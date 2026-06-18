@@ -1,0 +1,13 @@
+[package]
+name = "ass-wallpaper"
+description = "Compositor wallpaper: multi-format image and short-video backgrounds"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flux = { workspace = true }
+image = { workspace = true }
+log.workspace = true
+thiserror.workspace = true

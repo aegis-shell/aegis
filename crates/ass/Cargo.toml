@@ -1,0 +1,29 @@
+[package]
+name = "ass"
+description = "autonomous surface shell — a Wayland compositor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+default-run = "ass"
+
+[[bin]]
+name = "ass"
+path = "src/main.rs"
+
+[dependencies]
+ass-core = { workspace = true }
+ass-server = { workspace = true }
+ass-backend = { workspace = true }
+ass-render = { workspace = true }
+ass-shell = { workspace = true }
+ass-wallpaper = { workspace = true }
+flux = { workspace = true }
+flux-ui = { workspace = true }
+log.workspace = true
+env_logger.workspace = true
+# Direct deps purely so this binary's build script receives DEP_FLUX_RPATHS /
+# DEP_FLUX_UI_RPATHS (published via the -sys crates' `links` metadata) and can
+# re-emit the rpaths — `rustc-link-arg` does not propagate across crates.
+flux-sys = { workspace = true }
+flux-ui-sys = { workspace = true }

@@ -1,0 +1,59 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.74"
+repository = "."
+
+[workspace.dependencies]
+# flux/flux-ui Rust bindings, consumed from the in-tree binding crates inside
+# the sibling flux monorepo. flux ships libflux under `core/` and libflux-ui
+# under `ui/`; each subproject has its own meson build tree
+# (../flux/core/build, ../flux/ui/build). Build those first.
+flux = { path = "../flux/core/bindings/rust/flux" }
+flux-sys = { path = "../flux/core/bindings/rust/flux-sys" }
+flux-ui = { path = "../flux/ui/bindings/rust/flux-ui" }
+flux-ui-sys = { path = "../flux/ui/bindings/rust/flux-ui-sys" }
+
+# Observability: the facade in every crate, the impl only in the binary.
+# Long-term this seam is also how the AI-adaptation phase subscribes to
+# compositor events.
+log = "0.4"
+env_logger = "0.11"
+
+# Typed errors without handwritten Display/From impls.
+thiserror = "1"
+
+# Internal crates.
+ass-core = { path = "crates/ass-core" }
+ass-protocols = { path = "crates/ass-protocols" }
+ass-server = { path = "crates/ass-server" }
+ass-backend = { path = "crates/ass-backend" }
+ass-render = { path = "crates/ass-render" }
+ass-shell = { path = "crates/ass-shell" }
+ass-wallpaper = { path = "crates/ass-wallpaper" }
+
+# Image decode for the wallpaper crate. default-features off so the
+# avif decoder (which needs dav1d on the host) does not gate the build;
+# the enabled set covers every still and animated format the wallpaper
+# advertises.
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+    "bmp",
+    "ico",
+    "tiff",
+    "tga",
+    "qoi",
+    "pnm",
+    "rayon",
+] }
+
+[profile.dev]
+opt-level = 0

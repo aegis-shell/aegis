@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Lint and format the whole workspace. Both run without resolving path
+  # dependencies, so they are cheap and run on every change.
+  fmt-and-clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Clippy (flux-dependent crates skipped if deps unresolved)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+        continue-on-error: true
+
+  # ass-core and ass-protocols have no flux dependency, so their tests run
+  # without needing the sibling flux monorepo. ass-server also runs because
+  # wayland-server is a system dep, not a sibling path dep.
+  flux-free-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwayland-dev wayland-protocols \
+            pkg-config
+      - name: Test ass-core (no system deps)
+        run: cargo test -p ass-core
+      - name: Test ass-server (needs libwayland)
+        run: cargo test -p ass-server
+      - name: Build ass-protocols
+        run: cargo build -p ass-protocols
+
+  # Full workspace build + test. Requires the sibling flux monorepo at
+  # ../flux/{core,ui} with built meson trees. Disabled by default until repo
+  # integration strategy (submodule / multi-checkout / mirror) is decided.
+  full-workspace:
+    runs-on: ubuntu-latest
+    if: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwayland-dev wayland-protocols libvulkan-dev \
+            libxkbcommon-dev mesa-vulkan-drivers \
+            pkg-config meson ninja-build
+      # TODO: decide how flux is accessed in CI (submodule, mirror, manual
+      # checkout). Once that lands, build ../flux/core/build and
+      # ../flux/ui/build, then run `cargo test --workspace` and
+      # `cargo build --workspace`.
+      - name: Full workspace
+        run: cargo build --workspace

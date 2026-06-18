@@ -1,0 +1,12 @@
+[package]
+name = "ass-render"
+description = "Compositing: client buffers to flux textures, scene to the output via flux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ass-core = { workspace = true }
+flux = { workspace = true }
+log.workspace = true

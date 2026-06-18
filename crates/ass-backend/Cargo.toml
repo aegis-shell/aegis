@@ -1,0 +1,19 @@
+[package]
+name = "ass-backend"
+description = "Compositor backends: nested (dev) now, DRM/KMS + libinput + seat later"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[dependencies]
+ass-core = { workspace = true }
+ass-protocols = { workspace = true }
+flux = { workspace = true }
+ash = "0.38"
+log.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+pkg-config = "0.3"
