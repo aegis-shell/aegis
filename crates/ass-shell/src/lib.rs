@@ -18,8 +18,9 @@ use std::os::raw::c_void;
 use flux_ui::{Frame, Ui};
 
 pub mod chrome;
-pub use chrome::{Decorations, Dock, WindowList};
+pub use chrome::{Decorations, Dock, Launcher, WindowList};
 
+use ass_core::app::Entry;
 use ass_core::window::Window;
 
 /// Re-export so callers can construct input snapshots without depending on
@@ -28,8 +29,10 @@ pub use flux_ui::Input;
 
 /// Interaction intents chrome components emit during a frame. The core
 /// collects these and the main loop drains them into server window-management
-/// actions (`focus_surface_by_id`, `close_toplevel`, `start_interactive_move`).
-/// Each field is set at most once per frame; components share the sink.
+/// actions (`focus_surface_by_id`, `close_toplevel`,
+/// `start_interactive_move`) or, for [`ChromeEvents::spawn`], into
+/// `ass-launch`. Each field is set at most once per frame; components share
+/// the sink.
 #[derive(Debug, Default)]
 pub struct ChromeEvents {
     /// The chrome requested the session to quit.
@@ -41,6 +44,11 @@ pub struct ChromeEvents {
     /// Surface id of the window a component asked to start an interactive
     /// move on.
     pub move_requested: Option<usize>,
+    /// A desktop entry the chrome asked to launch (e.g. the launcher's
+    /// clicked row). Drained into `ass-launch` by the main loop; carrying the
+    /// full [`Entry`] keeps `ass-shell` free of any `ass-apps` dependency
+    /// (ADR-0022).
+    pub spawn: Option<Entry>,
 }
 
 /// One piece of compositor chrome.
@@ -60,6 +68,25 @@ pub trait Chrome {
         windows: &[Window],
         out: &mut ChromeEvents,
     );
+
+    /// Whether this component currently owns the keyboard (e.g. an open
+    /// launcher). When any registered component returns true, the main loop
+    /// routes resolved key events to [`Chrome::key_char`] and withholds them
+    /// from the focused client. Default `false`; override in components that
+    /// capture text input.
+    fn captures_keyboard(&self) -> bool {
+        false
+    }
+
+    /// Handle one resolved key event while [`Chrome::captures_keyboard`] is
+    /// true. Default no-op; override to consume typed input (the launcher's
+    /// search box).
+    fn key_char(&mut self, _kc: &ass_core::input::KeyChar, _out: &mut ChromeEvents) {}
+
+    /// The global launcher hotkey fired (a Super tap detected by the main
+    /// loop's `TapDetector`). Default no-op; components with an open/closed
+    /// state (the launcher) override this to flip it.
+    fn toggle(&mut self, _out: &mut ChromeEvents) {}
 }
 
 /// Errors from the shell.
@@ -138,6 +165,39 @@ impl Shell {
     /// `Server::start_interactive_move`.
     pub fn take_move_requested(&mut self) -> Option<usize> {
         self.events.move_requested.take()
+    }
+
+    /// Drain the desktop entry the chrome asked to launch this frame, if any.
+    /// The main loop hands it to `ass-launch`.
+    pub fn take_spawn(&mut self) -> Option<Entry> {
+        self.events.spawn.take()
+    }
+
+    /// Whether any registered component currently captures keyboard input
+    /// (e.g. an open launcher). The main loop checks this to decide whether to
+    /// route key events to [`Shell::key_char`] or forward them to the focused
+    /// client.
+    pub fn captures_keyboard(&self) -> bool {
+        self.components.iter().any(|c| c.captures_keyboard())
+    }
+
+    /// Feed one resolved key event to every registered component. Only
+    /// components that override [`Chrome::key_char`] (the launcher) act on it;
+    /// others take the default no-op.
+    pub fn key_char(&mut self, kc: ass_core::input::KeyChar) {
+        let events = &mut self.events;
+        for component in self.components.iter_mut() {
+            component.key_char(&kc, events);
+        }
+    }
+
+    /// Fire the global launcher hotkey (a Super tap the main loop detected).
+    /// Components with an open/closed state flip themselves; others no-op.
+    pub fn toggle(&mut self) {
+        let events = &mut self.events;
+        for component in self.components.iter_mut() {
+            component.toggle(events);
+        }
     }
 
     /// Run every registered component and render the chrome into `canvas`,

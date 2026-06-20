@@ -1,0 +1,16 @@
+[package]
+name = "ass-launch"
+description = "Detached, XDG-environment-aware launching of desktop applications"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ass-core = { workspace = true }
+ass-apps = { workspace = true }
+log.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

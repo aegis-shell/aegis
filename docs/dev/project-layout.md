@@ -9,12 +9,14 @@ Where code lives and where new files belong. For the conceptual design, see
 ass/
   Cargo.toml            workspace
   crates/
-    ass-core/          shared model: geometry, surface tree, outputs, focus
+    ass-core/          shared model: geometry, surface tree, outputs, focus, apps
     ass-protocols/     shared Wayland protocol interface tables (xdg-shell)
     ass-server/        Wayland server: socket, globals, object lifecycle
     ass-backend/       presentation + input targets (nested now, DRM/KMS later)
     ass-render/        compositing through flux
     ass-shell/         compositor chrome through flux-ui
+    ass-apps/          freedesktop.org desktop-entry enumeration + icon lookup
+    ass-launch/        detached, XDG-environment-aware app launching
     ass/               the binary: wiring and event loop
   docs/                 documentation (see docs/index.md)
 ```
@@ -32,6 +34,8 @@ flux and flux-ui live as subprojects of the sibling flux monorepo
 | `ass-backend` | The `Backend` trait and its implementations | [ADR-0002](../adr/0002-hand-rolled-wayland-server.md), [ADR-0003](../adr/0003-nested-first-bring-up.md) |
 | `ass-render` | Client buffers to flux textures, scene to output | [ADR-0004](../adr/0004-client-buffers-via-flux-dmabuf-import.md) |
 | `ass-shell` | flux-ui chrome bound to the compositor device | [ADR-0001](../adr/0001-scope-and-responsibility-boundary.md) |
+| `ass-apps` | freedesktop.org desktop-entry enumeration and icon-theme lookup | [ADR-0022](../adr/0022-application-launcher.md) |
+| `ass-launch` | detached, XDG-environment-aware launching of desktop applications | [ADR-0022](../adr/0022-application-launcher.md) |
 | `ass` | Process entry point and frame loop | [Architecture](../explanation/architecture.md) |
 
 ## Placement Rules

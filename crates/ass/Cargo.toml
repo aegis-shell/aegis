@@ -18,6 +18,10 @@ ass-backend = { workspace = true }
 ass-render = { workspace = true }
 ass-shell = { workspace = true }
 ass-wallpaper = { workspace = true }
+# Launcher: enumerate `.desktop` entries and spawn them detached (ADR-0022).
+# Only the binary wires these; ass-shell and ass-render stay free of them.
+ass-apps = { workspace = true }
+ass-launch = { workspace = true }
 flux = { workspace = true }
 flux-ui = { workspace = true }
 log.workspace = true

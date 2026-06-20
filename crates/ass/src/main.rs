@@ -60,6 +60,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     shell.add(Box::new(ass_shell::WindowList::new()));
     shell.add(Box::new(ass_shell::Decorations::new()));
     shell.add(Box::new(ass_shell::Dock::new()));
+    // Application launcher: enumerate every launchable `.desktop` entry on the
+    // host once at startup and hand the snapshot to the component. The shell
+    // stays free of `ass-apps`; only the binary wires discovery to chrome
+    // (ADR-0022). Click a row to spawn the app detached via `ass-launch`.
+    let launcher_apps = ass_apps::enumerate();
+    log::info!("launcher: {} launchable applications discovered", launcher_apps.len());
+    shell.add(Box::new(ass_shell::Launcher::new(launcher_apps)));
     let mut input = ass_shell::Input::default();
     // Seed the chrome's logical extent so widgets can lay out before the first
     // resize arrives. Updated each frame from the host size.
@@ -102,6 +109,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let clear = flux::rgba(30, 30, 46, 255);
     let mut frame_count: u64 = 0;
 
+    // Global launcher hotkey: a bare Super tap (press and release with no
+    // other key in between) toggles the launcher. Super still works as a
+    // modifier for every other combo — only a clean tap fires. See ADR-0022.
+    let mut super_tap = ass_core::input::TapDetector::super_tap();
+    // Tracks the previous frame's keyboard-capture state so the main loop can
+    // grab/release the keyboard on edges (launcher open/close).
+    let mut prev_captured = false;
+
     while host.dispatch() && !shell.should_quit() {
         // Process client protocol traffic.
         server.dispatch();
@@ -111,6 +126,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // clicks (e.g. the Quit button). The chrome reads the same pointer
         // position; routing priority is decided by the shell's hit-test.
         let events = host.take_input();
+        // When chrome (the launcher) captures the keyboard, key events go to
+        // the chrome's search box rather than the focused client. The shell
+        // reports capture state from the previous frame's render / key
+        // handling, so this is stable for the whole batch.
+        let keyboard_captured = shell.captures_keyboard();
         if !events.is_empty() {
             for ev in &events {
                 use ass_core::input::InputEvent::*;
@@ -141,12 +161,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     PointerLeave => {
                         input.set_cursor(-1.0, -1.0);
                     }
-                    PointerAxis { .. } | Key { .. } => {}
+                    Key { code, state } if keyboard_captured => {
+                        // Capture: advance the server's xkb state on every key
+                        // event (press and release both keep modifier tracking
+                        // consistent), and feed the launcher brain only on
+                        // press so typed characters are not double-counted.
+                        // Captured keys are withheld from clients below.
+                        if super_tap.on_key(code, state.is_pressed()) {
+                            shell.toggle();
+                        }
+                        if let Some(kc) = server.key_char(code, state.is_pressed()) {
+                            if state.is_pressed() {
+                                shell.key_char(kc);
+                            }
+                        }
+                    }
+                    Key { code, state } => {
+                        // Not capturing: keys forward to the client normally
+                        // (below). The Super-tap detector still observes every
+                        // key so a clean tap can open the launcher.
+                        if super_tap.on_key(code, state.is_pressed()) {
+                            shell.toggle();
+                        }
+                    }
+                    PointerAxis { .. } => {}
                 }
             }
             // Hand the events to the server for client routing after the shell
             // has seen them. The Quit button intercepts clicks when over chrome.
-            server.forward_input(&events);
+            // When the launcher captures the keyboard, withhold key events
+            // from clients — they belong to the search box, not the focused
+            // surface. Pointer events route normally in both cases.
+            if keyboard_captured {
+                let forwarded: Vec<ass_core::input::InputEvent> = events
+                    .iter()
+                    .copied()
+                    .filter(|e| !matches!(e, ass_core::input::InputEvent::Key { .. }))
+                    .collect();
+                server.forward_input(&forwarded);
+            } else {
+                server.forward_input(&events);
+            }
         }
 
         if let Some(sz) = host.take_resize() {
@@ -208,6 +263,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(id) = shell.take_move_requested() {
                     server.start_interactive_move(id);
                 }
+                // Launch the application the launcher's clicked row asked for.
+                // The child is detached (setsid) and inherits the Wayland/XDG
+                // environment, so it connects back to this compositor and
+                // survives it exiting. See ass-launch / ADR-0022.
+                if let Some(entry) = shell.take_spawn() {
+                    match ass_launch::launch(&entry, &ass_launch::LaunchOpts::default()) {
+                        Ok(report) => {
+                            log::info!("launcher: spawned {} (pid {})", entry.id, report.pid)
+                        }
+                        Err(e) => log::warn!("launcher: failed to spawn {}: {e}", entry.id),
+                    }
+                }
+                // Apply keyboard-grab transitions the chrome requested this
+                // frame (launcher opened or closed). Done after the intent
+                // drains so a launcher "focus running app" action (which sets
+                // a new keyboard focus) takes precedence over restoring the
+                // pre-grab focus. The grab sends `wl_keyboard.leave` to the
+                // focused client and the release sends `wl_keyboard.enter`
+                // back, keeping the focused client's state consistent with the
+                // capture decision. See ADR-0022.
+                let captured = shell.captures_keyboard();
+                if captured && !prev_captured {
+                    server.grab_keyboard_focus();
+                } else if !captured && prev_captured {
+                    server.release_keyboard_focus();
+                }
+                prev_captured = captured;
                 canvas.end();
                 frame.submit()?;
                 frame.present()?;

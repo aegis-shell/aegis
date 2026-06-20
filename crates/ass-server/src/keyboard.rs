@@ -68,6 +68,23 @@ pub struct Keyboard {
     keymap_size: usize,
 }
 
+/// Outcome of advancing the xkbcommon state with one key event: the modifier
+/// mask tuple the server posts to `wl_keyboard.modifiers`, plus the keysym
+/// and printable character the key produced (for compositor-side text input,
+/// e.g. the launcher's search box).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KeyOutcome {
+    pub depressed: u32,
+    pub latched: u32,
+    pub locked: u32,
+    pub group: u32,
+    /// XKB keysym for the key (`XKB_KEY_NoSymbol` if none resolved).
+    pub keysym: u32,
+    /// Printable character the key produced under the current layout and
+    /// modifiers, if any. `None` for control keys and plain modifiers.
+    pub utf8: Option<char>,
+}
+
 impl Keyboard {
     /// Compile the default keymap and back it with a sealed memfd.
     pub fn new() -> std::io::Result<Keyboard> {
@@ -130,12 +147,15 @@ impl Keyboard {
         }
     }
 
-    /// Advance the xkbcommon state with a key event and report the current
-    /// depressed/latched/locked/group mask tuple. The server posts
-    /// `wl_keyboard.modifiers` unconditionally after each key event so the
-    /// client's xkbcommon shadow state always matches ours; a comparison to
-    /// suppress redundant posts can be layered later.
-    pub fn update_key(&mut self, evdev_code: u32, pressed: bool) -> (u32, u32, u32, u32) {
+    /// Advance the xkbcommon state with a key event and report the resulting
+    /// modifier mask tuple plus the keysym and printable character the key
+    /// produced. The server posts `wl_keyboard.modifiers` unconditionally
+    /// after each key event so the client's xkbcommon shadow state always
+    /// matches ours; a comparison to suppress redundant posts can be layered
+    /// later. The keysym/utf8 fields feed compositor-side text input (the
+    /// launcher search) when the compositor — rather than a client — owns the
+    /// keyboard (ADR-0022).
+    pub fn update_key(&mut self, evdev_code: u32, pressed: bool) -> KeyOutcome {
         let direction = if pressed {
             xkb::KeyDirection::Down
         } else {
@@ -147,7 +167,19 @@ impl Keyboard {
         let latched = self.state.serialize_mods(xkb::STATE_MODS_LATCHED);
         let locked = self.state.serialize_mods(xkb::STATE_MODS_LOCKED);
         let group = self.state.serialize_layout(xkb::STATE_LAYOUT_EFFECTIVE);
-        (depressed, latched, locked, group)
+        // Read the keysym and produced char from the post-update state so
+        // same-batch Shift+letter resolves to the shifted glyph. For modifier
+        // keys themselves these resolve to NoSymbol / empty.
+        let keysym = self.state.key_get_one_sym(keycode).raw();
+        let utf8 = self.state.key_get_utf8(keycode).chars().next();
+        KeyOutcome {
+            depressed,
+            latched,
+            locked,
+            group,
+            keysym,
+            utf8,
+        }
     }
 
     fn create_keymap_fd(s: &CString, size: usize) -> std::io::Result<RawFd> {

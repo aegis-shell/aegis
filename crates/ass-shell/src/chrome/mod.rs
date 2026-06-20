@@ -13,11 +13,15 @@
 //!   overlays, with click-to-move and a close gadget.
 //! - [`Dock`] — a macOS-style bottom-center dock with one icon tile per
 //!   mapped toplevel; click to focus, activated window highlighted.
+//! - [`Launcher`] — a top-center toggle that expands into a centered list of
+//!   every enumerated `.desktop` entry; click a row to launch it (ADR-0022).
 
 mod decorations;
 mod dock;
+mod launcher;
 mod window_list;
 
 pub use decorations::Decorations;
 pub use dock::Dock;
+pub use launcher::Launcher;
 pub use window_list::WindowList;

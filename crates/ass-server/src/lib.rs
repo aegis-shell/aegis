@@ -202,6 +202,12 @@ struct State {
     /// from `pointer_focus` because click-to-focus sets keyboard focus only on
     /// button press, not on motion.
     keyboard_focus: *mut ffi::wl_resource,
+    /// Surface that had keyboard focus before chrome (the launcher) grabbed
+    /// it, or null. While a grab is active, `keyboard_focus` is null and the
+    /// saved surface receives a `wl_keyboard.leave`; releasing the grab
+    /// restores it via `wl_keyboard.enter` — but only if nothing else took
+    /// focus in the meantime. See `grab_keyboard_focus` / ADR-0022.
+    saved_keyboard_focus: *mut ffi::wl_resource,
     /// Last reported pointer position in compositor logical space.
     pointer_x: f32,
     pointer_y: f32,
@@ -228,6 +234,7 @@ impl State {
             keyboard_resources: Vec::new(),
             pointer_focus: std::ptr::null_mut(),
             keyboard_focus: std::ptr::null_mut(),
+            saved_keyboard_focus: std::ptr::null_mut(),
             pointer_x: 0.0,
             pointer_y: 0.0,
             last_button_serial: 0,
@@ -591,6 +598,62 @@ impl Server {
         unsafe { ffi::wl_display_flush_clients(self.state.display) };
     }
 
+    /// Advance the xkbcommon state with one key event and return the keysym
+    /// and printable character it produced, without forwarding anything to a
+    /// client.
+    ///
+    /// Used by the main loop when compositor chrome owns the keyboard (the
+    /// launcher overlay is open): the key event is consumed by the chrome
+    /// rather than delivered to the focused client, but the server's xkb
+    /// state still advances so modifier tracking stays consistent when the
+    /// client resumes ownership. Returns `None` only when the server has no
+    /// keyboard compiled. See ADR-0022.
+    pub fn key_char(&mut self, evdev_code: u32, pressed: bool) -> Option<ass_core::input::KeyChar> {
+        self.state.keyboard.as_mut().map(|kb| {
+            let o = kb.update_key(evdev_code, pressed);
+            ass_core::input::KeyChar {
+                keysym: o.keysym,
+                ch: o.utf8,
+            }
+        })
+    }
+
+    /// Grab the keyboard away from the focused client for compositor-side use
+    /// (the launcher overlay): sends `wl_keyboard.leave` to the current focus
+    /// and clears focus so no client receives keys while the grab is active.
+    /// Idempotent: a second call while grabbed is a no-op. Pair with
+    /// [`Server::release_keyboard_focus`]. See ADR-0022.
+    pub fn grab_keyboard_focus(&mut self) {
+        // Don't clobber the saved focus if already grabbed.
+        if !self.state.saved_keyboard_focus.is_null() {
+            return;
+        }
+        self.state.saved_keyboard_focus = self.state.keyboard_focus;
+        if !self.state.keyboard_focus.is_null() {
+            // change_keyboard_focus posts the leave and clears focus.
+            self.change_keyboard_focus(std::ptr::null_mut());
+        }
+    }
+
+    /// Release a keyboard grab taken by [`Server::grab_keyboard_focus`]:
+    /// restores `wl_keyboard.enter` to the surface that had focus before the
+    /// grab, but only if nothing else has since taken focus (e.g. the
+    /// launcher focusing a running app, or a pointer click-to-focus). If focus
+    /// moved during the grab, the current focus is left alone. No-op when no
+    /// grab is active.
+    pub fn release_keyboard_focus(&mut self) {
+        let saved = self.state.saved_keyboard_focus;
+        if saved.is_null() {
+            return;
+        }
+        self.state.saved_keyboard_focus = std::ptr::null_mut();
+        // Only restore if focus is still vacant; otherwise another path already
+        // established a new focus and we must not override it.
+        if self.state.keyboard_focus.is_null() {
+            self.change_keyboard_focus(saved);
+        }
+    }
+
     /// Current pointer focus, as the surface resource pointer. For the
     /// shell's hit-test of "is the pointer over chrome".
     pub fn pointer_focus_surface(&self) -> Option<*mut ffi::wl_resource> {
@@ -802,11 +865,15 @@ impl Server {
         // Always posting modifiers (even when unchanged) is simpler; the
         // client-side xkbcommon treats a no-op update cheaply. A delta check
         // can be added if profiling ever shows it matters.
-        let (depressed, latched, locked, group) = if let Some(kb) = self.state.keyboard.as_mut() {
+        let outcome = if let Some(kb) = self.state.keyboard.as_mut() {
             kb.update_key(evdev_code, state.is_pressed())
         } else {
-            (0u32, 0u32, 0u32, 0u32)
+            crate::keyboard::KeyOutcome::default()
         };
+        let depressed = outcome.depressed;
+        let latched = outcome.latched;
+        let locked = outcome.locked;
+        let group = outcome.group;
         let focus = self.state.keyboard_focus;
         let focus_client = unsafe { ffi::wl_resource_get_client(focus) };
         for k in self.iter_focus_keyboards(focus_client) {

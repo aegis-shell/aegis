@@ -28,6 +28,11 @@ env_logger = "0.11"
 # Typed errors without handwritten Display/From impls.
 thiserror = "1"
 
+# Launcher (ass-apps): XDG base-directory resolution and .desktop / index.theme
+# INI parsing. Kept off every other crate.
+dirs = "5"
+rust-ini = "0.20"
+
 # Internal crates.
 ass-core = { path = "crates/ass-core" }
 ass-protocols = { path = "crates/ass-protocols" }
@@ -36,6 +41,9 @@ ass-backend = { path = "crates/ass-backend" }
 ass-render = { path = "crates/ass-render" }
 ass-shell = { path = "crates/ass-shell" }
 ass-wallpaper = { path = "crates/ass-wallpaper" }
+# Launcher: XDG application discovery + detached launch. See ADR-0022.
+ass-apps = { path = "crates/ass-apps" }
+ass-launch = { path = "crates/ass-launch" }
 
 # Image decode for the wallpaper crate. default-features off so the
 # avif decoder (which needs dav1d on the host) does not gate the build;

@@ -5,7 +5,9 @@
 //! emit. It is deliberately free of flux and Wayland types so it can later
 //! grow the semantic introspection surface the AI-adaptation phase needs.
 
+pub mod app;
 pub mod input;
+pub mod launcher;
 pub mod window;
 
 /// An integer point in compositor (logical) coordinate space.

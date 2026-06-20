@@ -28,3 +28,4 @@ background and how the decisions fit together, see
 | [0019](0019-dock-as-bottom-center-overlay.md) | macOS-style dock via a bottom-center overlay | Accepted |
 | [0020](0020-buffer-scale-applied-at-composite.md) | Apply buffer_scale at composite time | Accepted |
 | [0021](0021-chrome-component-trait.md) | Chrome component trait (pure core shell) | Accepted |
+| [0022](0022-application-launcher.md) | Application launcher via freedesktop.org desktop entries | Accepted |

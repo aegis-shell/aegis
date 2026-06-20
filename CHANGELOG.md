@@ -7,6 +7,55 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### Launcher
+- Added an application launcher: enumerate every launchable `.desktop` entry
+  on the host (freedesktop.org Desktop Entry Specification) and expose it in
+  the chrome as a top-center toggle that expands into a centered list. Click a
+  row to launch, or search: type to filter, Up/Down to move the selection,
+  Enter to launch, Backspace to delete, Escape to close. The launched process
+  is detached — it runs in a new session via `setsid`, inherits the Wayland /
+  XDG environment, and survives the compositor exiting.
+- While the launcher is open it captures the keyboard: the `Chrome` trait
+  gained `captures_keyboard` and `key_char` default no-ops (only the launcher
+  overrides them), the main loop routes key events to the chrome and withholds
+  them from the focused client, the server sends a proper
+  `wl_keyboard.leave` on grab and `wl_keyboard.enter` on release
+  (`Server::{grab,release}_keyboard_focus`, restoring the pre-grab focus only
+  if nothing else took it during the session), and the server's
+  `Keyboard::update_key` / `Server::key_char` resolve each key to an
+  xkbcommon keysym + printable char to feed the search box. The
+  query/filter/selection logic lives in a pure, unit-tested
+  `ass-core::launcher` module; the flux-ui component is a thin adapter.
+- Added two new leaf crates: `ass-apps` (desktop-entry parsing, `XDG_DATA_HOME`
+  / `XDG_DATA_DIRS` traversal, deduplication with user-overrides-system
+  precedence, locale resolution via `LC_MESSAGES`, `Exec` field-code
+  expansion, and Icon Theme Spec lookup with the `hicolor` fallback) and
+  `ass-launch` (the detached spawn path, terminal-emulator wrapping for
+  `Terminal=true` entries).
+- A bare **Super tap** (press and release with no other key in between) now
+  opens the launcher from anywhere, even while an app has keyboard focus.
+  Detection is a pure `ass_core::input::TapDetector` fed every key event;
+  Super still works as a modifier in every other combo (the tap is observed,
+  not intercepted). Left and right Meta are equivalent.
+- The launcher is **aware of running apps**: activating an entry whose
+  `StartupWMClass` (or desktop-id stem) matches a live toplevel's `app_id`
+  focuses that instance instead of spawning a duplicate, via the existing
+  focus-by-surface-id path. Running rows are marked with a leading `●`.
+- Added `ass-core::app::Entry` as the shared launchable-application model,
+  `ass-core::launcher` (with the `Launch::{Spawn,Focus}` outcome) for the
+  search state machine, and
+  `ass-core::input::{KeyChar, KeyAction, key_action, TapDetector}` for the
+  keyboard path — so the shell chrome needs no `ass-apps` dependency.
+- `ass-shell` gains a `Launcher` chrome component, three `Chrome` trait
+  methods (`captures_keyboard`, `key_char`, `toggle`), and a
+  `ChromeEvents::spawn` intent; its dependency graph is unchanged. The binary
+  wires enumeration to the launcher, drains the spawn intent into
+  `ass-launch`, routes keyboard capture, and runs the Super-tap detector.
+- See [ADR-0022](docs/adr/0022-application-launcher.md). Rendering real app
+  icons as textures, a runtime application rescan, and a configurable
+  keybind (e.g. `Super+Space`) are follow-up work. Apps that set neither a
+  matching `app_id` nor `StartupWMClass` will not be recognized as running.
+
 ### Shell architecture
 - Split `ass-shell` into a pure core host and pluggable chrome components.
   `Shell` now owns only the flux-ui context, the per-frame window snapshot,
