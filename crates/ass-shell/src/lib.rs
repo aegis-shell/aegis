@@ -18,7 +18,7 @@ use std::os::raw::c_void;
 use lens::{Frame, Ui};
 
 pub mod chrome;
-pub use chrome::{Decorations, Dock, Launcher, Toast, WindowList, WorkspaceBar};
+pub use chrome::{Decorations, Dock, Launcher, Toast, WorkspaceBar};
 
 use ass_core::app::Entry;
 use ass_core::window::Window;
@@ -179,6 +179,14 @@ impl Shell {
     /// registration order.
     pub fn add(&mut self, component: Box<dyn Chrome>) {
         self.components.push(component);
+    }
+
+    /// Set the device-pixel (HiDPI) scale for the chrome. Layout and input
+    /// stay in logical pixels; lens scales the canvas transform on render so
+    /// chrome rasterises crisply on a scaled output. The main loop reports the
+    /// backend's output scale here each time it changes.
+    pub fn set_scale(&mut self, scale: f32) {
+        self.ui.set_scale(scale);
     }
 
     /// Whether any component requested the session to quit this frame.

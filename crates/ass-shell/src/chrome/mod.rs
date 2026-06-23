@@ -7,8 +7,6 @@
 //!
 //! Current components:
 //!
-//! - [`WindowList`] — the top-left side panel: Quit button plus a per-window
-//!   row with click-to-focus and close.
 //! - [`Decorations`] — per-window server-side title bars drawn as `lens`
 //!   overlays, with click-to-move and a close gadget.
 //! - [`Dock`] — a macOS-style bottom-center dock with one icon tile per
@@ -20,12 +18,10 @@ mod decorations;
 mod dock;
 mod launcher;
 mod toast;
-mod window_list;
 mod workspace_bar;
 
 pub use decorations::Decorations;
 pub use dock::Dock;
 pub use launcher::Launcher;
 pub use toast::Toast;
-pub use window_list::WindowList;
 pub use workspace_bar::WorkspaceBar;

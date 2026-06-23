@@ -232,11 +232,8 @@ struct State {
     /// updates the window's geometry instead of (only) being forwarded to
     /// the focused client.
     interactive: Option<ass_core::window::Interactive>,
-    /// Whether the current workspace is in tiled mode (ADR-0024). When on,
-    /// `apply_tiling` runs the master-stack policy over the workspace's
-    /// windows each frame, reconfiguring only those whose target moved.
-    tiling: bool,
-    /// Parameters for the tiling policy (gaps, master ratio).
+    /// Parameters for the tiling policy (gaps, master ratio). Per-workspace
+    /// tiling on/off lives on each workspace in the model (ADR-0024).
     layout_params: ass_core::layout::LayoutParams,
     /// Config-driven window rules (ADR-0026). Evaluated on first map; the
     /// first match prescribes a workspace move and/or a forced layout role.
@@ -272,7 +269,6 @@ impl State {
             interactive: None,
             workspaces,
             output,
-            tiling: false,
             layout_params: ass_core::layout::LayoutParams::default(),
             window_rules: Vec::new(),
             output_geometry: ass_core::output::OutputGeometry::default(),
@@ -957,7 +953,33 @@ impl Server {
 
     /// Whether the current workspace is in tiled mode (ADR-0024).
     pub fn tiling(&self) -> bool {
-        self.state.tiling
+        self.state.workspaces.current_workspace_tiled(self.state.output)
+    }
+
+    /// Toggle the current workspace between tiled and floating (ADR-0024).
+    /// On, the workspace's windows are marked `Tiled` and laid out next
+    /// `apply_tiling`; off, they revert to `Floating` and keep their current
+    /// geometry. Layout targets are cleared so the next apply reconfigures.
+    pub fn set_tiling(&mut self, on: bool) {
+        if let Some(wid) = self.state.workspaces.current_workspace(self.state.output) {
+            self.state.workspaces.set_tiled(wid, on);
+        }
+        let role = if on {
+            ass_core::layout::LayoutRole::Tiled
+        } else {
+            ass_core::layout::LayoutRole::Floating
+        };
+        for id in self.state.workspaces.visible_toplevels() {
+            let rec = self.find_surface_by_window_id(id);
+            if rec.is_null() {
+                continue;
+            }
+            unsafe {
+                (*rec).window.layout_role = role;
+                (*rec).layout_target = None;
+            }
+        }
+        log::info!("[server] workspace tiling {}", if on { "on" } else { "off" });
     }
 
     /// Replace the window rules (ADR-0026). Called at startup and on config
@@ -984,30 +1006,6 @@ impl Server {
         self.state.output_geometry.logical_rect()
     }
 
-    /// Toggle the current workspace between tiled and floating (ADR-0024).
-    /// On, the workspace's windows are marked `Tiled` and laid out next
-    /// `apply_tiling`; off, they revert to `Floating` and keep their current
-    /// geometry. Layout targets are cleared so the next apply reconfigures.
-    pub fn set_tiling(&mut self, on: bool) {
-        self.state.tiling = on;
-        let role = if on {
-            ass_core::layout::LayoutRole::Tiled
-        } else {
-            ass_core::layout::LayoutRole::Floating
-        };
-        for id in self.state.workspaces.visible_toplevels() {
-            let rec = self.find_surface_by_window_id(id);
-            if rec.is_null() {
-                continue;
-            }
-            unsafe {
-                (*rec).window.layout_role = role;
-                (*rec).layout_target = None;
-            }
-        }
-        log::info!("[server] tiling {}", if on { "on" } else { "off" });
-    }
-
     /// Apply the master-stack tiling policy to the current workspace's
     /// windows when tiled mode is on (ADR-0024). Runs the layout over
     /// `work_area` and reconfigures only the windows whose target rect moved,
@@ -1018,7 +1016,7 @@ impl Server {
     /// windows whose target rect moved, so steady state sends no configure
     /// events. No-op when tiling is off.
     pub fn apply_tiling(&mut self, work_area: ass_core::Rect) {
-        if !self.state.tiling {
+        if !self.state.workspaces.current_workspace_tiled(self.state.output) {
             return;
         }
         let tiled_ids: Vec<usize> = self

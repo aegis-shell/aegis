@@ -53,15 +53,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
 
-    // Host window + Vulkan surface.
+    // Host window + Vulkan surface. The swapchain is sized in *physical*
+    // pixels (logical × output scale) so a HiDPI host maps our buffer 1:1
+    // instead of upscaling it; `set_buffer_scale` tells the host the buffer is
+    // pre-scaled. Chrome and client/wallpaper draws stay in logical
+    // coordinates and are scaled up at draw time, keeping text and edges crisp.
     let mut host = NestedHost::open("ass", 1280, 720)?;
     let vk_surface = host.create_vk_surface(&device)?;
-    let (w, h) = host.size_u32();
-    log::info!("nested: host window {w}x{h}, VkSurfaceKHR created");
+    let (w, h) = host.physical_size();
+    log::info!(
+        "nested: host window {w}x{h} (scale {}), VkSurfaceKHR created",
+        host.scale()
+    );
 
     // flux presentable surface + canvas.
     let surface = unsafe { flux::Surface::from_vk(&device, vk_surface, w, h, true) }?;
     let canvas = flux::Canvas::new(&surface)?;
+    // Advertise the pre-scaled buffer to the host; takes effect on the next
+    // commit (the first present below).
+    host.set_buffer_scale();
 
     // Enumerate launchable `.desktop` entries once at startup; both the
     // launcher chrome and the dock icon cache consume the snapshot.
@@ -81,7 +91,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Compositor chrome, bound to the same device. The core host ships with
     // no chrome of its own; compose it from the components the binary wants.
     let mut shell = unsafe { ass_shell::Shell::new(device.as_raw() as *mut _) }?;
-    shell.add(Box::new(ass_shell::WindowList::new()));
     shell.add(Box::new(ass_shell::Decorations::new()));
     // Only the binary wires discovery to chrome (ADR-0022); the shell stays
     // free of `ass-apps`. Click a launcher row to spawn detached via
@@ -113,9 +122,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Optional wallpaper: a still image (png/jpg/webp/gif/…) or a short
     // video decoded by an external ffmpeg. Set $ASS_WALLPAPER to a path;
     // if absent or load fails, the frame's clear colour shows through.
-    // The video decode resolution is seeded from the initial host size;
+    // The video decode resolution is seeded from the initial *physical* host
+    // size so the wallpaper is decoded at the framebuffer's true resolution;
     // later resizes GPU-scale the wallpaper on draw without re-decoding.
-    let (init_w, init_h) = host.size_u32();
+    let (init_w, init_h) = host.physical_size();
     let mut wallpaper = match std::env::var("ASS_WALLPAPER")
         .ok()
         .filter(|s| !s.is_empty())

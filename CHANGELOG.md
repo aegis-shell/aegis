@@ -7,6 +7,15 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### Per-workspace tiling
+- Tiling is now per-workspace (ADR-0024), not a single global flag. Each
+  workspace remembers whether it is tiled, so one workspace can tile while
+  another floats, and the state persists across switches. `Workspace` and the
+  IPC snapshot carry a `tiled` flag; `set_tiling`/`ToggleTiling` flip the
+  *current* workspace; `apply_tiling` tiles only when the current workspace
+  is tiled. The server's global `tiling` bool is gone. Unit-tested in
+  `ass-core::workspace`.
+
 ### IPC: move a window to a workspace
 - New `MoveToWorkspace { window, workspace }` IPC command (control) and
   `ass-ctl move-to <window> <workspace>` move a toplevel to a workspace at

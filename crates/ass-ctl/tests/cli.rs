@@ -60,6 +60,7 @@ impl Handler for CtlHandler {
                 workspaces: vec![WorkspaceEntry {
                     id: WorkspaceId(0),
                     label: None,
+                    tiled: false,
                     toplevels: vec![1],
                 }],
             }],

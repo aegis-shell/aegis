@@ -61,6 +61,10 @@ pub struct Workspace {
     /// workspace moves back to it.
     pub origin: String,
     pub toplevels: Vec<usize>,
+    /// Whether this workspace is in tiled mode (ADR-0024 per-workspace
+    /// layout): when true, the master-stack policy lays out its `Tiled`-role
+    /// windows. Per-workspace, so one workspace can tile while another floats.
+    pub tiled: bool,
     /// Optional user-facing label. The visible number is the chrome's
     /// presentation; this is a name a user or the IPC may set.
     pub label: Option<String>,
@@ -110,6 +114,8 @@ pub struct OutputSnapshot {
 pub struct WorkspaceEntry {
     pub id: WorkspaceId,
     pub label: Option<String>,
+    /// Whether this workspace is in tiled mode (ADR-0024).
+    pub tiled: bool,
     /// Toplevel ids on this workspace, in z-order.
     pub toplevels: Vec<usize>,
 }
@@ -283,6 +289,24 @@ impl WorkspaceModel {
         o.workspaces.get(o.current).copied()
     }
 
+    /// Whether the workspace currently shown on `oid` is in tiled mode
+    /// (ADR-0024 per-workspace layout). `false` if the output or workspace
+    /// is unknown.
+    pub fn current_workspace_tiled(&self, oid: OutputId) -> bool {
+        self.current_workspace(oid)
+            .and_then(|wid| self.workspaces.get(&wid))
+            .map(|ws| ws.tiled)
+            .unwrap_or(false)
+    }
+
+    /// Set a workspace's tiled flag (ADR-0024). No-op if the workspace is
+    /// unknown.
+    pub fn set_tiled(&mut self, wid: WorkspaceId, tiled: bool) {
+        if let Some(ws) = self.workspaces.get_mut(&wid) {
+            ws.tiled = tiled;
+        }
+    }
+
     /// Switch the current workspace on `oid` by a relative step, clamped to
     /// the available range. Reaps the workspace left behind if it is empty.
     pub fn switch(&mut self, oid: OutputId, dir: Switch) -> Option<WorkspaceId> {
@@ -396,6 +420,7 @@ impl WorkspaceModel {
                         WorkspaceEntry {
                             id: wid,
                             label: ws.and_then(|w| w.label.clone()),
+                            tiled: ws.map(|w| w.tiled).unwrap_or(false),
                             toplevels: ws.map(|w| w.toplevels.clone()).unwrap_or_default(),
                         }
                     })
@@ -423,6 +448,7 @@ impl WorkspaceModel {
                 output: oid,
                 origin: connector.to_string(),
                 toplevels: Vec::new(),
+                tiled: false,
                 label: None,
             },
         );
@@ -694,6 +720,33 @@ mod tests {
         let _ = m.add_output("HDMI-A-1");
         let snap = m.snapshot();
         assert_eq!(snap.outputs[0].connector, "HDMI-A-1");
+    }
+
+    #[test]
+    fn tiling_is_per_workspace_and_persists_across_switch() {
+        let (mut m, oid, ws0) = one_output();
+        m.place_toplevel(ws0, 1); // fill ws0 → trailing ws1 appended
+        let ws1 = m.switch(oid, Switch::Next).unwrap(); // now on ws1
+
+        // Tile ws1 only.
+        m.set_tiled(ws1, true);
+        assert!(m.current_workspace_tiled(oid));
+        assert!(m.workspace(ws1).unwrap().tiled);
+        assert!(!m.workspace(ws0).unwrap().tiled, "ws0 stays floating");
+
+        // Switch back to ws0: it is floating; ws1 remembers it is tiled.
+        m.switch(oid, Switch::Prev);
+        assert!(!m.current_workspace_tiled(oid));
+        assert!(m.workspace(ws1).unwrap().tiled, "ws1 tiled flag persists");
+
+        // Snapshot surfaces the flag.
+        let snap = m.snapshot();
+        let entry1 = snap.outputs[0]
+            .workspaces
+            .iter()
+            .find(|w| w.id == ws1)
+            .unwrap();
+        assert!(entry1.tiled);
     }
 
     #[test]

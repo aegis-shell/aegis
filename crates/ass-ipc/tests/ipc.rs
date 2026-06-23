@@ -70,6 +70,7 @@ impl Handler for TestHandler {
                 workspaces: vec![WorkspaceEntry {
                     id: WorkspaceId(0),
                     label: None,
+                    tiled: false,
                     toplevels: self.windows.iter().map(|w| w.id).collect(),
                 }],
             }],
