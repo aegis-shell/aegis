@@ -53,6 +53,19 @@ struct State {
     pending_height: i32,
     resized: bool,
     should_close: bool,
+    /// Bound `wl_output` globals and the integer scale each last advertised.
+    /// The nested window reads the scale of the output it currently sits on
+    /// (`current_output`) to size its buffer for HiDPI.
+    outputs: Vec<(*mut ffi::wl_proxy, i32)>,
+    /// The output the surface most recently entered, or null before the first
+    /// `wl_surface.enter`.
+    current_output: *mut ffi::wl_proxy,
+    /// Effective integer buffer scale (>= 1) for the current output.
+    scale: i32,
+    /// Set when `scale` changed (output scale event, or the window moved to a
+    /// differently-scaled output); drained by `take_resize` so the main loop
+    /// rebuilds the swapchain at the new physical size.
+    scale_changed: bool,
     /// Input events drained by `take_input`. Pointer motion and button state
     /// changes accumulate here each dispatch; the main loop drains once per
     /// frame.
@@ -207,6 +220,20 @@ unsafe fn commit(surface: *mut ffi::wl_proxy) {
     );
 }
 
+/// `wl_surface.set_buffer_scale`: declare the attached buffer is pre-scaled by
+/// `scale`, so the host maps it 1:1 instead of upscaling a logical-sized
+/// buffer. Double-buffered; applies on the next commit (the next present).
+unsafe fn set_buffer_scale(surface: *mut ffi::wl_proxy, scale: i32) {
+    ffi::wl_proxy_marshal_flags(
+        surface,
+        ffi::WL_SURFACE_SET_BUFFER_SCALE,
+        ptr::null::<ffi::wl_interface>(),
+        ffi::wl_proxy_get_version(surface),
+        0,
+        scale.max(1),
+    );
+}
+
 unsafe fn set_string(toplevel: *mut ffi::wl_proxy, opcode: u32, value: &str) {
     let c = CString::new(value).unwrap_or_default();
     ffi::wl_proxy_marshal_flags(
@@ -243,6 +270,20 @@ unsafe extern "C" fn on_global(
         // Bind at v4: pointer v4 covers enter/leave/motion/button/axis without
         // the v5+ frame/axis_value120 group — sufficient for M1 forwarding.
         st.seat = registry_bind(registry, name, &ffi::wl_seat_interface, version.min(4));
+    } else if iface == b"wl_output" {
+        // Bind at v2 for the `scale` event (added in v2); v4's name/description
+        // are not requested, so the 4-slot vtable is never over-run. Track each
+        // output so `wl_surface.enter` can resolve the scale of the output the
+        // window is on.
+        let output = registry_bind(registry, name, &ffi::wl_output_interface, version.min(2));
+        if !output.is_null() {
+            ffi::wl_proxy_add_listener(
+                output,
+                &OUTPUT_LISTENER as *const _ as *const c_void,
+                data,
+            );
+            st.outputs.push((output, 1));
+        }
     }
 }
 
@@ -322,6 +363,80 @@ unsafe extern "C" fn on_seat_name(
     _data: *mut c_void,
     _seat: *mut ffi::wl_proxy,
     _name: *const std::os::raw::c_char,
+) {
+}
+
+// Host output listeners. We only care about `scale`: it drives the buffer
+// scale so a HiDPI host maps our pre-scaled buffer 1:1 instead of upscaling a
+// logical-sized one. `geometry`/`mode`/`done` are accepted (the vtable must be
+// complete) but ignored.
+unsafe extern "C" fn on_output_geometry(
+    _data: *mut c_void,
+    _output: *mut ffi::wl_proxy,
+    _x: i32,
+    _y: i32,
+    _physical_width: i32,
+    _physical_height: i32,
+    _subpixel: i32,
+    _make: *const std::os::raw::c_char,
+    _model: *const std::os::raw::c_char,
+    _transform: i32,
+) {
+}
+
+unsafe extern "C" fn on_output_mode(
+    _data: *mut c_void,
+    _output: *mut ffi::wl_proxy,
+    _flags: u32,
+    _width: i32,
+    _height: i32,
+    _refresh: i32,
+) {
+}
+
+unsafe extern "C" fn on_output_done(_data: *mut c_void, _output: *mut ffi::wl_proxy) {}
+
+unsafe extern "C" fn on_output_scale(
+    data: *mut c_void,
+    output: *mut ffi::wl_proxy,
+    factor: i32,
+) {
+    let st = &mut *(data as *mut State);
+    let f = factor.max(1);
+    if let Some(entry) = st.outputs.iter_mut().find(|o| o.0 == output) {
+        entry.1 = f;
+    } else {
+        st.outputs.push((output, f));
+    }
+    // Adopt this scale when it belongs to the output we're on, or before the
+    // first `enter` (so the very first frame already targets the right scale).
+    if (output == st.current_output || st.current_output.is_null()) && f != st.scale {
+        st.scale = f;
+        st.scale_changed = true;
+    }
+}
+
+// Host surface listeners. `enter` tells us which output the window sits on; we
+// adopt that output's scale. `leave` keeps the last known scale.
+unsafe extern "C" fn on_surface_enter(
+    data: *mut c_void,
+    _surface: *mut ffi::wl_proxy,
+    output: *mut ffi::wl_proxy,
+) {
+    let st = &mut *(data as *mut State);
+    st.current_output = output;
+    if let Some(entry) = st.outputs.iter().find(|o| o.0 == output) {
+        if entry.1 != st.scale {
+            st.scale = entry.1;
+            st.scale_changed = true;
+        }
+    }
+}
+
+unsafe extern "C" fn on_surface_leave(
+    _data: *mut c_void,
+    _surface: *mut ffi::wl_proxy,
+    _output: *mut ffi::wl_proxy,
 ) {
 }
 
@@ -499,6 +614,16 @@ static SEAT_LISTENER: ffi::wl_seat_listener = ffi::wl_seat_listener {
     capabilities: on_seat_capabilities,
     name: on_seat_name,
 };
+static OUTPUT_LISTENER: ffi::wl_output_listener = ffi::wl_output_listener {
+    geometry: on_output_geometry,
+    mode: on_output_mode,
+    done: on_output_done,
+    scale: on_output_scale,
+};
+static SURFACE_LISTENER: ffi::wl_surface_listener = ffi::wl_surface_listener {
+    enter: on_surface_enter,
+    leave: on_surface_leave,
+};
 static POINTER_LISTENER: ffi::wl_pointer_listener = ffi::wl_pointer_listener {
     enter: on_pointer_enter,
     leave: on_pointer_leave,
@@ -537,6 +662,10 @@ impl NestedHost {
                 pending_height: 0,
                 resized: false,
                 should_close: false,
+                outputs: Vec::new(),
+                current_output: ptr::null_mut(),
+                scale: 1,
+                scale_changed: false,
                 input_events: Vec::new(),
             });
             let data = &mut *state as *mut State as *mut c_void;
@@ -579,8 +708,14 @@ impl NestedHost {
                 );
             }
 
-            // Surface + xdg roles.
+            // Surface + xdg roles. Listen for enter/leave so the buffer scale
+            // tracks the output the window is shown on.
             let surface = create_surface(state.compositor);
+            ffi::wl_proxy_add_listener(
+                surface,
+                &SURFACE_LISTENER as *const _ as *const c_void,
+                data,
+            );
             let xdg_surface = get_xdg_surface(state.wm_base, surface);
             ffi::wl_proxy_add_listener(
                 xdg_surface,
@@ -652,12 +787,37 @@ impl NestedHost {
         }
     }
 
-    /// Window size as `u32`, for swapchain extents.
+    /// Logical window size as `u32` (the configured size, scale-independent).
+    /// Use [`physical_size`](Self::physical_size) for swapchain extents.
     pub fn size_u32(&self) -> (u32, u32) {
         (
             self.state.width.max(1) as u32,
             self.state.height.max(1) as u32,
         )
+    }
+
+    /// Integer buffer scale of the output the window is on (>= 1). 1 on a
+    /// non-HiDPI host or before the first output `scale` / surface `enter`.
+    pub fn scale(&self) -> i32 {
+        self.state.scale.max(1)
+    }
+
+    /// Physical (device-pixel) size = logical size × [`scale`](Self::scale).
+    /// This is the swapchain extent; the buffer is divisible by `scale`, so
+    /// `wl_surface.set_buffer_scale(scale)` is always valid.
+    pub fn physical_size(&self) -> (u32, u32) {
+        let s = self.scale();
+        (
+            (self.state.width.max(1) * s) as u32,
+            (self.state.height.max(1) * s) as u32,
+        )
+    }
+
+    /// Advertise the current buffer scale to the host. Applies on the next
+    /// surface commit (the next present); call after sizing the swapchain to
+    /// the matching physical size.
+    pub fn set_buffer_scale(&self) {
+        unsafe { set_buffer_scale(self.surface, self.state.scale) };
     }
 
     pub fn should_close(&self) -> bool {
@@ -688,11 +848,19 @@ impl Backend for NestedHost {
         std::mem::take(&mut self.state.input_events)
     }
 
+    /// Reports a new *logical* size when the host resized us or the output
+    /// scale changed (the window moved to a differently-scaled monitor). The
+    /// main loop derives the physical swapchain extent from
+    /// [`physical_size`](NestedHost::physical_size); on a pure scale change the
+    /// logical size is unchanged but the physical size is not.
     fn take_resize(&mut self) -> Option<Size> {
-        if self.state.resized {
-            self.state.width = self.state.pending_width;
-            self.state.height = self.state.pending_height;
+        if self.state.resized || self.state.scale_changed {
+            if self.state.resized {
+                self.state.width = self.state.pending_width;
+                self.state.height = self.state.pending_height;
+            }
             self.state.resized = false;
+            self.state.scale_changed = false;
             Some(Size {
                 w: self.state.width,
                 h: self.state.height,
@@ -723,6 +891,13 @@ impl Drop for NestedHost {
             }
             if !self.state.keyboard.is_null() {
                 ffi::wl_proxy_destroy(self.state.keyboard);
+            }
+            // Bound outputs are independent globals; reap them before the
+            // registry.
+            for (output, _) in self.state.outputs.iter() {
+                if !output.is_null() {
+                    ffi::wl_proxy_destroy(*output);
+                }
             }
             let compositor = self.state.compositor;
             let seat = self.state.seat;

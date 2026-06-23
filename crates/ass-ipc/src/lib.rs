@@ -22,9 +22,11 @@
 
 pub mod client;
 pub mod codec;
+pub mod journal;
 pub mod schema;
 pub mod server;
 
 pub use client::Client;
-pub use schema::{Capabilities, Command, Event, PROTOCOL_VERSION, Request, Response};
+pub use journal::{Effect, Journal, JournalEntry, JournalSnapshot, Origin, DEFAULT_CAPACITY};
+pub use schema::{Capabilities, Command, Event, OpClass, PROTOCOL_VERSION, Request, Response, Scope};
 pub use server::{Handler, Server};

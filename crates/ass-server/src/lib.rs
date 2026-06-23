@@ -248,6 +248,10 @@ struct State {
     /// The single output the nested backend presents. Multi-output lands in
     /// M7 (ADR-0028); until then there is exactly one.
     output: ass_core::workspace::OutputId,
+    /// Monotonic counter for durable window identifiers (ADR-0032). Starts
+    /// at 1 so `WindowId(0)` remains reserved for the `Window::default()`
+    /// that non-toplevel surfaces carry.
+    next_window_id: u64,
 }
 
 impl State {
@@ -272,7 +276,16 @@ impl State {
             layout_params: ass_core::layout::LayoutParams::default(),
             window_rules: Vec::new(),
             output_geometry: ass_core::output::OutputGeometry::default(),
+            next_window_id: 1,
         }
+    }
+
+    /// Allocate a fresh, never-reused `WindowId` (ADR-0032). Called on the
+    /// main loop when a toplevel role is acquired.
+    fn alloc_window_id(&mut self) -> ass_core::window::WindowId {
+        let id = self.next_window_id;
+        self.next_window_id += 1;
+        ass_core::window::WindowId(id)
     }
 
     /// Iterate live surface records, skipping nulled slots. The returned
@@ -391,7 +404,7 @@ impl Server {
     /// to upload. Subsurfaces are skipped until subsurface placement is modeled.
     /// The set of toplevel ids on the current workspace of each output — the
     /// only surfaces the renderer, chrome, and input may touch (ADR-0025).
-    fn visible(&self) -> std::collections::HashSet<usize> {
+    fn visible(&self) -> std::collections::HashSet<ass_core::window::WindowId> {
         self.state
             .workspaces
             .visible_toplevels()
@@ -413,7 +426,7 @@ impl Server {
                     && !s.window.minimized
                     && !s.content_is_dmabuf
                     && !s.pixels.is_empty()
-                    && visible.contains(&(s.resource as usize))
+                    && visible.contains(&s.window.id)
             })
             .map(|s| SurfacePixels {
                 id: s.resource as usize,
@@ -451,7 +464,7 @@ impl Server {
                     && !s.window.minimized
                     && s.content_is_dmabuf
                     && !s.dmabuf_buffer.is_null()
-                    && visible.contains(&(s.resource as usize))
+                    && visible.contains(&s.window.id)
             })
             .filter_map(|s| {
                 let db = unsafe {
@@ -517,7 +530,7 @@ impl Server {
             let parent = unsafe { &*p };
             if !parent.mapped
                 || parent.xdg_toplevel.is_null()
-                || !visible.contains(&(parent.resource as usize))
+                || !visible.contains(&parent.window.id)
             {
                 continue;
             }
@@ -565,7 +578,7 @@ impl Server {
             let parent = unsafe { &*p };
             if !parent.mapped
                 || parent.xdg_toplevel.is_null()
-                || !visible.contains(&(parent.resource as usize))
+                || !visible.contains(&parent.window.id)
             {
                 continue;
             }
@@ -745,7 +758,7 @@ impl Server {
             .live_surfaces()
             .map(|p| unsafe { &*p })
             .filter(|s| {
-                !s.xdg_toplevel.is_null() && visible.contains(&(s.resource as usize))
+                !s.xdg_toplevel.is_null() && visible.contains(&s.window.id)
             })
             .map(|s| s.window.clone())
             .collect()
@@ -754,10 +767,10 @@ impl Server {
     /// Ask a toplevel to close by posting `xdg_toplevel.close`. The client
     /// responds by destroying its `xdg_toplevel` (and usually the surface).
     /// No-op if `surface_id` does not name a live toplevel.
-    pub fn close_toplevel(&mut self, surface_id: usize) {
+    pub fn close_toplevel(&mut self, surface_id: ass_core::window::WindowId) {
         for p in self.state.live_surfaces() {
             let s = unsafe { &*p };
-            if s.resource as usize == surface_id && !s.xdg_toplevel.is_null() {
+            if s.window.id == surface_id && !s.xdg_toplevel.is_null() {
                 unsafe {
                     ffi::wl_resource_post_event(s.xdg_toplevel, ffi::XDG_TOPLEVEL_CLOSE);
                 }
@@ -771,10 +784,14 @@ impl Server {
     /// client updates its focus state. The shell calls this when keyboard
     /// focus changes; M1's click-to-focus already posts keyboard enter/leave,
     /// and this complements it with the toplevel-state side.
-    pub fn set_toplevel_activated(&mut self, surface_id: usize, activated: bool) {
+    pub fn set_toplevel_activated(
+        &mut self,
+        surface_id: ass_core::window::WindowId,
+        activated: bool,
+    ) {
         for p in self.state.live_surfaces() {
             let s = unsafe { &mut *p };
-            if s.resource as usize == surface_id && !s.xdg_toplevel.is_null() {
+            if s.window.id == surface_id && !s.xdg_toplevel.is_null() {
                 if s.window.state.activated == activated {
                     return;
                 }
@@ -791,7 +808,7 @@ impl Server {
     /// `xdg_toplevel.move` path, no serial validation is performed — the
     /// compositor is initiating the grab itself. No-op if a grab is already
     /// active or the surface is not a live toplevel.
-    pub fn start_interactive_move(&mut self, surface_id: usize) {
+    pub fn start_interactive_move(&mut self, surface_id: ass_core::window::WindowId) {
         if self.state.interactive.is_some() {
             return;
         }
@@ -810,7 +827,7 @@ impl Server {
     /// as [`start_interactive_move`](Self::start_interactive_move).
     pub fn start_interactive_resize(
         &mut self,
-        surface_id: usize,
+        surface_id: ass_core::window::WindowId,
         edges: ass_core::window::ResizeEdges,
     ) {
         if self.state.interactive.is_some() {
@@ -844,7 +861,7 @@ impl Server {
     /// surfaces. Equivalent to the click-to-focus path driven from a pointer
     /// button press, but initiated by the compositor. No-op if the id does
     /// not name a live toplevel.
-    pub fn focus_surface_by_id(&mut self, surface_id: usize) {
+    pub fn focus_surface_by_id(&mut self, surface_id: ass_core::window::WindowId) {
         let rec = self.find_surface_by_window_id(surface_id);
         if rec.is_null() {
             return;
@@ -866,7 +883,7 @@ impl Server {
     /// Surface id of the toplevel currently holding keyboard focus, if any.
     /// Returns `None` when no surface is focused or the focus is not a
     /// toplevel. Used by the keybind dispatcher to target the focused window.
-    pub fn focused_toplevel_id(&self) -> Option<usize> {
+    pub fn focused_toplevel_id(&self) -> Option<ass_core::window::WindowId> {
         let f = self.state.keyboard_focus;
         if f.is_null() {
             return None;
@@ -875,7 +892,7 @@ impl Server {
             .live_surfaces()
             .map(|p| unsafe { &*p })
             .find(|s| s.resource == f && !s.xdg_toplevel.is_null())
-            .map(|s| s.resource as usize)
+            .map(|s| s.window.id)
     }
 
     /// Cycle keyboard focus among mapped, non-minimized toplevels in creation
@@ -884,7 +901,7 @@ impl Server {
     /// `CycleFocusBack` key bindings.
     pub fn cycle_focus(&mut self, forward: bool) {
         let visible = self.visible();
-        let ids: Vec<usize> = self
+        let ids: Vec<ass_core::window::WindowId> = self
             .state
             .live_surfaces()
             .map(|p| unsafe { &*p })
@@ -892,9 +909,9 @@ impl Server {
                 !s.xdg_toplevel.is_null()
                     && s.mapped
                     && !s.window.minimized
-                    && visible.contains(&(s.resource as usize))
+                    && visible.contains(&s.window.id)
             })
-            .map(|s| s.resource as usize)
+            .map(|s| s.window.id)
             .collect();
         if ids.len() < 2 {
             return;
@@ -939,7 +956,7 @@ impl Server {
     /// window or workspace is unknown.
     pub fn move_to_workspace(
         &mut self,
-        window_id: usize,
+        window_id: ass_core::window::WindowId,
         workspace: ass_core::workspace::WorkspaceId,
     ) {
         self.state.workspaces.move_toplevel(window_id, workspace);
@@ -1006,6 +1023,21 @@ impl Server {
         self.state.output_geometry.logical_rect()
     }
 
+    /// The live outputs (connector + geometry) for the IPC and chrome. One
+    /// entry per workspace-model output, paired with the focused geometry
+    /// (multi-output geometry tracking lands with M7).
+    pub fn output_infos(&self) -> Vec<ass_core::output::OutputInfo> {
+        self.state
+            .workspaces
+            .outputs()
+            .iter()
+            .map(|o| ass_core::output::OutputInfo {
+                connector: o.connector.clone(),
+                geometry: self.state.output_geometry,
+            })
+            .collect()
+    }
+
     /// Apply the master-stack tiling policy to the current workspace's
     /// windows when tiled mode is on (ADR-0024). Runs the layout over
     /// `work_area` and reconfigures only the windows whose target rect moved,
@@ -1019,7 +1051,7 @@ impl Server {
         if !self.state.workspaces.current_workspace_tiled(self.state.output) {
             return;
         }
-        let tiled_ids: Vec<usize> = self
+        let tiled_ids: Vec<ass_core::window::WindowId> = self
             .state
             .workspaces
             .visible_toplevels()
@@ -1069,11 +1101,10 @@ impl Server {
     /// focus (post leave, deactivate). Idempotent.
     fn drop_focus_if_hidden(&mut self) {
         let visible = self.visible();
-        let f = self.state.keyboard_focus;
-        if f.is_null() {
+        let Some(wid) = self.focused_toplevel_id() else {
             return;
-        }
-        if !visible.contains(&(f as usize)) {
+        };
+        if !visible.contains(&wid) {
             self.change_keyboard_focus(std::ptr::null_mut());
         }
     }
@@ -1656,7 +1687,7 @@ unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut
         // (ADR-0025). The model's trailing-empty invariant appends a fresh
         // workspace if this one fills the last.
         if !(*rec).state.is_null() {
-            let id = (*rec).resource as usize;
+            let id = (*rec).window.id;
             let st = &mut *(*rec).state;
             if let Some(wid) = st.workspaces.current_workspace(st.output) {
                 st.workspaces.place_toplevel(wid, id);
@@ -1809,7 +1840,7 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
     // for surfaces that never mapped or had no toplevel role. Run before the
     // slot is nulled so the resource address is still readable.
     if !(*rec).state.is_null() {
-        let id = (*rec).resource as usize;
+        let id = (*rec).window.id;
         (*(*rec).state).workspaces.remove_toplevel(id);
     }
     // Release any held dma-buf-backed wl_buffer so the client can reclaim its
@@ -1992,7 +2023,14 @@ unsafe extern "C" fn xdg_surface_get_toplevel(
     (*rec).xdg_toplevel = toplevel;
     // Initialize the window metadata so subsequent state requests (set_title,
     // set_min_size, ...) have somewhere to write.
-    (*rec).window = ass_core::window::Window::new(rec as usize);
+    // Allocate a durable window id (ADR-0032). The surface address is no
+    // longer the window's identity; the id is monotonic and never reused.
+    let window_id = if !(*rec).state.is_null() {
+        (*(*rec).state).alloc_window_id()
+    } else {
+        ass_core::window::WindowId(0)
+    };
+    (*rec).window = ass_core::window::Window::new(window_id);
     ffi::wl_resource_set_implementation(
         toplevel,
         &XDG_TOPLEVEL_IMPL as *const _ as *const c_void,
@@ -2307,7 +2345,7 @@ unsafe extern "C" fn toplevel_move(
         return; // Already grabbing; ignore.
     }
     (*state_ptr).interactive = Some(ass_core::window::Interactive::Move {
-        window_id: rec as usize,
+        window_id: (*rec).window.id,
         origin: ((*state_ptr).pointer_x, (*state_ptr).pointer_y),
         start_position: (*rec).position,
     });
@@ -2332,7 +2370,7 @@ unsafe extern "C" fn toplevel_resize(
         return;
     }
     (*state_ptr).interactive = Some(ass_core::window::Interactive::Resize {
-        window_id: rec as usize,
+        window_id: (*rec).window.id,
         edges: ass_core::window::ResizeEdges(edges),
         origin: ((*state_ptr).pointer_x, (*state_ptr).pointer_y),
         start_position: (*rec).position,
@@ -2495,12 +2533,12 @@ impl Server {
         }
     }
 
-    fn find_surface_by_window_id(&self, id: usize) -> *mut SurfaceRec {
-        // The "window id" convention is the SurfaceRec address. Walk the Vec
-        // for the matching entry; O(N) but only fires per interactive motion
-        // event, not per frame.
+    fn find_surface_by_window_id(
+        &self,
+        id: ass_core::window::WindowId,
+    ) -> *mut SurfaceRec {
         for p in self.state.live_surfaces() {
-            if p as usize == id {
+            if unsafe { (*p).window.id } == id {
                 return p;
             }
         }
@@ -2664,6 +2702,35 @@ static SEAT_IMPL: ffi::wl_seat_interface_impl = ffi::wl_seat_interface_impl {
     release: res_destroy,
 };
 
+// `wl_pointer` has two requests: `set_cursor` (v1) and `release` (v3). The
+// previous code bound the pointer resource with a NULL implementation on the
+// assumption that no request needed handling — but `set_cursor` is a regular
+// request every client sends to change its cursor, and a NULL handler makes
+// libwayland abort with "Implementation of resource N of wl_pointer is NULL".
+// `set_cursor` is accepted and ignored: in the nested backend the host
+// compositor already paints a cursor; a future DRM/KMS backend will store
+// the cursor surface and paint it itself. `release` destroys the resource,
+// which then runs `pointer_resource_destroy` to null out the slot.
+static POINTER_IMPL: ffi::wl_pointer_interface_impl = ffi::wl_pointer_interface_impl {
+    set_cursor: pointer_set_cursor,
+    release: res_destroy,
+};
+
+static KEYBOARD_IMPL: ffi::wl_keyboard_interface_impl = ffi::wl_keyboard_interface_impl {
+    release: res_destroy,
+};
+
+/// `wl_pointer.set_cursor`: accept and ignore. See `POINTER_IMPL`.
+unsafe extern "C" fn pointer_set_cursor(
+    _client: *mut ffi::wl_client,
+    _pointer: *mut ffi::wl_resource,
+    _serial: u32,
+    _surface: *mut ffi::wl_resource,
+    _hotspot_x: i32,
+    _hotspot_y: i32,
+) {
+}
+
 unsafe extern "C" fn seat_bind(
     client: *mut ffi::wl_client,
     data: *mut c_void,
@@ -2703,12 +2770,11 @@ unsafe extern "C" fn seat_get_pointer(
     if p.is_null() {
         return;
     }
-    // NULL implementation: pointer resources receive events but never handle
-    // requests through v5 (`release` is a destructor handled by the destroy
-    // notify path).
+    // Real implementation: see POINTER_IMPL — both `set_cursor` and
+    // `release` must have handlers or libwayland aborts the server.
     ffi::wl_resource_set_implementation(
         p,
-        std::ptr::null(),
+        &POINTER_IMPL as *const _ as *const c_void,
         state as *mut c_void,
         Some(pointer_resource_destroy),
     );
@@ -2756,11 +2822,11 @@ unsafe extern "C" fn seat_get_keyboard(
     if k.is_null() {
         return;
     }
-    // NULL impl: keyboard resources only receive events; no requests to
-    // dispatch except `release` (v3+), handled by the destroy notify path.
+    // Real implementation: `release` (v3+) must have a handler or
+    // libwayland aborts when a client sends it. See KEYBOARD_IMPL.
     ffi::wl_resource_set_implementation(
         k,
-        std::ptr::null(),
+        &KEYBOARD_IMPL as *const _ as *const c_void,
         state as *mut c_void,
         Some(keyboard_resource_destroy),
     );

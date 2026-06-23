@@ -33,6 +33,7 @@ impl Client {
             &Request::Hello {
                 version: PROTOCOL_VERSION,
                 caps: requested,
+                scope: None,
             },
         )?;
         let resp: Response = read_msg(&mut stream)?;
@@ -40,6 +41,7 @@ impl Client {
             Response::Hello {
                 version,
                 caps,
+                scope: _,
             } if version == PROTOCOL_VERSION => caps,
             Response::Error { message } => {
                 return Err(io::Error::new(io::ErrorKind::ConnectionRefused, message));
@@ -120,6 +122,11 @@ impl Client {
         })
     }
 
+    /// Dismiss a notification by id.
+    pub fn dismiss_notification(&mut self, id: u64) -> io::Result<()> {
+        self.command(Command::DismissNotification { id })
+    }
+
     /// Fetch the live notification queue.
     pub fn notifications(&mut self) -> io::Result<Vec<ass_core::notify::Notification>> {
         write_msg(&mut self.stream, &Request::GetNotifications)?;
@@ -129,6 +136,19 @@ impl Client {
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("expected Notifications, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Fetch the live outputs (connector + geometry).
+    pub fn outputs(&mut self) -> io::Result<Vec<ass_core::output::OutputInfo>> {
+        write_msg(&mut self.stream, &Request::GetOutputs)?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::Outputs { outputs } => Ok(outputs),
+            Response::Error { message } => Err(io::Error::new(io::ErrorKind::Other, message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected Outputs, got {other:?}"),
             )),
         }
     }

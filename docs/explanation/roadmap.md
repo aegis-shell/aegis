@@ -31,7 +31,7 @@ committed; the verification criteria are.
 | [M7](#m7-multi-output-and-input-completeness) | Multi-output, mixed DPI, gestures, tablet, color | In progress (model) |
 | [M8](#m8-xwayland-and-application-coverage) | XWayland integration and broad application coverage | Planned |
 | [M9](#m9-polish-and-completeness) | Animations, overview, notifications, accessibility | Planned |
-| [M10](#m10-the-agent-phase) | The agent adaptation layer | Future |
+| [M10](#m10-the-agent-phase) | The agent adaptation layer | In progress (framing) |
 
 ## M0: Nested Bring-up
 
@@ -238,8 +238,11 @@ output; a journaled mutation log the agent can replay; and a capability
 model that bounds what the agent may do. The agent is an IPC client with a
 defined scope, never a special client of the compositor.
 
-**Status.** Future. Described in [Vision and Scope](vision.md#the-agent-phase).
-ADRs land as the milestone opens.
+**Status.** In progress (framing). The blueprint is in
+[The Agent Phase](agent-phase.md); the framing decisions landed in
+[ADR-0031](../adr/0031-agent-as-scoped-ipc-client.md) through
+[ADR-0034](../adr/0034-scoped-capabilities.md). Implementation ADRs follow
+as the desktop milestones that precede M10 close.
 
 ## Sequencing Rationale
 

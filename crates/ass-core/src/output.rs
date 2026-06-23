@@ -45,6 +45,16 @@ impl Default for Scale {
     }
 }
 
+/// One output's identity + geometry — the wire shape the IPC exposes for an
+/// output. The connector is the stable identity; the geometry is its current
+/// mode, scale, transform, and position.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutputInfo {
+    pub connector: String,
+    pub geometry: OutputGeometry,
+}
+
 /// Per-output geometry (ADR-0028): the physical mode, scale, transform, and
 /// the output's top-left in the global logical layout. From these the
 /// [`logical_size`](Self::logical_size) — the size the chrome and clients

@@ -205,6 +205,8 @@ version = "0.0.1"
 dependencies = [
  "ass-core",
  "ass-ipc",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

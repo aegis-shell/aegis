@@ -54,6 +54,7 @@ mod tests {
         let req = Request::Hello {
             version: PROTOCOL_VERSION,
             caps: crate::schema::Capabilities::QUERY,
+            scope: None,
         };
         let mut buf = Vec::new();
         write_msg(&mut buf, &req).unwrap();

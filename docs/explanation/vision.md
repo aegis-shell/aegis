@@ -134,8 +134,9 @@ capability model so the agent can act only where permitted. The agent is
 never a special client of the compositor; it is an IPC client with a
 defined scope.
 
-This phase is described at the level of intent here and will be expanded
-into ADRs when the desktop milestones that precede it are complete.
+The intent above is expanded into a concrete blueprint in
+[The Agent Phase](agent-phase.md). The framing decisions are recorded in
+[ADR-0031](../adr/0031-agent-as-scoped-ipc-client.md) and its follow-ons.
 
 ## See Also
 

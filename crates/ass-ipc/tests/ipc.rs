@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use ass_core::window::Window;
+use ass_core::window::{Window, WindowId};
 use ass_ipc::{Capabilities, Client, Command, Event, Handler, Server, PROTOCOL_VERSION};
 
 /// A unique throwaway socket path under the temp dir, namespaced by pid +
@@ -79,17 +79,27 @@ impl Handler for TestHandler {
     fn notifications(&self) -> Vec<ass_core::notify::Notification> {
         Vec::new()
     }
+    fn outputs(&self) -> Vec<ass_core::output::OutputInfo> {
+        Vec::new()
+    }
+    fn journal_since(&self, _since: u64) -> ass_ipc::JournalSnapshot {
+        ass_ipc::JournalSnapshot {
+            entries: vec![],
+            oldest_seq: 1,
+            latest_seq: 0,
+        }
+    }
     fn command(&self, cmd: Command) {
         self.commands.lock().unwrap().push(cmd);
     }
 }
 
 fn sample_windows() -> Vec<Window> {
-    let mut a = Window::new(1);
+    let mut a = Window::new(WindowId(1));
     a.title = Some("first".into());
     a.app_id = Some("org.example.first".into());
     a.state.activated = true;
-    let mut b = Window::new(2);
+    let mut b = Window::new(WindowId(2));
     b.title = Some("second".into());
     b.state.maximized = true;
     vec![a, b]
@@ -127,10 +137,10 @@ fn get_windows_returns_the_live_snapshot() {
     let mut client = Client::connect(&path).expect("connect");
     let windows = client.windows().expect("get_windows");
     assert_eq!(windows.len(), 2);
-    assert_eq!(windows[0].id, 1);
+    assert_eq!(windows[0].id, WindowId(1));
     assert_eq!(windows[0].title.as_deref(), Some("first"));
     assert!(windows[0].state.activated);
-    assert_eq!(windows[1].id, 2);
+    assert_eq!(windows[1].id, WindowId(2));
     assert!(windows[1].state.maximized);
 }
 
@@ -158,6 +168,7 @@ fn wrong_protocol_version_is_refused_at_handshake() {
     let bad = Request::Hello {
         version: PROTOCOL_VERSION + 1,
         caps: Capabilities::QUERY,
+        scope: None,
     };
     ass_ipc::codec::write_msg(&mut s, &bad).unwrap();
     let resp: ass_ipc::Response = ass_ipc::codec::read_msg(&mut s).unwrap();
@@ -184,16 +195,20 @@ fn control_command_is_queued_and_acked() {
         },
     )
     .expect("connect");
-    client.command(Command::Close { id: 2 }).expect("command");
-    client.command(Command::Focus { id: 1 }).expect("command");
+    client
+        .command(Command::Close { id: WindowId(2) })
+        .expect("command");
+    client
+        .command(Command::Focus { id: WindowId(1) })
+        .expect("command");
     client.command(Command::Cycle { forward: true }).expect("command");
 
     // The command() calls block until the server acked (Ok), by which point
     // the handler has recorded each one.
     let recorded = handler.commands.lock().unwrap();
     assert_eq!(recorded.len(), 3, "{recorded:?}");
-    assert!(recorded.contains(&Command::Close { id: 2 }));
-    assert!(recorded.contains(&Command::Focus { id: 1 }));
+    assert!(recorded.contains(&Command::Close { id: WindowId(2) }));
+    assert!(recorded.contains(&Command::Focus { id: WindowId(1) }));
 }
 
 #[test]
@@ -223,7 +238,7 @@ fn command_refused_without_the_required_capability() {
     let _server = Server::start(&path, handler).expect("bind");
 
     let mut client = Client::connect(&path).expect("connect"); // query only
-    let err = client.command(Command::Close { id: 1 }).unwrap_err();
+    let err = client.command(Command::Close { id: WindowId(1) }).unwrap_err();
     assert!(
         err.to_string().contains("capability"),
         "{}",

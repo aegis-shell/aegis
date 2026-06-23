@@ -7,6 +7,36 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### ass-ctl --json
+- `ass-ctl` accepts a global `--json`/`-j` flag: the query commands
+  (`windows`, `workspaces`, `outputs`) then print machine-readable JSON
+  (serialized straight from the IPC types) instead of human text, so scripts
+  and the agent can parse the output. Control commands keep their text ack.
+  ass-ctl gained a `serde`/`serde_json` dependency and enables ass-core's
+  serde feature. Loopback-tested.
+
+### ass-ctl subscribe: stream server events
+- `ass-ctl subscribe` connects, subscribes, and prints each server-pushed
+  event as a line until the connection closes — making the IPC's event
+  surface (WindowsChanged / WorkspaceChanged / Notified) consumable from the
+  shell for scripts and the agent. A pure `format_event` helper formats each
+  variant (unit-tested); the streaming loop is thin glue over the client.
+
+### Dismiss notifications
+- `NotificationQueue::dismiss(id)` removes a notification by id (returns
+  whether it was present), mirroring a user "dismiss" before the TTL. The
+  IPC `DismissNotification { id }` command (control), `ass-ctl dismiss <id>`,
+  and a main-loop drain wire it up. (Toast click-to-dismiss is a follow-up;
+  today dismiss is via the IPC/CLI.) Unit-tested in `ass-core::notify`.
+
+### GetOutputs: query the live output list
+- New `GetOutputs` IPC query and `ass-ctl outputs` expose the live outputs
+  (connector + geometry), completing the introspection surface — windows,
+  workspaces, notifications, and outputs are all queryable. A new
+  `ass_core::output::OutputInfo` pairs the connector with its geometry; the
+  server's `output_infos` builds it and the IPC handler mirrors it. Loopback-
+  tested.
+
 ### Per-workspace tiling
 - Tiling is now per-workspace (ADR-0024), not a single global flag. Each
   workspace remembers whether it is tiled, so one workspace can tile while

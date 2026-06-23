@@ -7,6 +7,10 @@
 //! [`Handler::command`], which the compositor forwards to its main loop:
 //! the Wayland server state is not `Send`, so a connection thread must not
 //! touch it directly. See ADR-0027.
+//!
+//! The mutation journal (ADR-0033) has a separate subscriber set
+//! ([`Server::broadcast_journal`]) so status bars receiving the coarse event
+//! stream are not flooded with per-command entries.
 
 use std::collections::HashMap;
 use std::io;
@@ -18,9 +22,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::codec::{read_msg, write_msg};
-use crate::schema::{Capabilities, Command, Event, PROTOCOL_VERSION, Request, Response};
+use crate::journal::JournalEntry;
+use crate::schema::{Capabilities, Command, Event, Scope, PROTOCOL_VERSION, Request, Response};
 
-/// Subscriber ids are globally unique across connections.
+/// Subscriber ids are globally unique across connections and subscription
+/// types (coarse events vs. journal entries).
 type SubId = u64;
 
 /// What the writer thread sends on the wire. Both kinds go through one inbox
@@ -48,6 +54,15 @@ pub trait Handler: Send + Sync {
     fn workspaces(&self) -> ass_core::workspace::WorkspaceSnapshot;
     /// Snapshot of the live notification queue.
     fn notifications(&self) -> Vec<ass_core::notify::Notification>;
+    /// Snapshot of the live outputs (connector + geometry).
+    fn outputs(&self) -> Vec<ass_core::output::OutputInfo>;
+    /// Snapshot of journal entries with `seq > since` (ADR-0033).
+    fn journal_since(&self, since: u64) -> crate::journal::JournalSnapshot;
+    /// Resolve a named scope from configuration (ADR-0034). Returns `None`
+    /// if the name is unknown; the server then falls back to unscoped.
+    fn resolve_scope(&self, _name: &str) -> Option<Scope> {
+        None
+    }
     /// Receive a control/session [`Command`]. Called from a connection
     /// thread; the implementation must forward to the compositor's main loop
     /// because the Wayland server state is not `Send`. Fire-and-forget: the
@@ -62,6 +77,7 @@ pub struct Server {
     _accept: thread::JoinHandle<()>,
     socket: PathBuf,
     subs: Arc<Mutex<HashMap<SubId, Sender<Outbound>>>>,
+    journal_subs: Arc<Mutex<HashMap<SubId, Sender<Outbound>>>>,
 }
 
 impl Server {
@@ -73,28 +89,46 @@ impl Server {
         let listener = UnixListener::bind(path)?;
         let socket = path.to_path_buf();
         let subs = Arc::new(Mutex::new(HashMap::new()));
+        let journal_subs = Arc::new(Mutex::new(HashMap::new()));
         let next_sub = Arc::new(AtomicU64::new(0));
         let subs_for_accept = Arc::clone(&subs);
+        let journal_subs_for_accept = Arc::clone(&journal_subs);
         let next_for_accept = Arc::clone(&next_sub);
         let accept = thread::Builder::new()
             .name("ass-ipc-accept".into())
             .spawn(move || {
-                accept_loop(listener, handler, subs_for_accept, next_for_accept)
+                accept_loop(
+                    listener,
+                    handler,
+                    subs_for_accept,
+                    journal_subs_for_accept,
+                    next_for_accept,
+                )
             })?;
         Ok(Server {
             _accept: accept,
             socket,
             subs,
+            journal_subs,
         })
     }
 
-    /// Push an event to every subscribed connection. Best-effort: a dead
-    /// subscriber is reaped when its reader thread cleans up on disconnect,
-    /// so a send failure here is harmless.
+    /// Push a coarse event to every subscribed connection (ADR-0027).
+    /// Best-effort: a dead subscriber is reaped on disconnect.
     pub fn broadcast(&self, ev: Event) {
         let subs = self.subs.lock().unwrap();
         for tx in subs.values() {
             let _ = tx.send(Outbound::Event(ev.clone()));
+        }
+    }
+
+    /// Push a journal entry to every journal-subscribed connection
+    /// (ADR-0033). Separate from [`broadcast`](Self::broadcast) so coarse
+    /// subscribers are not flooded with per-command entries.
+    pub fn broadcast_journal(&self, entry: JournalEntry) {
+        let subs = self.journal_subs.lock().unwrap();
+        for tx in subs.values() {
+            let _ = tx.send(Outbound::Event(Event::Journal { entry: entry.clone() }));
         }
     }
 }
@@ -109,6 +143,7 @@ fn accept_loop<H: Handler + 'static>(
     listener: UnixListener,
     handler: Arc<H>,
     subs: Arc<Mutex<HashMap<SubId, Sender<Outbound>>>>,
+    journal_subs: Arc<Mutex<HashMap<SubId, Sender<Outbound>>>>,
     next_sub: Arc<AtomicU64>,
 ) {
     for incoming in listener.incoming() {
@@ -117,26 +152,26 @@ fn accept_loop<H: Handler + 'static>(
         };
         let h = Arc::clone(&handler);
         let s = Arc::clone(&subs);
+        let js = Arc::clone(&journal_subs);
         let n = Arc::clone(&next_sub);
         let _ = thread::Builder::new()
             .name("ass-ipc-conn".into())
-            .spawn(move || serve_connection(stream, h, s, n));
+            .spawn(move || serve_connection(stream, h, s, js, n));
     }
 }
 
 /// Run one connection: a writer thread owns the write half; the current
 /// thread drives the read half and pushes responses/events through the
-/// writer's inbox. On read close the reader removes its subscriber entry so
-/// the writer sees its last sender disappear and exits promptly.
+/// writer's inbox. On read close the reader removes both its coarse and
+/// journal subscription entries so the writer sees its last sender
+/// disappear and exits promptly.
 fn serve_connection<H: Handler + 'static>(
     stream: UnixStream,
     handler: Arc<H>,
     subs: Arc<Mutex<HashMap<SubId, Sender<Outbound>>>>,
+    journal_subs: Arc<Mutex<HashMap<SubId, Sender<Outbound>>>>,
     next_sub: Arc<AtomicU64>,
 ) {
-    // Duplicate the fd so reader and writer threads each own a handle. Both
-    // are full-duplex; by contract the reader only reads and the writer only
-    // writes, so there is no contention.
     let mut read_half = match stream.try_clone() {
         Ok(s) => s,
         Err(_) => return,
@@ -146,23 +181,25 @@ fn serve_connection<H: Handler + 'static>(
     let writer = thread::Builder::new()
         .name("ass-ipc-writer".into())
         .spawn(move || {
-            let mut w = stream; // original fd, write side
+            let mut w = stream;
             while let Ok(out) = rx.recv() {
                 let res = match out {
                     Outbound::Response(r) => write_msg(&mut w, &r),
                     Outbound::Event(e) => write_msg(&mut w, &e),
                 };
                 if res.is_err() {
-                    break; // peer gone
+                    break;
                 }
             }
         });
 
-    let sub_id = drive_read_loop(&mut read_half, &tx, &*handler, &subs, &next_sub);
-    // Reap our subscription so the writer's inbox loses its last sender and
-    // the writer thread exits without lingering.
+    let (sub_id, journal_sub_id) =
+        drive_read_loop(&mut read_half, &tx, &*handler, &subs, &journal_subs, &next_sub);
     if let Some(id) = sub_id {
         subs.lock().unwrap().remove(&id);
+    }
+    if let Some(id) = journal_sub_id {
+        journal_subs.lock().unwrap().remove(&id);
     }
     drop(tx);
     if let Ok(handle) = writer {
@@ -170,52 +207,58 @@ fn serve_connection<H: Handler + 'static>(
     }
 }
 
-/// Drive the protocol on the read half. Returns the subscription id if the
-/// client subscribed, for cleanup.
+/// Drive the protocol on the read half. Returns `(coarse_sub_id,
+/// journal_sub_id)` for cleanup; either or both may be `None`.
 fn drive_read_loop<H: Handler>(
     read: &mut UnixStream,
     tx: &Sender<Outbound>,
     handler: &H,
     subs: &Mutex<HashMap<SubId, Sender<Outbound>>>,
+    journal_subs: &Mutex<HashMap<SubId, Sender<Outbound>>>,
     next_sub: &AtomicU64,
-) -> Option<SubId> {
-    // Handshake: the first message must be Hello. A wrong major version or a
-    // missing handshake is a protocol violation and closes the connection.
-    let granted = match read_msg::<_, Request>(read) {
-        Ok(Request::Hello { version, caps }) => {
+) -> (Option<SubId>, Option<SubId>) {
+    let (granted, granted_scope) = match read_msg::<_, Request>(read) {
+        Ok(Request::Hello { version, caps, scope }) => {
             if version != PROTOCOL_VERSION {
                 let _ = tx.send(Outbound::Response(Response::Error {
                     message: format!(
                         "unsupported protocol version {version} (server supports {PROTOCOL_VERSION})"
                     ),
                 }));
-                return None;
+                return (None, None);
             }
-            handler.policy_caps().intersect(caps).with_query_always()
+            let gc = handler.policy_caps().intersect(caps).with_query_always();
+            let gs = scope
+                .as_deref()
+                .and_then(|name| handler.resolve_scope(name))
+                .unwrap_or_else(Scope::unscoped);
+            (gc, gs)
         }
         Ok(_) => {
             let _ = tx.send(Outbound::Response(Response::Error {
                 message: "expected Hello first".into(),
             }));
-            return None;
+            return (None, None);
         }
-        Err(_) => return None, // client closed before handshaking
+        Err(_) => return (None, None),
     };
     if tx
         .send(Outbound::Response(Response::Hello {
             version: PROTOCOL_VERSION,
             caps: granted,
+            scope: granted_scope.clone(),
         }))
         .is_err()
     {
-        return None;
+        return (None, None);
     }
 
     let mut sub_id: Option<SubId> = None;
+    let mut journal_sub_id: Option<SubId> = None;
     loop {
         let req = match read_msg::<_, Request>(read) {
             Ok(r) => r,
-            Err(_) => break, // clean close between frames or a truncated frame
+            Err(_) => break,
         };
         let resp = match req {
             Request::Hello { .. } => Response::Error {
@@ -254,17 +297,43 @@ fn drive_read_loop<H: Handler>(
                     }
                 }
             }
+            Request::GetOutputs => {
+                if granted.query {
+                    Response::Outputs {
+                        outputs: handler.outputs(),
+                    }
+                } else {
+                    Response::Error {
+                        message: "GetOutputs requires the query capability".into(),
+                    }
+                }
+            }
+            Request::GetJournal { since } => {
+                if granted.query {
+                    Response::Journal {
+                        snapshot: handler.journal_since(since),
+                    }
+                } else {
+                    Response::Error {
+                        message: "GetJournal requires the query capability".into(),
+                    }
+                }
+            }
             Request::Do { cmd } => {
                 let need = cmd.required_cap();
                 let allowed =
                     (need.control && granted.control) || (need.session && granted.session);
-                if allowed {
-                    handler.command(cmd);
-                    Response::Ok
-                } else {
+                if !allowed {
                     Response::Error {
                         message: "command requires a capability not granted".into(),
                     }
+                } else if !granted_scope.permits(&cmd) {
+                    Response::Error {
+                        message: "out of scope".into(),
+                    }
+                } else {
+                    handler.command(cmd);
+                    Response::Ok
                 }
             }
             Request::Subscribe => {
@@ -275,10 +344,18 @@ fn drive_read_loop<H: Handler>(
                 }
                 Response::Subscribed
             }
+            Request::SubscribeJournal => {
+                if journal_sub_id.is_none() {
+                    let id = next_sub.fetch_add(1, Ordering::Relaxed);
+                    journal_subs.lock().unwrap().insert(id, tx.clone());
+                    journal_sub_id = Some(id);
+                }
+                Response::Subscribed
+            }
         };
         if tx.send(Outbound::Response(resp)).is_err() {
             break;
         }
     }
-    sub_id
+    (sub_id, journal_sub_id)
 }

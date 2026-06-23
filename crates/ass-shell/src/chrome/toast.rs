@@ -63,7 +63,7 @@ impl Chrome for Toast {
             };
             let id: usize = n.id as usize;
             let overlay_id = format!("ass-toast-{id}");
-            f.overlay(&overlay_id, rect, &opts, |f| {
+            f.layer(&overlay_id, rect, &opts, |f| {
                 let title = match &n.app_id {
                     Some(app) => format!("{} · {app}", n.summary),
                     None => n.summary.clone(),

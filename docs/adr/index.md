@@ -37,3 +37,7 @@ background and how the decisions fit together, see
 | [0028](0028-output-and-monitor-model.md) | Output and monitor model | Accepted |
 | [0029](0029-animation-and-effect-policy.md) | Animation and effect policy | Accepted |
 | [0030](0030-xwayland-strategy.md) | XWayland strategy | Accepted |
+| [0031](0031-agent-as-scoped-ipc-client.md) | The agent as a scoped IPC client (M10 framing) | Accepted |
+| [0032](0032-durable-window-identifiers.md) | Durable window identifiers | Accepted |
+| [0033](0033-mutation-journal.md) | The mutation journal | Accepted |
+| [0034](0034-scoped-capabilities.md) | Scoped capabilities | Accepted |

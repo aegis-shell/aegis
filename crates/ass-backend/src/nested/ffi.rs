@@ -35,6 +35,7 @@ pub const WL_REGISTRY_BIND: u32 = 0;
 pub const WL_COMPOSITOR_CREATE_SURFACE: u32 = 0;
 pub const WL_SURFACE_COMMIT: u32 = 6;
 pub const WL_SURFACE_DESTROY: u32 = 0;
+pub const WL_SURFACE_SET_BUFFER_SCALE: u32 = 8;
 pub const WL_SEAT_GET_POINTER: u32 = 0;
 pub const WL_SEAT_GET_KEYBOARD: u32 = 1;
 pub const WL_SEAT_GET_TOUCH: u32 = 2;
@@ -84,6 +85,37 @@ pub struct xdg_surface_listener {
 pub struct xdg_toplevel_listener {
     pub configure: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, c_int, c_int, *mut wl_array),
     pub close: unsafe extern "C" fn(*mut c_void, *mut wl_proxy),
+}
+
+/// `wl_output` listener vtable. Bound at v2 so only `geometry`/`mode`/`done`/
+/// `scale` are ever invoked (`name`/`description` are v4); the nested backend
+/// only reads `scale` to drive HiDPI buffer scaling.
+#[repr(C)]
+pub struct wl_output_listener {
+    pub geometry: unsafe extern "C" fn(
+        *mut c_void,
+        *mut wl_proxy,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+        *const c_char,
+        *const c_char,
+        i32,
+    ),
+    pub mode: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32, i32, i32, i32),
+    pub done: unsafe extern "C" fn(*mut c_void, *mut wl_proxy),
+    pub scale: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, i32),
+}
+
+/// `wl_surface` listener vtable. Bound at v4, so only `enter`/`leave` fire
+/// (`preferred_buffer_scale`/`preferred_buffer_transform` are v6). `enter`
+/// tells us which output the window is on, so we can pick that output's scale.
+#[repr(C)]
+pub struct wl_surface_listener {
+    pub enter: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, *mut wl_proxy),
+    pub leave: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, *mut wl_proxy),
 }
 
 /// `wl_seat` listener vtable.

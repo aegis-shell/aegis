@@ -63,14 +63,21 @@ impl SizeHints {
     }
 }
 
+/// Stable identifier for a window, opaque to chrome/IPC/agent. Allocated
+/// monotonically by the compositor and never reused within the process
+/// lifetime (ADR-0032). Outlives the surface: a retired id remains valid as
+/// a journal or scope reference but is never reassigned.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct WindowId(pub u64);
+
 /// Per-toplevel metadata. The server owns one per mapped `xdg_toplevel`; the
 /// shell and introspection APIs read it.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default)]
 pub struct Window {
-    /// Stable identifier; the surface resource's address as `usize`, matching
-    /// the `SurfacePixels.id` / `SurfaceDmabuf.id` convention.
-    pub id: usize,
+    /// Durable identifier (ADR-0032); never reused within the process.
+    pub id: WindowId,
     pub title: Option<String>,
     pub app_id: Option<String>,
     pub parent: Option<usize>,
@@ -95,7 +102,7 @@ pub struct Window {
 }
 
 impl Window {
-    pub fn new(id: usize) -> Window {
+    pub fn new(id: WindowId) -> Window {
         Window {
             id,
             ..Default::default()
@@ -140,7 +147,7 @@ impl ResizeEdges {
 pub enum Interactive {
     /// Move the window by the pointer delta from `origin`.
     Move {
-        window_id: usize,
+        window_id: WindowId,
         /// Pointer position at the moment the move started. Subsequent
         /// motion events compute `position += current - origin`.
         origin: (f32, f32),
@@ -150,7 +157,7 @@ pub enum Interactive {
     },
     /// Resize the window. Edges determine which sides move.
     Resize {
-        window_id: usize,
+        window_id: WindowId,
         edges: ResizeEdges,
         /// Pointer position at resize start.
         origin: (f32, f32),
@@ -162,7 +169,7 @@ pub enum Interactive {
 }
 
 impl Interactive {
-    pub fn window_id(self) -> usize {
+    pub fn window_id(self) -> WindowId {
         match self {
             Interactive::Move { window_id, .. } => window_id,
             Interactive::Resize { window_id, .. } => window_id,
@@ -219,8 +226,8 @@ mod tests {
 
     #[test]
     fn window_new_initializes_id_only() {
-        let w = Window::new(42);
-        assert_eq!(w.id, 42);
+        let w = Window::new(WindowId(42));
+        assert_eq!(w.id, WindowId(42));
         assert!(w.title.is_none());
         assert!(w.app_id.is_none());
         assert!(w.parent.is_none());
@@ -247,18 +254,18 @@ mod tests {
     #[test]
     fn interactive_reports_window_id() {
         let mv = Interactive::Move {
-            window_id: 7,
+            window_id: WindowId(7),
             origin: (0.0, 0.0),
             start_position: crate::Point::default(),
         };
-        assert_eq!(mv.window_id(), 7);
+        assert_eq!(mv.window_id(), WindowId(7));
         let rs = Interactive::Resize {
-            window_id: 9,
+            window_id: WindowId(9),
             edges: ResizeEdges::BOTTOM,
             origin: (0.0, 0.0),
             start_position: crate::Point::default(),
             start_size: crate::Size::default(),
         };
-        assert_eq!(rs.window_id(), 9);
+        assert_eq!(rs.window_id(), WindowId(9));
     }
 }

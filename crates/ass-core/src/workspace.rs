@@ -33,6 +33,7 @@
 //! ([ADR-0028](../../docs/adr/0028-output-and-monitor-model.md)) exercises
 //! real hotplug.
 
+use crate::window::WindowId;
 use std::collections::HashMap;
 
 /// Stable identifier for a workspace, opaque to chrome/IPC/agent. Lives as
@@ -60,7 +61,7 @@ pub struct Workspace {
     /// output removal keeps its origin; when the same connector returns, the
     /// workspace moves back to it.
     pub origin: String,
-    pub toplevels: Vec<usize>,
+    pub toplevels: Vec<WindowId>,
     /// Whether this workspace is in tiled mode (ADR-0024 per-workspace
     /// layout): when true, the master-stack policy lays out its `Tiled`-role
     /// windows. Per-workspace, so one workspace can tile while another floats.
@@ -117,7 +118,7 @@ pub struct WorkspaceEntry {
     /// Whether this workspace is in tiled mode (ADR-0024).
     pub tiled: bool,
     /// Toplevel ids on this workspace, in z-order.
-    pub toplevels: Vec<usize>,
+    pub toplevels: Vec<WindowId>,
 }
 
 /// Relative switch direction.
@@ -339,7 +340,7 @@ impl WorkspaceModel {
     /// Place `toplevel` on workspace `wid`, moving it from wherever it was.
     /// Restores invariant B on the target (appending a fresh empty workspace
     /// if the target was the last) and reaps an emptied source workspace.
-    pub fn place_toplevel(&mut self, wid: WorkspaceId, toplevel: usize) {
+    pub fn place_toplevel(&mut self, wid: WorkspaceId, toplevel: WindowId) {
         let src = self.workspace_of(toplevel);
         let src_oi = src.and_then(|s| self.output_of_workspace(s));
         if let Some(s) = src {
@@ -360,13 +361,13 @@ impl WorkspaceModel {
 
     /// Move `toplevel` onto `target`; convenience over
     /// [`Self::place_toplevel`].
-    pub fn move_toplevel(&mut self, toplevel: usize, target: WorkspaceId) {
+    pub fn move_toplevel(&mut self, toplevel: WindowId, target: WorkspaceId) {
         self.place_toplevel(target, toplevel);
     }
 
     /// Remove `toplevel` entirely (on close/unmap). Reaps its workspace if it
     /// emptied and is neither current nor last.
-    pub fn remove_toplevel(&mut self, toplevel: usize) {
+    pub fn remove_toplevel(&mut self, toplevel: WindowId) {
         let Some(swid) = self.workspace_of(toplevel) else {
             return;
         };
@@ -380,7 +381,7 @@ impl WorkspaceModel {
     }
 
     /// Which workspace `toplevel` is on, if any.
-    pub fn workspace_of(&self, toplevel: usize) -> Option<WorkspaceId> {
+    pub fn workspace_of(&self, toplevel: WindowId) -> Option<WorkspaceId> {
         self.workspaces
             .iter()
             .find(|(_, ws)| ws.toplevels.contains(&toplevel))
@@ -389,7 +390,7 @@ impl WorkspaceModel {
 
     /// Every toplevel currently visible: the union, in output order, of the
     /// toplevels on each output's current workspace.
-    pub fn visible_toplevels(&self) -> Vec<usize> {
+    pub fn visible_toplevels(&self) -> Vec<WindowId> {
         let mut v = Vec::new();
         for o in &self.outputs {
             if let Some(&wid) = o.workspaces.get(o.current) {
@@ -541,21 +542,21 @@ mod tests {
     #[test]
     fn placing_on_the_last_appends_a_fresh_empty() {
         let (mut m, oid, wid) = one_output();
-        m.place_toplevel(wid, 100);
+        m.place_toplevel(wid, WindowId(100));
         // Invariant B: a new empty workspace now trails the filled one.
         let o = m.output(oid).unwrap();
         assert_eq!(o.workspaces.len(), 2);
         let last = *o.workspaces.last().unwrap();
         assert!(m.workspace(last).unwrap().toplevels.is_empty());
-        assert_eq!(m.workspace(wid).unwrap().toplevels, vec![100]);
+        assert_eq!(m.workspace(wid).unwrap().toplevels, vec![WindowId(100)]);
         // The visible set is the current workspace's toplevels.
-        assert_eq!(m.visible_toplevels(), vec![100]);
+        assert_eq!(m.visible_toplevels(), vec![WindowId(100)]);
     }
 
     #[test]
     fn switch_clamps_at_the_empty_trailing_workspace() {
         let (mut m, oid, wid) = one_output();
-        m.place_toplevel(wid, 1); // now 2 workspaces: [full, empty]
+        m.place_toplevel(wid, WindowId(1)); // now 2 workspaces: [full, empty]
         // On the first (current). Next → index 1 (the empty one). Next again
         // clamps; it does not create a third.
         assert_eq!(m.switch(oid, Switch::Next), m.output(oid).unwrap().workspaces.get(1).copied());
@@ -573,22 +574,22 @@ mod tests {
     fn remove_toplevel_reaps_an_emptied_non_current_workspace() {
         let (mut m, oid, wid) = one_output();
         // Build [ws0=[1], ws1=[2], ws2=[]] with current on ws0.
-        m.place_toplevel(wid, 1); // ws0=[1], trailing ws1 appended
+        m.place_toplevel(wid, WindowId(1)); // ws0=[1], trailing ws1 appended
         let mid = m.switch(oid, Switch::Next).unwrap(); // current = ws1 (empty)
-        m.place_toplevel(mid, 2); // ws1=[2], trailing ws2 appended
+        m.place_toplevel(mid, WindowId(2)); // ws1=[2], trailing ws2 appended
         m.switch(oid, Switch::Prev).unwrap(); // current back to ws0
         assert_eq!(m.output(oid).unwrap().workspaces.len(), 3);
         // Removing the toplevel on the non-current, non-last ws1 empties it →
         // reaped. Back to [ws0=[1], ws2=[]].
-        m.remove_toplevel(2);
+        m.remove_toplevel(WindowId(2));
         assert_eq!(m.output(oid).unwrap().workspaces.len(), 2);
-        assert!(m.workspace_of(2).is_none());
+        assert!(m.workspace_of(WindowId(2)).is_none());
     }
 
     #[test]
     fn current_and_last_empty_workspaces_are_kept() {
         let (mut m, oid, wid) = one_output();
-        m.place_toplevel(wid, 1); // [1], []
+        m.place_toplevel(wid, WindowId(1)); // [1], []
         let empty = m.switch(oid, Switch::Next).unwrap(); // current = empty
         // Removing the only toplevel leaves ws0 empty but it is NOT current
         // and NOT last → reaped. Wait: current is `empty` (the last), ws0 is
@@ -596,7 +597,7 @@ mod tests {
         // No: last is always kept; ws0 reaped → [empty] becomes the only,
         // which is then the last. current recomputed to 0.
         let _ = empty;
-        m.remove_toplevel(1);
+        m.remove_toplevel(WindowId(1));
         let o = m.output(oid).unwrap();
         assert_eq!(o.workspaces.len(), 1, "reaped ws0; one empty workspace remains");
         assert!(m.workspace(o.workspaces[0]).unwrap().toplevels.is_empty());
@@ -606,10 +607,10 @@ mod tests {
     #[test]
     fn move_toplevel_changes_workspace() {
         let (mut m, oid, wid) = one_output();
-        m.place_toplevel(wid, 5);
+        m.place_toplevel(wid, WindowId(5));
         let second = m.switch(oid, Switch::Next).unwrap();
-        m.move_toplevel(5, second);
-        assert_eq!(m.workspace_of(5), Some(second));
+        m.move_toplevel(WindowId(5), second);
+        assert_eq!(m.workspace_of(WindowId(5)), Some(second));
         // ws0 emptied and is not current (current still on second? no —
         // switch moved current to second). ws0 not current, not last → reaped.
         let o = m.output(oid).unwrap();
@@ -624,8 +625,8 @@ mod tests {
         // Make several workspaces by filling.
         let mut ws = vec![_wid];
         let mut cur = _wid;
-        for i in 0..3 {
-            m.place_toplevel(cur, 100 + i);
+        for i in 0..3u64 {
+            m.place_toplevel(cur, WindowId(100 + i));
             cur = m.switch(oid, Switch::Next).unwrap();
             ws.push(cur);
         }
@@ -642,13 +643,13 @@ mod tests {
         let b = m.add_output("b");
         let wa = m.current_workspace(a).unwrap();
         let wb = m.current_workspace(b).unwrap();
-        m.place_toplevel(wa, 1);
-        m.place_toplevel(wb, 2);
+        m.place_toplevel(wa, WindowId(1));
+        m.place_toplevel(wb, WindowId(2));
         // Visible is the union of both current workspaces.
-        assert_eq!(m.visible_toplevels(), vec![1, 2]);
+        assert_eq!(m.visible_toplevels(), vec![WindowId(1), WindowId(2)]);
         // Switching one output does not affect the other.
         m.switch(a, Switch::Next);
-        assert_eq!(m.visible_toplevels(), vec![2]); // a now on its empty
+        assert_eq!(m.visible_toplevels(), vec![WindowId(2)]); // a now on its empty
     }
 
     #[test]
@@ -658,8 +659,8 @@ mod tests {
         let second = m.add_output("b");
         let ws_p = m.current_workspace(primary).unwrap();
         let ws_s = m.current_workspace(second).unwrap();
-        m.place_toplevel(ws_p, 7);
-        m.place_toplevel(ws_s, 9); // lives on the second output
+        m.place_toplevel(ws_p, WindowId(7));
+        m.place_toplevel(ws_s, WindowId(9)); // lives on the second output
         // Remove the second output: ws_s (non-empty) relocates to primary as
         // its own workspace (ADR-0025: workspaces move, they don't merge).
         let relocated = m.remove_output(second);
@@ -669,11 +670,11 @@ mod tests {
         // Toplevel 9 is retained on the primary output (not lost). It sits on
         // a relocated workspace that is not the current one, so it is not
         // immediately visible — switching to it shows it.
-        let ws9 = m.workspace_of(9).expect("toplevel 9 retained");
+        let ws9 = m.workspace_of(WindowId(9)).expect("toplevel 9 retained");
         assert_eq!(m.workspace(ws9).unwrap().output, primary);
         // Toplevel 7 (on the survivor's current workspace) stays visible.
-        assert!(m.visible_toplevels().contains(&7));
-        assert!(!m.visible_toplevels().contains(&9));
+        assert!(m.visible_toplevels().contains(&WindowId(7)));
+        assert!(!m.visible_toplevels().contains(&WindowId(9)));
     }
 
     #[test]
@@ -681,7 +682,7 @@ mod tests {
         let mut m = WorkspaceModel::new();
         let oid = m.add_output("a");
         let wid = m.current_workspace(oid).unwrap();
-        m.place_toplevel(wid, 42);
+        m.place_toplevel(wid, WindowId(42));
         assert_eq!(m.remove_output(oid), 0);
         assert!(m.outputs().is_empty());
         assert!(m.visible_toplevels().is_empty());
@@ -693,11 +694,11 @@ mod tests {
         let primary = m.add_output("a");
         let second = m.add_output("b");
         let ws_b = m.current_workspace(second).unwrap();
-        m.place_toplevel(ws_b, 9); // lives on the "b" output
+        m.place_toplevel(ws_b, WindowId(9)); // lives on the "b" output
 
         // Unplug "b": its workspace relocates to "a" but remembers "b" as home.
         m.remove_output(second);
-        let parked_on = m.workspace_of(9).expect("toplevel retained");
+        let parked_on = m.workspace_of(WindowId(9)).expect("toplevel retained");
         assert_eq!(m.workspace(parked_on).unwrap().output, primary);
         assert_eq!(m.workspace(parked_on).unwrap().origin, "b");
         assert_eq!(m.outputs().len(), 1);
@@ -705,7 +706,7 @@ mod tests {
         // Replug "b": the displaced workspace moves back to it.
         let second2 = m.add_output("b");
         assert_ne!(second2, second, "a replugged output gets a fresh id");
-        let home = m.workspace_of(9).expect("toplevel restored");
+        let home = m.workspace_of(WindowId(9)).expect("toplevel restored");
         assert_eq!(m.workspace(home).unwrap().output, second2, "back on its home output");
         assert_eq!(m.outputs().len(), 2);
         // Toplevel 9 is now on "b"'s current workspace only if it is current;
@@ -725,7 +726,7 @@ mod tests {
     #[test]
     fn tiling_is_per_workspace_and_persists_across_switch() {
         let (mut m, oid, ws0) = one_output();
-        m.place_toplevel(ws0, 1); // fill ws0 → trailing ws1 appended
+        m.place_toplevel(ws0, WindowId(1)); // fill ws0 → trailing ws1 appended
         let ws1 = m.switch(oid, Switch::Next).unwrap(); // now on ws1
 
         // Tile ws1 only.
@@ -752,9 +753,9 @@ mod tests {
     #[test]
     fn snapshot_reflects_place_and_switch() {
         let (mut m, oid, wid) = one_output();
-        m.place_toplevel(wid, 11);
+        m.place_toplevel(wid, WindowId(11));
         let second = m.switch(oid, Switch::Next).unwrap();
-        m.place_toplevel(second, 22);
+        m.place_toplevel(second, WindowId(22));
 
         let snap = m.snapshot();
         assert_eq!(snap.outputs.len(), 1);
@@ -762,8 +763,8 @@ mod tests {
         assert_eq!(o.id, oid);
         // Three workspaces: [11], [22], [] (trailing empty).
         assert_eq!(o.workspaces.len(), 3);
-        assert_eq!(o.workspaces[0].toplevels, vec![11]);
-        assert_eq!(o.workspaces[1].toplevels, vec![22]);
+        assert_eq!(o.workspaces[0].toplevels, vec![WindowId(11)]);
+        assert_eq!(o.workspaces[1].toplevels, vec![WindowId(22)]);
         assert!(o.workspaces[2].toplevels.is_empty());
         // Current is the workspace we switched to (index 1).
         assert_eq!(o.current, Some(second));
@@ -774,12 +775,12 @@ mod tests {
         // Stress the invariants: the last workspace is always empty after a
         // mixed sequence of operations.
         let (mut m, oid, mut cur) = one_output();
-        for i in 0..5 {
-            m.place_toplevel(cur, i);
+        for i in 0..5u64 {
+            m.place_toplevel(cur, WindowId(i));
             cur = m.switch(oid, Switch::Next).unwrap();
         }
         // Remove a middle toplevel to trigger a reap.
-        m.remove_toplevel(2);
+        m.remove_toplevel(WindowId(2));
         let o = m.output(oid).unwrap();
         let last = *o.workspaces.last().unwrap();
         assert!(
@@ -792,7 +793,7 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for wid in &o.workspaces {
             for t in &m.workspace(*wid).unwrap().toplevels {
-                assert!(seen.insert(*t), "toplevel {t} on two workspaces");
+                assert!(seen.insert(*t), "toplevel {:?} on two workspaces", t);
             }
         }
     }

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use ass_core::window::{Window, WindowState};
+use ass_core::window::{Window, WindowId, WindowState};
 use ass_core::workspace::{OutputSnapshot, WorkspaceEntry, WorkspaceId, WorkspaceSnapshot};
 use ass_ipc::{Command, Handler, Server};
 
@@ -42,7 +42,7 @@ impl Handler for CtlHandler {
         }
     }
     fn windows(&self) -> Vec<Window> {
-        let mut w = Window::new(1);
+        let mut w = Window::new(WindowId(1));
         w.title = Some("foot".into());
         w.app_id = Some("foot".into());
         w.state = WindowState {
@@ -61,7 +61,7 @@ impl Handler for CtlHandler {
                     id: WorkspaceId(0),
                     label: None,
                     tiled: false,
-                    toplevels: vec![1],
+                    toplevels: vec![WindowId(1)],
                 }],
             }],
         }
@@ -69,8 +69,30 @@ impl Handler for CtlHandler {
     fn notifications(&self) -> Vec<ass_core::notify::Notification> {
         Vec::new()
     }
+    fn outputs(&self) -> Vec<ass_core::output::OutputInfo> {
+        vec![ass_core::output::OutputInfo {
+            connector: "nested".into(),
+            geometry: ass_core::output::OutputGeometry {
+                mode: ass_core::output::OutputMode {
+                    width: 1280,
+                    height: 720,
+                    refresh_mhz: 60000,
+                },
+                scale: ass_core::output::Scale::IDENTITY,
+                transform: ass_core::Transform::Normal,
+                logical_origin: ass_core::Point::default(),
+            },
+        }]
+    }
     fn command(&self, cmd: Command) {
         self.commands.lock().unwrap().push(cmd);
+    }
+    fn journal_since(&self, _since: u64) -> ass_ipc::JournalSnapshot {
+        ass_ipc::JournalSnapshot {
+            entries: vec![],
+            oldest_seq: 1,
+            latest_seq: 0,
+        }
     }
 }
 
@@ -81,6 +103,18 @@ fn windows_command_lists_the_fixed_window() {
     let out = ass_ctl::run(&path, &["windows".into()]).unwrap();
     assert!(out.contains("foot"), "{out}");
     assert!(out.contains("(foot)"), "{out}");
+}
+
+#[test]
+fn json_flag_emits_parseable_json_for_windows() {
+    let path = scratch();
+    let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
+    let out = ass_ctl::run(&path, &["windows".into(), "--json".into()]).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+    let arr = parsed.as_array().expect("a JSON array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["app_id"], "foot");
+    assert_eq!(arr[0]["state"]["activated"], true);
 }
 
 #[test]
@@ -104,7 +138,7 @@ fn focus_command_sends_focus() {
             .lock()
             .unwrap()
             .iter()
-            .any(|c| matches!(c, Command::Focus { id: 1 })),
+            .any(|c| matches!(c, Command::Focus { id: WindowId(1) })),
         "{:?}",
         h.commands
     );
@@ -146,6 +180,24 @@ fn notify_command_sends_notify_with_body() {
 }
 
 #[test]
+fn dismiss_command_sends_dismiss_notification() {
+    let path = scratch();
+    let h = Arc::new(CtlHandler::new());
+    let _s = Server::start(&path, Arc::clone(&h)).unwrap();
+    let out = ass_ctl::run(&path, &["dismiss".into(), "7".into()]).unwrap();
+    assert!(out.contains("dismissed 7"), "{out}");
+    assert!(
+        h.commands
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| matches!(c, Command::DismissNotification { id: 7 })),
+        "{:?}",
+        h.commands
+    );
+}
+
+#[test]
 fn tiling_command_sends_toggle() {
     let path = scratch();
     let h = Arc::new(CtlHandler::new());
@@ -171,7 +223,7 @@ fn move_to_command_sends_move_to_workspace() {
     assert!(
         h.commands.lock().unwrap().iter().any(|c| matches!(
             c,
-            Command::MoveToWorkspace { window: 42, workspace } if workspace.0 == 3
+            Command::MoveToWorkspace { window: WindowId(42), workspace } if workspace.0 == 3
         )),
         "{:?}",
         h.commands

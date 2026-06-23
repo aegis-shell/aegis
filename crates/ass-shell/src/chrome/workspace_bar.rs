@@ -1,31 +1,39 @@
-//! A top-center workspace indicator: one numbered tile per workspace on the
-//! focused output, the current one highlighted. Clicking a tile switches to
-//! that workspace. Hidden while there is only one workspace (nothing to
-//! switch to). See ADR-0025.
+//! A top-center workspace indicator, macOS "Spaces"-style: a slim translucent
+//! pill holding one dot per workspace on the focused output, the current one
+//! drawn bright and the rest dim. Clicking a dot switches to that workspace.
+//! Hidden while there is only one workspace (nothing to switch to). See
+//! ADR-0025.
+//!
+//! Like the dock, the dots are drawn as their own small layers and clicks are
+//! hit-tested against the dot slots, so the indicator reads as a row of dots
+//! rather than a strip of buttons.
 
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{Chrome, ChromeEvents};
 use ass_core::workspace::WorkspaceSnapshot;
 
-/// Panel height. Holds one square tile per workspace.
-const BAR_HEIGHT: f32 = 34.0;
-/// Gap between the panel and the top edge of the output.
+/// Height of the indicator pill.
+const BAR_HEIGHT: f32 = 22.0;
+/// Gap between the pill and the top edge of the output.
 const BAR_TOP_MARGIN: f32 = 10.0;
-/// Side length of a square workspace tile.
-const BAR_TILE: f32 = 30.0;
-/// Gap between adjacent tiles inside the panel.
-const BAR_TILE_GAP: f32 = 6.0;
-/// Padding inside the panel; must match the `pad` passed to the overlay opts.
-const BAR_PAD: f32 = 5.0;
+/// Diameter of a workspace dot.
+const BAR_DOT: f32 = 9.0;
+/// Gap between adjacent dots.
+const BAR_DOT_GAP: f32 = 9.0;
+/// Padding between the pill edge and the first/last dot.
+const BAR_PAD: f32 = 10.0;
 
-/// The workspace indicator. Stateless beyond its appearance; reads the shared
-/// workspace snapshot each frame.
-pub struct WorkspaceBar;
+/// The workspace indicator. Reads the shared workspace snapshot each frame;
+/// the only state is the button-down level from last frame, for press-edge
+/// click detection.
+pub struct WorkspaceBar {
+    prev_down: bool,
+}
 
 impl WorkspaceBar {
     pub fn new() -> WorkspaceBar {
-        WorkspaceBar
+        WorkspaceBar { prev_down: false }
     }
 }
 
@@ -54,47 +62,98 @@ impl Chrome for WorkspaceBar {
         }
 
         let disp = input.as_raw().display_size;
-        let n = output.workspaces.len() as f32;
-        let bar_w = n * BAR_TILE + (n - 1.0) * BAR_TILE_GAP + 2.0 * BAR_PAD;
+        let cursor = input.as_raw().cursor;
+        // Click once on the press edge: the host does not clear the per-frame
+        // pressed flag, so track the button-down level transition ourselves.
+        let down = input.as_raw().mouse_down.first().copied().unwrap_or(false);
+        let pressed = down && !self.prev_down;
+        self.prev_down = down;
+
+        let n = output.workspaces.len();
+        let bar_w =
+            n as f32 * BAR_DOT + (n as f32 - 1.0) * BAR_DOT_GAP + 2.0 * BAR_PAD;
+        let bar_x = (disp.x - bar_w) * 0.5;
         let bar_rect = Rect {
-            x: (disp.x - bar_w) * 0.5,
+            x: bar_x,
             y: BAR_TOP_MARGIN,
             w: bar_w,
             h: BAR_HEIGHT,
         };
-        let opts = OverlayOpts {
-            bg: Color::rgba(28, 30, 44, 220),
-            border: Color::rgba(60, 64, 84, 255),
-            border_width: 1.0,
-            radius: 12.0,
-            pad: BAR_PAD,
-            cross: Align::Center,
-            ..Default::default()
-        };
-        f.overlay("ass-wsbar", bar_rect, &opts, |f| {
-            let row = LayoutOpts {
-                gap: BAR_TILE_GAP,
-                cross: Align::Center,
-                ..Default::default()
-            };
-            f.row_ex(&row, |f| {
-                for (i, ws) in output.workspaces.iter().enumerate() {
-                    f.size_next(BAR_TILE, BAR_TILE);
-                    // The visible number is the position (1-based); the stable
-                    // workspace id is what we switch to. `[n]` marks the
-                    // current workspace, ` n ` the others — same `button` API
-                    // the window list uses, no special "active button" needed.
-                    let is_current = output.current == Some(ws.id);
-                    let label = if is_current {
-                        format!("[{}]", i + 1)
-                    } else {
-                        format!(" {} ", i + 1)
-                    };
-                    if f.button(&label) {
-                        out.switch_workspace = Some(ws.id);
-                    }
-                }
-            });
+        let dot_y = BAR_TOP_MARGIN + BAR_HEIGHT * 0.5;
+        let centre = |i: usize| bar_x + BAR_PAD + i as f32 * (BAR_DOT + BAR_DOT_GAP) + BAR_DOT * 0.5;
+
+        // The pill background. A layer's rect is only an anchor, not a size, so
+        // a fixed-size child forces it to the pill size.
+        f.layer("ass-wsbar", bar_rect, &pill_opts(), |f| {
+            f.column_ex(&sized(bar_w, BAR_HEIGHT), |_| {});
         });
+
+        // Dots, plus click hit-testing against each dot's slot.
+        let half = (BAR_DOT + BAR_DOT_GAP) * 0.5;
+        let mut clicked: Option<usize> = None;
+        for (i, ws) in output.workspaces.iter().enumerate() {
+            let is_current = output.current == Some(ws.id);
+            let cx = centre(i);
+            let dot_rect = Rect {
+                x: cx - BAR_DOT * 0.5,
+                y: dot_y - BAR_DOT * 0.5,
+                w: BAR_DOT,
+                h: BAR_DOT,
+            };
+            let color = if is_current {
+                Color::rgba(236, 238, 245, 255)
+            } else {
+                Color::rgba(150, 156, 178, 140)
+            };
+            let id = format!("ass-wsdot-{}", ws.id.0);
+            f.layer(&id, dot_rect, &OverlayOpts::default(), |f| {
+                f.column_ex(&sized_fill(BAR_DOT, BAR_DOT, color, BAR_DOT * 0.5), |_| {});
+            });
+
+            if pressed
+                && (cursor.x - cx).abs() <= half
+                && cursor.y >= BAR_TOP_MARGIN
+                && cursor.y <= BAR_TOP_MARGIN + BAR_HEIGHT
+            {
+                clicked = Some(i);
+            }
+        }
+        if let Some(i) = clicked {
+            out.switch_workspace = Some(output.workspaces[i].id);
+        }
+    }
+}
+
+/// The indicator pill background.
+fn pill_opts() -> OverlayOpts {
+    OverlayOpts {
+        bg: Color::rgba(28, 30, 44, 200),
+        border: Color::rgba(70, 74, 96, 140),
+        border_width: 1.0,
+        radius: BAR_HEIGHT * 0.5,
+        pad: 0.0,
+        cross: Align::Center,
+        ..Default::default()
+    }
+}
+
+/// A fixed-size transparent container, to force a layer to a known size.
+fn sized(w: f32, h: f32) -> LayoutOpts {
+    LayoutOpts {
+        width: w,
+        height: h,
+        ..Default::default()
+    }
+}
+
+/// A fixed-size container that paints a rounded `bg` — a filled circle/dot when
+/// `radius` is half the side.
+fn sized_fill(w: f32, h: f32, bg: Color, radius: f32) -> LayoutOpts {
+    LayoutOpts {
+        width: w,
+        height: h,
+        bg,
+        radius,
+        ..Default::default()
     }
 }

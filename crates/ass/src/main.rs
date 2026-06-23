@@ -20,6 +20,92 @@ fn main() {
     }
 }
 
+/// Persistent (level) input state carried across frames. Per-frame edges
+/// (mouse pressed/released, scroll, text, key events) are *not* held here;
+/// they are built fresh each frame from backend events and live only for the
+/// iteration. This matches lens's contract that the host owns edge derivation
+/// (see the `lens::Input` docstring) and mirrors iris's wayland host
+/// `drain_input` pattern. Keeping level state separate from per-frame edges
+/// guarantees a press/release edge can never leak into the next frame and
+/// trigger phantom clicks in immediate-mode widgets.
+#[derive(Default)]
+struct InputAccumulator {
+    cursor: (f32, f32),
+    mouse_down: [bool; 3],
+    display_size: (f32, f32),
+}
+
+impl InputAccumulator {
+    /// Mirror of `lens::Input::set_mouse_down` so callers can update the
+    /// level state alongside the per-frame snapshot through the same
+    /// `lens::MouseButton` key.
+    fn set_mouse_down(&mut self, b: lens::MouseButton, down: bool) {
+        let idx = match b {
+            lens::MouseButton::Left => 0,
+            lens::MouseButton::Right => 1,
+            lens::MouseButton::Middle => 2,
+        };
+        self.mouse_down[idx] = down;
+    }
+}
+
+/// Dispatch a [`Command`] to the server and side-effect targets. Extracted
+/// from the three mutation sources (IPC, keybindings, chrome) so the journal
+/// chokepoint (ADR-0033) sees every mutation through one path.
+fn apply_command(
+    server: &mut ass_server::Server,
+    notif_queue: &std::sync::Arc<std::sync::Mutex<ass_core::notify::NotificationQueue>>,
+    quit: &mut bool,
+    cmd: &ass_ipc::Command,
+    ipc: &Option<ass_ipc::Server>,
+    ts_mono_ms: u64,
+) {
+    use ass_ipc::Command;
+    match cmd {
+        Command::Focus { id } => server.focus_surface_by_id(*id),
+        Command::Close { id } => server.close_toplevel(*id),
+        Command::Move { id } => server.start_interactive_move(*id),
+        Command::Cycle { forward } => server.cycle_focus(*forward),
+        Command::SwitchWorkspace { dir } => server.switch_workspace(*dir),
+        Command::SwitchWorkspaceTo { id } => server.switch_workspace_to(*id),
+        Command::MoveToWorkspace { window, workspace } => {
+            server.move_to_workspace(*window, *workspace)
+        }
+        Command::ToggleTiling => server.set_tiling(!server.tiling()),
+        Command::Notify { summary, body, app_id } => {
+            let n = notif_queue.lock().unwrap().push(
+                summary.clone(),
+                body.clone(),
+                app_id.clone(),
+                ts_mono_ms,
+            );
+            if let Some(s) = ipc.as_ref() {
+                s.broadcast(ass_ipc::Event::Notified { notification: n });
+            }
+        }
+        Command::DismissNotification { id } => {
+            notif_queue.lock().unwrap().dismiss(*id);
+        }
+        Command::Quit => *quit = true,
+    }
+}
+
+/// Record a mutation in the journal and push it to journal subscribers
+/// (ADR-0033).
+fn journal_and_broadcast(
+    journal: &std::sync::Arc<std::sync::Mutex<ass_ipc::Journal>>,
+    ipc: &Option<ass_ipc::Server>,
+    ts_mono_ms: u64,
+    origin: ass_ipc::Origin,
+    cmd: ass_ipc::Command,
+) {
+    let mut j = journal.lock().unwrap();
+    let entry = j.append(ts_mono_ms, origin, cmd, ass_ipc::Effect::Applied);
+    if let Some(s) = ipc.as_ref() {
+        s.broadcast_journal(entry.clone());
+    }
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     log::info!(
         "ass {} — autonomous surface shell",
@@ -91,56 +177,74 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Compositor chrome, bound to the same device. The core host ships with
     // no chrome of its own; compose it from the components the binary wants.
     let mut shell = unsafe { ass_shell::Shell::new(device.as_raw() as *mut _) }?;
-    shell.add(Box::new(ass_shell::Decorations::new()));
+    // Window decorations are intentionally not registered: windows are
+    // borderless (macOS-style), managed through the dock, tiling, and key
+    // bindings rather than per-window title bars.
     // Only the binary wires discovery to chrome (ADR-0022); the shell stays
-    // free of `ass-apps`. Click a launcher row to spawn detached via
-    // `ass-launch`; click a dock tile to focus / restore its window.
-    shell.add(Box::new(ass_shell::Launcher::new(launcher_apps.clone())));
+    // free of `ass-apps`. The launcher opens from the dock's Launchpad tile
+    // into a full-screen icon grid; clicking an icon spawns it detached via
+    // `ass-launch`. It shares the dock's decoded icon textures.
+    shell.add(Box::new(ass_shell::Launcher::with_icons(
+        launcher_apps.clone(),
+        icon_cache.map.clone(),
+    )));
     shell.add(Box::new(ass_shell::WorkspaceBar::new()));
     shell.add(Box::new(ass_shell::Toast::new(std::sync::Arc::clone(
         &notif_queue,
     ))));
-    shell.add(Box::new(ass_shell::Dock::with_icons(
-        icon_cache.map.clone(),
-    )));
-    let mut input = ass_shell::Input::default();
+    // The dock is added after the config is loaded below, so it can read the
+    // `[dock]` pinned list.
+    let mut input_acc = InputAccumulator::default();
     // Seed the chrome's logical extent so widgets can lay out before the first
     // resize arrives. Updated each frame from the host size.
     {
         let sz = host.size();
-        input.set_display_size(sz.w as f32, sz.h as f32);
+        input_acc.display_size = (sz.w as f32, sz.h as f32);
     }
 
     // Wayland server: accept client connections on its own socket.
     let mut server = ass_server::Server::new()?;
     log::info!("server: listening on WAYLAND_DISPLAY={}", server.socket());
 
+    // Repoint $WAYLAND_DISPLAY at this compositor's socket so children laun-
+    // ched from here (the dock / launcher via `ass-launch`) connect back to
+    // *us*, not the host session ass is nested in. The host connection was
+    // already captured above as an fd by `NestedHost::open`, which does not
+    // re-read the env var after connect, so overwriting it here is safe.
+    // `ass-launch::inherit_display_env` reads this var to seed each child.
+    std::env::set_var("WAYLAND_DISPLAY", server.socket());
+
     // Compositing of client surfaces.
     let mut renderer = ass_render::Renderer::new();
     let start = std::time::Instant::now();
 
-    // Optional wallpaper: a still image (png/jpg/webp/gif/…) or a short
-    // video decoded by an external ffmpeg. Set $ASS_WALLPAPER to a path;
-    // if absent or load fails, the frame's clear colour shows through.
-    // The video decode resolution is seeded from the initial *physical* host
-    // size so the wallpaper is decoded at the framebuffer's true resolution;
-    // later resizes GPU-scale the wallpaper on draw without re-decoding.
+    // Wallpaper: a still image (png/jpg/webp/gif/…) or a short video decoded by
+    // an external ffmpeg. `$ASS_WALLPAPER` selects the image; with it unset we
+    // fall back to a bundled demo wallpaper so a bare `cargo run` shows a
+    // desktop rather than the bare clear colour. The default is resolved at
+    // compile time relative to the crate, so it works straight from
+    // `cargo run`. A missing/failed load is not fatal — the clear colour shows
+    // through.
+    //
+    // The decode resolution is seeded from the initial *physical* host size so
+    // the wallpaper is decoded at the framebuffer's true resolution; later
+    // resizes GPU-scale the wallpaper on draw without re-decoding.
+    const DEFAULT_WALLPAPER: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/wallpapers/default.jpg");
     let (init_w, init_h) = host.physical_size();
-    let mut wallpaper = match std::env::var("ASS_WALLPAPER")
+    let wallpaper_path = std::env::var("ASS_WALLPAPER")
         .ok()
         .filter(|s| !s.is_empty())
-    {
-        Some(path) => match ass_wallpaper::Wallpaper::from_path(&path, init_w, init_h) {
-            Ok(w) => {
-                log::info!("wallpaper: enabled ({path})");
-                Some(w)
-            }
-            Err(e) => {
-                log::warn!("wallpaper: load failed for {path}: {e}");
-                None
-            }
-        },
-        None => None,
+        .unwrap_or_else(|| DEFAULT_WALLPAPER.to_string());
+    let mut wallpaper = match ass_wallpaper::Wallpaper::from_path(&wallpaper_path, init_w, init_h) {
+        Ok(w) => {
+            log::info!("wallpaper: enabled ({wallpaper_path})");
+            Some(w)
+        }
+        Err(e) => {
+            log::warn!("wallpaper: load failed for {wallpaper_path}: {e}");
+            None
+        }
     };
 
     let clear = flux::rgba(30, 30, 46, 255);
@@ -185,6 +289,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (init_w, init_h) = host.size_u32();
     server.set_output_geometry(output_geometry_from_size(init_w as i32, init_h as i32));
 
+    // The dock: a persistent strip of pinned `.desktop` app icons (ADR-0022),
+    // built from the config's `[dock] pinned` list, or auto-populated from the
+    // enumerated apps that have a usable icon when no pins are configured. It
+    // borrows the icon cache (which outlives the shell). Added last so it
+    // stacks above the other chrome.
+    let pinned = build_dock_apps(
+        &launcher_apps,
+        &icon_cache.map,
+        config.as_ref().map(|c| c.dock.pinned.as_slice()).unwrap_or(&[]),
+    );
+    log::info!("dock: {} app(s) pinned", pinned.len());
+    shell.add(Box::new(ass_shell::Dock::with_apps(
+        pinned,
+        icon_cache.map.clone(),
+    )));
+
     // mtime-based reload watcher, polled each frame. `None` when there is no
     // default config path on this host.
     let mut reload = config_path
@@ -201,9 +321,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // IPC rather than crashing. `ipc` is held to the end of `run()` so its
     // `Drop` removes the socket.
     let (ipc_cmd_tx, ipc_cmd_rx) = std::sync::mpsc::channel::<ass_ipc::Command>();
+    let journal = std::sync::Arc::new(std::sync::Mutex::new(ass_ipc::Journal::default_capacity()));
     let live = std::sync::Arc::new(LiveState::new(
         ipc_cmd_tx,
         std::sync::Arc::clone(&notif_queue),
+        std::sync::Arc::clone(&journal),
     ));
     let ipc: Option<ass_ipc::Server> = match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(d) => {
@@ -225,7 +347,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     // Signature of the last broadcast window set, used to detect changes.
-    let mut last_win_sig: Option<Vec<(usize, bool, Option<String>)>> = None;
+    let mut last_win_sig: Option<Vec<(ass_core::window::WindowId, bool, Option<String>)>> = None;
     // Last broadcast workspace snapshot, used to detect model changes.
     let mut last_ws_snap: Option<ass_core::workspace::WorkspaceSnapshot> = None;
 
@@ -245,34 +367,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // threads forward through the channel rather than touching it
         // directly. Mirrors the chrome-intent drain below (ADR-0016/0027).
         while let Ok(cmd) = ipc_cmd_rx.try_recv() {
-            use ass_ipc::Command;
-            match cmd {
-                Command::Focus { id } => server.focus_surface_by_id(id),
-                Command::Close { id } => server.close_toplevel(id),
-                Command::Move { id } => server.start_interactive_move(id),
-                Command::Cycle { forward } => server.cycle_focus(forward),
-                Command::SwitchWorkspace { dir } => server.switch_workspace(dir),
-                Command::SwitchWorkspaceTo { id } => server.switch_workspace_to(id),
-                Command::MoveToWorkspace { window, workspace } => {
-                    server.move_to_workspace(window, workspace)
-                }
-                Command::ToggleTiling => server.set_tiling(!server.tiling()),
-                Command::Notify {
-                    summary,
-                    body,
-                    app_id,
-                } => {
-                    let now_ms = start.elapsed().as_millis() as u64;
-                    let n = notif_queue
-                        .lock()
-                        .unwrap()
-                        .push(summary, body, app_id, now_ms);
-                    if let Some(s) = ipc.as_ref() {
-                        s.broadcast(ass_ipc::Event::Notified { notification: n });
-                    }
-                }
-                Command::Quit => quit_requested = true,
-            }
+            let ts = start.elapsed().as_millis() as u64;
+            apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+            journal_and_broadcast(
+                &journal,
+                &ipc,
+                ts,
+                ass_ipc::Origin::Ipc { conn_id: 0 },
+                cmd,
+            );
         }
         // Age out expired notifications once per frame.
         notif_queue
@@ -287,6 +390,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // mirror into the shell's input snapshot so chrome gets first dibs on
         // clicks (e.g. the Quit button). The chrome reads the same pointer
         // position; routing priority is decided by the shell's hit-test.
+        //
+        // The per-frame `Input` snapshot is rebuilt from the accumulator each
+        // iteration: only level state (cursor position, button-held, display
+        // size) is carried in; edge flags (pressed/released/scroll/keys/text)
+        // start at zero so a press/release in one frame can never bleed into
+        // the next and trigger phantom clicks in immediate-mode widgets.
+        let mut input = ass_shell::Input::default();
+        input.set_display_size(input_acc.display_size.0, input_acc.display_size.1);
+        input.set_cursor(input_acc.cursor.0, input_acc.cursor.1);
+        input.set_mouse_down(lens::MouseButton::Left, input_acc.mouse_down[0]);
+        input.set_mouse_down(lens::MouseButton::Right, input_acc.mouse_down[1]);
+        input.set_mouse_down(lens::MouseButton::Middle, input_acc.mouse_down[2]);
         let events = host.take_input();
         // When chrome (the launcher) captures the keyboard, key events go to
         // the chrome's search box rather than the focused client. The shell
@@ -299,6 +414,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 match *ev {
                     PointerMotion { x, y } => {
                         input.set_cursor(x, y);
+                        input_acc.cursor = (x, y);
                     }
                     PointerButton { button, state } => {
                         // Map Linux BTN_* codes (0x110=left, 0x111=right,
@@ -314,14 +430,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             if state.is_pressed() {
                                 input.set_mouse_pressed(b, true);
                                 input.set_mouse_down(b, true);
+                                input_acc.set_mouse_down(b, true);
                             } else {
                                 input.set_mouse_released(b, true);
                                 input.set_mouse_down(b, false);
+                                input_acc.set_mouse_down(b, false);
                             }
                         }
                     }
                     PointerLeave => {
                         input.set_cursor(-1.0, -1.0);
+                        input_acc.cursor = (-1.0, -1.0);
                     }
                     Key { code, state } if keyboard_captured => {
                         // Capture: advance the server's xkb state on every key
@@ -368,29 +487,65 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // captures the keyboard — those keys went to the search box.)
             for action in actions {
                 use ass_core::keybind::Action;
+                let ts = start.elapsed().as_millis() as u64;
+                let origin = ass_ipc::Origin::Keybinding;
                 match action {
                     Action::ToggleLauncher => shell.toggle(),
                     Action::CloseFocused => {
                         if let Some(id) = server.focused_toplevel_id() {
-                            server.close_toplevel(id);
+                            let cmd = ass_ipc::Command::Close { id };
+                            apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                            journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                         }
                     }
-                    Action::CycleFocus => server.cycle_focus(true),
-                    Action::CycleFocusBack => server.cycle_focus(false),
+                    Action::CycleFocus => {
+                        let cmd = ass_ipc::Command::Cycle { forward: true };
+                        apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                        journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
+                    }
+                    Action::CycleFocusBack => {
+                        let cmd = ass_ipc::Command::Cycle { forward: false };
+                        apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                        journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
+                    }
                     Action::WorkspaceNext => {
-                        server.switch_workspace(ass_core::workspace::Switch::Next)
+                        let cmd = ass_ipc::Command::SwitchWorkspace {
+                            dir: ass_core::workspace::Switch::Next,
+                        };
+                        apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                        journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                     }
                     Action::WorkspacePrev => {
-                        server.switch_workspace(ass_core::workspace::Switch::Prev)
+                        let cmd = ass_ipc::Command::SwitchWorkspace {
+                            dir: ass_core::workspace::Switch::Prev,
+                        };
+                        apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                        journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                     }
-                    Action::ToggleTiling => server.set_tiling(!server.tiling()),
-                    Action::Quit => quit_requested = true,
+                    Action::ToggleTiling => {
+                        let cmd = ass_ipc::Command::ToggleTiling;
+                        apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                        journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
+                    }
+                    Action::Quit => {
+                        let cmd = ass_ipc::Command::Quit;
+                        apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                        journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
+                    }
                 }
             }
         }
 
+        // A host resize or an output-scale change (window moved to a monitor
+        // with a different scale) reports the new *logical* size. The swapchain
+        // follows the physical size; layout, input, and the advertised output
+        // geometry stay logical. Re-advertise the buffer scale so the host
+        // keeps mapping our pre-scaled buffer 1:1.
         if let Some(sz) = host.take_resize() {
-            surface.resize(sz.w as u32, sz.h as u32)?;
+            let (pw, ph) = host.physical_size();
+            surface.resize(pw, ph)?;
+            host.set_buffer_scale();
+            input_acc.display_size = (sz.w as f32, sz.h as f32);
             input.set_display_size(sz.w as f32, sz.h as f32);
             server.set_output_geometry(output_geometry_from_size(sz.w, sz.h));
         }
@@ -405,6 +560,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         match surface.begin_frame() {
             Ok(frame) => {
                 canvas.begin(&frame, Some(clear))?;
+                // The swapchain is in physical pixels; the wallpaper and the
+                // client windows are positioned in logical coordinates (the
+                // server's output space). Scale the canvas transform by the
+                // output scale for that pass so logical units map onto the
+                // physical framebuffer. The chrome (lens) manages its own scale
+                // on render, so the transform is restored before it draws.
+                let scale = host.scale() as f32;
+                canvas.save();
+                if scale != 1.0 {
+                    canvas.scale(scale, scale);
+                }
                 // Wallpaper first (bottom-most), then client windows, then
                 // the compositor chrome on top. The wallpaper is drawn at
                 // the current output size so it always fills the frame;
@@ -440,6 +606,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     renderer.draw_subsurfaces(&device, &canvas, &sub_shm_above);
                     renderer.draw_dmabuf_subsurfaces(&device, &canvas, &sub_dmabuf_above);
                 }
+                canvas.restore();
                 // Hand the shell a snapshot of live toplevels so the chrome's
                 // window list reflects the current set. The shell reads
                 // title/app_id/activated off each Window to draw its buttons.
@@ -447,7 +614,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // chrome and external tools read identical state, and a
                 // change broadcasts `WindowsChanged` to subscribers.
                 let win_snapshot = server.windows();
-                let sig: Vec<(usize, bool, Option<String>)> = win_snapshot
+                let sig: Vec<(ass_core::window::WindowId, bool, Option<String>)> = win_snapshot
                     .iter()
                     .map(|w| (w.id, w.state.activated, w.title.clone()))
                     .collect();
@@ -465,28 +632,45 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let ws_changed = last_ws_snap.as_ref() != Some(&ws_snap);
                 live.set_workspaces(ws_snap.clone());
                 shell.set_workspaces(ws_snap.clone());
+                live.set_outputs(server.output_infos());
                 if ws_changed {
                     last_ws_snap = Some(ws_snap);
                     if let Some(s) = ipc.as_ref() {
                         s.broadcast(ass_ipc::Event::WorkspaceChanged);
                     }
                 }
+                // Report the output scale so lens rasterises chrome crisply on
+                // a HiDPI host; layout and input stay in logical pixels.
+                shell.set_scale(scale);
                 unsafe { shell.render(canvas.as_raw() as *mut _, &input)? };
-                // Drain chrome interactions and forward to the server's
-                // window-management API. Each is set at most once per frame.
+                // Drain chrome interactions and forward through the apply
+                // chokepoint (ADR-0033) so the journal records them.
+                let ts = start.elapsed().as_millis() as u64;
+                let origin = ass_ipc::Origin::Chrome;
                 if let Some(id) = shell.take_clicked_window() {
-                    server.focus_surface_by_id(id);
+                    let cmd = ass_ipc::Command::Focus { id };
+                    apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                    journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                 }
                 if let Some(id) = shell.take_closed_window() {
-                    server.close_toplevel(id);
+                    let cmd = ass_ipc::Command::Close { id };
+                    apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                    journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                 }
                 if let Some(id) = shell.take_move_requested() {
-                    server.start_interactive_move(id);
+                    let cmd = ass_ipc::Command::Move { id };
+                    apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                    journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                 }
-                // A workspace indicator tile was clicked: switch to it
-                // (ADR-0025). Same path as the Super+Left/Right bindings.
                 if let Some(id) = shell.take_switch_workspace() {
-                    server.switch_workspace_to(id);
+                    let cmd = ass_ipc::Command::SwitchWorkspaceTo { id };
+                    apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                    journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
+                }
+                // The dock's Launchpad tile was clicked: toggle the launcher,
+                // the same path as the Super-tap hotkey.
+                if shell.take_toggle_launcher() {
+                    shell.toggle();
                 }
                 // Launch the application the launcher's clicked row asked for.
                 // The child is detached (setsid) and inherits the Wayland/XDG
@@ -528,8 +712,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             Err(_) => {
-                // Out-of-date / lost: rebuild the swapchain at the current size.
-                let (nw, nh) = host.size_u32();
+                // Out-of-date / lost: rebuild the swapchain at the current
+                // physical size.
+                let (nw, nh) = host.physical_size();
                 surface.resize(nw, nh)?;
             }
         }
@@ -679,7 +864,9 @@ fn build_keymap(config: Option<&ass_config::Config>) -> ass_core::keybind::Keyma
 struct LiveState {
     windows: std::sync::RwLock<Vec<ass_core::window::Window>>,
     workspaces: std::sync::RwLock<ass_core::workspace::WorkspaceSnapshot>,
+    outputs: std::sync::RwLock<Vec<ass_core::output::OutputInfo>>,
     notifications: std::sync::Arc<std::sync::Mutex<ass_core::notify::NotificationQueue>>,
+    journal: std::sync::Arc<std::sync::Mutex<ass_ipc::Journal>>,
     commands: std::sync::Mutex<std::sync::mpsc::Sender<ass_ipc::Command>>,
 }
 
@@ -687,12 +874,15 @@ impl LiveState {
     fn new(
         commands: std::sync::mpsc::Sender<ass_ipc::Command>,
         notifications: std::sync::Arc<std::sync::Mutex<ass_core::notify::NotificationQueue>>,
+        journal: std::sync::Arc<std::sync::Mutex<ass_ipc::Journal>>,
     ) -> LiveState {
         LiveState {
             windows: std::sync::RwLock::new(Vec::new()),
             workspaces: std::sync::RwLock::new(ass_core::workspace::WorkspaceModel::new()
                 .snapshot()),
+            outputs: std::sync::RwLock::new(Vec::new()),
             notifications,
+            journal,
             commands: std::sync::Mutex::new(commands),
         }
     }
@@ -703,6 +893,10 @@ impl LiveState {
 
     fn set_workspaces(&self, snapshot: ass_core::workspace::WorkspaceSnapshot) {
         *self.workspaces.write().unwrap() = snapshot;
+    }
+
+    fn set_outputs(&self, outputs: Vec<ass_core::output::OutputInfo>) {
+        *self.outputs.write().unwrap() = outputs;
     }
 }
 
@@ -730,11 +924,27 @@ impl ass_ipc::Handler for LiveState {
         self.notifications.lock().unwrap().snapshot()
     }
 
+    fn outputs(&self) -> Vec<ass_core::output::OutputInfo> {
+        self.outputs.read().unwrap().clone()
+    }
+
+    fn journal_since(&self, since: u64) -> ass_ipc::JournalSnapshot {
+        self.journal.lock().unwrap().since(since)
+    }
+
     fn command(&self, cmd: ass_ipc::Command) {
         // Best-effort: a send fails only if the main loop has dropped the
         // receiver (compositor shutting down); the command is then lost,
         // which is the right outcome.
         let _ = self.commands.lock().unwrap().send(cmd);
+    }
+
+    fn resolve_scope(&self, _name: &str) -> Option<ass_ipc::Scope> {
+        // ADR-0034 scope resolution from the loaded configuration. The
+        // static scope model and enforcement are fully implemented; wiring
+        // the config through to here is a follow-up that lands when the
+        // desktop milestones preceding M10 are complete.
+        None
     }
 }
 
@@ -751,6 +961,65 @@ struct IconCache {
 /// rasterizer (resvg / librsvg) and is a follow-up; entries whose only icon is
 /// SVG fall back to the dock glyph.
 const RASTER_ICON_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif", "tiff", "ico"];
+
+/// The lowercased ids an entry might be matched by: its `StartupWMClass`, the
+/// desktop-file stem, and the declared icon name. These are the same keys
+/// [`build_icon_cache`] files icons under, so a dock tile can both find its
+/// icon and fold a running toplevel (matched by `app_id`) into itself.
+fn app_keys(entry: &ass_core::app::Entry) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut push = |s: &str| {
+        let s = s.to_ascii_lowercase();
+        if !s.is_empty() && !keys.contains(&s) {
+            keys.push(s);
+        }
+    };
+    if let Some(wm) = &entry.startup_wm_class {
+        push(wm);
+    }
+    push(entry.id.strip_suffix(".desktop").unwrap_or(&entry.id));
+    if let Some(ic) = &entry.icon {
+        push(ic);
+    }
+    keys
+}
+
+/// How many apps to auto-pin to the dock when the config pins none, so the bar
+/// is populated with real XDG icons out of the box rather than empty.
+const DEFAULT_PINNED_MAX: usize = 12;
+
+/// Build the dock's pinned app list. When `pinned` names apps, each name is
+/// resolved against the enumerated entries by id / desktop-stem / WM class /
+/// icon name (case-insensitive), in the order given; unresolved names are
+/// logged and skipped. When `pinned` is empty, the first [`DEFAULT_PINNED_MAX`]
+/// apps that have a decoded icon are pinned automatically.
+fn build_dock_apps(
+    apps: &[ass_core::app::Entry],
+    icons: &std::collections::HashMap<String, *mut std::ffi::c_void>,
+    pinned: &[String],
+) -> Vec<ass_shell::DockApp> {
+    let make = |entry: &ass_core::app::Entry| ass_shell::DockApp {
+        entry: entry.clone(),
+        keys: app_keys(entry),
+    };
+    if pinned.is_empty() {
+        return apps
+            .iter()
+            .filter(|e| app_keys(e).iter().any(|k| icons.contains_key(k)))
+            .take(DEFAULT_PINNED_MAX)
+            .map(make)
+            .collect();
+    }
+    let mut out = Vec::with_capacity(pinned.len());
+    for name in pinned {
+        let want = name.to_ascii_lowercase();
+        match apps.iter().find(|e| app_keys(e).iter().any(|k| *k == want)) {
+            Some(e) => out.push(make(e)),
+            None => log::warn!("dock: pinned app '{name}' not found among enumerated entries"),
+        }
+    }
+    out
+}
 
 /// Decode each app entry's icon into a flux texture, keyed by every id the
 /// window might report as `app_id` (StartupWMClass, the desktop-id stem, and
@@ -785,19 +1054,11 @@ fn build_icon_cache(device: &flux::Device, apps: &[ass_core::app::Entry]) -> Ico
         match flux::Image::from_bytes(device, w, h, flux::Format::FLUX_FORMAT_BGRA8_UNORM, &bgra) {
             Ok(img) => {
                 let ptr = img.as_raw() as *mut c_void;
-                if let Some(wm) = &entry.startup_wm_class {
-                    if !wm.is_empty() {
-                        map.entry(wm.to_ascii_lowercase()).or_insert(ptr);
-                    }
-                }
-                let stem = entry.id.strip_suffix(".desktop").unwrap_or(&entry.id);
-                if !stem.is_empty() {
-                    map.entry(stem.to_ascii_lowercase()).or_insert(ptr);
-                }
-                if let Some(ic) = &entry.icon {
-                    if !ic.is_empty() {
-                        map.entry(ic.to_ascii_lowercase()).or_insert(ptr);
-                    }
+                // Key the texture under every id a window might report as its
+                // `app_id`; the dock resolves both icons and running-window
+                // matches through these same keys.
+                for key in app_keys(entry) {
+                    map.entry(key).or_insert(ptr);
                 }
                 images.push(img);
             }

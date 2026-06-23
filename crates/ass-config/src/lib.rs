@@ -55,6 +55,55 @@ pub struct Config {
     /// Tiling policy parameters (ADR-0024), written as a `[layout]` table.
     #[serde(default)]
     pub layout: LayoutConfig,
+
+    /// Dock configuration, written as a `[dock]` table. Controls which apps
+    /// are pinned to the bottom dock.
+    #[serde(default)]
+    pub dock: DockConfig,
+
+    /// Agent scope declarations (ADR-0034), written as `[[agent.scope]]`
+    /// array-of-tables. Each entry names a scope the compositor resolves
+    /// when an IPC client presents the name at the Hello handshake.
+    #[serde(default)]
+    pub agent: AgentConfig,
+}
+
+/// The `[agent]` section (ADR-0034). Named scopes that bound what an agent
+/// IPC client may do: which operations, which windows, which workspaces.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct AgentConfig {
+    /// One named scope per `[[agent.scope]]` entry.
+    #[serde(default, rename = "scope")]
+    pub scopes: Vec<AgentScopeEntry>,
+}
+
+/// One declared agent scope. `ops` lists [`OpClass`] names (`Focus`,
+/// `Close`, …); `windows` and `workspaces` are id allowlists (empty or
+/// omitted means unrestricted at that axis).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct AgentScopeEntry {
+    /// The scope name an IPC client presents at Hello.
+    pub name: String,
+    /// Operation-class names this scope permits.
+    #[serde(default)]
+    pub ops: Vec<String>,
+    /// Window-id allowlist. Empty means unrestricted.
+    #[serde(default)]
+    pub windows: Vec<u64>,
+    /// Workspace-id allowlist. Empty means unrestricted.
+    #[serde(default)]
+    pub workspaces: Vec<u64>,
+}
+
+/// The `[dock]` section. `pinned` lists the apps to keep on the dock in order;
+/// each value matches an enumerated `.desktop` entry by its id, desktop-file
+/// stem, `StartupWMClass`, or icon name (case-insensitive). An empty list (the
+/// default) lets the compositor auto-populate the dock with the first handful
+/// of apps that have a usable icon, so the dock is never empty out of the box.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+pub struct DockConfig {
+    #[serde(default)]
+    pub pinned: Vec<String>,
 }
 
 /// The `[layout]` section: tiling gaps and master ratio. Defaults match the

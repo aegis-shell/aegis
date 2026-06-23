@@ -18,7 +18,7 @@ pub enum Launch {
     /// Focus an already-running instance whose Wayland `app_id` matched this
     /// entry's `StartupWMClass` (or its desktop id). Carries the surface id
     /// to feed `Server::focus_surface_by_id`.
-    Focus(usize),
+    Focus(crate::window::WindowId),
 }
 
 /// The launcher's interaction state.
@@ -38,7 +38,7 @@ pub struct Launcher {
     selection: usize,
     /// `(app_id, surface_id)` pairs the chrome refreshes each frame from the
     /// server's live toplevel snapshot. Empty when nothing matches.
-    running: Vec<(String, usize)>,
+    running: Vec<(String, crate::window::WindowId)>,
 }
 
 impl Launcher {
@@ -186,7 +186,7 @@ impl Launcher {
     /// each frame with `(app_id, surface_id)` pairs from the server's live
     /// toplevel list. Matching an entry against it lets the launcher focus an
     /// existing instance instead of spawning a duplicate.
-    pub fn set_running(&mut self, running: Vec<(String, usize)>) {
+    pub fn set_running(&mut self, running: Vec<(String, crate::window::WindowId)>) {
         self.running = running;
     }
 
@@ -210,7 +210,7 @@ impl Launcher {
     /// `StartupWMClass`, or — when that is unset — equals the entry's desktop
     /// id with its `.desktop` suffix stripped (case-insensitive, mirroring
     /// how most toolkits derive `app_id` from the desktop file name).
-    fn surface_if_running(&self, app_idx: usize) -> Option<usize> {
+    fn surface_if_running(&self, app_idx: usize) -> Option<crate::window::WindowId> {
         let e = &self.apps[app_idx];
         let id_stem = e.id.trim_end_matches(".desktop");
         for (app_id, sid) in &self.running {
@@ -476,11 +476,11 @@ mod tests {
         let mut l = Launcher::new(apps);
         l.open();
         // Surface 42 is running with app_id "firefox".
-        l.set_running(vec![("firefox".into(), 42)]);
+        l.set_running(vec![("firefox".into(), crate::window::WindowId(42))]);
 
         assert!(l.is_running(0));
         match l.handle(KeyAction::Enter) {
-            Some(Launch::Focus(sid)) => assert_eq!(sid, 42),
+            Some(Launch::Focus(sid)) => assert_eq!(sid, crate::window::WindowId(42)),
             other => panic!("expected Focus, got {other:?}"),
         }
         assert!(!l.is_open());
@@ -494,10 +494,10 @@ mod tests {
         l.open();
         // app_id "foot" matches "foot.desktop" with the suffix stripped,
         // case-insensitively.
-        l.set_running(vec![("FOOT".into(), 7)]);
+        l.set_running(vec![("FOOT".into(), crate::window::WindowId(7))]);
         assert!(l.is_running(0));
         match l.launch_filtered(0) {
-            Some(Launch::Focus(sid)) => assert_eq!(sid, 7),
+            Some(Launch::Focus(sid)) => assert_eq!(sid, crate::window::WindowId(7)),
             other => panic!("expected Focus, got {other:?}"),
         }
     }
@@ -508,7 +508,7 @@ mod tests {
         e.startup_wm_class = Some("A".into());
         let mut l = Launcher::new(vec![e]);
         l.open();
-        l.set_running(vec![("something-else".into(), 1)]);
+        l.set_running(vec![("something-else".into(), crate::window::WindowId(1))]);
         assert!(!l.is_running(0));
         match l.handle(KeyAction::Enter) {
             Some(Launch::Spawn(e)) => assert_eq!(e.id, "a.desktop"),
@@ -521,7 +521,7 @@ mod tests {
         let apps = vec![entry("foot.desktop", "Foot")];
         let mut l = Launcher::new(apps);
         l.open();
-        l.set_running(vec![("foot".into(), 1)]);
+        l.set_running(vec![("foot".into(), crate::window::WindowId(1))]);
         assert!(l.is_running(0));
         // Window closed: next frame reports no running apps.
         l.set_running(Vec::new());

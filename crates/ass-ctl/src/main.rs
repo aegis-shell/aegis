@@ -9,12 +9,12 @@ fn main() {
             std::process::exit(2);
         }
     };
-    match ass_ctl::run(&socket, &args) {
-        Ok(out) => {
-            if !out.is_empty() {
-                println!("{out}");
-            }
-        }
+    match if args.first().map(String::as_str) == Some("subscribe") {
+        ass_ctl::run_subscribe(&socket)
+    } else {
+        ass_ctl::run(&socket, &args).map(|_| ())
+    } {
+        Ok(()) => {}
         Err(e) => {
             eprintln!("ass-ctl: {e}");
             std::process::exit(1);

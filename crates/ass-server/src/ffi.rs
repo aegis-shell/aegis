@@ -290,6 +290,29 @@ pub struct wl_seat_interface_impl {
     pub release: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
 }
 
+/// `wl_pointer` requests: set_cursor (v1), release (v3).
+/// Both must be implemented: `set_cursor` is a regular request every client
+/// sends when changing its cursor, and libwayland aborts with "Implementation
+/// of resource N of wl_pointer is NULL" if the function pointer is NULL.
+#[repr(C)]
+pub struct wl_pointer_interface_impl {
+    pub set_cursor: unsafe extern "C" fn(
+        *mut wl_client,
+        *mut wl_resource,
+        u32,
+        *mut wl_resource,
+        i32,
+        i32,
+    ),
+    pub release: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `wl_keyboard` requests: release (v3).
+#[repr(C)]
+pub struct wl_keyboard_interface_impl {
+    pub release: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
 /// `xdg_toplevel` requests (xdg_wm_base v1): 14 entries in protocol order.
 #[repr(C)]
 pub struct xdg_toplevel_interface_impl {
@@ -390,6 +413,8 @@ assert_impl_opcode_count!(wl_subsurface_interface_impl, 6);
 assert_impl_opcode_count!(wl_data_device_manager_interface_impl, 3);
 assert_impl_opcode_count!(wl_data_device_interface_impl, 3);
 assert_impl_opcode_count!(wl_seat_interface_impl, 4);
+assert_impl_opcode_count!(wl_pointer_interface_impl, 2);
+assert_impl_opcode_count!(wl_keyboard_interface_impl, 1);
 assert_impl_opcode_count!(xdg_toplevel_interface_impl, 14);
 assert_impl_opcode_count!(zwp_linux_dmabuf_v1_interface_impl, 4);
 assert_impl_opcode_count!(zwp_linux_buffer_params_v1_interface_impl, 4);

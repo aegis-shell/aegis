@@ -68,6 +68,14 @@ impl NotificationQueue {
         self.entries.retain(|n| now_ms.saturating_sub(n.at_ms) <= self.ttl_ms);
     }
 
+    /// Dismiss a notification by id. Returns `true` if it was present and
+    /// removed. Mirrors a user "dismiss" action before the TTL elapses.
+    pub fn dismiss(&mut self, id: u64) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|n| n.id != id);
+        self.entries.len() != before
+    }
+
     /// The live entries, oldest first. Call [`Self::expire`] first to age
     /// out expired ones.
     pub fn recent(&self) -> &[Notification] {
@@ -135,5 +143,17 @@ mod tests {
         q.push("b", "", None, 1);
         assert_eq!(snap.len(), 1, "snapshot does not see later pushes");
         assert_eq!(q.len(), 2);
+    }
+
+    #[test]
+    fn dismiss_removes_by_id_and_reports_presence() {
+        let mut q = NotificationQueue::new(1000);
+        let a = q.push("a", "", None, 0);
+        let b = q.push("b", "", None, 1);
+        assert_eq!(q.len(), 2);
+        assert!(q.dismiss(a.id), "existing id is dismissed");
+        assert!(!q.dismiss(999), "unknown id reports false");
+        assert_eq!(q.len(), 1);
+        assert_eq!(q.recent()[0].id, b.id);
     }
 }

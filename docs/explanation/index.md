@@ -12,4 +12,5 @@ history.
 | [Architecture](architecture.md) | Component boundaries and data flow |
 | [Vision and Scope](vision.md) | Product direction, principles, and non-goals |
 | [Roadmap](roadmap.md) | The milestone sequence from nested bring-up to the agent phase |
+| [The Agent Phase](agent-phase.md) | The M10 blueprint: where the compositor stops and how the AI ecosystem attaches |
 | [Comparative Survey](comparative-survey.md) | What ass borrows from GNOME, KDE, sway, river, niri, macOS, and Xfce, and what it rejects |

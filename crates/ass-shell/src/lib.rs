@@ -18,7 +18,7 @@ use std::os::raw::c_void;
 use lens::{Frame, Ui};
 
 pub mod chrome;
-pub use chrome::{Decorations, Dock, Launcher, Toast, WorkspaceBar};
+pub use chrome::{Decorations, Dock, DockApp, Launcher, Toast, WorkspaceBar};
 
 use ass_core::app::Entry;
 use ass_core::window::Window;
@@ -65,13 +65,12 @@ pub use lens::Input;
 pub struct ChromeEvents {
     /// The chrome requested the session to quit.
     pub quit: bool,
-    /// Surface id of the window a component asked to focus/activate.
-    pub clicked: Option<usize>,
-    /// Surface id of the window a component asked to close.
-    pub closed: Option<usize>,
-    /// Surface id of the window a component asked to start an interactive
-    /// move on.
-    pub move_requested: Option<usize>,
+    /// Window id a component asked to focus/activate.
+    pub clicked: Option<ass_core::window::WindowId>,
+    /// Window id a component asked to close.
+    pub closed: Option<ass_core::window::WindowId>,
+    /// Window id a component asked to start an interactive move on.
+    pub move_requested: Option<ass_core::window::WindowId>,
     /// A desktop entry the chrome asked to launch (e.g. the launcher's
     /// clicked row). Drained into `ass-launch` by the main loop; carrying the
     /// full [`Entry`] keeps `ass-shell` free of any `ass-apps` dependency
@@ -81,6 +80,11 @@ pub struct ChromeEvents {
     /// tile). Drained into `Server::switch_workspace_to` by the main loop
     /// (ADR-0025).
     pub switch_workspace: Option<ass_core::workspace::WorkspaceId>,
+    /// The chrome asked to toggle the launcher this frame (the dock's
+    /// Launchpad tile). Drained by the main loop, which calls [`Shell::toggle`]
+    /// — the same path as the Super-tap hotkey — so the launcher flips open or
+    /// closed.
+    pub toggle_launcher: bool,
 }
 
 /// One piece of compositor chrome.
@@ -208,20 +212,20 @@ impl Shell {
 
     /// Drain the surface id of the window a component asked to focus this
     /// frame, if any.
-    pub fn take_clicked_window(&mut self) -> Option<usize> {
+    pub fn take_clicked_window(&mut self) -> Option<ass_core::window::WindowId> {
         self.events.clicked.take()
     }
 
     /// Drain the surface id of the window a component asked to close this
     /// frame, if any.
-    pub fn take_closed_window(&mut self) -> Option<usize> {
+    pub fn take_closed_window(&mut self) -> Option<ass_core::window::WindowId> {
         self.events.closed.take()
     }
 
     /// Drain the surface id of the window a component asked to move this
     /// frame, if any. The main loop forwards this to
     /// `Server::start_interactive_move`.
-    pub fn take_move_requested(&mut self) -> Option<usize> {
+    pub fn take_move_requested(&mut self) -> Option<ass_core::window::WindowId> {
         self.events.move_requested.take()
     }
 
@@ -236,6 +240,12 @@ impl Shell {
     /// `Server::switch_workspace_to`.
     pub fn take_switch_workspace(&mut self) -> Option<ass_core::workspace::WorkspaceId> {
         self.events.switch_workspace.take()
+    }
+
+    /// Whether the chrome asked to toggle the launcher this frame (the dock's
+    /// Launchpad tile). The main loop calls [`Shell::toggle`] when set.
+    pub fn take_toggle_launcher(&mut self) -> bool {
+        std::mem::take(&mut self.events.toggle_launcher)
     }
 
     /// Whether any registered component currently captures keyboard input

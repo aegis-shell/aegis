@@ -1,4 +1,4 @@
-//! Per-window server-side decorations (title bars) drawn as `lens` overlays.
+//! Per-window server-side decorations (title bars) drawn as `lens` layers.
 
 use lens::{Color, Frame, Input, OverlayOpts, Rect};
 
@@ -66,8 +66,8 @@ impl Chrome for Decorations {
                 pad: 4.0,
                 ..Default::default()
             };
-            let overlay_id = format!("ass-tbar-{}", w.id);
-            f.overlay(&overlay_id, bar_rect, &opts, |f| {
+            let overlay_id = format!("ass-tbar-{}", w.id.0);
+            f.layer(&overlay_id, bar_rect, &opts, |f| {
                 f.row(|f| {
                     // Title text grows to fill; click starts move.
                     f.flex(1.0);
