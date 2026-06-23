@@ -102,12 +102,7 @@ impl Keyboard {
             None,
             xkb::KEYMAP_COMPILE_NO_FLAGS,
         )
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "xkb_keymap_new_from_names returned NULL",
-            )
-        })?;
+        .ok_or_else(|| std::io::Error::other("xkb_keymap_new_from_names returned NULL"))?;
         let state = xkb::State::new(&keymap);
 
         let keymap_string_raw = keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);

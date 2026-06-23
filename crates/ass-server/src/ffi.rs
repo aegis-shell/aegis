@@ -1,6 +1,17 @@
 //! Raw FFI to libwayland-server. The unsafe seam; safe orchestration lives in
 //! the parent module.
-#![allow(non_camel_case_types)]
+//
+// This module mirrors the complete libwayland-server ABI surface (opcodes,
+// interface tables, extern fns, core ABI types). Not every symbol is wired
+// into a caller yet — they are kept complete so wiring the next server-side
+// request is local. The broad allows below reflect that this is a binding
+// module, not application code.
+#![allow(
+    non_camel_case_types,
+    non_upper_case_globals,
+    dead_code,
+    unused_imports
+)]
 
 use std::os::raw::{c_char, c_int, c_void};
 

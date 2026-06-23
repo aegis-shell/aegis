@@ -117,12 +117,7 @@ fn find_index_theme(theme: &str, bases: &[PathBuf]) -> Option<PathBuf> {
 }
 
 /// Search one theme's directory tree for `icon`, picking the closest size.
-fn lookup_in_theme(
-    theme: &str,
-    icon: &str,
-    bases: &[PathBuf],
-    target: u32,
-) -> Option<PathBuf> {
+fn lookup_in_theme(theme: &str, icon: &str, bases: &[PathBuf], target: u32) -> Option<PathBuf> {
     let mut best: Option<(u32, PathBuf)> = None;
     for b in bases {
         let theme_dir = b.join(theme);

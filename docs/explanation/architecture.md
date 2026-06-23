@@ -2,8 +2,9 @@
 
 ass is a Wayland compositor for Linux, written in Rust. It composites
 client windows and draws its own shell chrome through
-[flux](../../../flux/core), a Vulkan-first graphics library, and
-[flux-ui](../../../flux/ui), an immediate-mode UI library built on flux.
+[flux](../../optics/flux), a Vulkan-first rendering engine, and
+[lens](../../optics/lens), an immediate-mode UI engine that draws through
+flux.
 
 This page explains how the components fit together and where the project is
 headed. For the decisions behind the structure, see the
@@ -11,7 +12,7 @@ headed. For the decisions behind the structure, see the
 
 ## Responsibility Boundary
 
-ass owns the server and platform halves of a compositor; flux and flux-ui
+ass owns the server and platform halves of a compositor; flux and lens
 own rendering and UI. The split is fixed in
 [ADR-0001](../adr/0001-scope-and-responsibility-boundary.md).
 
@@ -21,10 +22,10 @@ own rendering and UI. The split is fixed in
 | Input, output, session and seat management | ass |
 | Window management, surface and scene model, focus | ass |
 | GPU rendering, client buffer import as textures | flux |
-| Compositor chrome (panels, decorations, overview) | flux-ui |
+| Compositor chrome (panels, decorations, overview) | lens |
 
 flux is a client-side renderer: it presents into a caller-supplied
-`VkSurfaceKHR` and has no windowing code. flux-ui consumes input as a data
+`VkSurfaceKHR` and has no windowing code. lens consumes input as a data
 snapshot and emits draw calls. ass supplies both the surface and the
 input.
 
@@ -42,14 +43,14 @@ backend, renderer, and shell behind clear seams so the
 | `ass-server` | The Wayland server: socket, globals, and protocol object lifecycle |
 | `ass-backend` | Presentation and input targets: the nested backend now, DRM/KMS later |
 | `ass-render` | Compositing: client buffers to flux textures, scene to the output |
-| `ass-shell` | Compositor chrome host + components on flux-ui |
+| `ass-shell` | Compositor chrome host + components on lens |
 | `ass-wallpaper` | Background layer: multi-format image and short-video wallpaper |
 | `ass` | The binary: wires the parts together and runs the event loop |
 
-flux and flux-ui are consumed through Rust bindings. flux's bindings live
-in the flux repository as `flux-sys` and `flux`
-([ADR-0005](../adr/0005-flux-core-binding-crate-in-flux-repo.md)); flux-ui
-ships its own.
+flux and lens are consumed through Rust bindings kept in separate
+repositories from their C libraries, following the openssl-sys /
+rusqlite convention: `flux-rs` (`flux` / `flux-sys`) and `lens-rs`
+(`lens` / `lens-sys`). See [ADR-0023](../adr/0023-split-flux-lens-stack.md).
 
 ## Backend Abstraction
 
@@ -77,7 +78,7 @@ In nested operation, each frame runs the following sequence:
    buffers (`wl_shm` or dmabuf), updating the surface tree in `ass-core`.
 3. The renderer turns each mapped surface into a flux texture — dmabuf by
    zero-copy import, `wl_shm` by CPU upload — and composites them in
-   z-order into the frame, then overlays the flux-ui chrome. When a
+   z-order into the frame, then overlays the lens chrome. When a
    wallpaper is loaded (see [ADR-0018](../adr/0018-wallpaper-crate.md)),
    `ass-wallpaper` draws it as the bottom-most layer before the renderer
    runs.
@@ -99,7 +100,7 @@ dependencies. Each is placed by responsibility per
 |-----|-------|------------|
 | Import client dmabuf as a texture | flux | dmabuf import API ([ADR-0004](../adr/0004-client-buffers-via-flux-dmabuf-import.md)) |
 | Render target not tied to `VkSurfaceKHR` presentation (for DRM/KMS) | flux | External-image render path, future work |
-| Rust bindings to flux core and the Vulkan seam | bindings | `flux-sys` / `flux` crates ([ADR-0005](../adr/0005-flux-core-binding-crate-in-flux-repo.md)) |
+| Rust bindings to flux and lens | bindings | `flux-rs` / `lens-rs` crates ([ADR-0023](../adr/0023-split-flux-lens-stack.md)) |
 | Explicit synchronization for buffer release | flux and ass | Timeline semaphores plus the Wayland explicit sync protocol, future work |
 | Wayland server, DRM/KMS, libinput, seat and session | ass | Implemented in ass ([ADR-0002](../adr/0002-hand-rolled-wayland-server.md)) |
 
@@ -114,7 +115,7 @@ begins.
 
 | Milestone | Outcome |
 |-----------|---------|
-| M0 | Nested window: flux presents cleared frames with flux-ui chrome. Complete. |
+| M0 | Nested window: flux presents cleared frames with lens chrome. Complete. |
 | M1 | Wayland server with the core globals; a real `wl_shm` client surface composited; input routed to the focused client. Complete: pointer and keyboard forward end-to-end with xkbcommon keymap and modifier state, click-to-focus, and shell input mirroring. |
 | M2 | `zwp_linux_dmabuf_v1` with flux dmabuf import; GPU clients composited zero-copy. Implemented: per-surface position tracking, subsurface tree (direct children, above/below z-split), `wp_viewport` source crop and destination scale, `wl_surface.set_buffer_transform` via CPU staging (8 cases), and additional fourccs (ARGB/ABGR + X-variants). Buffer scale (`set_buffer_scale`) is stored but not yet applied at composite; nested subsurfaces and damage tracking remain. |
 | M3 | Window management and richer chrome: multiple toplevels, focus, move and resize, decorations, overview. Implemented: toplevel metadata (title, app_id, parent, size hints), maximized/fullscreen/activated state with configure events, interactive move and resize with serial validation and size-hint clamping, a chrome window-list panel with click-to-focus and close, per-window server-side decorations (title bar + close gadget) drawn via flux-ui overlays with click-to-move, and a macOS-style bottom-center dock of per-window tiles. Border-drag resize and `xdg_toplevel.set_window_geometry` frame insets remain. |

@@ -367,6 +367,7 @@ impl Server {
             .filter(|s| {
                 s.mapped
                     && !s.xdg_toplevel.is_null()
+                    && !s.window.minimized
                     && !s.content_is_dmabuf
                     && !s.pixels.is_empty()
             })
@@ -402,6 +403,7 @@ impl Server {
             .filter(|s| {
                 s.mapped
                     && !s.xdg_toplevel.is_null()
+                    && !s.window.minimized
                     && s.content_is_dmabuf
                     && !s.dmabuf_buffer.is_null()
             })
@@ -584,7 +586,12 @@ impl Server {
     /// for the keyboard. Key events update xkbcommon state and post
     /// `wl_keyboard.key` plus any resulting `wl_keyboard.modifiers` change.
     /// Other event kinds are dropped silently for now (touch arrives later).
-    pub fn forward_input(&mut self, events: &[ass_core::input::InputEvent]) {
+    pub fn forward_input(
+        &mut self,
+        events: &[ass_core::input::InputEvent],
+        keymap: &ass_core::keybind::Keymap,
+    ) -> Vec<ass_core::keybind::Action> {
+        let mut actions = Vec::new();
         for event in events {
             use ass_core::input::InputEvent::*;
             match *event {
@@ -592,10 +599,15 @@ impl Server {
                 PointerButton { button, state } => self.pointer_button(button, state),
                 PointerLeave => self.pointer_leave_all(),
                 PointerAxis { .. } => {}
-                Key { code, state } => self.keyboard_key(code, state),
+                Key { code, state } => {
+                    if let Some(a) = self.keyboard_key(code, state, keymap) {
+                        actions.push(a);
+                    }
+                }
             }
         }
         unsafe { ffi::wl_display_flush_clients(self.state.display) };
+        actions
     }
 
     /// Advance the xkbcommon state with one key event and return the keysym
@@ -614,6 +626,7 @@ impl Server {
             ass_core::input::KeyChar {
                 keysym: o.keysym,
                 ch: o.utf8,
+                mods: ass_core::input::Mods(o.depressed),
             }
         })
     }
@@ -793,6 +806,53 @@ impl Server {
         unsafe { ffi::wl_display_flush_clients(self.state.display) };
     }
 
+    /// Surface id of the toplevel currently holding keyboard focus, if any.
+    /// Returns `None` when no surface is focused or the focus is not a
+    /// toplevel. Used by the keybind dispatcher to target the focused window.
+    pub fn focused_toplevel_id(&self) -> Option<usize> {
+        let f = self.state.keyboard_focus;
+        if f.is_null() {
+            return None;
+        }
+        self.state
+            .live_surfaces()
+            .map(|p| unsafe { &*p })
+            .find(|s| s.resource == f && !s.xdg_toplevel.is_null())
+            .map(|s| s.resource as usize)
+    }
+
+    /// Cycle keyboard focus among mapped, non-minimized toplevels in creation
+    /// order. `forward` selects the next surface, `false` the previous. No-op
+    /// if fewer than two eligible toplevels exist. Backs the `CycleFocus` /
+    /// `CycleFocusBack` key bindings.
+    pub fn cycle_focus(&mut self, forward: bool) {
+        let ids: Vec<usize> = self
+            .state
+            .live_surfaces()
+            .map(|p| unsafe { &*p })
+            .filter(|s| !s.xdg_toplevel.is_null() && s.mapped && !s.window.minimized)
+            .map(|s| s.resource as usize)
+            .collect();
+        if ids.len() < 2 {
+            return;
+        }
+        let next = match self
+            .focused_toplevel_id()
+            .and_then(|id| ids.iter().position(|x| *x == id))
+        {
+            Some(i) => {
+                let n = ids.len();
+                if forward {
+                    ids[(i + 1) % n]
+                } else {
+                    ids[(i + n - 1) % n]
+                }
+            }
+            None => ids[0],
+        };
+        self.focus_surface_by_id(next);
+    }
+
     fn pointer_motion(&mut self, x: f32, y: f32) {
         self.state.pointer_x = x;
         self.state.pointer_y = y;
@@ -855,21 +915,38 @@ impl Server {
         self.change_pointer_focus(std::ptr::null_mut());
     }
 
-    fn keyboard_key(&mut self, evdev_code: u32, state: ass_core::input::ButtonState) {
-        if self.state.keyboard_focus.is_null() {
-            return;
-        }
-        let serial = unsafe { ffi::wl_display_next_serial(self.state.display) };
-        let state_u32 = if state.is_pressed() { 1u32 } else { 0u32 };
-        // Advance xkbcommon state and read the post-event modifier mask.
+    fn keyboard_key(
+        &mut self,
+        evdev_code: u32,
+        state: ass_core::input::ButtonState,
+        keymap: &ass_core::keybind::Keymap,
+    ) -> Option<ass_core::keybind::Action> {
+        // Always advance xkbcommon state so modifier tracking and global
+        // bindings work even with no focused client (e.g. an empty desktop).
         // Always posting modifiers (even when unchanged) is simpler; the
         // client-side xkbcommon treats a no-op update cheaply. A delta check
         // can be added if profiling ever shows it matters.
         let outcome = if let Some(kb) = self.state.keyboard.as_mut() {
             kb.update_key(evdev_code, state.is_pressed())
         } else {
-            crate::keyboard::KeyOutcome::default()
+            return None;
         };
+        // A key that matches a global binding on press is consumed (not posted
+        // to the focused client) and its action returned for the caller to
+        // dispatch. Modifier-only keys never match, so modifiers still post.
+        let matched = if state.is_pressed() {
+            keymap.match_key(ass_core::input::Mods(outcome.depressed), outcome.keysym)
+        } else {
+            None
+        };
+        if matched.is_some() {
+            return matched;
+        }
+        if self.state.keyboard_focus.is_null() {
+            return None;
+        }
+        let serial = unsafe { ffi::wl_display_next_serial(self.state.display) };
+        let state_u32 = if state.is_pressed() { 1u32 } else { 0u32 };
         let depressed = outcome.depressed;
         let latched = outcome.latched;
         let locked = outcome.locked;
@@ -897,6 +974,7 @@ impl Server {
                 );
             }
         }
+        None
     }
 
     /// Hit-test the current pointer position against mapped toplevels,
@@ -907,7 +985,7 @@ impl Server {
         let mut hit: *mut ffi::wl_resource = std::ptr::null_mut();
         for p in self.state.live_surfaces() {
             let s = unsafe { &*p };
-            if !s.mapped || s.xdg_toplevel.is_null() {
+            if !s.mapped || s.xdg_toplevel.is_null() || s.window.minimized {
                 continue;
             }
             let sx = s.position.x as f32;
@@ -1022,6 +1100,11 @@ impl Server {
                     return;
                 }
                 s.window.state.activated = activated;
+                // Focusing a minimized toplevel restores it: clear the flag so
+                // the renderer and hit-test pick it up again.
+                if activated {
+                    s.window.minimized = false;
+                }
                 unsafe { reconfigure_with_state(s as *mut SurfaceRec) };
                 return;
             }
@@ -1054,18 +1137,22 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         unsafe {
-            // `wl_display_destroy` fires destroy notifys for all live resources;
-            // each surface's destroy notify reclaims its own box. In case any
-            // surface was orphaned (e.g. its resource was already destroyed
-            // without the notify firing), reclaim remaining live boxes here
-            // before tearing down the display. Boxes already freed by their
-            // destroy notify have their slot nulled and are skipped.
+            // `wl_display_destroy` fires each live resource's destroy notify;
+            // `surface_resource_destroy` frees each surface's box and nulls its
+            // slot. This MUST run before the orphan-reclaim loop below — the
+            // opposite order frees the boxes while the wl_resources still hold
+            // dangling user_data pointers, so the notifys fired here would
+            // dereference freed memory (use-after-free, observed as a flaky
+            // shutdown segfault roughly one run in three).
+            ffi::wl_display_destroy(self.state.display);
+            // Reclaim any orphaned boxes whose destroy notify never fired
+            // (slot still non-null). Boxes freed via their notify have a null
+            // slot and are skipped, so there is no double-free.
             for &p in &self.state.surfaces {
                 if !p.is_null() {
                     drop(Box::from_raw(p));
                 }
             }
-            ffi::wl_display_destroy(self.state.display);
         }
     }
 }
@@ -1412,6 +1499,7 @@ unsafe extern "C" fn surface_set_buffer_scale(
         (*rec).pending_scale = value;
     }
 }
+#[allow(dead_code)]
 unsafe extern "C" fn surface_noop_i32(_c: *mut ffi::wl_client, _r: *mut ffi::wl_resource, _v: i32) {
 }
 
@@ -1679,7 +1767,7 @@ static XDG_TOPLEVEL_IMPL: ffi::xdg_toplevel_interface_impl = ffi::xdg_toplevel_i
     unset_maximized: toplevel_unset_maximized,
     set_fullscreen: toplevel_set_fullscreen,
     unset_fullscreen: toplevel_unset_fullscreen,
-    set_minimized: xdg_noop_none,
+    set_minimized: toplevel_set_minimized,
 };
 
 unsafe extern "C" fn xdg_toplevel_destroy(
@@ -1868,6 +1956,46 @@ unsafe extern "C" fn toplevel_unset_fullscreen(
     }
     (*rec).window.state.fullscreen = false;
     reconfigure_with_state(rec);
+}
+
+/// `xdg_toplevel.set_minimized`: the client asks the compositor to hide it.
+/// Unlike maximize/fullscreen this is not a configure state — the compositor
+/// stops rendering and hit-testing the surface but keeps it mapped so the
+/// client retains its buffers and can be restored. If the minimized toplevel
+/// held keyboard focus, drop it (post `wl_keyboard.leave`, clear activated)
+/// so typing no longer routes to an invisible window. Restore happens when a
+/// later focus gain clears the flag (see `set_activated_for_surface`).
+unsafe extern "C" fn toplevel_set_minimized(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+) {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec;
+    if rec.is_null() {
+        return;
+    }
+    (*rec).window.minimized = true;
+    let state = (*rec).state;
+    if state.is_null() || (*state).keyboard_focus != (*rec).resource {
+        return;
+    }
+    // The minimized toplevel held keyboard focus: mirror
+    // `change_keyboard_focus(null)` + `set_activated_for_surface(old, false)`
+    // inline, since the handler is a free function without a `Server` ref.
+    let serial = ffi::wl_display_next_serial((*state).display);
+    let old_client = ffi::wl_resource_get_client((*rec).resource);
+    for k in (*state)
+        .keyboard_resources
+        .iter()
+        .copied()
+        .filter(|p| !p.is_null())
+        .filter(|p| ffi::wl_resource_get_client(*p) == old_client)
+    {
+        ffi::wl_resource_post_event(k, ffi::WL_KEYBOARD_LEAVE, serial, (*rec).resource);
+    }
+    (*state).keyboard_focus = std::ptr::null_mut();
+    (*rec).window.state.activated = false;
+    reconfigure_with_state(rec);
+    ffi::wl_display_flush_clients((*state).display);
 }
 
 // ----- interactive move / resize -----------------------------------------
@@ -2836,6 +2964,7 @@ unsafe extern "C" fn viewport_set_destination(
     (*rec).viewport_dst = Some(ass_core::Size { w, h });
 }
 
+#[allow(dead_code)]
 unsafe extern "C" fn viewport_noop_source(
     _c: *mut ffi::wl_client,
     _r: *mut ffi::wl_resource,
@@ -2851,6 +2980,7 @@ unsafe extern "C" fn viewport_noop_source(
 unsafe extern "C" fn res_destroy(_client: *mut ffi::wl_client, resource: *mut ffi::wl_resource) {
     ffi::wl_resource_destroy(resource);
 }
+#[allow(dead_code)]
 unsafe extern "C" fn xdg_noop_none(_c: *mut ffi::wl_client, _r: *mut ffi::wl_resource) {}
 unsafe extern "C" fn xdg_noop_serial(
     _c: *mut ffi::wl_client,
@@ -2858,18 +2988,21 @@ unsafe extern "C" fn xdg_noop_serial(
     _serial: u32,
 ) {
 }
+#[allow(dead_code)]
 unsafe extern "C" fn xdg_noop_obj(
     _c: *mut ffi::wl_client,
     _r: *mut ffi::wl_resource,
     _obj: *mut ffi::wl_resource,
 ) {
 }
+#[allow(dead_code)]
 unsafe extern "C" fn xdg_noop_str(
     _c: *mut ffi::wl_client,
     _r: *mut ffi::wl_resource,
     _s: *const std::os::raw::c_char,
 ) {
 }
+#[allow(dead_code)]
 unsafe extern "C" fn xdg_noop_ii(
     _c: *mut ffi::wl_client,
     _r: *mut ffi::wl_resource,
@@ -2886,6 +3019,7 @@ unsafe extern "C" fn xdg_noop_rect(
     _h: i32,
 ) {
 }
+#[allow(dead_code)]
 unsafe extern "C" fn xdg_noop_seat_serial(
     _c: *mut ffi::wl_client,
     _r: *mut ffi::wl_resource,
@@ -2893,6 +3027,7 @@ unsafe extern "C" fn xdg_noop_seat_serial(
     _serial: u32,
 ) {
 }
+#[allow(dead_code)]
 unsafe extern "C" fn xdg_noop_resize(
     _c: *mut ffi::wl_client,
     _r: *mut ffi::wl_resource,

@@ -12,7 +12,7 @@ background and how the decisions fit together, see
 | [0002](0002-hand-rolled-wayland-server.md) | Hand-rolled Wayland server on raw libwayland | Accepted |
 | [0003](0003-nested-first-bring-up.md) | Nested-first bring-up, DRM/KMS later | Accepted |
 | [0004](0004-client-buffers-via-flux-dmabuf-import.md) | Client buffers via flux dmabuf import | Accepted |
-| [0005](0005-flux-core-binding-crate-in-flux-repo.md) | flux core binding crate in the flux repo | Accepted |
+| [0005](0005-flux-core-binding-crate-in-flux-repo.md) | flux core binding crate in the flux repo | Superseded by [0023](0023-split-flux-lens-stack.md) |
 | [0006](0006-ffi-soundness-discipline.md) | FFI soundness discipline for hand-rolled protocol handlers | Accepted |
 | [0007](0007-logging-and-backend-input-contract.md) | Logging facade and the `Backend` input contract | Accepted |
 | [0009](0009-input-pipeline-and-pointer-focus.md) | Input pipeline and pointer focus model | Accepted |
@@ -29,3 +29,4 @@ background and how the decisions fit together, see
 | [0020](0020-buffer-scale-applied-at-composite.md) | Apply buffer_scale at composite time | Accepted |
 | [0021](0021-chrome-component-trait.md) | Chrome component trait (pure core shell) | Accepted |
 | [0022](0022-application-launcher.md) | Application launcher via freedesktop.org desktop entries | Accepted |
+| [0023](0023-split-flux-lens-stack.md) | Depend on the split flux / lens stack via out-of-tree Rust bindings | Accepted |

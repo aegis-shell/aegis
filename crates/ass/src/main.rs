@@ -54,19 +54,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let surface = unsafe { flux::Surface::from_vk(&device, vk_surface, w, h, true) }?;
     let canvas = flux::Canvas::new(&surface)?;
 
+    // Enumerate launchable `.desktop` entries once at startup; both the
+    // launcher chrome and the dock icon cache consume the snapshot.
+    let launcher_apps = ass_apps::enumerate();
+    log::info!(
+        "launcher: {} launchable applications discovered",
+        launcher_apps.len()
+    );
+    // Decode each app entry's raster icon into a flux texture once, keyed by
+    // every app_id the entry might run as (StartupWMClass, desktop-id stem,
+    // icon name) so the dock can look a running toplevel up by its `app_id`.
+    // SVG icons are skipped (no rasterizer yet) and fall back to the dock
+    // glyph. The cache owns the GPU textures and must outlive the shell, so it
+    // is declared before it.
+    let icon_cache = build_icon_cache(&device, &launcher_apps);
+
     // Compositor chrome, bound to the same device. The core host ships with
     // no chrome of its own; compose it from the components the binary wants.
     let mut shell = unsafe { ass_shell::Shell::new(device.as_raw() as *mut _) }?;
     shell.add(Box::new(ass_shell::WindowList::new()));
     shell.add(Box::new(ass_shell::Decorations::new()));
-    shell.add(Box::new(ass_shell::Dock::new()));
-    // Application launcher: enumerate every launchable `.desktop` entry on the
-    // host once at startup and hand the snapshot to the component. The shell
-    // stays free of `ass-apps`; only the binary wires discovery to chrome
-    // (ADR-0022). Click a row to spawn the app detached via `ass-launch`.
-    let launcher_apps = ass_apps::enumerate();
-    log::info!("launcher: {} launchable applications discovered", launcher_apps.len());
-    shell.add(Box::new(ass_shell::Launcher::new(launcher_apps)));
+    // Only the binary wires discovery to chrome (ADR-0022); the shell stays
+    // free of `ass-apps`. Click a launcher row to spawn detached via
+    // `ass-launch`; click a dock tile to focus / restore its window.
+    shell.add(Box::new(ass_shell::Launcher::new(launcher_apps.clone())));
+    shell.add(Box::new(ass_shell::Dock::with_icons(
+        icon_cache.map.clone(),
+    )));
     let mut input = ass_shell::Input::default();
     // Seed the chrome's logical extent so widgets can lay out before the first
     // resize arrives. Updated each frame from the host size.
@@ -117,7 +131,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // grab/release the keyboard on edges (launcher open/close).
     let mut prev_captured = false;
 
-    while host.dispatch() && !shell.should_quit() {
+    // Global key bindings: built-in defaults plus optional `$ASS_KEYBINDS`
+    // overrides (format: `super+space=launcher;super+q=close;...`). `forward_input`
+    // consumes a matched key before delivering it to the focused client.
+    let keymap = match std::env::var("ASS_KEYBINDS") {
+        Ok(s) if !s.trim().is_empty() => {
+            let (overrides, errs) = ass_core::keybind::Keymap::parse_overrides(&s);
+            for e in &errs {
+                log::warn!("keybind: {e}");
+            }
+            if overrides.is_empty() {
+                ass_core::keybind::Keymap::defaults()
+            } else {
+                log::info!(
+                    "keybind: {} override(s) from $ASS_KEYBINDS",
+                    overrides.len()
+                );
+                ass_core::keybind::Keymap::defaults().with_overrides(overrides)
+            }
+        }
+        _ => ass_core::keybind::Keymap::defaults(),
+    };
+    log::info!(
+        "keybinds: {} active (set $ASS_KEYBINDS to override)",
+        keymap.len()
+    );
+    let mut quit_requested = false;
+
+    while host.dispatch() && !shell.should_quit() && !quit_requested {
         // Process client protocol traffic.
         server.dispatch();
 
@@ -140,12 +181,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     PointerButton { button, state } => {
                         // Map Linux BTN_* codes (0x110=left, 0x111=right,
-                        // 0x112=middle) to flux-ui's MouseButton. Other buttons
+                        // 0x112=middle) to lens's MouseButton. Other buttons
                         // are dropped; the chrome only consumes these three.
                         let mapped = match button {
-                            0x110 => Some(flux_ui::MouseButton::Left),
-                            0x111 => Some(flux_ui::MouseButton::Right),
-                            0x112 => Some(flux_ui::MouseButton::Middle),
+                            0x110 => Some(lens::MouseButton::Left),
+                            0x111 => Some(lens::MouseButton::Right),
+                            0x112 => Some(lens::MouseButton::Middle),
                             _ => None,
                         };
                         if let Some(b) = mapped {
@@ -192,15 +233,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // When the launcher captures the keyboard, withhold key events
             // from clients — they belong to the search box, not the focused
             // surface. Pointer events route normally in both cases.
-            if keyboard_captured {
+            let actions = if keyboard_captured {
                 let forwarded: Vec<ass_core::input::InputEvent> = events
                     .iter()
                     .copied()
                     .filter(|e| !matches!(e, ass_core::input::InputEvent::Key { .. }))
                     .collect();
-                server.forward_input(&forwarded);
+                server.forward_input(&forwarded, &keymap)
             } else {
-                server.forward_input(&events);
+                server.forward_input(&events, &keymap)
+            };
+            // Dispatch matched global bindings. (Empty while the launcher
+            // captures the keyboard — those keys went to the search box.)
+            for action in actions {
+                use ass_core::keybind::Action;
+                match action {
+                    Action::ToggleLauncher => shell.toggle(),
+                    Action::CloseFocused => {
+                        if let Some(id) = server.focused_toplevel_id() {
+                            server.close_toplevel(id);
+                        }
+                    }
+                    Action::CycleFocus => server.cycle_focus(true),
+                    Action::CycleFocusBack => server.cycle_focus(false),
+                    Action::Quit => quit_requested = true,
+                }
             }
         }
 
@@ -313,4 +370,78 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("ass: window closed after {frame_count} frames");
     device.wait_idle();
     Ok(())
+}
+
+/// Decoded application-icon textures for the dock. `_images` owns the GPU
+/// textures; `map` keys raw pointers (borrowed from `_images`) by every
+/// `app_id` the entry might run as. The cache must outlive the shell, which
+/// holds clones of the pointers in its dock component.
+struct IconCache {
+    _images: Vec<flux::Image>,
+    map: std::collections::HashMap<String, *mut std::ffi::c_void>,
+}
+
+/// Raster extensions the `image` crate decodes for us. SVG needs a separate
+/// rasterizer (resvg / librsvg) and is a follow-up; entries whose only icon is
+/// SVG fall back to the dock glyph.
+const RASTER_ICON_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif", "tiff", "ico"];
+
+/// Decode each app entry's icon into a flux texture, keyed by every id the
+/// window might report as `app_id` (StartupWMClass, the desktop-id stem, and
+/// the icon name, all lowercased). The first key to claim a texture wins per
+/// entry, so a texture is never double-counted.
+fn build_icon_cache(device: &flux::Device, apps: &[ass_core::app::Entry]) -> IconCache {
+    use std::ffi::c_void;
+    let mut images: Vec<flux::Image> = Vec::new();
+    let mut map: std::collections::HashMap<String, *mut c_void> = std::collections::HashMap::new();
+
+    for entry in apps {
+        let Some(path) = &entry.icon_path else {
+            continue;
+        };
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        if !RASTER_ICON_EXTS.contains(&ext.as_str()) {
+            continue; // SVG / unknown — glyph fallback.
+        }
+        let Ok(decoded) = image::open(path) else {
+            continue;
+        };
+        let rgba = decoded.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        let mut bgra = rgba.into_raw();
+        for chunk in bgra.chunks_exact_mut(4) {
+            chunk.swap(0, 2); // RGBA8 -> BGRA8 (flux samples BGRA8_UNORM).
+        }
+        match flux::Image::from_bytes(device, w, h, flux::Format::FLUX_FORMAT_BGRA8_UNORM, &bgra) {
+            Ok(img) => {
+                let ptr = img.as_raw() as *mut c_void;
+                if let Some(wm) = &entry.startup_wm_class {
+                    if !wm.is_empty() {
+                        map.entry(wm.to_ascii_lowercase()).or_insert(ptr);
+                    }
+                }
+                let stem = entry.id.strip_suffix(".desktop").unwrap_or(&entry.id);
+                if !stem.is_empty() {
+                    map.entry(stem.to_ascii_lowercase()).or_insert(ptr);
+                }
+                if let Some(ic) = &entry.icon {
+                    if !ic.is_empty() {
+                        map.entry(ic.to_ascii_lowercase()).or_insert(ptr);
+                    }
+                }
+                images.push(img);
+            }
+            Err(e) => log::warn!("icon: upload failed for {}: {e:?}", path.display()),
+        }
+    }
+
+    log::info!("dock: {} app icon(s) decoded", images.len());
+    IconCache {
+        _images: images,
+        map,
+    }
 }

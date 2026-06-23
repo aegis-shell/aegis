@@ -9,7 +9,7 @@
 //! theme chain (with `hicolor` as the mandatory final fallback), and strip
 //! `Exec` field codes.
 //!
-//! The crate has no flux, flux-ui, or Wayland dependency. Per the project's
+//! The crate has no flux, lens, or Wayland dependency. Per the project's
 //! placement rules (see `docs/dev/project-layout.md`), freedesktop/OS
 //! integration that does not need the compositor types lives in its own crate
 //! rather than in `ass-shell`. The pure [`Entry`] model lives in

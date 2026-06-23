@@ -97,7 +97,9 @@ pub enum LaunchError {
 /// `setsid --fork` so the child escapes this process's session. Stdio is
 /// redirected to `/dev/null` unless [`LaunchOpts::foreground`] is set.
 pub fn launch(source: &dyn LaunchSource, opts: &LaunchOpts) -> Result<LaunchReport, LaunchError> {
-    let exec = source.exec().ok_or_else(|| LaunchError::NoExec(source.id().into()))?;
+    let exec = source
+        .exec()
+        .ok_or_else(|| LaunchError::NoExec(source.id().into()))?;
 
     // Expand field codes and POSIX-quote every token so the result is safe to
     // embed in `sh -c`.

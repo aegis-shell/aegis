@@ -1,17 +1,17 @@
 //! The application launcher chrome: a centered overlay backed by the pure
 //! [`ass_core::launcher::Launcher`] state machine.
 //!
-//! The component is a thin flux-ui adapter: it forwards mouse clicks and
+//! The component is a thin lens adapter: it forwards mouse clicks and
 //! resolved key events to the brain, and renders whatever the brain's query,
 //! filter, and selection produce. All search/selection logic lives in
-//! `ass-core` (unit-tested there, no flux-ui dependency). See ADR-0022.
+//! `ass-core` (unit-tested there, no lens dependency). See ADR-0022.
 //!
 //! Interaction: click the top-center "Apps" toggle to open, or open via a
 //! future hotkey. While open the launcher captures the keyboard: type to
 //! filter, Up/Down to move the selection, Enter to launch, Escape to close,
 //! Backspace to delete. Mouse clicks on rows still work alongside.
 
-use flux_ui::{Align, Color, Frame, Input, OverlayOpts, Rect};
+use lens::{Align, Color, Frame, Input, OverlayOpts, Rect};
 
 use crate::{Chrome, ChromeEvents};
 use ass_core::app::Entry;
@@ -35,6 +35,17 @@ impl Launcher {
     pub fn new(apps: Vec<Entry>) -> Launcher {
         Launcher {
             brain: Brain::new(apps),
+        }
+    }
+
+    /// Route a launch outcome into the chrome intent sink: spawn a new
+    /// instance, or focus an already-running one through the existing
+    /// `clicked` → `Server::focus_surface_by_id` path.
+    fn emit(outcome: Option<Launch>, out: &mut ChromeEvents) {
+        match outcome {
+            Some(Launch::Spawn(entry)) => out.spawn = Some(*entry),
+            Some(Launch::Focus(surface_id)) => out.clicked = Some(surface_id),
+            None => {}
         }
     }
 }
@@ -106,7 +117,14 @@ impl Chrome for Launcher {
             f.title("Applications");
             f.label_sized(&format!("Search: {query}_"), 14.0);
             f.label_sized(
-                &format!("{total} apps · {shown} match{}", if more > 0 { format!(", {more} more") } else { String::new() }),
+                &format!(
+                    "{total} apps · {shown} match{}",
+                    if more > 0 {
+                        format!(", {more} more")
+                    } else {
+                        String::new()
+                    }
+                ),
                 11.0,
             );
             f.separator();
@@ -133,14 +151,6 @@ impl Chrome for Launcher {
     /// Route a launch outcome into the chrome intent sink: spawn a new
     /// instance, or focus an already-running one through the existing
     /// `clicked` → `Server::focus_surface_by_id` path.
-    fn emit(outcome: Option<Launch>, out: &mut ChromeEvents) {
-        match outcome {
-            Some(Launch::Spawn(entry)) => out.spawn = Some(entry),
-            Some(Launch::Focus(surface_id)) => out.clicked = Some(surface_id),
-            None => {}
-        }
-    }
-
     fn captures_keyboard(&self) -> bool {
         self.brain.is_open()
     }

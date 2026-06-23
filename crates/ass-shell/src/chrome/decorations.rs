@@ -1,6 +1,6 @@
-//! Per-window server-side decorations (title bars) drawn as `flux-ui` overlays.
+//! Per-window server-side decorations (title bars) drawn as `lens` overlays.
 
-use flux_ui::{Color, Frame, Input, OverlayOpts, Rect};
+use lens::{Color, Frame, Input, OverlayOpts, Rect};
 
 use crate::{Chrome, ChromeEvents};
 use ass_core::window::Window;

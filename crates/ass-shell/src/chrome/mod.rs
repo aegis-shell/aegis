@@ -1,7 +1,7 @@
 //! Chrome components built on the [`crate::Chrome`] seam.
 //!
 //! Each module is one piece of compositor chrome: it reads the shared window
-//! snapshot and input, draws itself through a `flux-ui` frame, and pushes user
+//! snapshot and input, draws itself through a `lens` frame, and pushes user
 //! intents into [`crate::ChromeEvents`]. The core [`crate::Shell`] host is
 //! unaware of these; the binary registers whichever set it wants.
 //!
@@ -9,7 +9,7 @@
 //!
 //! - [`WindowList`] — the top-left side panel: Quit button plus a per-window
 //!   row with click-to-focus and close.
-//! - [`Decorations`] — per-window server-side title bars drawn as `flux-ui`
+//! - [`Decorations`] — per-window server-side title bars drawn as `lens`
 //!   overlays, with click-to-move and a close gadget.
 //! - [`Dock`] — a macOS-style bottom-center dock with one icon tile per
 //!   mapped toplevel; click to focus, activated window highlighted.

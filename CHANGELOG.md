@@ -7,6 +7,122 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### Real application icons in the dock
+- The dock now renders decoded application icon textures instead of a fixed
+  glyph when an icon is available for a window's `app_id`. The binary
+  decodes each `.desktop` entry's raster icon once at startup into a flux
+  texture, keyed by every `app_id` the entry might run as (`StartupWMClass`,
+  the desktop-id stem, and the icon name, all lowercased), so the dock can
+  look a running toplevel up by its `app_id`. Windows with no matching icon
+  fall back to the glyph. SVG icons are not yet rasterized (no rasterizer
+  dependency); entries whose only icon is SVG fall back to the glyph.
+  Launcher-row icons remain a follow-up.
+- This required a new raster-image capability in lens, which had none (its
+  only icon API was a fixed glyph set). Added `lens_image` (draw a host-owned
+  `flux_image` as a widget) and `lens_image_button` / `lens_image_button_active`
+  (texture-backed variants of the icon buttons with identical hover / active /
+  click behaviour) to lens, plus their Rust bindings. The pre-existing
+  `LENS_DRAW_IMAGE` draw command (a reserved stub) is now implemented in the
+  replay pass via `flux_canvas_draw_image`. `flux::Image` gained an `as_raw`
+  accessor (all other flux types already had one).
+
+### Build robustness
+- `ass-protocols` build script now probes `pkg-config --cflags-only-I
+  wayland-server` for the include path instead of assuming `wayland-util.h`
+  is in the compiler's default search path. Required on sysroot-based
+  distributions (e.g. theseus/wright) where libwayland headers live in a
+  build sysroot rather than `/usr/include`.
+- `scripts/env.sh` now also configures the theseus/wright sysroot when
+  present: `PKG_CONFIG_PATH` (so `wayland-server.pc` is found), `CPATH` (so
+  the C compiler finds `wayland-util.h`, which its `.pc` advertises as
+  `/usr/include` and pkg-config therefore drops from cflags), `PATH`
+  (`wayland-scanner`), and `LD_LIBRARY_PATH` (`libwayland-server.so.0` at
+  runtime). Harmless on conventional distros where wayland is in `/usr`.
+
+### Soundness
+- Fixed a use-after-free in `Server::drop`: surface boxes were reclaimed
+  *before* `wl_display_destroy`, leaving each `wl_resource`'s `user_data`
+  dangling for the destroy-notify fired during display teardown to
+  dereference. The display is now destroyed first (its notifys free the boxes
+  and null the slots); the reclaim loop then handles only orphaned slots.
+  Manifested as a flaky shutdown segfault once any client had connected.
+
+### Configurable key bindings
+- Added global key bindings with a built-in default set and an optional
+  `$ASS_KEYBINDS` override. The default set: `Super+Tab` cycles focus forward,
+  `Super+Shift+Tab` backward, `Super+Return` toggles the launcher, `Super+Q`
+  closes the focused window, and `Super+Shift+Return` quits. A bare Super tap
+  still toggles the launcher alongside these.
+- `$ASS_KEYBINDS` is a `;`-separated list of `mods+key=action` entries, e.g.
+  `super+space=launcher;super+q=close;ctrl+alt+del=quit`. Recognised modifier
+  names: `shift`, `ctrl`/`control`, `alt`/`mod1`, `super`/`meta`/`win`/`mod4`.
+  Key names cover letters, digits, and common controls (`return`, `escape`,
+  `tab`, `space`, `up`/`down`/`left`/`right`, `f1`–`f12`, …). Actions:
+  `launcher`, `close`, `cycle`/`next`, `prev`, `quit`. User overrides take
+  precedence over the defaults; the defaults remain as fallback. Malformed
+  entries are logged and skipped.
+- Matching is exact on the depressed modifier mask, so `Super+Q` does not also
+  fire on `Ctrl+Super+Q`. A matched key is **consumed before client delivery**:
+  the focused client never sees the key that triggered a global binding (a
+  text editor does not insert `q` when you press `Super+Q` to close).
+- New pure module `ass_core::keybind` (`Mods`, `Action`, `Keybind`, `Keymap`)
+  with the parser and matcher, unit-tested in isolation (no flux/lens/Wayland
+  dependency). `ass_core::input::KeyChar` gains a `mods` field carrying the
+  xkbcommon depressed-modifier mask at press time.
+- `Server::forward_input` now takes the keymap and returns the matched
+  actions; `Server::keyboard_key` always advances xkbcommon state (so bindings
+  and modifier tracking work on an empty desktop with no focused client) and
+  suppresses posting for consumed keys. Added `Server::focused_toplevel_id`
+  and `Server::cycle_focus(forward)` to back the `close` and `cycle` actions.
+
+### Window minimization
+- `xdg_toplevel.set_minimized` is now a real handler (was a no-op). The
+  compositor hides the surface from rendering (`toplevel_frames` /
+  `toplevel_dmabuf_frames` skip it) and from pointer hit-testing, but keeps
+  it mapped so the client retains its buffers. If the minimized toplevel held
+  keyboard focus it is dropped (`wl_keyboard.leave` posted, activated bit
+  cleared) so typing no longer routes to an invisible window.
+- Restore is focus-driven: any later focus gain on a minimized toplevel
+  (`set_activated_for_surface` with `activated = true`, reached from the
+  window list or dock click via `focus_surface_by_id`) clears the minimized
+  flag, reconfigures, and brings the window back. No new chrome intent was
+  needed — the existing `clicked` → `focus_surface_by_id` path restores.
+- `ass_core::window::Window` gains a compositor-internal `minimized: bool`
+  (not a `WindowState` bit, since `xdg-shell` defines no minimized configure
+  state). The window-list panel marks minimized rows with `◌` and still
+  lists them so the user can restore them; clicking a minimized row restores
+  and focuses it.
+
+### Build and dependencies
+- Migrated the shell from the removed in-tree `flux-ui` binding to the split
+  **flux / lens stack**. The old sibling `flux` monorepo was decomposed for
+  v0.1 into focused libraries under `../optics`: `flux` (`libflux`),
+  `lens` (`liblens`, the successor to `flux-ui`), and out-of-tree Rust
+  bindings `flux-rs` (`flux` / `flux-sys`) and `lens-rs` (`lens` /
+  `lens-sys`). The workspace now depends on `flux` / `flux-sys` from
+  `flux-rs` and `lens` / `lens-sys` from `lens-rs`; every `flux_ui` reference
+  in the shell became `lens`. The migration was a near-drop-in rename —
+  lens's safe surface matches what `ass-shell` used, and `lens-sys`'s
+  bindgen allowlist covers the `flux_*` types the device-binding seam casts
+  across. See [ADR-0023](docs/adr/0023-split-flux-lens-stack.md), which
+  supersedes ADR-0005.
+- The terminal binary's rpath relay now keys on `DEP_FLUX_RPATHS` and
+  `DEP_LENS_RPATHS` (the `-sys` `links` metadata) so it resolves
+  `libflux.so` and `liblens.so` from the meson build trees at runtime.
+- Added `scripts/env.sh`: source it once per shell to export the dev-mode
+  variables (`FLUX_BUILD_DIR`, `FLUX_SOURCE_DIR`, `LENS_BUILD_DIR`,
+  `LENS_SOURCE_DIR`) the `-sys` build scripts use to locate freshly-built
+  flux and lens without `meson install`. Set `ASS_DEV_ENV_USE_INSTALLED=1`
+  to link installed libraries instead.
+- `ass-shell` now compiles end-to-end for the first time. A latent bug
+  surfaced: the launcher's `emit` helper had been placed inside the
+  `impl Chrome for Launcher` block (not a trait method). It is moved to the
+  inherent `impl Launcher` block.
+- Updated `README.md`, `docs/dev/setup.md`, `docs/dev/project-layout.md`,
+  and `docs/explanation/architecture.md` for the new dependency paths and
+  the `flux-ui` → `lens` rename. Older ADRs retain their original `flux-ui`
+  wording as historical record; ADR-0023 notes the equivalence.
+
 ### Launcher
 - Added an application launcher: enumerate every launchable `.desktop` entry
   on the host (freedesktop.org Desktop Entry Specification) and expose it in

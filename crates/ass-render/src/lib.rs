@@ -326,7 +326,7 @@ impl Renderer {
                     };
                     match img {
                         Ok(img) => {
-                            if self.cache.get(&f.id).is_none() {
+                            if !self.cache.contains_key(&f.id) {
                                 log::info!(
                                     "[render] dma-buf imported: {}x{} fourcc={:#x} mod={:#x}",
                                     f.width,
@@ -417,6 +417,19 @@ impl Renderer {
     ) {
         self.draw_dmabuf_toplevels(device, canvas, frames, (0.0, 0.0));
     }
+}
+
+/// Create a flux device suitable for compositing.
+///
+/// `headless` skips swapchain/presentation requirements — used for smoke tests
+/// and any logic that never presents. A windowed backend passes `false` plus
+/// the surface extensions it needs.
+pub fn create_device(
+    headless: bool,
+    instance_extensions: &[&std::ffi::CStr],
+    device_extensions: &[&std::ffi::CStr],
+) -> Result<flux::Device, flux::Error> {
+    flux::Device::new(headless, instance_extensions, device_extensions)
 }
 
 #[cfg(test)]
@@ -596,17 +609,4 @@ mod tests {
         let (w, h) = destination_size((100, 50), None, None, 0);
         assert_eq!((w, h), (100.0, 50.0));
     }
-}
-
-/// Create a flux device suitable for compositing.
-///
-/// `headless` skips swapchain/presentation requirements — used for smoke tests
-/// and any logic that never presents. A windowed backend passes `false` plus
-/// the surface extensions it needs.
-pub fn create_device(
-    headless: bool,
-    instance_extensions: &[&std::ffi::CStr],
-    device_extensions: &[&std::ffi::CStr],
-) -> Result<flux::Device, flux::Error> {
-    flux::Device::new(headless, instance_extensions, device_extensions)
 }

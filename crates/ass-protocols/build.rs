@@ -27,6 +27,15 @@ fn main() {
 
     let mut build = cc::Build::new();
     build.warnings(false);
+    // The generated protocol sources `#include "wayland-util.h"`. On
+    // sysroot-based distributions (e.g. theseus/wright) the wayland headers
+    // are not in the compiler's default include path, so ask pkg-config for
+    // libwayland-server's include dir instead of assuming /usr/include.
+    if let Some(includes) = pkg_include_dirs("wayland-server") {
+        for dir in includes {
+            build.include(dir);
+        }
+    }
     for (subdir, base) in protocols {
         let xml = PathBuf::from(&pkgdatadir)
             .join(subdir)
@@ -49,4 +58,24 @@ fn main() {
     build.compile("ass_protocols");
 
     println!("cargo:rerun-if-changed=build.rs");
+}
+
+/// Parse `-I<dir>` flags out of `pkg-config --cflags-only-I <pkg>`. Returns
+/// `None` when pkg-config cannot find the package or reports no include dirs
+/// (the caller then falls back to the compiler's default search path).
+fn pkg_include_dirs(pkg: &str) -> Option<Vec<String>> {
+    let out = Command::new("pkg-config")
+        .args(["--cflags-only-I", pkg])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let dirs: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .filter_map(|f| f.strip_prefix("-I").map(|d| d.to_string()))
+        .collect();
+    if dirs.is_empty() {
+        None
+    } else {
+        Some(dirs)
+    }
 }

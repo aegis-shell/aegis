@@ -1,6 +1,6 @@
-//! Re-emit the rpaths published by the flux / flux-ui `-sys` crates (via their
+//! Re-emit the rpaths published by the flux / lens `-sys` crates (via their
 //! `links` metadata) so the final `ass` binary resolves libflux.so and
-//! libflux-ui.so from the sibling meson build trees at runtime without
+//! liblens.so from the sibling meson build trees at runtime without
 //! `LD_LIBRARY_PATH`. `rustc-link-arg` does not propagate across crates, so the
 //! terminal binary must re-emit them itself.
 
@@ -17,11 +17,11 @@ fn main() {
     }
 
     let mut emitted_dtags = false;
-    for var in ["DEP_FLUX_RPATHS", "DEP_FLUX_UI_RPATHS"] {
+    for var in ["DEP_FLUX_RPATHS", "DEP_LENS_RPATHS"] {
         if let Ok(rpaths) = std::env::var(var) {
             if !emitted_dtags {
                 // DT_RPATH (not DT_RUNPATH) so the search also covers transitive
-                // NEEDED libs (libflux is libflux-ui's NEEDED, not ours).
+                // NEEDED libs (libflux is liblens's NEEDED, not ours).
                 println!("cargo:rustc-link-arg=-Wl,--disable-new-dtags");
                 emitted_dtags = true;
             }

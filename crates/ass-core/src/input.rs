@@ -2,9 +2,14 @@
 //!
 //! Backends (nested-host, libinput, DRM/KMS) emit these; the main loop drains
 //! and routes them — to the focused client via `wl_seat`, to the chrome via
-//! `flux_ui::Input`, or both. Keeping the types in `ass-core` (rather than in
+//! `lens::Input`, or both. Keeping the types in `ass-core` (rather than in
 //! `ass-backend`) means the server and shell never need to depend on a backend
 //! crate to consume input.
+
+// The XKB keysym constants below mirror the C macros in X11/keysymdef.h
+// verbatim (e.g. `XKB_KEY_Escape`); their non-conforming casing is intentional
+// and silenced here so they stay greppable against the C source.
+#![allow(non_upper_case_globals)]
 
 /// A discrete press or release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -56,7 +61,10 @@ pub enum InputEvent {
 // XKB keysym values for the few control keys the compositor chrome cares
 // about. These are stable, public constants from X11/keysymdef.h; defining
 // them here keeps `ass-core` free of an `xkbcommon` dependency while letting
-// the launcher interpret keysym output it receives from the server.
+// the launcher interpret keysym output it receives from the server. The names
+// intentionally match the C macros verbatim (greppable against keysymdef.h),
+// so they do not follow Rust's UPPER_CASE globals convention; the file-level
+// allow below silences the lint for them and their use in `match` patterns.
 /// XKB `Escape`.
 pub const XKB_KEY_Escape: u32 = 0xff1b;
 /// XKB `Return` (Enter).
@@ -72,10 +80,44 @@ pub const XKB_KEY_Down: u32 = 0xff54;
 /// XKB `NoSymbol` — no keysym resolved for the key.
 pub const XKB_KEY_NoSymbol: u32 = 0;
 
+/// XKB modifier state, as a bitmask over the standard xkbcommon mod indices
+/// for the default `evdev/pc104/us` keymap the server compiles. The server
+/// fills this from `KeyOutcome.depressed`; the keybind matcher compares
+/// against these bits. Indices: Shift=0, Control=2, Mod1(Alt)=3, Mod4(Super)=6.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Mods(pub u32);
+
+impl Mods {
+    pub const NONE: Mods = Mods(0);
+    pub const SHIFT: Mods = Mods(1 << 0);
+    pub const CTRL: Mods = Mods(1 << 2);
+    pub const ALT: Mods = Mods(1 << 3);
+    pub const SUPER: Mods = Mods(1 << 6);
+
+    /// Whether all bits in `required` are set.
+    pub fn has(self, required: Mods) -> bool {
+        (self.0 & required.0) == required.0
+    }
+}
+
+impl std::ops::BitOr for Mods {
+    type Output = Mods;
+    fn bitor(self, rhs: Mods) -> Mods {
+        Mods(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitOrAssign for Mods {
+    fn bitor_assign(&mut self, rhs: Mods) {
+        self.0 |= rhs.0;
+    }
+}
+
 /// The character and keysym a key event produced, as extracted by the
 /// server's xkbcommon state. Forwarded to chrome for text-style input (the
 /// launcher's search box). `ch` is `None` for control keys (Esc, arrows,
-/// plain modifiers) that produce no printable character.
+/// plain modifiers) that produce no printable character. `mods` is the
+/// xkbcommon depressed-modifier mask active when the key was pressed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyChar {
     /// XKB keysym (`XKB_KEY_*`). `XKB_KEY_NoSymbol` when xkbcommon resolved
@@ -84,6 +126,8 @@ pub struct KeyChar {
     /// Printable character the key produced under the current layout and
     /// modifiers, if any.
     pub ch: Option<char>,
+    /// Active modifier mask at press time, for global key-bindings.
+    pub mods: Mods,
 }
 
 /// A chrome-facing classification of a key event. Built from a [`KeyChar`]
@@ -252,9 +296,18 @@ mod tests {
     #[test]
     fn key_action_passes_through_printable_chars() {
         use super::*;
-        assert_eq!(key_action(XKB_KEY_NoSymbol, Some('a')), KeyAction::Char('a'));
-        assert_eq!(key_action(XKB_KEY_NoSymbol, Some(' ')), KeyAction::Char(' '));
-        assert_eq!(key_action(XKB_KEY_NoSymbol, Some('Z')), KeyAction::Char('Z'));
+        assert_eq!(
+            key_action(XKB_KEY_NoSymbol, Some('a')),
+            KeyAction::Char('a')
+        );
+        assert_eq!(
+            key_action(XKB_KEY_NoSymbol, Some(' ')),
+            KeyAction::Char(' ')
+        );
+        assert_eq!(
+            key_action(XKB_KEY_NoSymbol, Some('Z')),
+            KeyAction::Char('Z')
+        );
     }
 
     #[test]
@@ -262,8 +315,14 @@ mod tests {
         use super::*;
         // A keysym of 0 with a control char below U+0020 must not become a
         // search character.
-        assert_eq!(key_action(XKB_KEY_NoSymbol, Some('\u{1}')), KeyAction::Ignore);
-        assert_eq!(key_action(XKB_KEY_NoSymbol, Some('\u{7f}')), KeyAction::Ignore);
+        assert_eq!(
+            key_action(XKB_KEY_NoSymbol, Some('\u{1}')),
+            KeyAction::Ignore
+        );
+        assert_eq!(
+            key_action(XKB_KEY_NoSymbol, Some('\u{7f}')),
+            KeyAction::Ignore
+        );
         // Unknown keysym with no char is ignored.
         assert_eq!(key_action(0x1234, None), KeyAction::Ignore);
     }
@@ -278,9 +337,9 @@ mod tests {
     #[test]
     fn tap_detector_ignores_modifier_held_as_modifier() {
         let mut d = super::TapDetector::new(&[super::KEY_LEFTMETA]);
-        d.on_key(super::KEY_LEFTMETA, true);  // super down
-        d.on_key(30, true);                   // 'a' down → super used as mod
-        d.on_key(30, false);                  // 'a' up
+        d.on_key(super::KEY_LEFTMETA, true); // super down
+        d.on_key(30, true); // 'a' down → super used as mod
+        d.on_key(30, false); // 'a' up
         assert!(!d.on_key(super::KEY_LEFTMETA, false)); // super up → no tap
     }
 

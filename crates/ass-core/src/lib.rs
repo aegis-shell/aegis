@@ -7,6 +7,7 @@
 
 pub mod app;
 pub mod input;
+pub mod keybind;
 pub mod launcher;
 pub mod window;
 

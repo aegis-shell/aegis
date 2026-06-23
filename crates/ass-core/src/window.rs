@@ -73,6 +73,12 @@ pub struct Window {
     pub parent: Option<usize>,
     pub size_hints: SizeHints,
     pub state: WindowState,
+    /// Compositor-internal minimized flag. Unlike the `state` bits this is not
+    /// an `xdg_toplevel` configure state (the protocol has no minimized
+    /// state); it records that the client requested `set_minimized` and the
+    /// compositor hides the surface from rendering and input until the user
+    /// restores it by focusing it from the window list or dock.
+    pub minimized: bool,
     /// Logical extent of the toplevel in compositor space. Set on first map
     /// (from the committed buffer size) and updated by interactive move and
     /// resize. The renderer reads `position`; the shell reads `position` and
@@ -213,6 +219,7 @@ mod tests {
         assert!(w.parent.is_none());
         assert!(w.size_hints.is_unconstrained());
         assert!(w.state.is_empty());
+        assert!(!w.minimized);
     }
 
     #[test]

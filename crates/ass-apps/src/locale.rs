@@ -77,8 +77,7 @@ mod tests {
         let l = Locale::parse("zh_CN.UTF-8@pinyin");
         assert_eq!(
             l.variants(),
-            &["zh_CN@pinyin", "zh_CN", "zh@pinyin", "zh"]
-                .map(String::from)
+            &["zh_CN@pinyin", "zh_CN", "zh@pinyin", "zh"].map(String::from)
         );
     }
 

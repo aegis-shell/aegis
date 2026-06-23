@@ -16,7 +16,10 @@ fn enumerates_real_host_applications() {
         return;
     }
     let apps = ass_apps::enumerate();
-    assert!(!apps.is_empty(), "expected system .desktop files on this host");
+    assert!(
+        !apps.is_empty(),
+        "expected system .desktop files on this host"
+    );
 
     // No duplicate ids.
     let id_set: HashSet<&str> = apps.iter().map(|e| e.id.as_str()).collect();
@@ -68,10 +71,7 @@ fn desktop_id_is_case_sensitive() {
     // Alacritty.desktop (capital A) is a common case-sensitive file.
     if apps.iter().any(|e| e.id == "Alacritty.desktop") {
         // Its StartupWMClass is "Alacritty" — the app_id join key.
-        let a = apps
-            .iter()
-            .find(|e| e.id == "Alacritty.desktop")
-            .unwrap();
+        let a = apps.iter().find(|e| e.id == "Alacritty.desktop").unwrap();
         assert_eq!(a.startup_wm_class.as_deref(), Some("Alacritty"));
     }
 }

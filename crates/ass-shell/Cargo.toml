@@ -1,6 +1,6 @@
 [package]
 name = "ass-shell"
-description = "Compositor chrome: panels, decorations, overview, launcher, built on flux-ui"
+description = "Compositor chrome: panels, decorations, overview, launcher, built on lens"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +8,6 @@ rust-version.workspace = true
 
 [dependencies]
 ass-core = { workspace = true }
-flux-ui = { workspace = true }
+lens = { workspace = true }
 log.workspace = true
 thiserror.workspace = true

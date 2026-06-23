@@ -1,6 +1,6 @@
 //! The launcher's pure state machine — query, filtering, and selection.
 //!
-//! No flux, flux-ui, or Wayland dependency. The chrome component in
+//! No flux, lens, or Wayland dependency. The chrome component in
 //! `ass-shell` owns one of these and delegates key handling and rendering to
 //! it; this module is unit-tested in isolation. See ADR-0022.
 
@@ -11,8 +11,10 @@ use crate::input::KeyAction;
 #[derive(Debug, Clone)]
 pub enum Launch {
     /// Spawn this entry (it is not already running, or its `app_id` is
-    /// unknown to the compositor).
-    Spawn(Entry),
+    /// unknown to the compositor). Boxed: `Entry` carries several owned
+    /// strings and would otherwise inflate the enum's stack footprint on the
+    /// small `Focus` variant.
+    Spawn(Box<Entry>),
     /// Focus an already-running instance whose Wayland `app_id` matched this
     /// entry's `StartupWMClass` (or its desktop id). Carries the surface id
     /// to feed `Server::focus_surface_by_id`.
@@ -199,7 +201,7 @@ impl Launcher {
     fn launch_outcome(&self, app_idx: usize) -> Launch {
         match self.surface_if_running(app_idx) {
             Some(sid) => Launch::Focus(sid),
-            None => Launch::Spawn(self.apps[app_idx].clone()),
+            None => Launch::Spawn(Box::new(self.apps[app_idx].clone())),
         }
     }
 
@@ -251,16 +253,14 @@ fn matches_query(e: &Entry, needle: &str) -> bool {
     if e.name.to_lowercase().contains(needle) {
         return true;
     }
-    if e
-        .generic_name
+    if e.generic_name
         .as_deref()
         .map(|s| s.to_lowercase().contains(needle))
         .unwrap_or(false)
     {
         return true;
     }
-    if e
-        .comment
+    if e.comment
         .as_deref()
         .map(|s| s.to_lowercase().contains(needle))
         .unwrap_or(false)
@@ -337,7 +337,12 @@ mod tests {
     #[test]
     fn filter_matches_case_insensitively_across_fields() {
         let apps = vec![
-            entry_with("firefox.desktop", "Firefox", "Web Browser", &["www", "internet"]),
+            entry_with(
+                "firefox.desktop",
+                "Firefox",
+                "Web Browser",
+                &["www", "internet"],
+            ),
             entry_with("code.desktop", "Code", "Editor", &["ide"]),
             entry_with("foot.desktop", "Foot", "Terminal", &["shell"]),
         ];
@@ -442,10 +447,7 @@ mod tests {
 
     #[test]
     fn mouse_launch_by_filtered_index() {
-        let apps = vec![
-            entry("a.desktop", "A"),
-            entry("b.desktop", "B"),
-        ];
+        let apps = vec![entry("a.desktop", "A"), entry("b.desktop", "B")];
         let mut l = Launcher::new(apps);
         l.open();
         match l.launch_filtered(1) {

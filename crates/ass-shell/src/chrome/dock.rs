@@ -1,7 +1,10 @@
 //! macOS-style dock: a rounded translucent panel at the bottom-center of the
 //! output with one icon tile per mapped toplevel.
 
-use flux_ui::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect};
+use std::collections::HashMap;
+use std::ffi::c_void;
+
+use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{Chrome, ChromeEvents};
 use ass_core::window::Window;
@@ -23,17 +26,27 @@ const DOCK_MIN_WIDTH: f32 = 96.0;
 
 /// The macOS-style dock. A rounded translucent panel anchored to a
 /// bottom-center rect, holding one tile per mapped toplevel. A tile click
-/// focuses that window; the activated window's tile is highlighted via
-/// `icon_button_active`. Drawn as a `flux-ui` overlay so it sits at an
-/// absolute position independent of the top-left auto-layout flow.
-///
-/// Stateless today; the tile layout already sizes for future per-app icons,
-/// pinned apps, and magnification state.
-pub struct Dock;
+/// focuses that window; the activated window's tile is highlighted. When an
+/// application icon texture is available for a window's `app_id` it is drawn
+/// via `image_button_active`; otherwise the dock falls back to a glyph.
+pub struct Dock {
+    /// `app_id` (lowercased) → borrowed icon texture pointer. Borrowed from
+    /// the binary's `IconCache`, which owns the `flux::Image`s and outlives
+    /// this component.
+    icons: HashMap<String, *mut c_void>,
+}
 
 impl Dock {
     pub fn new() -> Dock {
-        Dock
+        Dock {
+            icons: HashMap::new(),
+        }
+    }
+
+    /// Construct with a pre-decoded icon map (`app_id` → `flux_image` pointer
+    /// erased to `c_void`). The caller retains ownership of the textures.
+    pub fn with_icons(icons: HashMap<String, *mut c_void>) -> Dock {
+        Dock { icons }
     }
 }
 
@@ -78,7 +91,25 @@ impl Chrome for Dock {
             f.row_ex(&row, |f| {
                 for w in windows.iter() {
                     f.size_next(DOCK_TILE, DOCK_TILE);
-                    if f.icon_button_active(Icon::FileText, w.state.activated) {
+                    // Look up a decoded icon texture by the window's app_id
+                    // (lowercased). Present → draw the raster tile; absent →
+                    // glyph fallback. The pointer crosses from the binary's
+                    // flux binding type to lens's ABI-identical flux_image.
+                    let icon_ptr = w
+                        .app_id
+                        .as_deref()
+                        .and_then(|a| self.icons.get(&a.to_ascii_lowercase()).copied());
+                    let clicked = if let Some(ptr) = icon_ptr {
+                        unsafe {
+                            f.image_button_active(
+                                ptr as *mut lens::sys::flux_image,
+                                w.state.activated,
+                            )
+                        }
+                    } else {
+                        f.icon_button_active(Icon::FileText, w.state.activated)
+                    };
+                    if clicked {
                         out.clicked = Some(w.id);
                     }
                 }

@@ -1,7 +1,7 @@
 # ass Documentation
 
 ass is a Wayland compositor for Linux, written in Rust on
-[flux](../../flux/core) and [flux-ui](../../flux/ui). Start with the
+[flux](../optics/flux) and [lens](../optics/lens). Start with the
 [README](../README.md) for the project pitch and the shortest run path.
 
 ## Sections

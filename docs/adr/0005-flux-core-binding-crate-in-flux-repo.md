@@ -1,6 +1,6 @@
 # ADR-0005: flux core binding crate in the flux repo
 
-- Status: Accepted
+- Status: Superseded by [ADR-0023](0023-split-flux-lens-stack.md)
 - Date: 2026-06-04
 
 ## Context

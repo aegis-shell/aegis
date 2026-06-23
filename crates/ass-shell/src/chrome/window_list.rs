@@ -1,6 +1,6 @@
 //! The top-left side panel: Quit button and the per-window list.
 
-use flux_ui::{Frame, Input};
+use lens::{Frame, Input};
 
 use crate::{Chrome, ChromeEvents};
 use ass_core::window::Window;
@@ -42,8 +42,12 @@ impl Chrome for WindowList {
                 f.label("Windows");
                 for w in windows.iter() {
                     let title = w.title.as_deref().unwrap_or("<untitled>");
+                    // ▶ marks the activated window; ◌ marks a minimized one
+                    // (hidden from the screen, click to restore + focus).
                     let label = if w.state.activated {
                         format!("\u{25b6} {title}")
+                    } else if w.minimized {
+                        format!("\u{25cc} {title}")
                     } else {
                         format!("  {title}")
                     };

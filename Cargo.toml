@@ -10,14 +10,14 @@ rust-version = "1.74"
 repository = "."
 
 [workspace.dependencies]
-# flux/flux-ui Rust bindings, consumed from the in-tree binding crates inside
-# the sibling flux monorepo. flux ships libflux under `core/` and libflux-ui
-# under `ui/`; each subproject has its own meson build tree
-# (../flux/core/build, ../flux/ui/build). Build those first.
-flux = { path = "../flux/core/bindings/rust/flux" }
-flux-sys = { path = "../flux/core/bindings/rust/flux-sys" }
-flux-ui = { path = "../flux/ui/bindings/rust/flux-ui" }
-flux-ui-sys = { path = "../flux/ui/bindings/rust/flux-ui-sys" }
+# flux (rendering engine) + lens (immediate-mode UI engine) Rust bindings.
+# flux-rs wraps libflux; lens-rs wraps liblens (the successor to the old
+# flux-ui). Each C library lives as a sibling under ../optics and is built
+# with meson; point FLUX_BUILD_DIR / LENS_BUILD_DIR at their build trees.
+flux = { path = "../optics/flux-rs/crates/flux" }
+flux-sys = { path = "../optics/flux-rs/crates/flux-sys" }
+lens = { path = "../optics/lens-rs/crates/lens" }
+lens-sys = { path = "../optics/lens-rs/crates/lens-sys" }
 
 # Observability: the facade in every crate, the impl only in the binary.
 # Long-term this seam is also how the AI-adaptation phase subscribes to

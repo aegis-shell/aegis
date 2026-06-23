@@ -45,9 +45,10 @@ jobs:
       - name: Build ass-protocols
         run: cargo build -p ass-protocols
 
-  # Full workspace build + test. Requires the sibling flux monorepo at
-  # ../flux/{core,ui} with built meson trees. Disabled by default until repo
-  # integration strategy (submodule / multi-checkout / mirror) is decided.
+  # Full workspace build + test. Requires the sibling flux / lens stack under
+  # ../optics/{flux,lens} with built meson trees and their out-of-tree Rust
+  # bindings (../optics/flux-rs, ../optics/lens-rs). Disabled by default until
+  # repo integration strategy (multi-checkout / mirror) is decided.
   full-workspace:
     runs-on: ubuntu-latest
     if: false
@@ -61,9 +62,10 @@ jobs:
             libwayland-dev wayland-protocols libvulkan-dev \
             libxkbcommon-dev mesa-vulkan-drivers \
             pkg-config meson ninja-build
-      # TODO: decide how flux is accessed in CI (submodule, mirror, manual
-      # checkout). Once that lands, build ../flux/core/build and
-      # ../flux/ui/build, then run `cargo test --workspace` and
+      # TODO: decide how flux and lens are accessed in CI (multi-checkout,
+      # mirror, manual checkout). Once that lands, build
+      # ../optics/flux/build and ../optics/lens/build, source
+      # scripts/env.sh, then run `cargo test --workspace` and
       # `cargo build --workspace`.
       - name: Full workspace
         run: cargo build --workspace

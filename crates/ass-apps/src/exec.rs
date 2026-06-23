@@ -41,9 +41,7 @@ fn tokenize_quoted(s: &str) -> Vec<String> {
                     // Inside double quotes only `"`, `\`, `` ` ``, `$` keep
                     // their special meaning when escaped; otherwise the
                     // backslash is preserved literally.
-                    if i + 1 < chars.len()
-                        && matches!(chars[i + 1], '"' | '\\' | '`' | '$')
-                    {
+                    if i + 1 < chars.len() && matches!(chars[i + 1], '"' | '\\' | '`' | '$') {
                         cur.push(chars[i + 1]);
                         i += 2;
                         continue;
@@ -124,27 +122,25 @@ pub fn expand_exec_tokens(
             i += 2;
             match next {
                 Some('%') => buf.push('%'),
-                Some('f') | Some('F') | Some('u') | Some('U') => {
-                    if !files_consumed {
-                        files_consumed = true;
-                        // If the code stands alone in the token, push each
-                        // file as its own argv element; otherwise inline them
-                        // into the current buffer.
-                        let alone = buf.is_empty()
-                            && (i >= chars.len()
-                                || chars[i..].iter().all(|ch| matches!(ch, ' ' | '\t')));
-                        if alone {
-                            // Flush the (empty) buffer is a no-op; push files.
-                            for f in files {
-                                code_emitted_separate.push(f.clone());
+                Some('f') | Some('F') | Some('u') | Some('U') if !files_consumed => {
+                    files_consumed = true;
+                    // If the code stands alone in the token, push each
+                    // file as its own argv element; otherwise inline them
+                    // into the current buffer.
+                    let alone = buf.is_empty()
+                        && (i >= chars.len()
+                            || chars[i..].iter().all(|ch| matches!(ch, ' ' | '\t')));
+                    if alone {
+                        // Flush the (empty) buffer is a no-op; push files.
+                        for f in files {
+                            code_emitted_separate.push(f.clone());
+                        }
+                    } else {
+                        for (k, f) in files.iter().enumerate() {
+                            if k > 0 {
+                                buf.push(' ');
                             }
-                        } else {
-                            for (k, f) in files.iter().enumerate() {
-                                if k > 0 {
-                                    buf.push(' ');
-                                }
-                                buf.push_str(f);
-                            }
+                            buf.push_str(f);
                         }
                     }
                 }
@@ -203,8 +199,9 @@ pub fn expand_exec(
 /// `'\''`. Safe for `sh -c` argv composition.
 fn shell_quote(s: &str) -> String {
     if !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ',' | ':' | '+'))
+        && s.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ',' | ':' | '+')
+        })
     {
         s.to_string()
     } else {
@@ -227,7 +224,10 @@ mod tests {
 
     #[test]
     fn plain_passthrough() {
-        assert_eq!(expand_exec_tokens("foot", &[], None, None, None), vec!["foot"]);
+        assert_eq!(
+            expand_exec_tokens("foot", &[], None, None, None),
+            vec!["foot"]
+        );
     }
 
     #[test]
@@ -241,7 +241,13 @@ mod tests {
     #[test]
     fn file_code_absorbs_all_files() {
         assert_eq!(
-            expand_exec_tokens("mpv %f", &["a.mkv".into(), "b.mkv".into()], None, None, None),
+            expand_exec_tokens(
+                "mpv %f",
+                &["a.mkv".into(), "b.mkv".into()],
+                None,
+                None,
+                None
+            ),
             vec!["mpv", "a.mkv", "b.mkv"]
         );
     }
@@ -280,7 +286,10 @@ mod tests {
 
     #[test]
     fn percent_percent_is_literal() {
-        assert_eq!(expand_exec_tokens("echo 100%%", &[], None, None, None), vec!["echo", "100%"]);
+        assert_eq!(
+            expand_exec_tokens("echo 100%%", &[], None, None, None),
+            vec!["echo", "100%"]
+        );
     }
 
     #[test]

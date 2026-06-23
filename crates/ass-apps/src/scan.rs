@@ -41,7 +41,7 @@ pub fn enumerate_in(roots: &[PathBuf]) -> Vec<Entry> {
         }
     }
 
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|a| a.name.to_lowercase());
     out
 }
 
@@ -70,7 +70,9 @@ fn visit(base: &Path, cur: &Path, out: &mut Vec<(String, PathBuf)>) -> std::io::
                 .unwrap_or(false)
         {
             let rel = path.strip_prefix(base).unwrap_or(&path);
-            let id = rel.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "-");
+            let id = rel
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "-");
             out.push((id, path));
         }
     }
@@ -138,7 +140,7 @@ fn parse_text(
         icon_path,
         categories: section
             .get("Categories")
-            .map(|s| split_semicol(s))
+            .map(split_semicol)
             .unwrap_or_default(),
         keywords: pick_localized(section, "Keywords", locale)
             .map(|s| split_semicol(&s))
@@ -153,7 +155,7 @@ fn parse_text(
         path: section.get("Path").map(PathBuf::from),
         mime_types: section
             .get("MimeType")
-            .map(|s| split_semicol(s))
+            .map(split_semicol)
             .unwrap_or_default(),
     }))
 }
@@ -173,7 +175,10 @@ fn pick_localized(section: &ini::Properties, base: &str, locale: &Locale) -> Opt
 /// Split a desktop-entry `;`-delimited list. Trailing empty elements (such
 /// lists conventionally end with `;`) are dropped.
 fn split_semicol(s: &str) -> Vec<String> {
-    s.split(';').filter(|p| !p.is_empty()).map(str::to_string).collect()
+    s.split(';')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Recognize the spec's true-ish boolean values: `1`, `true`, `yes` (any

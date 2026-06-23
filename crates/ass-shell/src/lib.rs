@@ -1,7 +1,7 @@
-//! Compositor chrome for ass, built on flux-ui.
+//! Compositor chrome for ass, built on lens.
 //!
 //! The shell is split into a **core host** and pluggable **chrome components**.
-//! The core ([`Shell`]) owns the flux-ui context, the per-frame snapshot of
+//! The core ([`Shell`]) owns the lens context, the per-frame snapshot of
 //! live toplevels, and the interaction sink ([`ChromeEvents`]); it knows
 //! nothing about what the chrome looks like. Each piece of chrome — the window
 //! list, server-side decorations, the dock, a future HUD bar — is a [`Chrome`]
@@ -15,7 +15,7 @@
 
 use std::os::raw::c_void;
 
-use flux_ui::{Frame, Ui};
+use lens::{Frame, Ui};
 
 pub mod chrome;
 pub use chrome::{Decorations, Dock, Launcher, WindowList};
@@ -24,8 +24,8 @@ use ass_core::app::Entry;
 use ass_core::window::Window;
 
 /// Re-export so callers can construct input snapshots without depending on
-/// flux-ui directly.
-pub use flux_ui::Input;
+/// lens directly.
+pub use lens::Input;
 
 /// Interaction intents chrome components emit during a frame. The core
 /// collects these and the main loop drains them into server window-management
@@ -55,7 +55,7 @@ pub struct ChromeEvents {
 ///
 /// A component renders itself for one frame from the shared window snapshot
 /// and input, drawing through `frame` and pushing any user intents into `out`.
-/// The core owns the flux-ui context, the snapshot, and the sink; the component
+/// The core owns the lens context, the snapshot, and the sink; the component
 /// owns only its own appearance and state. Register implementations with
 /// [`Shell::add`].
 pub trait Chrome {
@@ -93,14 +93,14 @@ pub trait Chrome {
 #[derive(Debug, thiserror::Error)]
 pub enum ShellError {
     #[error("shell create: {0:?}")]
-    Create(#[source] flux_ui::Error),
+    Create(#[source] lens::Error),
     #[error("shell render: {0:?}")]
-    Render(#[source] flux_ui::Error),
+    Render(#[source] lens::Error),
 }
 
 /// The core chrome host.
 ///
-/// Owns a flux-ui context bound to the compositor's flux device, the per-frame
+/// Owns a lens context bound to the compositor's flux device, the per-frame
 /// window snapshot, the interaction sink, and a registry of [`Chrome`]
 /// components. The host renders the chrome into the output canvas each frame by
 /// running every registered component inside one `Ui::frame` envelope. It has
@@ -119,10 +119,10 @@ impl Shell {
     /// # Safety
     /// `device` must be a live `flux_device` (from [`flux::Device::as_raw`]) and
     /// outlive the `Shell`. The pointer crosses from the `flux` bindings' type
-    /// to flux-ui's distinct-but-ABI-identical `flux_device`.
+    /// to lens's distinct-but-ABI-identical `flux_device`.
     pub unsafe fn new(device: *mut c_void) -> Result<Shell, ShellError> {
-        let ui = Ui::with_device(device as *mut flux_ui::sys::flux_device)
-            .map_err(ShellError::Create)?;
+        let ui =
+            Ui::with_device(device as *mut lens::sys::flux_device).map_err(ShellError::Create)?;
         Ok(Shell {
             ui,
             windows: Vec::new(),
@@ -216,7 +216,7 @@ impl Shell {
             }
         });
         self.ui
-            .render(canvas as *mut flux_ui::sys::flux_canvas)
+            .render(canvas as *mut lens::sys::flux_canvas)
             .map_err(ShellError::Render)
     }
 }
