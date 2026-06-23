@@ -57,8 +57,7 @@ impl Default for Dock {
 }
 
 impl Chrome for Dock {
-    fn render(&mut self, f: &mut Frame, input: &Input, windows: &[Window], _workspaces: &crate::WorkspaceSnapshot, out: &mut ChromeEvents) {
-        let disp = input.as_raw().display_size;
+    fn render(&mut self, f: &mut Frame, input: &Input, windows: &[Window], _workspaces: &crate::WorkspaceSnapshot, out: &mut ChromeEvents) {        let disp = input.as_raw().display_size;
         let n = windows.len().max(1);
         let dock_w =
             (n as f32 * DOCK_TILE + (n as f32 - 1.0).max(0.0) * DOCK_TILE_GAP + 2.0 * DOCK_PAD)
@@ -115,5 +114,16 @@ impl Chrome for Dock {
                 }
             });
         });
+    }
+
+    /// The dock reserves the bottom edge so tiled windows do not render
+    /// under it (ADR-0024 chrome-aware work-area).
+    fn reserved(&self) -> crate::Reserved {
+        crate::Reserved {
+            top: 0,
+            bottom: (DOCK_HEIGHT + DOCK_BOTTOM_MARGIN) as i32,
+            left: 0,
+            right: 0,
+        }
     }
 }

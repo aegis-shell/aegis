@@ -966,6 +966,12 @@ impl Server {
         self.state.output_geometry = geo;
     }
 
+    /// The focused output's logical rect (ADR-0028). The chrome-aware
+    /// tiling work-area is this inset by the chrome's reserved edges.
+    pub fn output_logical_rect(&self) -> ass_core::Rect {
+        self.state.output_geometry.logical_rect()
+    }
+
     /// Toggle the current workspace between tiled and floating (ADR-0024).
     /// On, the workspace's windows are marked `Tiled` and laid out next
     /// `apply_tiling`; off, they revert to `Floating` and keep their current
@@ -995,15 +1001,14 @@ impl Server {
     /// `work_area` and reconfigures only the windows whose target rect moved,
     /// so steady state sends no configure events. No-op when tiling is off.
     /// Apply the master-stack tiling policy to the current workspace's
-    /// windows when tiled mode is on (ADR-0024). Runs the layout over the
-    /// focused output's logical rect (ADR-0028) and reconfigures only the
+    /// windows when tiled mode is on (ADR-0024). Runs the layout over
+    /// `work_area` (the chrome-aware logical rect) and reconfigures only the
     /// windows whose target rect moved, so steady state sends no configure
     /// events. No-op when tiling is off.
-    pub fn apply_tiling(&mut self) {
+    pub fn apply_tiling(&mut self, work_area: ass_core::Rect) {
         if !self.state.tiling {
             return;
         }
-        let work_area = self.state.output_geometry.logical_rect();
         let tiled_ids: Vec<usize> = self
             .state
             .workspaces

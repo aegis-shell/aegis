@@ -385,8 +385,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // Apply the tiling policy to the current workspace when tiled mode is
         // on (ADR-0024). No-op when off; reconfigures only windows whose
         // target moved. The work-area is the focused output's logical rect
-        // (ADR-0028); gaps/master-ratio come from the config.
-        server.apply_tiling();
+        // (ADR-0028) inset by the chrome's reserved edges, so tiles avoid
+        // the dock (ADR-0024 chrome-aware work-area).
+        server.apply_tiling(shell.reserved().inset(server.output_logical_rect()));
 
         match surface.begin_frame() {
             Ok(frame) => {

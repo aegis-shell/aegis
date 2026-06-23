@@ -7,6 +7,15 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### Chrome-aware tiling work-area
+- Tiled windows no longer render under the dock. The `Chrome` trait gained a
+  `reserved() -> Reserved` edge API (default none); the Dock reserves the
+  bottom edge (`DOCK_HEIGHT + margin`). The Shell aggregates every
+  component's reservation, and `apply_tiling` now tiles into the output's
+  logical rect inset by those edges (`Reserved::inset`, unit-tested). The
+  server gained `output_logical_rect` and `apply_tiling` again takes a
+  work-area; the binary computes the chrome-aware rect each frame.
+
 ### ass-ctl: command-line driver for the IPC
 - A new `ass-ctl` binary (and `ass_ctl` library) drives a running compositor
   over its IPC socket — the reference external tool (ADR-0027). Subcommands:

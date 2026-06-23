@@ -170,7 +170,8 @@ unit-tested. See [ADR-0024](../adr/0024-layout-model.md) and
 **M6 status: functionally complete for the single-output compositor.** The
 remaining items are polish and M7-dependent: server-side output hotplug
 (actual unplug/replug needs the multi-output backend, ADR-0028); per-workspace
-tiling policy config; floating-role exceptions; chrome-aware tiling margins.
+tiling policy config; floating-role exceptions; chrome-aware tiling margins
+(the dock now reserves the bottom edge; other chrome can follow).
 
 **Verification.** Each output has its own workspace set with an empty
 workspace always available. A window can be tiled or floated independently.

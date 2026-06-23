@@ -24,6 +24,33 @@ use ass_core::app::Entry;
 use ass_core::window::Window;
 use ass_core::workspace::WorkspaceSnapshot;
 
+/// Edge space a chrome component reserves; tiled windows avoid it. Summed
+/// across components by [`Shell::reserved`] and subtracted from the tiling
+/// work-area so tiles do not render under the dock or panels.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Reserved {
+    pub top: i32,
+    pub bottom: i32,
+    pub left: i32,
+    pub right: i32,
+}
+
+impl Reserved {
+    /// Shrink `rect` by these margins, clamped so size never goes negative.
+    pub fn inset(self, r: ass_core::Rect) -> ass_core::Rect {
+        ass_core::Rect {
+            origin: ass_core::Point {
+                x: r.origin.x + self.left,
+                y: r.origin.y + self.top,
+            },
+            size: ass_core::Size {
+                w: (r.size.w - self.left - self.right).max(0),
+                h: (r.size.h - self.top - self.bottom).max(0),
+            },
+        }
+    }
+}
+
 /// Re-export so callers can construct input snapshots without depending on
 /// lens directly.
 pub use lens::Input;
@@ -95,6 +122,13 @@ pub trait Chrome {
     /// loop's `TapDetector`). Default no-op; components with an open/closed
     /// state (the launcher) override this to flip it.
     fn toggle(&mut self, _out: &mut ChromeEvents) {}
+
+    /// Edge space this component reserves; tiled windows avoid it (ADR-0024).
+    /// Default none; overridden by chrome that should not be covered (the
+    /// dock reserves the bottom edge). Summed by [`Shell::reserved`].
+    fn reserved(&self) -> Reserved {
+        Reserved::default()
+    }
 }
 
 /// Errors from the shell.
@@ -223,6 +257,20 @@ impl Shell {
         }
     }
 
+    /// The union of every component's [`Chrome::reserved`] edges — the space
+    /// tiled windows should avoid. Summed per edge.
+    pub fn reserved(&self) -> Reserved {
+        let mut r = Reserved::default();
+        for c in &self.components {
+            let c = c.reserved();
+            r.top += c.top;
+            r.bottom += c.bottom;
+            r.left += c.left;
+            r.right += c.right;
+        }
+        r
+    }
+
     /// Run every registered component and render the chrome into `canvas`,
     /// using `input` for interaction.
     ///
@@ -242,5 +290,35 @@ impl Shell {
         self.ui
             .render(canvas as *mut lens::sys::flux_canvas)
             .map_err(ShellError::Render)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reserved_inset_shrinks_and_clamps() {
+        let r = Reserved {
+            top: 10,
+            bottom: 76,
+            left: 4,
+            right: 0,
+        };
+        let out = r.inset(ass_core::Rect::new(0, 0, 1000, 800));
+        assert_eq!(out.origin, ass_core::Point { x: 4, y: 10 });
+        assert_eq!(out.size, ass_core::Size { w: 996, h: 714 }); // 800-10-76
+    }
+
+    #[test]
+    fn reserved_inset_clamps_to_non_negative() {
+        let r = Reserved {
+            top: 0,
+            bottom: 2000,
+            left: 0,
+            right: 0,
+        };
+        let out = r.inset(ass_core::Rect::new(0, 0, 100, 100));
+        assert_eq!(out.size, ass_core::Size { w: 100, h: 0 });
     }
 }
