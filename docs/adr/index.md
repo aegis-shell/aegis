@@ -30,3 +30,10 @@ background and how the decisions fit together, see
 | [0021](0021-chrome-component-trait.md) | Chrome component trait (pure core shell) | Accepted |
 | [0022](0022-application-launcher.md) | Application launcher via freedesktop.org desktop entries | Accepted |
 | [0023](0023-split-flux-lens-stack.md) | Depend on the split flux / lens stack via out-of-tree Rust bindings | Accepted |
+| [0024](0024-layout-model.md) | Layout model — floating base with an optional tiling policy | Accepted |
+| [0025](0025-workspace-model.md) | Workspace model — dynamic and per-output | Accepted |
+| [0026](0026-configuration-system.md) | Configuration system — one declarative file with live reload | Accepted |
+| [0027](0027-ipc-and-introspection.md) | IPC and introspection seam | Accepted |
+| [0028](0028-output-and-monitor-model.md) | Output and monitor model | Accepted |
+| [0029](0029-animation-and-effect-policy.md) | Animation and effect policy | Accepted |
+| [0030](0030-xwayland-strategy.md) | XWayland strategy | Accepted |

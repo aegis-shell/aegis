@@ -7,8 +7,9 @@ client windows and draws its own shell chrome through
 flux.
 
 This page explains how the components fit together and where the project is
-headed. For the decisions behind the structure, see the
-[Architecture Decision Records](../adr/index.md).
+headed. For the product direction, see [Vision and Scope](vision.md); for
+the milestone sequence, see [Roadmap](roadmap.md); for the decisions behind
+the structure, see the [Architecture Decision Records](../adr/index.md).
 
 ## Responsibility Boundary
 
@@ -110,8 +111,15 @@ extensions.
 
 ## Roadmap
 
-Milestones are listed in order. Each one is verifiable before the next
-begins.
+The full milestone sequence — from the completed nested bring-up through the
+DRM/KMS backend, configuration and IPC, workspaces and layout, multi-output,
+XWayland, polish, and the agent phase — lives in
+[Roadmap](roadmap.md). The product direction behind it is
+[Vision and Scope](vision.md), and the systems ass borrows from are surveyed
+in [Comparative Survey](comparative-survey.md).
+
+The summary table is kept here as a quick status reference; the verification
+criteria and sequencing rationale are on the roadmap page.
 
 | Milestone | Outcome |
 |-----------|---------|
@@ -120,4 +128,4 @@ begins.
 | M2 | `zwp_linux_dmabuf_v1` with flux dmabuf import; GPU clients composited zero-copy. Implemented: per-surface position tracking, subsurface tree (direct children, above/below z-split), `wp_viewport` source crop and destination scale, `wl_surface.set_buffer_transform` via CPU staging (8 cases), and additional fourccs (ARGB/ABGR + X-variants). Buffer scale (`set_buffer_scale`) is stored but not yet applied at composite; nested subsurfaces and damage tracking remain. |
 | M3 | Window management and richer chrome: multiple toplevels, focus, move and resize, decorations, overview. Implemented: toplevel metadata (title, app_id, parent, size hints), maximized/fullscreen/activated state with configure events, interactive move and resize with serial validation and size-hint clamping, a chrome window-list panel with click-to-focus and close, per-window server-side decorations (title bar + close gadget) drawn via flux-ui overlays with click-to-move, and a macOS-style bottom-center dock of per-window tiles. Border-drag resize and `xdg_toplevel.set_window_geometry` frame insets remain. |
 | M4 | DRM/KMS backend with libinput and libseat for bare-TTY operation. |
-| M5 and beyond | AI-adaptation layer: a semantic surface model and an introspection and automation API. |
+| M5 and beyond | Configuration and IPC, workspaces and layout, multi-output, XWayland, polish, and the agent-adaptation layer. See [Roadmap](roadmap.md). |

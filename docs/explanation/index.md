@@ -9,4 +9,7 @@ history.
 
 | Page | Purpose |
 |------|---------|
-| [Architecture](architecture.md) | Component boundaries, data flow, and the development roadmap |
+| [Architecture](architecture.md) | Component boundaries and data flow |
+| [Vision and Scope](vision.md) | Product direction, principles, and non-goals |
+| [Roadmap](roadmap.md) | The milestone sequence from nested bring-up to the agent phase |
+| [Comparative Survey](comparative-survey.md) | What ass borrows from GNOME, KDE, sway, river, niri, macOS, and Xfce, and what it rejects |
