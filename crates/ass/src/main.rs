@@ -243,6 +243,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 Command::Cycle { forward } => server.cycle_focus(forward),
                 Command::SwitchWorkspace { dir } => server.switch_workspace(dir),
                 Command::SwitchWorkspaceTo { id } => server.switch_workspace_to(id),
+                Command::MoveToWorkspace { window, workspace } => {
+                    server.move_to_workspace(window, workspace)
+                }
                 Command::ToggleTiling => server.set_tiling(!server.tiling()),
                 Command::Notify {
                     summary,

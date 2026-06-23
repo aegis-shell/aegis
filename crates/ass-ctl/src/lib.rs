@@ -58,6 +58,17 @@ fn dispatch(client: &mut Client, args: &[String]) -> Result<String, String> {
             client.switch_workspace(dir).map_err(io_err)?;
             Ok(format!("switched {:?}", dir))
         }
+        "move-to" => {
+            let window = parse_usize(args, 1)?;
+            let ws = parse_usize(args, 2)?;
+            client
+                .command(Command::MoveToWorkspace {
+                    window,
+                    workspace: ass_core::workspace::WorkspaceId(ws as u64),
+                })
+                .map_err(io_err)?;
+            Ok(format!("moved window {window} to workspace {ws}"))
+        }
         "tiling" => {
             client.toggle_tiling().map_err(io_err)?;
             Ok("toggled tiling".into())
@@ -150,6 +161,7 @@ commands:
   focus <id>              focus a toplevel by id
   close <id>              request a toplevel to close
   switch <next|prev>      switch workspace on the focused output
+  move-to <win> <ws>      move a toplevel to a workspace (by id)
   tiling                  toggle the current workspace tiled/floating
   notify <summary> [body] post a notification
   quit                    ask the compositor to quit"

@@ -160,6 +160,24 @@ fn tiling_command_sends_toggle() {
 }
 
 #[test]
+fn move_to_command_sends_move_to_workspace() {
+    let path = scratch();
+    let h = Arc::new(CtlHandler::new());
+    let _s = Server::start(&path, Arc::clone(&h)).unwrap();
+    let out =
+        ass_ctl::run(&path, &["move-to".into(), "42".into(), "3".into()]).unwrap();
+    assert!(out.contains("moved window 42 to workspace 3"), "{out}");
+    assert!(
+        h.commands.lock().unwrap().iter().any(|c| matches!(
+            c,
+            Command::MoveToWorkspace { window: 42, workspace } if workspace.0 == 3
+        )),
+        "{:?}",
+        h.commands
+    );
+}
+
+#[test]
 fn unknown_command_errors_with_usage() {
     let path = scratch();
     let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();

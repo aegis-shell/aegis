@@ -74,6 +74,11 @@ pub enum Command {
     SwitchWorkspace { dir: Switch },
     /// Switch directly to a workspace by id (ADR-0025). `control`.
     SwitchWorkspaceTo { id: WorkspaceId },
+    /// Move a toplevel to a workspace (ADR-0025). `control`.
+    MoveToWorkspace {
+        window: usize,
+        workspace: WorkspaceId,
+    },
     /// Toggle the current workspace between tiled and floating (ADR-0024). `control`.
     ToggleTiling,
     /// Post a notification (M9, delivered over the IPC). `control`.
@@ -278,5 +283,18 @@ mod tests {
             Command::ToggleTiling
         );
         assert!(Command::ToggleTiling.required_cap().control);
+    }
+
+    #[test]
+    fn move_to_workspace_command_round_trips() {
+        let cmd = Command::MoveToWorkspace {
+            window: 42,
+            workspace: WorkspaceId(3),
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains(r#""type":"MoveToWorkspace""#), "{json}");
+        assert!(json.contains(r#""window":42"#) && json.contains(r#""workspace":3"#), "{json}");
+        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
+        assert!(cmd.required_cap().control);
     }
 }

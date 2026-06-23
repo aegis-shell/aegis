@@ -7,6 +7,14 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### IPC: move a window to a workspace
+- New `MoveToWorkspace { window, workspace }` IPC command (control) and
+  `ass-ctl move-to <window> <workspace>` move a toplevel to a workspace at
+  runtime — the script/agent analogue of the map-time window-rule
+  assignment (ADR-0025). Backed by `Server::move_to_workspace`, which routes
+  through the workspace model and drops focus if the window leaves the
+  visible set.
+
 ### Chrome-aware tiling work-area
 - Tiled windows no longer render under the dock. The `Chrome` trait gained a
   `reserved() -> Reserved` edge API (default none); the Dock reserves the

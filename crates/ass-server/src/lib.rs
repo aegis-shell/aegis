@@ -938,6 +938,18 @@ impl Server {
         unsafe { ffi::wl_display_flush_clients(self.state.display) };
     }
 
+    /// Move a toplevel to a workspace by id (ADR-0025). If the target is not
+    /// the current workspace, the window leaves the visible set. No-op if the
+    /// window or workspace is unknown.
+    pub fn move_to_workspace(
+        &mut self,
+        window_id: usize,
+        workspace: ass_core::workspace::WorkspaceId,
+    ) {
+        self.state.workspaces.move_toplevel(window_id, workspace);
+        self.drop_focus_if_hidden();
+    }
+
     /// The workspace/output snapshot for the IPC and chrome (ADR-0025/0027).
     pub fn workspace_snapshot(&self) -> ass_core::workspace::WorkspaceSnapshot {
         self.state.workspaces.snapshot()
