@@ -26,6 +26,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         env!("CARGO_PKG_VERSION")
     );
 
+    // Notification queue (M9, over the IPC): shared between the IPC handler
+    // (reads), the toast chrome component (renders), and this loop (pushes
+    // on `Notify`, expires each frame). Declared early so the toast
+    // component registration below can clone it.
+    let notif_queue: std::sync::Arc<std::sync::Mutex<ass_core::notify::NotificationQueue>> =
+        std::sync::Arc::new(std::sync::Mutex::new(ass_core::notify::NotificationQueue::new(
+            5_000,
+        )));
+
     // flux device with the instance extensions a nested Wayland surface needs,
     // plus the dma-buf import extensions when the driver supports them (fall
     // back to swapchain-only if device creation rejects them).
@@ -79,6 +88,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // `ass-launch`; click a dock tile to focus / restore its window.
     shell.add(Box::new(ass_shell::Launcher::new(launcher_apps.clone())));
     shell.add(Box::new(ass_shell::WorkspaceBar::new()));
+    shell.add(Box::new(ass_shell::Toast::new(std::sync::Arc::clone(
+        &notif_queue,
+    ))));
     shell.add(Box::new(ass_shell::Dock::with_icons(
         icon_cache.map.clone(),
     )));
@@ -155,6 +167,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .map(|c| c.window_rules.clone())
             .unwrap_or_default(),
     );
+    // Seed the tiling layout params (ADR-0024) and the focused output's
+    // geometry (ADR-0028) from the config and the initial host size.
+    if let Some(c) = config.as_ref() {
+        server.set_layout_params(c.layout.clone().into());
+    }
+    let (init_w, init_h) = host.size_u32();
+    server.set_output_geometry(output_geometry_from_size(init_w as i32, init_h as i32));
 
     // mtime-based reload watcher, polled each frame. `None` when there is no
     // default config path on this host.
@@ -172,7 +191,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // IPC rather than crashing. `ipc` is held to the end of `run()` so its
     // `Drop` removes the socket.
     let (ipc_cmd_tx, ipc_cmd_rx) = std::sync::mpsc::channel::<ass_ipc::Command>();
-    let live = std::sync::Arc::new(LiveState::new(ipc_cmd_tx));
+    let live = std::sync::Arc::new(LiveState::new(
+        ipc_cmd_tx,
+        std::sync::Arc::clone(&notif_queue),
+    ));
     let ipc: Option<ass_ipc::Server> = match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(d) => {
             let path = std::path::PathBuf::from(d).join("ass.sock");
@@ -222,9 +244,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 Command::SwitchWorkspace { dir } => server.switch_workspace(dir),
                 Command::SwitchWorkspaceTo { id } => server.switch_workspace_to(id),
                 Command::ToggleTiling => server.set_tiling(!server.tiling()),
+                Command::Notify {
+                    summary,
+                    body,
+                    app_id,
+                } => {
+                    let now_ms = start.elapsed().as_millis() as u64;
+                    let n = notif_queue
+                        .lock()
+                        .unwrap()
+                        .push(summary, body, app_id, now_ms);
+                    if let Some(s) = ipc.as_ref() {
+                        s.broadcast(ass_ipc::Event::Notified { notification: n });
+                    }
+                }
                 Command::Quit => quit_requested = true,
             }
         }
+        // Age out expired notifications once per frame.
+        notif_queue
+            .lock()
+            .unwrap()
+            .expire(start.elapsed().as_millis() as u64);
 
         // Process client protocol traffic.
         server.dispatch();
@@ -338,20 +379,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(sz) = host.take_resize() {
             surface.resize(sz.w as u32, sz.h as u32)?;
             input.set_display_size(sz.w as f32, sz.h as f32);
+            server.set_output_geometry(output_geometry_from_size(sz.w, sz.h));
         }
 
         // Apply the tiling policy to the current workspace when tiled mode is
         // on (ADR-0024). No-op when off; reconfigures only windows whose
-        // target moved. The full output is the work area (chrome margins are
-        // a follow-up).
-        let (wa_w, wa_h) = host.size_u32();
-        server.apply_tiling(ass_core::Rect {
-            origin: ass_core::Point { x: 0, y: 0 },
-            size: ass_core::Size {
-                w: wa_w as i32,
-                h: wa_h as i32,
-            },
-        });
+        // target moved. The work-area is the focused output's logical rect
+        // (ADR-0028); gaps/master-ratio come from the config.
+        server.apply_tiling();
 
         match surface.begin_frame() {
             Ok(frame) => {
@@ -532,6 +567,9 @@ fn reload_config(
                 .map(|c| c.window_rules.clone())
                 .unwrap_or_default(),
         );
+        if let Some(c) = config.as_ref() {
+            server.set_layout_params(c.layout.clone().into());
+        }
     };
     match ass_config::load(path) {
         Ok(Some(new_cfg)) => {
@@ -557,6 +595,22 @@ fn reload_config(
             }
             log::warn!("config: reload failed; keeping previous configuration");
         }
+    }
+}
+
+/// Build the focused output's geometry from a host (physical) pixel size.
+/// The nested backend presents at scale 1 with no transform; the DRM/KMS
+/// backend (M4/M7) supplies the real mode, scale, and transform.
+fn output_geometry_from_size(w: i32, h: i32) -> ass_core::output::OutputGeometry {
+    ass_core::output::OutputGeometry {
+        mode: ass_core::output::OutputMode {
+            width: w,
+            height: h,
+            refresh_mhz: 0,
+        },
+        scale: ass_core::output::Scale::IDENTITY,
+        transform: ass_core::Transform::Normal,
+        logical_origin: ass_core::Point::default(),
     }
 }
 
@@ -611,15 +665,20 @@ fn build_keymap(config: Option<&ass_config::Config>) -> ass_core::keybind::Keyma
 struct LiveState {
     windows: std::sync::RwLock<Vec<ass_core::window::Window>>,
     workspaces: std::sync::RwLock<ass_core::workspace::WorkspaceSnapshot>,
+    notifications: std::sync::Arc<std::sync::Mutex<ass_core::notify::NotificationQueue>>,
     commands: std::sync::Mutex<std::sync::mpsc::Sender<ass_ipc::Command>>,
 }
 
 impl LiveState {
-    fn new(commands: std::sync::mpsc::Sender<ass_ipc::Command>) -> LiveState {
+    fn new(
+        commands: std::sync::mpsc::Sender<ass_ipc::Command>,
+        notifications: std::sync::Arc<std::sync::Mutex<ass_core::notify::NotificationQueue>>,
+    ) -> LiveState {
         LiveState {
             windows: std::sync::RwLock::new(Vec::new()),
             workspaces: std::sync::RwLock::new(ass_core::workspace::WorkspaceModel::new()
                 .snapshot()),
+            notifications,
             commands: std::sync::Mutex::new(commands),
         }
     }
@@ -651,6 +710,10 @@ impl ass_ipc::Handler for LiveState {
 
     fn workspaces(&self) -> ass_core::workspace::WorkspaceSnapshot {
         self.workspaces.read().unwrap().clone()
+    }
+
+    fn notifications(&self) -> Vec<ass_core::notify::Notification> {
+        self.notifications.lock().unwrap().snapshot()
     }
 
     fn command(&self, cmd: ass_ipc::Command) {

@@ -241,6 +241,9 @@ struct State {
     /// Config-driven window rules (ADR-0026). Evaluated on first map; the
     /// first match prescribes a workspace move and/or a forced layout role.
     window_rules: Vec<ass_core::window_rule::WindowRule>,
+    /// The focused output's geometry (ADR-0028): the tiling work-area is its
+    /// logical rect. Updated by the backend on resize; defaults to identity.
+    output_geometry: ass_core::output::OutputGeometry,
     /// Dynamic per-output workspaces (ADR-0025). Toplevels are placed on the
     /// current workspace at first map; rendering and input see only the
     /// visible set (`visible_toplevels`).
@@ -272,6 +275,7 @@ impl State {
             tiling: false,
             layout_params: ass_core::layout::LayoutParams::default(),
             window_rules: Vec::new(),
+            output_geometry: ass_core::output::OutputGeometry::default(),
         }
     }
 
@@ -950,6 +954,18 @@ impl Server {
         self.state.window_rules = rules;
     }
 
+    /// Replace the tiling layout parameters (gaps, master ratio) from the
+    /// config (ADR-0024/0026). Applied on the next `apply_tiling`.
+    pub fn set_layout_params(&mut self, params: ass_core::layout::LayoutParams) {
+        self.state.layout_params = params;
+    }
+
+    /// Replace the focused output's geometry (ADR-0028). The backend calls
+    /// this on resize; the tiling work-area is the geometry's logical rect.
+    pub fn set_output_geometry(&mut self, geo: ass_core::output::OutputGeometry) {
+        self.state.output_geometry = geo;
+    }
+
     /// Toggle the current workspace between tiled and floating (ADR-0024).
     /// On, the workspace's windows are marked `Tiled` and laid out next
     /// `apply_tiling`; off, they revert to `Floating` and keep their current
@@ -978,12 +994,16 @@ impl Server {
     /// windows when tiled mode is on (ADR-0024). Runs the layout over
     /// `work_area` and reconfigures only the windows whose target rect moved,
     /// so steady state sends no configure events. No-op when tiling is off.
-    pub fn apply_tiling(&mut self, work_area: ass_core::Rect) {
+    /// Apply the master-stack tiling policy to the current workspace's
+    /// windows when tiled mode is on (ADR-0024). Runs the layout over the
+    /// focused output's logical rect (ADR-0028) and reconfigures only the
+    /// windows whose target rect moved, so steady state sends no configure
+    /// events. No-op when tiling is off.
+    pub fn apply_tiling(&mut self) {
         if !self.state.tiling {
             return;
         }
-        // Tile only windows whose role is `Tiled`; a rule-forced `Floating`
-        // window is left in place (ADR-0024 floating exceptions).
+        let work_area = self.state.output_geometry.logical_rect();
         let tiled_ids: Vec<usize> = self
             .state
             .workspaces

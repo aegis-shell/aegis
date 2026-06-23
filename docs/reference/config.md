@@ -16,6 +16,27 @@ log diagnostic and never crashes the compositor.
 | `schema_version` | integer | required | Schema major version. Must be `1`. A different value is rejected with a diagnostic; bumping it is a documented migration event. |
 | `[[keybind]]` | array of tables | built-in defaults | Global key bindings. See [Key Bindings](#key-bindings). |
 | `[[window_rule]]` | array of tables | none | Placement rules applied to newly-mapped toplevels. See [Window Rules](#window-rules). |
+| `[layout]` | table | gaps `8`, master_ratio `0.5` | Tiling policy parameters. See [Layout](#layout). |
+
+## Layout
+
+The `[layout]` table tunes the master-stack tiling policy (ADR-0024). Applied
+live on reload.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `gaps` | integer | `8` | Gap in logical pixels between tiles and around the work-area edge. |
+| `master_ratio` | float | `0.5` | Fraction of the work-area width (0.0–1.0) for the master column. |
+
+```toml
+[layout]
+gaps = 16
+master_ratio = 0.6
+```
+
+The work-area is the focused output's logical rect (ADR-0028); with the
+nested backend that is the host window at scale 1. Chrome-aware margins are a
+follow-up.
 
 ## Window Rules
 

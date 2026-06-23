@@ -6,6 +6,7 @@
 //! variants add without renaming existing fields. See
 //! [ADR-0027](../../docs/adr/0027-ipc-and-introspection.md).
 
+use ass_core::notify::Notification;
 use ass_core::window::Window;
 use ass_core::workspace::{Switch, WorkspaceId, WorkspaceSnapshot};
 
@@ -75,6 +76,12 @@ pub enum Command {
     SwitchWorkspaceTo { id: WorkspaceId },
     /// Toggle the current workspace between tiled and floating (ADR-0024). `control`.
     ToggleTiling,
+    /// Post a notification (M9, delivered over the IPC). `control`.
+    Notify {
+        summary: String,
+        body: String,
+        app_id: Option<String>,
+    },
     /// Quit the compositor. `session`.
     Quit,
 }
@@ -109,6 +116,10 @@ pub enum Event {
     /// from a workspace, a workspace created or reaped). Re-query with
     /// [`Request::GetWorkspaces`].
     WorkspaceChanged,
+    /// A notification was posted (via [`Request::Do`] / `Notify`). Carries
+    /// the notification itself; the queue is also queryable with
+    /// [`Request::GetNotifications`].
+    Notified { notification: Notification },
 }
 
 /// A client → server message.
@@ -126,6 +137,8 @@ pub enum Request {
     GetWindows,
     /// Fetch the live workspace/output snapshot. Requires `query`.
     GetWorkspaces,
+    /// Fetch the live notification queue. Requires `query`.
+    GetNotifications,
     /// Submit a [`Command`]. Fire-and-forget: the server acknowledges queuing
     /// with [`Response::Ok`], not completion. Requires the command's capability.
     Do { cmd: Command },
@@ -147,6 +160,8 @@ pub enum Response {
     Windows { windows: Vec<Window> },
     /// Reply to [`Request::GetWorkspaces`].
     Workspaces { snapshot: WorkspaceSnapshot },
+    /// Reply to [`Request::GetNotifications`].
+    Notifications { notifications: Vec<Notification> },
     /// Acknowledgment of a queued [`Request::Do`].
     Ok,
     /// Reply to [`Request::Subscribe`]: events will now be pushed.

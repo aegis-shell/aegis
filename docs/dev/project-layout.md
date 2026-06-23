@@ -17,6 +17,7 @@ ass/
     ass-shell/         compositor chrome through lens
     ass-config/        declarative configuration: TOML schema, loader, live reload
     ass-ipc/           versioned IPC and introspection over a unix socket
+    ass-ctl/           command-line driver for the IPC (reference external tool)
     ass-apps/          freedesktop.org desktop-entry enumeration + icon lookup
     ass-launch/        detached, XDG-environment-aware app launching
     ass/               the binary: wiring and event loop
@@ -40,6 +41,7 @@ as path dependencies.
 | `ass-shell` | lens chrome bound to the compositor device | [ADR-0001](../adr/0001-scope-and-responsibility-boundary.md) |
 | `ass-config` | Versioned TOML schema, loader, and mtime-based live reload | [ADR-0026](../adr/0026-configuration-system.md) |
 | `ass-ipc` | Versioned schema and codec over a unix socket; the extension/automation surface | [ADR-0027](../adr/0027-ipc-and-introspection.md) |
+| `ass-ctl` | Command-line driver for the IPC; the reference external tool | [ADR-0027](../adr/0027-ipc-and-introspection.md) |
 | `ass-apps` | freedesktop.org desktop-entry enumeration and icon-theme lookup | [ADR-0022](../adr/0022-application-launcher.md) |
 | `ass-launch` | detached, XDG-environment-aware launching of desktop applications | [ADR-0022](../adr/0022-application-launcher.md) |
 | `ass` | Process entry point and frame loop | [Architecture](../explanation/architecture.md) |

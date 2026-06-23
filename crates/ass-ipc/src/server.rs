@@ -46,6 +46,8 @@ pub trait Handler: Send + Sync {
     /// Snapshot of the workspace/output model. Same shape the chrome and the
     /// agent read.
     fn workspaces(&self) -> ass_core::workspace::WorkspaceSnapshot;
+    /// Snapshot of the live notification queue.
+    fn notifications(&self) -> Vec<ass_core::notify::Notification>;
     /// Receive a control/session [`Command`]. Called from a connection
     /// thread; the implementation must forward to the compositor's main loop
     /// because the Wayland server state is not `Send`. Fire-and-forget: the
@@ -238,6 +240,17 @@ fn drive_read_loop<H: Handler>(
                 } else {
                     Response::Error {
                         message: "GetWorkspaces requires the query capability".into(),
+                    }
+                }
+            }
+            Request::GetNotifications => {
+                if granted.query {
+                    Response::Notifications {
+                        notifications: handler.notifications(),
+                    }
+                } else {
+                    Response::Error {
+                        message: "GetNotifications requires the query capability".into(),
                     }
                 }
             }

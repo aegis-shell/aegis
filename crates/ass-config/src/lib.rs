@@ -51,6 +51,47 @@ pub struct Config {
     /// layout role). See [`ass_core::window_rule::WindowRule`].
     #[serde(default, rename = "window_rule")]
     pub window_rules: Vec<ass_core::window_rule::WindowRule>,
+
+    /// Tiling policy parameters (ADR-0024), written as a `[layout]` table.
+    #[serde(default)]
+    pub layout: LayoutConfig,
+}
+
+/// The `[layout]` section: tiling gaps and master ratio. Defaults match the
+/// built-in `ass_core::layout::LayoutParams`.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct LayoutConfig {
+    /// Gap in logical pixels between tiles and around the work-area edge.
+    #[serde(default = "default_gaps")]
+    pub gaps: i32,
+    /// Fraction of the work-area width for the master column (0.0..=1.0).
+    #[serde(default = "default_master_ratio")]
+    pub master_ratio: f32,
+}
+
+fn default_gaps() -> i32 {
+    8
+}
+fn default_master_ratio() -> f32 {
+    0.5
+}
+
+impl Default for LayoutConfig {
+    fn default() -> LayoutConfig {
+        LayoutConfig {
+            gaps: default_gaps(),
+            master_ratio: default_master_ratio(),
+        }
+    }
+}
+
+impl From<LayoutConfig> for ass_core::layout::LayoutParams {
+    fn from(c: LayoutConfig) -> ass_core::layout::LayoutParams {
+        ass_core::layout::LayoutParams {
+            gaps: c.gaps,
+            master_ratio: c.master_ratio,
+        }
+    }
 }
 
 /// One key binding: a modifier set, a key, and the action it triggers.
@@ -430,6 +471,29 @@ mod tests {
             message: "unknown key 'bad'".into(),
         };
         assert_eq!(d.to_string(), "line 4, keybind[1]: unknown key 'bad'");
+    }
+
+    #[test]
+    fn layout_section_overrides_defaults() {
+        let cfg = Config::from_str(
+            "schema_version = 1\n\
+             [layout]\n\
+             gaps = 16\n\
+             master_ratio = 0.6\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.layout.gaps, 16);
+        assert_eq!(cfg.layout.master_ratio, 0.6);
+        // Absent section → defaults.
+        let cfg2 = Config::from_str("schema_version = 1\n").unwrap();
+        assert_eq!(cfg2.layout, LayoutConfig::default());
+        // Partial section fills the rest with field defaults.
+        let cfg3 = Config::from_str("schema_version = 1\n[layout]\ngaps = 4\n").unwrap();
+        assert_eq!(cfg3.layout.gaps, 4);
+        assert_eq!(cfg3.layout.master_ratio, 0.5);
+        // Converts to the core layout params.
+        let p = ass_core::layout::LayoutParams::from(cfg.layout.clone());
+        assert_eq!(p.gaps, 16);
     }
 
     #[test]

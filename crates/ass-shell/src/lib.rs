@@ -18,7 +18,7 @@ use std::os::raw::c_void;
 use lens::{Frame, Ui};
 
 pub mod chrome;
-pub use chrome::{Decorations, Dock, Launcher, WindowList, WorkspaceBar};
+pub use chrome::{Decorations, Dock, Launcher, Toast, WindowList, WorkspaceBar};
 
 use ass_core::app::Entry;
 use ass_core::window::Window;

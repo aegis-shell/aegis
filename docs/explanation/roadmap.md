@@ -28,7 +28,7 @@ committed; the verification criteria are.
 | [M4](#m4-drmkms-backend) | DRM/KMS backend with libinput and libseat | Planned |
 | [M5](#m5-configuration-and-ipc) | Declarative configuration and versioned IPC | In progress |
 | [M6](#m6-workspaces-and-layout) | Dynamic per-output workspaces; floating with tiling policy | Complete (single-output) |
-| [M7](#m7-multi-output-and-input-completeness) | Multi-output, mixed DPI, gestures, tablet, color | Planned |
+| [M7](#m7-multi-output-and-input-completeness) | Multi-output, mixed DPI, gestures, tablet, color | In progress (model) |
 | [M8](#m8-xwayland-and-application-coverage) | XWayland integration and broad application coverage | Planned |
 | [M9](#m9-polish-and-completeness) | Animations, overview, notifications, accessibility | Planned |
 | [M10](#m10-the-agent-phase) | The agent adaptation layer | Future |
@@ -184,8 +184,17 @@ scale through `wp_fractional_scale_v1`. Touchpad gestures, tablet support
 with per-output mapping, and basic color management land with the libinput
 backend.
 
-**Status.** Planned. See
-[ADR-0028](../adr/0028-output-and-monitor-model.md).
+**Status.** In progress (model groundwork). The per-output geometry model
+landed in `ass-core::output` (`OutputMode`, `Scale`, `OutputGeometry`) with
+the logical-size derivation (physical mode, axis-swap for 90°/270°
+transforms, divide by integer or fractional scale) — pure and unit-tested.
+See [ADR-0028](../adr/0028-output-and-monitor-model.md).
+
+**Remaining for M7.** Server/backend wiring: track real output geometry
+from the backend, expose it to the workspace model and the tiling work-area,
+and advertise `wp_fractional_scale_v1` + `wp_viewporter`. Touchpad gestures,
+tablet mapping, and color management arrive with the libinput/DRM-KMS
+backend (M4). Needs real multi-monitor or DRM hardware to verify.
 
 **Verification.** Two outputs at different scales render correctly and the
 compositor's own chrome stays pixel-perfect. A touchpad three-finger swipe

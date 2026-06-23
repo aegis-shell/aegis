@@ -106,6 +106,33 @@ impl Client {
         self.command(Command::ToggleTiling)
     }
 
+    /// Post a notification.
+    pub fn notify(
+        &mut self,
+        summary: impl Into<String>,
+        body: impl Into<String>,
+        app_id: Option<String>,
+    ) -> io::Result<()> {
+        self.command(Command::Notify {
+            summary: summary.into(),
+            body: body.into(),
+            app_id,
+        })
+    }
+
+    /// Fetch the live notification queue.
+    pub fn notifications(&mut self) -> io::Result<Vec<ass_core::notify::Notification>> {
+        write_msg(&mut self.stream, &Request::GetNotifications)?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::Notifications { notifications } => Ok(notifications),
+            Response::Error { message } => Err(io::Error::new(io::ErrorKind::Other, message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected Notifications, got {other:?}"),
+            )),
+        }
+    }
+
     /// Submit a control/session command. Returns once the server has queued
     /// it (not once the compositor has applied it); re-query with [`Client::windows`]
     /// or subscribe to [`Event::WindowsChanged`] to observe the effect.

@@ -19,11 +19,13 @@
 mod decorations;
 mod dock;
 mod launcher;
+mod toast;
 mod window_list;
 mod workspace_bar;
 
 pub use decorations::Decorations;
 pub use dock::Dock;
 pub use launcher::Launcher;
+pub use toast::Toast;
 pub use window_list::WindowList;
 pub use workspace_bar::WorkspaceBar;

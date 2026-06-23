@@ -200,6 +200,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ass-ctl"
+version = "0.0.1"
+dependencies = [
+ "ass-core",
+ "ass-ipc",
+]
+
+[[package]]
 name = "ass-ipc"
 version = "0.0.1"
 dependencies = [

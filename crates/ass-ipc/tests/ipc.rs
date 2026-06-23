@@ -75,6 +75,9 @@ impl Handler for TestHandler {
             }],
         }
     }
+    fn notifications(&self) -> Vec<ass_core::notify::Notification> {
+        Vec::new()
+    }
     fn command(&self, cmd: Command) {
         self.commands.lock().unwrap().push(cmd);
     }
@@ -295,4 +298,56 @@ fn workspace_changed_event_is_broadcast() {
     server.broadcast(Event::WorkspaceChanged);
     let ev = client.next_event().expect("event");
     assert_eq!(ev, Event::WorkspaceChanged);
+}
+
+#[test]
+fn notify_command_is_queued_and_acked() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(vec![]));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+
+    let mut client = Client::connect_with(
+        &path,
+        Capabilities {
+            query: true,
+            control: true,
+            session: false,
+        },
+    )
+    .expect("connect");
+    client
+        .notify("Hello", "world", Some("app".into()))
+        .expect("notify");
+    let recorded = handler.commands.lock().unwrap();
+    assert!(
+        recorded
+            .iter()
+            .any(|c| matches!(c, Command::Notify { summary, .. } if summary == "Hello")),
+        "{recorded:?}"
+    );
+}
+
+#[test]
+fn notified_event_carries_the_notification() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::query(vec![]));
+    let server = Server::start(&path, handler).expect("bind");
+
+    let mut client = Client::connect(&path).expect("connect");
+    client.subscribe().expect("subscribe");
+    let n = ass_core::notify::Notification {
+        id: 7,
+        summary: "ping".into(),
+        body: "pong".into(),
+        app_id: None,
+        at_ms: 0,
+    };
+    server.broadcast(Event::Notified {
+        notification: n.clone(),
+    });
+    let ev = client.next_event().expect("event");
+    match ev {
+        Event::Notified { notification } => assert_eq!(notification, n),
+        other => panic!("expected Notified, got {other:?}"),
+    }
 }

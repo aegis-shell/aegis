@@ -1,0 +1,19 @@
+[package]
+name = "ass-ctl"
+description = "Command-line driver for the ass IPC (the reference external tool)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "ass_ctl"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ass-ctl"
+path = "src/main.rs"
+
+[dependencies]
+ass-ipc = { workspace = true }
+ass-core = { workspace = true }

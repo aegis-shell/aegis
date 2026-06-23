@@ -10,6 +10,8 @@ pub mod input;
 pub mod keybind;
 pub mod layout;
 pub mod launcher;
+pub mod notify;
+pub mod output;
 pub mod window;
 pub mod window_rule;
 pub mod workspace;
@@ -58,6 +60,7 @@ impl Rect {
 /// 90-degree rotations + reflections cover everything the Wayland core
 /// protocol defines. Compositing must apply this to the buffer's UVs (or
 /// pre-transform into a staging texture) before drawing.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u32)]
 pub enum Transform {

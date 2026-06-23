@@ -7,6 +7,56 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### ass-ctl: command-line driver for the IPC
+- A new `ass-ctl` binary (and `ass_ctl` library) drives a running compositor
+  over its IPC socket — the reference external tool (ADR-0027). Subcommands:
+  `windows`, `workspaces`, `focus <id>`, `close <id>`,
+  `switch <next|prev>`, `tiling`, `notify <summary> [body]`, `quit`, and
+  `help` (which works without a server). Connects to
+  `$XDG_RUNTIME_DIR/ass.sock`; the library's `run` entry point is
+  unit-tested against a loopback server.
+- This makes the compositor scriptable from the shell and validates the
+  client end of the IPC end to end.
+
+### Notifications (M9, over the IPC)
+- ass has notifications. The IPC `Notify { summary, body, app_id }` command
+  (control) posts one; subscribers receive a `Notified { notification }`
+  event, and `GetNotifications` queries the live queue. Notifications live
+  in a time-expiring queue (default 5 s TTL) owned by the binary and shared
+  with a new `Toast` chrome component, which renders them as a top-right
+  stack (newest on top, capped at 5). No `Chrome` trait change — the toast
+  reads the shared queue directly each frame.
+- New pure module `ass_core::notify` (`Notification`, `NotificationQueue`
+  with `push`/`expire`/`recent`/`snapshot`), unit-tested. The main loop
+  pushes on `Notify` (broadcasting the event) and expires entries once per
+  frame.
+- This is ass's own notification path (ADR-0027 rejected D-Bus); a
+  `org.freedesktop.Notifications` bridge is a possible later addition.
+
+### Configurable tiling + output-geometry work-area
+- The tiling gaps and master ratio are now configurable via a `[layout]`
+  table (`gaps`, `master_ratio`), applied live on config reload. New
+  `ass-config` `LayoutConfig` section converts to `ass_core::layout::LayoutParams`.
+- The tiling work-area now comes from the focused output's geometry
+  (ADR-0028) rather than a hardcoded rect: the server tracks an
+  `OutputGeometry` (`set_output_geometry`, called by the backend on resize)
+  and `apply_tiling` tiles into its logical rect. With the nested backend
+  (scale 1, no transform) the work-area is unchanged; real per-output scale
+  and transform take effect when M7 wires backend geometry.
+- `apply_tiling` no longer takes a work-area argument.
+
+### Output geometry groundwork (ADR-0028)
+- New pure module `ass_core::output` models one output's physical mode
+  (`OutputMode`: width, height, refresh in millihertz), scale (`Scale`,
+  fractional for HiDPI), transform, and global logical position
+  (`OutputGeometry`). The logical size the chrome and clients see is derived:
+  physical mode, axes swapped for 90°/270° transforms, divided by the
+  (integer or fractional) scale. Unit-tested with exact assertions for
+  identity, integer and fractional scale, axis-swap, their composition, and
+  non-positive-scale fallback. This is the foundation for the multi-output
+  milestone (M7) and the chrome-aware tiling work-area; server/backend wiring
+  lands with M7. `Transform` gained serde derives so a geometry serializes.
+
 ### Window rules (ADR-0026)
 - Config-driven placement rules, written as `[[window_rule]]` tables. A rule
   matches a newly-mapped toplevel by `app_id` and/or `title` (case-insensitive
