@@ -57,7 +57,7 @@ impl Default for Dock {
 }
 
 impl Chrome for Dock {
-    fn render(&mut self, f: &mut Frame, input: &Input, windows: &[Window], out: &mut ChromeEvents) {
+    fn render(&mut self, f: &mut Frame, input: &Input, windows: &[Window], _workspaces: &crate::WorkspaceSnapshot, out: &mut ChromeEvents) {
         let disp = input.as_raw().display_size;
         let n = windows.len().max(1);
         let dock_w =

@@ -27,6 +27,7 @@ impl Chrome for WindowList {
         f: &mut Frame,
         _input: &Input,
         windows: &[Window],
+        _workspaces: &crate::WorkspaceSnapshot,
         out: &mut ChromeEvents,
     ) {
         // Stays in the auto-layout flow at the top-left of the output.

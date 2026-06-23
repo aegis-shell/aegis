@@ -78,6 +78,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // free of `ass-apps`. Click a launcher row to spawn detached via
     // `ass-launch`; click a dock tile to focus / restore its window.
     shell.add(Box::new(ass_shell::Launcher::new(launcher_apps.clone())));
+    shell.add(Box::new(ass_shell::WorkspaceBar::new()));
     shell.add(Box::new(ass_shell::Dock::with_icons(
         icon_cache.map.clone(),
     )));
@@ -131,34 +132,100 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // grab/release the keyboard on edges (launcher open/close).
     let mut prev_captured = false;
 
-    // Global key bindings: built-in defaults plus optional `$ASS_KEYBINDS`
-    // overrides (format: `super+space=launcher;super+q=close;...`). `forward_input`
+    // Declarative configuration (ADR-0026). One TOML file at
+    // `$XDG_CONFIG_HOME/ass/config.toml` is the source of truth; absence is
+    // not an error (built-in defaults apply). A malformed or
+    // schema-incompatible file is logged and skipped, not fatal. Key
+    // bindings are the first section; later milestones add more.
+    let config_path = ass_config::default_path();
+    let mut config = load_config(config_path.as_deref());
+
+    // Global key bindings: built-in defaults overridden by the config file's
+    // `[[keybind]]` entries. The deprecated `$ASS_KEYBINDS` env var is still
+    // honored as a transitional override (logged) and takes precedence over
+    // the file; it is removed before the desktop phase closes. `forward_input`
     // consumes a matched key before delivering it to the focused client.
-    let keymap = match std::env::var("ASS_KEYBINDS") {
-        Ok(s) if !s.trim().is_empty() => {
-            let (overrides, errs) = ass_core::keybind::Keymap::parse_overrides(&s);
-            for e in &errs {
-                log::warn!("keybind: {e}");
-            }
-            if overrides.is_empty() {
-                ass_core::keybind::Keymap::defaults()
-            } else {
-                log::info!(
-                    "keybind: {} override(s) from $ASS_KEYBINDS",
-                    overrides.len()
-                );
-                ass_core::keybind::Keymap::defaults().with_overrides(overrides)
-            }
-        }
-        _ => ass_core::keybind::Keymap::defaults(),
-    };
-    log::info!(
-        "keybinds: {} active (set $ASS_KEYBINDS to override)",
-        keymap.len()
+    let mut keymap = build_keymap(config.as_ref());
+    log::info!("keybinds: {} active", keymap.len());
+    // Seed the window rules from the loaded config (ADR-0026). Re-applied on
+    // each reload above.
+    server.set_window_rules(
+        config
+            .as_ref()
+            .map(|c| c.window_rules.clone())
+            .unwrap_or_default(),
     );
+
+    // mtime-based reload watcher, polled each frame. `None` when there is no
+    // default config path on this host.
+    let mut reload = config_path
+        .as_deref()
+        .map(ass_config::ReloadWatcher::at);
     let mut quit_requested = false;
 
+    // IPC and introspection surface (ADR-0027). A unix socket at
+    // `$XDG_RUNTIME_DIR/ass.sock` serves the `query` capability over a
+    // snapshot shared with the main loop via an `Arc`. Connection threads
+    // read the snapshot; the main loop writes it each frame. `control`/
+    // `session` commands come back through `ipc_cmd_rx` and are applied on
+    // this thread. Bind failure is non-fatal so the compositor runs without
+    // IPC rather than crashing. `ipc` is held to the end of `run()` so its
+    // `Drop` removes the socket.
+    let (ipc_cmd_tx, ipc_cmd_rx) = std::sync::mpsc::channel::<ass_ipc::Command>();
+    let live = std::sync::Arc::new(LiveState::new(ipc_cmd_tx));
+    let ipc: Option<ass_ipc::Server> = match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(d) => {
+            let path = std::path::PathBuf::from(d).join("ass.sock");
+            match ass_ipc::Server::start(&path, std::sync::Arc::clone(&live)) {
+                Ok(s) => {
+                    log::info!("ipc: listening on {}", path.display());
+                    Some(s)
+                }
+                Err(e) => {
+                    log::warn!("ipc: failed to bind {}: {e}", path.display());
+                    None
+                }
+            }
+        }
+        None => {
+            log::warn!("ipc: $XDG_RUNTIME_DIR unset; no IPC socket");
+            None
+        }
+    };
+    // Signature of the last broadcast window set, used to detect changes.
+    let mut last_win_sig: Option<Vec<(usize, bool, Option<String>)>> = None;
+    // Last broadcast workspace snapshot, used to detect model changes.
+    let mut last_ws_snap: Option<ass_core::workspace::WorkspaceSnapshot> = None;
+
     while host.dispatch() && !shell.should_quit() && !quit_requested {
+        // Hot-reload the configuration when its mtime moves (ADR-0026). One
+        // `stat` per frame is cheap and keeps the reload on this loop, where
+        // the keymap rebuild must happen anyway. A failed reload keeps the
+        // previous configuration rather than reverting silently.
+        if let Some(path) = config_path.as_deref() {
+            if reload.as_mut().is_some_and(|w| w.changed(path)) {
+                reload_config(path, &mut config, &mut keymap, &mut server);
+            }
+        }
+
+        // Drain IPC control/session commands and apply them here on the main
+        // loop — the Wayland server state is not `Send`, so connection
+        // threads forward through the channel rather than touching it
+        // directly. Mirrors the chrome-intent drain below (ADR-0016/0027).
+        while let Ok(cmd) = ipc_cmd_rx.try_recv() {
+            use ass_ipc::Command;
+            match cmd {
+                Command::Focus { id } => server.focus_surface_by_id(id),
+                Command::Close { id } => server.close_toplevel(id),
+                Command::Move { id } => server.start_interactive_move(id),
+                Command::Cycle { forward } => server.cycle_focus(forward),
+                Command::SwitchWorkspace { dir } => server.switch_workspace(dir),
+                Command::SwitchWorkspaceTo { id } => server.switch_workspace_to(id),
+                Command::ToggleTiling => server.set_tiling(!server.tiling()),
+                Command::Quit => quit_requested = true,
+            }
+        }
+
         // Process client protocol traffic.
         server.dispatch();
 
@@ -256,6 +323,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Action::CycleFocus => server.cycle_focus(true),
                     Action::CycleFocusBack => server.cycle_focus(false),
+                    Action::WorkspaceNext => {
+                        server.switch_workspace(ass_core::workspace::Switch::Next)
+                    }
+                    Action::WorkspacePrev => {
+                        server.switch_workspace(ass_core::workspace::Switch::Prev)
+                    }
+                    Action::ToggleTiling => server.set_tiling(!server.tiling()),
                     Action::Quit => quit_requested = true,
                 }
             }
@@ -265,6 +339,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             surface.resize(sz.w as u32, sz.h as u32)?;
             input.set_display_size(sz.w as f32, sz.h as f32);
         }
+
+        // Apply the tiling policy to the current workspace when tiled mode is
+        // on (ADR-0024). No-op when off; reconfigures only windows whose
+        // target moved. The full output is the work area (chrome margins are
+        // a follow-up).
+        let (wa_w, wa_h) = host.size_u32();
+        server.apply_tiling(ass_core::Rect {
+            origin: ass_core::Point { x: 0, y: 0 },
+            size: ass_core::Size {
+                w: wa_w as i32,
+                h: wa_h as i32,
+            },
+        });
 
         match surface.begin_frame() {
             Ok(frame) => {
@@ -307,7 +394,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // Hand the shell a snapshot of live toplevels so the chrome's
                 // window list reflects the current set. The shell reads
                 // title/app_id/activated off each Window to draw its buttons.
-                shell.set_windows(server.windows());
+                // The same snapshot is mirrored to the IPC (ADR-0027) so the
+                // chrome and external tools read identical state, and a
+                // change broadcasts `WindowsChanged` to subscribers.
+                let win_snapshot = server.windows();
+                let sig: Vec<(usize, bool, Option<String>)> = win_snapshot
+                    .iter()
+                    .map(|w| (w.id, w.state.activated, w.title.clone()))
+                    .collect();
+                if last_win_sig.as_ref() != Some(&sig) {
+                    last_win_sig = Some(sig);
+                    if let Some(s) = ipc.as_ref() {
+                        s.broadcast(ass_ipc::Event::WindowsChanged);
+                    }
+                }
+                live.set_windows(win_snapshot.clone());
+                shell.set_windows(win_snapshot);
+                // Mirror the workspace snapshot and broadcast `WorkspaceChanged`
+                // on any model mutation (switch, place, remove, reap).
+                let ws_snap = server.workspace_snapshot();
+                let ws_changed = last_ws_snap.as_ref() != Some(&ws_snap);
+                live.set_workspaces(ws_snap.clone());
+                shell.set_workspaces(ws_snap.clone());
+                if ws_changed {
+                    last_ws_snap = Some(ws_snap);
+                    if let Some(s) = ipc.as_ref() {
+                        s.broadcast(ass_ipc::Event::WorkspaceChanged);
+                    }
+                }
                 unsafe { shell.render(canvas.as_raw() as *mut _, &input)? };
                 // Drain chrome interactions and forward to the server's
                 // window-management API. Each is set at most once per frame.
@@ -319,6 +433,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if let Some(id) = shell.take_move_requested() {
                     server.start_interactive_move(id);
+                }
+                // A workspace indicator tile was clicked: switch to it
+                // (ADR-0025). Same path as the Super+Left/Right bindings.
+                if let Some(id) = shell.take_switch_workspace() {
+                    server.switch_workspace_to(id);
                 }
                 // Launch the application the launcher's clicked row asked for.
                 // The child is detached (setsid) and inherits the Wayland/XDG
@@ -370,6 +489,176 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("ass: window closed after {frame_count} frames");
     device.wait_idle();
     Ok(())
+}
+
+/// Load the configuration from `path`, logging diagnostics on failure.
+/// `None` (no path, or a file that does not exist) means "use built-in
+/// defaults" and is not an error.
+fn load_config(path: Option<&std::path::Path>) -> Option<ass_config::Config> {
+    let path = path?;
+    match ass_config::load(path) {
+        Ok(Some(c)) => {
+            log::info!("config: loaded {}", path.display());
+            Some(c)
+        }
+        Ok(None) => None,
+        Err(e) => {
+            match &e {
+                ass_config::LoadError::Invalid { diagnostics, .. } => {
+                    for d in diagnostics {
+                        log::warn!("config: {d}");
+                    }
+                }
+                _ => log::warn!("config: {e}"),
+            }
+            log::warn!("config: using built-in defaults");
+            None
+        }
+    }
+}
+
+/// Re-load `path` and, on success, swap in the new config and rebuild the
+/// keymap. On failure, keep the previous config and keymap.
+fn reload_config(
+    path: &std::path::Path,
+    config: &mut Option<ass_config::Config>,
+    keymap: &mut ass_core::keybind::Keymap,
+    server: &mut ass_server::Server,
+) {
+    let apply = |config: &Option<ass_config::Config>, server: &mut ass_server::Server| {
+        server.set_window_rules(
+            config
+                .as_ref()
+                .map(|c| c.window_rules.clone())
+                .unwrap_or_default(),
+        );
+    };
+    match ass_config::load(path) {
+        Ok(Some(new_cfg)) => {
+            log::info!("config: reloaded {}", path.display());
+            *config = Some(new_cfg);
+            *keymap = build_keymap(config.as_ref());
+            apply(config, server);
+        }
+        Ok(None) => {
+            log::warn!("config: {} removed; reverting to defaults", path.display());
+            *config = None;
+            *keymap = build_keymap(config.as_ref());
+            apply(config, server);
+        }
+        Err(e) => {
+            match &e {
+                ass_config::LoadError::Invalid { diagnostics, .. } => {
+                    for d in diagnostics {
+                        log::warn!("config: {d}");
+                    }
+                }
+                _ => log::warn!("config: {e}"),
+            }
+            log::warn!("config: reload failed; keeping previous configuration");
+        }
+    }
+}
+
+/// Build the active keymap from the config file's `[[keybind]]` entries,
+/// layered over the built-in defaults. The deprecated `$ASS_KEYBINDS` env
+/// var is honored as a transitional override that takes precedence over the
+/// file (ADR-0026); it is logged and removed before the desktop phase
+/// closes.
+fn build_keymap(config: Option<&ass_config::Config>) -> ass_core::keybind::Keymap {
+    let mut overrides: Vec<ass_core::keybind::Keybind> = Vec::new();
+
+    // Deprecated env override — highest precedence so existing setups keep
+    // working during the transition.
+    if let Ok(s) = std::env::var("ASS_KEYBINDS") {
+        if !s.trim().is_empty() {
+            log::warn!(
+                "keybind: $ASS_KEYBINDS is deprecated; move it to the \
+                 `[[keybind]]` section of the config file"
+            );
+            let (env_binds, errs) = ass_core::keybind::Keymap::parse_overrides(&s);
+            for e in &errs {
+                log::warn!("keybind: {e}");
+            }
+            overrides.extend(env_binds);
+        }
+    }
+
+    // Config-file overrides — below the env override.
+    if let Some(cfg) = config {
+        let (cfg_binds, errs) = cfg.resolve_keybinds();
+        for e in &errs {
+            log::warn!("config: {e}");
+        }
+        overrides.extend(cfg_binds);
+    }
+
+    if overrides.is_empty() {
+        ass_core::keybind::Keymap::defaults()
+    } else {
+        log::info!("keybinds: {} override(s) applied", overrides.len());
+        ass_core::keybind::Keymap::defaults().with_overrides(overrides)
+    }
+}
+
+/// Shared live window snapshot for the IPC (ADR-0027). The main loop writes
+/// the same `Vec<Window>` it hands the shell; connection threads read it.
+/// `query`-capability commands never mutate, so the lock is an `RwLock` and
+/// reads from several connections do not block each other. `control`/
+/// `session` commands arrive through [`Handler::command`] and are forwarded
+/// to the main loop via the channel the binary owns — the Wayland server
+/// state is not `Send`, so connection threads must not touch it directly.
+struct LiveState {
+    windows: std::sync::RwLock<Vec<ass_core::window::Window>>,
+    workspaces: std::sync::RwLock<ass_core::workspace::WorkspaceSnapshot>,
+    commands: std::sync::Mutex<std::sync::mpsc::Sender<ass_ipc::Command>>,
+}
+
+impl LiveState {
+    fn new(commands: std::sync::mpsc::Sender<ass_ipc::Command>) -> LiveState {
+        LiveState {
+            windows: std::sync::RwLock::new(Vec::new()),
+            workspaces: std::sync::RwLock::new(ass_core::workspace::WorkspaceModel::new()
+                .snapshot()),
+            commands: std::sync::Mutex::new(commands),
+        }
+    }
+
+    fn set_windows(&self, windows: Vec<ass_core::window::Window>) {
+        *self.windows.write().unwrap() = windows;
+    }
+
+    fn set_workspaces(&self, snapshot: ass_core::workspace::WorkspaceSnapshot) {
+        *self.workspaces.write().unwrap() = snapshot;
+    }
+}
+
+impl ass_ipc::Handler for LiveState {
+    /// The socket lives in `$XDG_RUNTIME_DIR` (user-only), so every local
+    /// client is the user; grant all capabilities. The capability boundary
+    /// becomes load-bearing for the M10 agent phase, where a scope narrows it.
+    fn policy_caps(&self) -> ass_ipc::Capabilities {
+        ass_ipc::Capabilities {
+            query: true,
+            control: true,
+            session: true,
+        }
+    }
+
+    fn windows(&self) -> Vec<ass_core::window::Window> {
+        self.windows.read().unwrap().clone()
+    }
+
+    fn workspaces(&self) -> ass_core::workspace::WorkspaceSnapshot {
+        self.workspaces.read().unwrap().clone()
+    }
+
+    fn command(&self, cmd: ass_ipc::Command) {
+        // Best-effort: a send fails only if the main loop has dropped the
+        // receiver (compositor shutting down); the command is then lost,
+        // which is the right outcome.
+        let _ = self.commands.lock().unwrap().send(cmd);
+    }
 }
 
 /// Decoded application-icon textures for the dock. `_images` owns the GPU

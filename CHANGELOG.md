@@ -7,6 +7,182 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### Window rules (ADR-0026)
+- Config-driven placement rules, written as `[[window_rule]]` tables. A rule
+  matches a newly-mapped toplevel by `app_id` and/or `title` (case-insensitive
+  substring, AND-ed) and prescribes a workspace move and/or a forced layout
+  role. The first match applies at first map.
+  ```toml
+  [[window_rule]]
+  app_id = "firefox"
+  workspace = 2
+  role = "tiled"
+
+  [[window_rule]]
+  title = "calculator"
+  role = "floating"
+  ```
+- A rule with no matchers matches nothing (a bare `{ role = "floating" }` does
+  not catch every window). `workspace` is a 1-based index on the focused
+  output and applies only if that workspace exists. `role` is `floating` or
+  `tiled` (now lowercase on the wire).
+- Tiling now respects the layout role: a `floating`-role window is exempt
+  from tiling even when its workspace is in tiled mode (ADR-0024 floating
+  exceptions). New pure module `ass_core::window_rule` owns the matching
+  logic, unit-tested in isolation; `ass-config` deserializes the rules and
+  `ass-server` applies them on map and on config reload.
+- Limitation: rules evaluate at first map; `app_id`/`title` set after mapping
+  are not re-evaluated yet (follow-up).
+
+### Workspace replug-restore (ADR-0025)
+- The workspace model now restores a disconnected output's workspaces when
+  its connector returns. Each workspace remembers its birth connector
+  (`Workspace.origin`); outputs carry a stable `connector` identity
+  (`Output.connector`, surfaced in the IPC snapshot). Unplugging an output
+  relocates its non-empty workspaces to the primary survivor (origin
+  preserved); re-adding the same connector moves them home. `add_output`
+  now takes a connector name. Fully unit-tested in isolation (the
+  single-output server passes "nested" and never hotplugs, so its behavior
+  is unchanged; real hotplug wiring lands with the multi-output backend,
+  ADR-0028).
+
+### Tiling (ADR-0024)
+- New pure module `ass_core::layout` owns the tiling policy as geometry: a
+  `Layout` trait (`layout(work_area, n_tiled, params) -> Vec<Rect>`), a
+  `MasterStack` policy (master column + equal stack rows), `LayoutParams`
+  (gaps, master ratio), and a `LayoutRole` (`Floating`/`Tiled`). A tiled
+  window is still a `Window` with a position and size — the policy just sets
+  them, never a separate container type. `Window` gains a `layout_role`
+  field (`Floating` by default). Unit-tested in isolation with exact
+  rectangle assertions.
+- Server application: `Super+T` (keybind action `ToggleTiling`, configurable)
+  or the IPC `ToggleTiling` command flips the current workspace to tiled.
+  The master-stack policy runs over the workspace's windows each frame and
+  reconfigures only those whose target rect moved, so steady state sends no
+  `xdg_toplevel.configure` events (a new `reconfigure_with_size` forces an
+  explicit width/height, unlike the advisory 0×0 state-bit path). The work
+  area is the full output for now; chrome-aware margins are a follow-up.
+- The IPC `ToggleTiling` command makes tiling scriptable (and drove the
+  end-to-end design); the layout math is unit-tested.
+
+### Workspaces (M6, first cut)
+- ass is now workspace-aware. Each output owns a dynamic set of workspaces
+  with one always empty at the end (the GNOME/niri model,
+  [ADR-0025](docs/adr/0025-workspace-model.md)). A toplevel maps onto the
+  focused output's current workspace; rendering, the chrome snapshot, and
+  focus cycling see only the visible workspace's windows. Switching away
+  from a window drops its keyboard focus (a `wl_keyboard.leave` is posted)
+  so keystrokes do not route to a hidden window.
+- New pure model `ass_core::workspace` (`WorkspaceModel`, `Workspace`,
+  `Output`, `WorkspaceId`/`OutputId`) owns the semantics: toplevel
+  place/remove/move, `switch`/`switch_to`, the trailing-empty invariant,
+  empty-workspace reaping, multi-output independence, and output-removal
+  relocation. It is unit-tested in isolation and has no flux, lens, or
+  Wayland dependency.
+- Key bindings gained two actions, `WorkspaceNext`/`WorkspacePrev`, bound by
+  default to `Super+Right`/`Super+Left` and configurable (action names
+  `workspace_next`/`workspace_prev`, aliases `ws_next`/`ws_prev`) through
+  the config file's `[[keybind]]` section. A workspace switch with no live
+  client is a no-op.
+- The IPC exposes the workspace model (ADR-0027): `GetWorkspaces` returns a
+  serializable snapshot of every output, its current workspace, and each
+  workspace's toplevel ids; `SwitchWorkspace`/`SwitchWorkspaceTo` commands
+  drive the same switch path as the key bindings; and a `WorkspaceChanged`
+  event is pushed to subscribers whenever the model moves (switch, place,
+  remove, reap). The binary grants all capabilities to local clients on the
+  `$XDG_RUNTIME_DIR` socket (the boundary becomes load-bearing for the agent
+  phase). The workspace snapshot types live in `ass-core` (serde-derived) so
+  the IPC sends them without reconstructing them.
+- A top-center workspace indicator (`WorkspaceBar` chrome component) shows
+  one numbered tile per workspace, highlights the current one (`[n]`), and
+  switches on click. The `Chrome` trait's `render` now takes the workspace
+  snapshot; the existing components ignore it. The bar hides while there is
+  only a single workspace (nothing to switch to) and appears once a window
+  maps.
+- Out of scope for this cut (follow-ups): the optional tiling policy
+  ([ADR-0024](docs/adr/0024-layout-model.md)) and workspace replug-restore
+  ([ADR-0025](docs/adr/0025-workspace-model.md)) are not yet implemented.
+
+### IPC and introspection surface (query, control, and events)
+- ass now exposes a versioned IPC over a unix socket at
+  `$XDG_RUNTIME_DIR/ass.sock`, the foundation of the extension and
+  automation surface ([ADR-0027](docs/adr/0027-ipc-and-introspection.md)).
+  It is the path the chrome, external tools, and the later agent layer all
+  share: every capability returns the same `ass_core::window::Window` the
+  renderer and chrome read, with no separate wire DTO.
+- The protocol is length-framed JSON with an explicit major version
+  (`PROTOCOL_VERSION = 1`); a client offering any other version is refused at
+  the handshake. The handshake negotiates capabilities (`query`/`control`/
+  `session`); `query` is always granted, `control`/`session` are intersected
+  against server policy.
+- `query`: `GetWindows` returns the live toplevel snapshot in z-order.
+- `control`/`session`: `Do` submits a command — `Focus`, `Close`, `Move`,
+  `Cycle` (control) and `Quit` (session) — mirroring the operations the
+  chrome and key bindings already perform. Commands are fire-and-forget:
+  the server acknowledges queuing with `Ok`, not completion, and applies
+  them on the main loop (the Wayland server state is not `Send`, so
+  connection threads forward through a channel rather than touching it).
+  Re-query or subscribe to observe the effect.
+- Events: `Subscribe` opts a connection into server-pushed events; the
+  compositor broadcasts `WindowsChanged` whenever the visible window set
+  moves (focus, add/remove, retitle). Each connection runs a reader thread
+  (protocol) and a writer thread (sole write-half owner), so responses and
+  events never contend; the subscriber registry is reaped on disconnect.
+- Bind failure is non-fatal (the compositor runs without IPC); a stale
+  socket from a crashed run is removed on startup and on shutdown.
+- New pure crate `ass-ipc` (depends only on `ass-core`, `serde`,
+  `serde_json`) owns the schema, codec, server (`Handler` trait + accept
+  thread + per-connection reader/writer threads), and reference client,
+  verified end-to-end by loopback tests covering query, commands, capability
+  refusal, and event delivery. `ass-core` gained an optional, off-by-default
+  `serde` feature deriving `Serialize`/`Deserialize` on the shared model
+  types (`Window`, `WindowState`, `SizeHints`, `Point`, `Size`, `Rect`) so
+  the IPC sends the same types rather than reconstructing them.
+
+### Declarative configuration (TOML + live reload)
+- Configuration now lives in a single TOML file at
+  `$XDG_CONFIG_HOME/ass/config.toml` (defaulting to `~/.config/ass/config.toml`),
+  replacing the ad hoc `$ASS_KEYBINDS` environment variable as the source of
+  truth for user-tunable behavior. The file carries an explicit
+  `schema_version`; this build supports `1`. See
+  [ADR-0026](docs/adr/0026-configuration-system.md) and the
+  [configuration reference](docs/reference/config.md).
+- The first section is key bindings, written as an array of `[[keybind]]`
+  tables:
+  ```toml
+  schema_version = 1
+
+  [[keybind]]
+  mods = ["super"]
+  key = "space"
+  action = "launcher"
+
+  [[keybind]]
+  mods = ["super", "shift"]
+  key = "q"
+  action = "quit"
+  ```
+  Entries layer over the built-in defaults (a file with one binding keeps
+  the rest). Modifier names: `shift`, `ctrl`/`control`, `alt`/`mod1`,
+  `super`/`meta`/`win`/`mod4`. Action names: `launcher`, `close`, `cycle`
+  (alias `next`), `prev`, `quit`. Key names cover letters, digits, and the
+  common controls (`return`, `escape`, `tab`, `f1`–`f12`, arrows, …).
+- The file is hot-reloaded: editing it on disk changes behavior without a
+  restart, checked once per frame by mtime. A malformed file, an unknown
+  `schema_version`, or an unresolvable `[[keybind]]` entry is reported as a
+  structured `config:` diagnostic with field path and (for parse errors)
+  source line, and never crashes the compositor. Good entries in a partially
+  invalid file still take effect.
+- New pure crate `ass-config` (depends only on `ass-core`, `serde`, `toml`,
+  `dirs`) owns the schema, the loader, the watcher, and the migration logic;
+  it is unit-tested in isolation. `ass_core::keybind::{mod_from_name,
+  action_from_name}` are now public so the config layer reuses the existing
+  name-resolution tables instead of duplicating them.
+- `$ASS_KEYBINDS` remains honored as a **deprecated transitional override**
+  (logged on each reload) and takes precedence over the file; it will be
+  removed before the desktop phase closes. Move bindings into the
+  `[[keybind]]` section of the config file.
+
 ### Real application icons in the dock
 - The dock now renders decoded application icon textures instead of a fixed
   glyph when an icon is available for a window's `app_id`. The binary

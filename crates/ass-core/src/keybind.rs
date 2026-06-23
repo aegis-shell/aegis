@@ -28,6 +28,12 @@ pub enum Action {
     CycleFocus,
     /// Move keyboard focus to the previous mapped toplevel (backward).
     CycleFocusBack,
+    /// Switch to the next workspace on the focused output (ADR-0025).
+    WorkspaceNext,
+    /// Switch to the previous workspace on the focused output.
+    WorkspacePrev,
+    /// Toggle the current workspace between tiled and floating (ADR-0024).
+    ToggleTiling,
     /// Quit the compositor.
     Quit,
 }
@@ -61,6 +67,9 @@ impl Keymap {
                 ),
                 kb(Mods::SUPER, XKB_KEY_Return, Action::ToggleLauncher),
                 kb(Mods::SUPER, 0x71, Action::CloseFocused), /* 'q' */
+                kb(Mods::SUPER, 0xff53, Action::WorkspaceNext), /* Right */
+                kb(Mods::SUPER, 0xff51, Action::WorkspacePrev), /* Left */
+                kb(Mods::SUPER, 0x74, Action::ToggleTiling), /* 't' */
                 kb(Mods::SUPER | Mods::SHIFT, 0xff0d, Action::Quit),
             ],
         }
@@ -157,7 +166,7 @@ const fn kb(mods: Mods, keysym: u32, action: Action) -> Keybind {
     }
 }
 
-fn mod_from_name(s: &str) -> Option<Mods> {
+pub fn mod_from_name(s: &str) -> Option<Mods> {
     Some(match s {
         "shift" => Mods::SHIFT,
         "ctrl" | "control" => Mods::CTRL,
@@ -167,12 +176,15 @@ fn mod_from_name(s: &str) -> Option<Mods> {
     })
 }
 
-fn action_from_name(s: &str) -> Option<Action> {
+pub fn action_from_name(s: &str) -> Option<Action> {
     Some(match s.to_ascii_lowercase().as_str() {
         "launcher" | "togglelauncher" | "apps" => Action::ToggleLauncher,
         "close" | "closefocused" => Action::CloseFocused,
         "cycle" | "next" => Action::CycleFocus,
         "prev" | "previous" | "cycleback" => Action::CycleFocusBack,
+        "workspace_next" | "next_workspace" | "ws_next" => Action::WorkspaceNext,
+        "workspace_prev" | "prev_workspace" | "ws_prev" => Action::WorkspacePrev,
+        "tiling" | "toggle_tiling" => Action::ToggleTiling,
         "quit" | "exit" => Action::Quit,
         _ => return None,
     })

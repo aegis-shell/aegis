@@ -36,6 +36,7 @@ impl Chrome for Decorations {
         f: &mut Frame,
         _input: &Input,
         windows: &[Window],
+        _workspaces: &crate::WorkspaceSnapshot,
         out: &mut ChromeEvents,
     ) {
         for w in windows.iter() {

@@ -9,6 +9,7 @@
 /// State bits advertised to the client via `xdg_toplevel.configure`'s states
 /// array. Mapped one-to-one to the protocol's state enum values; the
 /// compositor OR's the active bits into the array on each configure.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WindowState {
     /// `XDG_TOPLEVEL_STATE_MAXIMIZED` (value 1).
@@ -47,6 +48,7 @@ impl WindowState {
 
 /// Minimum and maximum size hints from `xdg_toplevel.set_min_size` /
 /// `set_max_size`. `0` means "no constraint" per the protocol.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SizeHints {
     pub min_w: i32,
@@ -63,6 +65,7 @@ impl SizeHints {
 
 /// Per-toplevel metadata. The server owns one per mapped `xdg_toplevel`; the
 /// shell and introspection APIs read it.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default)]
 pub struct Window {
     /// Stable identifier; the surface resource's address as `usize`, matching
@@ -79,6 +82,10 @@ pub struct Window {
     /// compositor hides the surface from rendering and input until the user
     /// restores it by focusing it from the window list or dock.
     pub minimized: bool,
+    /// Whether the tiling policy (ADR-0024) or the floating policy owns this
+    /// window's position and size. `Floating` by default; a tiled window
+    /// still carries a position and size — the tiling policy sets them.
+    pub layout_role: crate::layout::LayoutRole,
     /// Logical extent of the toplevel in compositor space. Set on first map
     /// (from the committed buffer size) and updated by interactive move and
     /// resize. The renderer reads `position`; the shell reads `position` and

@@ -11,6 +11,7 @@ mod keyboard;
 use std::ffi::{c_void, CStr, CString};
 use std::os::raw::c_int;
 
+use ass_core::layout::Layout;
 use ass_core::{SurfaceDmabuf, SurfacePixels};
 
 /// Single-plane dma-buf parameters backing a `wl_buffer`, or accumulating in a
@@ -119,6 +120,10 @@ pub struct SurfaceRec {
     /// maximized/fullscreen transitions. Sent back to the client in the
     /// states array of subsequent `xdg_toplevel.configure` events.
     pub window: ass_core::window::Window,
+    /// Tiling target (ADR-0024): the layout rect the tiling policy last
+    /// configured this surface to, or `None` when not under active tiling.
+    /// The apply path reconfigures only when the target moves.
+    pub layout_target: Option<ass_core::Rect>,
     // ----- wp_viewport state -----
     /// Source rectangle in surface pixel coords, or None for "whole buffer".
     /// Set by `wp_viewport.set_source`. Coordinates arrive as 24.8
@@ -175,6 +180,10 @@ impl SurfaceRec {
             pending_scale: 1,
             pending_damage: Vec::new(),
             committed_damage: Vec::new(),
+            // Tiling (ADR-0024): the last layout rect we configured this
+            // surface to. `None` until applied; the apply path reconfigures
+            // only when the target moves, so steady state sends no configures.
+            layout_target: None,
         }
     }
 }
@@ -223,10 +232,28 @@ struct State {
     /// updates the window's geometry instead of (only) being forwarded to
     /// the focused client.
     interactive: Option<ass_core::window::Interactive>,
+    /// Whether the current workspace is in tiled mode (ADR-0024). When on,
+    /// `apply_tiling` runs the master-stack policy over the workspace's
+    /// windows each frame, reconfiguring only those whose target moved.
+    tiling: bool,
+    /// Parameters for the tiling policy (gaps, master ratio).
+    layout_params: ass_core::layout::LayoutParams,
+    /// Config-driven window rules (ADR-0026). Evaluated on first map; the
+    /// first match prescribes a workspace move and/or a forced layout role.
+    window_rules: Vec<ass_core::window_rule::WindowRule>,
+    /// Dynamic per-output workspaces (ADR-0025). Toplevels are placed on the
+    /// current workspace at first map; rendering and input see only the
+    /// visible set (`visible_toplevels`).
+    workspaces: ass_core::workspace::WorkspaceModel,
+    /// The single output the nested backend presents. Multi-output lands in
+    /// M7 (ADR-0028); until then there is exactly one.
+    output: ass_core::workspace::OutputId,
 }
 
 impl State {
     fn new(display: *mut ffi::wl_display) -> State {
+        let mut workspaces = ass_core::workspace::WorkspaceModel::new();
+        let output = workspaces.add_output("nested");
         State {
             display,
             surfaces: Vec::new(),
@@ -240,6 +267,11 @@ impl State {
             last_button_serial: 0,
             keyboard: None,
             interactive: None,
+            workspaces,
+            output,
+            tiling: false,
+            layout_params: ass_core::layout::LayoutParams::default(),
+            window_rules: Vec::new(),
         }
     }
 
@@ -357,7 +389,18 @@ impl Server {
 
     /// Mapped xdg-toplevel surfaces backed by shm (CPU pixels), for the renderer
     /// to upload. Subsurfaces are skipped until subsurface placement is modeled.
+    /// The set of toplevel ids on the current workspace of each output — the
+    /// only surfaces the renderer, chrome, and input may touch (ADR-0025).
+    fn visible(&self) -> std::collections::HashSet<usize> {
+        self.state
+            .workspaces
+            .visible_toplevels()
+            .into_iter()
+            .collect()
+    }
+
     pub fn toplevel_frames(&self) -> Vec<SurfacePixels<'_>> {
+        let visible = self.visible();
         self.state
             .surfaces
             .iter()
@@ -370,6 +413,7 @@ impl Server {
                     && !s.window.minimized
                     && !s.content_is_dmabuf
                     && !s.pixels.is_empty()
+                    && visible.contains(&(s.resource as usize))
             })
             .map(|s| SurfacePixels {
                 id: s.resource as usize,
@@ -394,6 +438,7 @@ impl Server {
     /// import zero-copy. The `fd` is borrowed (flux dups it); the server keeps
     /// ownership until the backing buffer is replaced or destroyed.
     pub fn toplevel_dmabuf_frames(&self) -> Vec<SurfaceDmabuf> {
+        let visible = self.visible();
         self.state
             .surfaces
             .iter()
@@ -406,6 +451,7 @@ impl Server {
                     && !s.window.minimized
                     && s.content_is_dmabuf
                     && !s.dmabuf_buffer.is_null()
+                    && visible.contains(&(s.resource as usize))
             })
             .filter_map(|s| {
                 let db = unsafe {
@@ -465,10 +511,14 @@ impl Server {
     }
 
     fn collect_subsurfaces_shm(&self, want_above: bool) -> Vec<SurfacePixels<'_>> {
+        let visible = self.visible();
         let mut out = Vec::new();
         for p in self.state.live_surfaces() {
             let parent = unsafe { &*p };
-            if !parent.mapped || parent.xdg_toplevel.is_null() {
+            if !parent.mapped
+                || parent.xdg_toplevel.is_null()
+                || !visible.contains(&(parent.resource as usize))
+            {
                 continue;
             }
             for &child_ptr in &parent.children {
@@ -509,10 +559,14 @@ impl Server {
     }
 
     fn collect_subsurfaces_dmabuf(&self, want_above: bool) -> Vec<SurfaceDmabuf> {
+        let visible = self.visible();
         let mut out = Vec::new();
         for p in self.state.live_surfaces() {
             let parent = unsafe { &*p };
-            if !parent.mapped || parent.xdg_toplevel.is_null() {
+            if !parent.mapped
+                || parent.xdg_toplevel.is_null()
+                || !visible.contains(&(parent.resource as usize))
+            {
                 continue;
             }
             for &child_ptr in &parent.children {
@@ -686,10 +740,13 @@ impl Server {
     /// and any chrome that needs a list of windows. Reads current metadata;
     /// mutation happens through xdg_toplevel requests from the owning client.
     pub fn windows(&self) -> Vec<ass_core::window::Window> {
+        let visible = self.visible();
         self.state
             .live_surfaces()
             .map(|p| unsafe { &*p })
-            .filter(|s| !s.xdg_toplevel.is_null())
+            .filter(|s| {
+                !s.xdg_toplevel.is_null() && visible.contains(&(s.resource as usize))
+            })
             .map(|s| s.window.clone())
             .collect()
     }
@@ -826,11 +883,17 @@ impl Server {
     /// if fewer than two eligible toplevels exist. Backs the `CycleFocus` /
     /// `CycleFocusBack` key bindings.
     pub fn cycle_focus(&mut self, forward: bool) {
+        let visible = self.visible();
         let ids: Vec<usize> = self
             .state
             .live_surfaces()
             .map(|p| unsafe { &*p })
-            .filter(|s| !s.xdg_toplevel.is_null() && s.mapped && !s.window.minimized)
+            .filter(|s| {
+                !s.xdg_toplevel.is_null()
+                    && s.mapped
+                    && !s.window.minimized
+                    && visible.contains(&(s.resource as usize))
+            })
             .map(|s| s.resource as usize)
             .collect();
         if ids.len() < 2 {
@@ -851,6 +914,133 @@ impl Server {
             None => ids[0],
         };
         self.focus_surface_by_id(next);
+    }
+
+    /// Switch to an adjacent workspace on the focused output (ADR-0025). The
+    /// visible set changes on the next frame; if the focused toplevel is no
+    /// longer visible, keyboard focus is dropped (a `wl_keyboard.leave` is
+    /// posted) so keystrokes do not route to a hidden window.
+    pub fn switch_workspace(&mut self, dir: ass_core::workspace::Switch) {
+        self.state.workspaces.switch(self.state.output, dir);
+        self.drop_focus_if_hidden();
+        unsafe { ffi::wl_display_flush_clients(self.state.display) };
+    }
+
+    /// Switch directly to a workspace by id on the output that owns it. Same
+    /// focus-drop contract as [`switch_workspace`](Self::switch_workspace).
+    pub fn switch_workspace_to(&mut self, id: ass_core::workspace::WorkspaceId) {
+        self.state.workspaces.switch_to(id);
+        self.drop_focus_if_hidden();
+        unsafe { ffi::wl_display_flush_clients(self.state.display) };
+    }
+
+    /// The workspace/output snapshot for the IPC and chrome (ADR-0025/0027).
+    pub fn workspace_snapshot(&self) -> ass_core::workspace::WorkspaceSnapshot {
+        self.state.workspaces.snapshot()
+    }
+
+    /// Whether the current workspace is in tiled mode (ADR-0024).
+    pub fn tiling(&self) -> bool {
+        self.state.tiling
+    }
+
+    /// Replace the window rules (ADR-0026). Called at startup and on config
+    /// reload. Rules apply to windows mapped after they are set.
+    pub fn set_window_rules(&mut self, rules: Vec<ass_core::window_rule::WindowRule>) {
+        self.state.window_rules = rules;
+    }
+
+    /// Toggle the current workspace between tiled and floating (ADR-0024).
+    /// On, the workspace's windows are marked `Tiled` and laid out next
+    /// `apply_tiling`; off, they revert to `Floating` and keep their current
+    /// geometry. Layout targets are cleared so the next apply reconfigures.
+    pub fn set_tiling(&mut self, on: bool) {
+        self.state.tiling = on;
+        let role = if on {
+            ass_core::layout::LayoutRole::Tiled
+        } else {
+            ass_core::layout::LayoutRole::Floating
+        };
+        for id in self.state.workspaces.visible_toplevels() {
+            let rec = self.find_surface_by_window_id(id);
+            if rec.is_null() {
+                continue;
+            }
+            unsafe {
+                (*rec).window.layout_role = role;
+                (*rec).layout_target = None;
+            }
+        }
+        log::info!("[server] tiling {}", if on { "on" } else { "off" });
+    }
+
+    /// Apply the master-stack tiling policy to the current workspace's
+    /// windows when tiled mode is on (ADR-0024). Runs the layout over
+    /// `work_area` and reconfigures only the windows whose target rect moved,
+    /// so steady state sends no configure events. No-op when tiling is off.
+    pub fn apply_tiling(&mut self, work_area: ass_core::Rect) {
+        if !self.state.tiling {
+            return;
+        }
+        // Tile only windows whose role is `Tiled`; a rule-forced `Floating`
+        // window is left in place (ADR-0024 floating exceptions).
+        let tiled_ids: Vec<usize> = self
+            .state
+            .workspaces
+            .visible_toplevels()
+            .into_iter()
+            .filter(|id| {
+                let rec = self.find_surface_by_window_id(*id);
+                !rec.is_null()
+                    && unsafe {
+                        (*rec).window.layout_role
+                            == ass_core::layout::LayoutRole::Tiled
+                    }
+            })
+            .collect();
+        let rects = ass_core::layout::MasterStack.layout(
+            work_area,
+            tiled_ids.len(),
+            &self.state.layout_params,
+        );
+        let mut flushed = false;
+        for (id, rect) in tiled_ids.iter().zip(rects.iter()) {
+            let rec = self.find_surface_by_window_id(*id);
+            if rec.is_null() {
+                continue;
+            }
+            unsafe {
+                if (*rec).xdg_toplevel.is_null() || !(*rec).mapped {
+                    continue;
+                }
+                if (*rec).layout_target == Some(*rect) {
+                    continue; // already at the target; do not reconfigure
+                }
+                (*rec).position = rect.origin;
+                (*rec).window.position = rect.origin;
+                (*rec).window.size = rect.size;
+                (*rec).window.layout_role = ass_core::layout::LayoutRole::Tiled;
+                (*rec).layout_target = Some(*rect);
+                reconfigure_with_size(rec, rect.size.w, rect.size.h);
+                if !flushed {
+                    ffi::wl_display_flush_clients(self.state.display);
+                    flushed = true;
+                }
+            }
+        }
+    }
+
+    /// If the keyboard-focused surface is not on a visible workspace, clear
+    /// focus (post leave, deactivate). Idempotent.
+    fn drop_focus_if_hidden(&mut self) {
+        let visible = self.visible();
+        let f = self.state.keyboard_focus;
+        if f.is_null() {
+            return;
+        }
+        if !visible.contains(&(f as usize)) {
+            self.change_keyboard_focus(std::ptr::null_mut());
+        }
     }
 
     fn pointer_motion(&mut self, x: f32, y: f32) {
@@ -1427,6 +1617,39 @@ unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut
             (*rec).width,
             (*rec).height
         );
+        // Place the new toplevel on the focused output's current workspace
+        // (ADR-0025). The model's trailing-empty invariant appends a fresh
+        // workspace if this one fills the last.
+        if !(*rec).state.is_null() {
+            let id = (*rec).resource as usize;
+            let st = &mut *(*rec).state;
+            if let Some(wid) = st.workspaces.current_workspace(st.output) {
+                st.workspaces.place_toplevel(wid, id);
+            }
+            // Apply the first matching window rule (ADR-0026): a workspace
+            // move and/or a forced layout role. `app_id`/`title` may not be
+            // set yet at first map; rules re-evaluating on title changes is a
+            // follow-up.
+            let app_id = (*rec).window.app_id.clone();
+            let title = (*rec).window.title.clone();
+            if let Some(rule) = st
+                .window_rules
+                .iter()
+                .find(|r| r.matches(app_id.as_deref(), title.as_deref()))
+            {
+                if let Some(ws_idx1) = rule.workspace {
+                    let idx = (ws_idx1 as usize).saturating_sub(1);
+                    if let Some(o) = st.workspaces.output(st.output) {
+                        if let Some(&target) = o.workspaces.get(idx) {
+                            st.workspaces.move_toplevel(id, target);
+                        }
+                    }
+                }
+                if let Some(role) = rule.role {
+                    (*rec).window.layout_role = role;
+                }
+            }
+        }
     }
 }
 
@@ -1546,6 +1769,13 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
     let rec = ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec;
     if rec.is_null() {
         return;
+    }
+    // Drop the toplevel from its workspace (ADR-0025). Idempotent: a no-op
+    // for surfaces that never mapped or had no toplevel role. Run before the
+    // slot is nulled so the resource address is still readable.
+    if !(*rec).state.is_null() {
+        let id = (*rec).resource as usize;
+        (*(*rec).state).workspaces.remove_toplevel(id);
     }
     // Release any held dma-buf-backed wl_buffer so the client can reclaim its
     // GPU memory; a surface destroyed while holding a zero-copy buffer would
@@ -1873,6 +2103,16 @@ unsafe extern "C" fn toplevel_set_max_size(
 /// client pick" per xdg-shell; we pass 0,0 for state-only changes and reserve
 /// non-zero dimensions for fullscreen-on-output (deferred).
 unsafe fn reconfigure_with_state(rec: *mut SurfaceRec) {
+    // The state-bit path leaves the size to the client (0, 0 = "you decide");
+    // maximize/fullscreen are advisory on size this way.
+    reconfigure_with_size(rec, 0, 0);
+}
+
+/// Post an `xdg_toplevel.configure` with an explicit width/height (the
+/// tiling path forces a size, unlike the state-bit path). `w`/`h` of 0 mean
+/// "client decides" per xdg-shell. The current window-state bits are sent
+/// unchanged; tiling carries no protocol state of its own.
+unsafe fn reconfigure_with_size(rec: *mut SurfaceRec, w: i32, h: i32) {
     if rec.is_null() || (*rec).xdg_toplevel.is_null() {
         return;
     }
@@ -1895,8 +2135,8 @@ unsafe fn reconfigure_with_state(rec: *mut SurfaceRec) {
     ffi::wl_resource_post_event(
         (*rec).xdg_toplevel,
         ffi::XDG_TOPLEVEL_CONFIGURE,
-        0i32,
-        0i32,
+        w,
+        h,
         &mut arr as *mut ffi::wl_array,
     );
     if !arr.data.is_null() {

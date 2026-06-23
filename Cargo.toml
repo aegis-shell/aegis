@@ -41,9 +41,21 @@ ass-backend = { path = "crates/ass-backend" }
 ass-render = { path = "crates/ass-render" }
 ass-shell = { path = "crates/ass-shell" }
 ass-wallpaper = { path = "crates/ass-wallpaper" }
+# Configuration: versioned TOML schema, loader, and live reload (ADR-0026).
+ass-config = { path = "crates/ass-config" }
+# IPC: versioned schema over a unix socket (ADR-0027).
+ass-ipc = { path = "crates/ass-ipc" }
 # Launcher: XDG application discovery + detached launch. See ADR-0022.
 ass-apps = { path = "crates/ass-apps" }
 ass-launch = { path = "crates/ass-launch" }
+
+# Declarative configuration (ADR-0026). `serde` drives the schema; `toml` is
+# the chosen file format over KDL/YAML/INI for tooling maturity and an
+# unambiguous grammar. `serde_json` is the IPC wire format (ADR-0027):
+# human-debuggable and schema-driven, distinct from adopting the i3 protocol.
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+serde_json = "1"
 
 # Image decode for the wallpaper crate. default-features off so the
 # avif decoder (which needs dav1d on the host) does not gate the build;

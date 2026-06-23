@@ -8,10 +8,14 @@
 pub mod app;
 pub mod input;
 pub mod keybind;
+pub mod layout;
 pub mod launcher;
 pub mod window;
+pub mod window_rule;
+pub mod workspace;
 
 /// An integer point in compositor (logical) coordinate space.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Point {
     pub x: i32,
@@ -19,6 +23,7 @@ pub struct Point {
 }
 
 /// An integer size in logical pixels.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Size {
     pub w: i32,
@@ -26,6 +31,7 @@ pub struct Size {
 }
 
 /// An axis-aligned rectangle in logical coordinate space.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Rect {
     pub origin: Point,

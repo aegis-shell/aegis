@@ -51,7 +51,7 @@ impl Launcher {
 }
 
 impl Chrome for Launcher {
-    fn render(&mut self, f: &mut Frame, input: &Input, windows: &[Window], out: &mut ChromeEvents) {
+    fn render(&mut self, f: &mut Frame, input: &Input, windows: &[Window], _workspaces: &crate::WorkspaceSnapshot, out: &mut ChromeEvents) {
         let disp = input.as_raw().display_size;
 
         // Refresh the brain's view of which apps are already running, so it

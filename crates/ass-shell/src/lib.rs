@@ -18,10 +18,11 @@ use std::os::raw::c_void;
 use lens::{Frame, Ui};
 
 pub mod chrome;
-pub use chrome::{Decorations, Dock, Launcher, WindowList};
+pub use chrome::{Decorations, Dock, Launcher, WindowList, WorkspaceBar};
 
 use ass_core::app::Entry;
 use ass_core::window::Window;
+use ass_core::workspace::WorkspaceSnapshot;
 
 /// Re-export so callers can construct input snapshots without depending on
 /// lens directly.
@@ -49,23 +50,30 @@ pub struct ChromeEvents {
     /// full [`Entry`] keeps `ass-shell` free of any `ass-apps` dependency
     /// (ADR-0022).
     pub spawn: Option<Entry>,
+    /// A workspace the chrome asked to switch to (the workspace bar's clicked
+    /// tile). Drained into `Server::switch_workspace_to` by the main loop
+    /// (ADR-0025).
+    pub switch_workspace: Option<ass_core::workspace::WorkspaceId>,
 }
 
 /// One piece of compositor chrome.
 ///
-/// A component renders itself for one frame from the shared window snapshot
-/// and input, drawing through `frame` and pushing any user intents into `out`.
-/// The core owns the lens context, the snapshot, and the sink; the component
-/// owns only its own appearance and state. Register implementations with
-/// [`Shell::add`].
+/// A component renders itself for one frame from the shared window and
+/// workspace snapshots and the input, drawing through `frame` and pushing
+/// any user intents into `out`. The core owns the lens context, the
+/// snapshots, and the sink; the component owns only its own appearance and
+/// state. Register implementations with [`Shell::add`].
 pub trait Chrome {
     /// Draw the component for this frame. Called inside the core's
-    /// `Ui::frame` envelope, so `frame` is a live builder.
+    /// `Ui::frame` envelope, so `frame` is a live builder. `workspaces` is
+    /// the live workspace/output snapshot (ADR-0025); components that don't
+    /// care ignore it.
     fn render(
         &mut self,
         frame: &mut Frame,
         input: &Input,
         windows: &[Window],
+        workspaces: &WorkspaceSnapshot,
         out: &mut ChromeEvents,
     );
 
@@ -108,6 +116,7 @@ pub enum ShellError {
 pub struct Shell {
     ui: Ui,
     windows: Vec<Window>,
+    workspaces: WorkspaceSnapshot,
     events: ChromeEvents,
     components: Vec<Box<dyn Chrome>>,
 }
@@ -126,6 +135,7 @@ impl Shell {
         Ok(Shell {
             ui,
             windows: Vec::new(),
+            workspaces: WorkspaceSnapshot { outputs: Vec::new() },
             events: ChromeEvents::default(),
             components: Vec::new(),
         })
@@ -146,6 +156,12 @@ impl Shell {
     /// by the main loop with `server.windows()`.
     pub fn set_windows(&mut self, windows: Vec<Window>) {
         self.windows = windows;
+    }
+
+    /// Replace the host's workspace snapshot. Called once per frame by the
+    /// main loop with `server.workspace_snapshot()`.
+    pub fn set_workspaces(&mut self, workspaces: WorkspaceSnapshot) {
+        self.workspaces = workspaces;
     }
 
     /// Drain the surface id of the window a component asked to focus this
@@ -171,6 +187,13 @@ impl Shell {
     /// The main loop hands it to `ass-launch`.
     pub fn take_spawn(&mut self) -> Option<Entry> {
         self.events.spawn.take()
+    }
+
+    /// Drain the workspace id the chrome asked to switch to this frame, if
+    /// any (the workspace bar's clicked tile). The main loop forwards it to
+    /// `Server::switch_workspace_to`.
+    pub fn take_switch_workspace(&mut self) -> Option<ass_core::workspace::WorkspaceId> {
+        self.events.switch_workspace.take()
     }
 
     /// Whether any registered component currently captures keyboard input
@@ -208,11 +231,12 @@ impl Shell {
     /// currently inside a `begin`/`end` recording pair on the active frame.
     pub unsafe fn render(&mut self, canvas: *mut c_void, input: &Input) -> Result<(), ShellError> {
         let windows = &self.windows;
+        let workspaces = &self.workspaces;
         let events = &mut self.events;
         let components = &mut self.components;
         self.ui.frame(input, |f| {
             for component in components.iter_mut() {
-                component.render(f, input, windows, events);
+                component.render(f, input, windows, workspaces, events);
             }
         });
         self.ui

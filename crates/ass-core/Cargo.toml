@@ -8,3 +8,12 @@ rust-version.workspace = true
 
 [dependencies]
 log.workspace = true
+# Optional, off by default: derive `serde::Serialize`/`Deserialize` on the
+# shared model types so the IPC (ADR-0027) sends the same `Window` the
+# renderer and chrome read, without reconstructing it as a wire DTO. Off by
+# default keeps ass-core's default surface lean.
+serde = { workspace = true, optional = true }
+
+[features]
+default = []
+serde = ["dep:serde"]

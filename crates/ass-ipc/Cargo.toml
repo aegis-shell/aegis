@@ -1,0 +1,17 @@
+[package]
+name = "ass-ipc"
+description = "Versioned IPC and introspection surface for ass over a unix socket"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Pure: depends on `ass-core` (with the `serde` feature so the IPC sends the
+# same `Window` the renderer and chrome read) and on `serde`/`serde_json` for
+# the wire format. No flux, lens, or Wayland dependency, so the codec and a
+# loopback server are unit-testable in isolation. See ADR-0027.
+ass-core = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log.workspace = true
