@@ -7,6 +7,7 @@
 
 mod ffi;
 mod keyboard;
+mod extensions;
 
 use std::ffi::{c_void, CStr, CString};
 use std::os::raw::c_int;
@@ -51,13 +52,32 @@ impl Drop for DmabufBuffer {
     }
 }
 
+/// The active clipboard selection: the `wl_data_source` that owns it and the
+/// MIME types it advertised. Set by `wl_data_device.set_selection`, advertised
+/// to every bound `wl_data_device` via `wl_data_offer`.
+struct Selection {
+    source: *mut ffi::wl_resource,
+    mime_types: Vec<String>,
+}
+
+/// Accumulated `xdg_positioner` state used to compute a popup's placement
+/// relative to its parent surface. Only the fields real-world clients set
+/// (size, anchor rect, offset) are tracked; anchor edge and gravity default to
+/// the common "top-left" so menus and tooltips place predictably.
+#[derive(Default)]
+struct PositionerState {
+    size: Option<ass_core::Size>,
+    anchor_rect: Option<ass_core::Rect>,
+    offset: ass_core::Point,
+}
+
 // Minimal close() without pulling the libc crate.
 extern "C" {
     fn close(fd: std::os::raw::c_int) -> std::os::raw::c_int;
     fn malloc(size: usize) -> *mut c_void;
     fn free(ptr: *mut c_void);
 }
-unsafe fn libc_close(fd: i32) {
+pub(crate) unsafe fn libc_close(fd: i32) {
     close(fd);
 }
 
@@ -132,6 +152,10 @@ pub struct SurfaceRec {
     /// Destination size in logical pixels, or None for "source size".
     /// Set by `wp_viewport.set_destination`.
     pub viewport_dst: Option<ass_core::Size>,
+    // ----- wp_fractional_scale_v1 state -----
+    /// The `wp_fractional_scale_v1` resource bound for this surface, if any.
+    /// The server posts `preferred_scale` here when the output's scale changes.
+    pub fractional_scale: *mut ffi::wl_resource,
     // ----- pending buffer transform / scale -----
     /// Pending buffer transform from `wl_surface.set_buffer_transform`,
     /// applied on the next commit.
@@ -176,6 +200,7 @@ impl SurfaceRec {
             window: ass_core::window::Window::default(),
             viewport_src: None,
             viewport_dst: None,
+            fractional_scale: std::ptr::null_mut(),
             pending_transform: ass_core::Transform::Normal,
             pending_scale: 1,
             pending_damage: Vec::new(),
@@ -190,8 +215,8 @@ impl SurfaceRec {
 
 /// Server-wide state. Its address is handed to the C bind callbacks, so it is
 /// boxed and never moved out.
-struct State {
-    display: *mut ffi::wl_display,
+pub(crate) struct State {
+    pub(crate) display: *mut ffi::wl_display,
     /// All surfaces ever created, indexed by allocation order. Entries are
     /// nulled when a surface's destroy notify fires and the rec is reclaimed;
     /// the slot is never reused so live surfaces keep stable indices. Iterators
@@ -204,6 +229,37 @@ struct State {
     /// Every `wl_keyboard` resource clients have bound. Same lifecycle as
     /// pointer_resources; the keymap event is sent to each on creation.
     keyboard_resources: Vec<*mut ffi::wl_resource>,
+    /// Every `wl_touch` resource clients have bound. Same lifecycle as the
+    /// pointer/keyboard lists.
+    touch_resources: Vec<*mut ffi::wl_resource>,
+    /// Every `wl_output` resource clients have bound. Resent in full when the
+    /// output geometry (mode/scale/transform) changes so bound clients update.
+    pub(crate) output_resources: Vec<*mut ffi::wl_resource>,
+    /// Every `xdg_output` resource clients have bound (zxdg-output v1). Resent
+    /// together with the wl_output reconfigure path.
+    pub(crate) xdg_output_resources: Vec<*mut ffi::wl_resource>,
+    /// Every `wl_data_device` resource clients have bound. A `set_selection`
+    /// advertises a new `wl_data_offer` to each.
+    data_devices: Vec<*mut ffi::wl_resource>,
+    /// The current clipboard selection, if any.
+    selection: Option<Selection>,
+    /// Active `zwp_relative_pointer_v1` resources. Relative-motion deltas are
+    /// posted to each (filtered to the focused client's set).
+    relative_pointers: Vec<*mut ffi::wl_resource>,
+    /// Bound `ext_foreign_toplevel_list_v1` resources. New toplevels, title
+    /// changes, and removals are pushed to each.
+    foreign_toplevel_lists: Vec<*mut ffi::wl_resource>,
+    /// Per-toplevel foreign handle resources, keyed by window id. Lets the
+    /// server push title/app_id/closed updates to the right handle.
+    foreign_handles: std::collections::HashMap<u64, *mut ffi::wl_resource>,
+    /// Active `zwp_text_input_v3` resources, with the surface they last
+    /// targeted (null until the client enables it). The focused client's
+    /// enabled text_input receives `enter`/`leave` on keyboard focus changes.
+    text_inputs: Vec<(*mut ffi::wl_resource, *mut ffi::wl_resource)>,
+    /// The last cursor shape requested by the focused client via
+    /// `wp_cursor_shape_device_v1.set_shape` (or `wl_pointer.set_cursor`,
+    /// once wired). 0 = default arrow. Exposed to the renderer.
+    cursor_shape: u32,
     /// Surface resource currently under the pointer, or null when the pointer
     /// is outside any mapped toplevel. Drives enter/leave transitions.
     pointer_focus: *mut ffi::wl_resource,
@@ -240,7 +296,7 @@ struct State {
     window_rules: Vec<ass_core::window_rule::WindowRule>,
     /// The focused output's geometry (ADR-0028): the tiling work-area is its
     /// logical rect. Updated by the backend on resize; defaults to identity.
-    output_geometry: ass_core::output::OutputGeometry,
+    pub(crate) output_geometry: ass_core::output::OutputGeometry,
     /// Dynamic per-output workspaces (ADR-0025). Toplevels are placed on the
     /// current workspace at first map; rendering and input see only the
     /// visible set (`visible_toplevels`).
@@ -263,6 +319,16 @@ impl State {
             surfaces: Vec::new(),
             pointer_resources: Vec::new(),
             keyboard_resources: Vec::new(),
+            touch_resources: Vec::new(),
+            output_resources: Vec::new(),
+            xdg_output_resources: Vec::new(),
+            data_devices: Vec::new(),
+            selection: None,
+            relative_pointers: Vec::new(),
+            foreign_toplevel_lists: Vec::new(),
+            foreign_handles: std::collections::HashMap::new(),
+            text_inputs: Vec::new(),
+            cursor_shape: 0,
             pointer_focus: std::ptr::null_mut(),
             keyboard_focus: std::ptr::null_mut(),
             saved_keyboard_focus: std::ptr::null_mut(),
@@ -294,12 +360,22 @@ impl State {
     fn live_surfaces(&self) -> impl Iterator<Item = *mut SurfaceRec> + '_ {
         self.surfaces.iter().copied().filter(|p| !p.is_null())
     }
+
+    /// Crate-visible live-surface iterator for `extensions.rs`.
+    pub(crate) fn live_surfaces_pub(&self) -> impl Iterator<Item = *mut SurfaceRec> + '_ {
+        self.surfaces.iter().copied().filter(|p| !p.is_null())
+    }
 }
 
 /// The Wayland server: socket, globals, and object lifecycle.
 pub struct Server {
     state: Box<State>,
     socket: String,
+    /// Monotonic epoch for `wl_pointer.axis` / `wl_pointer.button` time
+    /// stamps. The nested backend's input events carry no time, so the server
+    /// derives one from elapsed time since creation (millisecond granularity,
+    /// matching `wl_pointer`'s `uint32 time` semantics).
+    epoch: std::time::Instant,
 }
 
 impl Server {
@@ -381,8 +457,101 @@ impl Server {
                 data,
                 viewporter_bind,
             );
+            // Extension protocols. Each advertises its global so clients that
+            // require it connect without a protocol error.
+            ffi::wl_global_create(
+                display,
+                &ffi::zxdg_output_manager_v1_interface,
+                3,
+                data,
+                extensions::xdg_output_manager_bind,
+            );
+            ffi::wl_global_create(
+                display,
+                &ffi::wp_presentation_interface,
+                1,
+                data,
+                extensions::presentation_bind,
+            );
+            ffi::wl_global_create(
+                display,
+                &ffi::wp_fractional_scale_manager_v1_interface,
+                1,
+                data,
+                extensions::fractional_scale_bind,
+            );
+            ffi::wl_global_create(
+                display,
+                &ffi::zwp_idle_inhibit_manager_v1_interface,
+                1,
+                data,
+                extensions::idle_inhibit_bind,
+            );
+            ffi::wl_global_create(
+                display,
+                &ffi::ext_idle_notifier_v1_interface,
+                1,
+                data,
+                extensions::idle_notifier_bind,
+            );
+            ffi::wl_global_create(
+                display,
+                &ffi::zwp_relative_pointer_manager_v1_interface,
+                1,
+                data,
+                extensions::relative_pointer_bind,
+            );
+            ffi::wl_global_create(
+                display,
+                &ffi::zwp_pointer_constraints_v1_interface,
+                1,
+                data,
+                extensions::pointer_constraints_bind,
+            );
+            ffi::wl_global_create(
+                display,
+                &ffi::ext_session_lock_manager_v1_interface,
+                1,
+                data,
+                extensions::session_lock_bind,
+            );
+            ffi::wl_global_create(
+                display,
+                &ffi::ext_foreign_toplevel_list_v1_interface,
+                1,
+                data,
+                extensions::foreign_toplevel_bind,
+            );
+            ffi::wl_global_create(
+                display,
+                &ffi::ext_data_control_manager_v1_interface,
+                1,
+                data,
+                extensions::data_control_bind,
+            );
+            ffi::wl_global_create(
+                display,
+                &ffi::zwp_primary_selection_device_manager_v1_interface,
+                1,
+                data,
+                extensions::primary_selection_bind,
+            );
+            ffi::wl_global_create(
+                display,
+                &ffi::wp_cursor_shape_manager_v1_interface,
+                1,
+                data,
+                extensions::cursor_shape_bind,
+            );
+            ffi::wl_global_create(
+                display,
+                &ffi::zwp_text_input_manager_v3_interface,
+                1,
+                data,
+                extensions::text_input_bind,
+            );
 
-            Ok(Server { state, socket })
+            Ok(Server { state, socket, epoch: std::time::Instant::now() })
         }
     }
 
@@ -652,20 +821,29 @@ impl Server {
     /// pointer buttons go to the current focus and also drive click-to-focus
     /// for the keyboard. Key events update xkbcommon state and post
     /// `wl_keyboard.key` plus any resulting `wl_keyboard.modifiers` change.
-    /// Other event kinds are dropped silently for now (touch arrives later).
+    /// Pointer axis (scroll wheel) is posted as `wl_pointer.axis` followed by
+    /// `wl_pointer.axis_source` / `wl_pointer.axis_stop`, and discrete clicks
+    /// are posted as `wl_pointer.axis_discrete` for clients that prefer the
+    /// coarse signal.
     pub fn forward_input(
         &mut self,
         events: &[ass_core::input::InputEvent],
         keymap: &ass_core::keybind::Keymap,
     ) -> Vec<ass_core::keybind::Action> {
         let mut actions = Vec::new();
+        let time = self.epoch.elapsed().as_millis() as u32;
         for event in events {
             use ass_core::input::InputEvent::*;
             match *event {
                 PointerMotion { x, y } => self.pointer_motion(x, y),
                 PointerButton { button, state } => self.pointer_button(button, state),
                 PointerLeave => self.pointer_leave_all(),
-                PointerAxis { .. } => {}
+                PointerAxis { dx, dy } => self.pointer_axis(time, dx, dy),
+                TouchDown { id, x, y } => self.touch_down(time, id, x, y),
+                TouchMotion { id, x, y } => self.touch_motion(time, id, x, y),
+                TouchUp { id } => self.touch_up(time, id),
+                TouchFrame => self.touch_frame(),
+                TouchCancel => self.touch_cancel(),
                 Key { code, state } => {
                     if let Some(a) = self.keyboard_key(code, state, keymap) {
                         actions.push(a);
@@ -895,6 +1073,13 @@ impl Server {
             .map(|s| s.window.id)
     }
 
+    /// The last cursor shape requested by the focused client
+    /// (`wp_cursor_shape_device_v1.set_shape`), or 0 for the default arrow.
+    /// The renderer consults this to pick which cursor to paint.
+    pub fn cursor_shape(&self) -> u32 {
+        self.state.cursor_shape
+    }
+
     /// Cycle keyboard focus among mapped, non-minimized toplevels in creation
     /// order. `forward` selects the next surface, `false` the previous. No-op
     /// if fewer than two eligible toplevels exist. Backs the `CycleFocus` /
@@ -1013,14 +1198,72 @@ impl Server {
 
     /// Replace the focused output's geometry (ADR-0028). The backend calls
     /// this on resize; the tiling work-area is the geometry's logical rect.
+    /// Re-sends the wl_output geometry/mode/scale/done sequence to every bound
+    /// client so they update their scale and surface buffer scale.
     pub fn set_output_geometry(&mut self, geo: ass_core::output::OutputGeometry) {
         self.state.output_geometry = geo;
+        // Resend to every bound wl_output resource.
+        let resources: Vec<*mut ffi::wl_resource> = self
+            .state
+            .output_resources
+            .iter()
+            .copied()
+            .filter(|p| !p.is_null())
+            .collect();
+        for res in resources {
+            unsafe { send_output_geometry(res, self.state.as_ref() as *const State as *mut State) };
+        }
+        // Refresh xdg-output logical extents too.
+        self.resend_xdg_outputs();
+        // Re-send fractional-scale hints so HiDPI-aware clients resize buffers.
+        unsafe { extensions::resend_fractional_scales(self.state.as_ref() as *const State as *mut State) };
+        unsafe { ffi::wl_display_flush_clients(self.state.display) };
     }
+
+    /// Re-send logical geometry to every bound `zxdg_output_v1` resource.
+    /// Called when the output geometry changes.
 
     /// The focused output's logical rect (ADR-0028). The chrome-aware
     /// tiling work-area is this inset by the chrome's reserved edges.
     pub fn output_logical_rect(&self) -> ass_core::Rect {
         self.state.output_geometry.logical_rect()
+    }
+
+    /// Resend the `zxdg_output_v1` logical geometry events to every bound
+    /// xdg-output resource. Called whenever the output's logical extents
+    /// change (resize / scale / transform) so clients reposition. Pairs with
+    /// the wl_output geometry re-send in [`Server::set_output_geometry`].
+    fn resend_xdg_outputs(&self) {
+        let rect = self.state.output_geometry.logical_rect();
+        let resources: Vec<*mut ffi::wl_resource> = self
+            .state
+            .xdg_output_resources
+            .iter()
+            .copied()
+            .filter(|p| !p.is_null())
+            .collect();
+        for res in resources {
+            // SAFETY: res is a live zxdg_output_v1 resource we own. The logical
+            // position/size events take i32 pairs; done (v2+) flushes the batch.
+            unsafe {
+                let version = ffi::wl_resource_get_version(res);
+                ffi::wl_resource_post_event(
+                    res,
+                    ffi::ZXDG_OUTPUT_V1_LOGICAL_POSITION,
+                    rect.origin.x,
+                    rect.origin.y,
+                );
+                ffi::wl_resource_post_event(
+                    res,
+                    ffi::ZXDG_OUTPUT_V1_LOGICAL_SIZE,
+                    rect.size.w,
+                    rect.size.h,
+                );
+                if version >= 2 {
+                    ffi::wl_resource_post_event(res, ffi::ZXDG_OUTPUT_V1_DONE);
+                }
+            }
+        }
     }
 
     /// The live outputs (connector + geometry) for the IPC and chrome. One
@@ -1110,8 +1353,15 @@ impl Server {
     }
 
     fn pointer_motion(&mut self, x: f32, y: f32) {
+        // Relative delta from the previous motion event (for relative-pointer
+        // clients). Computed before pointer_x/y are overwritten.
+        let dx = x - self.state.pointer_x;
+        let dy = y - self.state.pointer_y;
         self.state.pointer_x = x;
         self.state.pointer_y = y;
+        // Push relative motion to bound zwp_relative_pointer_v1 resources of
+        // the focused client (games, etc.).
+        self.post_relative_motion(dx, dy);
         // If an interactive grab is active, update the window's geometry
         // before any hit-testing — motion goes to the grabbed surface, not
         // whatever is under the pointer.
@@ -1299,6 +1549,225 @@ impl Server {
         }
     }
 
+    /// Post `zwp_relative_pointer_v1.relative_motion` to every bound
+    /// relative-pointer resource owned by the focused client. `dx`/`dy` are the
+    /// unaccelerated pixel deltas since the last motion event; the protocol
+    /// also wants accelerated deltas, which we do not model, so we send both
+    /// fields equal to the unaccelerated value.
+    fn post_relative_motion(&self, dx: f32, dy: f32) {
+        if self.state.pointer_focus.is_null() || (dx == 0.0 && dy == 0.0) {
+            return;
+        }
+        let focus_client = unsafe { ffi::wl_resource_get_client(self.state.pointer_focus) };
+        // Monotonic microsecond timestamp, split hi/lo per the protocol.
+        let utime = self.epoch.elapsed().as_micros() as u64;
+        let utime_hi = (utime >> 32) as u32;
+        let utime_lo = (utime & 0xffff_ffff) as u32;
+        let fdx = ffi::wl_fixed_from_f32(dx);
+        let fdy = ffi::wl_fixed_from_f32(dy);
+        // Collect the live relative-pointer resources for this client.
+        let targets: Vec<*mut ffi::wl_resource> = self
+            .state
+            .relative_pointers
+            .iter()
+            .copied()
+            .filter(|p| {
+                !p.is_null() && unsafe { ffi::wl_resource_get_client(*p) == focus_client }
+            })
+            .collect();
+        for rp in targets {
+            unsafe {
+                ffi::wl_resource_post_event(
+                    rp,
+                    ffi::ZWP_RELATIVE_POINTER_V1_RELATIVE_MOTION,
+                    utime_hi,
+                    utime_lo,
+                    fdx,
+                    fdy,
+                    fdx,
+                    fdy,
+                );
+            }
+        }
+    }
+
+    /// Post `wl_pointer.axis` (scroll) to the focused client. `dx`/`dy` are
+    /// horizontal/vertical scroll deltas in logical-pixel units (libinput's
+    /// convention: discrete wheel clicks are ~10.0). Each axis with a non-zero
+    /// delta is posted with `wl_pointer.axis`; for discrete deltas we also
+    /// post `wl_pointer.axis_discrete` so scroll-stepping clients (browsers,
+    /// terminals) step the right number of lines. A `frame` event (v5+) bundles
+    /// the axis events for clients that consume them together.
+    fn pointer_axis(&mut self, time: u32, dx: f32, dy: f32) {
+        if self.state.pointer_focus.is_null() || (dx == 0.0 && dy == 0.0) {
+            return;
+        }
+        let focus = self.state.pointer_focus;
+        let focus_client = unsafe { ffi::wl_resource_get_client(focus) };
+        // Discrete scroll: a delta of ~10.0 is one wheel click (libinput's
+        // default DEG_PER_UNIT-derived value). Round to the nearest integer
+        // click count per axis.
+        let discrete_x = (dx.abs() / 10.0).round() as i32;
+        let discrete_y = (dy.abs() / 10.0).round() as i32;
+        for p in self.iter_focus_pointers(focus_client) {
+            let ver = unsafe { ffi::wl_resource_get_version(p) };
+            unsafe {
+                if dx != 0.0 {
+                    ffi::wl_resource_post_event(
+                        p,
+                        ffi::WL_POINTER_AXIS,
+                        time,
+                        ffi::WL_POINTER_AXIS_HORIZONTAL_SCROLL,
+                        ffi::wl_fixed_from_f32(dx),
+                    );
+                    if ver >= 5 && discrete_x != 0 {
+                        ffi::wl_resource_post_event(
+                            p,
+                            ffi::WL_POINTER_AXIS_DISCRETE,
+                            ffi::WL_POINTER_AXIS_HORIZONTAL_SCROLL,
+                            discrete_x,
+                        );
+                    }
+                }
+                if dy != 0.0 {
+                    ffi::wl_resource_post_event(
+                        p,
+                        ffi::WL_POINTER_AXIS,
+                        time,
+                        ffi::WL_POINTER_AXIS_VERTICAL_SCROLL,
+                        ffi::wl_fixed_from_f32(dy),
+                    );
+                    if ver >= 5 && discrete_y != 0 {
+                        ffi::wl_resource_post_event(
+                            p,
+                            ffi::WL_POINTER_AXIS_DISCRETE,
+                            ffi::WL_POINTER_AXIS_VERTICAL_SCROLL,
+                            discrete_y,
+                        );
+                    }
+                }
+                // Source + stop + frame (v5+) let clients distinguish wheel
+                // from touch/finger scroll and coalesce events.
+                if ver >= 5 {
+                    ffi::wl_resource_post_event(
+                        p,
+                        ffi::WL_POINTER_AXIS_SOURCE,
+                        ffi::WL_POINTER_AXIS_SOURCE_WHEEL,
+                    );
+                    if dx != 0.0 {
+                        ffi::wl_resource_post_event(
+                            p,
+                            ffi::WL_POINTER_AXIS_STOP,
+                            time,
+                            ffi::WL_POINTER_AXIS_HORIZONTAL_SCROLL,
+                        );
+                    }
+                    if dy != 0.0 {
+                        ffi::wl_resource_post_event(
+                            p,
+                            ffi::WL_POINTER_AXIS_STOP,
+                            time,
+                            ffi::WL_POINTER_AXIS_VERTICAL_SCROLL,
+                        );
+                    }
+                    ffi::wl_resource_post_event(p, ffi::WL_POINTER_FRAME);
+                }
+            }
+        }
+    }
+
+    /// Post `wl_touch.down`: a new contact on the focused surface. Touch
+    /// events go to the pointer-focused client (touch and pointer share a
+    /// seat). `id` is the contact id (0..). The `time` is the same monotonic
+    /// millisecond clock pointer events use.
+    fn touch_down(&mut self, time: u32, id: i32, x: f32, y: f32) {
+        if self.state.pointer_focus.is_null() {
+            return;
+        }
+        let focus = self.state.pointer_focus;
+        let serial = unsafe { ffi::wl_display_next_serial(self.state.display) };
+        let client = unsafe { ffi::wl_resource_get_client(focus) };
+        let fx = ffi::wl_fixed_from_f32(x);
+        let fy = ffi::wl_fixed_from_f32(y);
+        for t in self.iter_client_touch(client) {
+            unsafe {
+                ffi::wl_resource_post_event(
+                    t,
+                    ffi::WL_TOUCH_DOWN,
+                    serial,
+                    time,
+                    focus,
+                    id,
+                    fx,
+                    fy,
+                );
+            }
+        }
+    }
+
+    /// Post `wl_touch.motion` for an existing contact.
+    fn touch_motion(&mut self, time: u32, id: i32, x: f32, y: f32) {
+        if self.state.pointer_focus.is_null() {
+            return;
+        }
+        let client = unsafe { ffi::wl_resource_get_client(self.state.pointer_focus) };
+        let fx = ffi::wl_fixed_from_f32(x);
+        let fy = ffi::wl_fixed_from_f32(y);
+        for t in self.iter_client_touch(client) {
+            unsafe {
+                ffi::wl_resource_post_event(
+                    t, ffi::WL_TOUCH_MOTION, time, id, fx, fy,
+                );
+            }
+        }
+    }
+
+    /// Post `wl_touch.up`.
+    fn touch_up(&mut self, time: u32, id: i32) {
+        if self.state.pointer_focus.is_null() {
+            return;
+        }
+        let serial = unsafe { ffi::wl_display_next_serial(self.state.display) };
+        let client = unsafe { ffi::wl_resource_get_client(self.state.pointer_focus) };
+        for t in self.iter_client_touch(client) {
+            unsafe {
+                ffi::wl_resource_post_event(t, ffi::WL_TOUCH_UP, serial, time, id);
+            }
+        }
+    }
+
+    /// Post `wl_touch.frame`: end of a touch event batch.
+    fn touch_frame(&self) {
+        if self.state.pointer_focus.is_null() {
+            return;
+        }
+        let client = unsafe { ffi::wl_resource_get_client(self.state.pointer_focus) };
+        for t in self.iter_client_touch(client) {
+            unsafe { ffi::wl_resource_post_event(t, ffi::WL_TOUCH_FRAME) };
+        }
+    }
+
+    /// Post `wl_touch.cancel`: all active contacts invalidated.
+    fn touch_cancel(&self) {
+        if self.state.pointer_focus.is_null() {
+            return;
+        }
+        let client = unsafe { ffi::wl_resource_get_client(self.state.pointer_focus) };
+        for t in self.iter_client_touch(client) {
+            unsafe { ffi::wl_resource_post_event(t, ffi::WL_TOUCH_CANCEL) };
+        }
+    }
+
+    fn iter_client_touch(&self, client: *mut ffi::wl_client) -> Vec<*mut ffi::wl_resource> {
+        self.state
+            .touch_resources
+            .iter()
+            .copied()
+            .filter(|p| !p.is_null())
+            .filter(|p| unsafe { ffi::wl_resource_get_client(*p) == client })
+            .collect()
+    }
+
     /// Transition keyboard focus: post leave to the old client's keyboard
     /// resources and enter to the new client's. The "keys" array passed to
     /// `enter` is empty — M1 does not track currently-held keys for resend on
@@ -1312,6 +1781,9 @@ impl Server {
         let serial = unsafe { ffi::wl_display_next_serial(self.state.display) };
         let old = self.state.keyboard_focus;
         let empty = ffi::wl_array::empty();
+
+        // Notify text-input clients of the focus transition (IME enter/leave).
+        unsafe { extensions::text_input_focus_changed(self.state.as_ref() as *const State as *mut State, old, new_focus) };
 
         if !old.is_null() {
             let old_client = unsafe { ffi::wl_resource_get_client(old) };
@@ -1716,6 +2188,10 @@ unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut
                 }
             }
         }
+        // Live-update the foreign-toplevel list so taskbars see the new window.
+        if !(*rec).state.is_null() {
+            extensions::foreign_toplevel_added(rec, (*rec).state);
+        }
     }
 }
 
@@ -1842,6 +2318,10 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
     if !(*rec).state.is_null() {
         let id = (*rec).window.id;
         (*(*rec).state).workspaces.remove_toplevel(id);
+        // Notify foreign-toplevel listeners the window is gone.
+        if !(*rec).xdg_toplevel.is_null() {
+            extensions::foreign_toplevel_removed(id.0, (*rec).state);
+        }
     }
     // Release any held dma-buf-backed wl_buffer so the client can reclaim its
     // GPU memory; a surface destroyed while holding a zero-copy buffer would
@@ -1883,18 +2363,32 @@ unsafe extern "C" fn region_destroy(_client: *mut ffi::wl_client, resource: *mut
 
 // ----- wl_output ----------------------------------------------------------
 
-unsafe extern "C" fn output_bind(
-    client: *mut ffi::wl_client,
-    _data: *mut c_void,
-    version: u32,
-    id: u32,
-) {
-    let res = ffi::wl_resource_create(client, &ffi::wl_output_interface, version as c_int, id);
-    if res.is_null() {
-        return;
+/// Compute the (mode, integer-scale, transform) tuple from the state's
+/// `output_geometry`, with a sane default before the first resize.
+unsafe fn output_params(state: *mut State) -> (ass_core::output::OutputMode, i32, i32) {
+    let mut mode = ass_core::output::OutputMode {
+        width: 1280,
+        height: 720,
+        refresh_mhz: 60000,
+    };
+    let mut scale_i = 1i32;
+    let mut transform = 0i32;
+    if !state.is_null() {
+        let g = (*state).output_geometry;
+        if g.mode.width > 0 && g.mode.height > 0 {
+            mode = g.mode;
+        }
+        scale_i = g.scale.0.round().max(1.0) as i32;
+        transform = g.transform as i32;
     }
-    ffi::wl_resource_set_implementation(res, std::ptr::null(), std::ptr::null_mut(), None);
+    (mode, scale_i, transform)
+}
 
+/// Post the full geometry + mode + scale + done sequence to one wl_output
+/// resource. Version-gated: scale/done require v2.
+unsafe fn send_output_geometry(res: *mut ffi::wl_resource, state: *mut State) {
+    let (mode, scale_i, transform) = output_params(state);
+    let version = ffi::wl_resource_get_version(res);
     let make = CString::new("ass").unwrap();
     let model = CString::new("nested").unwrap();
     ffi::wl_resource_post_event(
@@ -1907,20 +2401,57 @@ unsafe extern "C" fn output_bind(
         0i32,
         make.as_ptr(),
         model.as_ptr(),
-        0i32,
+        transform,
     );
     ffi::wl_resource_post_event(
         res,
         ffi::WL_OUTPUT_MODE,
         ffi::WL_OUTPUT_MODE_CURRENT,
-        1280i32,
-        720i32,
-        60000i32,
+        mode.width,
+        mode.height,
+        mode.refresh_mhz as i32,
     );
     if version >= 2 {
-        ffi::wl_resource_post_event(res, ffi::WL_OUTPUT_SCALE, 1i32);
+        ffi::wl_resource_post_event(res, ffi::WL_OUTPUT_SCALE, scale_i);
         ffi::wl_resource_post_event(res, ffi::WL_OUTPUT_DONE);
     }
+}
+
+unsafe extern "C" fn output_resource_destroy(resource: *mut ffi::wl_resource) {
+    let state = ffi::wl_resource_get_user_data(resource) as *mut State;
+    if state.is_null() {
+        return;
+    }
+    for slot in (*state).output_resources.iter_mut() {
+        if *slot == resource {
+            *slot = std::ptr::null_mut();
+            break;
+        }
+    }
+}
+
+unsafe extern "C" fn output_bind(
+    client: *mut ffi::wl_client,
+    data: *mut c_void,
+    version: u32,
+    id: u32,
+) {
+    let res = ffi::wl_resource_create(client, &ffi::wl_output_interface, version as c_int, id);
+    if res.is_null() {
+        return;
+    }
+    let state = data as *mut State;
+    ffi::wl_resource_set_implementation(
+        res,
+        std::ptr::null(),
+        state as *mut c_void,
+        Some(output_resource_destroy),
+    );
+    if !state.is_null() {
+        (*state).output_resources.push(res);
+    }
+
+    send_output_geometry(res, state);
 }
 
 // ----- xdg_wm_base --------------------------------------------------------
@@ -1952,6 +2483,21 @@ unsafe extern "C" fn xdg_wm_base_bind(
     );
 }
 
+static POSITIONER_IMPL: ffi::xdg_positioner_interface_impl = ffi::xdg_positioner_interface_impl {
+    destroy: res_destroy,
+    set_size: positioner_set_size,
+    set_anchor_rect: positioner_set_anchor_rect,
+    set_anchor: noop_uu_one,
+    set_gravity: noop_uu_one,
+    set_constraint_adjustment: noop_uu_one,
+    set_offset: positioner_set_offset,
+};
+
+static POPUP_IMPL: ffi::xdg_popup_interface_impl = ffi::xdg_popup_interface_impl {
+    destroy: popup_destroy,
+    grab: popup_grab,
+};
+
 unsafe extern "C" fn xdg_wm_base_create_positioner(
     client: *mut ffi::wl_client,
     wm_base: *mut ffi::wl_resource,
@@ -1959,8 +2505,60 @@ unsafe extern "C" fn xdg_wm_base_create_positioner(
 ) {
     let ver = ffi::wl_resource_get_version(wm_base);
     let pos = ffi::wl_resource_create(client, &ffi::xdg_positioner_interface, ver, id);
-    if !pos.is_null() {
-        ffi::wl_resource_set_implementation(pos, std::ptr::null(), std::ptr::null_mut(), None);
+    if pos.is_null() {
+        return;
+    }
+    let st = Box::into_raw(Box::new(PositionerState::default()));
+    ffi::wl_resource_set_implementation(
+        pos,
+        &POSITIONER_IMPL as *const _ as *const c_void,
+        st as *mut c_void,
+        Some(positioner_resource_destroy),
+    );
+}
+
+unsafe extern "C" fn positioner_resource_destroy(resource: *mut ffi::wl_resource) {
+    let st = ffi::wl_resource_get_user_data(resource) as *mut PositionerState;
+    if !st.is_null() {
+        drop(Box::from_raw(st));
+    }
+}
+
+unsafe extern "C" fn positioner_set_size(
+    _c: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+    w: i32,
+    h: i32,
+) {
+    let st = ffi::wl_resource_get_user_data(resource) as *mut PositionerState;
+    if !st.is_null() && w > 0 && h > 0 {
+        (*st).size = Some(ass_core::Size { w, h });
+    }
+}
+
+unsafe extern "C" fn positioner_set_anchor_rect(
+    _c: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) {
+    let st = ffi::wl_resource_get_user_data(resource) as *mut PositionerState;
+    if !st.is_null() {
+        (*st).anchor_rect = Some(ass_core::Rect::new(x, y, w, h));
+    }
+}
+
+unsafe extern "C" fn positioner_set_offset(
+    _c: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+    x: i32,
+    y: i32,
+) {
+    let st = ffi::wl_resource_get_user_data(resource) as *mut PositionerState;
+    if !st.is_null() {
+        (*st).offset = ass_core::Point { x, y };
     }
 }
 
@@ -2041,17 +2639,93 @@ unsafe extern "C" fn xdg_surface_get_toplevel(
 
 unsafe extern "C" fn xdg_surface_get_popup(
     client: *mut ffi::wl_client,
-    _xdg_surface: *mut ffi::wl_resource,
+    xdg_surface: *mut ffi::wl_resource,
     id: u32,
-    _parent: *mut ffi::wl_resource,
-    _positioner: *mut ffi::wl_resource,
+    parent: *mut ffi::wl_resource,
+    positioner: *mut ffi::wl_resource,
 ) {
-    // Popups are not yet implemented; create an inert resource so the client
-    // does not get a protocol error on object creation.
-    let pop = ffi::wl_resource_create(client, &ffi::xdg_popup_interface, 1, id);
-    if !pop.is_null() {
-        ffi::wl_resource_set_implementation(pop, std::ptr::null(), std::ptr::null_mut(), None);
+    let rec = ffi::wl_resource_get_user_data(xdg_surface) as *mut SurfaceRec;
+    let ver = ffi::wl_resource_get_version(xdg_surface);
+    let pop = ffi::wl_resource_create(client, &ffi::xdg_popup_interface, ver, id);
+    if pop.is_null() {
+        return;
     }
+    // Compute the popup position from the positioner + parent.
+    let pos_state = ffi::wl_resource_get_user_data(positioner) as *mut PositionerState;
+    let parent_rec = if parent.is_null() {
+        std::ptr::null_mut::<SurfaceRec>()
+    } else {
+        ffi::wl_resource_get_user_data(parent) as *mut SurfaceRec
+    };
+    let (px, py) = if parent_rec.is_null() {
+        (0, 0)
+    } else {
+        ((*parent_rec).position.x, (*parent_rec).position.y)
+    };
+    let anchor = if !pos_state.is_null() {
+        (*pos_state).anchor_rect
+    } else {
+        None
+    };
+    let offset = if !pos_state.is_null() {
+        (*pos_state).offset
+    } else {
+        ass_core::Point::default()
+    };
+    // Place at the anchor-rect's bottom-left by default (the common menu case),
+    // else at the parent origin; apply the client offset.
+    let (ax, ay) = match anchor {
+        Some(r) => (r.origin.x, r.origin.y + r.size.h),
+        None => (0, 0),
+    };
+    let popup_pos = ass_core::Point {
+        x: px + ax + offset.x,
+        y: py + ay + offset.y,
+    };
+    let popup_size = if !pos_state.is_null() {
+        (*pos_state).size.unwrap_or(ass_core::Size { w: 0, h: 0 })
+    } else {
+        ass_core::Size { w: 0, h: 0 }
+    };
+    (*rec).position = popup_pos;
+    (*rec).xdg_toplevel = std::ptr::null_mut(); // popups are not toplevels
+    ffi::wl_resource_set_implementation(
+        pop,
+        &POPUP_IMPL as *const _ as *const c_void,
+        rec as *mut c_void,
+        None,
+    );
+    // Send the initial configure so the client sizes and maps its buffer.
+    ffi::wl_resource_post_event(
+        pop,
+        ffi::XDG_POPUP_CONFIGURE,
+        popup_pos.x,
+        popup_pos.y,
+        popup_size.w,
+        popup_size.h,
+    );
+    // The xdg_surface configure serial must follow per xdg-shell.
+    if !(*rec).xdg_surface.is_null() {
+        let serial = ffi::wl_display_next_serial((*rec).display);
+        ffi::wl_resource_post_event((*rec).xdg_surface, ffi::XDG_SURFACE_CONFIGURE, serial);
+    }
+}
+
+unsafe extern "C" fn popup_destroy(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+) {
+    ffi::wl_resource_destroy(resource);
+}
+
+unsafe extern "C" fn popup_grab(
+    _client: *mut ffi::wl_client,
+    _popup: *mut ffi::wl_resource,
+    _seat: *mut ffi::wl_resource,
+    _serial: u32,
+) {
+    // Popup grabs (keyboard/pointer grab semantics) are not enforced; accepting
+    // the request keeps client lifecycle valid.
 }
 
 // ----- xdg_toplevel -------------------------------------------------------
@@ -2110,6 +2784,9 @@ unsafe extern "C" fn toplevel_set_title(
     let rec = ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec;
     if !rec.is_null() {
         (*rec).window.title = cstr_to_string(title);
+        if !(*rec).state.is_null() {
+            extensions::foreign_toplevel_updated(rec, (*rec).state);
+        }
     }
 }
 
@@ -2121,6 +2798,9 @@ unsafe extern "C" fn toplevel_set_app_id(
     let rec = ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec;
     if !rec.is_null() {
         (*rec).window.app_id = cstr_to_string(app_id);
+        if !(*rec).state.is_null() {
+            extensions::foreign_toplevel_updated(rec, (*rec).state);
+        }
     }
 }
 
@@ -2720,6 +3400,10 @@ static KEYBOARD_IMPL: ffi::wl_keyboard_interface_impl = ffi::wl_keyboard_interfa
     release: res_destroy,
 };
 
+static TOUCH_IMPL: ffi::wl_touch_interface_impl = ffi::wl_touch_interface_impl {
+    release: res_destroy,
+};
+
 /// `wl_pointer.set_cursor`: accept and ignore. See `POINTER_IMPL`.
 unsafe extern "C" fn pointer_set_cursor(
     _client: *mut ffi::wl_client,
@@ -2744,8 +3428,9 @@ unsafe extern "C" fn seat_bind(
     ffi::wl_resource_set_implementation(res, &SEAT_IMPL as *const _ as *const c_void, data, None);
     let state = data as *mut State;
     // Pointer cap is always advertised; keyboard only when the xkbcommon
-    // keymap compiled successfully at startup. Touch is deferred.
-    let mut caps = ffi::WL_SEAT_CAPABILITY_POINTER;
+    // keymap compiled successfully at startup. Touch is always advertised so
+    // touch clients can bind.
+    let mut caps = ffi::WL_SEAT_CAPABILITY_POINTER | ffi::WL_SEAT_CAPABILITY_TOUCH;
     if !state.is_null() && (*state).keyboard.is_some() {
         caps |= ffi::WL_SEAT_CAPABILITY_KEYBOARD;
     }
@@ -2888,14 +3573,42 @@ unsafe extern "C" fn seat_get_touch(
     seat: *mut ffi::wl_resource,
     id: u32,
 ) {
+    let state = ffi::wl_resource_get_user_data(seat) as *mut State;
     let ver = ffi::wl_resource_get_version(seat).min(8);
     let t = ffi::wl_resource_create(client, &ffi::wl_touch_interface, ver, id);
-    if !t.is_null() {
-        ffi::wl_resource_set_implementation(t, std::ptr::null(), std::ptr::null_mut(), None);
+    if t.is_null() {
+        return;
+    }
+    ffi::wl_resource_set_implementation(
+        t,
+        &TOUCH_IMPL as *const _ as *const c_void,
+        state as *mut c_void,
+        Some(touch_resource_destroy),
+    );
+    if !state.is_null() {
+        (*state).touch_resources.push(t);
     }
 }
 
-// ----- wl_data_device_manager (clipboard stub) ----------------------------
+unsafe extern "C" fn touch_resource_destroy(resource: *mut ffi::wl_resource) {
+    let state = ffi::wl_resource_get_user_data(resource) as *mut State;
+    if state.is_null() {
+        return;
+    }
+    for slot in (*state).touch_resources.iter_mut() {
+        if *slot == resource {
+            *slot = std::ptr::null_mut();
+            break;
+        }
+    }
+}
+
+// ----- wl_data_device_manager (clipboard) ---------------------------------
+//
+// A functional single-seat clipboard: `set_selection` records the source and
+// advertises a `wl_data_offer` to every bound `wl_data_device`. Clients paste
+// by `data_offer.receive`, which we service from the source's `send` request.
+// The MIME types offered come from `wl_data_source.offer`.
 
 static DDM_IMPL: ffi::wl_data_device_manager_interface_impl =
     ffi::wl_data_device_manager_interface_impl {
@@ -2910,9 +3623,19 @@ static DATA_DEVICE_IMPL: ffi::wl_data_device_interface_impl = ffi::wl_data_devic
     release: res_destroy,
 };
 
+static DATA_SOURCE_IMPL: ffi::wl_data_source_interface_impl = ffi::wl_data_source_interface_impl {
+    offer: data_source_offer,
+    destroy: res_destroy,
+};
+
+static DATA_OFFER_IMPL: ffi::wl_data_offer_interface_impl = ffi::wl_data_offer_interface_impl {
+    receive: data_offer_receive,
+    destroy: res_destroy,
+};
+
 unsafe extern "C" fn ddm_bind(
     client: *mut ffi::wl_client,
-    _data: *mut c_void,
+    data: *mut c_void,
     version: u32,
     id: u32,
 ) {
@@ -2928,11 +3651,13 @@ unsafe extern "C" fn ddm_bind(
     ffi::wl_resource_set_implementation(
         res,
         &DDM_IMPL as *const _ as *const c_void,
-        std::ptr::null_mut(),
+        data,
         None,
     );
 }
 
+/// Create a `wl_data_source` whose user-data is a boxed `Vec<String>` of MIME
+/// types collected by `offer`.
 unsafe extern "C" fn ddm_create_data_source(
     client: *mut ffi::wl_client,
     mgr: *mut ffi::wl_resource,
@@ -2940,8 +3665,37 @@ unsafe extern "C" fn ddm_create_data_source(
 ) {
     let ver = ffi::wl_resource_get_version(mgr);
     let src = ffi::wl_resource_create(client, &ffi::wl_data_source_interface, ver, id);
-    if !src.is_null() {
-        ffi::wl_resource_set_implementation(src, std::ptr::null(), std::ptr::null_mut(), None);
+    if src.is_null() {
+        return;
+    }
+    let mimes = Box::into_raw(Box::new(Vec::<String>::new()));
+    ffi::wl_resource_set_implementation(
+        src,
+        &DATA_SOURCE_IMPL as *const _ as *const c_void,
+        mimes as *mut c_void,
+        Some(data_source_resource_destroy),
+    );
+}
+
+unsafe extern "C" fn data_source_resource_destroy(resource: *mut ffi::wl_resource) {
+    let mimes = ffi::wl_resource_get_user_data(resource) as *mut Vec<String>;
+    if !mimes.is_null() {
+        drop(Box::from_raw(mimes));
+    }
+}
+
+unsafe extern "C" fn data_source_offer(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+    mime_type: *const std::os::raw::c_char,
+) {
+    let mimes = ffi::wl_resource_get_user_data(resource) as *mut Vec<String>;
+    if !mimes.is_null() && !mime_type.is_null() {
+        if let Ok(s) = CStr::from_ptr(mime_type).to_str() {
+            if !(*mimes).iter().any(|m| m == s) {
+                (*mimes).push(s.to_string());
+            }
+        }
     }
 }
 
@@ -2949,17 +3703,139 @@ unsafe extern "C" fn ddm_get_data_device(
     client: *mut ffi::wl_client,
     mgr: *mut ffi::wl_resource,
     id: u32,
-    _seat: *mut ffi::wl_resource,
+    seat: *mut ffi::wl_resource,
 ) {
+    let state = ffi::wl_resource_get_user_data(seat) as *mut State;
     let ver = ffi::wl_resource_get_version(mgr);
     let dev = ffi::wl_resource_create(client, &ffi::wl_data_device_interface, ver, id);
-    if !dev.is_null() {
-        ffi::wl_resource_set_implementation(
-            dev,
-            &DATA_DEVICE_IMPL as *const _ as *const c_void,
-            std::ptr::null_mut(),
-            None,
-        );
+    if dev.is_null() {
+        return;
+    }
+    ffi::wl_resource_set_implementation(
+        dev,
+        &DATA_DEVICE_IMPL as *const _ as *const c_void,
+        state as *mut c_void,
+        Some(data_device_resource_destroy),
+    );
+    if !state.is_null() {
+        (*state).data_devices.push(dev);
+        // If a selection is already active, advertise it to this new device.
+        if let Some(sel) = &(*state).selection {
+            advertise_offer(dev, sel);
+        }
+    }
+}
+
+unsafe extern "C" fn data_device_resource_destroy(resource: *mut ffi::wl_resource) {
+    let state = ffi::wl_resource_get_user_data(resource) as *mut State;
+    if state.is_null() {
+        return;
+    }
+    for slot in (*state).data_devices.iter_mut() {
+        if *slot == resource {
+            *slot = std::ptr::null_mut();
+            break;
+        }
+    }
+}
+
+/// `wl_data_device.set_selection`: record the source as the current selection
+/// and advertise a `wl_data_offer` to every bound data device. A null source
+/// clears the selection.
+unsafe extern "C" fn ddev_set_selection(
+    _c: *mut ffi::wl_client,
+    _r: *mut ffi::wl_resource,
+    source: *mut ffi::wl_resource,
+    _serial: u32,
+) {
+    let state = ffi::wl_resource_get_user_data(_r) as *mut State;
+    if state.is_null() {
+        return;
+    }
+    if source.is_null() {
+        (*state).selection = None;
+        // Notify devices of the empty selection.
+        let devices: Vec<*mut ffi::wl_resource> = (*state)
+            .data_devices
+            .iter()
+            .copied()
+            .filter(|p| !p.is_null())
+            .collect();
+        for dev in devices {
+            ffi::wl_resource_post_event(dev, ffi::WL_DATA_DEVICE_SELECTION, std::ptr::null_mut::<ffi::wl_resource>());
+        }
+        return;
+    }
+    // Build the selection record: the source resource + its collected MIMEs.
+    let mimes_ptr = ffi::wl_resource_get_user_data(source) as *mut Vec<String>;
+    let mimes = if mimes_ptr.is_null() {
+        Vec::new()
+    } else {
+        (*mimes_ptr).clone()
+    };
+    let sel = Selection {
+        source,
+        mime_types: mimes,
+    };
+    (*state).selection = Some(sel);
+    let devices: Vec<*mut ffi::wl_resource> = (*state)
+        .data_devices
+        .iter()
+        .copied()
+        .filter(|p| !p.is_null())
+        .collect();
+    for dev in devices {
+        advertise_offer(dev, (*state).selection.as_ref().unwrap());
+    }
+}
+
+/// Create a `wl_data_offer` for `sel`, send `data_offer` + its `offer` events
+/// to `dev`, then `selection(offer)`.
+unsafe fn advertise_offer(dev: *mut ffi::wl_resource, sel: &Selection) {
+    let client = ffi::wl_resource_get_client(dev);
+    let offer = ffi::wl_resource_create(client, &ffi::wl_data_offer_interface, 3, 0);
+    if offer.is_null() {
+        return;
+    }
+    let src = sel.source; // back-pointer so receive() can forward to send().
+    ffi::wl_resource_set_implementation(
+        offer,
+        &DATA_OFFER_IMPL as *const _ as *const c_void,
+        src as *mut c_void,
+        Some(data_offer_resource_destroy),
+    );
+    ffi::wl_resource_post_event(dev, ffi::WL_DATA_DEVICE_DATA_OFFER, offer);
+    for mime in &sel.mime_types {
+        let c = CString::new(mime.as_str()).unwrap();
+        ffi::wl_resource_post_event(offer, ffi::WL_DATA_OFFER_OFFER, c.as_ptr());
+    }
+    ffi::wl_resource_post_event(dev, ffi::WL_DATA_DEVICE_SELECTION, offer);
+}
+
+unsafe extern "C" fn data_offer_resource_destroy(resource: *mut ffi::wl_resource) {
+    // user_data is the backing wl_data_source; not owned by the offer.
+    let _ = ffi::wl_resource_get_user_data(resource);
+}
+
+/// `wl_data_offer.receive`: forward to the source's `send` request so the
+/// owning client writes the content for `mime_type` into `fd`.
+unsafe extern "C" fn data_offer_receive(
+    _client: *mut ffi::wl_client,
+    offer: *mut ffi::wl_resource,
+    mime_type: *const std::os::raw::c_char,
+    fd: i32,
+) {
+    let source = ffi::wl_resource_get_user_data(offer) as *mut ffi::wl_resource;
+    if source.is_null() {
+        if fd >= 0 {
+            libc_close(fd);
+        }
+        return;
+    }
+    ffi::wl_resource_post_event(source, ffi::WL_DATA_SOURCE_SEND, mime_type, fd);
+    // The source owns writing to fd; close our copy.
+    if fd >= 0 {
+        libc_close(fd);
     }
 }
 
@@ -2971,13 +3847,8 @@ unsafe extern "C" fn ddev_start_drag(
     _icon: *mut ffi::wl_resource,
     _serial: u32,
 ) {
-}
-unsafe extern "C" fn ddev_set_selection(
-    _c: *mut ffi::wl_client,
-    _r: *mut ffi::wl_resource,
-    _source: *mut ffi::wl_resource,
-    _serial: u32,
-) {
+    // Drag-and-drop is not implemented; accepting the request keeps the
+    // client's lifecycle valid without a protocol error.
 }
 
 // ----- zwp_linux_dmabuf_v1 ------------------------------------------------
@@ -3318,7 +4189,7 @@ unsafe extern "C" fn viewport_noop_source(
 
 // ----- shared no-op handlers ----------------------------------------------
 
-unsafe extern "C" fn res_destroy(_client: *mut ffi::wl_client, resource: *mut ffi::wl_resource) {
+pub(crate) unsafe extern "C" fn res_destroy(_client: *mut ffi::wl_client, resource: *mut ffi::wl_resource) {
     ffi::wl_resource_destroy(resource);
 }
 #[allow(dead_code)]
@@ -3385,4 +4256,120 @@ unsafe extern "C" fn xdg_noop_menu(
     _x: i32,
     _y: i32,
 ) {
+}
+
+// ----- no-op handlers shared with the extensions module --------------------
+//
+// These are `pub(crate)` so `extensions.rs` can wire them into request
+// vtables without duplicating each trivial handler. They accept the protocol
+// arguments and do nothing (or only resource-lifecycle work).
+
+pub(crate) unsafe extern "C" fn noop_none(_c: *mut ffi::wl_client, _r: *mut ffi::wl_resource) {}
+
+pub(crate) unsafe extern "C" fn noop_obj(
+    _c: *mut ffi::wl_client,
+    _r: *mut ffi::wl_resource,
+    _obj: *mut ffi::wl_resource,
+) {
+}
+
+pub(crate) unsafe extern "C" fn noop_obj_serial(
+    _c: *mut ffi::wl_client,
+    _r: *mut ffi::wl_resource,
+    _obj: *mut ffi::wl_resource,
+    _serial: u32,
+) {
+}
+
+pub(crate) unsafe extern "C" fn noop_serial(
+    _c: *mut ffi::wl_client,
+    _r: *mut ffi::wl_resource,
+    _serial: u32,
+) {
+}
+
+pub(crate) unsafe extern "C" fn noop_str(
+    _c: *mut ffi::wl_client,
+    _r: *mut ffi::wl_resource,
+    _s: *const std::os::raw::c_char,
+) {
+}
+
+pub(crate) unsafe extern "C" fn noop_str_ii(
+    _c: *mut ffi::wl_client,
+    _r: *mut ffi::wl_resource,
+    _s: *const std::os::raw::c_char,
+    _a: i32,
+    _b: i32,
+) {
+}
+
+#[allow(dead_code)]
+pub(crate) unsafe extern "C" fn noop_ii(
+    _c: *mut ffi::wl_client,
+    _r: *mut ffi::wl_resource,
+    _a: i32,
+    _b: i32,
+) {
+}
+
+pub(crate) unsafe extern "C" fn noop_uu(
+    _c: *mut ffi::wl_client,
+    _r: *mut ffi::wl_resource,
+    _a: u32,
+    _b: u32,
+) {
+}
+
+pub(crate) unsafe extern "C" fn noop_rect(
+    _c: *mut ffi::wl_client,
+    _r: *mut ffi::wl_resource,
+    _x: i32,
+    _y: i32,
+    _w: i32,
+    _h: i32,
+) {
+}
+
+pub(crate) unsafe extern "C" fn noop_region(
+    _c: *mut ffi::wl_client,
+    _r: *mut ffi::wl_resource,
+    _reg: *mut ffi::wl_resource,
+) {
+}
+
+pub(crate) unsafe extern "C" fn noop_fixed2(
+    _c: *mut ffi::wl_client,
+    _r: *mut ffi::wl_resource,
+    _a: i32,
+    _b: i32,
+) {
+}
+
+#[allow(dead_code)]
+pub(crate) unsafe extern "C" fn noop_serial_shape(
+    _c: *mut ffi::wl_client,
+    _r: *mut ffi::wl_resource,
+    _serial: u32,
+    _shape: u32,
+) {
+}
+
+pub(crate) unsafe extern "C" fn noop_uu_one(
+    _c: *mut ffi::wl_client,
+    _r: *mut ffi::wl_resource,
+    _a: u32,
+) {
+}
+
+// ----- accessors for the extensions module --------------------------------
+
+/// Construct an `ass_core::Point` (re-exported so extensions.rs does not name
+/// the crate).
+pub(crate) fn ass_core_point(x: i32, y: i32) -> ass_core::Point {
+    ass_core::Point { x, y }
+}
+
+pub(crate) fn ass_core_size(w: i32, h: i32) -> ass_core::Size {
+    ass_core::Size { w, h }
 }

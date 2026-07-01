@@ -53,6 +53,17 @@ pub enum InputEvent {
     PointerAxis { dx: f32, dy: f32 },
     /// Pointer left the surface area.
     PointerLeave,
+    /// Touch contact `id` (0..max-1) went down at `(x, y)` in logical pixels.
+    TouchDown { id: i32, x: f32, y: f32 },
+    /// Touch contact `id` moved to `(x, y)`.
+    TouchMotion { id: i32, x: f32, y: f32 },
+    /// Touch contact `id` lifted.
+    TouchUp { id: i32 },
+    /// End of a batch of touch events for this frame (groups down/motion/up).
+    TouchFrame,
+    /// All active touch contacts cancelled (e.g. the seat lost the touch
+    /// device). Clients should drop all ongoing touches.
+    TouchCancel,
     /// Keyboard state changed. `code` is a Linux evdev scancode, suitable for
     /// forwarding directly to `wl_keyboard.key`.
     Key { code: u32, state: ButtonState },

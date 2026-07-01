@@ -35,23 +35,42 @@ input.
 ass is a Cargo workspace under `crates/`. The split keeps the server,
 backend, renderer, and shell behind clear seams so the
 [AI-adaptation phase](#roadmap) can grow a semantic model from
-`ass-core`.
+`ass-core`. The crates group into four roles:
 
-| Crate | Responsibility |
-|-------|----------------|
-| `ass-core` | Backend- and renderer-agnostic model: geometry, surface tree, outputs, focus |
-| `ass-protocols` | Wayland protocol interface tables (xdg-shell), generated once and shared |
-| `ass-server` | The Wayland server: socket, globals, and protocol object lifecycle |
-| `ass-backend` | Presentation and input targets: the nested backend now, DRM/KMS later |
-| `ass-render` | Compositing: client buffers to flux textures, scene to the output |
-| `ass-shell` | Compositor chrome host + components on lens |
-| `ass-wallpaper` | Background layer: multi-format image and short-video wallpaper |
-| `ass` | The binary: wires the parts together and runs the event loop |
+| Role | Crate | Responsibility |
+|------|-------|----------------|
+| **Model** | `ass-core` | Backend- and renderer-agnostic model: geometry, surface tree, outputs, focus |
+| | `ass-protocols` | Wayland protocol interface tables (xdg-shell), generated once and shared |
+| **Server / window management** | `ass-server` | Hand-rolled Wayland server: socket, globals, protocol object lifecycle, focus, move/close, tiling, workspaces, xdg-output |
+| | `ass-backend` | Presentation and input targets: the nested backend now, DRM/KMS + libinput + seat later |
+| | `ass-render` | Compositing: client buffers to flux textures, scene to the output via flux |
+| **Shell / interaction** | `ass-shell` | Compositor chrome host + components on lens: dock, launcher, workspace bar, decorations, toast |
+| | `ass-wallpaper` | Background layer: multi-format image and short-video wallpaper |
+| | `ass-config` | Declarative configuration: versioned TOML schema, loader, live reload |
+| **Convenience channels** | `ass-apps` | freedesktop.org desktop-entry enumeration and icon-theme lookup |
+| | `ass-launch` | Detached, XDG-environment-aware launching of desktop applications |
+| | `ass-ipc` | Versioned IPC and introspection surface for ass over a unix socket |
+| | `ass-ctl` | Command-line driver for the ass IPC (the reference external tool) |
+| **Binary** | `ass` | The binary: wires the parts together and runs the event loop |
 
 flux and lens are consumed through Rust bindings kept in separate
 repositories from their C libraries, following the openssl-sys /
 rusqlite convention: `flux-rs` (`flux` / `flux-sys`) and `lens-rs`
 (`lens` / `lens-sys`). See [ADR-0023](../adr/0023-split-flux-lens-stack.md).
+
+### Naming note: where the "user-facing" logic lives
+
+The crate names are *mechanism-oriented*, which can make the product roles
+hard to read at a glance. For the most common "I want to change what the
+user sees or can do" tasks:
+
+- **"Manage windows"** (focus, close, move, tile, workspace) → `ass-server`.
+- **"Change the chrome / interactions"** (dock, launcher, bars) → `ass-shell`.
+- **"Add an external control path"** (CLI, scripts, the agent) →
+  `ass-ipc` + `ass-ctl`.
+- **"Start or discover apps"** → `ass-apps` (discovery) + `ass-launch`
+  (spawn). `ass-launch` is intentionally narrow: process detachment and
+  environment, not window management.
 
 ## Backend Abstraction
 

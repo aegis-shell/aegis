@@ -133,6 +133,16 @@ pub trait Chrome {
     fn reserved(&self) -> Reserved {
         Reserved::default()
     }
+
+    /// Whether this component has a multi-frame animation in flight (a dock
+    /// spring still settling, a fade mid-transition, …). When any registered
+    /// component returns true the main loop keeps ticking frames instead of
+    /// blocking on the host event queue, so the animation can advance even
+    /// when the pointer is still. Default `false`; override in components that
+    /// run their own easing.
+    fn anim_pending(&self) -> bool {
+        false
+    }
 }
 
 /// Errors from the shell.
@@ -287,6 +297,18 @@ impl Shell {
             r.right += c.right;
         }
         r
+    }
+
+    /// Whether any registered component has a multi-frame animation in flight.
+    /// The main loop consults this to decide whether to keep ticking frames
+    /// (advance the animation) or block on the host event queue for the next
+    /// wakeup. Also folds in lens's own eased-value state so hover/active
+    /// fades on lens widgets (buttons, etc.) settle correctly.
+    pub fn anim_pending(&self) -> bool {
+        if self.components.iter().any(|c| c.anim_pending()) {
+            return true;
+        }
+        self.ui.anim_pending()
     }
 
     /// Run every registered component and render the chrome into `canvas`,

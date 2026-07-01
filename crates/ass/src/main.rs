@@ -351,7 +351,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Last broadcast workspace snapshot, used to detect model changes.
     let mut last_ws_snap: Option<ass_core::workspace::WorkspaceSnapshot> = None;
 
-    while host.dispatch() && !shell.should_quit() && !quit_requested {
+    // Last broadcast workspace snapshot, used to detect model changes.
+    let mut last_ws_snap: Option<ass_core::workspace::WorkspaceSnapshot> = None;
+    // Whether chrome reported a multi-frame animation in flight last frame.
+    // While true the loop pumps non-blocking dispatches and renders at a
+    // ~60fps cadence so the animation advances even with the pointer still;
+    // once it rests the loop goes back to blocking on the host event queue.
+    let mut animating = false;
+
+    loop {
+        // Choose dispatch mode: non-blocking + throttle while animating so the
+        // spring/wave keeps stepping; otherwise block on the host queue for the
+        // next wakeup (input, client commit, resize).
+        let alive = if animating {
+            // Cap the spin to ~60fps so we don't busy-burn a core. The host's
+            // own frame callbacks still flow through dispatch_nonblocking.
+            std::thread::sleep(std::time::Duration::from_millis(8));
+            host.dispatch_nonblocking()
+        } else {
+            host.dispatch()
+        };
+        if !alive || shell.should_quit() || quit_requested {
+            break;
+        }
         // Hot-reload the configuration when its mtime moves (ADR-0026). One
         // `stat` per frame is cheap and keeps the reload on this loop, where
         // the keymap rebuild must happen anyway. A failed reload keeps the
@@ -466,6 +488,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     PointerAxis { .. } => {}
+                    // Touch events are not handled by the shell chrome yet;
+                    // they route to clients via forward_input below.
+                    TouchDown { .. }
+                    | TouchMotion { .. }
+                    | TouchUp { .. }
+                    | TouchFrame
+                    | TouchCancel => {}
                 }
             }
             // Hand the events to the server for client routing after the shell
@@ -718,6 +747,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 surface.resize(nw, nh)?;
             }
         }
+
+        // Decide whether the next iteration keeps ticking (animation in
+        // flight) or blocks for the next host wakeup. Read after render so a
+        // freshly-started wave (cursor just entered the dock band) is caught
+        // the same frame it begins.
+        animating = shell.anim_pending();
     }
 
     log::info!("ass: window closed after {frame_count} frames");

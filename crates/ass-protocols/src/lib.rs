@@ -63,4 +63,62 @@ extern "C" {
 
     pub static wp_viewporter_interface: wl_interface;
     pub static wp_viewport_interface: wl_interface;
+
+    // presentation-time
+    pub static wp_presentation_interface: wl_interface;
+    pub static wp_presentation_feedback_interface: wl_interface;
+
+    // xdg-output-unstable-v1
+    pub static zxdg_output_manager_v1_interface: wl_interface;
+    pub static zxdg_output_v1_interface: wl_interface;
+
+    // idle-inhibit-unstable-v1
+    pub static zwp_idle_inhibit_manager_v1_interface: wl_interface;
+    pub static zwp_idle_inhibitor_v1_interface: wl_interface;
+
+    // relative-pointer-unstable-v1
+    pub static zwp_relative_pointer_manager_v1_interface: wl_interface;
+    pub static zwp_relative_pointer_v1_interface: wl_interface;
+
+    // pointer-constraints-unstable-v1
+    pub static zwp_pointer_constraints_v1_interface: wl_interface;
+    pub static zwp_confined_pointer_v1_interface: wl_interface;
+    pub static zwp_locked_pointer_v1_interface: wl_interface;
+
+    // primary-selection-unstable-v1
+    pub static zwp_primary_selection_device_manager_v1_interface: wl_interface;
+    pub static zwp_primary_selection_device_v1_interface: wl_interface;
+    pub static zwp_primary_selection_offer_v1_interface: wl_interface;
+    pub static zwp_primary_selection_source_v1_interface: wl_interface;
+
+    // text-input-unstable-v3
+    pub static zwp_text_input_manager_v3_interface: wl_interface;
+    pub static zwp_text_input_v3_interface: wl_interface;
+
+    // fractional-scale-v1
+    pub static wp_fractional_scale_manager_v1_interface: wl_interface;
+    pub static wp_fractional_scale_v1_interface: wl_interface;
+
+    // ext-session-lock-v1
+    pub static ext_session_lock_manager_v1_interface: wl_interface;
+    pub static ext_session_lock_v1_interface: wl_interface;
+    pub static ext_session_lock_surface_v1_interface: wl_interface;
+
+    // ext-idle-notify-v1
+    pub static ext_idle_notifier_v1_interface: wl_interface;
+    pub static ext_idle_notification_v1_interface: wl_interface;
+
+    // ext-foreign-toplevel-list-v1
+    pub static ext_foreign_toplevel_list_v1_interface: wl_interface;
+    pub static ext_foreign_toplevel_handle_v1_interface: wl_interface;
+
+    // ext-data-control-v1
+    pub static ext_data_control_manager_v1_interface: wl_interface;
+    pub static ext_data_control_device_v1_interface: wl_interface;
+    pub static ext_data_control_offer_v1_interface: wl_interface;
+    pub static ext_data_control_source_v1_interface: wl_interface;
+
+    // cursor-shape-v1
+    pub static wp_cursor_shape_manager_v1_interface: wl_interface;
+    pub static wp_cursor_shape_device_v1_interface: wl_interface;
 }

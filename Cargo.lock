@@ -651,14 +651,14 @@ dependencies = [
 
 [[package]]
 name = "flux"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "flux-sys",
 ]
 
 [[package]]
 name = "flux-sys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bindgen",
  "pkg-config",

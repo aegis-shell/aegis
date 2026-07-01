@@ -17,12 +17,29 @@ fn main() {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .expect("pkg-config: wayland-protocols not found");
-    // Each (subdir, basename) protocol is scanned to its interface tables and
-    // compiled into one static lib shared by client and server.
-    let protocols = [
+    // Each protocol is a `(category, basename)` pair. These are compiled into
+    // one static lib shared by client and server.
+    let protocols: &[(&str, &str)] = &[
+        // stable
         ("stable/xdg-shell", "xdg-shell"),
         ("unstable/linux-dmabuf", "linux-dmabuf-unstable-v1"),
         ("stable/viewporter", "viewporter"),
+        ("stable/presentation-time", "presentation-time"),
+        ("stable/tablet", "tablet-v2"),
+        // unstable
+        ("unstable/xdg-output", "xdg-output-unstable-v1"),
+        ("unstable/idle-inhibit", "idle-inhibit-unstable-v1"),
+        ("unstable/relative-pointer", "relative-pointer-unstable-v1"),
+        ("unstable/pointer-constraints", "pointer-constraints-unstable-v1"),
+        ("unstable/primary-selection", "primary-selection-unstable-v1"),
+        ("unstable/text-input", "text-input-unstable-v3"),
+        // staging / ext
+        ("staging/fractional-scale", "fractional-scale-v1"),
+        ("staging/ext-session-lock", "ext-session-lock-v1"),
+        ("staging/ext-idle-notify", "ext-idle-notify-v1"),
+        ("staging/ext-foreign-toplevel-list", "ext-foreign-toplevel-list-v1"),
+        ("staging/ext-data-control", "ext-data-control-v1"),
+        ("staging/cursor-shape", "cursor-shape-v1"),
     ];
 
     let mut build = cc::Build::new();
@@ -36,9 +53,9 @@ fn main() {
             build.include(dir);
         }
     }
-    for (subdir, base) in protocols {
+    for &(category, base) in protocols {
         let xml = PathBuf::from(&pkgdatadir)
-            .join(subdir)
+            .join(category)
             .join(format!("{base}.xml"));
         assert!(xml.exists(), "missing protocol xml: {}", xml.display());
         let cfile = out.join(format!("{base}-protocol.c"));

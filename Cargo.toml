@@ -12,12 +12,13 @@ repository = "."
 [workspace.dependencies]
 # flux (rendering engine) + lens (immediate-mode UI engine) Rust bindings.
 # flux-rs wraps libflux; lens-rs wraps liblens (the successor to the old
-# flux-ui). Each C library lives as a sibling under ../optics and is built
-# with meson; point FLUX_BUILD_DIR / LENS_BUILD_DIR at their build trees.
-flux = { path = "../optics/flux-rs/crates/flux" }
-flux-sys = { path = "../optics/flux-rs/crates/flux-sys" }
-lens = { path = "../optics/lens-rs/crates/lens" }
-lens-sys = { path = "../optics/lens-rs/crates/lens-sys" }
+# flux-ui). The C libraries and their bindings live under ../optics (bindings
+# in ../optics/bindings); built with meson. The sys crates auto-discover the
+# optics checkout, or point FLUX_BUILD_DIR / LENS_BUILD_DIR at the build tree.
+flux = { path = "../optics/bindings/flux-rs/crates/flux" }
+flux-sys = { path = "../optics/bindings/flux-rs/crates/flux-sys" }
+lens = { path = "../optics/bindings/lens-rs/crates/lens" }
+lens-sys = { path = "../optics/bindings/lens-rs/crates/lens-sys" }
 
 # Observability: the facade in every crate, the impl only in the binary.
 # Long-term this seam is also how the AI-adaptation phase subscribes to

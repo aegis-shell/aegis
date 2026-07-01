@@ -20,6 +20,15 @@ pub trait Backend {
     /// when the backend has been asked to shut down.
     fn dispatch(&mut self) -> bool;
 
+    /// Drain already-readable backend events without blocking. Used while a
+    /// chrome animation is in flight so the render loop keeps ticking frames
+    /// to advance it instead of sleeping on the host event queue. Default
+    /// falls back to the blocking [`dispatch`](Self::dispatch); backends that
+    /// can poll non-blocking override this.
+    fn dispatch_nonblocking(&mut self) -> bool {
+        self.dispatch()
+    }
+
     /// Drain buffered input events since the last call. The vector is empty
     /// until a backend with real input lands (the nested backend wires host
     /// seat in milestone M1). Drained events are routed by the main loop: the

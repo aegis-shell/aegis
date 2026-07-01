@@ -502,13 +502,23 @@ unsafe extern "C" fn on_pointer_button(
 }
 
 unsafe extern "C" fn on_pointer_axis(
-    _data: *mut c_void,
+    data: *mut c_void,
     _pointer: *mut ffi::wl_proxy,
     _time: u32,
-    _axis: u32,
-    _value: i32,
+    axis: u32,
+    value: i32,
 ) {
-    // Scroll wheel handling deferred — not on the M1 critical path.
+    // axis: 0 = vertical, 1 = horizontal. value is a wl_fixed scroll delta.
+    let st = &mut *(data as *mut State);
+    let v = ffi::wl_fixed_to_f32(value);
+    let (dx, dy) = match axis {
+        0 => (0.0, v),
+        1 => (v, 0.0),
+        _ => (0.0, 0.0),
+    };
+    if dx != 0.0 || dy != 0.0 {
+        st.input_events.push(InputEvent::PointerAxis { dx, dy });
+    }
 }
 
 // Host keyboard listeners. The keymap event from the host is consumed only to
@@ -836,6 +846,22 @@ impl Backend for NestedHost {
     fn dispatch(&mut self) -> bool {
         unsafe {
             if ffi::wl_display_roundtrip(self.display) < 0 {
+                self.state.should_close = true;
+            }
+        }
+        !self.state.should_close
+    }
+
+    /// Non-blocking drain of already-buffered host events. Used while a chrome
+    /// animation is in flight so the loop renders the next frame without
+    /// sleeping on the host. Returns false only on a hard error; an idle queue
+    /// still returns true (no events, but alive).
+    fn dispatch_nonblocking(&mut self) -> bool {
+        unsafe {
+            // `wl_display_dispatch_pending` processes events already read into
+            // the display's internal queue without blocking for new ones. A
+            // negative return is a fatal connection error, not "no events".
+            if ffi::wl_display_dispatch_pending(self.display) < 0 {
                 self.state.should_close = true;
             }
         }

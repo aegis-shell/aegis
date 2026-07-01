@@ -12,12 +12,14 @@
 //!
 //! Visuals are deliberately icon-first, not button-first: tiles are drawn as
 //! bare raster icons (no pill / border), and hovering magnifies the tile under
-//! the cursor and its neighbours along a cosine bell. Tiles are bottom-anchored
-//! and scale upward from a fixed rest slot, so a magnified icon pops *above*
-//! the bar — the classic macOS lift — while the bar itself stays put (its rest
-//! width is fixed, so the cursor → tile mapping never slips). Each tile eases
-//! its size toward the target per-frame so the wave stays silky as the cursor
-//! moves and settles gracefully after it stops.
+//! the cursor and its neighbours along a cosine bell. Unlike a fixed-slot
+//! dock, the bar *reflows*: it widens to fit the magnified widths and the
+//! neighbouring tiles spread apart around the cursor — the classic macOS
+//! squeeze-and-lift. Tiles are bottom-anchored and scale upward, so a
+//! magnified icon pops *above* the bar. Each tile's size is driven by a
+//! damped spring with a slight under-damped overshoot, so the wave tracks a
+//! moving cursor and settles with a gentle bounce. Brand-new tiles (a window
+//! just mapped) spring up from a seed size instead of popping in.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -30,7 +32,7 @@ use ass_core::window::Window;
 
 /// Visual height of the dock bar. Tiles rest inside it; magnified tiles pop
 /// above its top edge (they are drawn as their own layers, unclipped).
-const DOCK_PANEL_HEIGHT: f32 = 64.0;
+const DOCK_PANEL_HEIGHT: f32 = 74.0;
 /// Gap between the dock bar and the bottom edge of the output.
 const DOCK_BOTTOM_MARGIN: f32 = 12.0;
 /// Height of the strip at the bar's bottom reserved for the running-indicator
@@ -38,17 +40,24 @@ const DOCK_BOTTOM_MARGIN: f32 = 12.0;
 const DOCK_DOT_AREA: f32 = 8.0;
 /// Distance from the bar's bottom edge up to the icon baseline (the bottom of
 /// every tile). Leaves room for [`DOCK_DOT_AREA`] plus a small gap.
-const DOCK_BASELINE_INSET: f32 = 12.0;
+const DOCK_BASELINE_INSET: f32 = 13.0;
 /// Side length of a square dock tile at rest (the icon area).
-const DOCK_TILE: f32 = 48.0;
+const DOCK_TILE: f32 = 56.0;
 /// Side length of a square dock tile at full magnification (1.5× rest).
-const DOCK_TILE_MAX: f32 = 72.0;
+const DOCK_TILE_MAX: f32 = 84.0;
 /// How far (in rest-tile widths) the magnification reaches from the cursor.
 const MAGNIFY_RADIUS_TILES: f32 = 2.0;
-/// Exponential ease rate (1/seconds) for tile size → target. Higher is
-/// snappier; ~14 tracks a moving cursor without lagging and settles in
-/// roughly a twelfth of a second.
-const MAGNIFY_EASE_RATE: f32 = 14.0;
+/// Spring stiffness (ω₀²) for tile size → target. Drives how strongly the
+/// eased size is pulled toward its target. ~900 gives a period near 0.2s —
+/// snappy enough to track the cursor, slow enough to read as intentional.
+const SPRING_STIFFNESS: f32 = 900.0;
+/// Spring damping ratio. 1.0 is critically damped (no overshoot); values just
+/// under 1 give the slight macOS-style bounce-back. ~0.72 keeps one tiny
+/// overshoot without ringing.
+const SPRING_DAMPING: f32 = 0.72;
+/// Side length a brand-new tile grows in from. Springs up over the first few
+/// frames instead of popping in at full size.
+const DOCK_TILE_BIRTH: f32 = 6.0;
 /// Vertical band above the bar that still triggers magnification, in pixels.
 /// Lets the wave start as the cursor approaches; outside it (pointer in a
 /// window above) the row stays at rest.
@@ -116,13 +125,30 @@ pub struct Dock {
     /// the binary's `IconCache`, which owns the `flux::Image`s and outlives
     /// this component. Shared by pinned tiles and unpinned running windows.
     icons: HashMap<String, *mut c_void>,
-    /// Per-tile eased size in logical px, keyed by [`Tile::key`]. Entries for
-    /// tiles that disappear are dropped each frame.
-    sizes: HashMap<String, f32>,
+    /// Per-tile spring state (size + velocity) keyed by [`Tile::key`]. Entries
+    /// for tiles that disappear are dropped each frame. A first-seen key starts
+    /// at [`DOCK_TILE_BIRTH`] so new tiles grow in instead of popping.
+    sizes: HashMap<String, SpringState>,
+    /// Whether any tile's spring is still settling this frame. Set during
+    /// [`Chrome::render`] by inspecting the post-step states; read by
+    /// [`Chrome::anim_pending`] so the main loop keeps ticking frames until the
+    /// wave fully rests.
+    anim_active: bool,
     /// Whether the left button was held last frame, so a click fires once on
     /// the press edge. The host's per-frame `mouse_pressed` flag is not cleared
     /// between frames, so we track the `mouse_down` level transition ourselves.
     prev_down: bool,
+}
+
+/// A damped-spring state for one animated scalar (a tile's edge length).
+/// Integrated semi-implicitly each frame so it stays stable across a wide
+/// range of `dt` and produces the macOS-style slight overshoot.
+#[derive(Clone, Copy, Default)]
+struct SpringState {
+    /// Current eased value (logical px).
+    value: f32,
+    /// Current velocity (px/s).
+    vel: f32,
 }
 
 impl Dock {
@@ -132,6 +158,7 @@ impl Dock {
             apps: Vec::new(),
             icons: HashMap::new(),
             sizes: HashMap::new(),
+            anim_active: false,
             prev_down: false,
         }
     }
@@ -144,6 +171,7 @@ impl Dock {
             apps,
             icons,
             sizes: HashMap::new(),
+            anim_active: false,
             prev_down: false,
         }
     }
@@ -161,10 +189,37 @@ impl Dock {
         0.5 * (1.0 + (std::f32::consts::PI * d / radius).cos())
     }
 
-    /// Exponential ease of `cur` toward `target` using `dt_seconds`.
-    fn ease(cur: f32, target: f32, dt: f32) -> f32 {
-        let k = (dt * MAGNIFY_EASE_RATE).min(1.0);
-        cur + (target - cur) * k
+    /// The rest (un-magnified) centre of tile `i` in a row of `n`, assuming the
+    /// standard all-rest layout, used to measure cursor distance for the
+    /// magnify factor. The live centre drifts as tiles widen, but macOS drives
+    /// the *factor* from the fixed rest position so the wave does not chase its
+    /// own tail (a wider tile pulling the cursor closer, magnifying more, …).
+    fn rest_centre_estimate(i: usize, n: usize, disp_w: f32) -> f32 {
+        let bar_w = n as f32 * DOCK_TILE + (n as f32 - 1.0) * DOCK_TILE_GAP + 2.0 * DOCK_PAD;
+        let bar_x = (disp_w - bar_w) * 0.5;
+        bar_x + DOCK_PAD + i as f32 * (DOCK_TILE + DOCK_TILE_GAP) + DOCK_TILE * 0.5
+    }
+
+    /// Advance a damped spring one `dt` seconds toward `target`. Semi-implicit
+    /// Euler keeps it stable at large `dt` (a clamped-vs-true hybrid blows up
+    /// under frame hitches); the under-damped ratio gives a single gentle
+    /// overshoot — the macOS lift-and-settle. `value` and `vel` are updated in
+    /// place and the new value is returned.
+    fn spring(state: &mut SpringState, target: f32, dt: f32) -> f32 {
+        // ω₀ = √stiffness is the undamped angular frequency; c = 2·ζ·ω₀ the
+        // damping coefficient derived from the chosen damping ratio ζ.
+        let omega0 = SPRING_STIFFNESS.sqrt();
+        let damping = 2.0 * SPRING_DAMPING * omega0;
+        // Clamp dt so a long stall (paused tab, debugger) does not blow the
+        // integrator up; the spring simply catches up over the cap.
+        let dt = dt.min(1.0 / 30.0);
+        // Semi-implicit: update velocity from the force at the current value,
+        // then advance value with the new velocity. Energy-stable and matches
+        // the analytic damped-oscillator feel.
+        let force = SPRING_STIFFNESS * (target - state.value) - damping * state.vel;
+        state.vel += force * dt;
+        state.value += state.vel * dt;
+        state.value
     }
 
     /// Resolve the current frame's tiles: every pinned app (with any running
@@ -262,37 +317,67 @@ impl Chrome for Dock {
 
         let panel_y = disp.y - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN;
 
-        // The bar's width is fixed at the rest layout (icons scale in place,
-        // they do not widen the bar), so it stays centred and the cursor →
-        // tile mapping never slips while magnifying.
-        let bar_w =
-            n as f32 * DOCK_TILE + (n as f32 - 1.0) * DOCK_TILE_GAP + 2.0 * DOCK_PAD;
-        let bar_x = (disp.x - bar_w) * 0.5;
-        let rest_centre =
-            |i: usize| bar_x + DOCK_PAD + i as f32 * (DOCK_TILE + DOCK_TILE_GAP) + DOCK_TILE * 0.5;
-        // Bottom of every tile (icons are bottom-anchored and grow upward).
-        let icon_bottom = panel_y + DOCK_PANEL_HEIGHT - DOCK_BASELINE_INSET;
-
         // Vertical activation band: from `MAGNIFY_APPROACH_BAND` above the bar
         // down to the bottom of the display.
         let in_band = cursor.y >= panel_y - MAGNIFY_APPROACH_BAND;
 
-        // Ease each tile's size toward its magnification target.
+        // ---- contiguous reflow layout -------------------------------------
+        // Unlike a fixed-rest dock, the bar widens to fit the magnified tiles
+        // and neighbouring tiles spread apart around the cursor — the classic
+        // macOS squeeze-and-lift. Because the total width changes, centres are
+        // derived *from* the eased widths rather than from fixed slots, so the
+        // cursor → tile mapping tracks the live layout.
+        //
+        // First ease each tile's size toward its magnification target. A
+        // first-seen key springs up from DOCK_TILE_BIRTH (grow-in) instead of
+        // snapping to rest size.
         let mut eased: Vec<f32> = Vec::with_capacity(n);
+        // Track per-tile (target, velocity) so the anim-pending check below can
+        // tell when every spring has fully rested.
+        let mut unsettled = false;
         for (i, t) in tiles.iter().enumerate() {
             let factor = if in_band {
-                Self::magnify_factor(cursor.x - rest_centre(i))
+                Self::magnify_factor(cursor.x - Self::rest_centre_estimate(i, n, disp.x))
             } else {
                 0.0
             };
             let target = DOCK_TILE + (DOCK_TILE_MAX - DOCK_TILE) * factor;
-            let cur = *self.sizes.get(&t.key).unwrap_or(&DOCK_TILE);
-            let next = Self::ease(cur, target, dt);
-            self.sizes.insert(t.key.clone(), next);
-            eased.push(next);
+            let state = self.sizes.entry(t.key.clone()).or_insert(SpringState {
+                value: DOCK_TILE_BIRTH,
+                vel: 0.0,
+            });
+            eased.push(Self::spring(state, target, dt));
+            // A spring is still animating while it is meaningfully off its
+            // target or still moving. Sub-pixel drift is ignored so we don't
+            // tick forever chasing float noise.
+            let drifting = (state.value - target).abs() > 0.15 || state.vel.abs() > 0.5;
+            unsettled |= drifting;
         }
+        self.anim_active = unsettled;
 
-        // The bar background, drawn first so icons stack above it.
+        // Sum the eased widths (plus the inter-tile gap) to get the live bar
+        // width. The gap is constant; only the tiles widen. Centred horizontally.
+        let total_tiles: f32 = eased.iter().sum();
+        let bar_w = total_tiles + (n as f32 - 1.0) * DOCK_TILE_GAP + 2.0 * DOCK_PAD;
+        let bar_x = (disp.x - bar_w) * 0.5;
+
+        // The running x-offset of each tile's centre, left to right.
+        let mut centres = Vec::with_capacity(n);
+        let mut x = bar_x + DOCK_PAD;
+        for (i, s) in eased.iter().enumerate() {
+            if i > 0 {
+                x += DOCK_TILE_GAP;
+            }
+            centres.push(x + s * 0.5);
+            x += *s;
+        }
+        let centre = |i: usize| centres[i];
+
+        // Bottom of every tile (icons are bottom-anchored and grow upward).
+        let icon_bottom = panel_y + DOCK_PANEL_HEIGHT - DOCK_BASELINE_INSET;
+
+        // The bar background, drawn first so icons stack above it. Its width
+        // follows the live reflow, so the panel visibly widens on hover.
         let panel_rect = Rect {
             x: bar_x,
             y: panel_y,
@@ -305,17 +390,17 @@ impl Chrome for Dock {
             f.column_ex(&sized(bar_w, DOCK_PANEL_HEIGHT), |_| {});
         });
 
-        // Hit-test the cursor against tile slots. A slot spans its rest cell
-        // horizontally and the whole bar (plus the popped-icon band) vertically
-        // so the entire tile is clickable; ties resolve to the nearest centre.
+        // Hit-test the cursor against tile slots. A slot spans each tile's live
+        // width (so magnified tiles are fully clickable) and the whole bar
+        // height plus the popped-icon band; ties resolve to the nearest centre.
         let slot_top = icon_bottom - DOCK_TILE_MAX;
         let slot_bottom = panel_y + DOCK_PANEL_HEIGHT;
         let mut hit: Option<usize> = None;
         if cursor.y >= slot_top && cursor.y <= slot_bottom {
-            let half = (DOCK_TILE + DOCK_TILE_GAP) * 0.5;
             let mut best = f32::MAX;
             for i in 0..n {
-                let cx = rest_centre(i);
+                let cx = centre(i);
+                let half = eased[i] * 0.5 + DOCK_TILE_GAP * 0.5;
                 let d = (cursor.x - cx).abs();
                 if d <= half && d < best {
                     best = d;
@@ -326,8 +411,8 @@ impl Chrome for Dock {
 
         // Draw each tile's icon, then its running dot.
         for (i, t) in tiles.iter().enumerate() {
-            let s = eased[i];
-            let cx = rest_centre(i);
+            let s = eased[i].max(1.0);
+            let cx = centre(i);
             let rect = Rect {
                 x: cx - s * 0.5,
                 y: icon_bottom - s,
@@ -421,6 +506,13 @@ impl Chrome for Dock {
             left: 0,
             right: 0,
         }
+    }
+
+    /// The dock's magnify wave eases over many frames; report it as pending so
+    /// the main loop keeps rendering (instead of blocking on the host queue)
+    /// until every spring has rested.
+    fn anim_pending(&self) -> bool {
+        self.anim_active
     }
 }
 
@@ -528,11 +620,45 @@ mod tests {
     }
 
     #[test]
-    fn ease_approaches_target_and_clamps() {
-        assert_eq!(Dock::ease(10.0, 20.0, 0.0), 10.0);
-        assert_eq!(Dock::ease(10.0, 20.0, 1.0), 20.0);
-        let mid = Dock::ease(10.0, 20.0, 1.0 / MAGNIFY_EASE_RATE * 0.5);
-        assert!(mid > 10.0 && mid < 20.0, "got {mid}");
+    fn spring_approaches_target_at_rest() {
+        // No time elapses → nothing moves.
+        let mut s = SpringState { value: 10.0, vel: 0.0 };
+        assert_eq!(Dock::spring(&mut s, 20.0, 0.0), 10.0);
+    }
+
+    #[test]
+    fn spring_settles_on_target() {
+        // Many small steps from rest must converge to the target.
+        let mut s = SpringState { value: 10.0, vel: 0.0 };
+        for _ in 0..2000 {
+            Dock::spring(&mut s, 20.0, 1.0 / 120.0);
+        }
+        assert!((s.value - 20.0).abs() < 0.01, "settled at {}", s.value);
+    }
+
+    #[test]
+    fn spring_overshoots_then_settles() {
+        // Under-damped: from rest it should cross past the target at least once
+        // before settling (the macOS lift-and-bounce).
+        let mut s = SpringState { value: 0.0, vel: 0.0 };
+        let mut overshot = false;
+        for _ in 0..2000 {
+            Dock::spring(&mut s, 100.0, 1.0 / 120.0);
+            if s.value > 100.0 {
+                overshot = true;
+            }
+        }
+        assert!(overshot, "spring never overshot the target");
+        assert!((s.value - 100.0).abs() < 0.01, "settled at {}", s.value);
+    }
+
+    #[test]
+    fn spring_is_dt_stable() {
+        // A single large step (a long frame stall) must not blow up.
+        let mut s = SpringState { value: 0.0, vel: 0.0 };
+        let v = Dock::spring(&mut s, 100.0, 1.0 / 5.0);
+        assert!(v.is_finite(), "value diverged: {v}");
+        assert!(s.vel.is_finite(), "velocity diverged: {}", s.vel);
     }
 
     #[test]

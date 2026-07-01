@@ -25,6 +25,26 @@ pub use ass_protocols::{
 };
 pub use ass_protocols::{zwp_linux_buffer_params_v1_interface, zwp_linux_dmabuf_v1_interface};
 
+// ----- extension protocol interface tables -----
+pub use ass_protocols::{
+    ext_data_control_device_v1_interface, ext_data_control_manager_v1_interface,
+    ext_data_control_offer_v1_interface, ext_data_control_source_v1_interface,
+    ext_foreign_toplevel_handle_v1_interface, ext_foreign_toplevel_list_v1_interface,
+    ext_idle_notification_v1_interface, ext_idle_notifier_v1_interface,
+    ext_session_lock_manager_v1_interface, ext_session_lock_surface_v1_interface,
+    ext_session_lock_v1_interface, wp_cursor_shape_device_v1_interface,
+    wp_cursor_shape_manager_v1_interface, wp_fractional_scale_manager_v1_interface,
+    wp_fractional_scale_v1_interface, wp_presentation_feedback_interface,
+    wp_presentation_interface, zwp_confined_pointer_v1_interface,
+    zwp_idle_inhibit_manager_v1_interface, zwp_idle_inhibitor_v1_interface,
+    zwp_locked_pointer_v1_interface, zwp_pointer_constraints_v1_interface,
+    zwp_primary_selection_device_manager_v1_interface, zwp_primary_selection_device_v1_interface,
+    zwp_primary_selection_offer_v1_interface, zwp_primary_selection_source_v1_interface,
+    zwp_relative_pointer_manager_v1_interface, zwp_relative_pointer_v1_interface,
+    zwp_text_input_manager_v3_interface, zwp_text_input_v3_interface,
+    zxdg_output_manager_v1_interface, zxdg_output_v1_interface,
+};
+
 pub type wl_display = c_void;
 pub type wl_client = c_void;
 pub type wl_resource = c_void;
@@ -46,16 +66,39 @@ pub const WL_OUTPUT_SCALE: u32 = 3;
 pub const WL_OUTPUT_MODE_CURRENT: u32 = 0x1;
 pub const WL_CALLBACK_DONE: u32 = 0;
 pub const WL_BUFFER_RELEASE: u32 = 0;
+
+/// `wl_data_device` event opcodes.
+pub const WL_DATA_DEVICE_DATA_OFFER: u32 = 0;
+pub const WL_DATA_DEVICE_SELECTION: u32 = 1;
+/// `wl_data_offer` event opcodes.
+pub const WL_DATA_OFFER_OFFER: u32 = 0;
+/// `wl_data_source` event opcodes.
+pub const WL_DATA_SOURCE_SEND: u32 = 1;
 pub const XDG_SURFACE_CONFIGURE: u32 = 0;
 pub const XDG_TOPLEVEL_CONFIGURE: u32 = 0;
 pub const XDG_TOPLEVEL_CLOSE: u32 = 1;
 pub const XDG_WM_BASE_PING: u32 = 0;
+/// `xdg_popup` event opcodes.
+pub const XDG_POPUP_CONFIGURE: u32 = 0;
+pub const XDG_POPUP_POPUP_DONE: u32 = 1;
+
+/// `zxdg_output_v1` event opcodes.
+/// `logical_position`/`logical_size`/`name`/`description` are sent on first
+/// bind and whenever the output's logical extents change; `done` (added in
+/// v2) flushes a batch of changes so clients apply them atomically.
+pub const ZXDG_OUTPUT_V1_LOGICAL_POSITION: u32 = 0;
+pub const ZXDG_OUTPUT_V1_LOGICAL_SIZE: u32 = 1;
+pub const ZXDG_OUTPUT_V1_DONE: u32 = 2;
+pub const ZXDG_OUTPUT_V1_NAME: u32 = 3;
+pub const ZXDG_OUTPUT_V1_DESCRIPTION: u32 = 4;
 pub const WL_SEAT_CAPABILITIES: u32 = 0;
 pub const WL_SEAT_NAME: u32 = 1;
 /// `wl_seat.capability.pointer` bit.
 pub const WL_SEAT_CAPABILITY_POINTER: u32 = 1;
 /// `wl_seat.capability.keyboard` bit.
 pub const WL_SEAT_CAPABILITY_KEYBOARD: u32 = 2;
+/// `wl_seat.capability.touch` bit.
+pub const WL_SEAT_CAPABILITY_TOUCH: u32 = 4;
 
 /// `wl_pointer` event opcodes.
 pub const WL_POINTER_ENTER: u32 = 0;
@@ -63,6 +106,23 @@ pub const WL_POINTER_LEAVE: u32 = 1;
 pub const WL_POINTER_MOTION: u32 = 2;
 pub const WL_POINTER_BUTTON: u32 = 3;
 pub const WL_POINTER_AXIS: u32 = 4;
+/// `wl_pointer.frame` (v5+).
+pub const WL_POINTER_FRAME: u32 = 5;
+/// `wl_pointer.axis_source` (v5+).
+pub const WL_POINTER_AXIS_SOURCE: u32 = 6;
+/// `wl_pointer.axis_stop` (v5+).
+pub const WL_POINTER_AXIS_STOP: u32 = 7;
+/// `wl_pointer.axis_discrete` (v5+).
+pub const WL_POINTER_AXIS_DISCRETE: u32 = 8;
+
+/// `wl_pointer.axis` axis enum values.
+pub const WL_POINTER_AXIS_VERTICAL_SCROLL: u32 = 0;
+pub const WL_POINTER_AXIS_HORIZONTAL_SCROLL: u32 = 1;
+/// `wl_pointer.axis_source` enum values.
+pub const WL_POINTER_AXIS_SOURCE_WHEEL: u32 = 0;
+pub const WL_POINTER_AXIS_SOURCE_FINGER: u32 = 1;
+pub const WL_POINTER_AXIS_SOURCE_CONTINUOUS: u32 = 2;
+pub const WL_POINTER_AXIS_SOURCE_TABLET_PAD: u32 = 3;
 
 /// `wl_keyboard` event opcodes.
 pub const WL_KEYBOARD_KEYMAP: u32 = 0;
@@ -72,8 +132,84 @@ pub const WL_KEYBOARD_KEY: u32 = 3;
 pub const WL_KEYBOARD_MODIFIERS: u32 = 4;
 pub const WL_KEYBOARD_REPEAT_INFO: u32 = 5;
 
+/// `wl_touch` event opcodes.
+pub const WL_TOUCH_DOWN: u32 = 0;
+pub const WL_TOUCH_UP: u32 = 1;
+pub const WL_TOUCH_MOTION: u32 = 2;
+pub const WL_TOUCH_FRAME: u32 = 3;
+pub const WL_TOUCH_CANCEL: u32 = 4;
+pub const WL_TOUCH_SHAPE: u32 = 5;
+pub const WL_TOUCH_ORIENTATION: u32 = 6;
+
 /// `wl_keyboard.keymap.format`: 0 = no keymap, 1 = xkb string in fd.
 pub const WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1: u32 = 1;
+
+// ----- extension protocol event opcodes -----
+
+// zxdg_output_v1 opcodes (ZXDG_OUTPUT_V1_*) are declared above near the
+// output section; reused by the extensions module.
+
+// wp_fractional_scale_v1
+pub const WP_FRACTIONAL_SCALE_V1_PREFERRED_SCALE: u32 = 0;
+
+// zwp_relative_pointer_v1
+pub const ZWP_RELATIVE_POINTER_V1_RELATIVE_MOTION: u32 = 0;
+
+// zwp_confined_pointer_v1
+pub const ZWP_CONFINED_POINTER_V1_CONFINED: u32 = 0;
+pub const ZWP_CONFINED_POINTER_V1_UNCONFINED: u32 = 1;
+
+// zwp_locked_pointer_v1
+pub const ZWP_LOCKED_POINTER_V1_LOCKED: u32 = 0;
+pub const ZWP_LOCKED_POINTER_V1_UNLOCKED: u32 = 1;
+
+// ext_session_lock_v1
+pub const EXT_SESSION_LOCK_V1_LOCKED: u32 = 0;
+pub const EXT_SESSION_LOCK_V1_FINISHED: u32 = 1;
+// ext_session_lock_surface_v1
+pub const EXT_SESSION_LOCK_SURFACE_V1_CONFIGURE: u32 = 0;
+
+// ext_foreign_toplevel_list_v1
+pub const EXT_FOREIGN_TOPLEVEL_LIST_V1_TOPLEVEL: u32 = 0;
+pub const EXT_FOREIGN_TOPLEVEL_LIST_V1_FINISHED: u32 = 1;
+// ext_foreign_toplevel_handle_v1
+pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_CLOSED: u32 = 0;
+pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_DONE: u32 = 1;
+pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_TITLE: u32 = 2;
+pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_APP_ID: u32 = 3;
+pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_IDENTIFIER: u32 = 4;
+
+// ext_data_control_device_v1
+pub const EXT_DATA_CONTROL_DEVICE_V1_DATA_OFFER: u32 = 0;
+pub const EXT_DATA_CONTROL_DEVICE_V1_SELECTION: u32 = 1;
+pub const EXT_DATA_CONTROL_DEVICE_V1_FINISHED: u32 = 2;
+pub const EXT_DATA_CONTROL_DEVICE_V1_PRIMARY_SELECTION: u32 = 3;
+// ext_data_control_offer_v1
+pub const EXT_DATA_CONTROL_OFFER_V1_OFFER: u32 = 0;
+// ext_data_control_source_v1
+pub const EXT_DATA_CONTROL_SOURCE_V1_SEND: u32 = 0;
+pub const EXT_DATA_CONTROL_SOURCE_V1_CANCELLED: u32 = 1;
+
+// zwp_primary_selection_device_v1
+pub const ZWP_PRIMARY_SELECTION_DEVICE_V1_DATA_OFFER: u32 = 0;
+pub const ZWP_PRIMARY_SELECTION_DEVICE_V1_SELECTION: u32 = 1;
+// zwp_primary_selection_offer_v1
+pub const ZWP_PRIMARY_SELECTION_OFFER_V1_OFFER: u32 = 0;
+// zwp_primary_selection_source_v1
+pub const ZWP_PRIMARY_SELECTION_SOURCE_V1_SEND: u32 = 0;
+pub const ZWP_PRIMARY_SELECTION_SOURCE_V1_CANCELLED: u32 = 1;
+
+// wp_presentation_feedback (bitfield flags, but event opcode is 0)
+pub const WP_PRESENTATION_FEEDBACK_PRESENTED: u32 = 0;
+pub const WP_PRESENTATION_FEEDBACK_DISCARDED: u32 = 1;
+
+// zwp_text_input_v3
+pub const ZWP_TEXT_INPUT_V3_ENTER: u32 = 0;
+pub const ZWP_TEXT_INPUT_V3_LEAVE: u32 = 1;
+pub const ZWP_TEXT_INPUT_V3_PREEDIT_STRING: u32 = 2;
+pub const ZWP_TEXT_INPUT_V3_COMMIT_STRING: u32 = 3;
+pub const ZWP_TEXT_INPUT_V3_DELETE_SURROUNDING_TEXT: u32 = 4;
+pub const ZWP_TEXT_INPUT_V3_DONE: u32 = 5;
 
 /// Convert a compositor-space `f32` to a `wl_fixed_t` (24.8) for event posting.
 pub fn wl_fixed_from_f32(v: f32) -> i32 {
@@ -103,6 +239,7 @@ extern "C" {
     pub static wl_data_device_manager_interface: wl_interface;
     pub static wl_data_device_interface: wl_interface;
     pub static wl_data_source_interface: wl_interface;
+    pub static wl_data_offer_interface: wl_interface;
     pub static wl_buffer_interface: wl_interface;
 
     // Display + event loop.
@@ -210,6 +347,27 @@ pub struct xdg_wm_base_interface_impl {
     pub pong: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
 }
 
+/// `xdg_positioner` requests (v1): destroy, set_size, set_anchor_rect, set_anchor,
+/// set_gravity, set_constraint_adjustment, set_offset.
+#[repr(C)]
+pub struct xdg_positioner_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub set_size: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, i32, i32),
+    pub set_anchor_rect: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, i32, i32, i32, i32),
+    pub set_anchor: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub set_gravity: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub set_constraint_adjustment:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub set_offset: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, i32, i32),
+}
+
+/// `xdg_popup` requests: destroy, grab. (configure and popup_done are events.)
+#[repr(C)]
+pub struct xdg_popup_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub grab: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource, u32),
+}
+
 /// `xdg_surface` requests: destroy, get_toplevel, get_popup, set_window_geometry,
 /// ack_configure.
 #[repr(C)]
@@ -281,6 +439,20 @@ pub struct wl_data_device_interface_impl {
     pub release: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
 }
 
+/// `wl_data_source` requests: offer, destroy.
+#[repr(C)]
+pub struct wl_data_source_interface_impl {
+    pub offer: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `wl_data_offer` requests: receive, destroy.
+#[repr(C)]
+pub struct wl_data_offer_interface_impl {
+    pub receive: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char, i32),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
 /// `wl_seat` requests: get_pointer, get_keyboard, get_touch, release.
 #[repr(C)]
 pub struct wl_seat_interface_impl {
@@ -310,6 +482,12 @@ pub struct wl_pointer_interface_impl {
 /// `wl_keyboard` requests: release (v3).
 #[repr(C)]
 pub struct wl_keyboard_interface_impl {
+    pub release: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `wl_touch` requests: release (v3).
+#[repr(C)]
+pub struct wl_touch_interface_impl {
     pub release: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
 }
 
@@ -407,17 +585,330 @@ assert_impl_opcode_count!(wl_compositor_interface_impl, 2);
 assert_impl_opcode_count!(wl_surface_interface_impl, 10);
 assert_impl_opcode_count!(wl_region_interface_impl, 3);
 assert_impl_opcode_count!(xdg_wm_base_interface_impl, 4);
+assert_impl_opcode_count!(xdg_positioner_interface_impl, 7);
+assert_impl_opcode_count!(xdg_popup_interface_impl, 2);
 assert_impl_opcode_count!(xdg_surface_interface_impl, 5);
 assert_impl_opcode_count!(wl_subcompositor_interface_impl, 2);
 assert_impl_opcode_count!(wl_subsurface_interface_impl, 6);
 assert_impl_opcode_count!(wl_data_device_manager_interface_impl, 3);
 assert_impl_opcode_count!(wl_data_device_interface_impl, 3);
+assert_impl_opcode_count!(wl_data_source_interface_impl, 2);
+assert_impl_opcode_count!(wl_data_offer_interface_impl, 2);
 assert_impl_opcode_count!(wl_seat_interface_impl, 4);
 assert_impl_opcode_count!(wl_pointer_interface_impl, 2);
 assert_impl_opcode_count!(wl_keyboard_interface_impl, 1);
+assert_impl_opcode_count!(wl_touch_interface_impl, 1);
 assert_impl_opcode_count!(xdg_toplevel_interface_impl, 14);
 assert_impl_opcode_count!(zwp_linux_dmabuf_v1_interface_impl, 4);
 assert_impl_opcode_count!(zwp_linux_buffer_params_v1_interface_impl, 4);
 assert_impl_opcode_count!(wl_buffer_interface_impl, 1);
 assert_impl_opcode_count!(wp_viewporter_interface_impl, 2);
 assert_impl_opcode_count!(wp_viewport_interface_impl, 3);
+
+// ----- extension protocol request vtables ---------------------------------
+//
+// libwayland indexes each `*_interface_impl` struct by request opcode, so the
+// struct must carry exactly as many function-pointer slots as the protocol
+// advertises requests. The asserts at the bottom enforce this. Request
+// signatures come verbatim from the protocol XML; argument types are the C ABI
+// (object → *mut wl_resource, new_id → u32, fixed → i32, etc.).
+
+/// `zxdg_output_manager_v1`: destroy, get_xdg_output.
+#[repr(C)]
+pub struct zxdg_output_manager_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub get_xdg_output:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+}
+
+/// `zxdg_output_v1`: destroy.
+#[repr(C)]
+pub struct zxdg_output_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `wp_presentation`: destroy, feedback.
+#[repr(C)]
+pub struct wp_presentation_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub feedback:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource, u32),
+}
+
+/// `wp_fractional_scale_manager_v1`: destroy, get_fractional_scale.
+#[repr(C)]
+pub struct wp_fractional_scale_manager_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub get_fractional_scale:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+}
+
+/// `wp_fractional_scale_v1`: destroy.
+#[repr(C)]
+pub struct wp_fractional_scale_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `zwp_idle_inhibit_manager_v1`: destroy, create_inhibitor.
+#[repr(C)]
+pub struct zwp_idle_inhibit_manager_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub create_inhibitor:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+}
+
+/// `zwp_idle_inhibitor_v1`: destroy.
+#[repr(C)]
+pub struct zwp_idle_inhibitor_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `ext_idle_notifier_v1`: destroy, get_idle_notification, get_input_idle_notification.
+#[repr(C)]
+pub struct ext_idle_notifier_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub get_idle_notification:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, u32, *mut wl_resource),
+    pub get_input_idle_notification:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, u32, *mut wl_resource),
+}
+
+/// `ext_idle_notification_v1`: destroy.
+#[repr(C)]
+pub struct ext_idle_notification_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `zwp_relative_pointer_manager_v1`: destroy, get_relative_pointer.
+#[repr(C)]
+pub struct zwp_relative_pointer_manager_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub get_relative_pointer:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+}
+
+/// `zwp_relative_pointer_v1`: destroy.
+#[repr(C)]
+pub struct zwp_relative_pointer_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `zwp_pointer_constraints_v1`: destroy, lock_pointer, confine_pointer.
+#[repr(C)]
+pub struct zwp_pointer_constraints_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub lock_pointer: unsafe extern "C" fn(
+        *mut wl_client,
+        *mut wl_resource,
+        u32,
+        *mut wl_resource,
+        *mut wl_resource,
+        *mut wl_resource,
+        u32,
+    ),
+    pub confine_pointer: unsafe extern "C" fn(
+        *mut wl_client,
+        *mut wl_resource,
+        u32,
+        *mut wl_resource,
+        *mut wl_resource,
+        *mut wl_resource,
+        u32,
+    ),
+}
+
+/// `zwp_confined_pointer_v1`: destroy, set_region.
+#[repr(C)]
+pub struct zwp_confined_pointer_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub set_region: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource),
+}
+
+/// `zwp_locked_pointer_v1`: destroy, set_cursor_position_hint, set_region.
+#[repr(C)]
+pub struct zwp_locked_pointer_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub set_cursor_position_hint:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, i32, i32),
+    pub set_region: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource),
+}
+
+/// `ext_session_lock_manager_v1`: destroy, lock.
+#[repr(C)]
+pub struct ext_session_lock_manager_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub lock: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+}
+
+/// `ext_session_lock_v1`: destroy, get_lock_surface, unlock_and_destroy.
+#[repr(C)]
+pub struct ext_session_lock_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub get_lock_surface: unsafe extern "C" fn(
+        *mut wl_client,
+        *mut wl_resource,
+        u32,
+        *mut wl_resource,
+        *mut wl_resource,
+    ),
+    pub unlock_and_destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `ext_session_lock_surface_v1`: destroy, ack_configure.
+#[repr(C)]
+pub struct ext_session_lock_surface_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub ack_configure: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+}
+
+/// `ext_foreign_toplevel_list_v1`: stop, destroy.
+#[repr(C)]
+pub struct ext_foreign_toplevel_list_v1_interface_impl {
+    pub stop: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `ext_foreign_toplevel_handle_v1`: destroy.
+#[repr(C)]
+pub struct ext_foreign_toplevel_handle_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `ext_data_control_manager_v1`: create_data_source, get_data_device, destroy.
+#[repr(C)]
+pub struct ext_data_control_manager_v1_interface_impl {
+    pub create_data_source: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub get_data_device:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `ext_data_control_device_v1`: set_selection, destroy, set_primary_selection.
+#[repr(C)]
+pub struct ext_data_control_device_v1_interface_impl {
+    pub set_selection: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub set_primary_selection:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource),
+}
+
+/// `ext_data_control_source_v1`: offer, destroy.
+#[repr(C)]
+pub struct ext_data_control_source_v1_interface_impl {
+    pub offer: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `ext_data_control_offer_v1`: receive, destroy.
+#[repr(C)]
+pub struct ext_data_control_offer_v1_interface_impl {
+    pub receive: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char, i32),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `wp_cursor_shape_manager_v1`: destroy, get_pointer, get_tablet_tool_v2.
+#[repr(C)]
+pub struct wp_cursor_shape_manager_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub get_pointer:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+    pub get_tablet_tool_v2:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+}
+
+/// `wp_cursor_shape_device_v1`: destroy, set_shape.
+#[repr(C)]
+pub struct wp_cursor_shape_device_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub set_shape: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, u32),
+}
+
+/// `zwp_primary_selection_device_manager_v1`: create_source, get_device, destroy.
+#[repr(C)]
+pub struct zwp_primary_selection_device_manager_v1_interface_impl {
+    pub create_source: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub get_data_device:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `zwp_primary_selection_device_v1`: set_selection, destroy.
+#[repr(C)]
+pub struct zwp_primary_selection_device_v1_interface_impl {
+    pub set_selection:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource, u32),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `zwp_primary_selection_source_v1`: offer, destroy.
+#[repr(C)]
+pub struct zwp_primary_selection_source_v1_interface_impl {
+    pub offer: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `zwp_primary_selection_offer_v1`: receive, destroy.
+#[repr(C)]
+pub struct zwp_primary_selection_offer_v1_interface_impl {
+    pub receive: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char, i32),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `zwp_text_input_manager_v3`: destroy, get_text_input.
+#[repr(C)]
+pub struct zwp_text_input_manager_v3_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub get_text_input:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+}
+
+/// `zwp_text_input_v3` requests at v1 (8 opcodes). Opcode order: destroy,
+/// enable, disable, set_surrounding_text, set_text_change_cause,
+/// set_content_type, set_cursor_rectangle, commit. We bind at v1 so the three
+/// v2-only requests (set_available_actions, show/hide_input_panel) are
+/// unreachable.
+#[repr(C)]
+pub struct zwp_text_input_v3_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub enable: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub disable: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub set_surrounding_text:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char, i32, i32),
+    pub set_text_change_cause: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub set_content_type: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, u32),
+    pub set_cursor_rectangle:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, i32, i32, i32, i32),
+    pub commit: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+assert_impl_opcode_count!(zxdg_output_manager_v1_interface_impl, 2);
+assert_impl_opcode_count!(zxdg_output_v1_interface_impl, 1);
+assert_impl_opcode_count!(wp_presentation_interface_impl, 2);
+assert_impl_opcode_count!(wp_fractional_scale_manager_v1_interface_impl, 2);
+assert_impl_opcode_count!(wp_fractional_scale_v1_interface_impl, 1);
+assert_impl_opcode_count!(zwp_idle_inhibit_manager_v1_interface_impl, 2);
+assert_impl_opcode_count!(zwp_idle_inhibitor_v1_interface_impl, 1);
+assert_impl_opcode_count!(ext_idle_notifier_v1_interface_impl, 3);
+assert_impl_opcode_count!(ext_idle_notification_v1_interface_impl, 1);
+assert_impl_opcode_count!(zwp_relative_pointer_manager_v1_interface_impl, 2);
+assert_impl_opcode_count!(zwp_relative_pointer_v1_interface_impl, 1);
+assert_impl_opcode_count!(zwp_pointer_constraints_v1_interface_impl, 3);
+assert_impl_opcode_count!(zwp_confined_pointer_v1_interface_impl, 2);
+assert_impl_opcode_count!(zwp_locked_pointer_v1_interface_impl, 3);
+assert_impl_opcode_count!(ext_session_lock_manager_v1_interface_impl, 2);
+assert_impl_opcode_count!(ext_session_lock_v1_interface_impl, 3);
+assert_impl_opcode_count!(ext_session_lock_surface_v1_interface_impl, 2);
+assert_impl_opcode_count!(ext_foreign_toplevel_list_v1_interface_impl, 2);
+assert_impl_opcode_count!(ext_foreign_toplevel_handle_v1_interface_impl, 1);
+assert_impl_opcode_count!(ext_data_control_manager_v1_interface_impl, 3);
+assert_impl_opcode_count!(ext_data_control_device_v1_interface_impl, 3);
+assert_impl_opcode_count!(ext_data_control_source_v1_interface_impl, 2);
+assert_impl_opcode_count!(ext_data_control_offer_v1_interface_impl, 2);
+assert_impl_opcode_count!(wp_cursor_shape_manager_v1_interface_impl, 3);
+assert_impl_opcode_count!(wp_cursor_shape_device_v1_interface_impl, 2);
+assert_impl_opcode_count!(zwp_primary_selection_device_manager_v1_interface_impl, 3);
+assert_impl_opcode_count!(zwp_primary_selection_device_v1_interface_impl, 2);
+assert_impl_opcode_count!(zwp_primary_selection_source_v1_interface_impl, 2);
+assert_impl_opcode_count!(zwp_primary_selection_offer_v1_interface_impl, 2);
+assert_impl_opcode_count!(zwp_text_input_manager_v3_interface_impl, 2);
+assert_impl_opcode_count!(zwp_text_input_v3_interface_impl, 8);
