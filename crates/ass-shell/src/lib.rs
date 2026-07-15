@@ -187,7 +187,7 @@ pub trait Chrome {
         false
     }
 
-    /// Gaussian blur sigma requested for the desktop behind compositor
+    /// Blur width requested for the desktop behind compositor
     /// chrome, in logical pixels. The host takes the maximum across
     /// components and applies one shared backdrop capture before rendering
     /// chrome. A zero value disables the capture path.
@@ -234,7 +234,9 @@ impl Shell {
         Ok(Shell {
             ui,
             windows: Vec::new(),
-            workspaces: WorkspaceSnapshot { outputs: Vec::new() },
+            workspaces: WorkspaceSnapshot {
+                outputs: Vec::new(),
+            },
             events: ChromeEvents::default(),
             components: Vec::new(),
         })
@@ -326,9 +328,9 @@ impl Shell {
     /// use the same window/workspace snapshot they render, so routing and
     /// visuals agree for the frame.
     pub fn captures_pointer_at(&self, x: f32, y: f32, display: (f32, f32)) -> bool {
-        self.components.iter().any(|c| {
-            c.captures_pointer(x, y, display, &self.windows, &self.workspaces)
-        })
+        self.components
+            .iter()
+            .any(|c| c.captures_pointer(x, y, display, &self.windows, &self.workspaces))
     }
 
     /// Push a newly scanned application catalog to interested components.
@@ -390,7 +392,7 @@ impl Shell {
 
     /// Strongest backdrop blur requested by any registered component, in
     /// logical pixels. The executable converts it to physical pixels before
-    /// invoking flux's Gaussian effect.
+    /// invoking flux's realtime multi-resolution filter.
     pub fn backdrop_blur_sigma(&self) -> f32 {
         self.components
             .iter()

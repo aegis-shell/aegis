@@ -127,8 +127,7 @@ impl Scope {
                 Self::allows(&self.windows, *id)
             }
             Command::MoveToWorkspace { window, workspace } => {
-                Self::allows(&self.windows, *window)
-                    && Self::allows(&self.workspaces, *workspace)
+                Self::allows(&self.windows, *window) && Self::allows(&self.workspaces, *workspace)
             }
             Command::SwitchWorkspaceTo { id } => Self::allows(&self.workspaces, *id),
             _ => true,
@@ -390,9 +389,7 @@ mod tests {
     #[test]
     fn switch_workspace_command_round_trips() {
         // A nested internally-tagged enum (Command variant carrying `Switch`).
-        let cmd = Command::SwitchWorkspace {
-            dir: Switch::Next,
-        };
+        let cmd = Command::SwitchWorkspace { dir: Switch::Next };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains(r#""type":"SwitchWorkspace""#), "{json}");
         assert!(json.contains(r#""dir":{"type":"Next"}"#), "{json}");
@@ -419,7 +416,10 @@ mod tests {
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains(r#""type":"MoveToWorkspace""#), "{json}");
-        assert!(json.contains(r#""window":42"#) && json.contains(r#""workspace":3"#), "{json}");
+        assert!(
+            json.contains(r#""window":42"#) && json.contains(r#""workspace":3"#),
+            "{json}"
+        );
         assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
         assert!(cmd.required_cap().control);
     }

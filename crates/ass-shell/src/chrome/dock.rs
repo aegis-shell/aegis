@@ -501,7 +501,10 @@ impl Chrome for Dock {
                 };
                 let dot_id = format!("ass-dock-dot-{}", t.key);
                 f.layer(&dot_id, dot_rect, &OverlayOpts::default(), |f| {
-                    f.column_ex(&sized_fill(DOCK_DOT, DOCK_DOT, color, DOCK_DOT * 0.5), |_| {});
+                    f.column_ex(
+                        &sized_fill(DOCK_DOT, DOCK_DOT, color, DOCK_DOT * 0.5),
+                        |_| {},
+                    );
                 });
             }
         }
@@ -676,14 +679,20 @@ mod tests {
     #[test]
     fn spring_approaches_target_at_rest() {
         // No time elapses → nothing moves.
-        let mut s = SpringState { value: 10.0, vel: 0.0 };
+        let mut s = SpringState {
+            value: 10.0,
+            vel: 0.0,
+        };
         assert_eq!(Dock::spring(&mut s, 20.0, 0.0), 10.0);
     }
 
     #[test]
     fn spring_settles_on_target() {
         // Many small steps from rest must converge to the target.
-        let mut s = SpringState { value: 10.0, vel: 0.0 };
+        let mut s = SpringState {
+            value: 10.0,
+            vel: 0.0,
+        };
         for _ in 0..2000 {
             Dock::spring(&mut s, 20.0, 1.0 / 120.0);
         }
@@ -694,7 +703,10 @@ mod tests {
     fn spring_overshoots_then_settles() {
         // Under-damped: from rest it should cross past the target at least once
         // before settling (the macOS lift-and-bounce).
-        let mut s = SpringState { value: 0.0, vel: 0.0 };
+        let mut s = SpringState {
+            value: 0.0,
+            vel: 0.0,
+        };
         let mut overshot = false;
         for _ in 0..2000 {
             Dock::spring(&mut s, 100.0, 1.0 / 120.0);
@@ -709,7 +721,10 @@ mod tests {
     #[test]
     fn spring_is_dt_stable() {
         // A single large step (a long frame stall) must not blow up.
-        let mut s = SpringState { value: 0.0, vel: 0.0 };
+        let mut s = SpringState {
+            value: 0.0,
+            vel: 0.0,
+        };
         let v = Dock::spring(&mut s, 100.0, 1.0 / 5.0);
         assert!(v.is_finite(), "value diverged: {v}");
         assert!(s.vel.is_finite(), "velocity diverged: {}", s.vel);
@@ -718,11 +733,18 @@ mod tests {
     #[test]
     fn pinned_apps_show_without_any_running_window() {
         let dock = Dock::with_apps(
-            vec![app("firefox.desktop", &["firefox"]), app("term.desktop", &["term"])],
+            vec![
+                app("firefox.desktop", &["firefox"]),
+                app("term.desktop", &["term"]),
+            ],
             HashMap::new(),
         );
         let tiles = dock.tiles(&[]);
-        assert_eq!(tiles.len(), 2, "both pinned apps are tiles even with no windows");
+        assert_eq!(
+            tiles.len(),
+            2,
+            "both pinned apps are tiles even with no windows"
+        );
         assert!(tiles.iter().all(|t| !t.running));
         // No running window → clicking launches (spawn), not focus.
         assert!(tiles.iter().all(|t| t.spawn.is_some() && t.focus.is_none()));
@@ -732,10 +754,18 @@ mod tests {
     fn running_window_folds_into_its_pinned_tile() {
         let dock = Dock::with_apps(vec![app("firefox.desktop", &["firefox"])], HashMap::new());
         let tiles = dock.tiles(&[window(7, "firefox", true)]);
-        assert_eq!(tiles.len(), 1, "the window folds into the pinned tile, not a new one");
+        assert_eq!(
+            tiles.len(),
+            1,
+            "the window folds into the pinned tile, not a new one"
+        );
         assert!(tiles[0].running);
         assert!(tiles[0].activated);
-        assert_eq!(tiles[0].focus, Some(ass_core::window::WindowId(7)), "clicking focuses the running window");
+        assert_eq!(
+            tiles[0].focus,
+            Some(ass_core::window::WindowId(7)),
+            "clicking focuses the running window"
+        );
         assert!(tiles[0].spawn.is_none());
     }
 
@@ -743,7 +773,11 @@ mod tests {
     fn unpinned_running_window_is_appended() {
         let dock = Dock::with_apps(vec![app("firefox.desktop", &["firefox"])], HashMap::new());
         let tiles = dock.tiles(&[window(3, "gimp", false)]);
-        assert_eq!(tiles.len(), 2, "pinned firefox plus the unpinned gimp window");
+        assert_eq!(
+            tiles.len(),
+            2,
+            "pinned firefox plus the unpinned gimp window"
+        );
         let gimp = tiles.iter().find(|t| t.key == "win:3").expect("gimp tile");
         assert!(gimp.running);
         assert_eq!(gimp.focus, Some(ass_core::window::WindowId(3)));

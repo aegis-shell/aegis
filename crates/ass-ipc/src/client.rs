@@ -10,7 +10,7 @@ use std::path::Path;
 
 use crate::codec::{read_msg, write_msg};
 use crate::journal::JournalSnapshot;
-use crate::schema::{Capabilities, Command, Event, PROTOCOL_VERSION, Request, Response};
+use crate::schema::{Capabilities, Command, Event, Request, Response, PROTOCOL_VERSION};
 
 /// A connected IPC client. The handshake is complete on construction; the
 /// granted capabilities are available via [`Client::caps`].
@@ -89,18 +89,12 @@ impl Client {
     }
 
     /// Switch to an adjacent workspace on the focused output.
-    pub fn switch_workspace(
-        &mut self,
-        dir: ass_core::workspace::Switch,
-    ) -> io::Result<()> {
+    pub fn switch_workspace(&mut self, dir: ass_core::workspace::Switch) -> io::Result<()> {
         self.command(Command::SwitchWorkspace { dir })
     }
 
     /// Switch directly to a workspace by id.
-    pub fn switch_workspace_to(
-        &mut self,
-        id: ass_core::workspace::WorkspaceId,
-    ) -> io::Result<()> {
+    pub fn switch_workspace_to(&mut self, id: ass_core::workspace::WorkspaceId) -> io::Result<()> {
         self.command(Command::SwitchWorkspaceTo { id })
     }
 
@@ -191,8 +185,8 @@ impl Client {
             Response::Error { message } => Err(io::Error::other(message)),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("expected Subscribed, got {other:?}")),
-            ),
+                format!("expected Subscribed, got {other:?}"),
+            )),
         }
     }
 

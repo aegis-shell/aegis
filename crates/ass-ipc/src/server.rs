@@ -23,7 +23,7 @@ use std::thread;
 
 use crate::codec::{read_msg, write_msg};
 use crate::journal::JournalEntry;
-use crate::schema::{Capabilities, Command, Event, Scope, PROTOCOL_VERSION, Request, Response};
+use crate::schema::{Capabilities, Command, Event, Request, Response, Scope, PROTOCOL_VERSION};
 
 /// Subscriber ids are globally unique across connections and subscription
 /// types (coarse events vs. journal entries).
@@ -128,7 +128,9 @@ impl Server {
     pub fn broadcast_journal(&self, entry: JournalEntry) {
         let subs = self.journal_subs.lock().unwrap();
         for tx in subs.values() {
-            let _ = tx.send(Outbound::Event(Event::Journal { entry: entry.clone() }));
+            let _ = tx.send(Outbound::Event(Event::Journal {
+                entry: entry.clone(),
+            }));
         }
     }
 }
@@ -193,8 +195,14 @@ fn serve_connection<H: Handler + 'static>(
             }
         });
 
-    let (sub_id, journal_sub_id) =
-        drive_read_loop(&mut read_half, &tx, &*handler, &subs, &journal_subs, &next_sub);
+    let (sub_id, journal_sub_id) = drive_read_loop(
+        &mut read_half,
+        &tx,
+        &*handler,
+        &subs,
+        &journal_subs,
+        &next_sub,
+    );
     if let Some(id) = sub_id {
         subs.lock().unwrap().remove(&id);
     }
@@ -218,7 +226,11 @@ fn drive_read_loop<H: Handler>(
     next_sub: &AtomicU64,
 ) -> (Option<SubId>, Option<SubId>) {
     let (granted, granted_scope) = match read_msg::<_, Request>(read) {
-        Ok(Request::Hello { version, caps, scope }) => {
+        Ok(Request::Hello {
+            version,
+            caps,
+            scope,
+        }) => {
             if version != PROTOCOL_VERSION {
                 let _ = tx.send(Outbound::Response(Response::Error {
                     message: format!(

@@ -97,10 +97,7 @@ impl Layout for MasterStack {
         for k in 0..m {
             let y = inner.origin.y + k * (row_h + params.gaps);
             out.push(Rect {
-                origin: crate::Point {
-                    x: stack_x,
-                    y,
-                },
+                origin: crate::Point { x: stack_x, y },
                 size: Size {
                     w: stack_w,
                     h: row_h,
@@ -184,7 +181,7 @@ mod tests {
         assert_eq!(out.len(), 3);
         assert_eq!(out[0], area(10, 10, 485, 780)); // master
         assert_eq!(out[1], area(485 + 10 + 10, 10, 485, 385)); // first stack row
-        // Second row starts at y = 10 + 385 + 10 = 405.
+                                                               // Second row starts at y = 10 + 385 + 10 = 405.
         assert_eq!(out[2], area(505, 405, 485, 385));
     }
 
@@ -211,8 +208,14 @@ mod tests {
             // Every tile lies within the inner rect and is non-negative.
             assert!(r.origin.x >= inner.origin.x, "{r:?}");
             assert!(r.origin.y >= inner.origin.y, "{r:?}");
-            assert!(r.origin.x + r.size.w <= inner.origin.x + inner.size.w, "{r:?}");
-            assert!(r.origin.y + r.size.h <= inner.origin.y + inner.size.h, "{r:?}");
+            assert!(
+                r.origin.x + r.size.w <= inner.origin.x + inner.size.w,
+                "{r:?}"
+            );
+            assert!(
+                r.origin.y + r.size.h <= inner.origin.y + inner.size.h,
+                "{r:?}"
+            );
             assert!(r.size.w >= 0 && r.size.h >= 0);
         }
     }
@@ -230,7 +233,10 @@ mod tests {
         let work = area(0, 0, 1000, 800);
         let small = MasterStack.layout(work, 2, &p_small);
         let big = MasterStack.layout(work, 2, &p_big);
-        assert!(small[0].size.w < big[0].size.w, "bigger ratio → wider master");
+        assert!(
+            small[0].size.w < big[0].size.w,
+            "bigger ratio → wider master"
+        );
         assert_eq!(small[0].size.w, 250);
         assert_eq!(big[0].size.w, 750);
     }

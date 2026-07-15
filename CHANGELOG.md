@@ -15,9 +15,13 @@ project cuts a tagged release.
   `ASS_WALLPAPER_MODEL` overlays a `.glb` on an image or video wallpaper.
 - The model renderer auto-frames scene bounds and owns one depth target per
   frame-in-flight slot. The launcher now captures image/video, 3D, and client
-  layers into one half-scale offscreen scene and applies a frame-slot-safe
-  Gaussian blur every frame, so model motion and lighting stay live without
-  device-wide synchronization stalls.
+  layers into one quarter-scale offscreen scene and applies a frame-slot-safe
+  Dual-Kawase blur every frame, so model motion and lighting stay live without
+  device-wide synchronization stalls or GPU-watchdog-scale Gaussian kernels.
+  Animated rendering is capped at 60 frames per second. Captures normalize
+  BGRA swapchains to RGBA8 storage, and render-target transitions stay in the
+  owning frame, avoiding Intel i915 hangs from invalid storage formats and
+  nested one-shot submissions.
 
 ### Daily-use reliability and interaction polish
 
@@ -39,7 +43,7 @@ project cuts a tagged release.
 - The application catalog refreshes every five seconds, dock pins update on
   config reload, and SVG icons render through `rsvg-convert` when available.
 - The launcher is now a full-screen, responsive application library with a
-  cached Gaussian-blurred desktop, spring opening/closing motion, search,
+  live multi-resolution-blurred desktop, spring opening/closing motion, search,
   keyboard grid navigation, wheel/trackpad paging, and access to the complete
   application catalog instead of a fixed render cap. HiDPI icon lookup now
   targets 128 pixels, with stable colored initial tiles for missing icons.

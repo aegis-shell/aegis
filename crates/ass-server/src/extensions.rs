@@ -62,8 +62,7 @@ unsafe extern "C" fn xdg_output_manager_get_xdg_output(
 ) {
     let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
     let ver = ffi::wl_resource_get_version(mgr);
-    let res =
-        ffi::wl_resource_create(client, &ffi::zxdg_output_v1_interface, ver, id);
+    let res = ffi::wl_resource_create(client, &ffi::zxdg_output_v1_interface, ver, id);
     if res.is_null() {
         return;
     }
@@ -180,12 +179,7 @@ unsafe extern "C" fn presentation_feedback(
     // Create a wp_presentation_feedback with no requests. The compositor does
     // not yet track presentation timing, so we immediately post `discarded`
     // so the client frees the object rather than waiting forever.
-    let fb = ffi::wl_resource_create(
-        client,
-        &ffi::wp_presentation_feedback_interface,
-        1,
-        id,
-    );
+    let fb = ffi::wl_resource_create(client, &ffi::wp_presentation_feedback_interface, 1, id);
     if fb.is_null() {
         return;
     }
@@ -275,10 +269,7 @@ unsafe extern "C" fn fractional_scale_resource_destroy(resource: *mut ffi::wl_re
 
 /// Post `wp_fractional_scale_v1.preferred_scale` for one resource, in 120ths
 /// (the wire unit). Uses the output's fractional scale.
-pub(crate) unsafe fn send_fractional_scale(
-    res: *mut ffi::wl_resource,
-    state: *mut State,
-) {
+pub(crate) unsafe fn send_fractional_scale(res: *mut ffi::wl_resource, state: *mut State) {
     let scale_120 = if state.is_null() {
         120u32
     } else {
@@ -403,8 +394,7 @@ unsafe extern "C" fn idle_notifier_get(
     _seat: *mut ffi::wl_resource,
 ) {
     let ver = ffi::wl_resource_get_version(notifier);
-    let res =
-        ffi::wl_resource_create(client, &ffi::ext_idle_notification_v1_interface, ver, id);
+    let res = ffi::wl_resource_create(client, &ffi::ext_idle_notification_v1_interface, ver, id);
     if res.is_null() {
         return;
     }
@@ -461,8 +451,7 @@ unsafe extern "C" fn relative_pointer_manager_get(
 ) {
     let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
     let ver = ffi::wl_resource_get_version(mgr);
-    let res =
-        ffi::wl_resource_create(client, &ffi::zwp_relative_pointer_v1_interface, ver, id);
+    let res = ffi::wl_resource_create(client, &ffi::zwp_relative_pointer_v1_interface, ver, id);
     if res.is_null() {
         return;
     }
@@ -582,8 +571,7 @@ unsafe extern "C" fn pc_confine_pointer(
     _lifetime: u32,
 ) {
     let ver = ffi::wl_resource_get_version(pc);
-    let res =
-        ffi::wl_resource_create(client, &ffi::zwp_confined_pointer_v1_interface, ver, id);
+    let res = ffi::wl_resource_create(client, &ffi::zwp_confined_pointer_v1_interface, ver, id);
     if res.is_null() {
         return;
     }
@@ -670,12 +658,7 @@ unsafe extern "C" fn session_lock_get_surface(
     _output: *mut ffi::wl_resource,
 ) {
     let ver = ffi::wl_resource_get_version(lock);
-    let res = ffi::wl_resource_create(
-        client,
-        &ffi::ext_session_lock_surface_v1_interface,
-        ver,
-        id,
-    );
+    let res = ffi::wl_resource_create(client, &ffi::ext_session_lock_surface_v1_interface, ver, id);
     if res.is_null() {
         return;
     }
@@ -769,16 +752,28 @@ unsafe fn create_foreign_handle(
     let wid = (*rec).window.id.0;
     if let Some(title) = &(*rec).window.title {
         if let Ok(c) = CString::new(title.as_str()) {
-            ffi::wl_resource_post_event(handle, ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_TITLE, c.as_ptr());
+            ffi::wl_resource_post_event(
+                handle,
+                ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_TITLE,
+                c.as_ptr(),
+            );
         }
     }
     if let Some(app_id) = &(*rec).window.app_id {
         if let Ok(c) = CString::new(app_id.as_str()) {
-            ffi::wl_resource_post_event(handle, ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_APP_ID, c.as_ptr());
+            ffi::wl_resource_post_event(
+                handle,
+                ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_APP_ID,
+                c.as_ptr(),
+            );
         }
     }
     if let Ok(c) = CString::new(format!("ass:{wid}")) {
-        ffi::wl_resource_post_event(handle, ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_IDENTIFIER, c.as_ptr());
+        ffi::wl_resource_post_event(
+            handle,
+            ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_IDENTIFIER,
+            c.as_ptr(),
+        );
     }
     ffi::wl_resource_post_event(handle, ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_DONE);
     if !state.is_null() {
@@ -814,12 +809,20 @@ pub(crate) unsafe fn foreign_toplevel_updated(rec: *mut SurfaceRec, state: *mut 
     };
     if let Some(title) = &(*rec).window.title {
         if let Ok(c) = CString::new(title.as_str()) {
-            ffi::wl_resource_post_event(handle, ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_TITLE, c.as_ptr());
+            ffi::wl_resource_post_event(
+                handle,
+                ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_TITLE,
+                c.as_ptr(),
+            );
         }
     }
     if let Some(app_id) = &(*rec).window.app_id {
         if let Ok(c) = CString::new(app_id.as_str()) {
-            ffi::wl_resource_post_event(handle, ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_APP_ID, c.as_ptr());
+            ffi::wl_resource_post_event(
+                handle,
+                ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_APP_ID,
+                c.as_ptr(),
+            );
         }
     }
     ffi::wl_resource_post_event(handle, ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_DONE);
@@ -895,8 +898,7 @@ unsafe extern "C" fn dcm_create_data_source(
     id: u32,
 ) {
     let ver = ffi::wl_resource_get_version(mgr);
-    let src =
-        ffi::wl_resource_create(client, &ffi::ext_data_control_source_v1_interface, ver, id);
+    let src = ffi::wl_resource_create(client, &ffi::ext_data_control_source_v1_interface, ver, id);
     if !src.is_null() {
         ffi::wl_resource_set_implementation(
             src,
@@ -914,8 +916,7 @@ unsafe extern "C" fn dcm_get_data_device(
     _seat: *mut ffi::wl_resource,
 ) {
     let ver = ffi::wl_resource_get_version(mgr);
-    let dev =
-        ffi::wl_resource_create(client, &ffi::ext_data_control_device_v1_interface, ver, id);
+    let dev = ffi::wl_resource_create(client, &ffi::ext_data_control_device_v1_interface, ver, id);
     if !dev.is_null() {
         ffi::wl_resource_set_implementation(
             dev,
@@ -1090,8 +1091,7 @@ unsafe extern "C" fn cursor_shape_get_pointer(
 ) {
     let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
     let ver = ffi::wl_resource_get_version(mgr);
-    let dev =
-        ffi::wl_resource_create(client, &ffi::wp_cursor_shape_device_v1_interface, ver, id);
+    let dev = ffi::wl_resource_create(client, &ffi::wp_cursor_shape_device_v1_interface, ver, id);
     if !dev.is_null() {
         ffi::wl_resource_set_implementation(
             dev,
@@ -1110,8 +1110,7 @@ unsafe extern "C" fn cursor_shape_get_tablet(
 ) {
     let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
     let ver = ffi::wl_resource_get_version(mgr);
-    let dev =
-        ffi::wl_resource_create(client, &ffi::wp_cursor_shape_device_v1_interface, ver, id);
+    let dev = ffi::wl_resource_create(client, &ffi::wp_cursor_shape_device_v1_interface, ver, id);
     if !dev.is_null() {
         ffi::wl_resource_set_implementation(
             dev,
@@ -1233,7 +1232,11 @@ unsafe extern "C" fn text_input_enable(
         return;
     }
     let focus = (*state).keyboard_focus;
-    if let Some(slot) = (*state).text_inputs.iter_mut().find(|(r, _)| *r == resource) {
+    if let Some(slot) = (*state)
+        .text_inputs
+        .iter_mut()
+        .find(|(r, _)| *r == resource)
+    {
         slot.1 = focus;
     }
 }
@@ -1246,7 +1249,11 @@ unsafe extern "C" fn text_input_disable(
     if state.is_null() {
         return;
     }
-    if let Some(slot) = (*state).text_inputs.iter_mut().find(|(r, _)| *r == resource) {
+    if let Some(slot) = (*state)
+        .text_inputs
+        .iter_mut()
+        .find(|(r, _)| *r == resource)
+    {
         slot.1 = std::ptr::null_mut();
     }
 }
@@ -1272,7 +1279,11 @@ pub(crate) unsafe fn text_input_focus_changed(
         let ti_client = ffi::wl_resource_get_client(ti);
         // Leave: text_inputs of the old-focus client.
         if !old_focus.is_null() && ffi::wl_resource_get_client(old_focus) == ti_client {
-            ffi::wl_resource_post_event(ti, ffi::ZWP_TEXT_INPUT_V3_LEAVE, std::ptr::null_mut::<ffi::wl_resource>());
+            ffi::wl_resource_post_event(
+                ti,
+                ffi::ZWP_TEXT_INPUT_V3_LEAVE,
+                std::ptr::null_mut::<ffi::wl_resource>(),
+            );
         }
         // Enter: text_inputs of the new-focus client.
         if !new_focus.is_null() && ffi::wl_resource_get_client(new_focus) == ti_client {

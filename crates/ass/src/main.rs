@@ -49,10 +49,10 @@ impl InputAccumulator {
     }
 }
 
-/// Backdrop effects are evaluated at half resolution, then upsampled behind
-/// the launcher. Blur removes the lost high-frequency detail, while the 4x
-/// pixel reduction keeps animated wallpapers comfortably real-time.
-const BACKDROP_DOWNSAMPLE: u32 = 2;
+/// Backdrop effects are evaluated at quarter resolution, then upsampled behind
+/// the launcher. Dual-Kawase removes the lost high-frequency detail, while the
+/// 16x pixel reduction bounds the cost of live 2D + 3D wallpaper capture.
+const BACKDROP_DOWNSAMPLE: u32 = 4;
 
 struct BackdropCapture {
     image: flux::Image,
@@ -113,11 +113,12 @@ impl LauncherBackdrop {
             return BackdropPlan::Direct;
         }
         let format = match surface.format() {
-            flux::Format::FLUX_FORMAT_RGBA8_UNORM => flux::Format::FLUX_FORMAT_RGBA8_UNORM,
-            flux::Format::FLUX_FORMAT_BGRA8_UNORM => flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+            flux::Format::FLUX_FORMAT_RGBA8_UNORM | flux::Format::FLUX_FORMAT_BGRA8_UNORM => {
+                flux::Format::FLUX_FORMAT_RGBA8_UNORM
+            }
             other => {
                 log::warn!(
-                    "launcher: Gaussian backdrop unavailable for surface format {other:?}; using translucent fallback"
+                    "launcher: realtime backdrop unavailable for surface format {other:?}; using translucent fallback"
                 );
                 self.unsupported = true;
                 return BackdropPlan::Direct;
@@ -146,7 +147,7 @@ impl LauncherBackdrop {
                 }
                 Err(error) => {
                     log::warn!(
-                        "launcher: failed to allocate Gaussian backdrop target ({error}); using translucent fallback"
+                        "launcher: failed to allocate realtime backdrop target ({error}); using translucent fallback"
                     );
                     self.failed_session = true;
                     return BackdropPlan::Direct;
@@ -202,7 +203,7 @@ impl LauncherBackdrop {
             Ok(image) => Some(image),
             Err(error) => {
                 log::warn!(
-                    "launcher: Gaussian backdrop dispatch failed ({error}); using translucent fallback"
+                    "launcher: realtime backdrop dispatch failed ({error}); using translucent fallback"
                 );
                 self.failed_session = true;
                 None
@@ -645,9 +646,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // spring/wave keeps stepping; otherwise block on the host queue for the
         // next wakeup (input, client commit, resize).
         let alive = if animating {
-            // Cap the spin to ~60fps so we don't busy-burn a core. The host's
-            // own frame callbacks still flow through dispatch_nonblocking.
-            std::thread::sleep(std::time::Duration::from_millis(8));
+            // Cap animation at 60fps, accounting for work already spent on
+            // the previous frame. The host's own frame callbacks still flow
+            // through dispatch_nonblocking.
+            let frame_interval = std::time::Duration::from_micros(16_667);
+            let remaining = frame_interval.saturating_sub(previous_frame_at.elapsed());
+            if !remaining.is_zero() {
+                std::thread::sleep(remaining);
+            }
             host.dispatch_nonblocking()
         } else {
             host.dispatch()

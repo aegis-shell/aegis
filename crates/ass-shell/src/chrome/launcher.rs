@@ -5,14 +5,14 @@
 //! The component owns presentation state only: responsive grid geometry,
 //! paging, hover/click hit-testing, and the opening/closing spring. Search,
 //! running-app matching, selection, and launch outcomes stay in `ass-core`.
-//! The compositor host captures and Gaussian-blurs the desktop when
+//! The compositor host captures and multi-resolution-blurs the desktop when
 //! [`Chrome::backdrop_blur_sigma`] is non-zero, so the overlay remains legible
 //! without replacing the user's spatial context with an opaque panel.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
 
-use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect};
+use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
 
 use crate::{Chrome, ChromeEvents};
 use ass_core::app::Entry;
@@ -20,9 +20,9 @@ use ass_core::input::{key_action, KeyAction, KeyChar};
 use ass_core::launcher::{Launch, Launcher as Brain};
 use ass_core::window::Window;
 
-/// Blur radius requested from the compositor host, in logical pixels. The host
-/// scales it to the physical framebuffer and caches the result for one open
-/// session, so this does not run a full-screen compute pass every frame.
+/// Blur width requested from the compositor host, in logical pixels. The host
+/// scales it to its quarter-resolution capture and evaluates a fixed-cost
+/// multi-resolution filter while the desktop remains live.
 const BACKDROP_BLUR_SIGMA: f32 = 10.0;
 const SEARCH_TOP: f32 = 38.0;
 const SEARCH_H: f32 = 44.0;
@@ -53,6 +53,10 @@ pub struct Launcher {
     /// Level edge tracking prevents a held dock click from activating the
     /// launcher cell underneath it on the next frame.
     prev_down: bool,
+    /// Visual focus for the compositor-owned search field. Text editing lives
+    /// in the launcher brain, so the field cannot rely on lens widget focus to
+    /// draw its focus ring and caret.
+    search_focused: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -153,6 +157,7 @@ impl Launcher {
             visibility: SpringState::default(),
             anim_active: false,
             prev_down: false,
+            search_focused: false,
         }
     }
 
@@ -245,8 +250,15 @@ impl Chrome for Launcher {
             self.page = 0;
             self.page_shift = 0.0;
             self.prev_down = down;
+            self.search_focused = false;
             return;
         }
+
+        // Lens text and built-in glyphs inherit their colour from the active
+        // theme. Fade those tokens with the visibility spring so they do not
+        // remain fully opaque until their layers disappear.
+        let original_theme = frame.theme();
+        frame.set_theme(faded_theme(original_theme, progress));
 
         let dt = raw.dt_seconds.clamp(0.0, 1.0 / 15.0);
         if self.page_shift.abs() > 0.05 {
@@ -347,28 +359,53 @@ impl Chrome for Launcher {
             w: search_w,
             h: SEARCH_H,
         };
+        if pressed && contains(search_rect, cursor.x, cursor.y) {
+            self.search_focused = true;
+        }
         frame.layer(
             "ass-launcher-search",
             search_rect,
-            &glass_panel(progress, SEARCH_H * 0.5),
+            &glass_panel(progress, SEARCH_H * 0.5, self.search_focused),
             |frame| {
                 frame.row_ex(
                     &LayoutOpts {
                         width: search_w,
                         height: SEARCH_H,
-                        gap: 10.0,
-                        pad: 13.0,
+                        gap: 0.0,
+                        pad: 0.0,
                         cross: Align::Center,
                         ..Default::default()
                     },
                     |frame| {
+                        frame.spacer(16.0);
                         frame.icon(Icon::Search, 17.0);
-                        let text = if self.brain.query().is_empty() {
-                            "Search applications".to_string()
+                        frame.spacer(10.0);
+                        let (text, caret_after_text) = if self.brain.query().is_empty() {
+                            ("Search applications", false)
                         } else {
-                            format!("{}▏", self.brain.query())
+                            (self.brain.query(), true)
                         };
-                        frame.label_sized(&text, 15.0);
+                        frame.row_ex(
+                            &LayoutOpts {
+                                height: SEARCH_H,
+                                gap: if caret_after_text { 3.0 } else { 4.0 },
+                                cross: Align::Center,
+                                ..Default::default()
+                            },
+                            |frame| {
+                                if !caret_after_text {
+                                    search_caret(frame, progress, self.search_focused);
+                                }
+                                // The regular label carries theme padding,
+                                // which shifts placeholder text inside this
+                                // fixed-height field. The compact form keeps
+                                // the text's measured box vertically centred.
+                                frame.label_compact_sized(text, 15.0);
+                                if caret_after_text {
+                                    search_caret(frame, progress, self.search_focused);
+                                }
+                            },
+                        );
                     },
                 );
             },
@@ -391,7 +428,7 @@ impl Chrome for Launcher {
             &centered_layer(),
             |frame| {
                 frame.column_ex(&sized(display.x, 20.0), |frame| {
-                    frame.label_sized(&result_text, 11.0);
+                    frame.label_compact_sized(&result_text, 11.0);
                 });
             },
         );
@@ -458,11 +495,21 @@ impl Chrome for Launcher {
                         |frame| {
                             match cell.icon {
                                 Some(pointer) => unsafe {
-                                    frame.image(
-                                        pointer as *mut lens::sys::flux_image,
-                                        icon_size,
-                                        icon_size,
-                                    )
+                                    // Raster images have no theme opacity.
+                                    // Keep their layout slot fixed while the
+                                    // texture itself scales with visibility,
+                                    // so icons leave with the rest of the grid
+                                    // instead of lingering at full size.
+                                    frame.column_ex(&sized(icon_size, icon_size), |frame| {
+                                        let visible_size = icon_size * ease_out_cubic(progress);
+                                        if visible_size > 0.5 {
+                                            frame.image(
+                                                pointer as *mut lens::sys::flux_image,
+                                                visible_size,
+                                                visible_size,
+                                            );
+                                        }
+                                    });
                                 },
                                 None => frame.column_ex(
                                     &sized_fill(
@@ -581,6 +628,11 @@ impl Chrome for Launcher {
             });
         }
 
+        // The shell shares one lens frame across every chrome component.
+        // Restore its theme so the launcher's transient alpha cannot affect a
+        // component rendered after it.
+        frame.set_theme(original_theme);
+
         if let Some(page) = clicked_page {
             self.change_page(page);
             self.brain.select_filtered(self.page * self.page_capacity);
@@ -625,6 +677,9 @@ impl Chrome for Launcher {
     }
 
     fn key_char(&mut self, key: &KeyChar, out: &mut ChromeEvents) {
+        if self.brain.is_open() {
+            self.search_focused = true;
+        }
         let action = key_action(key.keysym, key.ch);
         let outcome = match action {
             KeyAction::Left => {
@@ -654,6 +709,7 @@ impl Chrome for Launcher {
     fn toggle(&mut self, _out: &mut ChromeEvents) {
         if !self.brain.is_open() {
             self.page = 0;
+            self.search_focused = true;
         }
         self.brain.toggle();
         self.anim_active = true;
@@ -762,16 +818,52 @@ fn centered_layer() -> OverlayOpts {
     }
 }
 
-fn glass_panel(progress: f32, radius: f32) -> OverlayOpts {
+fn glass_panel(progress: f32, radius: f32, focused: bool) -> OverlayOpts {
     OverlayOpts {
         bg: Color::rgba(248, 248, 255, alpha(32, progress)),
-        border: Color::rgba(255, 255, 255, alpha(64, progress)),
-        border_width: 1.0,
+        border: Color::rgba(
+            255,
+            255,
+            255,
+            alpha(if focused { 148 } else { 64 }, progress),
+        ),
+        border_width: if focused { 1.5 } else { 1.0 },
         radius,
         pad: 0.0,
         cross: Align::Center,
         ..Default::default()
     }
+}
+
+fn search_caret(frame: &mut Frame, progress: f32, focused: bool) {
+    frame.column_ex(
+        &sized_fill(
+            2.0,
+            18.0,
+            if focused {
+                Color::rgba(255, 255, 255, alpha(230, progress))
+            } else {
+                Color::TRANSPARENT
+            },
+            1.0,
+        ),
+        |_| {},
+    );
+}
+
+fn faded_theme(theme: Theme, progress: f32) -> Theme {
+    let fade = |color: Color| {
+        let (_, _, _, opacity) = color.components();
+        color.with_alpha(alpha(opacity, progress))
+    };
+    theme
+        .with_fg(fade(theme.fg()))
+        .with_accent(fade(theme.accent()))
+        .with_border(fade(theme.border()))
+        .with_hover(fade(theme.hover()))
+        .with_active(fade(theme.active()))
+        .with_disabled(fade(theme.disabled()))
+        .with_error(fade(theme.error()))
 }
 
 #[cfg(test)]

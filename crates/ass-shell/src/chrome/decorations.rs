@@ -110,10 +110,7 @@ impl Chrome for Decorations {
         windows.iter().rev().filter(|w| !w.minimized).any(|w| {
             let left = w.position.x as f32;
             let top = w.position.y as f32 - TITLE_BAR_HEIGHT;
-            x >= left
-                && x < left + w.size.w as f32
-                && y >= top
-                && y < top + TITLE_BAR_HEIGHT
+            x >= left && x < left + w.size.w as f32 && y >= top && y < top + TITLE_BAR_HEIGHT
         })
     }
 }

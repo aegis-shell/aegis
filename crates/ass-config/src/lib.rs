@@ -255,9 +255,7 @@ impl Config {
                 "must be zero or greater",
             ));
         }
-        if !cfg.layout.master_ratio.is_finite()
-            || !(0.0..=1.0).contains(&cfg.layout.master_ratio)
-        {
+        if !cfg.layout.master_ratio.is_finite() || !(0.0..=1.0).contains(&cfg.layout.master_ratio) {
             diagnostics.push(Diagnostic::new(
                 Some("layout.master_ratio".into()),
                 "must be between 0.0 and 1.0",
@@ -334,7 +332,12 @@ pub fn load(path: &Path) -> Result<Option<Config>, LoadError> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(LoadError::Read { path: path.into(), source: e }),
+        Err(e) => {
+            return Err(LoadError::Read {
+                path: path.into(),
+                source: e,
+            })
+        }
     };
     match Config::from_str(&text) {
         Ok(cfg) => Ok(Some(cfg)),
@@ -377,9 +380,7 @@ impl ReloadWatcher {
     /// absent, the baseline is `None`, so a later creation is reported as a
     /// change.
     pub fn at(path: &Path) -> ReloadWatcher {
-        let last = std::fs::metadata(path)
-            .and_then(|m| m.modified())
-            .ok();
+        let last = std::fs::metadata(path).and_then(|m| m.modified()).ok();
         ReloadWatcher { last }
     }
 
@@ -445,21 +446,20 @@ mod tests {
         let top = Config::from_str("schema_version = 1\ntheme = \"mystery\"\n").unwrap_err();
         assert!(top[0].message.contains("unknown field"), "{top:?}");
 
-        let nested = Config::from_str(
-            "schema_version = 1\n[layout]\ngaps = 8\nmaster_rato = 0.7\n",
-        )
-        .unwrap_err();
+        let nested =
+            Config::from_str("schema_version = 1\n[layout]\ngaps = 8\nmaster_rato = 0.7\n")
+                .unwrap_err();
         assert!(nested[0].message.contains("master_rato"), "{nested:?}");
     }
 
     #[test]
     fn invalid_layout_ranges_are_diagnosed() {
-        let err = Config::from_str(
-            "schema_version = 1\n[layout]\ngaps = -1\nmaster_ratio = 1.5\n",
-        )
-        .unwrap_err();
+        let err = Config::from_str("schema_version = 1\n[layout]\ngaps = -1\nmaster_ratio = 1.5\n")
+            .unwrap_err();
         assert_eq!(err.len(), 2);
-        assert!(err.iter().any(|d| d.field.as_deref() == Some("layout.gaps")));
+        assert!(err
+            .iter()
+            .any(|d| d.field.as_deref() == Some("layout.gaps")));
         assert!(err
             .iter()
             .any(|d| d.field.as_deref() == Some("layout.master_ratio")));
@@ -521,7 +521,9 @@ mod tests {
         assert!(errs.iter().any(|d| d.message.contains("caps")));
         assert!(errs.iter().any(|d| d.message.contains("nonsense")));
         assert!(errs.iter().any(|d| d.message.contains("fly-away")));
-        assert!(errs.iter().all(|d| d.field.as_deref().unwrap_or("").starts_with("keybind[")));
+        assert!(errs
+            .iter()
+            .all(|d| d.field.as_deref().unwrap_or("").starts_with("keybind[")));
     }
 
     #[test]
@@ -558,7 +560,10 @@ mod tests {
         // Override present.
         assert_eq!(km.match_key(M::SUPER, 0x20), Some(Action::ToggleLauncher));
         // Defaults still present.
-        assert_eq!(km.match_key(M::SUPER, ass_core::input::XKB_KEY_Tab), Some(Action::CycleFocus));
+        assert_eq!(
+            km.match_key(M::SUPER, ass_core::input::XKB_KEY_Tab),
+            Some(Action::CycleFocus)
+        );
         assert!(km.len() >= 6);
     }
 
@@ -629,8 +634,8 @@ mod tests {
         assert_eq!(byte_to_line(text, 0), 1); // first line
         assert_eq!(byte_to_line(text, 2), 2); // after the first newline
         assert_eq!(byte_to_line(text, 4), 3); // after the second newline
-        // An offset past the final newline is the line that follows it; a
-        // huge offset clamps to the text end rather than indexing past it.
+                                              // An offset past the final newline is the line that follows it; a
+                                              // huge offset clamps to the text end rather than indexing past it.
         assert_eq!(byte_to_line(text, usize::MAX), 4);
     }
 }

@@ -181,13 +181,12 @@ fn switch_command_sends_workspace_switch() {
     let h = Arc::new(CtlHandler::new());
     let _s = Server::start(&path, Arc::clone(&h)).unwrap();
     ass_ctl::run(&path, &["switch".into(), "next".into()]).unwrap();
-    assert!(
-        h.commands
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|c| matches!(c, Command::SwitchWorkspace { .. })),
-    );
+    assert!(h
+        .commands
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|c| matches!(c, Command::SwitchWorkspace { .. })),);
 }
 
 #[test]
@@ -241,11 +240,7 @@ fn notify_command_sends_notify_with_body() {
     let path = scratch();
     let h = Arc::new(CtlHandler::new());
     let _s = Server::start(&path, Arc::clone(&h)).unwrap();
-    ass_ctl::run(
-        &path,
-        &["notify".into(), "Hello".into(), "world".into()],
-    )
-    .unwrap();
+    ass_ctl::run(&path, &["notify".into(), "Hello".into(), "world".into()]).unwrap();
     assert!(
         h.commands.lock().unwrap().iter().any(|c| matches!(
             c,
@@ -280,13 +275,12 @@ fn tiling_command_sends_toggle() {
     let h = Arc::new(CtlHandler::new());
     let _s = Server::start(&path, Arc::clone(&h)).unwrap();
     ass_ctl::run(&path, &["tiling".into()]).unwrap();
-    assert!(
-        h.commands
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|c| matches!(c, Command::ToggleTiling)),
-    );
+    assert!(h
+        .commands
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|c| matches!(c, Command::ToggleTiling)),);
 }
 
 #[test]
@@ -294,8 +288,7 @@ fn move_to_command_sends_move_to_workspace() {
     let path = scratch();
     let h = Arc::new(CtlHandler::new());
     let _s = Server::start(&path, Arc::clone(&h)).unwrap();
-    let out =
-        ass_ctl::run(&path, &["move-to".into(), "42".into(), "3".into()]).unwrap();
+    let out = ass_ctl::run(&path, &["move-to".into(), "42".into(), "3".into()]).unwrap();
     assert!(out.contains("moved window 42 to workspace 3"), "{out}");
     assert!(
         h.commands.lock().unwrap().iter().any(|c| matches!(

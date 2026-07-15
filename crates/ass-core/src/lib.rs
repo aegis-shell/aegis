@@ -8,8 +8,8 @@
 pub mod app;
 pub mod input;
 pub mod keybind;
-pub mod layout;
 pub mod launcher;
+pub mod layout;
 pub mod notify;
 pub mod output;
 pub mod window;

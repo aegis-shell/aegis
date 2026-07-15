@@ -5,9 +5,9 @@
 //! shm implementation and the core `wl_*` interface tables come from
 //! libwayland-server; ass implements the request handlers.
 
+mod extensions;
 mod ffi;
 mod keyboard;
-mod extensions;
 
 use std::ffi::{c_void, CStr, CString};
 use std::os::raw::c_int;
@@ -557,7 +557,11 @@ impl Server {
                 extensions::text_input_bind,
             );
 
-            Ok(Server { state, socket, epoch: std::time::Instant::now() })
+            Ok(Server {
+                state,
+                socket,
+                epoch: std::time::Instant::now(),
+            })
         }
     }
 
@@ -941,9 +945,7 @@ impl Server {
         self.state
             .live_surfaces()
             .map(|p| unsafe { &*p })
-            .filter(|s| {
-                !s.xdg_toplevel.is_null() && visible.contains(&s.window.id)
-            })
+            .filter(|s| !s.xdg_toplevel.is_null() && visible.contains(&s.window.id))
             .map(|s| s.window.clone())
             .collect()
     }
@@ -1172,7 +1174,9 @@ impl Server {
 
     /// Whether the current workspace is in tiled mode (ADR-0024).
     pub fn tiling(&self) -> bool {
-        self.state.workspaces.current_workspace_tiled(self.state.output)
+        self.state
+            .workspaces
+            .current_workspace_tiled(self.state.output)
     }
 
     /// Toggle the current workspace between tiled and floating (ADR-0024).
@@ -1198,7 +1202,10 @@ impl Server {
                 (*rec).layout_target = None;
             }
         }
-        log::info!("[server] workspace tiling {}", if on { "on" } else { "off" });
+        log::info!(
+            "[server] workspace tiling {}",
+            if on { "on" } else { "off" }
+        );
     }
 
     /// Replace the window rules (ADR-0026). Called at startup and on config
@@ -1233,7 +1240,9 @@ impl Server {
         // Refresh xdg-output logical extents too.
         self.resend_xdg_outputs();
         // Re-send fractional-scale hints so HiDPI-aware clients resize buffers.
-        unsafe { extensions::resend_fractional_scales(self.state.as_ref() as *const State as *mut State) };
+        unsafe {
+            extensions::resend_fractional_scales(self.state.as_ref() as *const State as *mut State)
+        };
         unsafe { ffi::wl_display_flush_clients(self.state.display) };
     }
 
@@ -1305,7 +1314,11 @@ impl Server {
     /// windows whose target rect moved, so steady state sends no configure
     /// events. No-op when tiling is off.
     pub fn apply_tiling(&mut self, work_area: ass_core::Rect) {
-        if !self.state.workspaces.current_workspace_tiled(self.state.output) {
+        if !self
+            .state
+            .workspaces
+            .current_workspace_tiled(self.state.output)
+        {
             return;
         }
         let tiled_ids: Vec<ass_core::window::WindowId> = self
@@ -1316,10 +1329,7 @@ impl Server {
             .filter(|id| {
                 let rec = self.find_surface_by_window_id(*id);
                 !rec.is_null()
-                    && unsafe {
-                        (*rec).window.layout_role
-                            == ass_core::layout::LayoutRole::Tiled
-                    }
+                    && unsafe { (*rec).window.layout_role == ass_core::layout::LayoutRole::Tiled }
             })
             .collect();
         let rects = ass_core::layout::MasterStack.layout(
@@ -1414,11 +1424,9 @@ impl Server {
         const BORDER: f32 = 8.0;
         const BTN_LEFT: u32 = 0x110;
         if state.is_pressed() && button == BTN_LEFT && self.state.interactive.is_none() {
-            if let Some((rec, edges)) = self.resize_target_at(
-                self.state.pointer_x,
-                self.state.pointer_y,
-                BORDER,
-            ) {
+            if let Some((rec, edges)) =
+                self.resize_target_at(self.state.pointer_x, self.state.pointer_y, BORDER)
+            {
                 let resource = unsafe { (*rec).resource };
                 let id = unsafe { (*rec).window.id };
                 self.change_keyboard_focus(resource);
@@ -1602,7 +1610,8 @@ impl Server {
     /// End an interactive move/resize, clearing the protocol resizing state
     /// and notifying the client once after the final geometry.
     fn finish_interactive(&mut self) {
-        if let Some(ass_core::window::Interactive::Resize { window_id, .. }) = self.state.interactive
+        if let Some(ass_core::window::Interactive::Resize { window_id, .. }) =
+            self.state.interactive
         {
             let rec = self.find_surface_by_window_id(window_id);
             if !rec.is_null() {
@@ -1680,9 +1689,7 @@ impl Server {
             .relative_pointers
             .iter()
             .copied()
-            .filter(|p| {
-                !p.is_null() && unsafe { ffi::wl_resource_get_client(*p) == focus_client }
-            })
+            .filter(|p| !p.is_null() && unsafe { ffi::wl_resource_get_client(*p) == focus_client })
             .collect();
         for rp in targets {
             unsafe {
@@ -1800,16 +1807,7 @@ impl Server {
         let fy = ffi::wl_fixed_from_f32(y);
         for t in self.iter_client_touch(client) {
             unsafe {
-                ffi::wl_resource_post_event(
-                    t,
-                    ffi::WL_TOUCH_DOWN,
-                    serial,
-                    time,
-                    focus,
-                    id,
-                    fx,
-                    fy,
-                );
+                ffi::wl_resource_post_event(t, ffi::WL_TOUCH_DOWN, serial, time, focus, id, fx, fy);
             }
         }
     }
@@ -1824,9 +1822,7 @@ impl Server {
         let fy = ffi::wl_fixed_from_f32(y);
         for t in self.iter_client_touch(client) {
             unsafe {
-                ffi::wl_resource_post_event(
-                    t, ffi::WL_TOUCH_MOTION, time, id, fx, fy,
-                );
+                ffi::wl_resource_post_event(t, ffi::WL_TOUCH_MOTION, time, id, fx, fy);
             }
         }
     }
@@ -1895,7 +1891,13 @@ impl Server {
         let empty = ffi::wl_array::empty();
 
         // Notify text-input clients of the focus transition (IME enter/leave).
-        unsafe { extensions::text_input_focus_changed(self.state.as_ref() as *const State as *mut State, old, new_focus) };
+        unsafe {
+            extensions::text_input_focus_changed(
+                self.state.as_ref() as *const State as *mut State,
+                old,
+                new_focus,
+            )
+        };
 
         if !old.is_null() {
             let old_client = unsafe { ffi::wl_resource_get_client(old) };
@@ -1931,17 +1933,11 @@ impl Server {
     /// allocations do not move; only their pointers in the Vec do.
     fn raise_toplevel(&mut self, resource: *mut ffi::wl_resource) {
         let Some(pos) = self.state.surfaces.iter().position(|p| {
-            !p.is_null()
-                && unsafe {
-                    (**p).resource == resource && !(**p).xdg_toplevel.is_null()
-                }
+            !p.is_null() && unsafe { (**p).resource == resource && !(**p).xdg_toplevel.is_null() }
         }) else {
             return;
         };
-        if self.state.surfaces[pos + 1..]
-            .iter()
-            .all(|p| p.is_null())
-        {
+        if self.state.surfaces[pos + 1..].iter().all(|p| p.is_null()) {
             return;
         }
         let rec = self.state.surfaces.remove(pos);
@@ -2850,10 +2846,7 @@ unsafe extern "C" fn xdg_surface_get_popup(
     }
 }
 
-unsafe extern "C" fn popup_destroy(
-    _client: *mut ffi::wl_client,
-    resource: *mut ffi::wl_resource,
-) {
+unsafe extern "C" fn popup_destroy(_client: *mut ffi::wl_client, resource: *mut ffi::wl_resource) {
     ffi::wl_resource_destroy(resource);
 }
 
@@ -3361,10 +3354,7 @@ impl Server {
         }
     }
 
-    fn find_surface_by_window_id(
-        &self,
-        id: ass_core::window::WindowId,
-    ) -> *mut SurfaceRec {
+    fn find_surface_by_window_id(&self, id: ass_core::window::WindowId) -> *mut SurfaceRec {
         for p in self.state.live_surfaces() {
             if unsafe { (*p).window.id } == id {
                 return p;
@@ -3796,12 +3786,7 @@ unsafe extern "C" fn ddm_bind(
     if res.is_null() {
         return;
     }
-    ffi::wl_resource_set_implementation(
-        res,
-        &DDM_IMPL as *const _ as *const c_void,
-        data,
-        None,
-    );
+    ffi::wl_resource_set_implementation(res, &DDM_IMPL as *const _ as *const c_void, data, None);
 }
 
 /// Create a `wl_data_source` whose user-data is a boxed `Vec<String>` of MIME
@@ -3910,7 +3895,11 @@ unsafe extern "C" fn ddev_set_selection(
             .filter(|p| !p.is_null())
             .collect();
         for dev in devices {
-            ffi::wl_resource_post_event(dev, ffi::WL_DATA_DEVICE_SELECTION, std::ptr::null_mut::<ffi::wl_resource>());
+            ffi::wl_resource_post_event(
+                dev,
+                ffi::WL_DATA_DEVICE_SELECTION,
+                std::ptr::null_mut::<ffi::wl_resource>(),
+            );
         }
         return;
     }
@@ -4337,7 +4326,10 @@ unsafe extern "C" fn viewport_noop_source(
 
 // ----- shared no-op handlers ----------------------------------------------
 
-pub(crate) unsafe extern "C" fn res_destroy(_client: *mut ffi::wl_client, resource: *mut ffi::wl_resource) {
+pub(crate) unsafe extern "C" fn res_destroy(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+) {
     ffi::wl_resource_destroy(resource);
 }
 #[allow(dead_code)]

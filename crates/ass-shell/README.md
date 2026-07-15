@@ -22,8 +22,9 @@ or issue presentation commands. The executable drains their intents into
 Each shell frame draws overlays above client content, reports edge reservations
 for tiled work areas, and tells the event loop whether chrome captures input or
 has an animation in flight. The launcher additionally requests a backdrop blur;
-the executable captures and caches that Gaussian-blurred desktop for the open
-session while the shell renders the responsive app grid above it.
+the executable captures a live quarter-resolution desktop and applies a
+fixed-cost multi-resolution filter while the shell renders the responsive app
+grid above it.
 Modal chrome suppresses covered components; the launcher opts in as modal and
 the dock explicitly remains available during that presentation.
 

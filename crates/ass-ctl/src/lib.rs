@@ -83,7 +83,11 @@ fn dispatch(client: &mut Client, args: &[String], json: bool) -> Result<String, 
             }
         }
         "journal" => {
-            let since = args.get(1).map(|_| parse_u64(args, 1)).transpose()?.unwrap_or(0);
+            let since = args
+                .get(1)
+                .map(|_| parse_u64(args, 1))
+                .transpose()?
+                .unwrap_or(0);
             let snapshot = client.journal(since).map_err(io_err)?;
             if json {
                 to_json(&snapshot)
@@ -133,9 +137,7 @@ fn dispatch(client: &mut Client, args: &[String], json: bool) -> Result<String, 
         }
         "dismiss" => {
             let id = parse_usize(args, 1)?;
-            client
-                .dismiss_notification(id as u64)
-                .map_err(io_err)?;
+            client.dismiss_notification(id as u64).map_err(io_err)?;
             Ok(format!("dismissed {id}"))
         }
         "quit" => {
@@ -163,7 +165,10 @@ fn parse_usize(args: &[String], idx: usize) -> Result<usize, String> {
 fn parse_u64(args: &[String], idx: usize) -> Result<u64, String> {
     args.get(idx)
         .ok_or_else(|| format!("missing argument\n\n{}", usage()))
-        .and_then(|s| s.parse::<u64>().map_err(|_| format!("'{s}' is not a number")))
+        .and_then(|s| {
+            s.parse::<u64>()
+                .map_err(|_| format!("'{s}' is not a number"))
+        })
 }
 
 /// Parse a window id argument (ADR-0032). The wire encoding is a JSON

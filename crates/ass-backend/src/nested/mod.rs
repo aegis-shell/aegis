@@ -277,11 +277,7 @@ unsafe extern "C" fn on_global(
         // window is on.
         let output = registry_bind(registry, name, &ffi::wl_output_interface, version.min(2));
         if !output.is_null() {
-            ffi::wl_proxy_add_listener(
-                output,
-                &OUTPUT_LISTENER as *const _ as *const c_void,
-                data,
-            );
+            ffi::wl_proxy_add_listener(output, &OUTPUT_LISTENER as *const _ as *const c_void, data);
             st.outputs.push((output, 1));
         }
     }
@@ -396,11 +392,7 @@ unsafe extern "C" fn on_output_mode(
 
 unsafe extern "C" fn on_output_done(_data: *mut c_void, _output: *mut ffi::wl_proxy) {}
 
-unsafe extern "C" fn on_output_scale(
-    data: *mut c_void,
-    output: *mut ffi::wl_proxy,
-    factor: i32,
-) {
+unsafe extern "C" fn on_output_scale(data: *mut c_void, output: *mut ffi::wl_proxy, factor: i32) {
     let st = &mut *(data as *mut State);
     let f = factor.max(1);
     if let Some(entry) = st.outputs.iter_mut().find(|o| o.0 == output) {

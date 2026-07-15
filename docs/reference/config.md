@@ -29,10 +29,11 @@ Wallpaper sources are selected at process startup and are not hot-reloaded.
 | `ASS_WALLPAPER` | bundled `procedural-generation.png` | Image, animated image, short-video, or model-only `.glb` source. Setting an image or video suppresses the built-in model unless `ASS_WALLPAPER_MODEL` is also set. |
 | `ASS_WALLPAPER_MODEL` | built-in procedural knot for the default wallpaper | Optional `.glb` model drawn over an image or video with an orbiting camera and animated directional light. Ignored when `ASS_WALLPAPER` is itself a `.glb`. |
 
-The launcher captures image/video, 3D, and client layers into one half-scale
-offscreen scene and updates its Gaussian backdrop every frame. Blur is
-downsampled for bounded GPU cost; allocation or unsupported-format failures
-fall back to the launcher's translucent overlay for that session.
+The launcher captures image/video, 3D, and client layers into one quarter-scale
+RGBA8 offscreen scene and updates a fixed-cost Dual-Kawase backdrop every
+frame. Animation is capped at 60 frames per second. Allocation or
+unsupported-format failures fall back to the launcher's translucent overlay
+for that session.
 
 ## Layout
 

@@ -27,5 +27,7 @@ pub mod server;
 
 pub use client::Client;
 pub use journal::{Effect, Journal, JournalEntry, JournalSnapshot, Origin, DEFAULT_CAPACITY};
-pub use schema::{Capabilities, Command, Event, OpClass, PROTOCOL_VERSION, Request, Response, Scope};
+pub use schema::{
+    Capabilities, Command, Event, OpClass, Request, Response, Scope, PROTOCOL_VERSION,
+};
 pub use server::{Handler, Server};

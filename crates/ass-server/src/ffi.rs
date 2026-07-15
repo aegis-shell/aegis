@@ -356,8 +356,7 @@ pub struct xdg_positioner_interface_impl {
     pub set_anchor_rect: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, i32, i32, i32, i32),
     pub set_anchor: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
     pub set_gravity: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
-    pub set_constraint_adjustment:
-        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub set_constraint_adjustment: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
     pub set_offset: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, i32, i32),
 }
 
@@ -468,14 +467,8 @@ pub struct wl_seat_interface_impl {
 /// of resource N of wl_pointer is NULL" if the function pointer is NULL.
 #[repr(C)]
 pub struct wl_pointer_interface_impl {
-    pub set_cursor: unsafe extern "C" fn(
-        *mut wl_client,
-        *mut wl_resource,
-        u32,
-        *mut wl_resource,
-        i32,
-        i32,
-    ),
+    pub set_cursor:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource, i32, i32),
     pub release: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
 }
 
@@ -631,8 +624,7 @@ pub struct zxdg_output_v1_interface_impl {
 #[repr(C)]
 pub struct wp_presentation_interface_impl {
     pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
-    pub feedback:
-        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource, u32),
+    pub feedback: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource, u32),
 }
 
 /// `wp_fractional_scale_manager_v1`: destroy, get_fractional_scale.
@@ -728,8 +720,7 @@ pub struct zwp_confined_pointer_v1_interface_impl {
 #[repr(C)]
 pub struct zwp_locked_pointer_v1_interface_impl {
     pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
-    pub set_cursor_position_hint:
-        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, i32, i32),
+    pub set_cursor_position_hint: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, i32, i32),
     pub set_region: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource),
 }
 
@@ -810,8 +801,7 @@ pub struct ext_data_control_offer_v1_interface_impl {
 #[repr(C)]
 pub struct wp_cursor_shape_manager_v1_interface_impl {
     pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
-    pub get_pointer:
-        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+    pub get_pointer: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
     pub get_tablet_tool_v2:
         unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
 }

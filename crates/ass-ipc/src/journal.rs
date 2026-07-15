@@ -151,7 +151,10 @@ impl Journal {
     /// The `seq` of the oldest entry in the ring, or `latest_seq + 1` if
     /// empty (so `oldest_seq > latest_seq` signals an empty ring).
     pub fn oldest_seq(&self) -> u64 {
-        self.entries.front().map(|e| e.seq).unwrap_or_else(|| self.next_seq)
+        self.entries
+            .front()
+            .map(|e| e.seq)
+            .unwrap_or_else(|| self.next_seq)
     }
 
     /// The `seq` of the newest entry, or `0` if the ring has never been

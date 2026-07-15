@@ -30,14 +30,23 @@ fn main() {
         ("unstable/xdg-output", "xdg-output-unstable-v1"),
         ("unstable/idle-inhibit", "idle-inhibit-unstable-v1"),
         ("unstable/relative-pointer", "relative-pointer-unstable-v1"),
-        ("unstable/pointer-constraints", "pointer-constraints-unstable-v1"),
-        ("unstable/primary-selection", "primary-selection-unstable-v1"),
+        (
+            "unstable/pointer-constraints",
+            "pointer-constraints-unstable-v1",
+        ),
+        (
+            "unstable/primary-selection",
+            "primary-selection-unstable-v1",
+        ),
         ("unstable/text-input", "text-input-unstable-v3"),
         // staging / ext
         ("staging/fractional-scale", "fractional-scale-v1"),
         ("staging/ext-session-lock", "ext-session-lock-v1"),
         ("staging/ext-idle-notify", "ext-idle-notify-v1"),
-        ("staging/ext-foreign-toplevel-list", "ext-foreign-toplevel-list-v1"),
+        (
+            "staging/ext-foreign-toplevel-list",
+            "ext-foreign-toplevel-list-v1",
+        ),
         ("staging/ext-data-control", "ext-data-control-v1"),
         ("staging/cursor-shape", "cursor-shape-v1"),
     ];

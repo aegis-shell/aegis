@@ -65,7 +65,8 @@ impl NotificationQueue {
 
     /// Drop entries older than `ttl_ms` relative to `now_ms`.
     pub fn expire(&mut self, now_ms: u64) {
-        self.entries.retain(|n| now_ms.saturating_sub(n.at_ms) <= self.ttl_ms);
+        self.entries
+            .retain(|n| now_ms.saturating_sub(n.at_ms) <= self.ttl_ms);
     }
 
     /// Dismiss a notification by id. Returns `true` if it was present and

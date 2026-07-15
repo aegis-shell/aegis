@@ -181,12 +181,7 @@ impl WorkspaceModel {
             .workspaces
             .iter()
             .filter(|(_, ws)| ws.origin == connector && ws.output != dest_oid)
-            .map(|(wid, ws)| {
-                (
-                    *wid,
-                    self.output_index(ws.output).unwrap_or(dest_oi),
-                )
-            })
+            .map(|(wid, ws)| (*wid, self.output_index(ws.output).unwrap_or(dest_oi)))
             .collect();
         if moves.is_empty() {
             return;
@@ -509,11 +504,7 @@ impl WorkspaceModel {
         let o = &mut self.outputs[oi];
         o.workspaces.retain(|wid| !to_drop.contains(wid));
         // current survived (it was excluded); recompute its new index.
-        o.current = o
-            .workspaces
-            .iter()
-            .position(|w| *w == cur_id)
-            .unwrap_or(0);
+        o.current = o.workspaces.iter().position(|w| *w == cur_id).unwrap_or(0);
     }
 }
 
@@ -557,9 +548,12 @@ mod tests {
     fn switch_clamps_at_the_empty_trailing_workspace() {
         let (mut m, oid, wid) = one_output();
         m.place_toplevel(wid, WindowId(1)); // now 2 workspaces: [full, empty]
-        // On the first (current). Next → index 1 (the empty one). Next again
-        // clamps; it does not create a third.
-        assert_eq!(m.switch(oid, Switch::Next), m.output(oid).unwrap().workspaces.get(1).copied());
+                                            // On the first (current). Next → index 1 (the empty one). Next again
+                                            // clamps; it does not create a third.
+        assert_eq!(
+            m.switch(oid, Switch::Next),
+            m.output(oid).unwrap().workspaces.get(1).copied()
+        );
         let before = m.output(oid).unwrap().workspaces.len();
         m.switch(oid, Switch::Next);
         assert_eq!(m.output(oid).unwrap().workspaces.len(), before);
@@ -591,15 +585,19 @@ mod tests {
         let (mut m, oid, wid) = one_output();
         m.place_toplevel(wid, WindowId(1)); // [1], []
         let empty = m.switch(oid, Switch::Next).unwrap(); // current = empty
-        // Removing the only toplevel leaves ws0 empty but it is NOT current
-        // and NOT last → reaped. Wait: current is `empty` (the last), ws0 is
-        // neither current nor last → reaped. Result: just [empty] remains?
-        // No: last is always kept; ws0 reaped → [empty] becomes the only,
-        // which is then the last. current recomputed to 0.
+                                                          // Removing the only toplevel leaves ws0 empty but it is NOT current
+                                                          // and NOT last → reaped. Wait: current is `empty` (the last), ws0 is
+                                                          // neither current nor last → reaped. Result: just [empty] remains?
+                                                          // No: last is always kept; ws0 reaped → [empty] becomes the only,
+                                                          // which is then the last. current recomputed to 0.
         let _ = empty;
         m.remove_toplevel(WindowId(1));
         let o = m.output(oid).unwrap();
-        assert_eq!(o.workspaces.len(), 1, "reaped ws0; one empty workspace remains");
+        assert_eq!(
+            o.workspaces.len(),
+            1,
+            "reaped ws0; one empty workspace remains"
+        );
         assert!(m.workspace(o.workspaces[0]).unwrap().toplevels.is_empty());
         assert_eq!(o.current, 0);
     }
@@ -661,8 +659,8 @@ mod tests {
         let ws_s = m.current_workspace(second).unwrap();
         m.place_toplevel(ws_p, WindowId(7));
         m.place_toplevel(ws_s, WindowId(9)); // lives on the second output
-        // Remove the second output: ws_s (non-empty) relocates to primary as
-        // its own workspace (ADR-0025: workspaces move, they don't merge).
+                                             // Remove the second output: ws_s (non-empty) relocates to primary as
+                                             // its own workspace (ADR-0025: workspaces move, they don't merge).
         let relocated = m.remove_output(second);
         assert_eq!(relocated, 1);
         assert!(m.output(second).is_none());
@@ -707,7 +705,11 @@ mod tests {
         let second2 = m.add_output("b");
         assert_ne!(second2, second, "a replugged output gets a fresh id");
         let home = m.workspace_of(WindowId(9)).expect("toplevel restored");
-        assert_eq!(m.workspace(home).unwrap().output, second2, "back on its home output");
+        assert_eq!(
+            m.workspace(home).unwrap().output,
+            second2,
+            "back on its home output"
+        );
         assert_eq!(m.outputs().len(), 2);
         // Toplevel 9 is now on "b"'s current workspace only if it is current;
         // it sits on a (possibly non-current) restored workspace. Either way

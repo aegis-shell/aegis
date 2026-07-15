@@ -42,8 +42,7 @@ impl WorkspaceBar {
             return None;
         }
         let n = output.workspaces.len();
-        let bar_w =
-            n as f32 * BAR_DOT + (n as f32 - 1.0) * BAR_DOT_GAP + 2.0 * BAR_PAD;
+        let bar_w = n as f32 * BAR_DOT + (n as f32 - 1.0) * BAR_DOT_GAP + 2.0 * BAR_PAD;
         Some(Rect {
             x: (display_w - bar_w) * 0.5,
             y: BAR_TOP_MARGIN,
@@ -86,8 +85,7 @@ impl Chrome for WorkspaceBar {
         self.prev_down = down;
 
         let n = output.workspaces.len();
-        let bar_w =
-            n as f32 * BAR_DOT + (n as f32 - 1.0) * BAR_DOT_GAP + 2.0 * BAR_PAD;
+        let bar_w = n as f32 * BAR_DOT + (n as f32 - 1.0) * BAR_DOT_GAP + 2.0 * BAR_PAD;
         let bar_x = (disp.x - bar_w) * 0.5;
         let bar_rect = Rect {
             x: bar_x,
@@ -96,7 +94,8 @@ impl Chrome for WorkspaceBar {
             h: BAR_HEIGHT,
         };
         let dot_y = BAR_TOP_MARGIN + BAR_HEIGHT * 0.5;
-        let centre = |i: usize| bar_x + BAR_PAD + i as f32 * (BAR_DOT + BAR_DOT_GAP) + BAR_DOT * 0.5;
+        let centre =
+            |i: usize| bar_x + BAR_PAD + i as f32 * (BAR_DOT + BAR_DOT_GAP) + BAR_DOT * 0.5;
 
         // The pill background. A layer's rect is only an anchor, not a size, so
         // a fixed-size child forces it to the pill size.

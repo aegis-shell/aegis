@@ -174,7 +174,10 @@ fn wrong_protocol_version_is_refused_at_handshake() {
     let resp: ass_ipc::Response = ass_ipc::codec::read_msg(&mut s).unwrap();
     match resp {
         ass_ipc::Response::Error { message } => {
-            assert!(message.contains("unsupported protocol version"), "{message}");
+            assert!(
+                message.contains("unsupported protocol version"),
+                "{message}"
+            );
         }
         other => panic!("expected Error, got {other:?}"),
     }
@@ -201,7 +204,9 @@ fn control_command_is_queued_and_acked() {
     client
         .command(Command::Focus { id: WindowId(1) })
         .expect("command");
-    client.command(Command::Cycle { forward: true }).expect("command");
+    client
+        .command(Command::Cycle { forward: true })
+        .expect("command");
 
     // The command() calls block until the server acked (Ok), by which point
     // the handler has recorded each one.
@@ -238,12 +243,10 @@ fn command_refused_without_the_required_capability() {
     let _server = Server::start(&path, handler).expect("bind");
 
     let mut client = Client::connect(&path).expect("connect"); // query only
-    let err = client.command(Command::Close { id: WindowId(1) }).unwrap_err();
-    assert!(
-        err.to_string().contains("capability"),
-        "{}",
-        err
-    );
+    let err = client
+        .command(Command::Close { id: WindowId(1) })
+        .unwrap_err();
+    assert!(err.to_string().contains("capability"), "{}", err);
 }
 
 #[test]
