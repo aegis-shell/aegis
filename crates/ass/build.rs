@@ -17,7 +17,11 @@ fn main() {
     }
 
     let mut emitted_dtags = false;
-    for var in ["DEP_FLUX_RPATHS", "DEP_LENS_RPATHS"] {
+    for var in [
+        "DEP_FLUX_RPATHS",
+        "DEP_FLUX_SCENE_GRAPH_RPATHS",
+        "DEP_LENS_RPATHS",
+    ] {
         if let Ok(rpaths) = std::env::var(var) {
             if !emitted_dtags {
                 // DT_RPATH (not DT_RUNPATH) so the search also covers transitive

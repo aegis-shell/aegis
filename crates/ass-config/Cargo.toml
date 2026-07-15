@@ -1,6 +1,7 @@
 [package]
 name = "ass-config"
 description = "Declarative configuration for ass: versioned TOML schema, loader, live reload"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

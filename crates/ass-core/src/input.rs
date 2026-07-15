@@ -86,6 +86,10 @@ pub const XKB_KEY_BackSpace: u32 = 0xff08;
 pub const XKB_KEY_Tab: u32 = 0xff09;
 /// XKB up arrow.
 pub const XKB_KEY_Up: u32 = 0xff52;
+/// XKB left arrow.
+pub const XKB_KEY_Left: u32 = 0xff51;
+/// XKB right arrow.
+pub const XKB_KEY_Right: u32 = 0xff53;
 /// XKB down arrow.
 pub const XKB_KEY_Down: u32 = 0xff54;
 /// XKB `NoSymbol` — no keysym resolved for the key.
@@ -156,6 +160,10 @@ pub enum KeyAction {
     Escape,
     /// `Up` arrow.
     Up,
+    /// `Left` arrow.
+    Left,
+    /// `Right` arrow.
+    Right,
     /// `Down` arrow.
     Down,
     /// `Tab`.
@@ -178,6 +186,8 @@ pub fn key_action(keysym: u32, ch: Option<char>) -> KeyAction {
         XKB_KEY_BackSpace => KeyAction::Backspace,
         XKB_KEY_Tab => KeyAction::Tab,
         XKB_KEY_Up => KeyAction::Up,
+        XKB_KEY_Left => KeyAction::Left,
+        XKB_KEY_Right => KeyAction::Right,
         XKB_KEY_Down => KeyAction::Down,
         _ => match ch {
             Some(c) if (c as u32) >= 0x20 && (c as u32) != 0x7f => KeyAction::Char(c),
@@ -300,6 +310,8 @@ mod tests {
         assert_eq!(key_action(XKB_KEY_Return, None), KeyAction::Enter);
         assert_eq!(key_action(XKB_KEY_BackSpace, None), KeyAction::Backspace);
         assert_eq!(key_action(XKB_KEY_Up, None), KeyAction::Up);
+        assert_eq!(key_action(XKB_KEY_Left, None), KeyAction::Left);
+        assert_eq!(key_action(XKB_KEY_Right, None), KeyAction::Right);
         assert_eq!(key_action(XKB_KEY_Down, None), KeyAction::Down);
         assert_eq!(key_action(XKB_KEY_Tab, None), KeyAction::Tab);
     }

@@ -5,13 +5,12 @@
 #     cargo run
 #     cargo test --workspace
 #
-# ass depends on two C libraries, each built with meson and wrapped by an
-# out-of-tree Rust binding crate:
+# ass depends on two C libraries in the unified optics meson project, each
+# wrapped by an out-of-tree Rust binding crate:
 #
-#     ../optics/flux      libflux       (rendering engine, Vulkan + canvas + text)
-#     ../optics/flux-rs   flux/flux-sys (Rust bindings to libflux)
-#     ../optics/lens      liblens       (immediate-mode UI engine, draws via flux)
-#     ../optics/lens-rs   lens/lens-sys (Rust bindings to liblens)
+#     ../optics/libs/flux       libflux       (rendering engine)
+#     ../optics/libs/lens       liblens       (immediate-mode UI)
+#     ../optics/bindings/       Rust bindings
 #
 # The -sys build scripts locate the C libraries in dev mode: FLUX_BUILD_DIR /
 # LENS_BUILD_DIR point at meson build trees whose `meson-uninstalled/*.pc`
@@ -27,10 +26,11 @@ ASS_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 OPTICS="$ASS_ROOT/../optics"
 
 if [ "${ASS_DEV_ENV_USE_INSTALLED:-0}" != "1" ]; then
-    export FLUX_SOURCE_DIR="$OPTICS/flux"
-    export FLUX_BUILD_DIR="$FLUX_SOURCE_DIR/build"
-    export LENS_SOURCE_DIR="$OPTICS/lens"
-    export LENS_BUILD_DIR="$LENS_SOURCE_DIR/build"
+    export OPTICS_BUILD_DIR="${OPTICS_BUILD_DIR:-$OPTICS/build}"
+    export FLUX_SOURCE_DIR="$OPTICS/libs/flux"
+    export FLUX_BUILD_DIR="$OPTICS_BUILD_DIR"
+    export LENS_SOURCE_DIR="$OPTICS"
+    export LENS_BUILD_DIR="$OPTICS_BUILD_DIR"
 
     # theseus / wright keeps libwayland (headers + scanner + .pc) in a build
     # sysroot under ~/.cache/wright rather than in /usr. If that sysroot is
@@ -60,6 +60,14 @@ if [ "${ASS_DEV_ENV_USE_INSTALLED:-0}" != "1" ]; then
             return 1
         fi
     }
-    check_pc "$FLUX_BUILD_DIR" flux-uninstalled.pc || return 1
-    check_pc "$LENS_BUILD_DIR" lens-uninstalled.pc || return 1
+    check_pc "$OPTICS_BUILD_DIR" flux-uninstalled.pc || return 1
+    check_pc "$OPTICS_BUILD_DIR" flux-scene-graph-uninstalled.pc || return 1
+    check_pc "$OPTICS_BUILD_DIR" lens-uninstalled.pc || return 1
+
+    # Cargo binaries receive rpaths from the bindings, but library test
+    # harnesses do not consistently inherit them.
+    export LD_LIBRARY_PATH="$OPTICS_BUILD_DIR/libs/flux:$OPTICS_BUILD_DIR/libs/flux/scene_graph:$OPTICS_BUILD_DIR/libs/lens${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+else
+    export FLUX_USE_INSTALLED=1
+    export LENS_USE_INSTALLED=1
 fi

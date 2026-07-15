@@ -1,9 +1,9 @@
 //! Compositor backends.
 //!
 //! A backend owns the presentation target and the raw input stream. The
-//! first backend is *nested* — ass runs as a client of an existing Wayland or
-//! X11 session and presents into a host window. A later backend drives DRM/KMS
-//! directly with libinput and libseat for bare-TTY operation.
+//! first backend is *nested* — ass runs as a client of an existing Wayland
+//! session and presents into a host window. A later backend drives DRM/KMS
+//! directly with libinput and seat management for bare-TTY operation.
 //!
 //! Both implement [`Backend`], so the server, renderer, and shell are written
 //! once against the abstraction.
@@ -29,11 +29,9 @@ pub trait Backend {
         self.dispatch()
     }
 
-    /// Drain buffered input events since the last call. The vector is empty
-    /// until a backend with real input lands (the nested backend wires host
-    /// seat in milestone M1). Drained events are routed by the main loop: the
-    /// focused client receives them via `wl_seat`, with a copy to the chrome
-    /// when the pointer is over it.
+    /// Drain buffered input events since the last call. Drained events are
+    /// routed by the main loop: the focused client receives them via
+    /// `wl_seat`, with a copy to the chrome when the pointer is over it.
     fn take_input(&mut self) -> Vec<InputEvent>;
 
     /// Take a pending resize, if the host reconfigured the window since the

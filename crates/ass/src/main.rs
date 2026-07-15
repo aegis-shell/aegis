@@ -1,8 +1,8 @@
 //! ass — autonomous surface shell.
 //!
-//! M0c entry point: brings up a nested host window, creates a `VkSurfaceKHR`
-//! over flux's Vulkan instance, and presents a cleared frame each vsync. The
-//! Wayland *server* (accepting client surfaces) lands in M1.
+//! The process composition root: creates the nested host, Wayland server,
+//! renderer, shell, wallpaper, configuration, and IPC surfaces, then runs the
+//! compositor event and presentation loop.
 
 use ass_backend::nested::{NestedHost, DEVICE_EXTENSIONS, INSTANCE_EXTENSIONS};
 use ass_backend::Backend;
@@ -49,6 +49,246 @@ impl InputAccumulator {
     }
 }
 
+/// Backdrop effects are evaluated at half resolution, then upsampled behind
+/// the launcher. Blur removes the lost high-frequency detail, while the 4x
+/// pixel reduction keeps animated wallpapers comfortably real-time.
+const BACKDROP_DOWNSAMPLE: u32 = 2;
+
+struct BackdropCapture {
+    image: flux::Image,
+    size: (u32, u32),
+    format: flux::Format,
+}
+
+/// Live desktop capture used behind the full-screen application launcher.
+///
+/// Capture images and blur intermediates are both indexed by frame slot. A
+/// slot is rewritten only after `begin_frame` has waited its fence, avoiding
+/// device-wide stalls while a 3D wallpaper continues animating.
+struct LauncherBackdrop {
+    blur: flux::BlurFilter,
+    captures: Vec<Option<BackdropCapture>>,
+    was_active: bool,
+    failed_session: bool,
+    unsupported: bool,
+}
+
+#[derive(Clone, Copy)]
+enum BackdropPlan {
+    Direct,
+    Capture,
+}
+
+impl LauncherBackdrop {
+    fn new(device: &flux::Device) -> Result<Self, flux::Error> {
+        Ok(Self {
+            blur: flux::BlurFilter::new(device)?,
+            captures: Vec::new(),
+            was_active: false,
+            failed_session: false,
+            unsupported: false,
+        })
+    }
+
+    fn prepare(
+        &mut self,
+        active: bool,
+        device: &flux::Device,
+        surface: &flux::Surface,
+        frame: &flux::Frame<'_>,
+        surface_size: (u32, u32),
+    ) -> BackdropPlan {
+        if !active {
+            self.was_active = false;
+            self.failed_session = false;
+            return BackdropPlan::Direct;
+        }
+
+        let opening = !self.was_active;
+        self.was_active = true;
+        if opening {
+            self.failed_session = false;
+        }
+        if self.unsupported || self.failed_session || surface_size.0 == 0 || surface_size.1 == 0 {
+            return BackdropPlan::Direct;
+        }
+        let format = match surface.format() {
+            flux::Format::FLUX_FORMAT_RGBA8_UNORM => flux::Format::FLUX_FORMAT_RGBA8_UNORM,
+            flux::Format::FLUX_FORMAT_BGRA8_UNORM => flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+            other => {
+                log::warn!(
+                    "launcher: Gaussian backdrop unavailable for surface format {other:?}; using translucent fallback"
+                );
+                self.unsupported = true;
+                return BackdropPlan::Direct;
+            }
+        };
+
+        let size = (
+            surface_size.0.div_ceil(BACKDROP_DOWNSAMPLE).max(1),
+            surface_size.1.div_ceil(BACKDROP_DOWNSAMPLE).max(1),
+        );
+        let slot = frame.index() as usize;
+        if self.captures.len() <= slot {
+            self.captures.resize_with(slot + 1, || None);
+        }
+        let target_stale = self.captures[slot]
+            .as_ref()
+            .is_none_or(|capture| capture.size != size || capture.format != format);
+        if target_stale {
+            match flux::Image::render_target(device, size.0, size.1, format) {
+                Ok(image) => {
+                    self.captures[slot] = Some(BackdropCapture {
+                        image,
+                        size,
+                        format,
+                    });
+                }
+                Err(error) => {
+                    log::warn!(
+                        "launcher: failed to allocate Gaussian backdrop target ({error}); using translucent fallback"
+                    );
+                    self.failed_session = true;
+                    return BackdropPlan::Direct;
+                }
+            }
+        }
+        BackdropPlan::Capture
+    }
+
+    fn begin_capture(
+        &mut self,
+        canvas: &flux::Canvas,
+        frame: &flux::Frame<'_>,
+        clear: u32,
+    ) -> bool {
+        let Some(target) = self.target(frame) else {
+            return false;
+        };
+        if let Err(error) = canvas.begin_target(frame, target, Some(clear)) {
+            log::warn!(
+                "launcher: failed to begin backdrop capture ({error}); using translucent fallback"
+            );
+            self.failed_session = true;
+            return false;
+        }
+        true
+    }
+
+    fn target(&self, frame: &flux::Frame<'_>) -> Option<&flux::Image> {
+        self.captures
+            .get(frame.index() as usize)
+            .and_then(Option::as_ref)
+            .map(|capture| &capture.image)
+    }
+
+    fn capture_size(&self, frame: &flux::Frame<'_>) -> Option<(u32, u32)> {
+        self.captures
+            .get(frame.index() as usize)
+            .and_then(Option::as_ref)
+            .map(|capture| capture.size)
+    }
+
+    fn end_capture_and_blur<'backdrop>(
+        &'backdrop mut self,
+        canvas: &flux::Canvas,
+        frame: &flux::Frame<'_>,
+        sigma: f32,
+    ) -> Option<flux::BlurredImage<'backdrop>> {
+        canvas.end_target();
+        let slot = frame.index() as usize;
+        let capture = self.captures.get(slot)?.as_ref()?;
+        match self.blur.apply(frame, &capture.image, sigma) {
+            Ok(image) => Some(image),
+            Err(error) => {
+                log::warn!(
+                    "launcher: Gaussian backdrop dispatch failed ({error}); using translucent fallback"
+                );
+                self.failed_session = true;
+                None
+            }
+        }
+    }
+}
+
+fn draw_wallpaper_background(
+    canvas: &flux::Canvas,
+    device: &flux::Device,
+    wallpaper: &mut Option<ass_wallpaper::Wallpaper>,
+    logical_size: (u32, u32),
+    scale: f32,
+) {
+    canvas.save();
+    if scale != 1.0 {
+        canvas.scale(scale, scale);
+    }
+    if let Some(wallpaper) = wallpaper.as_mut() {
+        wallpaper.draw(device, canvas, logical_size.0 as f32, logical_size.1 as f32);
+    }
+    canvas.restore();
+}
+
+fn draw_client_scene(
+    canvas: &flux::Canvas,
+    device: &flux::Device,
+    renderer: &mut ass_render::Renderer,
+    server: &ass_server::Server,
+    scale: f32,
+) {
+    canvas.save();
+    if scale != 1.0 {
+        canvas.scale(scale, scale);
+    }
+    let shm = server.toplevel_frames();
+    let dmabuf = server.toplevel_dmabuf_frames();
+    let sub_shm_below = server.subsurface_frames_below();
+    let sub_shm_above = server.subsurface_frames_above();
+    let sub_dmabuf_below = server.subsurface_dmabuf_frames_below();
+    let sub_dmabuf_above = server.subsurface_dmabuf_frames_above();
+    renderer.gc(shm
+        .iter()
+        .map(|frame| frame.id)
+        .chain(dmabuf.iter().map(|frame| frame.id))
+        .chain(sub_shm_below.iter().map(|frame| frame.id))
+        .chain(sub_shm_above.iter().map(|frame| frame.id))
+        .chain(sub_dmabuf_below.iter().map(|frame| frame.id))
+        .chain(sub_dmabuf_above.iter().map(|frame| frame.id)));
+    renderer.draw_subsurfaces(device, canvas, &sub_shm_below);
+    renderer.draw_dmabuf_subsurfaces(device, canvas, &sub_dmabuf_below);
+    renderer.draw_toplevels(device, canvas, &shm, (0.0, 0.0));
+    renderer.draw_dmabuf_toplevels(device, canvas, &dmabuf, (0.0, 0.0));
+    renderer.draw_subsurfaces(device, canvas, &sub_shm_above);
+    renderer.draw_dmabuf_subsurfaces(device, canvas, &sub_dmabuf_above);
+    canvas.restore();
+}
+
+/// Direct swapchain composition. A model wallpaper inserts one depth-tested
+/// pass between the 2D background and client canvas draws.
+fn draw_direct_desktop_scene(
+    canvas: &flux::Canvas,
+    device: &flux::Device,
+    frame: &mut flux::Frame<'_>,
+    wallpaper: &mut Option<ass_wallpaper::Wallpaper>,
+    renderer: &mut ass_render::Renderer,
+    server: &ass_server::Server,
+    logical_size: (u32, u32),
+    scale: f32,
+) -> Result<(), flux::Error> {
+    draw_wallpaper_background(canvas, device, wallpaper, logical_size, scale);
+    if wallpaper
+        .as_ref()
+        .is_some_and(|wallpaper| wallpaper.has_model())
+    {
+        canvas.end();
+        if let Some(wallpaper) = wallpaper.as_mut() {
+            wallpaper.draw_model(device, frame);
+        }
+        canvas.begin(frame, None)?;
+    }
+    draw_client_scene(canvas, device, renderer, server, scale);
+    Ok(())
+}
+
 /// Dispatch a [`Command`] to the server and side-effect targets. Extracted
 /// from the three mutation sources (IPC, keybindings, chrome) so the journal
 /// chokepoint (ADR-0033) sees every mutation through one path.
@@ -72,7 +312,11 @@ fn apply_command(
             server.move_to_workspace(*window, *workspace)
         }
         Command::ToggleTiling => server.set_tiling(!server.tiling()),
-        Command::Notify { summary, body, app_id } => {
+        Command::Notify {
+            summary,
+            body,
+            app_id,
+        } => {
             let n = notif_queue.lock().unwrap().push(
                 summary.clone(),
                 body.clone(),
@@ -117,9 +361,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // on `Notify`, expires each frame). Declared early so the toast
     // component registration below can clone it.
     let notif_queue: std::sync::Arc<std::sync::Mutex<ass_core::notify::NotificationQueue>> =
-        std::sync::Arc::new(std::sync::Mutex::new(ass_core::notify::NotificationQueue::new(
-            5_000,
-        )));
+        std::sync::Arc::new(std::sync::Mutex::new(
+            ass_core::notify::NotificationQueue::new(5_000),
+        ));
 
     // flux device with the instance extensions a nested Wayland surface needs,
     // plus the dma-buf import extensions when the driver supports them (fall
@@ -153,15 +397,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // flux presentable surface + canvas.
-    let surface = unsafe { flux::Surface::from_vk(&device, vk_surface, w, h, true) }?;
+    let mut surface = unsafe { flux::Surface::from_vk(&device, vk_surface, w, h, true) }?;
     let canvas = flux::Canvas::new(&surface)?;
+    let mut launcher_backdrop = LauncherBackdrop::new(&device)?;
     // Advertise the pre-scaled buffer to the host; takes effect on the next
     // commit (the first present below).
     host.set_buffer_scale();
 
-    // Enumerate launchable `.desktop` entries once at startup; both the
-    // launcher chrome and the dock icon cache consume the snapshot.
-    let launcher_apps = ass_apps::enumerate();
+    // Enumerate launchable `.desktop` entries at startup; the catalog is
+    // rescanned periodically below so package installs/removals appear without
+    // restarting the compositor.
+    let mut launcher_apps = ass_apps::enumerate();
     log::info!(
         "launcher: {} launchable applications discovered",
         launcher_apps.len()
@@ -169,10 +415,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Decode each app entry's raster icon into a flux texture once, keyed by
     // every app_id the entry might run as (StartupWMClass, desktop-id stem,
     // icon name) so the dock can look a running toplevel up by its `app_id`.
-    // SVG icons are skipped (no rasterizer yet) and fall back to the dock
-    // glyph. The cache owns the GPU textures and must outlive the shell, so it
-    // is declared before it.
-    let icon_cache = build_icon_cache(&device, &launcher_apps);
+    // SVG icons are rasterized through the host's standard rsvg-convert when
+    // available. The cache owns the GPU textures and must outlive the shell,
+    // so it is declared before it.
+    let mut icon_cache = build_icon_cache(&device, &launcher_apps);
 
     // Compositor chrome, bound to the same device. The core host ships with
     // no chrome of its own; compose it from the components the binary wants.
@@ -180,18 +426,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Window decorations are intentionally not registered: windows are
     // borderless (macOS-style), managed through the dock, tiling, and key
     // bindings rather than per-window title bars.
-    // Only the binary wires discovery to chrome (ADR-0022); the shell stays
-    // free of `ass-apps`. The launcher opens from the dock's Launchpad tile
-    // into a full-screen icon grid; clicking an icon spawns it detached via
-    // `ass-launch`. It shares the dock's decoded icon textures.
-    shell.add(Box::new(ass_shell::Launcher::with_icons(
-        launcher_apps.clone(),
-        icon_cache.map.clone(),
-    )));
     shell.add(Box::new(ass_shell::WorkspaceBar::new()));
     shell.add(Box::new(ass_shell::Toast::new(std::sync::Arc::clone(
         &notif_queue,
     ))));
+    // Only the binary wires discovery to chrome (ADR-0022); the shell stays
+    // free of `ass-apps`. Register the launcher after ordinary overlays so its
+    // full-screen surface covers workspace/toast chrome, while the dock (added
+    // last below) remains available like macOS Launchpad.
+    shell.add(Box::new(ass_shell::Launcher::with_icons(
+        launcher_apps.clone(),
+        icon_cache.map.clone(),
+    )));
     // The dock is added after the config is loaded below, so it can read the
     // `[dock]` pinned list.
     let mut input_acc = InputAccumulator::default();
@@ -229,17 +475,45 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // The decode resolution is seeded from the initial *physical* host size so
     // the wallpaper is decoded at the framebuffer's true resolution; later
     // resizes GPU-scale the wallpaper on draw without re-decoding.
-    const DEFAULT_WALLPAPER: &str =
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/wallpapers/default.jpg");
+    const DEFAULT_WALLPAPER: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/wallpapers/procedural-generation.png"
+    );
     let (init_w, init_h) = host.physical_size();
-    let wallpaper_path = std::env::var("ASS_WALLPAPER")
+    let wallpaper_override = std::env::var("ASS_WALLPAPER")
         .ok()
-        .filter(|s| !s.is_empty())
+        .filter(|value| !value.is_empty());
+    let wallpaper_path = wallpaper_override
+        .clone()
         .unwrap_or_else(|| DEFAULT_WALLPAPER.to_string());
-    let mut wallpaper = match ass_wallpaper::Wallpaper::from_path(&wallpaper_path, init_w, init_h) {
-        Ok(w) => {
+    let is_gltf = std::path::Path::new(&wallpaper_path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("glb"));
+    let loaded = if is_gltf {
+        ass_wallpaper::Wallpaper::from_gltf(&device, &surface, &wallpaper_path)
+    } else {
+        ass_wallpaper::Wallpaper::from_path(&wallpaper_path, init_w, init_h)
+    };
+    let mut wallpaper = match loaded {
+        Ok(mut wallpaper) => {
+            if !is_gltf {
+                let model_override = std::env::var("ASS_WALLPAPER_MODEL")
+                    .ok()
+                    .filter(|value| !value.is_empty());
+                let model_result = if let Some(path) = model_override.as_deref() {
+                    wallpaper.set_model_from_gltf(&device, &surface, path)
+                } else if wallpaper_override.is_none() {
+                    wallpaper.set_builtin_model(&device, &surface)
+                } else {
+                    Ok(())
+                };
+                if let Err(error) = model_result {
+                    log::warn!("wallpaper: 3D model disabled: {error}");
+                }
+            }
             log::info!("wallpaper: enabled ({wallpaper_path})");
-            Some(w)
+            Some(wallpaper)
         }
         Err(e) => {
             log::warn!("wallpaper: load failed for {wallpaper_path}: {e}");
@@ -297,7 +571,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let pinned = build_dock_apps(
         &launcher_apps,
         &icon_cache.map,
-        config.as_ref().map(|c| c.dock.pinned.as_slice()).unwrap_or(&[]),
+        config
+            .as_ref()
+            .map(|c| c.dock.pinned.as_slice())
+            .unwrap_or(&[]),
     );
     log::info!("dock: {} app(s) pinned", pinned.len());
     shell.add(Box::new(ass_shell::Dock::with_apps(
@@ -307,9 +584,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // mtime-based reload watcher, polled each frame. `None` when there is no
     // default config path on this host.
-    let mut reload = config_path
-        .as_deref()
-        .map(ass_config::ReloadWatcher::at);
+    let mut reload = config_path.as_deref().map(ass_config::ReloadWatcher::at);
     let mut quit_requested = false;
 
     // IPC and introspection surface (ADR-0027). A unix socket at
@@ -350,14 +625,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_win_sig: Option<Vec<(ass_core::window::WindowId, bool, Option<String>)>> = None;
     // Last broadcast workspace snapshot, used to detect model changes.
     let mut last_ws_snap: Option<ass_core::workspace::WorkspaceSnapshot> = None;
-
-    // Last broadcast workspace snapshot, used to detect model changes.
-    let mut last_ws_snap: Option<ass_core::workspace::WorkspaceSnapshot> = None;
     // Whether chrome reported a multi-frame animation in flight last frame.
     // While true the loop pumps non-blocking dispatches and renders at a
     // ~60fps cadence so the animation advances even with the pointer still;
     // once it rests the loop goes back to blocking on the host event queue.
     let mut animating = false;
+    // Pointer ownership at the end of the previous input batch. Keeping the
+    // edge lets us send exactly one wl_pointer.leave when entering chrome and
+    // synthesize motion before a click that returns to client content.
+    let mut chrome_pointer_captured = false;
+    // Runtime application rescan: package managers and user-created desktop
+    // entries become visible in launcher/dock during a long-running session.
+    const APP_RESCAN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+    let mut next_app_scan = std::time::Instant::now() + APP_RESCAN_INTERVAL;
+    let mut previous_frame_at = std::time::Instant::now();
 
     loop {
         // Choose dispatch mode: non-blocking + throttle while animating so the
@@ -374,13 +655,54 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if !alive || shell.should_quit() || quit_requested {
             break;
         }
+        let frame_at = std::time::Instant::now();
+        let frame_dt = (frame_at - previous_frame_at)
+            .as_secs_f32()
+            .clamp(0.0, 1.0 / 15.0);
+        previous_frame_at = frame_at;
         // Hot-reload the configuration when its mtime moves (ADR-0026). One
         // `stat` per frame is cheap and keeps the reload on this loop, where
         // the keymap rebuild must happen anyway. A failed reload keeps the
         // previous configuration rather than reverting silently.
         if let Some(path) = config_path.as_deref() {
-            if reload.as_mut().is_some_and(|w| w.changed(path)) {
-                reload_config(path, &mut config, &mut keymap, &mut server);
+            if reload.as_mut().is_some_and(|w| w.changed(path))
+                && reload_config(path, &mut config, &mut keymap, &mut server)
+            {
+                let pinned = build_dock_apps(
+                    &launcher_apps,
+                    &icon_cache.map,
+                    config
+                        .as_ref()
+                        .map(|c| c.dock.pinned.as_slice())
+                        .unwrap_or(&[]),
+                );
+                shell.update_app_catalog(&launcher_apps, &pinned, &icon_cache.map);
+            }
+        }
+
+        if std::time::Instant::now() >= next_app_scan {
+            next_app_scan = std::time::Instant::now() + APP_RESCAN_INTERVAL;
+            let refreshed = ass_apps::enumerate();
+            if refreshed != launcher_apps {
+                log::info!(
+                    "launcher: application catalog changed ({} -> {})",
+                    launcher_apps.len(),
+                    refreshed.len()
+                );
+                let refreshed_icons = build_icon_cache(&device, &refreshed);
+                let pinned = build_dock_apps(
+                    &refreshed,
+                    &refreshed_icons.map,
+                    config
+                        .as_ref()
+                        .map(|c| c.dock.pinned.as_slice())
+                        .unwrap_or(&[]),
+                );
+                shell.update_app_catalog(&refreshed, &pinned, &refreshed_icons.map);
+                launcher_apps = refreshed;
+                // Components now point only at refreshed_icons; dropping the
+                // old cache after the update cannot leave dangling textures.
+                icon_cache = refreshed_icons;
             }
         }
 
@@ -390,14 +712,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // directly. Mirrors the chrome-intent drain below (ADR-0016/0027).
         while let Ok(cmd) = ipc_cmd_rx.try_recv() {
             let ts = start.elapsed().as_millis() as u64;
-            apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
-            journal_and_broadcast(
-                &journal,
+            apply_command(
+                &mut server,
+                &notif_queue,
+                &mut quit_requested,
+                &cmd,
                 &ipc,
                 ts,
-                ass_ipc::Origin::Ipc { conn_id: 0 },
-                cmd,
             );
+            journal_and_broadcast(&journal, &ipc, ts, ass_ipc::Origin::Ipc { conn_id: 0 }, cmd);
         }
         // Age out expired notifications once per frame.
         notif_queue
@@ -424,6 +747,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         input.set_mouse_down(lens::MouseButton::Left, input_acc.mouse_down[0]);
         input.set_mouse_down(lens::MouseButton::Right, input_acc.mouse_down[1]);
         input.set_mouse_down(lens::MouseButton::Middle, input_acc.mouse_down[2]);
+        input.set_dt(frame_dt);
+        let mut shell_scroll = (0.0_f32, 0.0_f32);
+        let pointer_before = input_acc.cursor;
         let events = host.take_input();
         // When chrome (the launcher) captures the keyboard, key events go to
         // the chrome's search box rather than the focused client. The shell
@@ -487,7 +813,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             shell.toggle();
                         }
                     }
-                    PointerAxis { .. } => {}
+                    PointerAxis { dx, dy } => {
+                        shell_scroll.0 += dx;
+                        shell_scroll.1 += dy;
+                    }
                     // Touch events are not handled by the shell chrome yet;
                     // they route to clients via forward_input below.
                     TouchDown { .. }
@@ -497,21 +826,92 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     | TouchCancel => {}
                 }
             }
-            // Hand the events to the server for client routing after the shell
-            // has seen them. The Quit button intercepts clicks when over chrome.
-            // When the launcher captures the keyboard, withhold key events
-            // from clients — they belong to the search box, not the focused
-            // surface. Pointer events route normally in both cases.
-            let actions = if keyboard_captured {
-                let forwarded: Vec<ass_core::input::InputEvent> = events
-                    .iter()
-                    .copied()
-                    .filter(|e| !matches!(e, ass_core::input::InputEvent::Key { .. }))
-                    .collect();
-                server.forward_input(&forwarded, &keymap)
-            } else {
-                server.forward_input(&events, &keymap)
-            };
+            // Route the batch a second time with compositor overlays removed
+            // from the client stream. Pointer motion into chrome becomes one
+            // leave; buttons and scroll are consumed until the pointer exits.
+            // This prevents a dock/workspace/launcher click from also clicking
+            // the client window visually underneath it.
+            let display = input_acc.display_size;
+            let mut route_cursor = pointer_before;
+            let mut forwarded = Vec::with_capacity(events.len() + 1);
+            for ev in events.iter().copied() {
+                use ass_core::input::InputEvent::*;
+                match ev {
+                    Key { .. } if keyboard_captured => {}
+                    PointerMotion { x, y } => {
+                        route_cursor = (x, y);
+                        let captured = shell.captures_pointer_at(x, y, display);
+                        if captured {
+                            if !chrome_pointer_captured {
+                                forwarded.push(PointerLeave);
+                            }
+                            // A title-bar move or edge resize begins after
+                            // chrome handles the press. Once active, pointer
+                            // motion still has to reach the server even while
+                            // the cursor remains inside that chrome region.
+                            if server.interactive().is_some() {
+                                forwarded.push(ev);
+                            }
+                        } else {
+                            forwarded.push(ev);
+                        }
+                        chrome_pointer_captured = captured;
+                    }
+                    PointerButton { state, .. } => {
+                        let captured =
+                            shell.captures_pointer_at(route_cursor.0, route_cursor.1, display);
+                        if captured {
+                            if !chrome_pointer_captured {
+                                forwarded.push(PointerLeave);
+                            }
+                            // Chrome-initiated move/resize grabs still need a
+                            // release edge to terminate even though ordinary
+                            // clicks over the overlay are consumed.
+                            if !state.is_pressed() && server.interactive().is_some() {
+                                forwarded.push(ev);
+                            }
+                        } else {
+                            // A button/axis can be the first event after an
+                            // overlay closes. Re-establish client focus before
+                            // forwarding it because the enter-side motion was
+                            // consumed while chrome owned the pointer.
+                            if chrome_pointer_captured {
+                                forwarded.push(PointerMotion {
+                                    x: route_cursor.0,
+                                    y: route_cursor.1,
+                                });
+                            }
+                            forwarded.push(ev);
+                        }
+                        chrome_pointer_captured = captured;
+                    }
+                    PointerAxis { .. } => {
+                        let captured =
+                            shell.captures_pointer_at(route_cursor.0, route_cursor.1, display);
+                        if captured {
+                            if !chrome_pointer_captured {
+                                forwarded.push(PointerLeave);
+                            }
+                        } else {
+                            if chrome_pointer_captured {
+                                forwarded.push(PointerMotion {
+                                    x: route_cursor.0,
+                                    y: route_cursor.1,
+                                });
+                            }
+                            forwarded.push(ev);
+                        }
+                        chrome_pointer_captured = captured;
+                    }
+                    PointerLeave => {
+                        route_cursor = (-1.0, -1.0);
+                        chrome_pointer_captured = false;
+                        forwarded.push(PointerLeave);
+                    }
+                    _ => forwarded.push(ev),
+                }
+            }
+            let actions = server.forward_input(&forwarded, &keymap);
             // Dispatch matched global bindings. (Empty while the launcher
             // captures the keyboard — those keys went to the search box.)
             for action in actions {
@@ -523,47 +923,97 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     Action::CloseFocused => {
                         if let Some(id) = server.focused_toplevel_id() {
                             let cmd = ass_ipc::Command::Close { id };
-                            apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                            apply_command(
+                                &mut server,
+                                &notif_queue,
+                                &mut quit_requested,
+                                &cmd,
+                                &ipc,
+                                ts,
+                            );
                             journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                         }
                     }
                     Action::CycleFocus => {
                         let cmd = ass_ipc::Command::Cycle { forward: true };
-                        apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                        apply_command(
+                            &mut server,
+                            &notif_queue,
+                            &mut quit_requested,
+                            &cmd,
+                            &ipc,
+                            ts,
+                        );
                         journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                     }
                     Action::CycleFocusBack => {
                         let cmd = ass_ipc::Command::Cycle { forward: false };
-                        apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                        apply_command(
+                            &mut server,
+                            &notif_queue,
+                            &mut quit_requested,
+                            &cmd,
+                            &ipc,
+                            ts,
+                        );
                         journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                     }
                     Action::WorkspaceNext => {
                         let cmd = ass_ipc::Command::SwitchWorkspace {
                             dir: ass_core::workspace::Switch::Next,
                         };
-                        apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                        apply_command(
+                            &mut server,
+                            &notif_queue,
+                            &mut quit_requested,
+                            &cmd,
+                            &ipc,
+                            ts,
+                        );
                         journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                     }
                     Action::WorkspacePrev => {
                         let cmd = ass_ipc::Command::SwitchWorkspace {
                             dir: ass_core::workspace::Switch::Prev,
                         };
-                        apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                        apply_command(
+                            &mut server,
+                            &notif_queue,
+                            &mut quit_requested,
+                            &cmd,
+                            &ipc,
+                            ts,
+                        );
                         journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                     }
                     Action::ToggleTiling => {
                         let cmd = ass_ipc::Command::ToggleTiling;
-                        apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                        apply_command(
+                            &mut server,
+                            &notif_queue,
+                            &mut quit_requested,
+                            &cmd,
+                            &ipc,
+                            ts,
+                        );
                         journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                     }
                     Action::Quit => {
                         let cmd = ass_ipc::Command::Quit;
-                        apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                        apply_command(
+                            &mut server,
+                            &notif_queue,
+                            &mut quit_requested,
+                            &cmd,
+                            &ipc,
+                            ts,
+                        );
                         journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                     }
                 }
             }
         }
+        input.set_scroll(shell_scroll.0, shell_scroll.1);
 
         // A host resize or an output-scale change (window moved to a monitor
         // with a different scale) reports the new *logical* size. The swapchain
@@ -587,55 +1037,92 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         server.apply_tiling(shell.reserved().inset(server.output_logical_rect()));
 
         match surface.begin_frame() {
-            Ok(frame) => {
-                canvas.begin(&frame, Some(clear))?;
-                // The swapchain is in physical pixels; the wallpaper and the
-                // client windows are positioned in logical coordinates (the
-                // server's output space). Scale the canvas transform by the
-                // output scale for that pass so logical units map onto the
-                // physical framebuffer. The chrome (lens) manages its own scale
-                // on render, so the transform is restored before it draws.
+            Ok(mut frame) => {
                 let scale = host.scale() as f32;
-                canvas.save();
-                if scale != 1.0 {
-                    canvas.scale(scale, scale);
+                let logical_size = host.size_u32();
+                let physical_size = surface.size();
+                let blur_sigma = shell.backdrop_blur_sigma();
+                let model_active = wallpaper
+                    .as_ref()
+                    .is_some_and(ass_wallpaper::Wallpaper::has_model);
+                let backdrop_plan = launcher_backdrop.prepare(
+                    blur_sigma > 0.0,
+                    &device,
+                    &surface,
+                    &frame,
+                    physical_size,
+                );
+
+                match backdrop_plan {
+                    BackdropPlan::Capture
+                        if launcher_backdrop.begin_capture(&canvas, &frame, clear) =>
+                    {
+                        let capture_size = launcher_backdrop
+                            .capture_size(&frame)
+                            .unwrap_or(physical_size);
+                        let capture_ratio = capture_size.0 as f32 / physical_size.0.max(1) as f32;
+                        let capture_scale = scale * capture_ratio;
+
+                        draw_wallpaper_background(
+                            &canvas,
+                            &device,
+                            &mut wallpaper,
+                            logical_size,
+                            capture_scale,
+                        );
+
+                        if model_active {
+                            canvas.end_target();
+                            if let Some(target) = launcher_backdrop.target(&frame) {
+                                if let Some(wallpaper) = wallpaper.as_mut() {
+                                    wallpaper.draw_model_to(&device, &mut frame, target);
+                                }
+                                canvas.begin_target(&frame, target, None)?;
+                            }
+                        }
+
+                        draw_client_scene(&canvas, &device, &mut renderer, &server, capture_scale);
+                        let blurred = launcher_backdrop.end_capture_and_blur(
+                            &canvas,
+                            &frame,
+                            blur_sigma * capture_scale,
+                        );
+                        canvas.begin(&frame, Some(clear))?;
+                        if let Some(image) = blurred {
+                            image.draw(
+                                &canvas,
+                                0.0,
+                                0.0,
+                                physical_size.0 as f32,
+                                physical_size.1 as f32,
+                            );
+                        } else {
+                            draw_direct_desktop_scene(
+                                &canvas,
+                                &device,
+                                &mut frame,
+                                &mut wallpaper,
+                                &mut renderer,
+                                &server,
+                                logical_size,
+                                scale,
+                            )?;
+                        }
+                    }
+                    BackdropPlan::Capture | BackdropPlan::Direct => {
+                        canvas.begin(&frame, Some(clear))?;
+                        draw_direct_desktop_scene(
+                            &canvas,
+                            &device,
+                            &mut frame,
+                            &mut wallpaper,
+                            &mut renderer,
+                            &server,
+                            logical_size,
+                            scale,
+                        )?;
+                    }
                 }
-                // Wallpaper first (bottom-most), then client windows, then
-                // the compositor chrome on top. The wallpaper is drawn at
-                // the current output size so it always fills the frame;
-                // resizes after load are absorbed by GPU scaling.
-                if let Some(wp) = wallpaper.as_mut() {
-                    let (cw, ch) = host.size_u32();
-                    wp.draw(&device, &canvas, cw as f32, ch as f32);
-                }
-                // Client windows next. Subsurfaces split into below-parent
-                // (drawn under the toplevel) and above-parent (drawn over
-                // the toplevel) per `wl_subsurface.place_above` /
-                // `place_below`. The renderer's per-id texture cache is
-                // shared across all four lists.
-                {
-                    let shm = server.toplevel_frames();
-                    let dmabuf = server.toplevel_dmabuf_frames();
-                    let sub_shm_below = server.subsurface_frames_below();
-                    let sub_shm_above = server.subsurface_frames_above();
-                    let sub_dmabuf_below = server.subsurface_dmabuf_frames_below();
-                    let sub_dmabuf_above = server.subsurface_dmabuf_frames_above();
-                    renderer.gc(shm
-                        .iter()
-                        .map(|f| f.id)
-                        .chain(dmabuf.iter().map(|f| f.id))
-                        .chain(sub_shm_below.iter().map(|f| f.id))
-                        .chain(sub_shm_above.iter().map(|f| f.id))
-                        .chain(sub_dmabuf_below.iter().map(|f| f.id))
-                        .chain(sub_dmabuf_above.iter().map(|f| f.id)));
-                    renderer.draw_subsurfaces(&device, &canvas, &sub_shm_below);
-                    renderer.draw_dmabuf_subsurfaces(&device, &canvas, &sub_dmabuf_below);
-                    renderer.draw_toplevels(&device, &canvas, &shm, (0.0, 0.0));
-                    renderer.draw_dmabuf_toplevels(&device, &canvas, &dmabuf, (0.0, 0.0));
-                    renderer.draw_subsurfaces(&device, &canvas, &sub_shm_above);
-                    renderer.draw_dmabuf_subsurfaces(&device, &canvas, &sub_dmabuf_above);
-                }
-                canvas.restore();
                 // Hand the shell a snapshot of live toplevels so the chrome's
                 // window list reflects the current set. The shell reads
                 // title/app_id/activated off each Window to draw its buttons.
@@ -678,22 +1165,62 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let origin = ass_ipc::Origin::Chrome;
                 if let Some(id) = shell.take_clicked_window() {
                     let cmd = ass_ipc::Command::Focus { id };
-                    apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                    apply_command(
+                        &mut server,
+                        &notif_queue,
+                        &mut quit_requested,
+                        &cmd,
+                        &ipc,
+                        ts,
+                    );
                     journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                 }
                 if let Some(id) = shell.take_closed_window() {
                     let cmd = ass_ipc::Command::Close { id };
-                    apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                    apply_command(
+                        &mut server,
+                        &notif_queue,
+                        &mut quit_requested,
+                        &cmd,
+                        &ipc,
+                        ts,
+                    );
                     journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                 }
                 if let Some(id) = shell.take_move_requested() {
                     let cmd = ass_ipc::Command::Move { id };
-                    apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                    apply_command(
+                        &mut server,
+                        &notif_queue,
+                        &mut quit_requested,
+                        &cmd,
+                        &ipc,
+                        ts,
+                    );
                     journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                 }
                 if let Some(id) = shell.take_switch_workspace() {
                     let cmd = ass_ipc::Command::SwitchWorkspaceTo { id };
-                    apply_command(&mut server, &notif_queue, &mut quit_requested, &cmd, &ipc, ts);
+                    apply_command(
+                        &mut server,
+                        &notif_queue,
+                        &mut quit_requested,
+                        &cmd,
+                        &ipc,
+                        ts,
+                    );
+                    journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
+                }
+                if let Some(id) = shell.take_dismissed_notification() {
+                    let cmd = ass_ipc::Command::DismissNotification { id };
+                    apply_command(
+                        &mut server,
+                        &notif_queue,
+                        &mut quit_requested,
+                        &cmd,
+                        &ipc,
+                        ts,
+                    );
                     journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                 }
                 // The dock's Launchpad tile was clicked: toggle the launcher,
@@ -729,8 +1256,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 prev_captured = captured;
                 canvas.end();
-                frame.submit()?;
-                frame.present()?;
+                frame.submit()?.present()?;
 
                 // Pace clients: fire frame callbacks for this presentation.
                 server.send_frame_callbacks(start.elapsed().as_millis() as u32);
@@ -752,7 +1278,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // flight) or blocks for the next host wakeup. Read after render so a
         // freshly-started wave (cursor just entered the dock band) is caught
         // the same frame it begins.
-        animating = shell.anim_pending();
+        animating = shell.anim_pending()
+            || wallpaper
+                .as_ref()
+                .is_some_and(ass_wallpaper::Wallpaper::has_model);
     }
 
     log::info!("ass: window closed after {frame_count} frames");
@@ -793,7 +1322,7 @@ fn reload_config(
     config: &mut Option<ass_config::Config>,
     keymap: &mut ass_core::keybind::Keymap,
     server: &mut ass_server::Server,
-) {
+) -> bool {
     let apply = |config: &Option<ass_config::Config>, server: &mut ass_server::Server| {
         server.set_window_rules(
             config
@@ -803,6 +1332,8 @@ fn reload_config(
         );
         if let Some(c) = config.as_ref() {
             server.set_layout_params(c.layout.clone().into());
+        } else {
+            server.set_layout_params(ass_core::layout::LayoutParams::default());
         }
     };
     match ass_config::load(path) {
@@ -811,12 +1342,14 @@ fn reload_config(
             *config = Some(new_cfg);
             *keymap = build_keymap(config.as_ref());
             apply(config, server);
+            true
         }
         Ok(None) => {
             log::warn!("config: {} removed; reverting to defaults", path.display());
             *config = None;
             *keymap = build_keymap(config.as_ref());
             apply(config, server);
+            true
         }
         Err(e) => {
             match &e {
@@ -828,6 +1361,7 @@ fn reload_config(
                 _ => log::warn!("config: {e}"),
             }
             log::warn!("config: reload failed; keeping previous configuration");
+            false
         }
     }
 }
@@ -913,8 +1447,9 @@ impl LiveState {
     ) -> LiveState {
         LiveState {
             windows: std::sync::RwLock::new(Vec::new()),
-            workspaces: std::sync::RwLock::new(ass_core::workspace::WorkspaceModel::new()
-                .snapshot()),
+            workspaces: std::sync::RwLock::new(
+                ass_core::workspace::WorkspaceModel::new().snapshot(),
+            ),
             outputs: std::sync::RwLock::new(Vec::new()),
             notifications,
             journal,
@@ -992,10 +1527,11 @@ struct IconCache {
     map: std::collections::HashMap<String, *mut std::ffi::c_void>,
 }
 
-/// Raster extensions the `image` crate decodes for us. SVG needs a separate
-/// rasterizer (resvg / librsvg) and is a follow-up; entries whose only icon is
-/// SVG fall back to the dock glyph.
+/// Raster extensions the `image` crate decodes directly. SVG/SVGZ uses the
+/// standard librsvg command-line rasterizer when installed and otherwise
+/// falls back to the dock glyph without failing startup.
 const RASTER_ICON_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif", "tiff", "ico"];
+const SVG_ICON_EXTS: &[&str] = &["svg", "svgz"];
 
 /// The lowercased ids an entry might be matched by: its `StartupWMClass`, the
 /// desktop-file stem, and the declared icon name. These are the same keys
@@ -1048,7 +1584,7 @@ fn build_dock_apps(
     let mut out = Vec::with_capacity(pinned.len());
     for name in pinned {
         let want = name.to_ascii_lowercase();
-        match apps.iter().find(|e| app_keys(e).iter().any(|k| *k == want)) {
+        match apps.iter().find(|e| app_keys(e).contains(&want)) {
             Some(e) => out.push(make(e)),
             None => log::warn!("dock: pinned app '{name}' not found among enumerated entries"),
         }
@@ -1074,10 +1610,7 @@ fn build_icon_cache(device: &flux::Device, apps: &[ass_core::app::Entry]) -> Ico
             .and_then(|e| e.to_str())
             .map(|e| e.to_ascii_lowercase())
             .unwrap_or_default();
-        if !RASTER_ICON_EXTS.contains(&ext.as_str()) {
-            continue; // SVG / unknown — glyph fallback.
-        }
-        let Ok(decoded) = image::open(path) else {
+        let Some(decoded) = decode_icon(path, &ext) else {
             continue;
         };
         let rgba = decoded.to_rgba8();
@@ -1106,4 +1639,26 @@ fn build_icon_cache(device: &flux::Device, apps: &[ass_core::app::Entry]) -> Ico
         _images: images,
         map,
     }
+}
+
+/// Decode a desktop icon. Raster formats stay in-process; SVG is converted to
+/// a bounded PNG on stdout so malformed or enormous vector sources cannot
+/// dictate an unbounded GPU texture. Every failure is a normal glyph fallback.
+fn decode_icon(path: &std::path::Path, ext: &str) -> Option<image::DynamicImage> {
+    if RASTER_ICON_EXTS.contains(&ext) {
+        return image::open(path).ok();
+    }
+    if !SVG_ICON_EXTS.contains(&ext) {
+        return None;
+    }
+    let output = std::process::Command::new("rsvg-convert")
+        .args(["--width", "128", "--height", "128", "--keep-aspect-ratio"])
+        .arg(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        log::debug!("icon: SVG rasterization failed for {}", path.display());
+        return None;
+    }
+    image::load_from_memory(&output.stdout).ok()
 }

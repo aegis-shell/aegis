@@ -10,9 +10,10 @@ use ass_core::window::{Window, WindowId, WindowState};
 use ass_core::workspace::{OutputSnapshot, WorkspaceEntry, WorkspaceId, WorkspaceSnapshot};
 use ass_ipc::{Command, Handler, Server};
 
+static N: AtomicU64 = AtomicU64::new(0);
+
 /// A unique temp socket path namespaced by pid + counter.
 fn scratch() -> PathBuf {
-    static N: AtomicU64 = AtomicU64::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
     let mut p = std::env::temp_dir();
     p.push(format!("ass-ctl-{}-{n}.sock", std::process::id()));
@@ -67,7 +68,13 @@ impl Handler for CtlHandler {
         }
     }
     fn notifications(&self) -> Vec<ass_core::notify::Notification> {
-        Vec::new()
+        vec![ass_core::notify::Notification {
+            id: 7,
+            summary: "Build complete".into(),
+            body: "All checks passed".into(),
+            app_id: Some("ci".into()),
+            at_ms: 10,
+        }]
     }
     fn outputs(&self) -> Vec<ass_core::output::OutputInfo> {
         vec![ass_core::output::OutputInfo {
@@ -89,9 +96,15 @@ impl Handler for CtlHandler {
     }
     fn journal_since(&self, _since: u64) -> ass_ipc::JournalSnapshot {
         ass_ipc::JournalSnapshot {
-            entries: vec![],
+            entries: vec![ass_ipc::JournalEntry {
+                seq: 3,
+                ts_mono_ms: 42,
+                origin: ass_ipc::Origin::Chrome,
+                cmd: Command::Focus { id: WindowId(1) },
+                effect: ass_ipc::Effect::Applied,
+            }],
             oldest_seq: 1,
-            latest_seq: 0,
+            latest_seq: 3,
         }
     }
 }
@@ -127,6 +140,24 @@ fn workspaces_command_shows_output_and_workspace() {
 }
 
 #[test]
+fn notifications_command_lists_active_notifications() {
+    let path = scratch();
+    let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
+    let out = ass_ctl::run(&path, &["notifications".into()]).unwrap();
+    assert!(out.contains("Build complete"), "{out}");
+    assert!(out.contains("All checks passed"), "{out}");
+}
+
+#[test]
+fn journal_command_lists_entries() {
+    let path = scratch();
+    let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
+    let out = ass_ctl::run(&path, &["journal".into(), "2".into()]).unwrap();
+    assert!(out.contains("#3"), "{out}");
+    assert!(out.contains("Focus"), "{out}");
+}
+
+#[test]
 fn focus_command_sends_focus() {
     let path = scratch();
     let h = Arc::new(CtlHandler::new());
@@ -157,6 +188,52 @@ fn switch_command_sends_workspace_switch() {
             .iter()
             .any(|c| matches!(c, Command::SwitchWorkspace { .. })),
     );
+}
+
+#[test]
+fn switch_to_command_sends_direct_workspace_switch() {
+    let path = scratch();
+    let h = Arc::new(CtlHandler::new());
+    let _s = Server::start(&path, Arc::clone(&h)).unwrap();
+    let out = ass_ctl::run(&path, &["switch-to".into(), "9".into()]).unwrap();
+    assert!(out.contains("workspace 9"), "{out}");
+    assert!(h.commands.lock().unwrap().iter().any(|c| matches!(
+        c,
+        Command::SwitchWorkspaceTo { id } if id.0 == 9
+    )));
+}
+
+#[test]
+fn binary_prints_query_output() {
+    let root = std::env::temp_dir().join(format!(
+        "ass-ctl-bin-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let socket = root.join("ass.sock");
+    let _s = Server::start(&socket, Arc::new(CtlHandler::new())).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ass-ctl"))
+        .env("XDG_RUNTIME_DIR", &root)
+        .arg("windows")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("foot"), "stdout was {stdout:?}");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn binary_help_needs_no_runtime_directory() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ass-ctl"))
+        .env_remove("XDG_RUNTIME_DIR")
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("commands:"), "stdout was {stdout:?}");
 }
 
 #[test]

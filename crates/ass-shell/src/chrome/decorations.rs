@@ -34,12 +34,21 @@ impl Chrome for Decorations {
     fn render(
         &mut self,
         f: &mut Frame,
-        _input: &Input,
+        input: &Input,
         windows: &[Window],
         _workspaces: &crate::WorkspaceSnapshot,
         out: &mut ChromeEvents,
     ) {
+        let left_pressed = input
+            .as_raw()
+            .mouse_pressed
+            .first()
+            .copied()
+            .unwrap_or(false);
         for w in windows.iter() {
+            if w.minimized {
+                continue;
+            }
             let x = w.position.x as f32;
             let y = w.position.y as f32;
             let win_w = w.size.w as f32;
@@ -72,7 +81,11 @@ impl Chrome for Decorations {
                     // Title text grows to fill; click starts move.
                     f.flex(1.0);
                     let label = w.title.as_deref().unwrap_or("<untitled>");
-                    if f.selectable(label, false) {
+                    f.selectable(label, false);
+                    // Begin the compositor grab on the press edge. A normal
+                    // widget click fires on release, which is too late to
+                    // receive the drag motion between press and release.
+                    if left_pressed && f.response().pressed {
                         out.move_requested = Some(w.id);
                     }
                     // Close gadget.
@@ -84,5 +97,23 @@ impl Chrome for Decorations {
                 });
             });
         }
+    }
+
+    fn captures_pointer(
+        &self,
+        x: f32,
+        y: f32,
+        _display: (f32, f32),
+        windows: &[Window],
+        _workspaces: &crate::WorkspaceSnapshot,
+    ) -> bool {
+        windows.iter().rev().filter(|w| !w.minimized).any(|w| {
+            let left = w.position.x as f32;
+            let top = w.position.y as f32 - TITLE_BAR_HEIGHT;
+            x >= left
+                && x < left + w.size.w as f32
+                && y >= top
+                && y < top + TITLE_BAR_HEIGHT
+        })
     }
 }

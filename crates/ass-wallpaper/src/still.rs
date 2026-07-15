@@ -43,6 +43,20 @@ struct Frame {
 }
 
 impl StillSource {
+    pub(super) fn transparent_pixel() -> Self {
+        StillSource {
+            frames: vec![Frame {
+                pixels: vec![0, 0, 0, 0],
+                duration: FOREVER,
+            }],
+            width: 1,
+            height: 1,
+            current: 0,
+            last_advance: Instant::now(),
+            gen: 0,
+        }
+    }
+
     pub(super) fn load(path: &Path) -> Result<Self, Error> {
         let format = image::ImageReader::open(path)
             .map_err(|e| Error::Open(path.to_path_buf(), e))?

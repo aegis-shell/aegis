@@ -1,6 +1,7 @@
 [package]
 name = "ass-render"
 description = "Compositing: client buffers to flux textures, scene to the output via flux"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -7,11 +7,52 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### Animated 3D wallpapers
+
+- The default procedural wallpaper now includes a depth-tested torus-knot
+  glTF layer with an orbiting camera, moving directional light, and animated
+  specular highlights. `ASS_WALLPAPER` accepts a model-only `.glb`, while
+  `ASS_WALLPAPER_MODEL` overlays a `.glb` on an image or video wallpaper.
+- The model renderer auto-frames scene bounds and owns one depth target per
+  frame-in-flight slot. The launcher now captures image/video, 3D, and client
+  layers into one half-scale offscreen scene and applies a frame-slot-safe
+  Gaussian blur every frame, so model motion and lighting stay live without
+  device-wide synchronization stalls.
+
+### Daily-use reliability and interaction polish
+
+- Restored compatibility with flux's typestate frame API, so the workspace
+  builds against the current renderer bindings again.
+- Updated the Quick Start and `scripts/env.sh` for the unified `../optics`
+  Meson build. The script now makes library test harnesses find both shared
+  libraries as well as configuring the binding build directories.
+- `ass-ctl` now prints query and command output instead of discarding it.
+  Added `notifications`, `journal [since]`, `switch-to`, and
+  `subscribe-journal`; local help also works without `XDG_RUNTIME_DIR`.
+- Shell overlays own their pointer regions. Clicking or scrolling the dock,
+  launcher, workspace bar, notification stack, or decorations no longer
+  leaks input to a client underneath. Clicking a notification dismisses it.
+- Floating windows resize from an 8-pixel inside border. Edge and corner
+  grabs honor size hints and publish the xdg-shell `resizing` state. Focusing
+  a window raises it, and hidden-workspace windows no longer participate in
+  pointer hit-testing.
+- The application catalog refreshes every five seconds, dock pins update on
+  config reload, and SVG icons render through `rsvg-convert` when available.
+- The launcher is now a full-screen, responsive application library with a
+  cached Gaussian-blurred desktop, spring opening/closing motion, search,
+  keyboard grid navigation, wheel/trackpad paging, and access to the complete
+  application catalog instead of a fixed render cap. HiDPI icon lookup now
+  targets 128 pixels, with stable colored initial tiles for missing icons.
+- Configuration rejects unknown fields and invalid layout ranges. Removing
+  the config restores default layout parameters instead of retaining stale
+  values.
+
 ### ass-ctl --json
 - `ass-ctl` accepts a global `--json`/`-j` flag: the query commands
-  (`windows`, `workspaces`, `outputs`) then print machine-readable JSON
-  (serialized straight from the IPC types) instead of human text, so scripts
-  and the agent can parse the output. Control commands keep their text ack.
+  (`windows`, `workspaces`, `outputs`, `notifications`, `journal`) then print
+  machine-readable JSON (serialized straight from the IPC types) instead of
+  human text, so scripts and the agent can parse the output. Control commands
+  keep their text ack.
   ass-ctl gained a `serde`/`serde_json` dependency and enables ass-core's
   serde feature. Loopback-tested.
 
@@ -26,8 +67,8 @@ project cuts a tagged release.
 - `NotificationQueue::dismiss(id)` removes a notification by id (returns
   whether it was present), mirroring a user "dismiss" before the TTL. The
   IPC `DismissNotification { id }` command (control), `ass-ctl dismiss <id>`,
-  and a main-loop drain wire it up. (Toast click-to-dismiss is a follow-up;
-  today dismiss is via the IPC/CLI.) Unit-tested in `ass-core::notify`.
+  a main-loop drain, and toast click-to-dismiss wire it up. Unit-tested in
+  `ass-core::notify`.
 
 ### GetOutputs: query the live output list
 - New `GetOutputs` IPC query and `ass-ctl outputs` expose the live outputs

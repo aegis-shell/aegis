@@ -1,6 +1,7 @@
 [package]
 name = "ass-shell"
-description = "Compositor chrome: panels, decorations, overview, launcher, built on lens"
+description = "Compositor chrome: dock, launcher, workspaces, decorations, and notifications"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

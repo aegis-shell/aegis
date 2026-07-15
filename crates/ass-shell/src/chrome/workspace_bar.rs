@@ -35,6 +35,22 @@ impl WorkspaceBar {
     pub fn new() -> WorkspaceBar {
         WorkspaceBar { prev_down: false }
     }
+
+    fn bounds(workspaces: &WorkspaceSnapshot, display_w: f32) -> Option<Rect> {
+        let output = workspaces.outputs.first()?;
+        if output.workspaces.len() < 2 {
+            return None;
+        }
+        let n = output.workspaces.len();
+        let bar_w =
+            n as f32 * BAR_DOT + (n as f32 - 1.0) * BAR_DOT_GAP + 2.0 * BAR_PAD;
+        Some(Rect {
+            x: (display_w - bar_w) * 0.5,
+            y: BAR_TOP_MARGIN,
+            w: bar_w,
+            h: BAR_HEIGHT,
+        })
+    }
 }
 
 impl Default for WorkspaceBar {
@@ -121,6 +137,18 @@ impl Chrome for WorkspaceBar {
         if let Some(i) = clicked {
             out.switch_workspace = Some(output.workspaces[i].id);
         }
+    }
+
+    fn captures_pointer(
+        &self,
+        x: f32,
+        y: f32,
+        display: (f32, f32),
+        _windows: &[ass_core::window::Window],
+        workspaces: &WorkspaceSnapshot,
+    ) -> bool {
+        Self::bounds(workspaces, display.0)
+            .is_some_and(|r| x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h)
     }
 }
 

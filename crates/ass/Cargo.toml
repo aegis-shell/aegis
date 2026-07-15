@@ -1,6 +1,7 @@
 [package]
 name = "ass"
 description = "autonomous surface shell — a Wayland compositor"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -35,4 +36,5 @@ env_logger.workspace = true
 # DEP_LENS_RPATHS (published via the -sys crates' `links` metadata) and can
 # re-emit the rpaths — `rustc-link-arg` does not propagate across crates.
 flux-sys = { workspace = true }
+flux-scene-graph-sys = { workspace = true }
 lens-sys = { workspace = true }

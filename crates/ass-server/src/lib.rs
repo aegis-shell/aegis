@@ -115,7 +115,8 @@ pub struct SurfaceRec {
     /// holding a borrow across libwayland callbacks.
     state: *mut State,
     /// Slot index in `state.surfaces`. Used to null the entry in O(1) on
-    /// destroy. Surfaces never move slots while alive.
+    /// destroy. Focus-driven raises update this index when they move a live
+    /// pointer to the end of the stacking vector.
     index: usize,
     // ----- subsurface state -----
     /// Parent surface if this is a subsurface, null otherwise. A subsurface
@@ -217,10 +218,10 @@ impl SurfaceRec {
 /// boxed and never moved out.
 pub(crate) struct State {
     pub(crate) display: *mut ffi::wl_display,
-    /// All surfaces ever created, indexed by allocation order. Entries are
-    /// nulled when a surface's destroy notify fires and the rec is reclaimed;
-    /// the slot is never reused so live surfaces keep stable indices. Iterators
-    /// must skip null entries.
+    /// Surface pointers in stacking order (bottom to top). Entries are nulled
+    /// when a surface's destroy notify fires; focusing a toplevel moves its
+    /// pointer to the end and updates affected live records' slot indices.
+    /// Iterators must skip null entries.
     surfaces: Vec<*mut SurfaceRec>,
     /// Every `wl_pointer` resource clients have bound. Entries null out when
     /// the resource's destroy notify fires. Pointer events are forwarded only
@@ -288,6 +289,10 @@ pub(crate) struct State {
     /// updates the window's geometry instead of (only) being forwarded to
     /// the focused client.
     interactive: Option<ass_core::window::Interactive>,
+    /// The active interactive grab was initiated by the compositor's
+    /// invisible floating-window border. Its initiating button press was not
+    /// sent to the client, so the matching release must also be consumed.
+    compositor_pointer_grab: bool,
     /// Parameters for the tiling policy (gaps, master ratio). Per-workspace
     /// tiling on/off lives on each workspace in the model (ADR-0024).
     layout_params: ass_core::layout::LayoutParams,
@@ -337,6 +342,7 @@ impl State {
             last_button_serial: 0,
             keyboard: None,
             interactive: None,
+            compositor_pointer_grab: false,
             workspaces,
             output,
             layout_params: ass_core::layout::LayoutParams::default(),
@@ -994,11 +1000,13 @@ impl Server {
         if rec.is_null() || unsafe { (*rec).xdg_toplevel.is_null() } {
             return;
         }
+        self.change_keyboard_focus(unsafe { (*rec).resource });
         self.state.interactive = Some(ass_core::window::Interactive::Move {
             window_id: surface_id,
             origin: (self.state.pointer_x, self.state.pointer_y),
             start_position: unsafe { (*rec).position },
         });
+        self.state.compositor_pointer_grab = false;
     }
 
     /// Begin an interactive resize from the shell. Same serial-less contract
@@ -1015,6 +1023,14 @@ impl Server {
         if rec.is_null() || unsafe { (*rec).xdg_toplevel.is_null() } {
             return;
         }
+        if edges.is_none() {
+            return;
+        }
+        self.change_keyboard_focus(unsafe { (*rec).resource });
+        unsafe {
+            (*rec).window.state.resizing = true;
+            reconfigure_with_state(rec);
+        }
         self.state.interactive = Some(ass_core::window::Interactive::Resize {
             window_id: surface_id,
             edges,
@@ -1025,6 +1041,7 @@ impl Server {
                 h: unsafe { (*rec).height },
             },
         });
+        self.state.compositor_pointer_grab = false;
     }
 
     /// Whether an interactive grab (move or resize) is currently active.
@@ -1220,9 +1237,6 @@ impl Server {
         unsafe { ffi::wl_display_flush_clients(self.state.display) };
     }
 
-    /// Re-send logical geometry to every bound `zxdg_output_v1` resource.
-    /// Called when the output geometry changes.
-
     /// The focused output's logical rect (ADR-0028). The chrome-aware
     /// tiling work-area is this inset by the chrome's reserved edges.
     pub fn output_logical_rect(&self) -> ass_core::Rect {
@@ -1382,11 +1396,49 @@ impl Server {
     }
 
     fn pointer_button(&mut self, button: u32, state: ass_core::input::ButtonState) {
-        // Button release ends any active interactive grab.
+        // Button release ends any active interactive grab. A compositor-side
+        // border grab consumed its press, so consume the paired release too;
+        // client-initiated grabs still receive the release as required.
         if !state.is_pressed() && self.state.interactive.is_some() {
-            self.state.interactive = None;
-            // Still forward the release event so the client's button state
-            // stays consistent.
+            let consume = self.state.compositor_pointer_grab;
+            self.finish_interactive();
+            if consume {
+                return;
+            }
+        }
+
+        // Floating windows expose an invisible inside border for direct
+        // resize. This runs before client button delivery so dragging a border
+        // never activates a widget under the same pixels. Tiled, maximized,
+        // and fullscreen windows keep their layout-owned geometry.
+        const BORDER: f32 = 8.0;
+        const BTN_LEFT: u32 = 0x110;
+        if state.is_pressed() && button == BTN_LEFT && self.state.interactive.is_none() {
+            if let Some((rec, edges)) = self.resize_target_at(
+                self.state.pointer_x,
+                self.state.pointer_y,
+                BORDER,
+            ) {
+                let resource = unsafe { (*rec).resource };
+                let id = unsafe { (*rec).window.id };
+                self.change_keyboard_focus(resource);
+                unsafe {
+                    (*rec).window.state.resizing = true;
+                    reconfigure_with_state(rec);
+                }
+                self.state.interactive = Some(ass_core::window::Interactive::Resize {
+                    window_id: id,
+                    edges,
+                    origin: (self.state.pointer_x, self.state.pointer_y),
+                    start_position: unsafe { (*rec).position },
+                    start_size: ass_core::Size {
+                        w: unsafe { (*rec).width },
+                        h: unsafe { (*rec).height },
+                    },
+                });
+                self.state.compositor_pointer_grab = true;
+                return;
+            }
         }
         // Click-to-focus: when a button is pressed over a surface, that
         // surface also gains keyboard focus. Released edges do not change
@@ -1488,10 +1540,15 @@ impl Server {
     /// each surface's authoritative `position` (assigned at map time); later
     /// surfaces in the surfaces Vec are considered "above" earlier ones.
     fn hit_test_focus(&self, x: f32, y: f32) -> *mut ffi::wl_resource {
+        let visible = self.visible();
         let mut hit: *mut ffi::wl_resource = std::ptr::null_mut();
         for p in self.state.live_surfaces() {
             let s = unsafe { &*p };
-            if !s.mapped || s.xdg_toplevel.is_null() || s.window.minimized {
+            if !s.mapped
+                || s.xdg_toplevel.is_null()
+                || s.window.minimized
+                || !visible.contains(&s.window.id)
+            {
                 continue;
             }
             let sx = s.position.x as f32;
@@ -1505,6 +1562,58 @@ impl Server {
             }
         }
         hit
+    }
+
+    /// Topmost floating toplevel whose inside border contains `(x, y)`.
+    fn resize_target_at(
+        &self,
+        x: f32,
+        y: f32,
+        border: f32,
+    ) -> Option<(*mut SurfaceRec, ass_core::window::ResizeEdges)> {
+        let visible = self.visible();
+        let mut hit = None;
+        for p in self.state.live_surfaces() {
+            let s = unsafe { &*p };
+            if !s.mapped
+                || s.xdg_toplevel.is_null()
+                || s.window.minimized
+                || s.window.state.maximized
+                || s.window.state.fullscreen
+                || s.window.layout_role != ass_core::layout::LayoutRole::Floating
+                || !visible.contains(&s.window.id)
+            {
+                continue;
+            }
+            let mut window = s.window.clone();
+            window.position = s.position;
+            window.size = ass_core::Size {
+                w: s.width,
+                h: s.height,
+            };
+            let edges = window.resize_edges_at(x, y, border);
+            if !edges.is_none() {
+                hit = Some((p, edges));
+            }
+        }
+        hit
+    }
+
+    /// End an interactive move/resize, clearing the protocol resizing state
+    /// and notifying the client once after the final geometry.
+    fn finish_interactive(&mut self) {
+        if let Some(ass_core::window::Interactive::Resize { window_id, .. }) = self.state.interactive
+        {
+            let rec = self.find_surface_by_window_id(window_id);
+            if !rec.is_null() {
+                unsafe {
+                    (*rec).window.state.resizing = false;
+                    reconfigure_with_state(rec);
+                }
+            }
+        }
+        self.state.interactive = None;
+        self.state.compositor_pointer_grab = false;
     }
 
     /// Transition focus: post leave to the old client's pointer resources and
@@ -1775,6 +1884,9 @@ impl Server {
     /// Also flips the `activated` toplevel state bit on the old and new
     /// surfaces so clients update their title-bar chrome to match focus.
     fn change_keyboard_focus(&mut self, new_focus: *mut ffi::wl_resource) {
+        if !new_focus.is_null() {
+            self.raise_toplevel(new_focus);
+        }
         if new_focus == self.state.keyboard_focus {
             return;
         }
@@ -1811,6 +1923,33 @@ impl Server {
             }
             // Set activated on the surface gaining keyboard focus.
             self.set_activated_for_surface(new_focus, true);
+        }
+    }
+
+    /// Move a focused toplevel to the top of the stacking order while keeping
+    /// every live record's destroy-slot index correct. Raw `SurfaceRec`
+    /// allocations do not move; only their pointers in the Vec do.
+    fn raise_toplevel(&mut self, resource: *mut ffi::wl_resource) {
+        let Some(pos) = self.state.surfaces.iter().position(|p| {
+            !p.is_null()
+                && unsafe {
+                    (**p).resource == resource && !(**p).xdg_toplevel.is_null()
+                }
+        }) else {
+            return;
+        };
+        if self.state.surfaces[pos + 1..]
+            .iter()
+            .all(|p| p.is_null())
+        {
+            return;
+        }
+        let rec = self.state.surfaces.remove(pos);
+        self.state.surfaces.push(rec);
+        for (index, ptr) in self.state.surfaces.iter().copied().enumerate().skip(pos) {
+            if !ptr.is_null() {
+                unsafe { (*ptr).index = index };
+            }
         }
     }
 
@@ -3029,6 +3168,7 @@ unsafe extern "C" fn toplevel_move(
         origin: ((*state_ptr).pointer_x, (*state_ptr).pointer_y),
         start_position: (*rec).position,
     });
+    (*state_ptr).compositor_pointer_grab = false;
 }
 
 unsafe extern "C" fn toplevel_resize(
@@ -3049,9 +3189,15 @@ unsafe extern "C" fn toplevel_resize(
     if (*state_ptr).interactive.is_some() {
         return;
     }
+    let edges = ass_core::window::ResizeEdges(edges);
+    if edges.is_none() {
+        return;
+    }
+    (*rec).window.state.resizing = true;
+    reconfigure_with_state(rec);
     (*state_ptr).interactive = Some(ass_core::window::Interactive::Resize {
         window_id: (*rec).window.id,
-        edges: ass_core::window::ResizeEdges(edges),
+        edges,
         origin: ((*state_ptr).pointer_x, (*state_ptr).pointer_y),
         start_position: (*rec).position,
         start_size: ass_core::Size {
@@ -3059,6 +3205,7 @@ unsafe extern "C" fn toplevel_resize(
             h: (*rec).height,
         },
     });
+    (*state_ptr).compositor_pointer_grab = false;
 }
 
 /// Apply a pointer-motion delta to an active interactive grab. Returns
@@ -3080,6 +3227,7 @@ impl Server {
         let rec_ptr: *mut SurfaceRec = self.find_surface_by_window_id(interactive.window_id());
         if rec_ptr.is_null() {
             self.state.interactive = None;
+            self.state.compositor_pointer_grab = false;
             return false;
         }
         match interactive {

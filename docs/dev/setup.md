@@ -7,7 +7,7 @@ How to build and run ass for development.
 | Requirement | Notes |
 |-------------|-------|
 | Rust toolchain | `rustc` and `cargo`, edition 2021 (1.74+) |
-| flux + lens source trees | Sibling directory `../optics`, containing `flux/` (`libflux`) and `lens/` (`liblens`) meson subprojects, plus their out-of-tree Rust bindings `flux-rs/` and `lens-rs/` |
+| flux + lens source tree | Sibling `../optics` Meson project, containing `libs/flux`, `libs/lens`, and `bindings/` |
 | meson and a C23 compiler | To build the flux and lens libraries |
 | Vulkan 1.3 runtime and loader | flux is Vulkan-first |
 | Wayland client and protocols | `wayland-client`, `wayland-protocols`, and `wayland-scanner` for the nested backend |
@@ -16,25 +16,24 @@ How to build and run ass for development.
 
 ## Build the dependencies
 
-The Rust bindings build against the flux and lens meson build trees, so build
-`libflux` and `liblens` first:
+The Rust bindings build against the unified optics Meson build tree, so build
+`libflux`, `libflux-scene-graph`, and `liblens` first:
 
 ```bash
-meson compile -C ../optics/flux/build
-meson compile -C ../optics/lens/build
+meson compile -C ../optics/build
 ```
 
 If a build tree does not exist yet, configure it once before compiling:
 
 ```bash
-meson setup ../optics/flux/build ../optics/flux
-meson setup ../optics/lens/build ../optics/lens
+meson setup ../optics/build ../optics -Dtests=false
 ```
 
-The `-sys` build scripts locate each tree in dev mode through its uninstalled
-pkg-config file (`meson-uninstalled/flux-uninstalled.pc`,
-`meson-uninstalled/lens-uninstalled.pc`); set `FLUX_BUILD_DIR` or
-`LENS_BUILD_DIR` to override the default location.
+The `-sys` build scripts locate the tree through
+`meson-uninstalled/flux-uninstalled.pc` and
+`meson-uninstalled/flux-scene-graph-uninstalled.pc`, plus
+`meson-uninstalled/lens-uninstalled.pc`. Set `OPTICS_BUILD_DIR` before
+sourcing `scripts/env.sh` to override `../optics/build`.
 
 ## Build and run
 
@@ -49,8 +48,9 @@ cargo run
 
 `cargo run` opens a nested window on `$WAYLAND_DISPLAY`, creates a
 `VkSurfaceKHR` on flux's Vulkan instance, and presents the shell. The binary
-re-emits the rpaths the binding crates publish, so it finds `libflux.so` and
-`liblens.so` in the meson build trees without `LD_LIBRARY_PATH`.
+re-emits the rpaths the binding crates publish. The environment script also
+adds all three library directories to `LD_LIBRARY_PATH` because Cargo library-test
+harnesses do not consistently inherit dependency rpaths.
 
 If you have run `meson install` for both flux and lens into a prefix on
 `PKG_CONFIG_PATH`, source the env script with
@@ -81,7 +81,7 @@ the build trees.
 | Symptom | First check |
 |---------|-----|
 | `cannot connect to host Wayland display` | `$WAYLAND_DISPLAY` is unset or points at no compositor |
-| `missing flux-uninstalled.pc` or `lens-uninstalled.pc` | The meson build tree is not built; build the dependencies first |
+| Missing `flux-uninstalled.pc`, `flux-scene-graph-uninstalled.pc`, or `lens-uninstalled.pc` | The Meson build tree is not built with the required components; build the dependencies first |
 | `vkCreateSwapchainKHR: function pointer was NULL` | `VK_KHR_swapchain` not enabled; the backend requests it, so check the flux device extensions |
 | `error while loading shared libraries: libflux*.so` / `liblens*.so` | Run through `cargo run` so the rpath relay applies, or rebuild after moving the meson trees |
 

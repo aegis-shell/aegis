@@ -72,6 +72,7 @@ const DOCK_DOT: f32 = 5.0;
 /// One application pinned to the dock: the launchable entry plus the lowercased
 /// `app_id`s a running toplevel might report, used to fold a running window
 /// into its pinned tile.
+#[derive(Clone)]
 pub struct DockApp {
     /// The entry spawned when the tile is clicked and no window matches.
     pub entry: Entry,
@@ -282,6 +283,33 @@ impl Dock {
             });
         }
         tiles
+    }
+
+    /// Bounds of the live dock interaction surface. Uses the current spring
+    /// widths (or rest width before a tile's first render) so pointer routing
+    /// follows the bar as it expands without claiming the entire bottom edge.
+    fn pointer_bounds(&self, windows: &[Window], display: (f32, f32)) -> Rect {
+        let mut tiles = vec![Tile::launchpad()];
+        tiles.extend(self.tiles(windows));
+        let widths: Vec<f32> = tiles
+            .iter()
+            .map(|t| {
+                self.sizes
+                    .get(&t.key)
+                    .map(|s| s.value.max(DOCK_TILE))
+                    .unwrap_or(DOCK_TILE)
+            })
+            .collect();
+        let gaps = tiles.len().saturating_sub(1) as f32 * DOCK_TILE_GAP;
+        let bar_w = widths.iter().sum::<f32>() + gaps + 2.0 * DOCK_PAD;
+        let panel_y = display.1 - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN;
+        let icon_bottom = panel_y + DOCK_PANEL_HEIGHT - DOCK_BASELINE_INSET;
+        Rect {
+            x: (display.0 - bar_w) * 0.5,
+            y: icon_bottom - DOCK_TILE_MAX,
+            w: bar_w,
+            h: panel_y + DOCK_PANEL_HEIGHT - (icon_bottom - DOCK_TILE_MAX),
+        }
     }
 }
 
@@ -513,6 +541,32 @@ impl Chrome for Dock {
     /// until every spring has rested.
     fn anim_pending(&self) -> bool {
         self.anim_active
+    }
+
+    fn captures_pointer(
+        &self,
+        x: f32,
+        y: f32,
+        display: (f32, f32),
+        windows: &[Window],
+        _workspaces: &crate::WorkspaceSnapshot,
+    ) -> bool {
+        let r = self.pointer_bounds(windows, display);
+        x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h
+    }
+
+    fn visible_during_modal(&self) -> bool {
+        true
+    }
+
+    fn update_app_catalog(
+        &mut self,
+        _apps: &[Entry],
+        dock_apps: &[DockApp],
+        icons: &HashMap<String, *mut c_void>,
+    ) {
+        self.apps = dock_apps.to_vec();
+        self.icons.clone_from(icons);
     }
 }
 

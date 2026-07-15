@@ -14,11 +14,10 @@
 //!
 //! # Status
 //!
-//! MVP: the `query` capability and a single command, [`Request::GetWindows`].
-//! The capability model and handshake are in place so `control` and
-//! `session` commands add without changing the wire.
-//!
-//! [`Request::GetWindows`]: schema::Request::GetWindows
+//! Protocol version 2 supports state queries, typed control and session
+//! commands, coarse event subscriptions, detailed mutation-journal streams,
+//! and configuration-defined agent scopes. The capability handshake limits
+//! each connection to its negotiated operations.
 
 pub mod client;
 pub mod codec;

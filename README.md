@@ -6,8 +6,9 @@ written in Rust.
 ## What It Is
 
 ass composites client windows and draws its own shell chrome through
-[flux](../optics/flux) (a Vulkan-first rendering engine) and
-[lens](../optics/lens) (an immediate-mode UI engine that draws through flux).
+[flux](../optics/libs/flux) (a Vulkan-first rendering engine) and
+[lens](../optics/libs/lens) (an immediate-mode UI engine that draws through
+flux).
 The compositor owns the Wayland server, input, output, and window management;
 flux and lens own rendering and UI.
 
@@ -17,26 +18,25 @@ machine through it.
 
 ## Quick Start
 
-ass builds against two sibling C libraries under `../optics`: **flux**
-(`libflux`, the Vulkan rendering engine) and **lens** (`liblens`, the
-immediate-mode UI engine that draws the shell chrome). Each is wrapped by an
-out-of-tree Rust binding crate (`../optics/flux-rs`, `../optics/lens-rs`).
+ass builds against **flux** and **lens** in the sibling `../optics` Meson
+project. Rust bindings live under `../optics/bindings/`.
 
 Build the C libraries with meson first, then run the nested backend inside an
 existing Wayland session:
 
 ```bash
-meson compile -C ../optics/flux/build
-meson compile -C ../optics/lens/build
+meson setup ../optics/build ../optics -Dtests=false
+meson compile -C ../optics/build
 source scripts/env.sh
 cargo run
 ```
 
-`scripts/env.sh` exports the `FLUX_BUILD_DIR` / `LENS_BUILD_DIR` variables the
-`-sys` build scripts use to locate the freshly-built libraries without a
-`meson install`. `cargo run` opens a nested window on `$WAYLAND_DISPLAY` and
-presents the shell. See [Setup](docs/dev/setup.md) for prerequisites and
-details.
+Skip `meson setup` when `../optics/build` already exists.
+
+`scripts/env.sh` points the flux, scene-graph, and lens bindings at the unified
+build tree and exposes their shared libraries to test harnesses. `cargo run`
+opens a nested window on `$WAYLAND_DISPLAY` and presents the shell. See
+[Setup](docs/dev/setup.md) for prerequisites and details.
 
 ## Documentation
 

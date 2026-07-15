@@ -63,9 +63,9 @@ pub fn enumerate() -> Vec<Entry> {
     enumerate_in(&dirs)
 }
 
-/// Default requested icon size. Picked to match the dock tile / launcher row
-/// scale already used by `ass-shell`.
-pub const DEFAULT_ICON_SIZE: u32 = 48;
+/// Default requested icon size. Large enough for a 72 logical-pixel launcher
+/// icon on HiDPI outputs without visibly upscaling a 48-pixel source.
+pub const DEFAULT_ICON_SIZE: u32 = 128;
 
 /// Default icon theme used when the caller passes none. `hicolor` is the
 /// spec-mandated final fallback for every theme chain.

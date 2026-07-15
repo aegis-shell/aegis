@@ -1,8 +1,8 @@
-//! Generate and compile the xdg-shell `wl_interface` tables once, here, so both
-//! the client-side nested backend and the server share a single definition of
-//! `xdg_*_interface` (compiling them in two crates would duplicate the symbols
-//! at the final link). The tables reference core `wl_*_interface` symbols, which
-//! the consumer resolves from the libwayland it links (client or server).
+//! Generate and compile the Wayland extension `wl_interface` tables once, here,
+//! so the client-side nested backend and server share each symbol definition.
+//! Compiling them in both consumers would duplicate symbols at the final link.
+//! The tables reference core `wl_*_interface` symbols, which each consumer
+//! resolves from the libwayland implementation it links.
 
 use std::path::PathBuf;
 use std::process::Command;

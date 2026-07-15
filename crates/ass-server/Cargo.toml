@@ -1,6 +1,7 @@
 [package]
 name = "ass-server"
 description = "Hand-rolled Wayland server: socket, globals, and protocol object lifecycle"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

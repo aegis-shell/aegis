@@ -148,6 +148,7 @@ dependencies = [
  "ass-wallpaper",
  "env_logger",
  "flux",
+ "flux-scene-graph-sys",
  "flux-sys",
  "image",
  "lens",
@@ -273,6 +274,8 @@ name = "ass-wallpaper"
 version = "0.0.1"
 dependencies = [
  "flux",
+ "flux-scene-graph",
+ "flux-scene-graph-sys",
  "image",
  "log",
  "thiserror 1.0.69",
@@ -654,6 +657,22 @@ name = "flux"
 version = "0.1.1"
 dependencies = [
  "flux-sys",
+]
+
+[[package]]
+name = "flux-scene-graph"
+version = "0.1.1"
+dependencies = [
+ "flux",
+ "flux-scene-graph-sys",
+]
+
+[[package]]
+name = "flux-scene-graph-sys"
+version = "0.1.1"
+dependencies = [
+ "bindgen",
+ "pkg-config",
 ]
 
 [[package]]

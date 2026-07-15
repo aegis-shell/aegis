@@ -1,8 +1,8 @@
 //! Compositing for ass, built on flux.
 //!
 //! Turns the surface tree into draw calls: each client buffer becomes a flux
-//! texture (shm via CPU upload, dmabuf via zero-copy import once flux's import
-//! API lands), composited in z-order into the output's frame.
+//! texture (shm via CPU upload, dmabuf via zero-copy import), composited in
+//! z-order into the output's frame.
 
 use std::borrow::Cow;
 use std::collections::HashMap;

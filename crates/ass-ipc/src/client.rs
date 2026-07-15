@@ -9,6 +9,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use crate::codec::{read_msg, write_msg};
+use crate::journal::JournalSnapshot;
 use crate::schema::{Capabilities, Command, Event, PROTOCOL_VERSION, Request, Response};
 
 /// A connected IPC client. The handshake is complete on construction; the
@@ -66,7 +67,7 @@ impl Client {
         write_msg(&mut self.stream, &Request::GetWindows)?;
         match read_msg::<_, Response>(&mut self.stream)? {
             Response::Windows { windows } => Ok(windows),
-            Response::Error { message } => Err(io::Error::new(io::ErrorKind::Other, message)),
+            Response::Error { message } => Err(io::Error::other(message)),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("expected Windows, got {other:?}"),
@@ -79,7 +80,7 @@ impl Client {
         write_msg(&mut self.stream, &Request::GetWorkspaces)?;
         match read_msg::<_, Response>(&mut self.stream)? {
             Response::Workspaces { snapshot } => Ok(snapshot),
-            Response::Error { message } => Err(io::Error::new(io::ErrorKind::Other, message)),
+            Response::Error { message } => Err(io::Error::other(message)),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("expected Workspaces, got {other:?}"),
@@ -132,7 +133,7 @@ impl Client {
         write_msg(&mut self.stream, &Request::GetNotifications)?;
         match read_msg::<_, Response>(&mut self.stream)? {
             Response::Notifications { notifications } => Ok(notifications),
-            Response::Error { message } => Err(io::Error::new(io::ErrorKind::Other, message)),
+            Response::Error { message } => Err(io::Error::other(message)),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("expected Notifications, got {other:?}"),
@@ -145,10 +146,23 @@ impl Client {
         write_msg(&mut self.stream, &Request::GetOutputs)?;
         match read_msg::<_, Response>(&mut self.stream)? {
             Response::Outputs { outputs } => Ok(outputs),
-            Response::Error { message } => Err(io::Error::new(io::ErrorKind::Other, message)),
+            Response::Error { message } => Err(io::Error::other(message)),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("expected Outputs, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Fetch mutation-journal entries whose sequence is greater than `since`.
+    pub fn journal(&mut self, since: u64) -> io::Result<JournalSnapshot> {
+        write_msg(&mut self.stream, &Request::GetJournal { since })?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::Journal { snapshot } => Ok(snapshot),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected Journal, got {other:?}"),
             )),
         }
     }
@@ -160,7 +174,7 @@ impl Client {
         write_msg(&mut self.stream, &Request::Do { cmd })?;
         match read_msg::<_, Response>(&mut self.stream)? {
             Response::Ok => Ok(()),
-            Response::Error { message } => Err(io::Error::new(io::ErrorKind::Other, message)),
+            Response::Error { message } => Err(io::Error::other(message)),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("expected Ok, got {other:?}"),
@@ -174,11 +188,24 @@ impl Client {
         write_msg(&mut self.stream, &Request::Subscribe)?;
         match read_msg::<_, Response>(&mut self.stream)? {
             Response::Subscribed => Ok(()),
-            Response::Error { message } => Err(io::Error::new(io::ErrorKind::Other, message)),
+            Response::Error { message } => Err(io::Error::other(message)),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("expected Subscribed, got {other:?}")),
             ),
+        }
+    }
+
+    /// Opt into the detailed mutation-journal stream on this connection.
+    pub fn subscribe_journal(&mut self) -> io::Result<()> {
+        write_msg(&mut self.stream, &Request::SubscribeJournal)?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::Subscribed => Ok(()),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected Subscribed, got {other:?}"),
+            )),
         }
     }
 

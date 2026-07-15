@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 
 /// One launchable application, parsed from a `.desktop` entry.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Entry {
     /// The desktop file id: the entry's filename relative to an
     /// `applications/` directory (e.g. `firefox.desktop`). Case-sensitive;

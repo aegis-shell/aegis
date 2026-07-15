@@ -10,3 +10,4 @@ see [Explanation](../explanation/index.md).
 | Page | Purpose |
 |------|---------|
 | [Configuration](config.md) | The `config.toml` schema: fields, key names, modifier names, action names, and defaults |
+| [Command-Line Reference](cli.md) | `ass-ctl` query, control, event-stream, JSON, and exit-status reference |

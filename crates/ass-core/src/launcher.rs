@@ -91,6 +91,15 @@ impl Launcher {
         &self.apps
     }
 
+    /// Replace the live application catalog while preserving whether the
+    /// overlay is open and the user's current query. Runtime `.desktop`
+    /// rescans use this so installing/removing an app does not require a
+    /// compositor restart or unexpectedly close an active launcher.
+    pub fn replace_apps(&mut self, apps: Vec<Entry>) {
+        self.apps = apps;
+        self.clamp_selection();
+    }
+
     /// Indices into [`Launcher::apps`] matching the current query, in display
     /// order (which is the apps' already-sorted order). Empty query matches
     /// everything.
@@ -160,6 +169,14 @@ impl Launcher {
                 self.move_selection(-1);
                 None
             }
+            KeyAction::Left => {
+                self.move_selection(-1);
+                None
+            }
+            KeyAction::Right => {
+                self.move_selection(1);
+                None
+            }
             KeyAction::Down => {
                 self.move_selection(1);
                 None
@@ -180,6 +197,26 @@ impl Launcher {
             self.close();
         }
         outcome
+    }
+
+    /// Move the highlighted filtered position by an arbitrary signed amount.
+    /// Grid adapters use this for row-wise navigation while the core keeps the
+    /// same wrap-around and empty-list behavior as its one-step controls.
+    pub fn move_selection_by(&mut self, delta: i32) {
+        if self.open {
+            self.move_selection(delta);
+        }
+    }
+
+    /// Select one filtered position directly, clamped to the current result
+    /// set. Page-based adapters use this when wheel or pointer navigation moves
+    /// to a different page.
+    pub fn select_filtered(&mut self, index: usize) {
+        if !self.open {
+            return;
+        }
+        let len = self.filtered().len();
+        self.selection = if len == 0 { 0 } else { index.min(len - 1) };
     }
 
     /// Refresh the snapshot of running applications. The chrome calls this
@@ -302,6 +339,39 @@ mod tests {
         assert!(l.handle(KeyAction::Char('x')).is_none());
         assert!(l.query().is_empty());
         assert!(!l.is_open());
+    }
+
+    #[test]
+    fn replacing_apps_preserves_open_query_and_clamps_selection() {
+        let mut l = Launcher::new(vec![
+            entry("a.desktop", "Alpha"),
+            entry("b.desktop", "Beta"),
+        ]);
+        l.open();
+        l.handle(KeyAction::Char('a'));
+        l.handle(KeyAction::Down);
+        l.replace_apps(vec![entry("c.desktop", "Gamma")]);
+        assert!(l.is_open());
+        assert_eq!(l.query(), "a");
+        assert_eq!(l.filtered().len(), 1);
+        assert_eq!(l.selection(), 0);
+    }
+
+    #[test]
+    fn grid_navigation_moves_and_selects_filtered_positions() {
+        let mut l = Launcher::new(vec![
+            entry("a.desktop", "Alpha"),
+            entry("b.desktop", "Beta"),
+            entry("c.desktop", "Gamma"),
+            entry("d.desktop", "Delta"),
+        ]);
+        l.open();
+        l.move_selection_by(3);
+        assert_eq!(l.selection(), 3);
+        l.move_selection_by(2);
+        assert_eq!(l.selection(), 1, "movement wraps through the result set");
+        l.select_filtered(usize::MAX);
+        assert_eq!(l.selection(), 3, "direct page selection clamps safely");
     }
 
     #[test]

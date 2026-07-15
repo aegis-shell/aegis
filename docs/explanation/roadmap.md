@@ -83,11 +83,14 @@ decorations ([ADR-0017](../adr/0017-server-side-decorations-via-overlays.md)),
 dock ([ADR-0019](../adr/0019-dock-as-bottom-center-overlay.md)),
 the `Chrome` trait ([ADR-0021](../adr/0021-chrome-component-trait.md)),
 and the launcher ([ADR-0022](../adr/0022-application-launcher.md)).
+Floating-window borders now start edge and corner resize grabs, SVG desktop
+icons are rasterized when librsvg is available, and the application catalog
+is refreshed while the compositor is running.
 
-**Remaining for M3 close.** Border-drag resize,
-`xdg_toplevel.set_window_geometry` frame insets, SVG icon rasterization,
-runtime application rescan. These close the gap between "demo on the nested
-backend" and "a complete floating-only desktop on the nested backend".
+**Remaining for M3 close.** Honour
+`xdg_toplevel.set_window_geometry` frame insets. This closes the remaining
+protocol gap between "demo on the nested backend" and "a complete
+floating-only desktop on the nested backend".
 
 ## M4: DRM/KMS Backend
 

@@ -40,12 +40,28 @@ impl Chrome for Toast {
         input: &Input,
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
-        _out: &mut ChromeEvents,
+        out: &mut ChromeEvents,
     ) {
         let disp = input.as_raw().display_size;
-        let queue = self.queue.lock().unwrap();
+        let cursor = input.as_raw().cursor;
+        let pressed = input
+            .as_raw()
+            .mouse_pressed
+            .first()
+            .copied()
+            .unwrap_or(false);
+        let notifications: Vec<_> = self
+            .queue
+            .lock()
+            .unwrap()
+            .recent()
+            .iter()
+            .rev()
+            .take(MAX_VISIBLE)
+            .cloned()
+            .collect();
         // Newest on top: iterate the tail in reverse, capped.
-        for (i, n) in queue.recent().iter().rev().take(MAX_VISIBLE).enumerate() {
+        for (i, n) in notifications.iter().enumerate() {
             let rect = Rect {
                 x: disp.x - TOAST_W - TOAST_RIGHT_MARGIN,
                 y: TOAST_TOP_MARGIN + i as f32 * (TOAST_H + TOAST_GAP),
@@ -71,6 +87,30 @@ impl Chrome for Toast {
                 f.label(&title);
                 f.label_sized(&n.body, 12.0);
             });
+            if pressed
+                && cursor.x >= rect.x
+                && cursor.x < rect.x + rect.w
+                && cursor.y >= rect.y
+                && cursor.y < rect.y + rect.h
+            {
+                out.dismissed_notification = Some(n.id);
+            }
         }
+    }
+
+    fn captures_pointer(
+        &self,
+        x: f32,
+        y: f32,
+        display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> bool {
+        let visible = self.queue.lock().unwrap().recent().len().min(MAX_VISIBLE);
+        (0..visible).any(|i| {
+            let left = display.0 - TOAST_W - TOAST_RIGHT_MARGIN;
+            let top = TOAST_TOP_MARGIN + i as f32 * (TOAST_H + TOAST_GAP);
+            x >= left && x < left + TOAST_W && y >= top && y < top + TOAST_H
+        })
     }
 }

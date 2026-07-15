@@ -17,6 +17,22 @@ log diagnostic and never crashes the compositor.
 | `[[keybind]]` | array of tables | built-in defaults | Global key bindings. See [Key Bindings](#key-bindings). |
 | `[[window_rule]]` | array of tables | none | Placement rules applied to newly-mapped toplevels. See [Window Rules](#window-rules). |
 | `[layout]` | table | gaps `8`, master_ratio `0.5` | Tiling policy parameters. See [Layout](#layout). |
+| `[dock]` | table | automatic pins | Applications pinned to the dock. See [Dock](#dock). |
+| `[agent]` | table | no scopes | Named automation scopes. Scope parsing is available; compositor enforcement is not wired yet. |
+
+## Startup Environment
+
+Wallpaper sources are selected at process startup and are not hot-reloaded.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ASS_WALLPAPER` | bundled `procedural-generation.png` | Image, animated image, short-video, or model-only `.glb` source. Setting an image or video suppresses the built-in model unless `ASS_WALLPAPER_MODEL` is also set. |
+| `ASS_WALLPAPER_MODEL` | built-in procedural knot for the default wallpaper | Optional `.glb` model drawn over an image or video with an orbiting camera and animated directional light. Ignored when `ASS_WALLPAPER` is itself a `.glb`. |
+
+The launcher captures image/video, 3D, and client layers into one half-scale
+offscreen scene and updates its Gaussian backdrop every frame. Blur is
+downsampled for bounded GPU cost; allocation or unsupported-format failures
+fall back to the launcher's translucent overlay for that session.
 
 ## Layout
 
@@ -34,9 +50,29 @@ gaps = 16
 master_ratio = 0.6
 ```
 
-The work-area is the focused output's logical rect (ADR-0028); with the
-nested backend that is the host window at scale 1. Chrome-aware margins are a
-follow-up.
+The work area is the focused output's logical rectangle minus reserved shell
+chrome, including the dock. Negative gaps and master ratios outside
+`0.0`–`1.0` reject the configuration.
+
+## Dock
+
+The `[dock]` table controls persistent application pins. Changes apply on
+live reload. Each value matches a desktop-file id, desktop-file stem,
+`StartupWMClass`, or icon name, case-insensitively.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `pinned` | array of strings | `[]` | Applications shown in the listed order. An empty array automatically selects up to 12 applications with decoded icons. |
+
+```toml
+[dock]
+pinned = ["foot.desktop", "firefox", "org.gnome.Nautilus"]
+```
+
+The application catalog is rescanned every five seconds. Installed, removed,
+or edited desktop entries appear without restarting ass. Raster icons decode
+in process; SVG icons use `rsvg-convert` when it is installed and otherwise
+fall back to the generic application glyph.
 
 ## Window Rules
 
@@ -116,6 +152,9 @@ Letters (`a`–`z`, lowercased), digits (`0`–`9`), and the common controls:
 | `close` | `closefocused` | Close the focused toplevel |
 | `cycle` | `next` | Move focus to the next toplevel |
 | `prev` | `previous`, `cycleback` | Move focus to the previous toplevel |
+| `workspace_next` | `next_workspace`, `ws_next` | Switch to the next workspace |
+| `workspace_prev` | `prev_workspace`, `ws_prev` | Switch to the previous workspace |
+| `tiling` | `toggle_tiling` | Toggle tiling on the current workspace |
 | `quit` | `exit` | Quit the compositor |
 
 A matched binding is consumed before delivery to the focused client, so the
@@ -132,6 +171,9 @@ configured:
 | `Super+Shift+Tab` | `prev` |
 | `Super+Return` | `launcher` |
 | `Super+Q` | `close` |
+| `Super+Right` | `workspace_next` |
+| `Super+Left` | `workspace_prev` |
+| `Super+T` | `tiling` |
 | `Super+Shift+Return` | `quit` |
 
 A bare Super tap (press and release with no other key in between) also
@@ -155,7 +197,7 @@ action = "quit"
 [[keybind]]
 mods = ["super"]
 key = "right"
-action = "cycle"
+action = "workspace_next"
 ```
 
 ## Migration from `$ASS_KEYBINDS`

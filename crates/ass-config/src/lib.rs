@@ -34,6 +34,7 @@ pub const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 /// than spreading behavior across environment variables. Every field is
 /// [`Default`]-able so a partially specified file still loads.
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// Schema major version. Required; must equal
     /// [`SUPPORTED_SCHEMA_VERSION`]. Missing or mismatched versions are
@@ -71,6 +72,7 @@ pub struct Config {
 /// The `[agent]` section (ADR-0034). Named scopes that bound what an agent
 /// IPC client may do: which operations, which windows, which workspaces.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentConfig {
     /// One named scope per `[[agent.scope]]` entry.
     #[serde(default, rename = "scope")]
@@ -81,6 +83,7 @@ pub struct AgentConfig {
 /// `Close`, …); `windows` and `workspaces` are id allowlists (empty or
 /// omitted means unrestricted at that axis).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentScopeEntry {
     /// The scope name an IPC client presents at Hello.
     pub name: String,
@@ -101,6 +104,7 @@ pub struct AgentScopeEntry {
 /// default) lets the compositor auto-populate the dock with the first handful
 /// of apps that have a usable icon, so the dock is never empty out of the box.
 #[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DockConfig {
     #[serde(default)]
     pub pinned: Vec<String>,
@@ -109,6 +113,7 @@ pub struct DockConfig {
 /// The `[layout]` section: tiling gaps and master ratio. Defaults match the
 /// built-in `ass_core::layout::LayoutParams`.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LayoutConfig {
     /// Gap in logical pixels between tiles and around the work-area edge.
     #[serde(default = "default_gaps")]
@@ -150,6 +155,7 @@ impl From<LayoutConfig> for ass_core::layout::LayoutParams {
 /// names. Unknown names produce a per-entry diagnostic rather than aborting
 /// the whole file.
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KeybindEntry {
     /// Modifier names: `shift`, `ctrl`/`control`, `alt`/`mod1`,
     /// `super`/`meta`/`win`/`mod4`. Combinations are OR'd together.
@@ -242,7 +248,26 @@ impl Config {
                 ),
             }]);
         }
-        Ok(cfg)
+        let mut diagnostics = Vec::new();
+        if cfg.layout.gaps < 0 {
+            diagnostics.push(Diagnostic::new(
+                Some("layout.gaps".into()),
+                "must be zero or greater",
+            ));
+        }
+        if !cfg.layout.master_ratio.is_finite()
+            || !(0.0..=1.0).contains(&cfg.layout.master_ratio)
+        {
+            diagnostics.push(Diagnostic::new(
+                Some("layout.master_ratio".into()),
+                "must be between 0.0 and 1.0",
+            ));
+        }
+        if diagnostics.is_empty() {
+            Ok(cfg)
+        } else {
+            Err(diagnostics)
+        }
     }
 
     /// Resolve the configured key bindings into [`Keybind`]s. Returns the
@@ -413,6 +438,31 @@ mod tests {
         assert_eq!(err.len(), 1);
         assert!(err[0].field.as_deref() == Some("schema_version"));
         assert!(err[0].message.contains("99"));
+    }
+
+    #[test]
+    fn unknown_fields_are_rejected_instead_of_silently_ignored() {
+        let top = Config::from_str("schema_version = 1\ntheme = \"mystery\"\n").unwrap_err();
+        assert!(top[0].message.contains("unknown field"), "{top:?}");
+
+        let nested = Config::from_str(
+            "schema_version = 1\n[layout]\ngaps = 8\nmaster_rato = 0.7\n",
+        )
+        .unwrap_err();
+        assert!(nested[0].message.contains("master_rato"), "{nested:?}");
+    }
+
+    #[test]
+    fn invalid_layout_ranges_are_diagnosed() {
+        let err = Config::from_str(
+            "schema_version = 1\n[layout]\ngaps = -1\nmaster_ratio = 1.5\n",
+        )
+        .unwrap_err();
+        assert_eq!(err.len(), 2);
+        assert!(err.iter().any(|d| d.field.as_deref() == Some("layout.gaps")));
+        assert!(err
+            .iter()
+            .any(|d| d.field.as_deref() == Some("layout.master_ratio")));
     }
 
     #[test]

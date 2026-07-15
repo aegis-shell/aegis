@@ -17,6 +17,8 @@ repository = "."
 # optics checkout, or point FLUX_BUILD_DIR / LENS_BUILD_DIR at the build tree.
 flux = { path = "../optics/bindings/flux-rs/crates/flux" }
 flux-sys = { path = "../optics/bindings/flux-rs/crates/flux-sys" }
+flux-scene-graph = { path = "../optics/bindings/flux-rs/crates/flux-scene-graph" }
+flux-scene-graph-sys = { path = "../optics/bindings/flux-rs/crates/flux-scene-graph-sys" }
 lens = { path = "../optics/bindings/lens-rs/crates/lens" }
 lens-sys = { path = "../optics/bindings/lens-rs/crates/lens-sys" }
 

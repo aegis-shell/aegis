@@ -13,9 +13,11 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+mod model;
 mod still;
 mod video;
 
+use model::ModelLayer;
 use still::StillSource;
 use video::VideoSource;
 
@@ -32,6 +34,12 @@ pub enum Error {
     FfmpegSpawn(#[source] std::io::Error),
     #[error("wallpaper: ffmpeg produced no frames for {0:?}")]
     FfmpegEmpty(PathBuf),
+    #[error("wallpaper: glTF model {0:?}: {1}")]
+    Gltf(PathBuf, #[source] flux_scene_graph::Error),
+    #[error("wallpaper: glTF model {0:?} has no measurable bounds")]
+    GltfBounds(PathBuf),
+    #[error("wallpaper: 3D render resource: {0}")]
+    Flux(#[from] flux::Error),
 }
 
 /// Per-source decode + pacing state. Each implementation owns its pixels
@@ -71,6 +79,9 @@ pub struct Wallpaper {
     /// Generation last uploaded to `flux_image`. Initial value forces a
     /// first-frame upload.
     last_uploaded_gen: u64,
+    /// Optional depth-tested model layer drawn between the media background
+    /// and compositor client surfaces.
+    model: Option<ModelLayer>,
 }
 
 impl Wallpaper {
@@ -101,6 +112,7 @@ impl Wallpaper {
                 height: h,
                 flux_image: None,
                 last_uploaded_gen: u64::MAX,
+                model: None,
             });
         }
 
@@ -119,7 +131,85 @@ impl Wallpaper {
             height: h,
             flux_image: None,
             last_uploaded_gen: u64::MAX,
+            model: None,
         })
+    }
+
+    /// Load a `.glb` as a model-only wallpaper. The scene is automatically
+    /// framed, then rendered with an orbiting camera and animated key light.
+    pub fn from_gltf(
+        device: &flux::Device,
+        surface: &flux::Surface,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, Error> {
+        let path = path.as_ref();
+        let model = ModelLayer::from_path(device, surface, path)?;
+        Ok(Self {
+            source: SourceKind::Still(StillSource::transparent_pixel()),
+            width: 1,
+            height: 1,
+            flux_image: None,
+            last_uploaded_gen: u64::MAX,
+            model: Some(model),
+        })
+    }
+
+    /// Add a caller-selected `.glb` model over the current media background.
+    pub fn set_model_from_gltf(
+        &mut self,
+        device: &flux::Device,
+        surface: &flux::Surface,
+        path: impl AsRef<Path>,
+    ) -> Result<(), Error> {
+        self.model = Some(ModelLayer::from_path(device, surface, path.as_ref())?);
+        Ok(())
+    }
+
+    /// Add the built-in procedural knot model over the current background.
+    pub fn set_builtin_model(
+        &mut self,
+        device: &flux::Device,
+        surface: &flux::Surface,
+    ) -> Result<(), Error> {
+        self.model = Some(ModelLayer::builtin(device, surface)?);
+        Ok(())
+    }
+
+    pub fn has_model(&self) -> bool {
+        self.model.is_some()
+    }
+
+    /// Draw the optional 3D model into its own depth-tested pass. The caller
+    /// must end any canvas pass first and may begin another canvas pass with
+    /// load semantics afterward.
+    pub fn draw_model(&mut self, device: &flux::Device, frame: &mut flux::Frame<'_>) {
+        self.draw_model_into(device, frame, None);
+    }
+
+    /// Draw the optional 3D model into a sampleable offscreen color target.
+    /// The target's existing 2D background is loaded and preserved.
+    pub fn draw_model_to(
+        &mut self,
+        device: &flux::Device,
+        frame: &mut flux::Frame<'_>,
+        target: &flux::Image,
+    ) {
+        self.draw_model_into(device, frame, Some(target));
+    }
+
+    fn draw_model_into(
+        &mut self,
+        device: &flux::Device,
+        frame: &mut flux::Frame<'_>,
+        target: Option<&flux::Image>,
+    ) {
+        let Some(model) = self.model.as_mut() else {
+            return;
+        };
+        if let Err(error) = model.draw(device, frame, target) {
+            log::warn!("wallpaper: disabling 3D model after render failure: {error}");
+            self.model = None;
+        }
     }
 
     /// Decoded source dimensions (not the destination size passed to

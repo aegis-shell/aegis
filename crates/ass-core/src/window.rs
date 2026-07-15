@@ -16,6 +16,10 @@ pub struct WindowState {
     pub maximized: bool,
     /// `XDG_TOPLEVEL_STATE_FULLSCREEN` (value 2).
     pub fullscreen: bool,
+    /// `XDG_TOPLEVEL_STATE_RESIZING` (value 3). Set for the duration of an
+    /// interactive edge/corner resize so clients can use cheaper live-resize
+    /// rendering and restore normal quality when the grab ends.
+    pub resizing: bool,
     /// `XDG_TOPLEVEL_STATE_ACTIVATED` (value 4). The window has keyboard focus.
     pub activated: bool,
 }
@@ -32,7 +36,9 @@ impl WindowState {
         if self.fullscreen {
             v.push(2);
         }
-        // Value 3 is RESIZING; we do not currently set it.
+        if self.resizing {
+            v.push(3);
+        }
         if self.activated {
             v.push(4);
         }
@@ -42,7 +48,7 @@ impl WindowState {
     /// `true` if no state bits are set. The corresponding `configure` states
     /// array is empty.
     pub fn is_empty(self) -> bool {
-        !(self.maximized || self.fullscreen || self.activated)
+        !(self.maximized || self.fullscreen || self.resizing || self.activated)
     }
 }
 
@@ -107,6 +113,39 @@ impl Window {
             id,
             ..Default::default()
         }
+    }
+
+    /// Resolve an inside-border pointer position to xdg-shell resize edge
+    /// bits. Returns [`ResizeEdges::NONE`] away from the border or outside the
+    /// window. When a tiny window puts both opposing borders within reach,
+    /// the nearest edge wins so an axis is never contradictory.
+    pub fn resize_edges_at(&self, x: f32, y: f32, border: f32) -> ResizeEdges {
+        if border <= 0.0 || self.size.w <= 0 || self.size.h <= 0 {
+            return ResizeEdges::NONE;
+        }
+        let left = self.position.x as f32;
+        let top = self.position.y as f32;
+        let right = left + self.size.w as f32;
+        let bottom = top + self.size.h as f32;
+        if x < left || x >= right || y < top || y >= bottom {
+            return ResizeEdges::NONE;
+        }
+        let dl = x - left;
+        let dr = right - x;
+        let dt = y - top;
+        let db = bottom - y;
+        let mut bits = 0;
+        if dl <= border && dl <= dr {
+            bits |= ResizeEdges::LEFT.0;
+        } else if dr <= border {
+            bits |= ResizeEdges::RIGHT.0;
+        }
+        if dt <= border && dt <= db {
+            bits |= ResizeEdges::TOP.0;
+        } else if db <= border {
+            bits |= ResizeEdges::BOTTOM.0;
+        }
+        ResizeEdges(bits)
     }
 }
 
@@ -193,11 +232,11 @@ mod tests {
         let s = WindowState {
             maximized: true,
             fullscreen: true,
+            resizing: true,
             activated: true,
         };
-        // Protocol order: maximized=1, fullscreen=2, (resizing=3 skipped),
-        // activated=4.
-        assert_eq!(s.to_state_array(), vec![1, 2, 4]);
+        // Protocol order: maximized=1, fullscreen=2, resizing=3, activated=4.
+        assert_eq!(s.to_state_array(), vec![1, 2, 3, 4]);
         assert!(!s.is_empty());
     }
 
@@ -206,6 +245,7 @@ mod tests {
         let s = WindowState {
             maximized: false,
             fullscreen: true,
+            resizing: false,
             activated: false,
         };
         assert_eq!(s.to_state_array(), vec![2]);
@@ -267,5 +307,17 @@ mod tests {
             start_size: crate::Size::default(),
         };
         assert_eq!(rs.window_id(), WindowId(9));
+    }
+
+    #[test]
+    fn resize_hit_test_resolves_edges_corners_and_center() {
+        let mut w = Window::new(WindowId(1));
+        w.position = crate::Point { x: 100, y: 50 };
+        w.size = crate::Size { w: 400, h: 300 };
+        assert_eq!(w.resize_edges_at(101.0, 200.0, 8.0), ResizeEdges::LEFT);
+        assert_eq!(w.resize_edges_at(498.0, 200.0, 8.0), ResizeEdges::RIGHT);
+        assert_eq!(w.resize_edges_at(102.0, 52.0, 8.0).0, 5); // top-left
+        assert_eq!(w.resize_edges_at(300.0, 200.0, 8.0), ResizeEdges::NONE);
+        assert_eq!(w.resize_edges_at(99.0, 200.0, 8.0), ResizeEdges::NONE);
     }
 }

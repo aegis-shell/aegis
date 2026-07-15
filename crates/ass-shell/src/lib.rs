@@ -13,6 +13,7 @@
 //! to clients; component-emitted intents are drained by the main loop into
 //! server window-management actions.
 
+use std::collections::HashMap;
 use std::os::raw::c_void;
 
 use lens::{Frame, Ui};
@@ -85,6 +86,9 @@ pub struct ChromeEvents {
     /// — the same path as the Super-tap hotkey — so the launcher flips open or
     /// closed.
     pub toggle_launcher: bool,
+    /// Notification id the toast stack asked to dismiss. Drained through the
+    /// same command/journal path as an IPC dismissal.
+    pub dismissed_notification: Option<u64>,
 }
 
 /// One piece of compositor chrome.
@@ -127,6 +131,45 @@ pub trait Chrome {
     /// state (the launcher) override this to flip it.
     fn toggle(&mut self, _out: &mut ChromeEvents) {}
 
+    /// Whether this component owns pointer input at the given output-space
+    /// position. The main loop uses this before client routing so clicks on
+    /// overlays never fall through to a window underneath them.
+    fn captures_pointer(
+        &self,
+        _x: f32,
+        _y: f32,
+        _display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> bool {
+        false
+    }
+
+    /// Whether this component temporarily owns the chrome presentation layer.
+    /// While a modal component is active, the shell skips ordinary components
+    /// so visually covered controls cannot still respond to pointer input.
+    fn modal_active(&self) -> bool {
+        false
+    }
+
+    /// Whether this component remains visible and interactive while another
+    /// component is modal. Modal components opt in themselves; persistent
+    /// surfaces such as the dock may opt in as well.
+    fn visible_during_modal(&self) -> bool {
+        false
+    }
+
+    /// Refresh the host application catalog and decoded icon map. Components
+    /// that do not display applications ignore it; the launcher and dock
+    /// replace their snapshots in place.
+    fn update_app_catalog(
+        &mut self,
+        _apps: &[Entry],
+        _dock_apps: &[DockApp],
+        _icons: &HashMap<String, *mut c_void>,
+    ) {
+    }
+
     /// Edge space this component reserves; tiled windows avoid it (ADR-0024).
     /// Default none; overridden by chrome that should not be covered (the
     /// dock reserves the bottom edge). Summed by [`Shell::reserved`].
@@ -142,6 +185,14 @@ pub trait Chrome {
     /// run their own easing.
     fn anim_pending(&self) -> bool {
         false
+    }
+
+    /// Gaussian blur sigma requested for the desktop behind compositor
+    /// chrome, in logical pixels. The host takes the maximum across
+    /// components and applies one shared backdrop capture before rendering
+    /// chrome. A zero value disables the capture path.
+    fn backdrop_blur_sigma(&self) -> f32 {
+        0.0
     }
 }
 
@@ -252,6 +303,11 @@ impl Shell {
         self.events.switch_workspace.take()
     }
 
+    /// Drain a notification dismissal requested by the toast stack.
+    pub fn take_dismissed_notification(&mut self) -> Option<u64> {
+        self.events.dismissed_notification.take()
+    }
+
     /// Whether the chrome asked to toggle the launcher this frame (the dock's
     /// Launchpad tile). The main loop calls [`Shell::toggle`] when set.
     pub fn take_toggle_launcher(&mut self) -> bool {
@@ -264,6 +320,27 @@ impl Shell {
     /// client.
     pub fn captures_keyboard(&self) -> bool {
         self.components.iter().any(|c| c.captures_keyboard())
+    }
+
+    /// Whether compositor chrome owns pointer input at `(x, y)`. Components
+    /// use the same window/workspace snapshot they render, so routing and
+    /// visuals agree for the frame.
+    pub fn captures_pointer_at(&self, x: f32, y: f32, display: (f32, f32)) -> bool {
+        self.components.iter().any(|c| {
+            c.captures_pointer(x, y, display, &self.windows, &self.workspaces)
+        })
+    }
+
+    /// Push a newly scanned application catalog to interested components.
+    pub fn update_app_catalog(
+        &mut self,
+        apps: &[Entry],
+        dock_apps: &[DockApp],
+        icons: &HashMap<String, *mut c_void>,
+    ) {
+        for component in self.components.iter_mut() {
+            component.update_app_catalog(apps, dock_apps, icons);
+        }
     }
 
     /// Feed one resolved key event to every registered component. Only
@@ -311,6 +388,16 @@ impl Shell {
         self.ui.anim_pending()
     }
 
+    /// Strongest backdrop blur requested by any registered component, in
+    /// logical pixels. The executable converts it to physical pixels before
+    /// invoking flux's Gaussian effect.
+    pub fn backdrop_blur_sigma(&self) -> f32 {
+        self.components
+            .iter()
+            .map(|component| component.backdrop_blur_sigma())
+            .fold(0.0_f32, f32::max)
+    }
+
     /// Run every registered component and render the chrome into `canvas`,
     /// using `input` for interaction.
     ///
@@ -323,8 +410,11 @@ impl Shell {
         let events = &mut self.events;
         let components = &mut self.components;
         self.ui.frame(input, |f| {
+            let modal_active = components.iter().any(|component| component.modal_active());
             for component in components.iter_mut() {
-                component.render(f, input, windows, workspaces, events);
+                if !modal_active || component.visible_during_modal() {
+                    component.render(f, input, windows, workspaces, events);
+                }
             }
         });
         self.ui

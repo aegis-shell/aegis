@@ -1,10 +1,11 @@
-//! Shared Wayland protocol types and interface tables.
+//! Shared Wayland protocol types and generated interface tables.
 //!
 //! This crate defines the canonical `wl_interface` / `wl_message` / `wl_array`
-//! C ABI types used across ass, and exposes the xdg-shell interface tables
-//! compiled by its build script. The core `wl_*_interface` symbols are not
-//! declared here: they are provided by whichever libwayland (client or server)
-//! the consuming crate links, and each consumer declares the externs it needs.
+//! C ABI types used across ass, and exposes the shell and extension-protocol
+//! interface tables compiled by its build script. The core `wl_*_interface`
+//! symbols are not declared here: they are provided by whichever libwayland
+//! (client or server) the consuming crate links, and each consumer declares the
+//! externs it needs.
 #![allow(non_camel_case_types, non_upper_case_globals)]
 
 use std::os::raw::{c_char, c_int, c_void};

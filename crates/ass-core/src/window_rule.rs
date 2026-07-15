@@ -11,6 +11,7 @@
 /// must match (AND). A rule with no matchers matches nothing, so a bare
 /// `{ role = "floating" }` does not catch every window.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowRule {
     /// Match if the toplevel's `app_id` contains this, case-insensitively.
