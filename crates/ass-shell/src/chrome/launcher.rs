@@ -72,8 +72,6 @@ struct Cell {
     running: bool,
     selected: bool,
     icon: Option<*mut c_void>,
-    fallback_initial: String,
-    fallback_color: (u8, u8, u8),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -306,15 +304,12 @@ impl Chrome for Launcher {
             .map(|(slot, &app_index)| {
                 let entry = &self.brain.apps()[app_index];
                 let filtered_position = start + slot;
-                let (fallback_initial, fallback_color) = fallback_style(entry);
                 Cell {
                     filtered_position,
                     label: truncate_label(&entry.name, layout.cell_w),
                     running: self.brain.is_running(app_index),
                     selected: filtered_position == selection,
                     icon: self.entry_icon(entry),
-                    fallback_initial,
-                    fallback_color,
                 }
             })
             .collect();
@@ -380,36 +375,46 @@ impl Chrome for Launcher {
                         frame.spacer(16.0);
                         frame.icon(Icon::Search, 17.0);
                         frame.spacer(10.0);
-                        let (text, caret_after_text) = if self.brain.query().is_empty() {
-                            ("Search applications", false)
+                        if self.brain.query().is_empty() {
+                            // Keep the placeholder on the exact same text
+                            // origin as a real query. Its caret is an overlay
+                            // below so the caret does not consume layout width.
+                            frame.label_compact_sized("Search applications", 15.0);
                         } else {
-                            (self.brain.query(), true)
-                        };
-                        frame.row_ex(
-                            &LayoutOpts {
-                                height: SEARCH_H,
-                                gap: if caret_after_text { 3.0 } else { 4.0 },
-                                cross: Align::Center,
-                                ..Default::default()
-                            },
-                            |frame| {
-                                if !caret_after_text {
+                            frame.row_ex(
+                                &LayoutOpts {
+                                    height: SEARCH_H,
+                                    gap: 3.0,
+                                    cross: Align::Center,
+                                    ..Default::default()
+                                },
+                                |frame| {
+                                    // The regular label carries theme padding,
+                                    // which shifts text inside this fixed-height
+                                    // field. The compact form keeps its measured
+                                    // box vertically centred.
+                                    frame.label_compact_sized(self.brain.query(), 15.0);
                                     search_caret(frame, progress, self.search_focused);
-                                }
-                                // The regular label carries theme padding,
-                                // which shifts placeholder text inside this
-                                // fixed-height field. The compact form keeps
-                                // the text's measured box vertically centred.
-                                frame.label_compact_sized(text, 15.0);
-                                if caret_after_text {
-                                    search_caret(frame, progress, self.search_focused);
-                                }
-                            },
-                        );
+                                },
+                            );
+                        }
                     },
                 );
             },
         );
+        if self.brain.query().is_empty() && self.search_focused {
+            frame.layer(
+                "ass-launcher-search-empty-caret",
+                Rect {
+                    x: search_rect.x + 42.0,
+                    y: search_rect.y + (SEARCH_H - 18.0) * 0.5,
+                    w: 2.0,
+                    h: 18.0,
+                },
+                &centered_layer(),
+                |frame| search_caret(frame, progress, true),
+            );
+        }
 
         let result_text = match filtered.len() {
             0 => "No applications found".to_string(),
@@ -493,41 +498,7 @@ impl Chrome for Launcher {
                             ..Default::default()
                         },
                         |frame| {
-                            match cell.icon {
-                                Some(pointer) => unsafe {
-                                    // Raster images have no theme opacity.
-                                    // Keep their layout slot fixed while the
-                                    // texture itself scales with visibility,
-                                    // so icons leave with the rest of the grid
-                                    // instead of lingering at full size.
-                                    frame.column_ex(&sized(icon_size, icon_size), |frame| {
-                                        let visible_size = icon_size * ease_out_cubic(progress);
-                                        if visible_size > 0.5 {
-                                            frame.image(
-                                                pointer as *mut lens::sys::flux_image,
-                                                visible_size,
-                                                visible_size,
-                                            );
-                                        }
-                                    });
-                                },
-                                None => frame.column_ex(
-                                    &sized_fill(
-                                        icon_size,
-                                        icon_size,
-                                        Color::rgba(
-                                            cell.fallback_color.0,
-                                            cell.fallback_color.1,
-                                            cell.fallback_color.2,
-                                            alpha(238, progress),
-                                        ),
-                                        icon_size * 0.24,
-                                    ),
-                                    |frame| {
-                                        frame.label_sized(&cell.fallback_initial, icon_size * 0.38)
-                                    },
-                                ),
-                            }
+                            render_app_icon(frame, cell.icon, icon_size, progress);
                             let label = if cell.running {
                                 format!("• {}", cell.label)
                             } else {
@@ -746,6 +717,13 @@ fn ease_out_cubic(t: f32) -> f32 {
     1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
 }
 
+fn icon_visibility_scale(progress: f32) -> f32 {
+    // Area, rather than diameter, tracks visibility linearly. This keeps the
+    // texture readable during entry while still reducing its visible footprint
+    // every frame during exit.
+    progress.clamp(0.0, 1.0).sqrt()
+}
+
 fn alpha(base: u8, progress: f32) -> u8 {
     (base as f32 * progress.clamp(0.0, 1.0)).round() as u8
 }
@@ -759,33 +737,6 @@ fn truncate_label(label: &str, cell_width: f32) -> String {
     let mut shortened: String = label.chars().take(limit.saturating_sub(1)).collect();
     shortened.push('…');
     shortened
-}
-
-/// Produce a stable, recognizable fallback when a desktop entry has no
-/// decodable icon. A varied system palette plus the app's first character is
-/// easier to scan than repeating one generic glyph for every missing asset.
-fn fallback_style(entry: &Entry) -> (String, (u8, u8, u8)) {
-    let initial = entry
-        .name
-        .chars()
-        .find(|character| character.is_alphanumeric())
-        .and_then(|character| character.to_uppercase().next())
-        .unwrap_or('•')
-        .to_string();
-    let hash = entry.id.bytes().fold(2_166_136_261_u32, |hash, byte| {
-        (hash ^ byte as u32).wrapping_mul(16_777_619)
-    });
-    let color = match hash % 8 {
-        0 => (72, 118, 222),
-        1 => (126, 87, 194),
-        2 => (42, 151, 160),
-        3 => (52, 142, 91),
-        4 => (202, 102, 54),
-        5 => (196, 76, 112),
-        6 => (80, 107, 148),
-        _ => (152, 93, 171),
-    };
-    (initial, color)
 }
 
 fn sized(width: f32, height: f32) -> LayoutOpts {
@@ -866,6 +817,46 @@ fn faded_theme(theme: Theme, progress: f32) -> Theme {
         .with_error(fade(theme.error()))
 }
 
+/// Draw a real application texture or the same generic app glyph used by the
+/// dock. Both variants live in one fixed slot and use the same visibility
+/// curve, so missing-icon entries participate in launcher entry/exit motion
+/// exactly like resolved raster icons.
+fn render_app_icon(frame: &mut Frame, icon: Option<*mut c_void>, icon_size: f32, progress: f32) {
+    frame.column_ex(&sized(icon_size, icon_size), |frame| {
+        let visible_size = icon_size * icon_visibility_scale(progress);
+        if visible_size <= 0.5 {
+            return;
+        }
+        frame.spacer((icon_size - visible_size) * 0.5);
+        match icon {
+            // The pointer crosses from the binary's flux binding type to
+            // lens's ABI-identical flux_image.
+            Some(pointer) => unsafe {
+                frame.image(
+                    pointer as *mut lens::sys::flux_image,
+                    visible_size,
+                    visible_size,
+                );
+            },
+            None => {
+                let glyph_size = visible_size * 0.50;
+                frame.column_ex(
+                    &sized_fill(
+                        visible_size,
+                        visible_size,
+                        Color::rgba(76, 85, 116, alpha(224, progress)),
+                        visible_size * 0.24,
+                    ),
+                    |frame| {
+                        frame.spacer((visible_size - glyph_size) * 0.5);
+                        frame.icon(Icon::FileText, glyph_size);
+                    },
+                );
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -898,22 +889,24 @@ mod tests {
     }
 
     #[test]
+    fn raster_icon_scale_tracks_launcher_visibility() {
+        assert_eq!(icon_visibility_scale(0.0), 0.0);
+        assert_eq!(icon_visibility_scale(1.0), 1.0);
+        assert!(icon_visibility_scale(0.25) < icon_visibility_scale(0.75));
+    }
+
+    #[test]
+    fn opening_launcher_focuses_search() {
+        let mut launcher = Launcher::new(Vec::new());
+        launcher.toggle(&mut ChromeEvents::default());
+        assert!(launcher.brain.is_open());
+        assert!(launcher.search_focused);
+    }
+
+    #[test]
     fn label_truncation_is_unicode_safe() {
         let label = truncate_label("非常长的应用程序名称不会切断字符", 80.0);
         assert!(label.ends_with('…'));
         assert!(label.is_char_boundary(label.len()));
-    }
-
-    #[test]
-    fn fallback_style_is_stable_and_uses_the_app_initial() {
-        let entry = Entry {
-            id: "org.example.Editor.desktop".into(),
-            name: "editor".into(),
-            ..Default::default()
-        };
-        let first = fallback_style(&entry);
-        let second = fallback_style(&entry);
-        assert_eq!(first.0, "E");
-        assert_eq!(first.1, second.1);
     }
 }
