@@ -15,7 +15,9 @@ compositor or an `XDG_RUNTIME_DIR` value.
 | `ass-ctl notifications` | List active notifications. |
 | `ass-ctl journal [since]` | List mutation entries with a sequence greater than `since`; the default is `0`. |
 | `ass-ctl focus <id>` | Focus and raise a toplevel. |
+| `ass-ctl minimize <id>` | Minimize a toplevel while keeping its client alive. |
 | `ass-ctl close <id>` | Request that a toplevel close. |
+| `ass-ctl set-geometry <id> <x> <y> <w> <h>` | Set floating-window geometry in compositor logical pixels. |
 | `ass-ctl switch <next\|prev>` | Switch to an adjacent workspace. |
 | `ass-ctl switch-to <workspace>` | Switch directly to a workspace id. |
 | `ass-ctl move-to <window> <workspace>` | Move a toplevel to a workspace id. |

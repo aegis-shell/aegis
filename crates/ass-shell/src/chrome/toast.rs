@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use lens::{Align, Color, Frame, Input, OverlayOpts, Rect};
 
-use crate::{Chrome, ChromeEvents};
+use crate::{Chrome, ChromeEvents, Localizer};
 use ass_core::notify::NotificationQueue;
 use ass_core::window::Window;
 use ass_core::workspace::WorkspaceSnapshot;
@@ -15,7 +15,7 @@ use ass_core::workspace::WorkspaceSnapshot;
 const TOAST_W: f32 = 300.0;
 const TOAST_H: f32 = 56.0;
 const TOAST_GAP: f32 = 8.0;
-const TOAST_TOP_MARGIN: f32 = 10.0;
+const TOAST_TOP_MARGIN: f32 = super::workspace_bar::HUD_HEIGHT + 10.0;
 const TOAST_RIGHT_MARGIN: f32 = 10.0;
 /// Cap the visible stack so a flood does not fill the screen.
 const MAX_VISIBLE: usize = 5;
@@ -40,6 +40,7 @@ impl Chrome for Toast {
         input: &Input,
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
+        _i18n: &Localizer,
         out: &mut ChromeEvents,
     ) {
         let disp = input.as_raw().display_size;
@@ -50,16 +51,20 @@ impl Chrome for Toast {
             .first()
             .copied()
             .unwrap_or(false);
-        let notifications: Vec<_> = self
-            .queue
-            .lock()
-            .unwrap()
-            .recent()
-            .iter()
-            .rev()
-            .take(MAX_VISIBLE)
-            .cloned()
-            .collect();
+        let notifications: Vec<_> = {
+            let queue = self.queue.lock().unwrap();
+            if queue.do_not_disturb() {
+                Vec::new()
+            } else {
+                queue
+                    .recent()
+                    .iter()
+                    .rev()
+                    .take(MAX_VISIBLE)
+                    .cloned()
+                    .collect()
+            }
+        };
         // Newest on top: iterate the tail in reverse, capped.
         for (i, n) in notifications.iter().enumerate() {
             let rect = Rect {
@@ -106,7 +111,11 @@ impl Chrome for Toast {
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> bool {
-        let visible = self.queue.lock().unwrap().recent().len().min(MAX_VISIBLE);
+        let queue = self.queue.lock().unwrap();
+        if queue.do_not_disturb() {
+            return false;
+        }
+        let visible = queue.recent().len().min(MAX_VISIBLE);
         (0..visible).any(|i| {
             let left = display.0 - TOAST_W - TOAST_RIGHT_MARGIN;
             let top = TOAST_TOP_MARGIN + i as f32 * (TOAST_H + TOAST_GAP);

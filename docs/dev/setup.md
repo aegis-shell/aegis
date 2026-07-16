@@ -6,7 +6,7 @@ How to build and run ass for development.
 
 | Requirement | Notes |
 |-------------|-------|
-| Rust toolchain | `rustc` and `cargo`, edition 2021 (1.74+) |
+| Rust toolchain | `rustc` and `cargo`, edition 2021 (1.88+) |
 | flux + lens source tree | Sibling `../optics` Meson project, containing `libs/flux`, `libs/lens`, and `bindings/` |
 | meson and a C23 compiler | To build the flux and lens libraries |
 | Vulkan 1.3 runtime and loader | flux is Vulkan-first |

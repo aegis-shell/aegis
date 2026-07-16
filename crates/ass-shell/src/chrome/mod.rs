@@ -15,14 +15,17 @@
 //! - [`Launcher`] — a top-center toggle that expands into a centered list of
 //!   every enumerated `.desktop` entry; click a row to launch it (ADR-0022).
 
+mod app_menu;
+mod control_center;
 mod decorations;
 mod dock;
 mod launcher;
 mod toast;
 mod workspace_bar;
 
+pub use control_center::ControlCenter;
 pub use decorations::Decorations;
 pub use dock::{Dock, DockApp};
 pub use launcher::Launcher;
 pub use toast::Toast;
-pub use workspace_bar::WorkspaceBar;
+pub use workspace_bar::{HudBar, WorkspaceBar};

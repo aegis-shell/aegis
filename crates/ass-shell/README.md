@@ -9,7 +9,8 @@ as typed intents to the compositor loop.
 - Host pluggable `Chrome` components in a defined render order.
 - Draw decorations, the dock, launcher, workspace bar, and notification toasts.
 - Consume window, workspace, application, notification, and input snapshots.
-- Report focus, close, move, launch, workspace, and notification intents.
+- Report focus, minimize, close, move, launch, workspace, and notification
+  intents.
 
 ## Boundaries
 
@@ -39,5 +40,7 @@ shell.
 ## Related Documentation
 
 - [Architecture](../../docs/explanation/architecture.md)
+- [Dock and launcher operations](../../docs/how-to/dock-and-launcher.md)
+- [Borderless window operations](../../docs/how-to/window-management.md)
 - [Chrome component decision](../../docs/adr/0021-chrome-component-trait.md)
 - [Workspace layout](../../docs/dev/project-layout.md)

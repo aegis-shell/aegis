@@ -11,7 +11,7 @@ use std::ffi::{c_void, CStr, CString};
 use std::ptr;
 
 use ash::vk::Handle;
-use ass_core::input::InputEvent;
+use ass_core::input::{InputEvent, PointerGestureEvent, TextInputEvent, TextInputState};
 use ass_core::Size;
 
 use crate::Backend;
@@ -43,9 +43,20 @@ pub enum NestedError {
 struct State {
     compositor: *mut ffi::wl_proxy,
     wm_base: *mut ffi::wl_proxy,
+    viewporter: *mut ffi::wl_proxy,
+    fractional_scale_manager: *mut ffi::wl_proxy,
+    cursor_shape_manager: *mut ffi::wl_proxy,
+    cursor_shape_device: *mut ffi::wl_proxy,
+    pointer_gestures_manager: *mut ffi::wl_proxy,
+    gesture_swipe: *mut ffi::wl_proxy,
+    gesture_pinch: *mut ffi::wl_proxy,
+    gesture_hold: *mut ffi::wl_proxy,
+    text_input_manager: *mut ffi::wl_proxy,
+    text_input: *mut ffi::wl_proxy,
     seat: *mut ffi::wl_proxy,
     pointer: *mut ffi::wl_proxy,
     keyboard: *mut ffi::wl_proxy,
+    last_pointer_serial: u32,
     configured: bool,
     width: i32,
     height: i32,
@@ -62,6 +73,12 @@ struct State {
     current_output: *mut ffi::wl_proxy,
     /// Effective integer buffer scale (>= 1) for the current output.
     scale: i32,
+    /// Preferred surface scale in 120ths, supplied by
+    /// `wp_fractional_scale_v1`. Used only while `fractional_active` is true.
+    preferred_scale_120: u32,
+    /// True once both a fractional-scale object and viewport have been
+    /// created for the host surface.
+    fractional_active: bool,
     /// Set when `scale` changed (output scale event, or the window moved to a
     /// differently-scaled output); drained by `take_resize` so the main loop
     /// rebuilds the swapchain at the new physical size.
@@ -70,6 +87,10 @@ struct State {
     /// changes accumulate here each dispatch; the main loop drains once per
     /// frame.
     input_events: Vec<InputEvent>,
+    pointer_gesture_events: Vec<PointerGestureEvent>,
+    text_input_events: Vec<TextInputEvent>,
+    text_input_entered: bool,
+    text_input_state: TextInputState,
 }
 
 /// A nested host window and its Vulkan surface.
@@ -79,6 +100,8 @@ pub struct NestedHost {
     surface: *mut ffi::wl_proxy,
     xdg_surface: *mut ffi::wl_proxy,
     toplevel: *mut ffi::wl_proxy,
+    viewport: *mut ffi::wl_proxy,
+    fractional_scale: *mut ffi::wl_proxy,
     // Boxed so the address handed to the C callbacks stays stable across moves.
     state: Box<State>,
     // Retained so the surface can be destroyed on drop. The `ash::Instance` is
@@ -148,6 +171,20 @@ unsafe fn pointer_release(pointer: *mut ffi::wl_proxy) {
         ptr::null::<ffi::wl_interface>(),
         ffi::wl_proxy_get_version(pointer),
         ffi::WL_MARSHAL_FLAG_DESTROY,
+    );
+}
+
+unsafe fn pointer_hide_cursor(pointer: *mut ffi::wl_proxy, serial: u32) {
+    ffi::wl_proxy_marshal_flags(
+        pointer,
+        ffi::WL_POINTER_SET_CURSOR,
+        ptr::null::<ffi::wl_interface>(),
+        ffi::wl_proxy_get_version(pointer),
+        0,
+        serial,
+        ptr::null_mut::<ffi::wl_proxy>(),
+        0i32,
+        0i32,
     );
 }
 
@@ -234,6 +271,256 @@ unsafe fn set_buffer_scale(surface: *mut ffi::wl_proxy, scale: i32) {
     );
 }
 
+unsafe fn get_viewport(
+    viewporter: *mut ffi::wl_proxy,
+    surface: *mut ffi::wl_proxy,
+) -> *mut ffi::wl_proxy {
+    ffi::wl_proxy_marshal_flags(
+        viewporter,
+        ffi::WP_VIEWPORTER_GET_VIEWPORT,
+        &ffi::wp_viewport_interface,
+        ffi::wl_proxy_get_version(viewporter),
+        0,
+        ptr::null::<c_void>(),
+        surface,
+    )
+}
+
+unsafe fn viewport_set_destination(viewport: *mut ffi::wl_proxy, width: i32, height: i32) {
+    ffi::wl_proxy_marshal_flags(
+        viewport,
+        ffi::WP_VIEWPORT_SET_DESTINATION,
+        ptr::null::<ffi::wl_interface>(),
+        ffi::wl_proxy_get_version(viewport),
+        0,
+        width.max(1),
+        height.max(1),
+    );
+}
+
+unsafe fn get_fractional_scale(
+    manager: *mut ffi::wl_proxy,
+    surface: *mut ffi::wl_proxy,
+) -> *mut ffi::wl_proxy {
+    ffi::wl_proxy_marshal_flags(
+        manager,
+        ffi::WP_FRACTIONAL_SCALE_MANAGER_V1_GET_FRACTIONAL_SCALE,
+        &ffi::wp_fractional_scale_v1_interface,
+        ffi::wl_proxy_get_version(manager),
+        0,
+        ptr::null::<c_void>(),
+        surface,
+    )
+}
+
+unsafe fn get_cursor_shape_device(
+    manager: *mut ffi::wl_proxy,
+    pointer: *mut ffi::wl_proxy,
+) -> *mut ffi::wl_proxy {
+    ffi::wl_proxy_marshal_flags(
+        manager,
+        ffi::WP_CURSOR_SHAPE_MANAGER_V1_GET_POINTER,
+        &ffi::wp_cursor_shape_device_v1_interface,
+        ffi::wl_proxy_get_version(manager),
+        0,
+        ptr::null::<c_void>(),
+        pointer,
+    )
+}
+
+unsafe fn cursor_shape_set_shape(device: *mut ffi::wl_proxy, serial: u32, shape: u32) {
+    ffi::wl_proxy_marshal_flags(
+        device,
+        ffi::WP_CURSOR_SHAPE_DEVICE_V1_SET_SHAPE,
+        ptr::null::<ffi::wl_interface>(),
+        ffi::wl_proxy_get_version(device),
+        0,
+        serial,
+        shape.max(1),
+    );
+}
+
+unsafe fn get_pointer_gesture(
+    manager: *mut ffi::wl_proxy,
+    opcode: u32,
+    interface: &ffi::wl_interface,
+    pointer: *mut ffi::wl_proxy,
+) -> *mut ffi::wl_proxy {
+    ffi::wl_proxy_marshal_flags(
+        manager,
+        opcode,
+        interface,
+        1,
+        0,
+        ptr::null::<c_void>(),
+        pointer,
+    )
+}
+
+unsafe fn destroy_pointer_gesture(gesture: *mut ffi::wl_proxy) {
+    if !gesture.is_null() {
+        ffi::wl_proxy_marshal_flags(
+            gesture,
+            0,
+            ptr::null::<ffi::wl_interface>(),
+            ffi::wl_proxy_get_version(gesture),
+            ffi::WL_MARSHAL_FLAG_DESTROY,
+        );
+    }
+}
+
+unsafe fn destroy_pointer_gestures(st: *mut State) {
+    destroy_pointer_gesture((*st).gesture_hold);
+    destroy_pointer_gesture((*st).gesture_pinch);
+    destroy_pointer_gesture((*st).gesture_swipe);
+    (*st).gesture_hold = ptr::null_mut();
+    (*st).gesture_pinch = ptr::null_mut();
+    (*st).gesture_swipe = ptr::null_mut();
+}
+
+unsafe fn ensure_pointer_gestures(st: *mut State, data: *mut c_void) {
+    if st.is_null()
+        || (*st).pointer.is_null()
+        || (*st).pointer_gestures_manager.is_null()
+        || !(*st).gesture_swipe.is_null()
+    {
+        return;
+    }
+    let manager = (*st).pointer_gestures_manager;
+    let pointer = (*st).pointer;
+    (*st).gesture_swipe = get_pointer_gesture(
+        manager,
+        ffi::ZWP_POINTER_GESTURES_V1_GET_SWIPE_GESTURE,
+        &ffi::zwp_pointer_gesture_swipe_v1_interface,
+        pointer,
+    );
+    if !(*st).gesture_swipe.is_null() {
+        ffi::wl_proxy_add_listener(
+            (*st).gesture_swipe,
+            &SWIPE_GESTURE_LISTENER as *const _ as *const c_void,
+            data,
+        );
+    }
+    if ffi::wl_proxy_get_version(manager) >= 2 {
+        (*st).gesture_pinch = get_pointer_gesture(
+            manager,
+            ffi::ZWP_POINTER_GESTURES_V1_GET_PINCH_GESTURE,
+            &ffi::zwp_pointer_gesture_pinch_v1_interface,
+            pointer,
+        );
+        if !(*st).gesture_pinch.is_null() {
+            ffi::wl_proxy_add_listener(
+                (*st).gesture_pinch,
+                &PINCH_GESTURE_LISTENER as *const _ as *const c_void,
+                data,
+            );
+        }
+    }
+    if ffi::wl_proxy_get_version(manager) >= 3 {
+        (*st).gesture_hold = get_pointer_gesture(
+            manager,
+            ffi::ZWP_POINTER_GESTURES_V1_GET_HOLD_GESTURE,
+            &ffi::zwp_pointer_gesture_hold_v1_interface,
+            pointer,
+        );
+        if !(*st).gesture_hold.is_null() {
+            ffi::wl_proxy_add_listener(
+                (*st).gesture_hold,
+                &HOLD_GESTURE_LISTENER as *const _ as *const c_void,
+                data,
+            );
+        }
+    }
+}
+
+unsafe fn get_text_input(
+    manager: *mut ffi::wl_proxy,
+    seat: *mut ffi::wl_proxy,
+) -> *mut ffi::wl_proxy {
+    ffi::wl_proxy_marshal_flags(
+        manager,
+        ffi::ZWP_TEXT_INPUT_MANAGER_V3_GET_TEXT_INPUT,
+        &ffi::zwp_text_input_v3_interface,
+        ffi::wl_proxy_get_version(manager).min(1),
+        0,
+        ptr::null::<c_void>(),
+        seat,
+    )
+}
+
+unsafe fn send_text_input_state(st: *mut State) {
+    if st.is_null() || (*st).text_input.is_null() || !(*st).text_input_entered {
+        return;
+    }
+    let text_input = (*st).text_input;
+    let state = (*st).text_input_state.clone();
+    let opcode = if state.enabled {
+        ffi::ZWP_TEXT_INPUT_V3_ENABLE
+    } else {
+        ffi::ZWP_TEXT_INPUT_V3_DISABLE
+    };
+    ffi::wl_proxy_marshal_flags(
+        text_input,
+        opcode,
+        ptr::null::<ffi::wl_interface>(),
+        ffi::wl_proxy_get_version(text_input),
+        0,
+    );
+    if state.enabled {
+        if let Some(text) = state.surrounding_text {
+            if let Ok(text) = CString::new(text) {
+                ffi::wl_proxy_marshal_flags(
+                    text_input,
+                    ffi::ZWP_TEXT_INPUT_V3_SET_SURROUNDING_TEXT,
+                    ptr::null::<ffi::wl_interface>(),
+                    ffi::wl_proxy_get_version(text_input),
+                    0,
+                    text.as_ptr(),
+                    state.cursor,
+                    state.anchor,
+                );
+            }
+        }
+        ffi::wl_proxy_marshal_flags(
+            text_input,
+            ffi::ZWP_TEXT_INPUT_V3_SET_TEXT_CHANGE_CAUSE,
+            ptr::null::<ffi::wl_interface>(),
+            ffi::wl_proxy_get_version(text_input),
+            0,
+            state.change_cause,
+        );
+        ffi::wl_proxy_marshal_flags(
+            text_input,
+            ffi::ZWP_TEXT_INPUT_V3_SET_CONTENT_TYPE,
+            ptr::null::<ffi::wl_interface>(),
+            ffi::wl_proxy_get_version(text_input),
+            0,
+            state.content_hint,
+            state.content_purpose,
+        );
+        if let Some((x, y, width, height)) = state.cursor_rect {
+            ffi::wl_proxy_marshal_flags(
+                text_input,
+                ffi::ZWP_TEXT_INPUT_V3_SET_CURSOR_RECTANGLE,
+                ptr::null::<ffi::wl_interface>(),
+                ffi::wl_proxy_get_version(text_input),
+                0,
+                x,
+                y,
+                width,
+                height,
+            );
+        }
+    }
+    ffi::wl_proxy_marshal_flags(
+        text_input,
+        ffi::ZWP_TEXT_INPUT_V3_COMMIT,
+        ptr::null::<ffi::wl_interface>(),
+        ffi::wl_proxy_get_version(text_input),
+        0,
+    );
+}
+
 unsafe fn set_string(toplevel: *mut ffi::wl_proxy, opcode: u32, value: &str) {
     let c = CString::new(value).unwrap_or_default();
     ffi::wl_proxy_marshal_flags(
@@ -280,6 +567,42 @@ unsafe extern "C" fn on_global(
             ffi::wl_proxy_add_listener(output, &OUTPUT_LISTENER as *const _ as *const c_void, data);
             st.outputs.push((output, 1));
         }
+    } else if iface == b"wp_viewporter" {
+        st.viewporter = registry_bind(
+            registry,
+            name,
+            &ffi::wp_viewporter_interface,
+            version.min(1),
+        );
+    } else if iface == b"wp_fractional_scale_manager_v1" {
+        st.fractional_scale_manager = registry_bind(
+            registry,
+            name,
+            &ffi::wp_fractional_scale_manager_v1_interface,
+            version.min(1),
+        );
+    } else if iface == b"wp_cursor_shape_manager_v1" {
+        st.cursor_shape_manager = registry_bind(
+            registry,
+            name,
+            &ffi::wp_cursor_shape_manager_v1_interface,
+            version.min(2),
+        );
+    } else if iface == b"zwp_pointer_gestures_v1" {
+        st.pointer_gestures_manager = registry_bind(
+            registry,
+            name,
+            &ffi::zwp_pointer_gestures_v1_interface,
+            version.min(3),
+        );
+        ensure_pointer_gestures(st, data);
+    } else if iface == b"zwp_text_input_manager_v3" {
+        st.text_input_manager = registry_bind(
+            registry,
+            name,
+            &ffi::zwp_text_input_manager_v3_interface,
+            version.min(1),
+        );
     }
 }
 
@@ -335,9 +658,18 @@ unsafe extern "C" fn on_seat_capabilities(data: *mut c_void, seat: *mut ffi::wl_
         if !p.is_null() {
             ffi::wl_proxy_add_listener(p, &POINTER_LISTENER as *const _ as *const c_void, data);
             st.pointer = p;
+            if !st.cursor_shape_manager.is_null() {
+                st.cursor_shape_device = get_cursor_shape_device(st.cursor_shape_manager, p);
+            }
+            ensure_pointer_gestures(st, data);
             log::debug!("nested: host pointer bound");
         }
     } else if !want_pointer && !st.pointer.is_null() {
+        destroy_pointer_gestures(st);
+        if !st.cursor_shape_device.is_null() {
+            ffi::wl_proxy_destroy(st.cursor_shape_device);
+            st.cursor_shape_device = std::ptr::null_mut();
+        }
         pointer_release(st.pointer);
         st.pointer = std::ptr::null_mut();
         st.input_events.push(InputEvent::PointerLeave);
@@ -404,6 +736,21 @@ unsafe extern "C" fn on_output_scale(data: *mut c_void, output: *mut ffi::wl_pro
     // first `enter` (so the very first frame already targets the right scale).
     if (output == st.current_output || st.current_output.is_null()) && f != st.scale {
         st.scale = f;
+        if !st.fractional_active {
+            st.scale_changed = true;
+        }
+    }
+}
+
+unsafe extern "C" fn on_preferred_scale(
+    data: *mut c_void,
+    _fractional_scale: *mut ffi::wl_proxy,
+    scale_120: u32,
+) {
+    let st = &mut *(data as *mut State);
+    let scale_120 = scale_120.max(1);
+    if scale_120 != st.preferred_scale_120 {
+        st.preferred_scale_120 = scale_120;
         st.scale_changed = true;
     }
 }
@@ -440,12 +787,13 @@ unsafe extern "C" fn on_surface_leave(
 unsafe extern "C" fn on_pointer_enter(
     data: *mut c_void,
     _pointer: *mut ffi::wl_proxy,
-    _serial: u32,
+    serial: u32,
     _surface: *mut ffi::wl_proxy,
     x: i32,
     y: i32,
 ) {
     let st = &mut *(data as *mut State);
+    st.last_pointer_serial = serial;
     st.input_events.push(InputEvent::PointerMotion {
         x: ffi::wl_fixed_to_f32(x),
         y: ffi::wl_fixed_to_f32(y),
@@ -479,12 +827,13 @@ unsafe extern "C" fn on_pointer_motion(
 unsafe extern "C" fn on_pointer_button(
     data: *mut c_void,
     _pointer: *mut ffi::wl_proxy,
-    _serial: u32,
+    serial: u32,
     _time: u32,
     button: u32,
     state: u32,
 ) {
     let st = &mut *(data as *mut State);
+    st.last_pointer_serial = serial;
     // Host button codes are Linux input-event BTN_* codes already
     // (BTN_LEFT=0x110, BTN_RIGHT=0x111, BTN_MIDDLE=0x112). Pass through.
     st.input_events.push(InputEvent::PointerButton {
@@ -511,6 +860,126 @@ unsafe extern "C" fn on_pointer_axis(
     if dx != 0.0 || dy != 0.0 {
         st.input_events.push(InputEvent::PointerAxis { dx, dy });
     }
+}
+
+unsafe extern "C" fn on_swipe_begin(
+    data: *mut c_void,
+    _gesture: *mut ffi::wl_proxy,
+    _serial: u32,
+    time: u32,
+    _surface: *mut ffi::wl_proxy,
+    fingers: u32,
+) {
+    (*(data as *mut State))
+        .pointer_gesture_events
+        .push(PointerGestureEvent::SwipeBegin { time, fingers });
+}
+
+unsafe extern "C" fn on_swipe_update(
+    data: *mut c_void,
+    _gesture: *mut ffi::wl_proxy,
+    time: u32,
+    dx: i32,
+    dy: i32,
+) {
+    (*(data as *mut State))
+        .pointer_gesture_events
+        .push(PointerGestureEvent::SwipeUpdate {
+            time,
+            dx: ffi::wl_fixed_to_f32(dx),
+            dy: ffi::wl_fixed_to_f32(dy),
+        });
+}
+
+unsafe extern "C" fn on_swipe_end(
+    data: *mut c_void,
+    _gesture: *mut ffi::wl_proxy,
+    _serial: u32,
+    time: u32,
+    cancelled: i32,
+) {
+    (*(data as *mut State))
+        .pointer_gesture_events
+        .push(PointerGestureEvent::SwipeEnd {
+            time,
+            cancelled: cancelled != 0,
+        });
+}
+
+unsafe extern "C" fn on_pinch_begin(
+    data: *mut c_void,
+    _gesture: *mut ffi::wl_proxy,
+    _serial: u32,
+    time: u32,
+    _surface: *mut ffi::wl_proxy,
+    fingers: u32,
+) {
+    (*(data as *mut State))
+        .pointer_gesture_events
+        .push(PointerGestureEvent::PinchBegin { time, fingers });
+}
+
+unsafe extern "C" fn on_pinch_update(
+    data: *mut c_void,
+    _gesture: *mut ffi::wl_proxy,
+    time: u32,
+    dx: i32,
+    dy: i32,
+    scale: i32,
+    rotation: i32,
+) {
+    (*(data as *mut State))
+        .pointer_gesture_events
+        .push(PointerGestureEvent::PinchUpdate {
+            time,
+            dx: ffi::wl_fixed_to_f32(dx),
+            dy: ffi::wl_fixed_to_f32(dy),
+            scale: ffi::wl_fixed_to_f32(scale),
+            rotation: ffi::wl_fixed_to_f32(rotation),
+        });
+}
+
+unsafe extern "C" fn on_pinch_end(
+    data: *mut c_void,
+    _gesture: *mut ffi::wl_proxy,
+    _serial: u32,
+    time: u32,
+    cancelled: i32,
+) {
+    (*(data as *mut State))
+        .pointer_gesture_events
+        .push(PointerGestureEvent::PinchEnd {
+            time,
+            cancelled: cancelled != 0,
+        });
+}
+
+unsafe extern "C" fn on_hold_begin(
+    data: *mut c_void,
+    _gesture: *mut ffi::wl_proxy,
+    _serial: u32,
+    time: u32,
+    _surface: *mut ffi::wl_proxy,
+    fingers: u32,
+) {
+    (*(data as *mut State))
+        .pointer_gesture_events
+        .push(PointerGestureEvent::HoldBegin { time, fingers });
+}
+
+unsafe extern "C" fn on_hold_end(
+    data: *mut c_void,
+    _gesture: *mut ffi::wl_proxy,
+    _serial: u32,
+    time: u32,
+    cancelled: i32,
+) {
+    (*(data as *mut State))
+        .pointer_gesture_events
+        .push(PointerGestureEvent::HoldEnd {
+            time,
+            cancelled: cancelled != 0,
+        });
 }
 
 // Host keyboard listeners. The keymap event from the host is consumed only to
@@ -594,9 +1063,97 @@ unsafe extern "C" fn on_keyboard_repeat_info(
     // rate is ignored.
 }
 
+unsafe extern "C" fn on_text_input_enter(
+    data: *mut c_void,
+    _text_input: *mut ffi::wl_proxy,
+    _surface: *mut ffi::wl_proxy,
+) {
+    let st = data as *mut State;
+    (*st).text_input_entered = true;
+    send_text_input_state(st);
+}
+
+unsafe extern "C" fn on_text_input_leave(
+    data: *mut c_void,
+    _text_input: *mut ffi::wl_proxy,
+    _surface: *mut ffi::wl_proxy,
+) {
+    (*(data as *mut State)).text_input_entered = false;
+}
+
+unsafe extern "C" fn on_text_input_preedit(
+    data: *mut c_void,
+    _text_input: *mut ffi::wl_proxy,
+    text: *const std::os::raw::c_char,
+    cursor_begin: i32,
+    cursor_end: i32,
+) {
+    let text = if text.is_null() {
+        None
+    } else {
+        Some(CStr::from_ptr(text).to_string_lossy().into_owned())
+    };
+    (*(data as *mut State))
+        .text_input_events
+        .push(TextInputEvent::Preedit {
+            text,
+            cursor_begin,
+            cursor_end,
+        });
+}
+
+unsafe extern "C" fn on_text_input_commit(
+    data: *mut c_void,
+    _text_input: *mut ffi::wl_proxy,
+    text: *const std::os::raw::c_char,
+) {
+    let text = if text.is_null() {
+        None
+    } else {
+        Some(CStr::from_ptr(text).to_string_lossy().into_owned())
+    };
+    (*(data as *mut State))
+        .text_input_events
+        .push(TextInputEvent::Commit(text));
+}
+
+unsafe extern "C" fn on_text_input_delete(
+    data: *mut c_void,
+    _text_input: *mut ffi::wl_proxy,
+    before_length: u32,
+    after_length: u32,
+) {
+    (*(data as *mut State))
+        .text_input_events
+        .push(TextInputEvent::DeleteSurrounding {
+            before_length,
+            after_length,
+        });
+}
+
+unsafe extern "C" fn on_text_input_done(
+    data: *mut c_void,
+    _text_input: *mut ffi::wl_proxy,
+    _serial: u32,
+) {
+    (*(data as *mut State))
+        .text_input_events
+        .push(TextInputEvent::Done);
+}
+
 mod libc {
+    #[repr(C)]
+    pub struct pollfd {
+        pub fd: i32,
+        pub events: i16,
+        pub revents: i16,
+    }
+
+    pub const POLLIN: i16 = 0x0001;
+
     extern "C" {
         pub fn close(fd: i32) -> i32;
+        pub fn poll(fds: *mut pollfd, nfds: usize, timeout: i32) -> i32;
     }
 }
 
@@ -626,6 +1183,10 @@ static SURFACE_LISTENER: ffi::wl_surface_listener = ffi::wl_surface_listener {
     enter: on_surface_enter,
     leave: on_surface_leave,
 };
+static FRACTIONAL_SCALE_LISTENER: ffi::wp_fractional_scale_v1_listener =
+    ffi::wp_fractional_scale_v1_listener {
+        preferred_scale: on_preferred_scale,
+    };
 static POINTER_LISTENER: ffi::wl_pointer_listener = ffi::wl_pointer_listener {
     enter: on_pointer_enter,
     leave: on_pointer_leave,
@@ -633,6 +1194,23 @@ static POINTER_LISTENER: ffi::wl_pointer_listener = ffi::wl_pointer_listener {
     button: on_pointer_button,
     axis: on_pointer_axis,
 };
+static SWIPE_GESTURE_LISTENER: ffi::zwp_pointer_gesture_swipe_v1_listener =
+    ffi::zwp_pointer_gesture_swipe_v1_listener {
+        begin: on_swipe_begin,
+        update: on_swipe_update,
+        end: on_swipe_end,
+    };
+static PINCH_GESTURE_LISTENER: ffi::zwp_pointer_gesture_pinch_v1_listener =
+    ffi::zwp_pointer_gesture_pinch_v1_listener {
+        begin: on_pinch_begin,
+        update: on_pinch_update,
+        end: on_pinch_end,
+    };
+static HOLD_GESTURE_LISTENER: ffi::zwp_pointer_gesture_hold_v1_listener =
+    ffi::zwp_pointer_gesture_hold_v1_listener {
+        begin: on_hold_begin,
+        end: on_hold_end,
+    };
 static KEYBOARD_LISTENER: ffi::wl_keyboard_listener = ffi::wl_keyboard_listener {
     keymap: on_keyboard_keymap,
     enter: on_keyboard_enter,
@@ -640,6 +1218,14 @@ static KEYBOARD_LISTENER: ffi::wl_keyboard_listener = ffi::wl_keyboard_listener 
     key: on_keyboard_key,
     modifiers: on_keyboard_modifiers,
     repeat_info: on_keyboard_repeat_info,
+};
+static TEXT_INPUT_LISTENER: ffi::zwp_text_input_v3_listener = ffi::zwp_text_input_v3_listener {
+    enter: on_text_input_enter,
+    leave: on_text_input_leave,
+    preedit_string: on_text_input_preedit,
+    commit_string: on_text_input_commit,
+    delete_surrounding_text: on_text_input_delete,
+    done: on_text_input_done,
 };
 
 impl NestedHost {
@@ -654,9 +1240,20 @@ impl NestedHost {
             let mut state = Box::new(State {
                 compositor: ptr::null_mut(),
                 wm_base: ptr::null_mut(),
+                viewporter: ptr::null_mut(),
+                fractional_scale_manager: ptr::null_mut(),
+                cursor_shape_manager: ptr::null_mut(),
+                cursor_shape_device: ptr::null_mut(),
+                pointer_gestures_manager: ptr::null_mut(),
+                gesture_swipe: ptr::null_mut(),
+                gesture_pinch: ptr::null_mut(),
+                gesture_hold: ptr::null_mut(),
+                text_input_manager: ptr::null_mut(),
+                text_input: ptr::null_mut(),
                 seat: ptr::null_mut(),
                 pointer: ptr::null_mut(),
                 keyboard: ptr::null_mut(),
+                last_pointer_serial: 0,
                 configured: false,
                 width,
                 height,
@@ -667,8 +1264,14 @@ impl NestedHost {
                 outputs: Vec::new(),
                 current_output: ptr::null_mut(),
                 scale: 1,
+                preferred_scale_120: 120,
+                fractional_active: false,
                 scale_changed: false,
                 input_events: Vec::new(),
+                pointer_gesture_events: Vec::new(),
+                text_input_events: Vec::new(),
+                text_input_entered: false,
+                text_input_state: TextInputState::default(),
             });
             let data = &mut *state as *mut State as *mut c_void;
 
@@ -708,6 +1311,17 @@ impl NestedHost {
                     &SEAT_LISTENER as *const _ as *const c_void,
                     data,
                 );
+                if !state.text_input_manager.is_null() {
+                    let text_input = get_text_input(state.text_input_manager, state.seat);
+                    if !text_input.is_null() {
+                        ffi::wl_proxy_add_listener(
+                            text_input,
+                            &TEXT_INPUT_LISTENER as *const _ as *const c_void,
+                            data,
+                        );
+                        state.text_input = text_input;
+                    }
+                }
             }
 
             // Surface + xdg roles. Listen for enter/leave so the buffer scale
@@ -718,6 +1332,36 @@ impl NestedHost {
                 &SURFACE_LISTENER as *const _ as *const c_void,
                 data,
             );
+            // Fractional scaling is useful only as a pair: the scale protocol
+            // recommends a buffer size, and viewporter maps that buffer back
+            // to the xdg-configured logical surface size. If either global is
+            // absent, retain the core integer buffer-scale path.
+            let (viewport, fractional_scale) =
+                if !state.viewporter.is_null() && !state.fractional_scale_manager.is_null() {
+                    let viewport = get_viewport(state.viewporter, surface);
+                    let fractional_scale =
+                        get_fractional_scale(state.fractional_scale_manager, surface);
+                    if !viewport.is_null() && !fractional_scale.is_null() {
+                        ffi::wl_proxy_add_listener(
+                            fractional_scale,
+                            &FRACTIONAL_SCALE_LISTENER as *const _ as *const c_void,
+                            data,
+                        );
+                        state.fractional_active = true;
+                        state.preferred_scale_120 = (state.scale.max(1) as u32) * 120;
+                        (viewport, fractional_scale)
+                    } else {
+                        if !viewport.is_null() {
+                            ffi::wl_proxy_destroy(viewport);
+                        }
+                        if !fractional_scale.is_null() {
+                            ffi::wl_proxy_destroy(fractional_scale);
+                        }
+                        (ptr::null_mut(), ptr::null_mut())
+                    }
+                } else {
+                    (ptr::null_mut(), ptr::null_mut())
+                };
             let xdg_surface = get_xdg_surface(state.wm_base, surface);
             ffi::wl_proxy_add_listener(
                 xdg_surface,
@@ -751,6 +1395,11 @@ impl NestedHost {
                 state.height = state.pending_height;
                 state.resized = false;
             }
+            // Collect the initial preferred_scale before the swapchain is
+            // created, avoiding a needless 1x first frame followed by resize.
+            if state.fractional_active && ffi::wl_display_roundtrip(display) < 0 {
+                return Err(NestedError::Roundtrip);
+            }
 
             Ok(NestedHost {
                 display,
@@ -758,6 +1407,8 @@ impl NestedHost {
                 surface,
                 xdg_surface,
                 toplevel,
+                viewport,
+                fractional_scale,
                 state,
                 ash: None,
                 vk_surface: 0,
@@ -798,10 +1449,15 @@ impl NestedHost {
         )
     }
 
-    /// Integer buffer scale of the output the window is on (>= 1). 1 on a
-    /// non-HiDPI host or before the first output `scale` / surface `enter`.
-    pub fn scale(&self) -> i32 {
-        self.state.scale.max(1)
+    /// Preferred render scale for the host surface. Fractional when the host
+    /// supports fractional-scale + viewporter, otherwise the core integer
+    /// `wl_output.scale` value.
+    pub fn scale(&self) -> f32 {
+        if self.state.fractional_active {
+            self.state.preferred_scale_120.max(1) as f32 / 120.0
+        } else {
+            self.state.scale.max(1) as f32
+        }
     }
 
     /// Physical (device-pixel) size = logical size × [`scale`](Self::scale).
@@ -810,8 +1466,8 @@ impl NestedHost {
     pub fn physical_size(&self) -> (u32, u32) {
         let s = self.scale();
         (
-            (self.state.width.max(1) * s) as u32,
-            (self.state.height.max(1) * s) as u32,
+            (self.state.width.max(1) as f32 * s).round().max(1.0) as u32,
+            (self.state.height.max(1) as f32 * s).round().max(1.0) as u32,
         )
     }
 
@@ -819,7 +1475,60 @@ impl NestedHost {
     /// surface commit (the next present); call after sizing the swapchain to
     /// the matching physical size.
     pub fn set_buffer_scale(&self) {
-        unsafe { set_buffer_scale(self.surface, self.state.scale) };
+        unsafe {
+            if self.state.fractional_active {
+                // fractional-scale-v1 requires buffer_scale=1. The Vulkan
+                // buffer is rendered at logical*preferred_scale and the
+                // viewport declares its logical surface-local destination.
+                set_buffer_scale(self.surface, 1);
+                viewport_set_destination(self.viewport, self.state.width, self.state.height);
+            } else {
+                set_buffer_scale(self.surface, self.state.scale);
+            }
+        };
+    }
+
+    /// Apply the focused inner client's committed text-input state to the
+    /// host compositor. State is retained while the outer window is
+    /// unfocused and replayed on the next host text-input `enter` event.
+    pub fn set_text_input_state(&mut self, state: TextInputState) {
+        self.state.text_input_state = state;
+        unsafe { send_text_input_state(self.state.as_mut()) };
+    }
+
+    /// Drain IME events produced by the host compositor.
+    pub fn take_text_input(&mut self) -> Vec<TextInputEvent> {
+        std::mem::take(&mut self.state.text_input_events)
+    }
+
+    /// Drain touchpad gestures received from the host compositor.
+    pub fn take_pointer_gestures(&mut self) -> Vec<PointerGestureEvent> {
+        std::mem::take(&mut self.state.pointer_gesture_events)
+    }
+
+    /// Forward a client cursor-shape request to the host cursor. The most
+    /// recent pointer enter/button serial authorizes the request.
+    pub fn set_cursor_shape(&mut self, shape: u32) {
+        if self.state.cursor_shape_device.is_null() || self.state.last_pointer_serial == 0 {
+            return;
+        }
+        unsafe {
+            cursor_shape_set_shape(
+                self.state.cursor_shape_device,
+                self.state.last_pointer_serial,
+                shape.max(1),
+            )
+        };
+    }
+
+    /// Hide the host compositor cursor while an inner custom cursor surface
+    /// is composited into the nested window (or the client explicitly asks
+    /// for no cursor).
+    pub fn hide_cursor(&mut self) {
+        if self.state.pointer.is_null() || self.state.last_pointer_serial == 0 {
+            return;
+        }
+        unsafe { pointer_hide_cursor(self.state.pointer, self.state.last_pointer_serial) };
     }
 
     pub fn should_close(&self) -> bool {
@@ -854,6 +1563,32 @@ impl Backend for NestedHost {
             // the display's internal queue without blocking for new ones. A
             // negative return is a fatal connection error, not "no events".
             if ffi::wl_display_dispatch_pending(self.display) < 0 {
+                self.state.should_close = true;
+            }
+        }
+        !self.state.should_close
+    }
+
+    fn dispatch_timeout(&mut self, timeout: std::time::Duration) -> bool {
+        unsafe {
+            if ffi::wl_display_dispatch_pending(self.display) < 0 {
+                self.state.should_close = true;
+                return false;
+            }
+            // Flush requests before waiting. A would-block result is benign:
+            // POLLOUT is unnecessary here because the regular frame loop will
+            // retry and our small request stream fits the Wayland socket.
+            let _ = ffi::wl_display_flush(self.display);
+            let mut fd = crate::nested::libc::pollfd {
+                fd: ffi::wl_display_get_fd(self.display),
+                events: crate::nested::libc::POLLIN,
+                revents: 0,
+            };
+            let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+            let ready = crate::nested::libc::poll(&mut fd, 1, timeout_ms);
+            let dispatch_failed =
+                ready > 0 && fd.revents != 0 && ffi::wl_display_dispatch(self.display) < 0;
+            if ready < 0 || dispatch_failed {
                 self.state.should_close = true;
             }
         }
@@ -905,6 +1640,7 @@ impl Drop for NestedHost {
             // struct's teardown contract complete instead of relying on
             // disconnect to reap it.
             if !self.state.pointer.is_null() {
+                destroy_pointer_gestures(self.state.as_mut());
                 ffi::wl_proxy_destroy(self.state.pointer);
             }
             if !self.state.keyboard.is_null() {
@@ -920,10 +1656,19 @@ impl Drop for NestedHost {
             let compositor = self.state.compositor;
             let seat = self.state.seat;
             for p in [
+                self.state.text_input,
+                self.state.cursor_shape_device,
+                self.fractional_scale,
+                self.viewport,
                 self.toplevel,
                 self.xdg_surface,
                 self.surface,
                 self.wm_base_ptr(),
+                self.state.fractional_scale_manager,
+                self.state.viewporter,
+                self.state.text_input_manager,
+                self.state.cursor_shape_manager,
+                self.state.pointer_gestures_manager,
                 compositor,
                 seat,
                 self.registry,

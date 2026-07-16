@@ -6,10 +6,12 @@
 //! variants add without renaming existing fields. See
 //! [ADR-0027](../../docs/adr/0027-ipc-and-introspection.md).
 
+use ass_core::input::SyntheticInputAction;
 use ass_core::notify::Notification;
 use ass_core::output::OutputInfo;
 use ass_core::window::{Window, WindowId};
 use ass_core::workspace::{OutputId, Switch, WorkspaceId, WorkspaceSnapshot};
+use ass_core::Rect;
 
 use crate::journal::{JournalEntry, JournalSnapshot};
 
@@ -21,15 +23,19 @@ pub const PROTOCOL_VERSION: u32 = 2;
 
 /// The capability classes a client may hold (ADR-0027).
 ///
-/// `query` is always granted (read state + subscribe); `control` and
-/// `session` require the server's policy to allow them. Serialized as an
-/// object so tool authors read it without decoding a bitmask.
+/// `query` is always granted (read state + subscribe); `control`, `input`,
+/// and `session` require the server's policy to allow them. Serialized as an
+/// object so tool authors read it without decoding a bitmask. New fields use
+/// serde defaults so a version-2 peer that predates them negotiates them off.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Capabilities {
     /// Read state and subscribe to events. Always granted.
     pub query: bool,
     /// Mutate windows, workspaces, and input focus.
     pub control: bool,
+    /// Inject bounded, target-local input actions. Named scope required.
+    #[serde(default)]
+    pub input: bool,
     /// Session-level actions: quit, reload config, change outputs.
     pub session: bool,
 }
@@ -39,6 +45,7 @@ impl Capabilities {
     pub const QUERY: Self = Self {
         query: true,
         control: false,
+        input: false,
         session: false,
     };
 
@@ -48,6 +55,7 @@ impl Capabilities {
         Self {
             query: self.query && other.query,
             control: self.control && other.control,
+            input: self.input && other.input,
             session: self.session && other.session,
         }
     }
@@ -62,14 +70,17 @@ impl Capabilities {
 }
 
 /// One operation family, used by [`Scope`] to enumerate which commands a
-/// scoped client may issue (ADR-0034). One variant per `control`-class
-/// `Command`; session commands (Quit) are governed by caps alone.
+/// scoped client may issue (ADR-0034). One variant per scoped `Command`;
+/// session commands (Quit) are governed by caps alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
 pub enum OpClass {
     Focus,
+    Minimize,
     Close,
     Move,
+    SetWindowGeometry,
+    InjectInput,
     Cycle,
     SwitchWorkspace,
     SwitchWorkspaceTo,
@@ -81,8 +92,9 @@ pub enum OpClass {
 
 /// A resource-and-operation allowlist layered on top of capabilities
 /// (ADR-0034). `None` at any field means "unrestricted at this axis". The
-/// default (all fields `None`) is the unscoped back-compat behavior: all
-/// resources, all operations within the granted caps.
+/// default (all fields `None`) is the unscoped back-compat behavior for
+/// ordinary operations. High-risk input is the exception: `InjectInput` must
+/// be explicitly present in `ops`.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Scope {
     /// Allowed window ids. `None` = all.
@@ -94,20 +106,22 @@ pub struct Scope {
     /// Allowed output ids. `None` = all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outputs: Option<Vec<OutputId>>,
-    /// Allowed operation families. `None` = all.
+    /// Allowed operation families. `None` = all ordinary operations, but no
+    /// synthetic input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ops: Option<Vec<OpClass>>,
 }
 
 impl Scope {
-    /// The unscoped default: all resources, all operations.
+    /// The unscoped compatibility default. Synthetic input still requires an
+    /// explicit operation allowlist entry.
     pub fn unscoped() -> Self {
         Scope::default()
     }
 
     /// Whether `val` is allowed by the `None`-means-all allowlist.
     fn allows<T: PartialEq + Copy>(opt: &Option<Vec<T>>, val: T) -> bool {
-        opt.as_ref().map_or(true, |v| v.contains(&val))
+        opt.as_ref().is_none_or(|v| v.contains(&val))
     }
 
     /// Whether this scope permits the given command (ADR-0034). Session
@@ -117,15 +131,29 @@ impl Scope {
         if need.session {
             return true;
         }
-        if let Some(ops) = &self.ops {
+        if cmd.required_cap().input {
+            // Input is a high-risk capability with no compatibility caller:
+            // a named scope must opt in explicitly rather than inheriting the
+            // general `None`-means-unrestricted behavior.
+            if !self
+                .ops
+                .as_ref()
+                .is_some_and(|ops| ops.contains(&cmd.op_class()))
+            {
+                return false;
+            }
+        } else if let Some(ops) = &self.ops {
             if !ops.contains(&cmd.op_class()) {
                 return false;
             }
         }
         match cmd {
-            Command::Focus { id } | Command::Close { id } | Command::Move { id } => {
-                Self::allows(&self.windows, *id)
-            }
+            Command::Focus { id }
+            | Command::Minimize { id }
+            | Command::Close { id }
+            | Command::Move { id }
+            | Command::SetWindowGeometry { id, .. }
+            | Command::InjectInput { id, .. } => Self::allows(&self.windows, *id),
             Command::MoveToWorkspace { window, workspace } => {
                 Self::allows(&self.windows, *window) && Self::allows(&self.workspaces, *workspace)
             }
@@ -143,10 +171,23 @@ impl Scope {
 pub enum Command {
     /// Focus (activate) a toplevel by id. `control`.
     Focus { id: WindowId },
+    /// Minimize a toplevel by id while keeping it mapped. `control`.
+    Minimize { id: WindowId },
     /// Close a toplevel by id. `control`.
     Close { id: WindowId },
     /// Begin an interactive move of a toplevel by id. `control`.
     Move { id: WindowId },
+    /// Set a floating toplevel's geometry in compositor logical coordinates.
+    /// The server validates and clamps the requested size to client hints.
+    /// `control`.
+    SetWindowGeometry { id: WindowId, rect: Rect },
+    /// Deliver self-contained input actions in target-window-local logical
+    /// coordinates. Requires the separate `input` capability and a named
+    /// scope that grants both this operation and the target window.
+    InjectInput {
+        id: WindowId,
+        actions: Vec<SyntheticInputAction>,
+    },
     /// Cycle keyboard focus. `forward = true` for next, `false` for previous. `control`.
     Cycle { forward: bool },
     /// Switch to an adjacent workspace on the focused output. `control`.
@@ -179,13 +220,70 @@ impl Command {
             Command::Quit => Capabilities {
                 query: false,
                 control: false,
+                input: false,
                 session: true,
+            },
+            Command::InjectInput { .. } => Capabilities {
+                query: false,
+                control: false,
+                input: true,
+                session: false,
             },
             _ => Capabilities {
                 query: false,
                 control: true,
+                input: false,
                 session: false,
             },
+        }
+    }
+
+    /// Validate transport-level bounds before a command reaches the main
+    /// loop. Resource state (window existence, visibility, and local pointer
+    /// bounds) remains the compositor's responsibility at apply time.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        const MAX_GEOMETRY_EXTENT: i32 = 32_768;
+        const MAX_INPUT_ACTIONS: usize = 64;
+        const MAX_SCROLL_DELTA: f32 = 1_000.0;
+        match self {
+            Command::SetWindowGeometry { rect, .. }
+                if !(1..=MAX_GEOMETRY_EXTENT).contains(&rect.size.w)
+                    || !(1..=MAX_GEOMETRY_EXTENT).contains(&rect.size.h)
+                    || rect.origin.x.checked_add(rect.size.w).is_none()
+                    || rect.origin.y.checked_add(rect.size.h).is_none() =>
+            {
+                Err("window geometry size is out of range")
+            }
+            Command::InjectInput { actions, .. }
+                if actions.is_empty() || actions.len() > MAX_INPUT_ACTIONS =>
+            {
+                Err("input action count is out of range")
+            }
+            Command::InjectInput { actions, .. } => {
+                for action in actions {
+                    match *action {
+                        SyntheticInputAction::Click { button, .. }
+                            if !(0x110..=0x117).contains(&button) =>
+                        {
+                            return Err("input button code is out of range");
+                        }
+                        SyntheticInputAction::Scroll { dx, dy, .. }
+                            if !dx.is_finite()
+                                || !dy.is_finite()
+                                || dx.abs() > MAX_SCROLL_DELTA
+                                || dy.abs() > MAX_SCROLL_DELTA =>
+                        {
+                            return Err("input scroll delta is out of range");
+                        }
+                        SyntheticInputAction::KeyPress { code } if code > 0x2ff => {
+                            return Err("input key code is out of range");
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
         }
     }
 
@@ -194,8 +292,11 @@ impl Command {
     pub fn op_class(&self) -> OpClass {
         match self {
             Command::Focus { .. } => OpClass::Focus,
+            Command::Minimize { .. } => OpClass::Minimize,
             Command::Close { .. } => OpClass::Close,
             Command::Move { .. } => OpClass::Move,
+            Command::SetWindowGeometry { .. } => OpClass::SetWindowGeometry,
+            Command::InjectInput { .. } => OpClass::InjectInput,
             Command::Cycle { .. } => OpClass::Cycle,
             Command::SwitchWorkspace { .. } => OpClass::SwitchWorkspace,
             Command::SwitchWorkspaceTo { .. } => OpClass::SwitchWorkspaceTo,
@@ -317,6 +418,7 @@ mod tests {
             caps: Capabilities {
                 query: true,
                 control: false,
+                input: false,
                 session: true,
             },
             scope: None,
@@ -331,13 +433,24 @@ mod tests {
         let client = Capabilities {
             query: true,
             control: true,
+            input: true,
             session: true,
         };
         let policy = Capabilities::QUERY; // query only
         let granted = policy.intersect(client).with_query_always();
         assert!(granted.query);
         assert!(!granted.control);
+        assert!(!granted.input);
         assert!(!granted.session);
+    }
+
+    #[test]
+    fn capabilities_from_older_v2_peer_default_input_off() {
+        let caps: Capabilities =
+            serde_json::from_str(r#"{"query":true,"control":true,"session":false}"#).unwrap();
+        assert!(caps.query);
+        assert!(caps.control);
+        assert!(!caps.input);
     }
 
     #[test]
@@ -371,11 +484,94 @@ mod tests {
     }
 
     #[test]
+    fn minimize_command_round_trips_and_is_window_scoped() {
+        let cmd = Command::Minimize { id: WindowId(9) };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(json, r#"{"type":"Minimize","id":9}"#);
+        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
+
+        let scope = Scope {
+            windows: Some(vec![WindowId(9)]),
+            ops: Some(vec![OpClass::Minimize]),
+            ..Scope::default()
+        };
+        assert!(scope.permits(&cmd));
+        assert!(!scope.permits(&Command::Minimize { id: WindowId(10) }));
+    }
+
+    #[test]
+    fn geometry_command_is_control_scoped_and_validated() {
+        let cmd = Command::SetWindowGeometry {
+            id: WindowId(9),
+            rect: Rect::new(10, 20, 800, 600),
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
+        assert!(cmd.required_cap().control);
+        assert!(cmd.validate().is_ok());
+        assert!(Command::SetWindowGeometry {
+            id: WindowId(9),
+            rect: Rect::new(0, 0, 0, 600),
+        }
+        .validate()
+        .is_err());
+
+        let scope = Scope {
+            windows: Some(vec![WindowId(9)]),
+            ops: Some(vec![OpClass::SetWindowGeometry]),
+            ..Scope::default()
+        };
+        assert!(scope.permits(&cmd));
+    }
+
+    #[test]
+    fn synthetic_input_is_separately_capability_and_window_scoped() {
+        let cmd = Command::InjectInput {
+            id: WindowId(9),
+            actions: vec![SyntheticInputAction::Click {
+                position: ass_core::Point { x: 20, y: 30 },
+                button: 0x110,
+            }],
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
+        let cap = cmd.required_cap();
+        assert!(cap.input);
+        assert!(!cap.control);
+        assert!(cmd.validate().is_ok());
+
+        let scope = Scope {
+            windows: Some(vec![WindowId(9)]),
+            ops: Some(vec![OpClass::InjectInput]),
+            ..Scope::default()
+        };
+        assert!(scope.permits(&cmd));
+        assert!(!scope.permits(&Command::InjectInput {
+            id: WindowId(10),
+            actions: vec![SyntheticInputAction::KeyPress { code: 30 }],
+        }));
+        assert!(Command::InjectInput {
+            id: WindowId(9),
+            actions: vec![],
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
     fn required_cap_separates_control_and_session() {
         assert!(Command::Focus { id: WindowId(1) }.required_cap().control);
         assert!(Command::Cycle { forward: true }.required_cap().control);
         assert!(Command::Quit.required_cap().session);
         assert!(!Command::Quit.required_cap().control);
+        assert!(
+            Command::InjectInput {
+                id: WindowId(1),
+                actions: vec![SyntheticInputAction::KeyPress { code: 30 }],
+            }
+            .required_cap()
+            .input
+        );
     }
 
     #[test]
@@ -439,6 +635,10 @@ mod tests {
         assert!(s.permits(&Command::Focus { id: WindowId(1) }));
         assert!(s.permits(&Command::Close { id: WindowId(99) }));
         assert!(s.permits(&Command::Quit));
+        assert!(!s.permits(&Command::InjectInput {
+            id: WindowId(1),
+            actions: vec![SyntheticInputAction::KeyPress { code: 30 }],
+        }));
     }
 
     #[test]

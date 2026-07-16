@@ -4,7 +4,7 @@
 //! `ass-shell` owns one of these and delegates key handling and rendering to
 //! it; this module is unit-tested in isolation. See ADR-0022.
 
-use crate::app::Entry;
+use crate::app::{ApplicationTarget, BuiltInApplication, Entry};
 use crate::input::KeyAction;
 
 /// What the launcher asked the main loop to do when the user activates a row.
@@ -19,6 +19,9 @@ pub enum Launch {
     /// entry's `StartupWMClass` (or its desktop id). Carries the surface id
     /// to feed `Server::focus_surface_by_id`.
     Focus(crate::window::WindowId),
+    /// Present a trusted compositor-owned application without spawning a
+    /// process or requiring a Wayland client round-trip.
+    BuiltIn(BuiltInApplication),
 }
 
 /// The launcher's interaction state.
@@ -233,9 +236,30 @@ impl Launcher {
         self.surface_if_running(app_idx).is_some()
     }
 
+    /// All running toplevels matching one application entry, in the order
+    /// supplied by the shell. Context menus use the complete set instead of
+    /// silently applying an application-level action to the first window.
+    pub fn running_surfaces(&self, app_idx: usize) -> Vec<crate::window::WindowId> {
+        let e = &self.apps[app_idx];
+        let id_stem = e.id.trim_end_matches(".desktop");
+        self.running
+            .iter()
+            .filter_map(|(app_id, sid)| {
+                let wm_matches = e
+                    .startup_wm_class
+                    .as_deref()
+                    .is_some_and(|wm| wm.eq_ignore_ascii_case(app_id));
+                (wm_matches || id_stem.eq_ignore_ascii_case(app_id)).then_some(*sid)
+            })
+            .collect()
+    }
+
     /// Decide what activating `app_idx` should do: focus a matching running
     /// instance, or spawn a fresh one.
     fn launch_outcome(&self, app_idx: usize) -> Launch {
+        if let ApplicationTarget::BuiltIn(app) = self.apps[app_idx].target {
+            return Launch::BuiltIn(app);
+        }
         match self.surface_if_running(app_idx) {
             Some(sid) => Launch::Focus(sid),
             None => Launch::Spawn(Box::new(self.apps[app_idx].clone())),
@@ -248,19 +272,10 @@ impl Launcher {
     /// id with its `.desktop` suffix stripped (case-insensitive, mirroring
     /// how most toolkits derive `app_id` from the desktop file name).
     fn surface_if_running(&self, app_idx: usize) -> Option<crate::window::WindowId> {
-        let e = &self.apps[app_idx];
-        let id_stem = e.id.trim_end_matches(".desktop");
-        for (app_id, sid) in &self.running {
-            if let Some(wm) = e.startup_wm_class.as_deref() {
-                if wm == app_id.as_str() {
-                    return Some(*sid);
-                }
-            }
-            if id_stem.eq_ignore_ascii_case(app_id.as_str()) {
-                return Some(*sid);
-            }
+        if matches!(self.apps[app_idx].target, ApplicationTarget::BuiltIn(_)) {
+            return None;
         }
-        None
+        self.running_surfaces(app_idx).into_iter().next()
     }
 
     fn move_selection(&mut self, delta: i32) {
@@ -339,6 +354,20 @@ mod tests {
         assert!(l.handle(KeyAction::Char('x')).is_none());
         assert!(l.query().is_empty());
         assert!(!l.is_open());
+    }
+
+    #[test]
+    fn builtin_entry_opens_without_spawning() {
+        let mut launcher = Launcher::new(vec![Entry::control_center(
+            "Control Center",
+            "System controls",
+        )]);
+        launcher.open();
+        assert!(matches!(
+            launcher.handle(KeyAction::Enter),
+            Some(Launch::BuiltIn(BuiltInApplication::ControlCenter))
+        ));
+        assert!(!launcher.is_open());
     }
 
     #[test]
@@ -554,6 +583,23 @@ mod tests {
             other => panic!("expected Focus, got {other:?}"),
         }
         assert!(!l.is_open());
+    }
+
+    #[test]
+    fn running_surfaces_returns_every_matching_window_in_snapshot_order() {
+        let mut firefox = entry("org.mozilla.firefox.desktop", "Firefox");
+        firefox.startup_wm_class = Some("Firefox".into());
+        let mut l = Launcher::new(vec![firefox]);
+        l.set_running(vec![
+            ("firefox".into(), crate::window::WindowId(8)),
+            ("FIREFOX".into(), crate::window::WindowId(3)),
+            ("other".into(), crate::window::WindowId(1)),
+        ]);
+
+        assert_eq!(
+            l.running_surfaces(0),
+            vec![crate::window::WindowId(8), crate::window::WindowId(3)]
+        );
     }
 
     #[test]

@@ -11,9 +11,32 @@
 
 use std::path::PathBuf;
 
+/// A compositor-owned application that is part of the desktop itself rather
+/// than an external process described by a desktop entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltInApplication {
+    /// System controls for audio, displays, radios, notifications, and the
+    /// current desktop session.
+    ControlCenter,
+}
+
+/// How activating an application entry is fulfilled.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ApplicationTarget {
+    /// Expand `Exec` and spawn an external process through `ass-launch`.
+    #[default]
+    External,
+    /// Ask the compositor to present one of its trusted, built-in apps.
+    BuiltIn(BuiltInApplication),
+}
+
 /// One launchable application, parsed from a `.desktop` entry.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Entry {
+    /// Whether activation spawns an external process or opens a trusted
+    /// compositor-owned application. XDG-discovered entries use `External`;
+    /// the binary adds built-ins to the same catalog explicitly.
+    pub target: ApplicationTarget,
     /// The desktop file id: the entry's filename relative to an
     /// `applications/` directory (e.g. `firefox.desktop`). Case-sensitive;
     /// used as the deduplication key during enumeration.
@@ -65,5 +88,45 @@ impl Entry {
             .as_deref()
             .or(self.comment.as_deref())
             .unwrap_or("")
+    }
+
+    /// Construct the stable catalog entry for the compositor's control
+    /// center. The caller supplies localized presentation strings while the
+    /// application identity and activation target remain locale-independent.
+    pub fn control_center(name: impl Into<String>, summary: impl Into<String>) -> Entry {
+        Entry {
+            target: ApplicationTarget::BuiltIn(BuiltInApplication::ControlCenter),
+            id: "ass-control-center.desktop".into(),
+            name: name.into(),
+            generic_name: Some(summary.into()),
+            comment: Some("Audio, display, connectivity, and session controls".into()),
+            icon: Some("preferences-system-symbolic".into()),
+            categories: vec!["Settings".into(), "System".into()],
+            keywords: vec![
+                "settings".into(),
+                "system".into(),
+                "audio".into(),
+                "brightness".into(),
+                "wifi".into(),
+                "bluetooth".into(),
+            ],
+            ..Entry::default()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_center_has_a_stable_builtin_identity() {
+        let entry = Entry::control_center("Control Center", "System controls");
+        assert_eq!(entry.id, "ass-control-center.desktop");
+        assert_eq!(
+            entry.target,
+            ApplicationTarget::BuiltIn(BuiltInApplication::ControlCenter)
+        );
+        assert!(entry.exec.is_none());
     }
 }

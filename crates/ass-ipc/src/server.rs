@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -85,8 +86,34 @@ impl Server {
     /// bind happens synchronously before the accept thread spawns, so a
     /// caller connecting immediately after `start` returns does not race.
     pub fn start<H: Handler + 'static>(path: &Path, handler: Arc<H>) -> io::Result<Server> {
-        let _ = std::fs::remove_file(path); // stale socket from a crashed run
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_socket() => match UnixStream::connect(path) {
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AddrInUse,
+                        format!("IPC socket {} is already serving", path.display()),
+                    ));
+                }
+                Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+                    std::fs::remove_file(path)?;
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            },
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("refusing to replace non-socket path {}", path.display()),
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
         let listener = UnixListener::bind(path)?;
+        if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+            let _ = std::fs::remove_file(path);
+            return Err(error);
+        }
         let socket = path.to_path_buf();
         let subs = Arc::new(Mutex::new(HashMap::new()));
         let journal_subs = Arc::new(Mutex::new(HashMap::new()));
@@ -94,7 +121,7 @@ impl Server {
         let subs_for_accept = Arc::clone(&subs);
         let journal_subs_for_accept = Arc::clone(&journal_subs);
         let next_for_accept = Arc::clone(&next_sub);
-        let accept = thread::Builder::new()
+        let accept = match thread::Builder::new()
             .name("ass-ipc-accept".into())
             .spawn(move || {
                 accept_loop(
@@ -104,7 +131,13 @@ impl Server {
                     journal_subs_for_accept,
                     next_for_accept,
                 )
-            })?;
+            }) {
+            Ok(accept) => accept,
+            Err(error) => {
+                let _ = std::fs::remove_file(path);
+                return Err(error);
+            }
+        };
         Ok(Server {
             _accept: accept,
             socket,
@@ -137,7 +170,11 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.socket);
+        if std::fs::symlink_metadata(&self.socket)
+            .is_ok_and(|metadata| metadata.file_type().is_socket())
+        {
+            let _ = std::fs::remove_file(&self.socket);
+        }
     }
 }
 
@@ -225,7 +262,7 @@ fn drive_read_loop<H: Handler>(
     journal_subs: &Mutex<HashMap<SubId, Sender<Outbound>>>,
     next_sub: &AtomicU64,
 ) -> (Option<SubId>, Option<SubId>) {
-    let (granted, granted_scope) = match read_msg::<_, Request>(read) {
+    let (granted, granted_scope, scope_name) = match read_msg::<_, Request>(read) {
         Ok(Request::Hello {
             version,
             caps,
@@ -239,12 +276,27 @@ fn drive_read_loop<H: Handler>(
                 }));
                 return (None, None);
             }
-            let gc = handler.policy_caps().intersect(caps).with_query_always();
-            let gs = scope
-                .as_deref()
-                .and_then(|name| handler.resolve_scope(name))
-                .unwrap_or_else(Scope::unscoped);
-            (gc, gs)
+            let mut gc = handler.policy_caps().intersect(caps).with_query_always();
+            // Synthetic input is intentionally unavailable to unscoped
+            // compatibility clients. A caller must name a compositor-owned
+            // scope so every injected action has a revocable resource and
+            // operation bound (ADR-0035).
+            if scope.is_none() {
+                gc.input = false;
+            }
+            let gs = match scope.as_deref() {
+                Some(name) => match handler.resolve_scope(name) {
+                    Some(scope) => scope,
+                    None => {
+                        let _ = tx.send(Outbound::Response(Response::Error {
+                            message: format!("unknown scope '{name}'"),
+                        }));
+                        return (None, None);
+                    }
+                },
+                None => Scope::unscoped(),
+            };
+            (gc, gs, scope)
         }
         Ok(_) => {
             let _ = tx.send(Outbound::Response(Response::Error {
@@ -267,11 +319,7 @@ fn drive_read_loop<H: Handler>(
 
     let mut sub_id: Option<SubId> = None;
     let mut journal_sub_id: Option<SubId> = None;
-    loop {
-        let req = match read_msg::<_, Request>(read) {
-            Ok(r) => r,
-            Err(_) => break,
-        };
+    while let Ok(req) = read_msg::<_, Request>(read) {
         let resp = match req {
             Request::Hello { .. } => Response::Error {
                 message: "Hello already exchanged".into(),
@@ -333,15 +381,28 @@ fn drive_read_loop<H: Handler>(
             }
             Request::Do { cmd } => {
                 let need = cmd.required_cap();
-                let allowed =
-                    (need.control && granted.control) || (need.session && granted.session);
+                let allowed = (need.control && granted.control)
+                    || (need.input && granted.input)
+                    || (need.session && granted.session);
                 if !allowed {
                     Response::Error {
                         message: "command requires a capability not granted".into(),
                     }
-                } else if !granted_scope.permits(&cmd) {
+                } else if !scope_name
+                    .as_deref()
+                    .map(|name| {
+                        handler
+                            .resolve_scope(name)
+                            .is_some_and(|scope| scope.permits(&cmd))
+                    })
+                    .unwrap_or_else(|| granted_scope.permits(&cmd))
+                {
                     Response::Error {
                         message: "out of scope".into(),
+                    }
+                } else if let Err(message) = cmd.validate() {
+                    Response::Error {
+                        message: message.into(),
                     }
                 } else {
                     handler.command(cmd);

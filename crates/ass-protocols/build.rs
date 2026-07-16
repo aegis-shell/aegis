@@ -28,8 +28,14 @@ fn main() {
         ("stable/tablet", "tablet-v2"),
         // unstable
         ("unstable/xdg-output", "xdg-output-unstable-v1"),
+        ("unstable/xdg-decoration", "xdg-decoration-unstable-v1"),
         ("unstable/idle-inhibit", "idle-inhibit-unstable-v1"),
         ("unstable/relative-pointer", "relative-pointer-unstable-v1"),
+        ("unstable/pointer-gestures", "pointer-gestures-unstable-v1"),
+        (
+            "unstable/keyboard-shortcuts-inhibit",
+            "keyboard-shortcuts-inhibit-unstable-v1",
+        ),
         (
             "unstable/pointer-constraints",
             "pointer-constraints-unstable-v1",
@@ -49,6 +55,7 @@ fn main() {
         ),
         ("staging/ext-data-control", "ext-data-control-v1"),
         ("staging/cursor-shape", "cursor-shape-v1"),
+        ("staging/xdg-activation", "xdg-activation-v1"),
     ];
 
     let mut build = cc::Build::new();

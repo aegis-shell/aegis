@@ -69,6 +69,116 @@ pub enum InputEvent {
     Key { code: u32, state: ButtonState },
 }
 
+/// One self-contained input action requested by a trusted automation client.
+///
+/// Unlike [`InputEvent`], these actions cannot leave a button or key held
+/// across IPC requests: clicks and key presses always synthesize their paired
+/// release. Pointer coordinates are local to the target toplevel, which lets
+/// the compositor validate the complete action before converting it to global
+/// logical coordinates.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", serde(tag = "type"))]
+pub enum SyntheticInputAction {
+    /// Move the logical pointer within the target toplevel.
+    PointerMove { position: crate::Point },
+    /// Move to `position`, then press and release one Linux `BTN_*` code.
+    Click { position: crate::Point, button: u32 },
+    /// Move to `position`, then deliver a smooth scroll delta.
+    Scroll {
+        position: crate::Point,
+        dx: f32,
+        dy: f32,
+    },
+    /// Press and release one Linux evdev key code against the target toplevel.
+    KeyPress { code: u32 },
+}
+
+impl SyntheticInputAction {
+    /// Target-local pointer position used by this action, if it has one.
+    pub fn pointer_position(self) -> Option<crate::Point> {
+        match self {
+            Self::PointerMove { position }
+            | Self::Click { position, .. }
+            | Self::Scroll { position, .. } => Some(position),
+            Self::KeyPress { .. } => None,
+        }
+    }
+}
+
+/// Complete text-input state committed by an inner Wayland client. A nested
+/// backend forwards this to the host compositor's `zwp_text_input_v3` object
+/// so the host IME sees the same editor context as the focused inner client.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TextInputState {
+    pub enabled: bool,
+    pub surrounding_text: Option<String>,
+    pub cursor: i32,
+    pub anchor: i32,
+    pub change_cause: u32,
+    pub content_hint: u32,
+    pub content_purpose: u32,
+    pub cursor_rect: Option<(i32, i32, i32, i32)>,
+}
+
+/// Text produced by the host compositor's input method and routed back to the
+/// enabled inner `zwp_text_input_v3` object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextInputEvent {
+    Preedit {
+        text: Option<String>,
+        cursor_begin: i32,
+        cursor_end: i32,
+    },
+    Commit(Option<String>),
+    DeleteSurrounding {
+        before_length: u32,
+        after_length: u32,
+    },
+    Done,
+}
+
+/// High-level touchpad gestures forwarded from the nested host compositor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PointerGestureEvent {
+    SwipeBegin {
+        time: u32,
+        fingers: u32,
+    },
+    SwipeUpdate {
+        time: u32,
+        dx: f32,
+        dy: f32,
+    },
+    SwipeEnd {
+        time: u32,
+        cancelled: bool,
+    },
+    PinchBegin {
+        time: u32,
+        fingers: u32,
+    },
+    PinchUpdate {
+        time: u32,
+        dx: f32,
+        dy: f32,
+        scale: f32,
+        rotation: f32,
+    },
+    PinchEnd {
+        time: u32,
+        cancelled: bool,
+    },
+    HoldBegin {
+        time: u32,
+        fingers: u32,
+    },
+    HoldEnd {
+        time: u32,
+        cancelled: bool,
+    },
+}
+
 // XKB keysym values for the few control keys the compositor chrome cares
 // about. These are stable, public constants from X11/keysymdef.h; defining
 // them here keeps `ass-core` free of an `xkbcommon` dependency while letting
@@ -277,6 +387,16 @@ impl TapDetector {
         false
     }
 
+    /// Mark the currently-held target as having been used for a non-keyboard
+    /// gesture (for example, Super+pointer drag). The held-key depth remains
+    /// intact so its eventual release is consumed normally, but it will not
+    /// be reported as a clean tap.
+    pub fn cancel_current(&mut self) {
+        if self.depth > 0 {
+            self.clean = false;
+        }
+    }
+
     /// Reset internal state (e.g. on focus change).
     pub fn reset(&mut self) {
         self.depth = 0;
@@ -403,5 +523,13 @@ mod tests {
         d.on_key(super::KEY_LEFTMETA, true);
         d.on_key(30, false); // release of an unpressed key — no-op, clean stays
         assert!(d.on_key(super::KEY_LEFTMETA, false));
+    }
+
+    #[test]
+    fn tap_detector_pointer_gesture_cancels_current_tap() {
+        let mut d = super::TapDetector::super_tap();
+        assert!(!d.on_key(super::KEY_LEFTMETA, true));
+        d.cancel_current();
+        assert!(!d.on_key(super::KEY_LEFTMETA, false));
     }
 }

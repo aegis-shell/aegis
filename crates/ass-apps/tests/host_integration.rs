@@ -7,7 +7,8 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 fn have_system_apps() -> bool {
-    PathBuf::from("/usr/share/applications").is_dir()
+    xdg_data_dirs().contains(&PathBuf::from("/usr/share"))
+        && PathBuf::from("/usr/share/applications").is_dir()
 }
 
 #[test]
@@ -108,10 +109,49 @@ fn icon_resolution_picks_closest_size() {
 #[test]
 fn data_dirs_precedence_keeps_user_first() {
     let dirs = xdg_data_dirs();
-    // System dirs always present.
-    assert!(dirs.contains(&PathBuf::from("/usr/share")));
-    // No empty components leak through.
-    assert!(dirs.iter().all(|d| !d.as_os_str().is_empty()));
+    assert!(dirs.iter().all(|dir| dir.is_absolute()));
+    let unique: HashSet<&PathBuf> = dirs.iter().collect();
+    assert_eq!(unique.len(), dirs.len(), "duplicate XDG data dirs present");
+}
+
+#[test]
+fn exported_flatpak_desktop_symlinks_are_discoverable() {
+    let apps = ass_apps::enumerate();
+    for root in xdg_data_dirs() {
+        if !root.to_string_lossy().contains("flatpak/exports/share") {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(root.join("applications")) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !entry
+                .file_type()
+                .map(|kind| kind.is_symlink())
+                .unwrap_or(false)
+                || path.extension().and_then(|ext| ext.to_str()) != Some("desktop")
+            {
+                continue;
+            }
+            let Some(id) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            // Visibility rules can legitimately exclude an export. The first
+            // entry parse_str considers visible must also appear in the full
+            // XDG scan under the symlink's exported desktop id.
+            if ass_apps::parse_str(&text, id).ok().flatten().is_some() {
+                assert!(
+                    apps.iter().any(|app| app.id == id),
+                    "visible Flatpak export {path:?} was not enumerated"
+                );
+                return;
+            }
+        }
+    }
 }
 
 #[test]

@@ -10,40 +10,60 @@ use std::path::Path;
 
 use crate::codec::{read_msg, write_msg};
 use crate::journal::JournalSnapshot;
-use crate::schema::{Capabilities, Command, Event, Request, Response, PROTOCOL_VERSION};
+use crate::schema::{Capabilities, Command, Event, Request, Response, Scope, PROTOCOL_VERSION};
 
 /// A connected IPC client. The handshake is complete on construction; the
 /// granted capabilities are available via [`Client::caps`].
 pub struct Client {
     stream: UnixStream,
     caps: Capabilities,
+    scope: Scope,
 }
 
 impl Client {
     /// Connect requesting `query` only.
     pub fn connect(path: &Path) -> io::Result<Client> {
-        Self::connect_with(path, Capabilities::QUERY)
+        Self::connect_inner(path, Capabilities::QUERY, None)
     }
 
     /// Connect requesting a specific capability set. The server may grant a
     /// subset (intersected with its policy, with `query` forced on).
     pub fn connect_with(path: &Path, requested: Capabilities) -> io::Result<Client> {
+        Self::connect_inner(path, requested, None)
+    }
+
+    /// Connect requesting capabilities under a named, compositor-configured
+    /// scope. An unknown scope is refused during the handshake instead of
+    /// silently granting an unrestricted connection.
+    pub fn connect_scoped(
+        path: &Path,
+        requested: Capabilities,
+        scope: impl Into<String>,
+    ) -> io::Result<Client> {
+        Self::connect_inner(path, requested, Some(scope.into()))
+    }
+
+    fn connect_inner(
+        path: &Path,
+        requested: Capabilities,
+        scope_name: Option<String>,
+    ) -> io::Result<Client> {
         let mut stream = UnixStream::connect(path)?;
         write_msg(
             &mut stream,
             &Request::Hello {
                 version: PROTOCOL_VERSION,
                 caps: requested,
-                scope: None,
+                scope: scope_name,
             },
         )?;
         let resp: Response = read_msg(&mut stream)?;
-        let caps = match resp {
+        let (caps, scope) = match resp {
             Response::Hello {
                 version,
                 caps,
-                scope: _,
-            } if version == PROTOCOL_VERSION => caps,
+                scope,
+            } if version == PROTOCOL_VERSION => (caps, scope),
             Response::Error { message } => {
                 return Err(io::Error::new(io::ErrorKind::ConnectionRefused, message));
             }
@@ -54,12 +74,21 @@ impl Client {
                 ));
             }
         };
-        Ok(Client { stream, caps })
+        Ok(Client {
+            stream,
+            caps,
+            scope,
+        })
     }
 
     /// The capabilities the server actually granted at the handshake.
     pub fn caps(&self) -> Capabilities {
         self.caps
+    }
+
+    /// The resource/operation scope granted by the compositor at handshake.
+    pub fn scope(&self) -> &Scope {
+        &self.scope
     }
 
     /// Fetch the live toplevel snapshot.
@@ -101,6 +130,25 @@ impl Client {
     /// Toggle the current workspace between tiled and floating (ADR-0024).
     pub fn toggle_tiling(&mut self) -> io::Result<()> {
         self.command(Command::ToggleTiling)
+    }
+
+    /// Set a floating toplevel's geometry in compositor logical coordinates.
+    pub fn set_window_geometry(
+        &mut self,
+        id: ass_core::window::WindowId,
+        rect: ass_core::Rect,
+    ) -> io::Result<()> {
+        self.command(Command::SetWindowGeometry { id, rect })
+    }
+
+    /// Inject bounded, target-local actions into a toplevel. The connection
+    /// must have negotiated the `input` capability under a named scope.
+    pub fn inject_input(
+        &mut self,
+        id: ass_core::window::WindowId,
+        actions: Vec<ass_core::input::SyntheticInputAction>,
+    ) -> io::Result<()> {
+        self.command(Command::InjectInput { id, actions })
     }
 
     /// Post a notification.

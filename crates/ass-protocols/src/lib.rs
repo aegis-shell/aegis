@@ -73,6 +73,10 @@ extern "C" {
     pub static zxdg_output_manager_v1_interface: wl_interface;
     pub static zxdg_output_v1_interface: wl_interface;
 
+    // xdg-decoration-unstable-v1
+    pub static zxdg_decoration_manager_v1_interface: wl_interface;
+    pub static zxdg_toplevel_decoration_v1_interface: wl_interface;
+
     // idle-inhibit-unstable-v1
     pub static zwp_idle_inhibit_manager_v1_interface: wl_interface;
     pub static zwp_idle_inhibitor_v1_interface: wl_interface;
@@ -80,6 +84,16 @@ extern "C" {
     // relative-pointer-unstable-v1
     pub static zwp_relative_pointer_manager_v1_interface: wl_interface;
     pub static zwp_relative_pointer_v1_interface: wl_interface;
+
+    // pointer-gestures-unstable-v1
+    pub static zwp_pointer_gestures_v1_interface: wl_interface;
+    pub static zwp_pointer_gesture_swipe_v1_interface: wl_interface;
+    pub static zwp_pointer_gesture_pinch_v1_interface: wl_interface;
+    pub static zwp_pointer_gesture_hold_v1_interface: wl_interface;
+
+    // keyboard-shortcuts-inhibit-unstable-v1
+    pub static zwp_keyboard_shortcuts_inhibit_manager_v1_interface: wl_interface;
+    pub static zwp_keyboard_shortcuts_inhibitor_v1_interface: wl_interface;
 
     // pointer-constraints-unstable-v1
     pub static zwp_pointer_constraints_v1_interface: wl_interface;
@@ -122,4 +136,8 @@ extern "C" {
     // cursor-shape-v1
     pub static wp_cursor_shape_manager_v1_interface: wl_interface;
     pub static wp_cursor_shape_device_v1_interface: wl_interface;
+
+    // xdg-activation-v1
+    pub static xdg_activation_v1_interface: wl_interface;
+    pub static xdg_activation_token_v1_interface: wl_interface;
 }

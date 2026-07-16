@@ -246,6 +246,8 @@ fn draw_client_scene(
     let sub_shm_above = server.subsurface_frames_above();
     let sub_dmabuf_below = server.subsurface_dmabuf_frames_below();
     let sub_dmabuf_above = server.subsurface_dmabuf_frames_above();
+    let overlay_shm = server.overlay_frames();
+    let overlay_dmabuf = server.overlay_dmabuf_frames();
     renderer.gc(shm
         .iter()
         .map(|frame| frame.id)
@@ -253,18 +255,28 @@ fn draw_client_scene(
         .chain(sub_shm_below.iter().map(|frame| frame.id))
         .chain(sub_shm_above.iter().map(|frame| frame.id))
         .chain(sub_dmabuf_below.iter().map(|frame| frame.id))
-        .chain(sub_dmabuf_above.iter().map(|frame| frame.id)));
+        .chain(sub_dmabuf_above.iter().map(|frame| frame.id))
+        .chain(overlay_shm.iter().map(|frame| frame.id))
+        .chain(overlay_dmabuf.iter().map(|frame| frame.id)));
     renderer.draw_subsurfaces(device, canvas, &sub_shm_below);
     renderer.draw_dmabuf_subsurfaces(device, canvas, &sub_dmabuf_below);
     renderer.draw_toplevels(device, canvas, &shm, (0.0, 0.0));
     renderer.draw_dmabuf_toplevels(device, canvas, &dmabuf, (0.0, 0.0));
     renderer.draw_subsurfaces(device, canvas, &sub_shm_above);
     renderer.draw_dmabuf_subsurfaces(device, canvas, &sub_dmabuf_above);
+    renderer.draw_toplevels(device, canvas, &overlay_shm, (0.0, 0.0));
+    renderer.draw_dmabuf_toplevels(device, canvas, &overlay_dmabuf, (0.0, 0.0));
     canvas.restore();
 }
 
 /// Direct swapchain composition. A model wallpaper inserts one depth-tested
 /// pass between the 2D background and client canvas draws.
+#[derive(Clone, Copy)]
+struct RenderGeometry {
+    logical_size: (u32, u32),
+    scale: f32,
+}
+
 fn draw_direct_desktop_scene(
     canvas: &flux::Canvas,
     device: &flux::Device,
@@ -272,9 +284,12 @@ fn draw_direct_desktop_scene(
     wallpaper: &mut Option<ass_wallpaper::Wallpaper>,
     renderer: &mut ass_render::Renderer,
     server: &ass_server::Server,
-    logical_size: (u32, u32),
-    scale: f32,
+    geometry: RenderGeometry,
 ) -> Result<(), flux::Error> {
+    let RenderGeometry {
+        logical_size,
+        scale,
+    } = geometry;
     draw_wallpaper_background(canvas, device, wallpaper, logical_size, scale);
     if wallpaper
         .as_ref()
@@ -290,7 +305,7 @@ fn draw_direct_desktop_scene(
     Ok(())
 }
 
-/// Dispatch a [`Command`] to the server and side-effect targets. Extracted
+/// Dispatch an [`ass_ipc::Command`] to the server and side-effect targets. Extracted
 /// from the three mutation sources (IPC, keybindings, chrome) so the journal
 /// chokepoint (ADR-0033) sees every mutation through one path.
 fn apply_command(
@@ -304,8 +319,17 @@ fn apply_command(
     use ass_ipc::Command;
     match cmd {
         Command::Focus { id } => server.focus_surface_by_id(*id),
+        Command::Minimize { id } => server.minimize_toplevel(*id),
         Command::Close { id } => server.close_toplevel(*id),
         Command::Move { id } => server.start_interactive_move(*id),
+        Command::SetWindowGeometry { id, rect } => {
+            server.set_window_geometry(*id, *rect);
+        }
+        Command::InjectInput { .. } => {
+            // Synthetic input needs shell-occlusion validation and is handled
+            // beside the physical-input router in the main loop.
+            debug_assert!(false, "InjectInput reached the generic command path");
+        }
         Command::Cycle { forward } => server.cycle_focus(*forward),
         Command::SwitchWorkspace { dir } => server.switch_workspace(*dir),
         Command::SwitchWorkspaceTo { id } => server.switch_workspace_to(*id),
@@ -344,10 +368,112 @@ fn journal_and_broadcast(
     origin: ass_ipc::Origin,
     cmd: ass_ipc::Command,
 ) {
+    journal_effect_and_broadcast(
+        journal,
+        ipc,
+        ts_mono_ms,
+        origin,
+        cmd,
+        ass_ipc::Effect::Applied,
+    );
+}
+
+fn journal_effect_and_broadcast(
+    journal: &std::sync::Arc<std::sync::Mutex<ass_ipc::Journal>>,
+    ipc: &Option<ass_ipc::Server>,
+    ts_mono_ms: u64,
+    origin: ass_ipc::Origin,
+    cmd: ass_ipc::Command,
+    effect: ass_ipc::Effect,
+) {
     let mut j = journal.lock().unwrap();
-    let entry = j.append(ts_mono_ms, origin, cmd, ass_ipc::Effect::Applied);
+    let entry = j.append(ts_mono_ms, origin, cmd, effect);
     if let Some(s) = ipc.as_ref() {
         s.broadcast_journal(entry.clone());
+    }
+}
+
+/// Apply one trusted Control Center mutation. Compositor-native layout changes
+/// return an IPC command so they pass through the journal chokepoint; host
+/// hardware controls are dispatched through their standard Linux tools.
+fn apply_system_action(
+    server: &mut ass_server::Server,
+    notifications: &std::sync::Arc<std::sync::Mutex<ass_core::notify::NotificationQueue>>,
+    status: &mut ass_shell::SystemStatus,
+    action: ass_shell::SystemAction,
+) -> Option<ass_ipc::Command> {
+    use ass_shell::SystemAction;
+
+    match action {
+        SystemAction::ToggleMute => {
+            spawn_host_command("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]);
+            status.muted = !status.muted;
+        }
+        SystemAction::StepVolume(delta) => {
+            let amount = format!(
+                "{}%{}",
+                delta.unsigned_abs(),
+                if delta >= 0 { "+" } else { "-" }
+            );
+            spawn_host_command(
+                "wpctl",
+                &["set-volume", "@DEFAULT_AUDIO_SINK@", &amount, "-l", "1.0"],
+            );
+            let current = status.volume.unwrap_or(0) as i16;
+            status.volume = Some((current + i16::from(delta)).clamp(0, 100) as u8);
+        }
+        SystemAction::SetVolume(level) => {
+            let level = level.min(100);
+            let amount = format!("{level}%");
+            spawn_host_command(
+                "wpctl",
+                &["set-volume", "@DEFAULT_AUDIO_SINK@", &amount, "-l", "1.0"],
+            );
+            status.volume = Some(level);
+        }
+        SystemAction::SetBrightness(level) => {
+            let level = level.clamp(1, 100);
+            let amount = format!("{level}%");
+            spawn_host_command("brightnessctl", &["--class=backlight", "set", &amount]);
+            status.brightness = Some(level);
+        }
+        SystemAction::SetWifi(enabled) => {
+            spawn_host_command(
+                "nmcli",
+                &["radio", "wifi", if enabled { "on" } else { "off" }],
+            );
+            status.wifi_enabled = Some(enabled);
+        }
+        SystemAction::SetBluetooth(enabled) => {
+            spawn_host_command(
+                "rfkill",
+                &[if enabled { "unblock" } else { "block" }, "bluetooth"],
+            );
+            status.bluetooth_enabled = Some(enabled);
+        }
+        SystemAction::SetDoNotDisturb(enabled) => {
+            notifications.lock().unwrap().set_do_not_disturb(enabled);
+            status.do_not_disturb = enabled;
+        }
+        SystemAction::SetTiling(enabled) => {
+            status.tiled = enabled;
+            if server.tiling() != enabled {
+                return Some(ass_ipc::Command::ToggleTiling);
+            }
+        }
+    }
+    None
+}
+
+fn spawn_host_command(program: &str, args: &[&str]) {
+    let result = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if let Err(error) = result {
+        log::warn!("control center: failed to start {program}: {error}");
     }
 }
 
@@ -408,10 +534,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Enumerate launchable `.desktop` entries at startup; the catalog is
     // rescanned periodically below so package installs/removals appear without
     // restarting the compositor.
-    let mut launcher_apps = ass_apps::enumerate();
+    let mut icon_theme = selected_icon_theme();
+    let mut icon_scale = host.scale().ceil().max(1.0) as u32;
+    let mut launcher_apps = application_catalog(&icon_theme, icon_scale);
     log::info!(
-        "launcher: {} launchable applications discovered",
-        launcher_apps.len()
+        "launcher: {} launchable applications discovered (icon theme: {})",
+        launcher_apps.len(),
+        icon_theme
     );
     // Decode each app entry's raster icon into a flux texture once, keyed by
     // every app_id the entry might run as (StartupWMClass, desktop-id stem,
@@ -419,7 +548,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // SVG icons are rasterized through the host's standard rsvg-convert when
     // available. The cache owns the GPU textures and must outlive the shell,
     // so it is declared before it.
-    let mut icon_cache = build_icon_cache(&device, &launcher_apps);
+    let mut icon_cache = build_icon_cache(&device, &launcher_apps, &icon_theme, icon_scale);
+    let mut icon_snapshot = snapshot_icons(&launcher_apps);
 
     // Compositor chrome, bound to the same device. The core host ships with
     // no chrome of its own; compose it from the components the binary wants.
@@ -427,7 +557,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Window decorations are intentionally not registered: windows are
     // borderless (macOS-style), managed through the dock, tiling, and key
     // bindings rather than per-window title bars.
-    shell.add(Box::new(ass_shell::WorkspaceBar::new()));
+    shell.add(Box::new(ass_shell::HudBar::with_notifications(
+        std::sync::Arc::clone(&notif_queue),
+        icon_cache.map.clone(),
+    )));
     shell.add(Box::new(ass_shell::Toast::new(std::sync::Arc::clone(
         &notif_queue,
     ))));
@@ -437,6 +570,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // last below) remains available like macOS Launchpad.
     shell.add(Box::new(ass_shell::Launcher::with_icons(
         launcher_apps.clone(),
+        icon_cache.map.clone(),
+    )));
+    // Built-in applications share the launcher catalog with XDG entries but
+    // render in-process through optics/lens. Register the backing component
+    // above the launcher and ordinary chrome, while leaving the dock last.
+    shell.add(Box::new(ass_shell::ControlCenter::with_icons(
         icon_cache.map.clone(),
     )));
     // The dock is added after the config is loaded below, so it can read the
@@ -562,7 +701,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         server.set_layout_params(c.layout.clone().into());
     }
     let (init_w, init_h) = host.size_u32();
-    server.set_output_geometry(output_geometry_from_size(init_w as i32, init_h as i32));
+    server.set_output_geometry(output_geometry_from_host(
+        init_w as i32,
+        init_h as i32,
+        host.scale(),
+    ));
 
     // The dock: a persistent strip of pinned `.desktop` app icons (ADR-0022),
     // built from the config's `[dock] pinned` list, or auto-populated from the
@@ -583,6 +726,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         icon_cache.map.clone(),
     )));
 
+    // One normalized status snapshot feeds both the compact HUD and the
+    // built-in Control Center. Host probes run on a low-frequency cadence;
+    // compositor-owned fields are refreshed immediately when they change.
+    const SYSTEM_STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+    let mut system_status = ass_shell::SystemStatus::detect();
+    system_status.do_not_disturb = notif_queue.lock().unwrap().do_not_disturb();
+    system_status.tiled = server.tiling();
+    shell.set_system_status(system_status.clone());
+    let mut next_system_status_poll = std::time::Instant::now() + SYSTEM_STATUS_INTERVAL;
+
     // mtime-based reload watcher, polled each frame. `None` when there is no
     // default config path on this host.
     let mut reload = config_path.as_deref().map(ass_config::ReloadWatcher::at);
@@ -602,6 +755,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ipc_cmd_tx,
         std::sync::Arc::clone(&notif_queue),
         std::sync::Arc::clone(&journal),
+        build_ipc_scopes(config.as_ref()),
     ));
     let ipc: Option<ass_ipc::Server> = match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(d) => {
@@ -635,6 +789,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // edge lets us send exactly one wl_pointer.leave when entering chrome and
     // synthesize motion before a click that returns to client content.
     let mut chrome_pointer_captured = false;
+    // Synthetic pointer movement is independent of the nested host's physical
+    // cursor. The next physical pointer event realigns the server before a
+    // human button/axis event is delivered, preventing a click at stale
+    // synthetic coordinates.
+    let mut synthetic_pointer_active = false;
+    let mut last_cursor_shape = 0u32;
+    let mut last_cursor_hidden = false;
     // Runtime application rescan: package managers and user-created desktop
     // entries become visible in launcher/dock during a long-running session.
     const APP_RESCAN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
@@ -656,7 +817,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             host.dispatch_nonblocking()
         } else {
-            host.dispatch()
+            host.dispatch_timeout(std::time::Duration::from_secs(1))
         };
         if !alive || shell.should_quit() || quit_requested {
             break;
@@ -666,6 +827,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .as_secs_f32()
             .clamp(0.0, 1.0 / 15.0);
         previous_frame_at = frame_at;
+
+        if frame_at >= next_system_status_poll {
+            next_system_status_poll = frame_at + SYSTEM_STATUS_INTERVAL;
+            let mut detected = ass_shell::SystemStatus::detect();
+            detected.do_not_disturb = notif_queue.lock().unwrap().do_not_disturb();
+            detected.tiled = server.tiling();
+            if detected != system_status {
+                system_status = detected;
+                shell.set_system_status(system_status.clone());
+            }
+        }
         // Hot-reload the configuration when its mtime moves (ADR-0026). One
         // `stat` per frame is cheap and keeps the reload on this loop, where
         // the keymap rebuild must happen anyway. A failed reload keeps the
@@ -674,6 +846,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if reload.as_mut().is_some_and(|w| w.changed(path))
                 && reload_config(path, &mut config, &mut keymap, &mut server)
             {
+                live.set_scopes(build_ipc_scopes(config.as_ref()));
                 let pinned = build_dock_apps(
                     &launcher_apps,
                     &icon_cache.map,
@@ -688,14 +861,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         if std::time::Instant::now() >= next_app_scan {
             next_app_scan = std::time::Instant::now() + APP_RESCAN_INTERVAL;
-            let refreshed = ass_apps::enumerate();
-            if refreshed != launcher_apps {
+            let refreshed_theme = selected_icon_theme();
+            let refreshed_scale = host.scale().ceil().max(1.0) as u32;
+            let refreshed = application_catalog(&refreshed_theme, refreshed_scale);
+            let refreshed_snapshot = snapshot_icons(&refreshed);
+            let catalog_changed = refreshed != launcher_apps;
+            let icons_changed = refreshed_snapshot != icon_snapshot;
+            let theme_changed = refreshed_theme != icon_theme;
+            let scale_changed = refreshed_scale != icon_scale;
+            if catalog_changed || icons_changed || theme_changed || scale_changed {
                 log::info!(
-                    "launcher: application catalog changed ({} -> {})",
+                    "launcher: application catalog/icons changed ({} -> {}, theme {} -> {})",
                     launcher_apps.len(),
-                    refreshed.len()
+                    refreshed.len(),
+                    icon_theme,
+                    refreshed_theme
                 );
-                let refreshed_icons = build_icon_cache(&device, &refreshed);
+                let refreshed_icons =
+                    build_icon_cache(&device, &refreshed, &refreshed_theme, refreshed_scale);
                 let pinned = build_dock_apps(
                     &refreshed,
                     &refreshed_icons.map,
@@ -705,19 +888,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .unwrap_or(&[]),
                 );
                 shell.update_app_catalog(&refreshed, &pinned, &refreshed_icons.map);
-                launcher_apps = refreshed;
                 // Components now point only at refreshed_icons; dropping the
                 // old cache after the update cannot leave dangling textures.
                 icon_cache = refreshed_icons;
             }
+            if theme_changed && !catalog_changed && !icons_changed && !scale_changed {
+                log::info!(
+                    "launcher: icon theme changed ({} -> {}), resolved icons unchanged",
+                    icon_theme,
+                    refreshed_theme
+                );
+            }
+            launcher_apps = refreshed;
+            icon_snapshot = refreshed_snapshot;
+            icon_theme = refreshed_theme;
+            icon_scale = refreshed_scale;
         }
 
         // Drain IPC control/session commands and apply them here on the main
         // loop — the Wayland server state is not `Send`, so connection
         // threads forward through the channel rather than touching it
         // directly. Mirrors the chrome-intent drain below (ADR-0016/0027).
+        let mut pending_synthetic_input = Vec::new();
         while let Ok(cmd) = ipc_cmd_rx.try_recv() {
             let ts = start.elapsed().as_millis() as u64;
+            if matches!(cmd, ass_ipc::Command::InjectInput { .. }) {
+                pending_synthetic_input.push((cmd, ts));
+                continue;
+            }
             apply_command(
                 &mut server,
                 &notif_queue,
@@ -736,7 +934,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         // Process client protocol traffic.
         server.dispatch();
-
+        for state in server.take_text_input_states() {
+            host.set_text_input_state(state);
+        }
+        for event in host.take_text_input() {
+            server.text_input_event(&event);
+        }
+        for event in host.take_pointer_gestures() {
+            server.pointer_gesture_event(&event);
+        }
         // Drain backend input: forward to clients (via the server's seat) and
         // mirror into the shell's input snapshot so chrome gets first dibs on
         // clicks (e.g. the Quit button). The chrome reads the same pointer
@@ -757,8 +963,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut shell_scroll = (0.0_f32, 0.0_f32);
         let pointer_before = input_acc.cursor;
         let events = host.take_input();
-        // When chrome (the launcher) captures the keyboard, key events go to
-        // the chrome's search box rather than the focused client. The shell
+        // When chrome (the launcher or a context menu) captures the keyboard,
+        // key events go to chrome rather than the focused client. The shell
         // reports capture state from the previous frame's render / key
         // handling, so this is stable for the whole batch.
         let keyboard_captured = shell.captures_keyboard();
@@ -771,6 +977,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         input_acc.cursor = (x, y);
                     }
                     PointerButton { button, state } => {
+                        if state.is_pressed() {
+                            // A pointer gesture while Super is held is a
+                            // modifier drag, not a bare launcher-key tap.
+                            super_tap.cancel_current();
+                        }
                         // Map Linux BTN_* codes (0x110=left, 0x111=right,
                         // 0x112=middle) to lens's MouseButton. Other buttons
                         // are dropped; the chrome only consumes these three.
@@ -845,6 +1056,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 match ev {
                     Key { .. } if keyboard_captured => {}
                     PointerMotion { x, y } => {
+                        synthetic_pointer_active = false;
                         route_cursor = (x, y);
                         let captured = shell.captures_pointer_at(x, y, display);
                         if captured {
@@ -855,7 +1067,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             // chrome handles the press. Once active, pointer
                             // motion still has to reach the server even while
                             // the cursor remains inside that chrome region.
-                            if server.interactive().is_some() {
+                            if server.interactive().is_some() || server.drag_active() {
                                 forwarded.push(ev);
                             }
                         } else {
@@ -866,6 +1078,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     PointerButton { state, .. } => {
                         let captured =
                             shell.captures_pointer_at(route_cursor.0, route_cursor.1, display);
+                        if synthetic_pointer_active {
+                            if !captured {
+                                forwarded.push(PointerMotion {
+                                    x: route_cursor.0,
+                                    y: route_cursor.1,
+                                });
+                            }
+                            synthetic_pointer_active = false;
+                        }
                         if captured {
                             if !chrome_pointer_captured {
                                 forwarded.push(PointerLeave);
@@ -873,7 +1094,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             // Chrome-initiated move/resize grabs still need a
                             // release edge to terminate even though ordinary
                             // clicks over the overlay are consumed.
-                            if !state.is_pressed() && server.interactive().is_some() {
+                            if !state.is_pressed()
+                                && (server.interactive().is_some() || server.drag_active())
+                            {
                                 forwarded.push(ev);
                             }
                         } else {
@@ -894,6 +1117,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     PointerAxis { .. } => {
                         let captured =
                             shell.captures_pointer_at(route_cursor.0, route_cursor.1, display);
+                        if synthetic_pointer_active {
+                            if !captured {
+                                forwarded.push(PointerMotion {
+                                    x: route_cursor.0,
+                                    y: route_cursor.1,
+                                });
+                            }
+                            synthetic_pointer_active = false;
+                        }
                         if captured {
                             if !chrome_pointer_captured {
                                 forwarded.push(PointerLeave);
@@ -910,9 +1142,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         chrome_pointer_captured = captured;
                     }
                     PointerLeave => {
+                        synthetic_pointer_active = false;
                         route_cursor = (-1.0, -1.0);
                         chrome_pointer_captured = false;
                         forwarded.push(PointerLeave);
+                    }
+                    TouchDown { x, y, .. } if synthetic_pointer_active => {
+                        // Touch delivery shares the server's pointer focus.
+                        // Re-hit-test at the physical contact before routing
+                        // the down event after a synthetic pointer move.
+                        synthetic_pointer_active = false;
+                        forwarded.push(PointerMotion { x, y });
+                        forwarded.push(ev);
                     }
                     _ => forwarded.push(ev),
                 }
@@ -1019,6 +1260,59 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+
+        // Apply scoped synthetic actions only after physical input has updated
+        // xkb modifier state. The target-local batch was authorized on the IPC
+        // thread; this main-loop pass validates live geometry, z-order, and
+        // shell occlusion before sending any event.
+        for (cmd, ts) in pending_synthetic_input {
+            let ass_ipc::Command::InjectInput { id, actions } = &cmd else {
+                unreachable!();
+            };
+            let prepared = server.prepare_synthetic_input(*id, actions);
+            let effect = if let Some(events) = prepared {
+                let has_key = events
+                    .iter()
+                    .any(|event| matches!(event, ass_core::input::InputEvent::Key { .. }));
+                let blocked_by_chrome = (has_key && shell.captures_keyboard())
+                    || events.iter().any(|event| {
+                        matches!(
+                            *event,
+                            ass_core::input::InputEvent::PointerMotion { x, y }
+                                if shell.captures_pointer_at(x, y, input_acc.display_size)
+                        )
+                    });
+                if blocked_by_chrome {
+                    ass_ipc::Effect::Refused {
+                        reason: "target is covered by compositor chrome".into(),
+                    }
+                } else {
+                    server.focus_surface_by_id(*id);
+                    let no_bindings = ass_core::keybind::Keymap::default();
+                    let actions = server.forward_input(&events, &no_bindings);
+                    debug_assert!(actions.is_empty());
+                    if events.iter().any(|event| {
+                        matches!(event, ass_core::input::InputEvent::PointerMotion { .. })
+                    }) {
+                        synthetic_pointer_active = true;
+                        chrome_pointer_captured = false;
+                    }
+                    ass_ipc::Effect::Applied
+                }
+            } else {
+                ass_ipc::Effect::Refused {
+                    reason: "invalid, hidden, stale, or occluded target".into(),
+                }
+            };
+            journal_effect_and_broadcast(
+                &journal,
+                &ipc,
+                ts,
+                ass_ipc::Origin::Ipc { conn_id: 0 },
+                cmd,
+                effect,
+            );
+        }
         input.set_scroll(shell_scroll.0, shell_scroll.1);
 
         // A host resize or an output-scale change (window moved to a monitor
@@ -1032,7 +1326,38 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             host.set_buffer_scale();
             input_acc.display_size = (sz.w as f32, sz.h as f32);
             input.set_display_size(sz.w as f32, sz.h as f32);
-            server.set_output_geometry(output_geometry_from_size(sz.w, sz.h));
+            server.set_output_geometry(output_geometry_from_host(sz.w, sz.h, host.scale()));
+        }
+
+        // Chrome owns the host cursor while it owns pointer routing. This is
+        // what gives the launcher's search field a text caret and interactive
+        // HUD/dock controls a pointing hand; leaving chrome restores the
+        // focused client's requested cursor (including hidden cursors).
+        let chrome_cursor = shell.cursor_shape_at(
+            input_acc.cursor.0,
+            input_acc.cursor.1,
+            input_acc.display_size,
+        );
+        let compositor_cursor = server.compositor_cursor_shape();
+        let owned_cursor = if server.interactive().is_some() {
+            compositor_cursor
+        } else {
+            chrome_cursor
+                .map(|shape| shape as u32)
+                .or(compositor_cursor)
+        };
+        let cursor_hidden = owned_cursor.is_none() && server.cursor_hidden();
+        let cursor_shape = owned_cursor.unwrap_or_else(|| server.cursor_shape().max(1));
+        if cursor_hidden != last_cursor_hidden
+            || (!cursor_hidden && cursor_shape != last_cursor_shape)
+        {
+            if cursor_hidden {
+                host.hide_cursor();
+            } else {
+                host.set_cursor_shape(cursor_shape);
+            }
+            last_cursor_shape = cursor_shape;
+            last_cursor_hidden = cursor_hidden;
         }
 
         // Apply the tiling policy to the current workspace when tiled mode is
@@ -1044,15 +1369,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         match surface.begin_frame() {
             Ok(mut frame) => {
-                let scale = host.scale() as f32;
+                let scale = host.scale();
                 let logical_size = host.size_u32();
+                let render_geometry = RenderGeometry {
+                    logical_size,
+                    scale,
+                };
                 let physical_size = surface.size();
                 let blur_sigma = shell.backdrop_blur_sigma();
+                let backdrop_regions = shell.backdrop_regions(input_acc.display_size);
                 let model_active = wallpaper
                     .as_ref()
                     .is_some_and(ass_wallpaper::Wallpaper::has_model);
                 let backdrop_plan = launcher_backdrop.prepare(
-                    blur_sigma > 0.0,
+                    blur_sigma > 0.0 && !backdrop_regions.is_empty(),
                     &device,
                     &surface,
                     &frame,
@@ -1094,25 +1424,48 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             blur_sigma * capture_scale,
                         );
                         canvas.begin(&frame, Some(clear))?;
+                        // Preserve the live desktop everywhere, then replace
+                        // only the component-declared glass regions with the
+                        // shared blurred capture. This is a true backdrop
+                        // effect rather than a full-screen blur hidden under
+                        // an opaque top-bar colour.
+                        draw_direct_desktop_scene(
+                            &canvas,
+                            &device,
+                            &mut frame,
+                            &mut wallpaper,
+                            &mut renderer,
+                            &server,
+                            render_geometry,
+                        )?;
                         if let Some(image) = blurred {
-                            image.draw(
-                                &canvas,
-                                0.0,
-                                0.0,
-                                physical_size.0 as f32,
-                                physical_size.1 as f32,
-                            );
-                        } else {
-                            draw_direct_desktop_scene(
-                                &canvas,
-                                &device,
-                                &mut frame,
-                                &mut wallpaper,
-                                &mut renderer,
-                                &server,
-                                logical_size,
-                                scale,
-                            )?;
+                            for region in &backdrop_regions {
+                                let x = region.x.max(0.0) * scale;
+                                let y = region.y.max(0.0) * scale;
+                                let w = region
+                                    .w
+                                    .max(0.0)
+                                    .min(logical_size.0 as f32 - region.x.max(0.0))
+                                    * scale;
+                                let h = region
+                                    .h
+                                    .max(0.0)
+                                    .min(logical_size.1 as f32 - region.y.max(0.0))
+                                    * scale;
+                                if w <= 0.0 || h <= 0.0 {
+                                    continue;
+                                }
+                                canvas.save();
+                                canvas.clip_rect(x, y, w, h);
+                                image.draw(
+                                    &canvas,
+                                    0.0,
+                                    0.0,
+                                    physical_size.0 as f32,
+                                    physical_size.1 as f32,
+                                );
+                                canvas.restore();
+                            }
                         }
                     }
                     BackdropPlan::Capture | BackdropPlan::Direct => {
@@ -1124,8 +1477,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             &mut wallpaper,
                             &mut renderer,
                             &server,
-                            logical_size,
-                            scale,
+                            render_geometry,
                         )?;
                     }
                 }
@@ -1160,6 +1512,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(s) = ipc.as_ref() {
                         s.broadcast(ass_ipc::Event::WorkspaceChanged);
                     }
+                }
+                let do_not_disturb = notif_queue.lock().unwrap().do_not_disturb();
+                let tiled = server.tiling();
+                if system_status.do_not_disturb != do_not_disturb || system_status.tiled != tiled {
+                    system_status.do_not_disturb = do_not_disturb;
+                    system_status.tiled = tiled;
+                    shell.set_system_status(system_status.clone());
                 }
                 // Report the output scale so lens rasterises chrome crisply on
                 // a HiDPI host; layout and input stay in logical pixels.
@@ -1205,6 +1564,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     );
                     journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                 }
+                for action in shell.take_window_actions() {
+                    let cmd = match action {
+                        ass_shell::WindowAction::Focus(id) => ass_ipc::Command::Focus { id },
+                        ass_shell::WindowAction::Minimize(id) => ass_ipc::Command::Minimize { id },
+                        ass_shell::WindowAction::Close(id) => ass_ipc::Command::Close { id },
+                    };
+                    apply_command(
+                        &mut server,
+                        &notif_queue,
+                        &mut quit_requested,
+                        &cmd,
+                        &ipc,
+                        ts,
+                    );
+                    journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
+                }
                 if let Some(id) = shell.take_switch_workspace() {
                     let cmd = ass_ipc::Command::SwitchWorkspaceTo { id };
                     apply_command(
@@ -1228,6 +1603,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         ts,
                     );
                     journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
+                }
+                if let Some(app) = shell.take_open_builtin() {
+                    shell.open_builtin(app);
+                }
+                let system_actions = shell.take_system_actions();
+                if !system_actions.is_empty() {
+                    for action in system_actions {
+                        if let Some(cmd) = apply_system_action(
+                            &mut server,
+                            &notif_queue,
+                            &mut system_status,
+                            action,
+                        ) {
+                            apply_command(
+                                &mut server,
+                                &notif_queue,
+                                &mut quit_requested,
+                                &cmd,
+                                &ipc,
+                                ts,
+                            );
+                            journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
+                        }
+                    }
+                    shell.set_system_status(system_status.clone());
+                    // Reconcile optimistic hardware state shortly after the
+                    // detached host command has had time to take effect.
+                    next_system_status_poll =
+                        std::time::Instant::now() + std::time::Duration::from_millis(500);
                 }
                 // The dock's Launchpad tile was clicked: toggle the launcher,
                 // the same path as the Super-tap hotkey.
@@ -1372,17 +1776,28 @@ fn reload_config(
     }
 }
 
-/// Build the focused output's geometry from a host (physical) pixel size.
-/// The nested backend presents at scale 1 with no transform; the DRM/KMS
-/// backend (M4/M7) supplies the real mode, scale, and transform.
-fn output_geometry_from_size(w: i32, h: i32) -> ass_core::output::OutputGeometry {
+/// Build the nested output geometry from its logical surface size and the
+/// host's preferred render scale. `wl_output.mode` is expressed in physical
+/// pixels while xdg-output derives the original logical size by dividing by
+/// `scale`; keeping both in one constructor prevents the two coordinate spaces
+/// from silently drifting apart.
+fn output_geometry_from_host(
+    logical_w: i32,
+    logical_h: i32,
+    scale: f32,
+) -> ass_core::output::OutputGeometry {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
     ass_core::output::OutputGeometry {
         mode: ass_core::output::OutputMode {
-            width: w,
-            height: h,
+            width: (logical_w.max(1) as f32 * scale).round() as i32,
+            height: (logical_h.max(1) as f32 * scale).round() as i32,
             refresh_mhz: 0,
         },
-        scale: ass_core::output::Scale::IDENTITY,
+        scale: ass_core::output::Scale(scale),
         transform: ass_core::Transform::Normal,
         logical_origin: ass_core::Point::default(),
     }
@@ -1429,11 +1844,99 @@ fn build_keymap(config: Option<&ass_config::Config>) -> ass_core::keybind::Keyma
     }
 }
 
+/// Compile the trusted named IPC scopes from configuration. Invalid operation
+/// names are ignored inside an explicit allowlist (therefore granting nothing
+/// for that entry) and logged; they never turn into an unrestricted scope.
+fn build_ipc_scopes(
+    config: Option<&ass_config::Config>,
+) -> std::collections::HashMap<String, ass_ipc::Scope> {
+    let mut scopes = std::collections::HashMap::new();
+    let Some(config) = config else {
+        return scopes;
+    };
+
+    for declared in &config.agent.scopes {
+        let name = declared.name.trim();
+        if name.is_empty() {
+            log::warn!("config: ignoring agent scope with an empty name");
+            continue;
+        }
+        if scopes.contains_key(name) {
+            log::warn!("config: duplicate agent scope '{name}' ignored");
+            continue;
+        }
+
+        let ops = if declared.ops.is_empty() {
+            None
+        } else {
+            Some(
+                declared
+                    .ops
+                    .iter()
+                    .filter_map(|op| match ipc_op_class(op) {
+                        Some(op) => Some(op),
+                        None => {
+                            log::warn!("config: agent scope '{name}' has unknown operation '{op}'");
+                            None
+                        }
+                    })
+                    .collect(),
+            )
+        };
+        let windows = (!declared.windows.is_empty()).then(|| {
+            declared
+                .windows
+                .iter()
+                .copied()
+                .map(ass_core::window::WindowId)
+                .collect()
+        });
+        let workspaces = (!declared.workspaces.is_empty()).then(|| {
+            declared
+                .workspaces
+                .iter()
+                .copied()
+                .map(ass_core::workspace::WorkspaceId)
+                .collect()
+        });
+        scopes.insert(
+            name.to_string(),
+            ass_ipc::Scope {
+                windows,
+                workspaces,
+                outputs: None,
+                ops,
+            },
+        );
+    }
+    scopes
+}
+
+fn ipc_op_class(name: &str) -> Option<ass_ipc::OpClass> {
+    use ass_ipc::OpClass;
+    match name.trim().to_ascii_lowercase().as_str() {
+        "focus" => Some(OpClass::Focus),
+        "minimize" => Some(OpClass::Minimize),
+        "close" => Some(OpClass::Close),
+        "move" => Some(OpClass::Move),
+        "setwindowgeometry" | "set_window_geometry" => Some(OpClass::SetWindowGeometry),
+        "injectinput" | "inject_input" => Some(OpClass::InjectInput),
+        "cycle" => Some(OpClass::Cycle),
+        "switchworkspace" | "switch_workspace" => Some(OpClass::SwitchWorkspace),
+        "switchworkspaceto" | "switch_workspace_to" => Some(OpClass::SwitchWorkspaceTo),
+        "movetoworkspace" | "move_to_workspace" => Some(OpClass::MoveToWorkspace),
+        "toggletiling" | "toggle_tiling" => Some(OpClass::ToggleTiling),
+        "notify" => Some(OpClass::Notify),
+        "dismissnotification" | "dismiss_notification" => Some(OpClass::DismissNotification),
+        _ => None,
+    }
+}
+
 /// Shared live window snapshot for the IPC (ADR-0027). The main loop writes
 /// the same `Vec<Window>` it hands the shell; connection threads read it.
 /// `query`-capability commands never mutate, so the lock is an `RwLock` and
 /// reads from several connections do not block each other. `control`/
-/// `session` commands arrive through [`Handler::command`] and are forwarded
+/// `session` commands arrive through [`ass_ipc::Handler::command`] and are forwarded
 /// to the main loop via the channel the binary owns — the Wayland server
 /// state is not `Send`, so connection threads must not touch it directly.
 struct LiveState {
@@ -1443,6 +1946,7 @@ struct LiveState {
     notifications: std::sync::Arc<std::sync::Mutex<ass_core::notify::NotificationQueue>>,
     journal: std::sync::Arc<std::sync::Mutex<ass_ipc::Journal>>,
     commands: std::sync::Mutex<std::sync::mpsc::Sender<ass_ipc::Command>>,
+    scopes: std::sync::RwLock<std::collections::HashMap<String, ass_ipc::Scope>>,
 }
 
 impl LiveState {
@@ -1450,6 +1954,7 @@ impl LiveState {
         commands: std::sync::mpsc::Sender<ass_ipc::Command>,
         notifications: std::sync::Arc<std::sync::Mutex<ass_core::notify::NotificationQueue>>,
         journal: std::sync::Arc<std::sync::Mutex<ass_ipc::Journal>>,
+        scopes: std::collections::HashMap<String, ass_ipc::Scope>,
     ) -> LiveState {
         LiveState {
             windows: std::sync::RwLock::new(Vec::new()),
@@ -1460,6 +1965,7 @@ impl LiveState {
             notifications,
             journal,
             commands: std::sync::Mutex::new(commands),
+            scopes: std::sync::RwLock::new(scopes),
         }
     }
 
@@ -1474,6 +1980,10 @@ impl LiveState {
     fn set_outputs(&self, outputs: Vec<ass_core::output::OutputInfo>) {
         *self.outputs.write().unwrap() = outputs;
     }
+
+    fn set_scopes(&self, scopes: std::collections::HashMap<String, ass_ipc::Scope>) {
+        *self.scopes.write().unwrap() = scopes;
+    }
 }
 
 impl ass_ipc::Handler for LiveState {
@@ -1484,6 +1994,7 @@ impl ass_ipc::Handler for LiveState {
         ass_ipc::Capabilities {
             query: true,
             control: true,
+            input: true,
             session: true,
         }
     }
@@ -1515,12 +2026,8 @@ impl ass_ipc::Handler for LiveState {
         let _ = self.commands.lock().unwrap().send(cmd);
     }
 
-    fn resolve_scope(&self, _name: &str) -> Option<ass_ipc::Scope> {
-        // ADR-0034 scope resolution from the loaded configuration. The
-        // static scope model and enforcement are fully implemented; wiring
-        // the config through to here is a follow-up that lands when the
-        // desktop milestones preceding M10 are complete.
-        None
+    fn resolve_scope(&self, name: &str) -> Option<ass_ipc::Scope> {
+        self.scopes.read().unwrap().get(name).cloned()
     }
 }
 
@@ -1538,6 +2045,103 @@ struct IconCache {
 /// falls back to the dock glyph without failing startup.
 const RASTER_ICON_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif", "tiff", "ico"];
 const SVG_ICON_EXTS: &[&str] = &["svg", "svgz"];
+const HUD_SYMBOLIC_ICON_NAMES: &[&str] = &[
+    "audio-volume-muted-symbolic",
+    "audio-volume-low-symbolic",
+    "audio-volume-medium-symbolic",
+    "audio-volume-high-symbolic",
+    "network-wireless-signal-excellent-symbolic",
+    "network-wired-symbolic",
+    "network-offline-symbolic",
+    "preferences-system-notifications-symbolic",
+    "preferences-system-symbolic",
+    "window-close-symbolic",
+    "application-x-executable-symbolic",
+];
+
+/// Resolve the host's selected application icon theme. An explicit ass
+/// override wins; otherwise query the GTK/GSettings desktop preference used
+/// by niri and other toolkit-neutral Wayland sessions. `hicolor` remains the
+/// portable fallback when GSettings is unavailable.
+fn selected_icon_theme() -> String {
+    if let Some(theme) = std::env::var("ASS_ICON_THEME")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return theme;
+    }
+
+    let output = std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "icon-theme"])
+        .output();
+    output
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|value| parse_gsettings_string(&value))
+        .unwrap_or_else(|| ass_apps::DEFAULT_ICON_THEME.to_string())
+}
+
+/// Merge XDG applications with compositor-owned system applications. Built-in
+/// entries deliberately use the same `Entry` model so launcher search,
+/// context menus, pinning, and icon lookup have one catalog contract.
+fn application_catalog(icon_theme: &str, icon_scale: u32) -> Vec<ass_core::app::Entry> {
+    let mut applications = ass_apps::enumerate_with_theme_and_scale(icon_theme, icon_scale.max(1));
+    let i18n = ass_shell::Localizer::from_env();
+    applications.push(ass_core::app::Entry::control_center(
+        i18n.text(ass_shell::Message::ControlCenter),
+        i18n.text(ass_shell::Message::BuiltInSystemApp),
+    ));
+    applications
+}
+
+fn parse_gsettings_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    let unquoted = value
+        .strip_prefix('\'')
+        .and_then(|value| value.strip_suffix('\''))
+        .or_else(|| {
+            value
+                .strip_prefix('"')
+                .and_then(|value| value.strip_suffix('"'))
+        })
+        .unwrap_or(value)
+        .trim();
+    (!unquoted.is_empty()).then(|| unquoted.to_string())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IconFileStamp {
+    len: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    device: u64,
+    inode: u64,
+}
+
+/// Snapshot only icons the catalog actually uses. Metadata follows symlinks,
+/// so a Flatpak `current/active` update is noticed even when the exported icon
+/// path itself remains unchanged.
+fn snapshot_icons(
+    apps: &[ass_core::app::Entry],
+) -> std::collections::BTreeMap<std::path::PathBuf, Option<IconFileStamp>> {
+    use std::os::unix::fs::MetadataExt;
+
+    let mut snapshot = std::collections::BTreeMap::new();
+    for path in apps.iter().filter_map(|entry| entry.icon_path.as_ref()) {
+        snapshot.entry(path.clone()).or_insert_with(|| {
+            std::fs::metadata(path).ok().map(|metadata| IconFileStamp {
+                len: metadata.len(),
+                modified_seconds: metadata.mtime(),
+                modified_nanoseconds: metadata.mtime_nsec(),
+                device: metadata.dev(),
+                inode: metadata.ino(),
+            })
+        });
+    }
+    snapshot
+}
 
 /// The lowercased ids an entry might be matched by: its `StartupWMClass`, the
 /// desktop-file stem, and the declared icon name. These are the same keys
@@ -1602,7 +2206,12 @@ fn build_dock_apps(
 /// window might report as `app_id` (StartupWMClass, the desktop-id stem, and
 /// the icon name, all lowercased). The first key to claim a texture wins per
 /// entry, so a texture is never double-counted.
-fn build_icon_cache(device: &flux::Device, apps: &[ass_core::app::Entry]) -> IconCache {
+fn build_icon_cache(
+    device: &flux::Device,
+    apps: &[ass_core::app::Entry],
+    icon_theme: &str,
+    icon_scale: u32,
+) -> IconCache {
     use std::ffi::c_void;
     let mut images: Vec<flux::Image> = Vec::new();
     let mut map: std::collections::HashMap<String, *mut c_void> = std::collections::HashMap::new();
@@ -1616,7 +2225,7 @@ fn build_icon_cache(device: &flux::Device, apps: &[ass_core::app::Entry]) -> Ico
             .and_then(|e| e.to_str())
             .map(|e| e.to_ascii_lowercase())
             .unwrap_or_default();
-        let Some(decoded) = decode_icon(path, &ext) else {
+        let Some(decoded) = decode_icon(path, &ext, icon_scale) else {
             continue;
         };
         let rgba = decoded.to_rgba8();
@@ -1640,7 +2249,71 @@ fn build_icon_cache(device: &flux::Device, apps: &[ass_core::app::Entry]) -> Ico
         }
     }
 
-    log::info!("dock: {} app icon(s) decoded", images.len());
+    // HUD status assets come from the same icon theme as applications. SVGs
+    // are rasterized at output scale (and subsequently sampled down by lens),
+    // avoiding the coarse single-pixel strokes of compositor glyphs while
+    // retaining the host theme's silhouettes and proportions.
+    let mut symbolic_names: Vec<String> = HUD_SYMBOLIC_ICON_NAMES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    for level in (0..=100).step_by(10) {
+        symbolic_names.push(format!("battery-level-{level}-symbolic"));
+        symbolic_names.push(format!("battery-level-{level}-charging-symbolic"));
+    }
+    let mut hud_count = 0usize;
+    for name in symbolic_names {
+        let Some(path) =
+            ass_apps::resolve_icon_scaled(&name, Some(icon_theme), &[], 24, icon_scale.max(1))
+        else {
+            log::debug!("hud icon: '{name}' was not found in theme '{icon_theme}'");
+            continue;
+        };
+        let ext = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default();
+        let Some(decoded) = decode_icon(&path, &ext, icon_scale) else {
+            continue;
+        };
+        let mut rgba = decoded.to_rgba8();
+        // Symbolic themes commonly encode a dark CSS foreground intended for
+        // toolkit recolouring. The compositor has no GTK style context, so
+        // apply the HUD's light foreground while preserving every coverage
+        // value produced by SVG antialiasing.
+        for pixel in rgba.pixels_mut() {
+            if pixel[3] != 0 {
+                pixel[0] = 246;
+                pixel[1] = 246;
+                pixel[2] = 248;
+            }
+        }
+        let (w, h) = rgba.dimensions();
+        let mut bgra = rgba.into_raw();
+        for chunk in bgra.chunks_exact_mut(4) {
+            chunk.swap(0, 2);
+        }
+        match flux::Image::from_bytes(device, w, h, flux::Format::FLUX_FORMAT_BGRA8_UNORM, &bgra) {
+            Ok(image) => {
+                let ptr = image.as_raw() as *mut c_void;
+                map.insert(format!("ass-hud:{name}"), ptr);
+                if name == "preferences-system-symbolic" {
+                    // Stable application-icon key for the compositor-owned
+                    // control center entry and component header.
+                    map.insert("ass-control-center".into(), ptr);
+                }
+                images.push(image);
+                hud_count += 1;
+            }
+            Err(error) => log::warn!("hud icon: upload failed for {}: {error:?}", path.display()),
+        }
+    }
+
+    log::info!(
+        "icons: {} application texture(s), {hud_count} themed HUD symbol(s)",
+        images.len().saturating_sub(hud_count)
+    );
     IconCache {
         _images: images,
         map,
@@ -1650,15 +2323,25 @@ fn build_icon_cache(device: &flux::Device, apps: &[ass_core::app::Entry]) -> Ico
 /// Decode a desktop icon. Raster formats stay in-process; SVG is converted to
 /// a bounded PNG on stdout so malformed or enormous vector sources cannot
 /// dictate an unbounded GPU texture. Every failure is a normal glyph fallback.
-fn decode_icon(path: &std::path::Path, ext: &str) -> Option<image::DynamicImage> {
+fn decode_icon(path: &std::path::Path, ext: &str, icon_scale: u32) -> Option<image::DynamicImage> {
     if RASTER_ICON_EXTS.contains(&ext) {
         return image::open(path).ok();
     }
     if !SVG_ICON_EXTS.contains(&ext) {
         return None;
     }
+    let target = ass_apps::DEFAULT_ICON_SIZE
+        .saturating_mul(icon_scale.max(1))
+        .min(512)
+        .to_string();
     let output = std::process::Command::new("rsvg-convert")
-        .args(["--width", "128", "--height", "128", "--keep-aspect-ratio"])
+        .args([
+            "--width",
+            &target,
+            "--height",
+            &target,
+            "--keep-aspect-ratio",
+        ])
         .arg(path)
         .output()
         .ok()?;
@@ -1667,4 +2350,82 @@ fn decode_icon(path: &std::path::Path, ext: &str) -> Option<image::DynamicImage>
         return None;
     }
     image::load_from_memory(&output.stdout).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_output_geometry_preserves_logical_size_at_integer_scale() {
+        let geometry = output_geometry_from_host(945, 924, 2.0);
+        assert_eq!(geometry.mode.width, 1890);
+        assert_eq!(geometry.mode.height, 1848);
+        assert_eq!(geometry.scale, ass_core::output::Scale(2.0));
+        assert_eq!(geometry.logical_size(), ass_core::Size { w: 945, h: 924 });
+    }
+
+    #[test]
+    fn nested_output_geometry_preserves_logical_size_at_fractional_scale() {
+        let geometry = output_geometry_from_host(945, 924, 1.5);
+        assert_eq!(geometry.mode.width, 1418);
+        assert_eq!(geometry.mode.height, 1386);
+        assert_eq!(geometry.scale, ass_core::output::Scale(1.5));
+        assert_eq!(geometry.logical_size(), ass_core::Size { w: 945, h: 924 });
+    }
+
+    #[test]
+    fn parses_gsettings_icon_theme_string() {
+        assert_eq!(
+            parse_gsettings_string("'Papirus-Dark'\n").as_deref(),
+            Some("Papirus-Dark")
+        );
+        assert_eq!(
+            parse_gsettings_string("\"Adwaita\"").as_deref(),
+            Some("Adwaita")
+        );
+        assert_eq!(parse_gsettings_string("  "), None);
+    }
+
+    #[test]
+    fn config_agent_scopes_compile_to_fail_closed_ipc_allowlists() {
+        let config = ass_config::Config::parse(
+            "schema_version = 1\n\
+             [[agent.scope]]\n\
+             name = \"focus-one\"\n\
+             ops = [\"Focus\", \"NotARealOperation\"]\n\
+             windows = [7]\n\
+             workspaces = [3]\n",
+        )
+        .unwrap();
+        let scopes = build_ipc_scopes(Some(&config));
+        let scope = scopes.get("focus-one").expect("compiled scope");
+
+        assert_eq!(scope.ops, Some(vec![ass_ipc::OpClass::Focus]));
+        assert!(scope.permits(&ass_ipc::Command::Focus {
+            id: ass_core::window::WindowId(7),
+        }));
+        assert!(!scope.permits(&ass_ipc::Command::Focus {
+            id: ass_core::window::WindowId(8),
+        }));
+        assert!(!scope.permits(&ass_ipc::Command::Close {
+            id: ass_core::window::WindowId(7),
+        }));
+    }
+
+    #[test]
+    fn automation_operation_names_accept_canonical_and_snake_case() {
+        assert_eq!(
+            ipc_op_class("SetWindowGeometry"),
+            Some(ass_ipc::OpClass::SetWindowGeometry)
+        );
+        assert_eq!(
+            ipc_op_class("set_window_geometry"),
+            Some(ass_ipc::OpClass::SetWindowGeometry)
+        );
+        assert_eq!(
+            ipc_op_class("inject_input"),
+            Some(ass_ipc::OpClass::InjectInput)
+        );
+    }
 }

@@ -39,6 +39,7 @@ impl Handler for CtlHandler {
         ass_ipc::Capabilities {
             query: true,
             control: true,
+            input: false,
             session: true,
         }
     }
@@ -173,6 +174,48 @@ fn focus_command_sends_focus() {
         "{:?}",
         h.commands
     );
+}
+
+#[test]
+fn minimize_command_sends_minimize() {
+    let path = scratch();
+    let h = Arc::new(CtlHandler::new());
+    let _s = Server::start(&path, Arc::clone(&h)).unwrap();
+    let out = ass_ctl::run(&path, &["minimize".into(), "1".into()]).unwrap();
+    assert!(out.contains("minimized 1"), "{out}");
+    assert!(h
+        .commands
+        .lock()
+        .unwrap()
+        .contains(&Command::Minimize { id: WindowId(1) }));
+}
+
+#[test]
+fn set_geometry_command_sends_logical_rectangle() {
+    let path = scratch();
+    let h = Arc::new(CtlHandler::new());
+    let _s = Server::start(&path, Arc::clone(&h)).unwrap();
+    let out = ass_ctl::run(
+        &path,
+        &[
+            "set-geometry".into(),
+            "1".into(),
+            "-20".into(),
+            "30".into(),
+            "800".into(),
+            "600".into(),
+        ],
+    )
+    .unwrap();
+    assert!(out.contains("-20,30 800x600"), "{out}");
+    assert!(h
+        .commands
+        .lock()
+        .unwrap()
+        .contains(&Command::SetWindowGeometry {
+            id: WindowId(1),
+            rect: ass_core::Rect::new(-20, 30, 800, 600),
+        }));
 }
 
 #[test]

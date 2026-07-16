@@ -14,11 +14,15 @@ use std::ffi::c_void;
 
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
 
-use crate::{Chrome, ChromeEvents};
+use crate::{
+    BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Message, Reserved, WindowAction,
+};
 use ass_core::app::Entry;
 use ass_core::input::{key_action, KeyAction, KeyChar};
 use ass_core::launcher::{Launch, Launcher as Brain};
 use ass_core::window::Window;
+
+use super::app_menu::AppMenu;
 
 /// Blur width requested from the compositor host, in logical pixels. The host
 /// scales it to its quarter-resolution capture and evaluates a fixed-cost
@@ -29,10 +33,13 @@ const SEARCH_H: f32 = 44.0;
 const SEARCH_MAX_W: f32 = 520.0;
 const SEARCH_MIN_W: f32 = 280.0;
 const GRID_TOP: f32 = 126.0;
-const GRID_BOTTOM_RESERVE: f32 = 102.0;
+/// Space inside the modal work area reserved for pagination and breathing
+/// room. Persistent chrome (notably the dock) is subtracted separately from
+/// the work area, so this value never has to guess the dock's height.
+const GRID_BOTTOM_RESERVE: f32 = 44.0;
 const GRID_MAX_W: f32 = 1180.0;
 const TARGET_CELL_W: f32 = 145.0;
-const TARGET_CELL_H: f32 = 118.0;
+const TARGET_CELL_H: f32 = 110.0;
 const MAX_COLUMNS: usize = 8;
 const MAX_ROWS: usize = 5;
 const OPEN_STIFFNESS: f32 = 360.0;
@@ -57,6 +64,13 @@ pub struct Launcher {
     /// in the launcher brain, so the field cannot rely on lens widget focus to
     /// draw its focus ring and caret.
     search_focused: bool,
+    /// Edge space reserved by chrome that remains visible during the modal.
+    /// Updated by the shell before every render; keeps cells and pagination
+    /// above the dock even when its dimensions change.
+    modal_reserved: Reserved,
+    /// Right-click application menu. It resolves stored window ids against
+    /// the live snapshot on every frame, so closed windows disappear safely.
+    app_menu: AppMenu,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -67,6 +81,7 @@ struct SpringState {
 
 /// One resolved grid cell for the current frame.
 struct Cell {
+    app_index: usize,
     filtered_position: usize,
     label: String,
     running: bool,
@@ -86,25 +101,29 @@ struct GridLayout {
 }
 
 impl GridLayout {
-    fn for_display(width: f32, height: f32) -> GridLayout {
+    fn for_display(width: f32, height: f32, reserved: Reserved) -> GridLayout {
         let width = width.max(1.0);
         let height = height.max(1.0);
+        let content_top = reserved.top.max(0) as f32;
+        let content_bottom = (height - reserved.bottom.max(0) as f32).max(content_top + 1.0);
+        let content_height = content_bottom - content_top;
         let side = if width < 700.0 { 24.0 } else { 64.0 };
         let grid_w = (width - 2.0 * side).clamp(1.0, GRID_MAX_W);
         let min_columns = if width < 320.0 { 1 } else { 2 };
         let columns = ((grid_w / TARGET_CELL_W).floor() as usize).clamp(min_columns, MAX_COLUMNS);
 
-        let grid_top = if height < 560.0 {
-            106.0_f32.min(height * 0.28)
-        } else {
-            GRID_TOP
-        };
-        let bottom = if height < 560.0 {
-            72.0_f32.min(height * 0.18)
+        let grid_top = content_top
+            + if content_height < 560.0 {
+                106.0_f32.min(content_height * 0.28)
+            } else {
+                GRID_TOP
+            };
+        let bottom = if content_height < 560.0 {
+            42.0_f32.min(content_height * 0.14)
         } else {
             GRID_BOTTOM_RESERVE
         };
-        let available_h = (height - grid_top - bottom).max(1.0);
+        let available_h = (content_bottom - grid_top - bottom).max(1.0);
         let rows = ((available_h / TARGET_CELL_H).floor() as usize).clamp(1, MAX_ROWS);
         let cell_h = (available_h / rows as f32).min(134.0);
         let grid_h = cell_h * rows as f32;
@@ -156,6 +175,8 @@ impl Launcher {
             anim_active: false,
             prev_down: false,
             search_focused: false,
+            modal_reserved: Reserved::default(),
+            app_menu: AppMenu::new("ass-launcher-context-menu"),
         }
     }
 
@@ -183,8 +204,9 @@ impl Launcher {
 
     fn emit(outcome: Option<Launch>, out: &mut ChromeEvents) {
         match outcome {
-            Some(Launch::Spawn(entry)) => out.spawn = Some(*entry),
+            Some(Launch::Spawn(entry)) => out.activate_entry(*entry),
             Some(Launch::Focus(window_id)) => out.clicked = Some(window_id),
+            Some(Launch::BuiltIn(app)) => out.open_builtin = Some(app),
             None => {}
         }
     }
@@ -220,6 +242,24 @@ impl Launcher {
         self.page_shift = if page > self.page { 28.0 } else { -28.0 };
         self.page = page;
     }
+
+    fn search_rect_for_display(display: (f32, f32), progress: f32) -> Rect {
+        let search_w = (display.0 * 0.40)
+            .clamp(SEARCH_MIN_W, SEARCH_MAX_W)
+            .min((display.0 - 40.0).max(1.0));
+        let slide_y = (1.0 - ease_out_cubic(progress)) * 18.0;
+        let search_y = if display.1 < 560.0 { 22.0 } else { SEARCH_TOP } + slide_y;
+        Rect {
+            x: (display.0 - search_w) * 0.5,
+            y: search_y,
+            w: search_w,
+            h: SEARCH_H,
+        }
+    }
+
+    fn search_rect(&self, display: (f32, f32)) -> Rect {
+        Self::search_rect_for_display(display, self.visibility.value.clamp(0.0, 1.0))
+    }
 }
 
 impl Chrome for Launcher {
@@ -229,6 +269,7 @@ impl Chrome for Launcher {
         input: &Input,
         windows: &[Window],
         _workspaces: &crate::WorkspaceSnapshot,
+        i18n: &Localizer,
         out: &mut ChromeEvents,
     ) {
         let raw = input.as_raw();
@@ -236,8 +277,18 @@ impl Chrome for Launcher {
         let cursor = raw.cursor;
         let down = raw.mouse_down.first().copied().unwrap_or(false);
 
+        // Prefer the active window, then the topmost/recent windows. The core
+        // uses the first match for ordinary left-click activation, while the
+        // context menu still receives every matching toplevel.
         let running: Vec<(String, ass_core::window::WindowId)> = windows
             .iter()
+            .filter(|window| window.state.activated)
+            .chain(
+                windows
+                    .iter()
+                    .rev()
+                    .filter(|window| !window.state.activated),
+            )
             .filter_map(|window| window.app_id.as_ref().map(|id| (id.clone(), window.id)))
             .collect();
         self.brain.set_running(running);
@@ -265,7 +316,7 @@ impl Chrome for Launcher {
             self.page_shift = 0.0;
         }
 
-        let layout = GridLayout::for_display(display.x, display.y);
+        let layout = GridLayout::for_display(display.x, display.y, self.modal_reserved);
         self.columns = layout.columns;
         self.page_capacity = layout.capacity().max(1);
 
@@ -305,6 +356,7 @@ impl Chrome for Launcher {
                 let entry = &self.brain.apps()[app_index];
                 let filtered_position = start + slot;
                 Cell {
+                    app_index,
                     filtered_position,
                     label: truncate_label(&entry.name, layout.cell_w),
                     running: self.brain.is_running(app_index),
@@ -315,9 +367,12 @@ impl Chrome for Launcher {
             .collect();
 
         let slide_y = (1.0 - ease_out_cubic(progress)) * 18.0;
-        let pressed = down && !self.prev_down && self.brain.is_open();
+        let pressed = down && !self.prev_down && self.brain.is_open() && !self.app_menu.is_open();
+        let right_pressed =
+            raw.mouse_pressed.get(1).copied().unwrap_or(false) && self.brain.is_open();
         let mut clicked_cell = None;
         let mut clicked_page = None;
+        let mut context_app = None;
 
         // A fixed-size child, rather than the layer's anchor alone, guarantees
         // that the dim surface covers every logical output pixel.
@@ -344,18 +399,11 @@ impl Chrome for Launcher {
             },
         );
 
-        let search_w = (display.x * 0.40)
-            .clamp(SEARCH_MIN_W, SEARCH_MAX_W)
-            .min((display.x - 40.0).max(1.0));
-        let search_y = if display.y < 560.0 { 22.0 } else { SEARCH_TOP } + slide_y;
-        let search_rect = Rect {
-            x: (display.x - search_w) * 0.5,
-            y: search_y,
-            w: search_w,
-            h: SEARCH_H,
-        };
-        if pressed && contains(search_rect, cursor.x, cursor.y) {
-            self.search_focused = true;
+        let search_rect = Self::search_rect_for_display((display.x, display.y), progress);
+        let search_w = search_rect.w;
+        let search_y = search_rect.y;
+        if pressed {
+            self.search_focused = contains(search_rect, cursor.x, cursor.y);
         }
         frame.layer(
             "ass-launcher-search",
@@ -379,7 +427,7 @@ impl Chrome for Launcher {
                             // Keep the placeholder on the exact same text
                             // origin as a real query. Its caret is an overlay
                             // below so the caret does not consume layout width.
-                            frame.label_compact_sized("Search applications", 15.0);
+                            frame.label_compact_sized(i18n.text(Message::SearchApplications), 15.0);
                         } else {
                             frame.row_ex(
                                 &LayoutOpts {
@@ -416,11 +464,7 @@ impl Chrome for Launcher {
             );
         }
 
-        let result_text = match filtered.len() {
-            0 => "No applications found".to_string(),
-            1 => "1 application".to_string(),
-            count => format!("{count} applications"),
-        };
+        let result_text = i18n.application_count(filtered.len());
         let result_rect = Rect {
             x: 0.0,
             y: search_y + SEARCH_H + 10.0,
@@ -447,7 +491,7 @@ impl Chrome for Launcher {
             };
             frame.layer("ass-launcher-empty", empty, &centered_layer(), |frame| {
                 frame.column_ex(&sized(display.x, 32.0), |frame| {
-                    frame.label_sized("Try another search", 16.0);
+                    frame.label_sized(i18n.text(Message::TryAnotherSearch), 16.0);
                 });
             });
         }
@@ -458,6 +502,9 @@ impl Chrome for Launcher {
             let hovered = self.brain.is_open() && contains(rect, cursor.x, cursor.y);
             if pressed && hovered {
                 clicked_cell = Some(cell.filtered_position);
+            }
+            if right_pressed && hovered {
+                context_app = Some((cell.app_index, rect));
             }
 
             let icon_size = (layout.cell_w * 0.52)
@@ -511,7 +558,8 @@ impl Chrome for Launcher {
             );
         }
 
-        let footer_y = (layout.y + layout.height + 13.0 + slide_y).min(display.y - 34.0);
+        let modal_bottom = (display.y - self.modal_reserved.bottom.max(0) as f32).max(1.0);
+        let footer_y = (layout.y + layout.height + 13.0 + slide_y).min(modal_bottom - 28.0);
         if page_total > 1 && page_total <= 12 {
             let group_w = page_total as f32 * 18.0;
             let group_x = (display.x - group_w) * 0.5;
@@ -610,6 +658,26 @@ impl Chrome for Launcher {
         } else if let Some(filtered_position) = clicked_cell {
             Self::emit(self.brain.launch_filtered(filtered_position), out);
         }
+        if let Some((app_index, owner)) = context_app {
+            let entry = self.brain.apps()[app_index].clone();
+            self.app_menu.open(
+                entry.name.clone(),
+                Some(entry),
+                self.brain.running_surfaces(app_index),
+                owner,
+            );
+        }
+        let action_start = out.window_actions.len();
+        let had_activation = out.spawn.is_some() || out.open_builtin.is_some();
+        self.app_menu.render(frame, input, windows, i18n, out);
+        let activated = out.window_actions[action_start..]
+            .iter()
+            .any(|action| matches!(action, WindowAction::Focus(_)));
+        let activated_app = !had_activation && (out.spawn.is_some() || out.open_builtin.is_some());
+        if activated || activated_app {
+            self.brain.close();
+            self.anim_active = true;
+        }
         self.prev_down = down;
     }
 
@@ -636,18 +704,46 @@ impl Chrome for Launcher {
         true
     }
 
+    fn cursor_shape_at(
+        &self,
+        x: f32,
+        y: f32,
+        display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &crate::WorkspaceSnapshot,
+    ) -> CursorShape {
+        if self.app_menu.contains(x, y, display) {
+            CursorShape::Pointer
+        } else if contains(self.search_rect(display), x, y) {
+            CursorShape::Text
+        } else {
+            CursorShape::Default
+        }
+    }
+
+    fn set_modal_reserved(&mut self, reserved: Reserved) {
+        self.modal_reserved = reserved;
+    }
+
     fn update_app_catalog(
         &mut self,
         apps: &[Entry],
         _dock_apps: &[crate::DockApp],
         icons: &HashMap<String, *mut c_void>,
     ) {
+        self.app_menu.dismiss();
         self.brain.replace_apps(apps.to_vec());
         self.icons.clone_from(icons);
         self.sync_page_to_selection();
     }
 
     fn key_char(&mut self, key: &KeyChar, out: &mut ChromeEvents) {
+        if self.app_menu.is_open() {
+            if matches!(key_action(key.keysym, key.ch), KeyAction::Escape) {
+                self.app_menu.dismiss();
+            }
+            return;
+        }
         if self.brain.is_open() {
             self.search_focused = true;
         }
@@ -678,9 +774,12 @@ impl Chrome for Launcher {
     }
 
     fn toggle(&mut self, _out: &mut ChromeEvents) {
+        self.app_menu.dismiss();
         if !self.brain.is_open() {
             self.page = 0;
-            self.search_focused = true;
+            // Keyboard input is still captured immediately, but the visual
+            // caret appears only after a click or the first typed key.
+            self.search_focused = false;
         }
         self.brain.toggle();
         self.anim_active = true;
@@ -701,6 +800,24 @@ impl Chrome for Launcher {
             BACKDROP_BLUR_SIGMA
         } else {
             0.0
+        }
+    }
+
+    fn backdrop_regions(
+        &self,
+        display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &crate::WorkspaceSnapshot,
+    ) -> Vec<BackdropRegion> {
+        if self.brain.is_open() || self.visibility.value > 0.01 {
+            vec![BackdropRegion {
+                x: 0.0,
+                y: 0.0,
+                w: display.0,
+                h: display.1,
+            }]
+        } else {
+            Vec::new()
         }
     }
 }
@@ -863,18 +980,22 @@ mod tests {
 
     #[test]
     fn standard_layout_is_a_complete_page_above_the_dock() {
-        let layout = GridLayout::for_display(1280.0, 720.0);
+        let reserved = Reserved {
+            bottom: 86,
+            ..Reserved::default()
+        };
+        let layout = GridLayout::for_display(1280.0, 720.0, reserved);
         assert_eq!(layout.columns, 7);
         assert_eq!(layout.rows, 4);
         assert_eq!(layout.capacity(), 28);
         assert!(layout.x >= 0.0);
         assert!(layout.y >= SEARCH_TOP + SEARCH_H);
-        assert!(layout.y + layout.height <= 720.0 - 70.0);
+        assert!(layout.y + layout.height <= 720.0 - reserved.bottom as f32 - 40.0);
     }
 
     #[test]
     fn compact_layout_stays_usable() {
-        let layout = GridLayout::for_display(360.0, 480.0);
+        let layout = GridLayout::for_display(360.0, 480.0, Reserved::default());
         assert!(layout.columns >= 2);
         assert!(layout.rows >= 1);
         assert!(layout.capacity() >= 2);
@@ -882,7 +1003,7 @@ mod tests {
 
     #[test]
     fn pages_cover_every_application_without_a_render_cap() {
-        let capacity = GridLayout::for_display(1280.0, 720.0).capacity();
+        let capacity = GridLayout::for_display(1280.0, 720.0, Reserved::default()).capacity();
         let pages = page_count(257, capacity);
         assert!(pages * capacity >= 257);
         assert!((pages - 1) * capacity < 257);
@@ -896,11 +1017,11 @@ mod tests {
     }
 
     #[test]
-    fn opening_launcher_focuses_search() {
+    fn opening_launcher_keeps_search_caret_hidden() {
         let mut launcher = Launcher::new(Vec::new());
         launcher.toggle(&mut ChromeEvents::default());
         assert!(launcher.brain.is_open());
-        assert!(launcher.search_focused);
+        assert!(!launcher.search_focused);
     }
 
     #[test]

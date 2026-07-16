@@ -26,9 +26,12 @@ use std::ffi::c_void;
 
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect};
 
-use crate::{Chrome, ChromeEvents};
+use crate::{BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Message};
 use ass_core::app::Entry;
+use ass_core::input::{key_action, KeyAction, KeyChar};
 use ass_core::window::Window;
+
+use super::app_menu::AppMenu;
 
 /// Visual height of the dock bar. Tiles rest inside it; magnified tiles pop
 /// above its top edge (they are drawn as their own layers, unclipped).
@@ -68,6 +71,13 @@ const DOCK_TILE_GAP: f32 = 10.0;
 const DOCK_PAD: f32 = 10.0;
 /// Diameter of a running-indicator dot.
 const DOCK_DOT: f32 = 5.0;
+/// Pointer dwell before an application name appears. This keeps labels from
+/// flashing while the pointer merely crosses the dock.
+const TOOLTIP_DWELL: f32 = 0.30;
+/// Exponential fade speed for the dock application-name tooltip.
+const TOOLTIP_FADE_SPEED: f32 = 18.0;
+const TOOLTIP_HEIGHT: f32 = 28.0;
+const TOOLTIP_GAP: f32 = 9.0;
 
 /// One application pinned to the dock: the launchable entry plus the lowercased
 /// `app_id`s a running toplevel might report, used to fold a running window
@@ -94,8 +104,17 @@ struct Tile {
     activated: bool,
     /// Surface id to focus on click (a running window), if any.
     focus: Option<ass_core::window::WindowId>,
+    /// Every running window folded into this application tile. Right-click
+    /// actions operate on this complete set rather than an arbitrary match.
+    windows: Vec<ass_core::window::WindowId>,
+    /// Index into [`Dock::apps`] for pinned application metadata. Unlike
+    /// `spawn`, this remains present while the application is running so the
+    /// context menu can offer "New Window".
+    app: Option<usize>,
     /// Index into [`Dock::apps`] to spawn on click when nothing is running.
     spawn: Option<usize>,
+    /// Human-readable context-menu heading.
+    label: String,
     /// The Launchpad tile (always the first tile): clicking it toggles the
     /// launcher rather than focusing or spawning. Drawn as a 3×3 grid glyph.
     launchpad: bool,
@@ -104,14 +123,17 @@ struct Tile {
 impl Tile {
     /// The leading Launchpad tile — a macOS-style "show all apps" button that
     /// opens the launcher. Always present, never marked running.
-    fn launchpad() -> Tile {
+    fn launchpad(label: &str) -> Tile {
         Tile {
             key: "launchpad".to_string(),
             icon: None,
             running: false,
             activated: false,
             focus: None,
+            windows: Vec::new(),
+            app: None,
             spawn: None,
+            label: label.to_string(),
             launchpad: true,
         }
     }
@@ -139,6 +161,16 @@ pub struct Dock {
     /// the press edge. The host's per-frame `mouse_pressed` flag is not cleared
     /// between frames, so we track the `mouse_down` level transition ourselves.
     prev_down: bool,
+    /// Shared popup implementation also used by the full-screen launcher.
+    app_menu: AppMenu,
+    /// Stable tile identity for an open menu, used to keep the popup attached
+    /// while the dock's magnification spring moves and resizes that tile.
+    menu_tile: Option<String>,
+    /// Hover dwell and fade state for the app-name tooltip.
+    hovered_tile: Option<String>,
+    hover_elapsed: f32,
+    tooltip_tile: Option<String>,
+    tooltip_alpha: f32,
 }
 
 /// A damped-spring state for one animated scalar (a tile's edge length).
@@ -161,6 +193,12 @@ impl Dock {
             sizes: HashMap::new(),
             anim_active: false,
             prev_down: false,
+            app_menu: AppMenu::new("ass-dock-context-menu"),
+            menu_tile: None,
+            hovered_tile: None,
+            hover_elapsed: 0.0,
+            tooltip_tile: None,
+            tooltip_alpha: 0.0,
         }
     }
 
@@ -174,6 +212,12 @@ impl Dock {
             sizes: HashMap::new(),
             anim_active: false,
             prev_down: false,
+            app_menu: AppMenu::new("ass-dock-context-menu"),
+            menu_tile: None,
+            hovered_tile: None,
+            hover_elapsed: 0.0,
+            tooltip_tile: None,
+            tooltip_alpha: 0.0,
         }
     }
 
@@ -228,6 +272,10 @@ impl Dock {
     /// app. A window matches an app when its lowercased `app_id` is among the
     /// app's [`DockApp::keys`].
     fn tiles(&self, windows: &[Window]) -> Vec<Tile> {
+        self.localized_tiles(windows, "")
+    }
+
+    fn localized_tiles(&self, windows: &[Window], application_label: &str) -> Vec<Tile> {
         let win_appid: Vec<Option<String>> = windows
             .iter()
             .map(|w| w.app_id.as_ref().map(|a| a.to_ascii_lowercase()))
@@ -239,11 +287,17 @@ impl Dock {
             let mut running = false;
             let mut activated = false;
             let mut focus = None;
+            let mut window_ids = Vec::new();
             for (wi, w) in windows.iter().enumerate() {
                 let Some(a) = &win_appid[wi] else { continue };
                 if app.keys.iter().any(|k| k == a) {
                     claimed[wi] = true;
                     running = true;
+                    if w.state.activated {
+                        window_ids.insert(0, w.id);
+                    } else {
+                        window_ids.push(w.id);
+                    }
                     // Prefer the activated window as the focus target.
                     if w.state.activated {
                         activated = true;
@@ -260,7 +314,10 @@ impl Dock {
                 running,
                 activated,
                 focus,
+                windows: window_ids,
+                app: Some(i),
                 spawn: if running { None } else { Some(i) },
+                label: app.entry.name.clone(),
                 launchpad: false,
             });
         }
@@ -278,7 +335,14 @@ impl Dock {
                 running: true,
                 activated: w.state.activated,
                 focus: Some(w.id),
+                windows: vec![w.id],
+                app: None,
                 spawn: None,
+                label: w
+                    .title
+                    .clone()
+                    .or_else(|| w.app_id.clone())
+                    .unwrap_or_else(|| application_label.to_string()),
                 launchpad: false,
             });
         }
@@ -289,7 +353,7 @@ impl Dock {
     /// widths (or rest width before a tile's first render) so pointer routing
     /// follows the bar as it expands without claiming the entire bottom edge.
     fn pointer_bounds(&self, windows: &[Window], display: (f32, f32)) -> Rect {
-        let mut tiles = vec![Tile::launchpad()];
+        let mut tiles = vec![Tile::launchpad("")];
         tiles.extend(self.tiles(windows));
         let widths: Vec<f32> = tiles
             .iter()
@@ -326,17 +390,20 @@ impl Chrome for Dock {
         input: &Input,
         windows: &[Window],
         _workspaces: &crate::WorkspaceSnapshot,
+        i18n: &Localizer,
         out: &mut ChromeEvents,
     ) {
         let disp = input.as_raw().display_size;
         let dt = input.as_raw().dt_seconds.max(0.0);
         let cursor = input.as_raw().cursor;
+        let menu_was_open = self.app_menu.is_open();
 
         // The Launchpad tile always leads the strip (macOS-style), followed by
         // the pinned apps and any unpinned running windows.
         let mut tiles = Vec::with_capacity(self.apps.len() + windows.len() + 1);
-        tiles.push(Tile::launchpad());
-        tiles.extend(self.tiles(windows));
+        let application_label = i18n.text(Message::Applications);
+        tiles.push(Tile::launchpad(application_label));
+        tiles.extend(self.localized_tiles(windows, application_label));
         let n = tiles.len();
 
         // Drop eased sizes for tiles no longer present so the map does not
@@ -371,9 +438,21 @@ impl Chrome for Dock {
             };
             let target = DOCK_TILE + (DOCK_TILE_MAX - DOCK_TILE) * factor;
             let state = self.sizes.entry(t.key.clone()).or_insert(SpringState {
-                value: DOCK_TILE_BIRTH,
+                value: if menu_was_open {
+                    DOCK_TILE
+                } else {
+                    DOCK_TILE_BIRTH
+                },
                 vel: 0.0,
             });
+            // A context menu must not become a moving target. Freeze the
+            // complete wave exactly where it was opened; once the menu closes,
+            // the same springs resume toward the live pointer targets.
+            if menu_was_open {
+                state.vel = 0.0;
+                eased.push(state.value);
+                continue;
+            }
             eased.push(Self::spring(state, target, dt));
             // A spring is still animating while it is meaningfully off its
             // target or still moving. Sub-pixel drift is ignored so we don't
@@ -403,6 +482,32 @@ impl Chrome for Dock {
 
         // Bottom of every tile (icons are bottom-anchored and grow upward).
         let icon_bottom = panel_y + DOCK_PANEL_HEIGHT - DOCK_BASELINE_INSET;
+        let icon_rects: Vec<Rect> = (0..n)
+            .map(|i| {
+                let s = eased[i].max(1.0);
+                Rect {
+                    x: centre(i) - s * 0.5,
+                    y: icon_bottom - s,
+                    w: s,
+                    h: s,
+                }
+            })
+            .collect();
+
+        // The popup belongs to a tile rather than the pointer coordinate.
+        // Re-anchor every frame so it follows the tile's live spring geometry.
+        if self.app_menu.is_open() {
+            if let Some((index, _)) = self
+                .menu_tile
+                .as_ref()
+                .and_then(|key| tiles.iter().enumerate().find(|(_, tile)| &tile.key == key))
+            {
+                self.app_menu.set_owner(icon_rects[index]);
+            } else {
+                self.app_menu.dismiss();
+                self.menu_tile = None;
+            }
+        }
 
         // The bar background, drawn first so icons stack above it. Its width
         // follows the live reflow, so the panel visibly widens on hover.
@@ -426,9 +531,9 @@ impl Chrome for Dock {
         let mut hit: Option<usize> = None;
         if cursor.y >= slot_top && cursor.y <= slot_bottom {
             let mut best = f32::MAX;
-            for i in 0..n {
+            for (i, width) in eased.iter().enumerate() {
                 let cx = centre(i);
-                let half = eased[i] * 0.5 + DOCK_TILE_GAP * 0.5;
+                let half = *width * 0.5 + DOCK_TILE_GAP * 0.5;
                 let d = (cursor.x - cx).abs();
                 if d <= half && d < best {
                     best = d;
@@ -441,12 +546,7 @@ impl Chrome for Dock {
         for (i, t) in tiles.iter().enumerate() {
             let s = eased[i].max(1.0);
             let cx = centre(i);
-            let rect = Rect {
-                x: cx - s * 0.5,
-                y: icon_bottom - s,
-                w: s,
-                h: s,
-            };
+            let rect = icon_rects[i];
             let icon_id = format!("ass-dock-icon-{}", t.key);
             if t.launchpad {
                 // A rounded "app tile" with a 3×3 grid, so it reads as macOS's
@@ -512,7 +612,7 @@ impl Chrome for Dock {
         // Fire a click once on the press edge (the host does not clear the
         // per-frame pressed flag, so track the button-down level transition).
         let down = input.as_raw().mouse_down.first().copied().unwrap_or(false);
-        if down && !self.prev_down {
+        if down && !self.prev_down && !menu_was_open {
             if let Some(i) = hit {
                 let t = &tiles[i];
                 if t.launchpad {
@@ -520,9 +620,80 @@ impl Chrome for Dock {
                 } else if let Some(id) = t.focus {
                     out.clicked = Some(id);
                 } else if let Some(ai) = t.spawn {
-                    out.spawn = Some(self.apps[ai].entry.clone());
+                    out.activate_entry(self.apps[ai].entry.clone());
                 }
             }
+        }
+        let right_pressed = input
+            .as_raw()
+            .mouse_pressed
+            .get(1)
+            .copied()
+            .unwrap_or(false);
+        if right_pressed {
+            if let Some(i) = hit {
+                let tile = &tiles[i];
+                if !tile.launchpad {
+                    self.app_menu.open(
+                        tile.label.clone(),
+                        tile.app.map(|app| self.apps[app].entry.clone()),
+                        tile.windows.iter().copied(),
+                        icon_rects[i],
+                    );
+                    self.menu_tile = Some(tile.key.clone());
+                }
+            }
+        }
+
+        // Reveal an app name only after a short dwell, then keep it centred
+        // above the current animated icon. Switching tiles resets the dwell so
+        // a sweep across the dock does not produce a trail of labels.
+        let hovered_tile = hit.map(|i| tiles[i].key.clone());
+        if self.hovered_tile != hovered_tile {
+            self.hovered_tile = hovered_tile;
+            self.hover_elapsed = 0.0;
+            self.tooltip_tile = None;
+            self.tooltip_alpha = 0.0;
+        } else if self.hovered_tile.is_some() && !self.app_menu.is_open() {
+            self.hover_elapsed += dt;
+        }
+
+        if self.app_menu.is_open() {
+            self.tooltip_tile = None;
+            self.tooltip_alpha = 0.0;
+        } else {
+            let wants_tooltip = self.hovered_tile.is_some() && self.hover_elapsed >= TOOLTIP_DWELL;
+            if wants_tooltip {
+                self.tooltip_tile.clone_from(&self.hovered_tile);
+            }
+            let target = if wants_tooltip { 1.0 } else { 0.0 };
+            let blend = 1.0 - (-TOOLTIP_FADE_SPEED * dt.min(1.0 / 30.0)).exp();
+            self.tooltip_alpha += (target - self.tooltip_alpha) * blend;
+            if target == 0.0 && self.tooltip_alpha < 0.01 {
+                self.tooltip_alpha = 0.0;
+                self.tooltip_tile = None;
+            }
+            let waiting = self.hovered_tile.is_some() && self.hover_elapsed < TOOLTIP_DWELL;
+            let fading = (target - self.tooltip_alpha).abs() > 0.01;
+            self.anim_active |= waiting || fading;
+        }
+
+        if let Some((index, tile)) = self
+            .tooltip_tile
+            .as_ref()
+            .and_then(|key| tiles.iter().enumerate().find(|(_, tile)| &tile.key == key))
+        {
+            render_tooltip(
+                f,
+                &tile.label,
+                icon_rects[index],
+                (disp.x, disp.y),
+                self.tooltip_alpha,
+            );
+        }
+        self.app_menu.render(f, input, windows, i18n, out);
+        if !self.app_menu.is_open() {
+            self.menu_tile = None;
         }
         self.prev_down = down;
     }
@@ -536,6 +707,46 @@ impl Chrome for Dock {
             bottom: (DOCK_PANEL_HEIGHT + DOCK_BOTTOM_MARGIN) as i32,
             left: 0,
             right: 0,
+        }
+    }
+
+    fn backdrop_blur_sigma(&self) -> f32 {
+        12.0
+    }
+
+    fn backdrop_regions(
+        &self,
+        display: (f32, f32),
+        windows: &[Window],
+        _workspaces: &crate::WorkspaceSnapshot,
+    ) -> Vec<BackdropRegion> {
+        let bounds = self.pointer_bounds(windows, display);
+        let panel_y = display.1 - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN;
+        let radius = 18.0;
+        vec![
+            BackdropRegion {
+                x: bounds.x + radius,
+                y: panel_y,
+                w: (bounds.w - radius * 2.0).max(0.0),
+                h: DOCK_PANEL_HEIGHT,
+            },
+            BackdropRegion {
+                x: bounds.x,
+                y: panel_y + radius,
+                w: bounds.w,
+                h: DOCK_PANEL_HEIGHT - radius * 2.0,
+            },
+        ]
+    }
+
+    fn captures_keyboard(&self) -> bool {
+        self.app_menu.is_open()
+    }
+
+    fn key_char(&mut self, key: &KeyChar, _out: &mut ChromeEvents) {
+        if matches!(key_action(key.keysym, key.ch), KeyAction::Escape) {
+            self.app_menu.dismiss();
+            self.menu_tile = None;
         }
     }
 
@@ -555,11 +766,23 @@ impl Chrome for Dock {
         _workspaces: &crate::WorkspaceSnapshot,
     ) -> bool {
         let r = self.pointer_bounds(windows, display);
-        x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h
+        self.app_menu.contains(x, y, display)
+            || (x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h)
     }
 
     fn visible_during_modal(&self) -> bool {
         true
+    }
+
+    fn cursor_shape_at(
+        &self,
+        _x: f32,
+        _y: f32,
+        _display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &crate::WorkspaceSnapshot,
+    ) -> CursorShape {
+        CursorShape::Pointer
     }
 
     fn update_app_catalog(
@@ -568,6 +791,8 @@ impl Chrome for Dock {
         dock_apps: &[DockApp],
         icons: &HashMap<String, *mut c_void>,
     ) {
+        self.app_menu.dismiss();
+        self.menu_tile = None;
         self.apps = dock_apps.to_vec();
         self.icons.clone_from(icons);
     }
@@ -607,8 +832,8 @@ fn grid(gap: f32) -> LayoutOpts {
 /// The dock bar background: a rounded translucent panel.
 fn panel_opts() -> OverlayOpts {
     OverlayOpts {
-        bg: Color::rgba(28, 30, 44, 205),
-        border: Color::rgba(70, 74, 96, 140),
+        bg: Color::rgba(24, 26, 36, 148),
+        border: Color::rgba(255, 255, 255, 46),
         border_width: 1.0,
         radius: 18.0,
         pad: 0.0,
@@ -631,6 +856,59 @@ fn tile_opts() -> OverlayOpts {
     }
 }
 
+/// A compact app-name bubble that follows the owning dock icon. It is kept
+/// visually quieter than a context menu and never obscures the icon itself.
+fn render_tooltip(frame: &mut Frame, label: &str, owner: Rect, display: (f32, f32), alpha: f32) {
+    let label = truncate_tooltip(label, 32);
+    let text = frame.measure_text(&label, 12.5);
+    let width = (text.width + 22.0).clamp(54.0, 224.0);
+    let x = (owner.x + owner.w * 0.5 - width * 0.5).clamp(8.0, (display.0 - width - 8.0).max(8.0));
+    let y = (owner.y - TOOLTIP_GAP - TOOLTIP_HEIGHT - (1.0 - alpha) * 3.0).max(8.0);
+    let opacity = |base: u8| (base as f32 * alpha.clamp(0.0, 1.0)).round() as u8;
+    let rect = Rect {
+        x,
+        y,
+        w: width,
+        h: TOOLTIP_HEIGHT,
+    };
+    let original = frame.theme();
+    frame.set_theme(original.with_fg(Color::rgba(242, 244, 250, opacity(255))));
+    frame.layer(
+        "ass-dock-app-name",
+        rect,
+        &OverlayOpts {
+            bg: Color::rgba(23, 26, 38, opacity(232)),
+            border: Color::rgba(112, 118, 142, opacity(145)),
+            border_width: 1.0,
+            radius: 8.0,
+            pad: 0.0,
+            cross: Align::Center,
+            ..Default::default()
+        },
+        |frame| {
+            frame.column_ex(
+                &LayoutOpts {
+                    width,
+                    height: TOOLTIP_HEIGHT,
+                    cross: Align::Center,
+                    ..Default::default()
+                },
+                |frame| frame.label_compact_sized(&label, 12.5),
+            );
+        },
+    );
+    frame.set_theme(original);
+}
+
+fn truncate_tooltip(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut value: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    value.push('…');
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,9 +924,11 @@ mod tests {
     }
 
     fn window(id: u64, app_id: &str, activated: bool) -> Window {
-        let mut w = Window::default();
-        w.id = ass_core::window::WindowId(id);
-        w.app_id = Some(app_id.to_string());
+        let mut w = Window {
+            id: ass_core::window::WindowId(id),
+            app_id: Some(app_id.to_string()),
+            ..Default::default()
+        };
         w.state.activated = activated;
         w
     }

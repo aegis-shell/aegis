@@ -19,9 +19,15 @@ use std::os::raw::c_void;
 use lens::{Frame, Ui};
 
 pub mod chrome;
-pub use chrome::{Decorations, Dock, DockApp, Launcher, Toast, WorkspaceBar};
+pub mod i18n;
+pub mod system;
+pub use chrome::{
+    ControlCenter, Decorations, Dock, DockApp, HudBar, Launcher, Toast, WorkspaceBar,
+};
+pub use i18n::{Language, Localizer, Message};
+pub use system::{BatteryStatus, NetworkState, SystemAction, SystemStatus};
 
-use ass_core::app::Entry;
+use ass_core::app::{ApplicationTarget, BuiltInApplication, Entry};
 use ass_core::window::Window;
 use ass_core::workspace::WorkspaceSnapshot;
 
@@ -34,6 +40,30 @@ pub struct Reserved {
     pub bottom: i32,
     pub left: i32,
     pub right: i32,
+}
+
+/// Logical output-space rectangle whose already-composited desktop should be
+/// sampled and blurred before chrome is drawn over it. Components declare
+/// only the area occupied by their glass material; the executable shares one
+/// desktop capture across every request.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct BackdropRegion {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+/// Cursor shapes chrome can request from the nested host. Values deliberately
+/// mirror `wp_cursor_shape_device_v1.shape`, so the executable can pass them
+/// through without maintaining a second translation table.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(u32)]
+pub enum CursorShape {
+    #[default]
+    Default = 1,
+    Pointer = 4,
+    Text = 9,
 }
 
 impl Reserved {
@@ -56,12 +86,23 @@ impl Reserved {
 /// lens directly.
 pub use lens::Input;
 
+/// One ordered window-management action emitted by compositor chrome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowAction {
+    /// Focus and raise a window; focusing a minimized window restores it.
+    Focus(ass_core::window::WindowId),
+    /// Hide a window while keeping its client and buffers alive.
+    Minimize(ass_core::window::WindowId),
+    /// Ask a client to close one of its toplevels gracefully.
+    Close(ass_core::window::WindowId),
+}
+
 /// Interaction intents chrome components emit during a frame. The core
 /// collects these and the main loop drains them into server window-management
 /// actions (`focus_surface_by_id`, `close_toplevel`,
 /// `start_interactive_move`) or, for [`ChromeEvents::spawn`], into
-/// `ass-launch`. Each field is set at most once per frame; components share
-/// the sink.
+/// `ass-launch`. Scalar intents keep the latest value; application menus use
+/// an ordered queue for multi-window actions.
 #[derive(Debug, Default)]
 pub struct ChromeEvents {
     /// The chrome requested the session to quit.
@@ -72,11 +113,19 @@ pub struct ChromeEvents {
     pub closed: Option<ass_core::window::WindowId>,
     /// Window id a component asked to start an interactive move on.
     pub move_requested: Option<ass_core::window::WindowId>,
+    /// Ordered window actions emitted by popup menus. A queue allows an
+    /// application-level action such as "close all windows" to preserve one
+    /// journal entry per affected toplevel.
+    pub window_actions: Vec<WindowAction>,
     /// A desktop entry the chrome asked to launch (e.g. the launcher's
     /// clicked row). Drained into `ass-launch` by the main loop; carrying the
     /// full [`Entry`] keeps `ass-shell` free of any `ass-apps` dependency
     /// (ADR-0022).
     pub spawn: Option<Entry>,
+    /// A trusted compositor-owned application to present. Built-ins share the
+    /// launcher catalog with external apps but never pass through a shell
+    /// command or process boundary.
+    pub open_builtin: Option<BuiltInApplication>,
     /// A workspace the chrome asked to switch to (the workspace bar's clicked
     /// tile). Drained into `Server::switch_workspace_to` by the main loop
     /// (ADR-0025).
@@ -89,6 +138,18 @@ pub struct ChromeEvents {
     /// Notification id the toast stack asked to dismiss. Drained through the
     /// same command/journal path as an IPC dismissal.
     pub dismissed_notification: Option<u64>,
+    /// Ordered host-system mutations requested by compositor-owned UI.
+    pub system_actions: Vec<SystemAction>,
+}
+
+impl ChromeEvents {
+    /// Activate one catalog entry through its declared target.
+    pub fn activate_entry(&mut self, entry: Entry) {
+        match entry.target {
+            ApplicationTarget::External => self.spawn = Some(entry),
+            ApplicationTarget::BuiltIn(app) => self.open_builtin = Some(app),
+        }
+    }
 }
 
 /// One piece of compositor chrome.
@@ -109,6 +170,7 @@ pub trait Chrome {
         input: &Input,
         windows: &[Window],
         workspaces: &WorkspaceSnapshot,
+        i18n: &Localizer,
         out: &mut ChromeEvents,
     );
 
@@ -130,6 +192,14 @@ pub trait Chrome {
     /// loop's `TapDetector`). Default no-op; components with an open/closed
     /// state (the launcher) override this to flip it.
     fn toggle(&mut self, _out: &mut ChromeEvents) {}
+
+    /// Present one compositor-owned application. Only the component backing
+    /// the requested identity acts; ordinary chrome ignores it.
+    fn open_builtin(&mut self, _app: BuiltInApplication) {}
+
+    /// Receive a normalized host-system snapshot. Components keep their own
+    /// presentation copy so the render trait remains focused on frame data.
+    fn update_system_status(&mut self, _status: &SystemStatus) {}
 
     /// Whether this component owns pointer input at the given output-space
     /// position. The main loop uses this before client routing so clicks on
@@ -158,6 +228,24 @@ pub trait Chrome {
     fn visible_during_modal(&self) -> bool {
         false
     }
+
+    /// Cursor shape to use while this component owns the pointer at `(x, y)`.
+    /// The shell asks only after [`Chrome::captures_pointer`] returned true.
+    fn cursor_shape_at(
+        &self,
+        _x: f32,
+        _y: f32,
+        _display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> CursorShape {
+        CursorShape::Default
+    }
+
+    /// Inform modal chrome about edge space belonging to persistent chrome.
+    /// A full-screen launcher still paints the whole output, but lays out its
+    /// usable content above a dock that remains visible during the modal.
+    fn set_modal_reserved(&mut self, _reserved: Reserved) {}
 
     /// Refresh the host application catalog and decoded icon map. Components
     /// that do not display applications ignore it; the launcher and dock
@@ -194,6 +282,18 @@ pub trait Chrome {
     fn backdrop_blur_sigma(&self) -> f32 {
         0.0
     }
+
+    /// Regions covered by this component's glass material, in logical output
+    /// coordinates. A component requesting blur without a region is treated
+    /// as full-screen for compatibility.
+    fn backdrop_regions(
+        &self,
+        _display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> Vec<BackdropRegion> {
+        Vec::new()
+    }
 }
 
 /// Errors from the shell.
@@ -216,6 +316,8 @@ pub struct Shell {
     ui: Ui,
     windows: Vec<Window>,
     workspaces: WorkspaceSnapshot,
+    i18n: Localizer,
+    system_status: SystemStatus,
     events: ChromeEvents,
     components: Vec<Box<dyn Chrome>>,
 }
@@ -225,7 +327,7 @@ impl Shell {
     /// registered; add components with [`Shell::add`].
     ///
     /// # Safety
-    /// `device` must be a live `flux_device` (from [`flux::Device::as_raw`]) and
+    /// `device` must be a live `flux_device` (from `flux::Device::as_raw`) and
     /// outlive the `Shell`. The pointer crosses from the `flux` bindings' type
     /// to lens's distinct-but-ABI-identical `flux_device`.
     pub unsafe fn new(device: *mut c_void) -> Result<Shell, ShellError> {
@@ -237,6 +339,8 @@ impl Shell {
             workspaces: WorkspaceSnapshot {
                 outputs: Vec::new(),
             },
+            i18n: Localizer::from_env(),
+            system_status: SystemStatus::default(),
             events: ChromeEvents::default(),
             components: Vec::new(),
         })
@@ -244,7 +348,8 @@ impl Shell {
 
     /// Register a chrome component. Components render once per frame, in
     /// registration order.
-    pub fn add(&mut self, component: Box<dyn Chrome>) {
+    pub fn add(&mut self, mut component: Box<dyn Chrome>) {
+        component.update_system_status(&self.system_status);
         self.components.push(component);
     }
 
@@ -254,6 +359,18 @@ impl Shell {
     /// backend's output scale here each time it changes.
     pub fn set_scale(&mut self, scale: f32) {
         self.ui.set_scale(scale);
+    }
+
+    /// Select chrome translations from a POSIX locale or BCP-47 language tag.
+    /// Unsupported locales use the English fallback catalog. The shell starts
+    /// with the process message locale (`LC_ALL` > `LC_MESSAGES` > `LANG`).
+    pub fn set_locale(&mut self, locale: &str) {
+        self.i18n = Localizer::new(locale);
+    }
+
+    /// Canonical locale tag of the active shell translation catalog.
+    pub fn locale(&self) -> &'static str {
+        self.i18n.locale()
     }
 
     /// Whether any component requested the session to quit this frame.
@@ -292,10 +409,42 @@ impl Shell {
         self.events.move_requested.take()
     }
 
+    /// Drain ordered window actions emitted by application context menus.
+    pub fn take_window_actions(&mut self) -> Vec<WindowAction> {
+        std::mem::take(&mut self.events.window_actions)
+    }
+
     /// Drain the desktop entry the chrome asked to launch this frame, if any.
     /// The main loop hands it to `ass-launch`.
     pub fn take_spawn(&mut self) -> Option<Entry> {
         self.events.spawn.take()
+    }
+
+    /// Drain the compositor-owned application requested this frame.
+    pub fn take_open_builtin(&mut self) -> Option<BuiltInApplication> {
+        self.events.open_builtin.take()
+    }
+
+    /// Present a compositor-owned application through its registered chrome
+    /// component.
+    pub fn open_builtin(&mut self, app: BuiltInApplication) {
+        for component in self.components.iter_mut() {
+            component.open_builtin(app);
+        }
+    }
+
+    /// Replace the normalized system snapshot and notify interested shell
+    /// applications and compact status surfaces.
+    pub fn set_system_status(&mut self, status: SystemStatus) {
+        self.system_status = status;
+        for component in self.components.iter_mut() {
+            component.update_system_status(&self.system_status);
+        }
+    }
+
+    /// Drain ordered system mutations requested by trusted shell UI.
+    pub fn take_system_actions(&mut self) -> Vec<SystemAction> {
+        std::mem::take(&mut self.events.system_actions)
     }
 
     /// Drain the workspace id the chrome asked to switch to this frame, if
@@ -333,6 +482,26 @@ impl Shell {
             .any(|c| c.captures_pointer(x, y, display, &self.windows, &self.workspaces))
     }
 
+    /// Cursor requested by the topmost chrome component at `(x, y)`, or
+    /// `None` when the pointer belongs to a client. Components are visited in
+    /// reverse registration order because that is their visual stacking order.
+    pub fn cursor_shape_at(&self, x: f32, y: f32, display: (f32, f32)) -> Option<CursorShape> {
+        let modal_active = self
+            .components
+            .iter()
+            .any(|component| component.modal_active());
+        self.components
+            .iter()
+            .rev()
+            .filter(|component| !modal_active || component.visible_during_modal())
+            .find(|component| {
+                component.captures_pointer(x, y, display, &self.windows, &self.workspaces)
+            })
+            .map(|component| {
+                component.cursor_shape_at(x, y, display, &self.windows, &self.workspaces)
+            })
+    }
+
     /// Push a newly scanned application catalog to interested components.
     pub fn update_app_catalog(
         &mut self,
@@ -345,9 +514,9 @@ impl Shell {
         }
     }
 
-    /// Feed one resolved key event to every registered component. Only
-    /// components that override [`Chrome::key_char`] (the launcher) act on it;
-    /// others take the default no-op.
+    /// Feed one resolved key event to every registered component. Components
+    /// with keyboard-owned state, such as the launcher or an application
+    /// context menu, override [`Chrome::key_char`]; others no-op.
     pub fn key_char(&mut self, kc: ass_core::input::KeyChar) {
         let events = &mut self.events;
         for component in self.components.iter_mut() {
@@ -400,22 +569,66 @@ impl Shell {
             .fold(0.0_f32, f32::max)
     }
 
+    /// Glass regions contributed by components that will render this frame.
+    /// Ordinary chrome is excluded while a modal is active, matching the
+    /// render path below.
+    pub fn backdrop_regions(&self, display: (f32, f32)) -> Vec<BackdropRegion> {
+        let modal_active = self
+            .components
+            .iter()
+            .any(|component| component.modal_active());
+        let mut regions = Vec::new();
+        for component in &self.components {
+            if (!modal_active || component.visible_during_modal())
+                && component.backdrop_blur_sigma() > 0.0
+            {
+                let mut requested =
+                    component.backdrop_regions(display, &self.windows, &self.workspaces);
+                if requested.is_empty() {
+                    requested.push(BackdropRegion {
+                        x: 0.0,
+                        y: 0.0,
+                        w: display.0,
+                        h: display.1,
+                    });
+                }
+                regions.extend(requested);
+            }
+        }
+        regions
+    }
+
     /// Run every registered component and render the chrome into `canvas`,
     /// using `input` for interaction.
     ///
     /// # Safety
-    /// `canvas` must be a live `flux_canvas` (from [`flux::Canvas::as_raw`])
+    /// `canvas` must be a live `flux_canvas` (from `flux::Canvas::as_raw`)
     /// currently inside a `begin`/`end` recording pair on the active frame.
     pub unsafe fn render(&mut self, canvas: *mut c_void, input: &Input) -> Result<(), ShellError> {
         let windows = &self.windows;
         let workspaces = &self.workspaces;
+        let i18n = &self.i18n;
         let events = &mut self.events;
         let components = &mut self.components;
+        let modal_reserved = components
+            .iter()
+            .filter(|component| component.visible_during_modal())
+            .fold(Reserved::default(), |mut total, component| {
+                let edge = component.reserved();
+                total.top += edge.top;
+                total.bottom += edge.bottom;
+                total.left += edge.left;
+                total.right += edge.right;
+                total
+            });
+        for component in components.iter_mut() {
+            component.set_modal_reserved(modal_reserved);
+        }
         self.ui.frame(input, |f| {
             let modal_active = components.iter().any(|component| component.modal_active());
             for component in components.iter_mut() {
                 if !modal_active || component.visible_during_modal() {
-                    component.render(f, input, windows, workspaces, events);
+                    component.render(f, input, windows, workspaces, i18n, events);
                 }
             }
         });

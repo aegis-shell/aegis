@@ -4,84 +4,92 @@
 //! [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/):
 //!
 //! - `$XDG_DATA_HOME` (default `$HOME/.local/share`) comes first.
-//! - `$XDG_DATA_DIRS` (default `/usr/local/share:/usr/share`) follow, in
-//!   order. Empty components are skipped.
+//! - `$XDG_DATA_DIRS` (default `/usr/local/share:/usr/share`) follow in order.
+//! - Relative and empty XDG components are ignored.
 //!
-//! Icon search additionally appends `/usr/share/pixmaps` (the icon-theme
-//! spec's legacy fallback) to every `<data>/icons` set.
+//! Icon search adds the legacy `$HOME/.icons` base and the unthemed
+//! `/usr/share/pixmaps` fallback around the XDG `<data>/icons` bases.
 
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 /// The `$XDG_DATA_HOME` / `$XDG_DATA_DIRS` list, in lookup precedence.
 ///
-/// Empty entries are skipped. A missing `$HOME` collapses the home-relative
-/// default to nothing rather than panicking.
+/// Invalid relative and empty entries are skipped. A missing `$HOME`
+/// collapses the home-relative default to nothing rather than panicking.
 pub fn xdg_data_dirs() -> Vec<PathBuf> {
+    xdg_data_dirs_from(
+        std::env::var_os("XDG_DATA_HOME"),
+        std::env::var_os("XDG_DATA_DIRS"),
+        home_dir(),
+    )
+}
+
+/// Pure XDG data-directory resolution used by [`xdg_data_dirs`] and tests.
+///
+/// The base-directory specification requires every XDG path to be absolute;
+/// invalid relative components are ignored. The system defaults are used
+/// only when `XDG_DATA_DIRS` is unset or empty, never appended to an explicit
+/// search path.
+fn xdg_data_dirs_from(
+    data_home: Option<OsString>,
+    data_dirs: Option<OsString>,
+    home: Option<PathBuf>,
+) -> Vec<PathBuf> {
     let mut out = Vec::new();
 
-    // XDG_DATA_HOME: single directory, default ~/.local/share.
-    let home = match std::env::var("HOME") {
-        Ok(h) if !h.is_empty() => Some(PathBuf::from(h)),
-        _ => dirs::data_dir(),
-    };
-    match std::env::var("XDG_DATA_HOME") {
-        Ok(v) if !v.is_empty() && v != "$HOME/.local/share" => {
-            out.push(PathBuf::from(v));
-        }
-        _ => {
-            if let Some(h) = home {
-                out.push(h.join(".local/share"));
-            } else if let Some(d) = dirs::data_dir() {
-                out.push(d);
-            }
-        }
+    let data_home = absolute_nonempty(data_home.as_deref()).or_else(|| {
+        home.filter(|p| p.is_absolute())
+            .map(|p| p.join(".local/share"))
+    });
+    if let Some(path) = data_home {
+        push_unique(&mut out, path);
     }
 
-    // XDG_DATA_DIRS: colon list, default /usr/local/share:/usr/share.
-    let dirs_env = std::env::var("XDG_DATA_DIRS")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "/usr/local/share:/usr/share".to_string());
-    for part in dirs_env.split(':') {
-        let p = part.trim();
-        if p.is_empty() {
-            continue;
+    let explicit = data_dirs.as_deref().filter(|value| !value.is_empty());
+    if let Some(value) = explicit {
+        for path in std::env::split_paths(value).filter(|path| path.is_absolute()) {
+            push_unique(&mut out, path);
         }
-        let pb = PathBuf::from(p);
-        if !out.contains(&pb) {
-            out.push(pb);
-        }
-    }
-
-    // Guarantee the spec defaults are present even if the environment is
-    // hostile (e.g. tests running with a cleared env). Deduplicated above.
-    for default in ["/usr/local/share", "/usr/share"] {
-        let pb = PathBuf::from(default);
-        if !out.contains(&pb) {
-            out.push(pb);
-        }
+    } else {
+        push_unique(&mut out, PathBuf::from("/usr/local/share"));
+        push_unique(&mut out, PathBuf::from("/usr/share"));
     }
 
     out
 }
 
+fn absolute_nonempty(value: Option<&OsStr>) -> Option<PathBuf> {
+    let path = PathBuf::from(value?);
+    (!path.as_os_str().is_empty() && path.is_absolute()).then_some(path)
+}
+
+fn home_dir() -> Option<PathBuf> {
+    absolute_nonempty(std::env::var_os("HOME").as_deref()).or_else(dirs::home_dir)
+}
+
+fn push_unique(out: &mut Vec<PathBuf>, path: PathBuf) {
+    if !out.contains(&path) {
+        out.push(path);
+    }
+}
+
 /// Every base directory the icon-theme spec searches, in precedence.
 ///
-/// For each XDG data dir this yields `<dir>/icons`, then appends
-/// `/usr/share/pixmaps` exactly once as the legacy fallback. Duplicates are
-/// removed.
+/// This yields `$HOME/.icons`, every XDG `<dir>/icons`, and finally
+/// `/usr/share/pixmaps`. Duplicates are removed without changing precedence.
 pub fn icon_search_bases() -> Vec<PathBuf> {
     let mut out = Vec::new();
+    // The icon-theme specification keeps ~/.icons as its highest-precedence
+    // compatibility location. XDG data-home/icons follows through the normal
+    // data-directory list.
+    if let Some(home) = home_dir() {
+        push_unique(&mut out, home.join(".icons"));
+    }
     for d in xdg_data_dirs() {
-        let icons = d.join("icons");
-        if !out.contains(&icons) {
-            out.push(icons);
-        }
+        push_unique(&mut out, d.join("icons"));
     }
-    let pixmap = PathBuf::from("/usr/share/pixmaps");
-    if !out.contains(&pixmap) {
-        out.push(pixmap);
-    }
+    push_unique(&mut out, PathBuf::from("/usr/share/pixmaps"));
     out
 }
 
@@ -89,17 +97,64 @@ pub fn icon_search_bases() -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
+    fn os(value: &str) -> Option<OsString> {
+        Some(OsString::from(value))
+    }
+
     #[test]
-    fn data_dirs_contains_system_defaults() {
-        let dirs = xdg_data_dirs();
-        assert!(dirs.contains(&PathBuf::from("/usr/share")));
-        assert!(dirs.contains(&PathBuf::from("/usr/local/share")));
+    fn explicit_data_dirs_are_not_extended_with_defaults() {
+        let dirs = xdg_data_dirs_from(
+            os("/home/test/data"),
+            os("/opt/share:/srv/share"),
+            Some(PathBuf::from("/home/test")),
+        );
+        assert_eq!(
+            dirs,
+            ["/home/test/data", "/opt/share", "/srv/share"].map(PathBuf::from)
+        );
+    }
+
+    #[test]
+    fn unset_values_use_spec_defaults() {
+        let dirs = xdg_data_dirs_from(None, None, Some(PathBuf::from("/home/test")));
+        assert_eq!(
+            dirs,
+            ["/home/test/.local/share", "/usr/local/share", "/usr/share"].map(PathBuf::from)
+        );
+    }
+
+    #[test]
+    fn relative_xdg_paths_are_ignored() {
+        let dirs = xdg_data_dirs_from(
+            os("relative/home"),
+            os("relative/system:/valid/share"),
+            Some(PathBuf::from("/home/test")),
+        );
+        assert_eq!(
+            dirs,
+            ["/home/test/.local/share", "/valid/share"].map(PathBuf::from)
+        );
+    }
+
+    #[test]
+    fn duplicate_paths_keep_first_precedence() {
+        let dirs = xdg_data_dirs_from(
+            os("/home/test/data"),
+            os("/opt/share:/opt/share:/usr/share"),
+            Some(PathBuf::from("/home/test")),
+        );
+        assert_eq!(
+            dirs,
+            ["/home/test/data", "/opt/share", "/usr/share"].map(PathBuf::from)
+        );
     }
 
     #[test]
     fn icon_bases_include_pixmaps_and_icons() {
         let bases = icon_search_bases();
-        assert!(bases.contains(&PathBuf::from("/usr/share/icons")));
+        for data_dir in xdg_data_dirs() {
+            assert!(bases.contains(&data_dir.join("icons")));
+        }
         assert!(bases.contains(&PathBuf::from("/usr/share/pixmaps")));
     }
 }

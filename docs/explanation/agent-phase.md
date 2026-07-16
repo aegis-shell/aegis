@@ -86,7 +86,7 @@ pattern, not a reimplementation per pattern. The compositor stays put.
 |-----------------|-----------------|--------------|
 | Function calling / tool use | Claude, GPT, Gemini, Qwen, Mistral | Each IPC request becomes a tool; the adapter translates between the model's tool-call schema and ass's JSON. |
 | Model Context Protocol | Claude Desktop, Cline, Cursor | One adapter exposes IPC operations as MCP tools, the model snapshot as MCP resources, and the journal as MCP subscriptions. |
-| Vision-based computer use | Claude Computer Use, OpenAI Operator | Requires pixel capture and input injection — the deferred perceptual path; the fallback for applications the structured model cannot reach. |
+| Vision-based computer use | Claude Computer Use, OpenAI Operator | Bounded target-local input is available; pixel capture and arbitrary gestures remain the deferred perceptual path for applications the structured model cannot reach. |
 | Agent SDKs | Claude Agent SDK, LangGraph, custom | The agent process uses an SDK; tools call through the IPC. The SDK is indifferent to the transport. |
 | Local models | Ollama, llama.cpp, MLX | Same tool-calling interface, routed to a local endpoint. Smaller models benefit most from the structured path. |
 | Multi-agent orchestration | CrewAI, AutoGen, sub-agents | Each agent is a separate connection with its own scope; the journal lets them observe each other. Scoped capabilities are what make this safe. |
@@ -100,13 +100,13 @@ re-architecture. This is not coincidence: both are answers to the same
 question — how does an out-of-process agent address a system it did not
 build? — and the answer is the same shape both times.
 
-The vision-based computer-use pattern is the exception. It needs what the
-structured path deliberately does not provide: raw pixels and arbitrary
-input injection. ass treats this as a measured fallback, opened only when
-the structured path plus the M9 accessibility output demonstrably cannot
-cover a class of agent tasks. The default bet is that structure plus
-accessibility is enough; pixels earn their own capability gate and their
-own ADR if and when the bet fails.
+The vision-based computer-use pattern is the exception. Scoped, target-local
+clicks, scrolls, pointer moves, and key presses cover bounded interaction
+without granting a client arbitrary desktop input. Raw pixels, background
+capture, and arbitrary gestures remain outside the structured path. ass treats
+those as a measured fallback, opened only when the structured path plus the M9
+accessibility output demonstrably cannot cover a class of agent tasks. Pixels
+earn their own capability gate and ADR if and when that case is established.
 
 ## The Strategic Bet
 

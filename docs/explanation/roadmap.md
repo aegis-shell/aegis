@@ -241,11 +241,13 @@ output; a journaled mutation log the agent can replay; and a capability
 model that bounds what the agent may do. The agent is an IPC client with a
 defined scope, never a special client of the compositor.
 
-**Status.** In progress (framing). The blueprint is in
-[The Agent Phase](agent-phase.md); the framing decisions landed in
+**Status.** In progress. Durable window ids, the mutation journal, fail-closed
+named scopes, deterministic floating-window geometry, and bounded target-local
+input are implemented. The blueprint is in
+[The Agent Phase](agent-phase.md); decisions are recorded in
 [ADR-0031](../adr/0031-agent-as-scoped-ipc-client.md) through
-[ADR-0034](../adr/0034-scoped-capabilities.md). Implementation ADRs follow
-as the desktop milestones that precede M10 close.
+[ADR-0036](../adr/0036-scoped-semantic-automation.md). Pixel capture and the
+remaining desktop-dependent semantic surface stay open.
 
 ## Sequencing Rationale
 

@@ -2,7 +2,7 @@
 
 use lens::{Color, Frame, Input, OverlayOpts, Rect};
 
-use crate::{Chrome, ChromeEvents};
+use crate::{Chrome, ChromeEvents, Localizer, Message};
 use ass_core::window::Window;
 
 /// Height of the server-side decoration title bar drawn above each mapped
@@ -37,6 +37,7 @@ impl Chrome for Decorations {
         input: &Input,
         windows: &[Window],
         _workspaces: &crate::WorkspaceSnapshot,
+        i18n: &Localizer,
         out: &mut ChromeEvents,
     ) {
         let left_pressed = input
@@ -80,7 +81,10 @@ impl Chrome for Decorations {
                 f.row(|f| {
                     // Title text grows to fill; click starts move.
                     f.flex(1.0);
-                    let label = w.title.as_deref().unwrap_or("<untitled>");
+                    let label = w
+                        .title
+                        .as_deref()
+                        .unwrap_or_else(|| i18n.text(Message::Untitled));
                     f.selectable(label, false);
                     // Begin the compositor grab on the press edge. A normal
                     // widget click fires on release, which is too late to

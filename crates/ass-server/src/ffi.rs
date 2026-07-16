@@ -35,14 +35,19 @@ pub use ass_protocols::{
     ext_session_lock_v1_interface, wp_cursor_shape_device_v1_interface,
     wp_cursor_shape_manager_v1_interface, wp_fractional_scale_manager_v1_interface,
     wp_fractional_scale_v1_interface, wp_presentation_feedback_interface,
-    wp_presentation_interface, zwp_confined_pointer_v1_interface,
-    zwp_idle_inhibit_manager_v1_interface, zwp_idle_inhibitor_v1_interface,
-    zwp_locked_pointer_v1_interface, zwp_pointer_constraints_v1_interface,
-    zwp_primary_selection_device_manager_v1_interface, zwp_primary_selection_device_v1_interface,
-    zwp_primary_selection_offer_v1_interface, zwp_primary_selection_source_v1_interface,
-    zwp_relative_pointer_manager_v1_interface, zwp_relative_pointer_v1_interface,
-    zwp_text_input_manager_v3_interface, zwp_text_input_v3_interface,
+    wp_presentation_interface, xdg_activation_token_v1_interface, xdg_activation_v1_interface,
+    zwp_confined_pointer_v1_interface, zwp_idle_inhibit_manager_v1_interface,
+    zwp_idle_inhibitor_v1_interface, zwp_keyboard_shortcuts_inhibit_manager_v1_interface,
+    zwp_keyboard_shortcuts_inhibitor_v1_interface, zwp_locked_pointer_v1_interface,
+    zwp_pointer_constraints_v1_interface, zwp_pointer_gesture_hold_v1_interface,
+    zwp_pointer_gesture_pinch_v1_interface, zwp_pointer_gesture_swipe_v1_interface,
+    zwp_pointer_gestures_v1_interface, zwp_primary_selection_device_manager_v1_interface,
+    zwp_primary_selection_device_v1_interface, zwp_primary_selection_offer_v1_interface,
+    zwp_primary_selection_source_v1_interface, zwp_relative_pointer_manager_v1_interface,
+    zwp_relative_pointer_v1_interface, zwp_text_input_manager_v3_interface,
+    zwp_text_input_v3_interface, zxdg_decoration_manager_v1_interface,
     zxdg_output_manager_v1_interface, zxdg_output_v1_interface,
+    zxdg_toplevel_decoration_v1_interface,
 };
 
 pub type wl_display = c_void;
@@ -69,11 +74,33 @@ pub const WL_BUFFER_RELEASE: u32 = 0;
 
 /// `wl_data_device` event opcodes.
 pub const WL_DATA_DEVICE_DATA_OFFER: u32 = 0;
-pub const WL_DATA_DEVICE_SELECTION: u32 = 1;
+pub const WL_DATA_DEVICE_ENTER: u32 = 1;
+pub const WL_DATA_DEVICE_LEAVE: u32 = 2;
+pub const WL_DATA_DEVICE_MOTION: u32 = 3;
+pub const WL_DATA_DEVICE_DROP: u32 = 4;
+pub const WL_DATA_DEVICE_SELECTION: u32 = 5;
 /// `wl_data_offer` event opcodes.
 pub const WL_DATA_OFFER_OFFER: u32 = 0;
+pub const WL_DATA_OFFER_SOURCE_ACTIONS: u32 = 1;
+pub const WL_DATA_OFFER_ACTION: u32 = 2;
 /// `wl_data_source` event opcodes.
+pub const WL_DATA_SOURCE_TARGET: u32 = 0;
 pub const WL_DATA_SOURCE_SEND: u32 = 1;
+pub const WL_DATA_SOURCE_CANCELLED: u32 = 2;
+pub const WL_DATA_SOURCE_DND_DROP_PERFORMED: u32 = 3;
+pub const WL_DATA_SOURCE_DND_FINISHED: u32 = 4;
+pub const WL_DATA_SOURCE_ACTION: u32 = 5;
+pub const WL_DATA_ACTION_NONE: u32 = 0;
+pub const WL_DATA_ACTION_COPY: u32 = 1;
+pub const WL_DATA_ACTION_MOVE: u32 = 2;
+pub const WL_DATA_ACTION_ASK: u32 = 4;
+pub const WL_DATA_ACTION_MASK: u32 = 7;
+pub const WL_DATA_SOURCE_ERROR_INVALID_ACTION_MASK: u32 = 0;
+pub const WL_DATA_SOURCE_ERROR_INVALID_SOURCE: u32 = 1;
+pub const WL_DATA_OFFER_ERROR_INVALID_FINISH: u32 = 0;
+pub const WL_DATA_OFFER_ERROR_INVALID_ACTION_MASK: u32 = 1;
+pub const WL_DATA_OFFER_ERROR_INVALID_ACTION: u32 = 2;
+pub const WL_DATA_OFFER_ERROR_INVALID_OFFER: u32 = 3;
 pub const XDG_SURFACE_CONFIGURE: u32 = 0;
 pub const XDG_TOPLEVEL_CONFIGURE: u32 = 0;
 pub const XDG_TOPLEVEL_CLOSE: u32 = 1;
@@ -91,6 +118,14 @@ pub const ZXDG_OUTPUT_V1_LOGICAL_SIZE: u32 = 1;
 pub const ZXDG_OUTPUT_V1_DONE: u32 = 2;
 pub const ZXDG_OUTPUT_V1_NAME: u32 = 3;
 pub const ZXDG_OUTPUT_V1_DESCRIPTION: u32 = 4;
+pub const ZXDG_TOPLEVEL_DECORATION_V1_CONFIGURE: u32 = 0;
+pub const ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE: u32 = 1;
+pub const ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE: u32 = 2;
+pub const ZXDG_TOPLEVEL_DECORATION_V1_ERROR_ALREADY_CONSTRUCTED: u32 = 1;
+pub const ZXDG_TOPLEVEL_DECORATION_V1_ERROR_ORPHANED: u32 = 2;
+pub const ZXDG_TOPLEVEL_DECORATION_V1_ERROR_INVALID_MODE: u32 = 3;
+pub const XDG_ACTIVATION_TOKEN_V1_DONE: u32 = 0;
+pub const XDG_ACTIVATION_TOKEN_V1_ERROR_ALREADY_USED: u32 = 0;
 pub const WL_SEAT_CAPABILITIES: u32 = 0;
 pub const WL_SEAT_NAME: u32 = 1;
 /// `wl_seat.capability.pointer` bit.
@@ -154,6 +189,21 @@ pub const WP_FRACTIONAL_SCALE_V1_PREFERRED_SCALE: u32 = 0;
 
 // zwp_relative_pointer_v1
 pub const ZWP_RELATIVE_POINTER_V1_RELATIVE_MOTION: u32 = 0;
+
+// zwp_pointer_gesture_{swipe,pinch,hold}_v1
+pub const ZWP_POINTER_GESTURE_SWIPE_V1_BEGIN: u32 = 0;
+pub const ZWP_POINTER_GESTURE_SWIPE_V1_UPDATE: u32 = 1;
+pub const ZWP_POINTER_GESTURE_SWIPE_V1_END: u32 = 2;
+pub const ZWP_POINTER_GESTURE_PINCH_V1_BEGIN: u32 = 0;
+pub const ZWP_POINTER_GESTURE_PINCH_V1_UPDATE: u32 = 1;
+pub const ZWP_POINTER_GESTURE_PINCH_V1_END: u32 = 2;
+pub const ZWP_POINTER_GESTURE_HOLD_V1_BEGIN: u32 = 0;
+pub const ZWP_POINTER_GESTURE_HOLD_V1_END: u32 = 1;
+
+// keyboard-shortcuts-inhibit-unstable-v1
+pub const ZWP_KEYBOARD_SHORTCUTS_INHIBITOR_V1_ACTIVE: u32 = 0;
+pub const ZWP_KEYBOARD_SHORTCUTS_INHIBITOR_V1_INACTIVE: u32 = 1;
+pub const ZWP_KEYBOARD_SHORTCUTS_INHIBIT_MANAGER_V1_ERROR_ALREADY_INHIBITED: u32 = 0;
 
 // zwp_confined_pointer_v1
 pub const ZWP_CONFINED_POINTER_V1_CONFINED: u32 = 0;
@@ -410,19 +460,15 @@ pub struct wl_subsurface_interface_impl {
     pub set_desync: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
 }
 
-/// `wl_data_device_manager` requests. v1 declares `create_data_source` and
-/// `get_data_device`; v2 adds `destroy` as opcode 2. The global is bound at v3,
-/// so all three are reachable. The struct must carry all three slots or
-/// libwayland reads past the end on opcode 2.
+/// `wl_data_device_manager` requests through version 3.
 #[repr(C)]
 pub struct wl_data_device_manager_interface_impl {
     pub create_data_source: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
     pub get_data_device:
         unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
-    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
 }
 
-/// `wl_data_device` requests: start_drag, set_selection, release.
+/// `wl_data_device` v1 requests: start_drag, set_selection.
 #[repr(C)]
 pub struct wl_data_device_interface_impl {
     pub start_drag: unsafe extern "C" fn(
@@ -435,21 +481,24 @@ pub struct wl_data_device_interface_impl {
     ),
     pub set_selection:
         unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource, u32),
-    pub release: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
 }
 
-/// `wl_data_source` requests: offer, destroy.
+/// `wl_data_source` v3 requests: offer, destroy, set_actions.
 #[repr(C)]
 pub struct wl_data_source_interface_impl {
     pub offer: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char),
     pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub set_actions: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
 }
 
-/// `wl_data_offer` requests: receive, destroy.
+/// `wl_data_offer` v3 requests: accept, receive, destroy, finish, set_actions.
 #[repr(C)]
 pub struct wl_data_offer_interface_impl {
+    pub accept: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *const c_char),
     pub receive: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char, i32),
     pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub finish: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub set_actions: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, u32),
 }
 
 /// `wl_seat` requests: get_pointer, get_keyboard, get_touch, release.
@@ -583,10 +632,10 @@ assert_impl_opcode_count!(xdg_popup_interface_impl, 2);
 assert_impl_opcode_count!(xdg_surface_interface_impl, 5);
 assert_impl_opcode_count!(wl_subcompositor_interface_impl, 2);
 assert_impl_opcode_count!(wl_subsurface_interface_impl, 6);
-assert_impl_opcode_count!(wl_data_device_manager_interface_impl, 3);
-assert_impl_opcode_count!(wl_data_device_interface_impl, 3);
-assert_impl_opcode_count!(wl_data_source_interface_impl, 2);
-assert_impl_opcode_count!(wl_data_offer_interface_impl, 2);
+assert_impl_opcode_count!(wl_data_device_manager_interface_impl, 2);
+assert_impl_opcode_count!(wl_data_device_interface_impl, 2);
+assert_impl_opcode_count!(wl_data_source_interface_impl, 3);
+assert_impl_opcode_count!(wl_data_offer_interface_impl, 5);
 assert_impl_opcode_count!(wl_seat_interface_impl, 4);
 assert_impl_opcode_count!(wl_pointer_interface_impl, 2);
 assert_impl_opcode_count!(wl_keyboard_interface_impl, 1);
@@ -617,6 +666,42 @@ pub struct zxdg_output_manager_v1_interface_impl {
 /// `zxdg_output_v1`: destroy.
 #[repr(C)]
 pub struct zxdg_output_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `zxdg_decoration_manager_v1`: destroy, get_toplevel_decoration.
+#[repr(C)]
+pub struct zxdg_decoration_manager_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub get_toplevel_decoration:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+}
+
+/// `zxdg_toplevel_decoration_v1`: destroy, set_mode, unset_mode.
+#[repr(C)]
+pub struct zxdg_toplevel_decoration_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub set_mode: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub unset_mode: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `xdg_activation_v1`: destroy, get_activation_token, activate.
+#[repr(C)]
+pub struct xdg_activation_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub get_activation_token: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub activate:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char, *mut wl_resource),
+}
+
+/// `xdg_activation_token_v1`: set_serial, set_app_id, set_surface, commit,
+/// destroy.
+#[repr(C)]
+pub struct xdg_activation_token_v1_interface_impl {
+    pub set_serial: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+    pub set_app_id: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char),
+    pub set_surface: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource),
+    pub commit: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
     pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
 }
 
@@ -682,6 +767,52 @@ pub struct zwp_relative_pointer_manager_v1_interface_impl {
 /// `zwp_relative_pointer_v1`: destroy.
 #[repr(C)]
 pub struct zwp_relative_pointer_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `zwp_pointer_gestures_v1`: destroy and create swipe/pinch/hold objects.
+#[repr(C)]
+pub struct zwp_pointer_gestures_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub get_swipe_gesture:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+    pub get_pinch_gesture:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+    pub get_hold_gesture:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+}
+
+#[repr(C)]
+pub struct zwp_pointer_gesture_swipe_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+#[repr(C)]
+pub struct zwp_pointer_gesture_pinch_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+#[repr(C)]
+pub struct zwp_pointer_gesture_hold_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `zwp_keyboard_shortcuts_inhibit_manager_v1`: destroy, inhibit_shortcuts.
+#[repr(C)]
+pub struct zwp_keyboard_shortcuts_inhibit_manager_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub inhibit_shortcuts: unsafe extern "C" fn(
+        *mut wl_client,
+        *mut wl_resource,
+        u32,
+        *mut wl_resource,
+        *mut wl_resource,
+    ),
+}
+
+/// `zwp_keyboard_shortcuts_inhibitor_v1`: destroy.
+#[repr(C)]
+pub struct zwp_keyboard_shortcuts_inhibitor_v1_interface_impl {
     pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
 }
 
@@ -873,6 +1004,10 @@ pub struct zwp_text_input_v3_interface_impl {
 
 assert_impl_opcode_count!(zxdg_output_manager_v1_interface_impl, 2);
 assert_impl_opcode_count!(zxdg_output_v1_interface_impl, 1);
+assert_impl_opcode_count!(zxdg_decoration_manager_v1_interface_impl, 2);
+assert_impl_opcode_count!(zxdg_toplevel_decoration_v1_interface_impl, 3);
+assert_impl_opcode_count!(xdg_activation_v1_interface_impl, 3);
+assert_impl_opcode_count!(xdg_activation_token_v1_interface_impl, 5);
 assert_impl_opcode_count!(wp_presentation_interface_impl, 2);
 assert_impl_opcode_count!(wp_fractional_scale_manager_v1_interface_impl, 2);
 assert_impl_opcode_count!(wp_fractional_scale_v1_interface_impl, 1);
@@ -882,6 +1017,12 @@ assert_impl_opcode_count!(ext_idle_notifier_v1_interface_impl, 3);
 assert_impl_opcode_count!(ext_idle_notification_v1_interface_impl, 1);
 assert_impl_opcode_count!(zwp_relative_pointer_manager_v1_interface_impl, 2);
 assert_impl_opcode_count!(zwp_relative_pointer_v1_interface_impl, 1);
+assert_impl_opcode_count!(zwp_pointer_gestures_v1_interface_impl, 4);
+assert_impl_opcode_count!(zwp_pointer_gesture_swipe_v1_interface_impl, 1);
+assert_impl_opcode_count!(zwp_pointer_gesture_pinch_v1_interface_impl, 1);
+assert_impl_opcode_count!(zwp_pointer_gesture_hold_v1_interface_impl, 1);
+assert_impl_opcode_count!(zwp_keyboard_shortcuts_inhibit_manager_v1_interface_impl, 2);
+assert_impl_opcode_count!(zwp_keyboard_shortcuts_inhibitor_v1_interface_impl, 1);
 assert_impl_opcode_count!(zwp_pointer_constraints_v1_interface_impl, 3);
 assert_impl_opcode_count!(zwp_confined_pointer_v1_interface_impl, 2);
 assert_impl_opcode_count!(zwp_locked_pointer_v1_interface_impl, 3);

@@ -19,7 +19,15 @@ use std::os::raw::{c_char, c_int, c_void};
 // Canonical protocol ABI types and the xdg-shell interface tables come from the
 // shared protocols crate so client and server agree on one definition.
 pub use ass_protocols::{wl_array, wl_interface, wl_message};
-pub use ass_protocols::{xdg_surface_interface, xdg_toplevel_interface, xdg_wm_base_interface};
+pub use ass_protocols::{
+    wp_cursor_shape_device_v1_interface, wp_cursor_shape_manager_v1_interface,
+    wp_fractional_scale_manager_v1_interface, wp_fractional_scale_v1_interface,
+    wp_viewport_interface, wp_viewporter_interface, xdg_surface_interface, xdg_toplevel_interface,
+    xdg_wm_base_interface, zwp_pointer_gesture_hold_v1_interface,
+    zwp_pointer_gesture_pinch_v1_interface, zwp_pointer_gesture_swipe_v1_interface,
+    zwp_pointer_gestures_v1_interface, zwp_text_input_manager_v3_interface,
+    zwp_text_input_v3_interface,
+};
 
 /// Opaque protocol object. Every Wayland object (display, registry, surface,
 /// xdg_* …) is a `wl_proxy` at the C ABI level.
@@ -36,10 +44,27 @@ pub const WL_COMPOSITOR_CREATE_SURFACE: u32 = 0;
 pub const WL_SURFACE_COMMIT: u32 = 6;
 pub const WL_SURFACE_DESTROY: u32 = 0;
 pub const WL_SURFACE_SET_BUFFER_SCALE: u32 = 8;
+pub const WP_VIEWPORTER_GET_VIEWPORT: u32 = 1;
+pub const WP_VIEWPORT_SET_DESTINATION: u32 = 2;
+pub const WP_FRACTIONAL_SCALE_MANAGER_V1_GET_FRACTIONAL_SCALE: u32 = 1;
+pub const WP_CURSOR_SHAPE_MANAGER_V1_GET_POINTER: u32 = 1;
+pub const WP_CURSOR_SHAPE_DEVICE_V1_SET_SHAPE: u32 = 1;
+pub const ZWP_POINTER_GESTURES_V1_GET_SWIPE_GESTURE: u32 = 1;
+pub const ZWP_POINTER_GESTURES_V1_GET_PINCH_GESTURE: u32 = 2;
+pub const ZWP_POINTER_GESTURES_V1_GET_HOLD_GESTURE: u32 = 3;
+pub const ZWP_TEXT_INPUT_MANAGER_V3_GET_TEXT_INPUT: u32 = 1;
+pub const ZWP_TEXT_INPUT_V3_ENABLE: u32 = 1;
+pub const ZWP_TEXT_INPUT_V3_DISABLE: u32 = 2;
+pub const ZWP_TEXT_INPUT_V3_SET_SURROUNDING_TEXT: u32 = 3;
+pub const ZWP_TEXT_INPUT_V3_SET_TEXT_CHANGE_CAUSE: u32 = 4;
+pub const ZWP_TEXT_INPUT_V3_SET_CONTENT_TYPE: u32 = 5;
+pub const ZWP_TEXT_INPUT_V3_SET_CURSOR_RECTANGLE: u32 = 6;
+pub const ZWP_TEXT_INPUT_V3_COMMIT: u32 = 7;
 pub const WL_SEAT_GET_POINTER: u32 = 0;
 pub const WL_SEAT_GET_KEYBOARD: u32 = 1;
 pub const WL_SEAT_GET_TOUCH: u32 = 2;
 pub const WL_POINTER_RELEASE: u32 = 5;
+pub const WL_POINTER_SET_CURSOR: u32 = 0;
 pub const WL_KEYBOARD_RELEASE: u32 = 3;
 pub const XDG_WM_BASE_DESTROY: u32 = 0;
 pub const XDG_WM_BASE_GET_XDG_SURFACE: u32 = 2;
@@ -118,6 +143,46 @@ pub struct wl_surface_listener {
     pub leave: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, *mut wl_proxy),
 }
 
+/// `wp_fractional_scale_v1` listener vtable (v1: preferred_scale).
+#[repr(C)]
+pub struct wp_fractional_scale_v1_listener {
+    pub preferred_scale: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32),
+}
+
+/// `zwp_text_input_v3` listener vtable at protocol version 1.
+#[repr(C)]
+pub struct zwp_text_input_v3_listener {
+    pub enter: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, *mut wl_proxy),
+    pub leave: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, *mut wl_proxy),
+    pub preedit_string: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, *const c_char, i32, i32),
+    pub commit_string: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, *const c_char),
+    pub delete_surrounding_text: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32, u32),
+    pub done: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32),
+}
+
+/// `zwp_pointer_gesture_swipe_v1` listener (protocol version 1).
+#[repr(C)]
+pub struct zwp_pointer_gesture_swipe_v1_listener {
+    pub begin: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32, u32, *mut wl_proxy, u32),
+    pub update: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32, i32, i32),
+    pub end: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32, u32, i32),
+}
+
+/// `zwp_pointer_gesture_pinch_v1` listener (protocol version 1).
+#[repr(C)]
+pub struct zwp_pointer_gesture_pinch_v1_listener {
+    pub begin: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32, u32, *mut wl_proxy, u32),
+    pub update: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32, i32, i32, i32, i32),
+    pub end: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32, u32, i32),
+}
+
+/// `zwp_pointer_gesture_hold_v1` listener (protocol version 1).
+#[repr(C)]
+pub struct zwp_pointer_gesture_hold_v1_listener {
+    pub begin: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32, u32, *mut wl_proxy, u32),
+    pub end: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32, u32, i32),
+}
+
 /// `wl_seat` listener vtable.
 #[repr(C)]
 pub struct wl_seat_listener {
@@ -163,6 +228,7 @@ extern "C" {
     pub fn wl_display_connect(name: *const c_char) -> *mut wl_display;
     pub fn wl_display_disconnect(display: *mut wl_display);
     pub fn wl_display_roundtrip(display: *mut wl_display) -> c_int;
+    pub fn wl_display_dispatch(display: *mut wl_display) -> c_int;
     pub fn wl_display_dispatch_pending(display: *mut wl_display) -> c_int;
     pub fn wl_display_flush(display: *mut wl_display) -> c_int;
     pub fn wl_display_get_fd(display: *mut wl_display) -> c_int;

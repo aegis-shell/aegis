@@ -1,6 +1,6 @@
 # ADR-0034: Scoped capabilities
 
-- Status: Accepted
+- Status: Superseded by ADR-0035
 - Date: 2026-06-24
 
 ## Context

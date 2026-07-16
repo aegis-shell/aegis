@@ -2,7 +2,8 @@
 //!
 //! The reference external tool (ADR-0027): it connects to a running
 //! compositor's IPC socket and drives it — list windows/workspaces, focus,
-//! close, switch workspace, toggle tiling, post a notification, quit. The
+//! minimize, close, switch workspace, toggle tiling, post a notification,
+//! quit. The
 //! [`run`] entry point is unit-testable against a loopback server; the thin
 //! binary in `main.rs` parses argv and prints the result.
 
@@ -40,6 +41,7 @@ pub fn run(socket: &Path, args: &[String]) -> Result<String, String> {
         Capabilities {
             query: true,
             control: true,
+            input: false,
             session: true,
         },
     )
@@ -100,10 +102,29 @@ fn dispatch(client: &mut Client, args: &[String], json: bool) -> Result<String, 
             client.command(Command::Focus { id }).map_err(io_err)?;
             Ok(format!("focused {}", id.0))
         }
+        "minimize" => {
+            let id = parse_window_id(args, 1)?;
+            client.command(Command::Minimize { id }).map_err(io_err)?;
+            Ok(format!("minimized {}", id.0))
+        }
         "close" => {
             let id = parse_window_id(args, 1)?;
             client.command(Command::Close { id }).map_err(io_err)?;
             Ok(format!("close requested for {}", id.0))
+        }
+        "set-geometry" => {
+            let id = parse_window_id(args, 1)?;
+            let rect = ass_core::Rect::new(
+                parse_i32(args, 2)?,
+                parse_i32(args, 3)?,
+                parse_i32(args, 4)?,
+                parse_i32(args, 5)?,
+            );
+            client.set_window_geometry(id, rect).map_err(io_err)?;
+            Ok(format!(
+                "set window {} geometry to {},{} {}x{}",
+                id.0, rect.origin.x, rect.origin.y, rect.size.w, rect.size.h
+            ))
         }
         "switch" => {
             let dir = parse_switch(args)?;
@@ -168,6 +189,15 @@ fn parse_u64(args: &[String], idx: usize) -> Result<u64, String> {
         .and_then(|s| {
             s.parse::<u64>()
                 .map_err(|_| format!("'{s}' is not a number"))
+        })
+}
+
+fn parse_i32(args: &[String], idx: usize) -> Result<i32, String> {
+    args.get(idx)
+        .ok_or_else(|| format!("missing argument\n\n{}", usage()))
+        .and_then(|s| {
+            s.parse::<i32>()
+                .map_err(|_| format!("'{s}' is not a signed 32-bit number"))
         })
 }
 
@@ -332,6 +362,7 @@ fn run_stream(socket: &Path, journal: bool) -> Result<(), String> {
         Capabilities {
             query: true,
             control: false,
+            input: false,
             session: false,
         },
     )
@@ -362,7 +393,10 @@ commands:
   notifications           list active notifications
   journal [since]         list mutation journal entries after a sequence
   focus <id>              focus a toplevel by id
+  minimize <id>           minimize a toplevel by id
   close <id>              request a toplevel to close
+  set-geometry <id> <x> <y> <w> <h>
+                           set floating geometry in logical pixels
   switch <next|prev>      switch workspace on the focused output
   switch-to <ws>          switch directly to a workspace (by id)
   move-to <win> <ws>      move a toplevel to a workspace (by id)

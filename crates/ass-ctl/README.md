@@ -20,7 +20,8 @@ the running compositor.
 ## Runtime Effect
 
 Query commands read compositor state. Control commands enqueue typed actions
-such as focus, close, workspace switching, notification, tiling, and shutdown.
+such as focus, minimize, close, workspace switching, notification, tiling,
+and shutdown.
 The `help` command is local and does not require a running compositor.
 
 ## Use
@@ -30,6 +31,7 @@ cargo run -p ass-ctl -- help
 cargo run -p ass-ctl -- windows
 cargo run -p ass-ctl -- windows --json
 cargo run -p ass-ctl -- focus 42
+cargo run -p ass-ctl -- minimize 42
 cargo run -p ass-ctl -- subscribe
 ```
 
@@ -41,4 +43,3 @@ prefix.
 - [Command-line reference](../../docs/reference/cli.md)
 - [IPC and introspection decision](../../docs/adr/0027-ipc-and-introspection.md)
 - [Workspace layout](../../docs/dev/project-layout.md)
-

@@ -199,8 +199,8 @@ pub struct SurfacePixels<'a> {
 
 /// A single-plane dma-buf-backed surface, handed from the server to the
 /// renderer for zero-copy import. The `fd` is borrowed: the renderer (flux)
-/// dups what it needs; the server keeps ownership and closes it when the
-/// backing `wl_buffer` is destroyed. `drm_format` is a DRM fourcc.
+/// duplicates it before import; the server keeps ownership and closes it when
+/// the surface backing is replaced or destroyed. `drm_format` is a DRM fourcc.
 pub struct SurfaceDmabuf {
     pub id: usize,
     pub width: i32,

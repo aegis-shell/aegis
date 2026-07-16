@@ -6,7 +6,7 @@ members = ["crates/*"]
 version = "0.0.1"
 edition = "2021"
 license = "Apache-2.0"
-rust-version = "1.74"
+rust-version = "1.88"
 repository = "."
 
 [workspace.dependencies]

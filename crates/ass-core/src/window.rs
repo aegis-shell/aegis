@@ -147,6 +147,55 @@ impl Window {
         }
         ResizeEdges(bits)
     }
+
+    /// Choose a resize edge or corner for a modifier-drag that may begin
+    /// anywhere inside the window. The outer thirds select their adjacent
+    /// edges; the center cell falls back to the physically nearest edge so a
+    /// valid in-window press never produces [`ResizeEdges::NONE`].
+    pub fn resize_edges_nearest(&self, x: f32, y: f32) -> ResizeEdges {
+        if self.size.w <= 0 || self.size.h <= 0 {
+            return ResizeEdges::NONE;
+        }
+        let left = self.position.x as f32;
+        let top = self.position.y as f32;
+        let right = left + self.size.w as f32;
+        let bottom = top + self.size.h as f32;
+        if x < left || x >= right || y < top || y >= bottom {
+            return ResizeEdges::NONE;
+        }
+
+        let nx = (x - left) / self.size.w as f32;
+        let ny = (y - top) / self.size.h as f32;
+        let mut bits = if nx < 1.0 / 3.0 {
+            ResizeEdges::LEFT.0
+        } else if nx > 2.0 / 3.0 {
+            ResizeEdges::RIGHT.0
+        } else {
+            0
+        };
+        bits |= if ny < 1.0 / 3.0 {
+            ResizeEdges::TOP.0
+        } else if ny > 2.0 / 3.0 {
+            ResizeEdges::BOTTOM.0
+        } else {
+            0
+        };
+
+        if bits == 0 {
+            let distances = [
+                (x - left, ResizeEdges::LEFT.0),
+                (right - x, ResizeEdges::RIGHT.0),
+                (y - top, ResizeEdges::TOP.0),
+                (bottom - y, ResizeEdges::BOTTOM.0),
+            ];
+            bits = distances
+                .into_iter()
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|(_, edge)| edge)
+                .unwrap_or(ResizeEdges::RIGHT.0);
+        }
+        ResizeEdges(bits)
+    }
 }
 
 /// Edge bits from `xdg_toplevel.resize`. Matches the protocol's enum:
@@ -319,5 +368,24 @@ mod tests {
         assert_eq!(w.resize_edges_at(102.0, 52.0, 8.0).0, 5); // top-left
         assert_eq!(w.resize_edges_at(300.0, 200.0, 8.0), ResizeEdges::NONE);
         assert_eq!(w.resize_edges_at(99.0, 200.0, 8.0), ResizeEdges::NONE);
+    }
+
+    #[test]
+    fn modifier_resize_selects_nearest_edges_from_any_window_point() {
+        let mut w = Window::new(WindowId(1));
+        w.position = crate::Point { x: 100, y: 100 };
+        w.size = crate::Size { w: 300, h: 180 };
+
+        assert_eq!(
+            w.resize_edges_nearest(110.0, 110.0),
+            ResizeEdges(ResizeEdges::LEFT.0 | ResizeEdges::TOP.0)
+        );
+        assert_eq!(w.resize_edges_nearest(250.0, 120.0), ResizeEdges::TOP);
+        assert_eq!(
+            w.resize_edges_nearest(390.0, 270.0),
+            ResizeEdges(ResizeEdges::RIGHT.0 | ResizeEdges::BOTTOM.0)
+        );
+        assert!(!w.resize_edges_nearest(250.0, 190.0).is_none());
+        assert!(w.resize_edges_nearest(99.0, 190.0).is_none());
     }
 }

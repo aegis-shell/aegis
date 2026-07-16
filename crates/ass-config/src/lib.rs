@@ -79,7 +79,7 @@ pub struct AgentConfig {
     pub scopes: Vec<AgentScopeEntry>,
 }
 
-/// One declared agent scope. `ops` lists [`OpClass`] names (`Focus`,
+/// One declared agent scope. `ops` lists `OpClass` names (`Focus`,
 /// `Close`, …); `windows` and `workspaces` are id allowlists (empty or
 /// omitted means unrestricted at that axis).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -226,7 +226,7 @@ impl Config {
     /// Parse a config file from its text. Returns the parsed [`Config`] or
     /// the diagnostics that prevented it. Parse errors carry a 1-based
     /// source line where the `toml` crate provides a byte span.
-    pub fn from_str(text: &str) -> Result<Config, Vec<Diagnostic>> {
+    pub fn parse(text: &str) -> Result<Config, Vec<Diagnostic>> {
         let cfg: Config = match toml::from_str(text) {
             Ok(c) => c,
             Err(e) => {
@@ -325,6 +325,14 @@ impl Config {
     }
 }
 
+impl std::str::FromStr for Config {
+    type Err = Vec<Diagnostic>;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        Config::parse(text)
+    }
+}
+
 /// Read and parse the config file at `path`. Returns `Ok(None)` when the
 /// file does not exist (the caller falls back to defaults), an error for
 /// read or validation failures.
@@ -339,7 +347,7 @@ pub fn load(path: &Path) -> Result<Option<Config>, LoadError> {
             })
         }
     };
-    match Config::from_str(&text) {
+    match Config::parse(&text) {
         Ok(cfg) => Ok(Some(cfg)),
         Err(diagnostics) => Err(LoadError::Invalid {
             path: path.into(),
@@ -417,14 +425,14 @@ mod tests {
 
     #[test]
     fn minimal_valid_config_loads() {
-        let cfg = Config::from_str("schema_version = 1\n").unwrap();
+        let cfg = Config::parse("schema_version = 1\n").unwrap();
         assert_eq!(cfg.schema_version, 1);
         assert!(cfg.keybinds.is_empty());
     }
 
     #[test]
     fn missing_schema_version_is_rejected() {
-        let err = Config::from_str("").unwrap_err();
+        let err = Config::parse("").unwrap_err();
         assert_eq!(err.len(), 1);
         assert!(
             err[0].message.contains("schema_version"),
@@ -435,7 +443,7 @@ mod tests {
 
     #[test]
     fn future_schema_version_is_rejected() {
-        let err = Config::from_str("schema_version = 99\n").unwrap_err();
+        let err = Config::parse("schema_version = 99\n").unwrap_err();
         assert_eq!(err.len(), 1);
         assert!(err[0].field.as_deref() == Some("schema_version"));
         assert!(err[0].message.contains("99"));
@@ -443,18 +451,17 @@ mod tests {
 
     #[test]
     fn unknown_fields_are_rejected_instead_of_silently_ignored() {
-        let top = Config::from_str("schema_version = 1\ntheme = \"mystery\"\n").unwrap_err();
+        let top = Config::parse("schema_version = 1\ntheme = \"mystery\"\n").unwrap_err();
         assert!(top[0].message.contains("unknown field"), "{top:?}");
 
-        let nested =
-            Config::from_str("schema_version = 1\n[layout]\ngaps = 8\nmaster_rato = 0.7\n")
-                .unwrap_err();
+        let nested = Config::parse("schema_version = 1\n[layout]\ngaps = 8\nmaster_rato = 0.7\n")
+            .unwrap_err();
         assert!(nested[0].message.contains("master_rato"), "{nested:?}");
     }
 
     #[test]
     fn invalid_layout_ranges_are_diagnosed() {
-        let err = Config::from_str("schema_version = 1\n[layout]\ngaps = -1\nmaster_ratio = 1.5\n")
+        let err = Config::parse("schema_version = 1\n[layout]\ngaps = -1\nmaster_ratio = 1.5\n")
             .unwrap_err();
         assert_eq!(err.len(), 2);
         assert!(err
@@ -468,7 +475,7 @@ mod tests {
     #[test]
     fn parse_error_reports_a_line() {
         // Malformed TOML: an unterminated string.
-        let err = Config::from_str("schema_version = 1\nkey = \"oops\n").unwrap_err();
+        let err = Config::parse("schema_version = 1\nkey = \"oops\n").unwrap_err();
         assert_eq!(err.len(), 1);
         assert!(err[0].line.is_some(), "parse error should map to a line");
         assert!(err[0].message.starts_with("parse error"));
@@ -476,7 +483,7 @@ mod tests {
 
     #[test]
     fn keybind_entry_resolves_to_keybind() {
-        let cfg = Config::from_str(
+        let cfg = Config::parse(
             "schema_version = 1\n\
              [[keybind]]\n\
              mods = [\"super\", \"shift\"]\n\
@@ -497,7 +504,7 @@ mod tests {
 
     #[test]
     fn unknown_modifier_key_and_action_each_diagnose_without_aborting() {
-        let cfg = Config::from_str(
+        let cfg = Config::parse(
             "schema_version = 1\n\
              [[keybind]]\n\
              mods = [\"super\", \"caps\"]\n\
@@ -528,7 +535,7 @@ mod tests {
 
     #[test]
     fn good_entries_survive_alongside_bad_ones() {
-        let cfg = Config::from_str(
+        let cfg = Config::parse(
             "schema_version = 1\n\
              [[keybind]]\n\
              mods = [\"super\"]\n\
@@ -547,7 +554,7 @@ mod tests {
 
     #[test]
     fn keymap_layers_overrides_on_defaults() {
-        let cfg = Config::from_str(
+        let cfg = Config::parse(
             "schema_version = 1\n\
              [[keybind]]\n\
              mods = [\"super\"]\n\
@@ -579,7 +586,7 @@ mod tests {
 
     #[test]
     fn layout_section_overrides_defaults() {
-        let cfg = Config::from_str(
+        let cfg = Config::parse(
             "schema_version = 1\n\
              [layout]\n\
              gaps = 16\n\
@@ -589,10 +596,10 @@ mod tests {
         assert_eq!(cfg.layout.gaps, 16);
         assert_eq!(cfg.layout.master_ratio, 0.6);
         // Absent section → defaults.
-        let cfg2 = Config::from_str("schema_version = 1\n").unwrap();
+        let cfg2 = Config::parse("schema_version = 1\n").unwrap();
         assert_eq!(cfg2.layout, LayoutConfig::default());
         // Partial section fills the rest with field defaults.
-        let cfg3 = Config::from_str("schema_version = 1\n[layout]\ngaps = 4\n").unwrap();
+        let cfg3 = Config::parse("schema_version = 1\n[layout]\ngaps = 4\n").unwrap();
         assert_eq!(cfg3.layout.gaps, 4);
         assert_eq!(cfg3.layout.master_ratio, 0.5);
         // Converts to the core layout params.
@@ -602,7 +609,7 @@ mod tests {
 
     #[test]
     fn window_rules_parse_from_toml() {
-        let cfg = Config::from_str(
+        let cfg = Config::parse(
             "schema_version = 1\n\
              [[window_rule]]\n\
              app_id = \"firefox\"\n\

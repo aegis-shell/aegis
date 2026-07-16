@@ -10,10 +10,13 @@
 
 use ass_core::input::InputEvent;
 use ass_core::Size;
+use std::time::Duration;
 
 /// A presentation + input target the compositor drives each frame.
 pub trait Backend {
-    /// Current size of the presentation target, in physical pixels.
+    /// Current size of the presentation target in compositor logical pixels.
+    /// Backend-specific accessors expose the physical render extent when it
+    /// differs (for example, a nested HiDPI Wayland surface).
     fn size(&self) -> Size;
 
     /// Pump backend events (input, resize, redraw requests). Returns `false`
@@ -29,13 +32,21 @@ pub trait Backend {
         self.dispatch()
     }
 
+    /// Wait for backend events for at most `timeout`. Timer-driven chrome
+    /// (clock/status refresh) uses this to wake an otherwise idle compositor
+    /// without forcing the animation-rate non-blocking loop. Backends without
+    /// timed polling may keep the blocking default.
+    fn dispatch_timeout(&mut self, _timeout: Duration) -> bool {
+        self.dispatch()
+    }
+
     /// Drain buffered input events since the last call. Drained events are
     /// routed by the main loop: the focused client receives them via
     /// `wl_seat`, with a copy to the chrome when the pointer is over it.
     fn take_input(&mut self) -> Vec<InputEvent>;
 
     /// Take a pending resize, if the host reconfigured the window since the
-    /// last call. The size is in physical pixels.
+    /// last call. The size is in compositor logical pixels.
     fn take_resize(&mut self) -> Option<Size>;
 }
 

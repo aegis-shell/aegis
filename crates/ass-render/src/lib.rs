@@ -6,8 +6,14 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::os::raw::c_int;
 
 use ass_core::{SurfaceDmabuf, SurfacePixels, Transform};
+
+unsafe extern "C" {
+    fn dup(fd: c_int) -> c_int;
+    fn close(fd: c_int) -> c_int;
+}
 
 /// DRM fourccs the compositor advertises, mapped to flux formats. The
 /// 32-bit per-pixel layouts are little-endian: `ARGB8888` is `[B, G, R, A]` in
@@ -130,7 +136,8 @@ fn transformed_dims(width: i32, height: i32, transform: Transform) -> (i32, i32)
 ///
 /// Mirrors `weston_surface_update_size`:
 /// - `viewport_dst` set: used as-is (already in logical pixels).
-/// - `viewport_dst` unset, `viewport_src` set: source size / scale.
+/// - `viewport_dst` unset, `viewport_src` set: source size (already in
+///   post-buffer-scale surface coordinates).
 /// - both unset: post-transform buffer dims / scale.
 ///
 /// `scale <= 0` is treated as 1; the server validates `value >= 1` and
@@ -144,12 +151,27 @@ fn destination_size(
     let scale = buffer_scale.max(1) as f32;
     match (viewport_dst, viewport_src) {
         (Some(dst), _) => (dst.w as f32, dst.h as f32),
-        (None, Some(src)) => (src.size.w as f32 / scale, src.size.h as f32 / scale),
+        (None, Some(src)) => (src.size.w as f32, src.size.h as f32),
         (None, None) => {
             let (tw, th) = post_transform_dims;
             (tw as f32 / scale, th as f32 / scale)
         }
     }
+}
+
+fn viewport_uv(
+    source: ass_core::Rect,
+    post_transform_dims: (i32, i32),
+    buffer_scale: i32,
+) -> (f32, f32, f32, f32) {
+    let scale = buffer_scale.max(1) as f32;
+    let (width, height) = post_transform_dims;
+    (
+        source.origin.x as f32 * scale / width.max(1) as f32,
+        source.origin.y as f32 * scale / height.max(1) as f32,
+        source.size.w as f32 * scale / width.max(1) as f32,
+        source.size.h as f32 * scale / height.max(1) as f32,
+    )
 }
 
 /// Caches per-surface GPU textures so client contents are re-uploaded only when
@@ -193,7 +215,7 @@ impl Renderer {
             let stale = self
                 .cache
                 .get(&f.id)
-                .map_or(true, |(_, g)| *g != f.generation);
+                .is_none_or(|(_, g)| *g != f.generation);
             if stale {
                 // Apply the buffer transform on the CPU at upload time. For
                 // the common case (Normal) this is a borrowed Cow with no
@@ -269,9 +291,9 @@ impl Renderer {
                 let x = f.geometry.position.x as f32;
                 let y = f.geometry.position.y as f32;
                 // Apply wp_viewport and buffer_scale to compute the
-                // destination rectangle. The source UV rect (when set) is
-                // independent of scale because it is expressed against the
-                // post-transform buffer pixel space.
+                // destination rectangle. Viewport source coordinates are
+                // after buffer transform *and scale*, so convert them back to
+                // buffer-pixel UVs using buffer_scale.
                 let (tw, th) = transformed_dims(f.width, f.height, f.geometry.transform);
                 let (dst_w, dst_h) = destination_size(
                     (tw, th),
@@ -281,10 +303,7 @@ impl Renderer {
                 );
                 match f.geometry.viewport_src {
                     Some(src) => {
-                        let su = src.origin.x as f32 / tw as f32;
-                        let sv = src.origin.y as f32 / th as f32;
-                        let sw = src.size.w as f32 / tw as f32;
-                        let sh = src.size.h as f32 / th as f32;
+                        let (su, sv, sw, sh) = viewport_uv(src, (tw, th), f.geometry.buffer_scale);
                         canvas.draw_image_sub(img, x, y, dst_w, dst_h, su, sv, sw, sh);
                     }
                     None => {
@@ -309,9 +328,24 @@ impl Renderer {
             let stale = self
                 .cache
                 .get(&f.id)
-                .map_or(true, |(_, g)| *g != f.generation);
+                .is_none_or(|(_, g)| *g != f.generation);
             if stale {
                 if let Some(fmt) = drm_format_to_flux(f.drm_format) {
+                    // Flux consumes the descriptor fd on success. The frame's
+                    // fd is borrowed from the server and must remain valid for
+                    // later commits, so hand Flux a fresh duplicate.
+                    let import_fd = unsafe { dup(f.fd) };
+                    if import_fd < 0 {
+                        if self.failed_imports.insert(f.id, ()).is_none() {
+                            log::warn!(
+                                "[render] failed to duplicate dma-buf fd {} for {}x{}",
+                                f.fd,
+                                f.width,
+                                f.height,
+                            );
+                        }
+                        continue;
+                    }
                     let img = unsafe {
                         flux::Image::import_dmabuf(
                             device,
@@ -319,7 +353,7 @@ impl Renderer {
                             f.height as u32,
                             fmt,
                             f.modifier,
-                            f.fd,
+                            import_fd,
                             f.offset,
                             f.stride,
                         )
@@ -342,14 +376,22 @@ impl Renderer {
                             self.cache.insert(f.id, (img, f.generation));
                         }
                         Err(e) => {
+                            // Flux leaves ownership with the caller on error.
+                            unsafe { close(import_fd) };
                             // Suppress repeated identical failures; otherwise a
                             // persistent import problem floods the log every
                             // frame, since `stale` keeps re-triggering the path.
                             // `HashMap::insert` returns None when the key is new.
                             if self.failed_imports.insert(f.id, ()).is_none() {
                                 log::warn!(
-                                    "[render] dma-buf import failed ({e}): {}x{} fourcc={:#x} mod={:#x}",
-                                    f.width, f.height, f.drm_format, f.modifier
+                                    "[render] dma-buf import failed ({e}): {}x{} fourcc={:#x} mod={:#x} stride={} offset={} fd={}",
+                                    f.width,
+                                    f.height,
+                                    f.drm_format,
+                                    f.modifier,
+                                    f.stride,
+                                    f.offset,
+                                    f.fd,
                                 );
                             }
                         }
@@ -371,10 +413,8 @@ impl Renderer {
                 );
                 match f.geometry.viewport_src {
                     Some(src) => {
-                        let su = src.origin.x as f32 / f.width as f32;
-                        let sv = src.origin.y as f32 / f.height as f32;
-                        let sw = src.size.w as f32 / f.width as f32;
-                        let sh = src.size.h as f32 / f.height as f32;
+                        let (su, sv, sw, sh) =
+                            viewport_uv(src, (f.width, f.height), f.geometry.buffer_scale);
                         canvas.draw_image_sub(img, x, y, dst_w, dst_h, su, sv, sw, sh);
                     }
                     None => {
@@ -580,12 +620,12 @@ mod tests {
         let (w, h) = destination_size((100, 50), None, None, 2);
         assert_eq!((w, h), (50.0, 25.0));
 
-        // Source-only: source rect divided by scale.
+        // Source-only: coordinates are already after buffer scale.
         let src = Rect::new(10, 10, 80, 40);
         let (w, h) = destination_size((100, 50), Some(src), None, 1);
         assert_eq!((w, h), (80.0, 40.0));
         let (w, h) = destination_size((100, 50), Some(src), None, 2);
-        assert_eq!((w, h), (40.0, 20.0));
+        assert_eq!((w, h), (80.0, 40.0));
 
         // Destination wins regardless of scale (already logical px).
         let dst = Size { w: 30, h: 20 };
@@ -608,5 +648,11 @@ mod tests {
     fn destination_size_clamps_nonpositive_scale() {
         let (w, h) = destination_size((100, 50), None, None, 0);
         assert_eq!((w, h), (100.0, 50.0));
+    }
+
+    #[test]
+    fn viewport_source_converts_post_scale_coordinates_to_buffer_uvs() {
+        let src = ass_core::Rect::new(10, 5, 30, 20);
+        assert_eq!(viewport_uv(src, (200, 100), 2), (0.1, 0.1, 0.3, 0.4));
     }
 }

@@ -41,6 +41,7 @@ opens a nested window on `$WAYLAND_DISPLAY` and presents the shell. See
 ## Documentation
 
 - [Documentation index](docs/index.md)
+- [Daily-use guides](docs/how-to/index.md)
 - [Architecture](docs/explanation/architecture.md)
 - [Architecture Decision Records](docs/adr/index.md)
 

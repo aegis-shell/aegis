@@ -2,12 +2,16 @@
 //! and a `Client` over a real unix socket on a process-unique temp path.
 //! No Vulkan or Wayland dependency.
 
+use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ass_core::window::{Window, WindowId};
-use ass_ipc::{Capabilities, Client, Command, Event, Handler, Server, PROTOCOL_VERSION};
+use ass_ipc::{
+    Capabilities, Client, Command, Event, Handler, OpClass, Scope, Server, PROTOCOL_VERSION,
+};
 
 /// A unique throwaway socket path under the temp dir, namespaced by pid +
 /// counter so parallel test processes do not collide.
@@ -26,6 +30,7 @@ struct TestHandler {
     windows: Vec<Window>,
     policy: Capabilities,
     commands: Mutex<Vec<Command>>,
+    scopes: Mutex<HashMap<String, Scope>>,
 }
 
 impl TestHandler {
@@ -35,6 +40,7 @@ impl TestHandler {
             windows,
             policy: Capabilities::QUERY,
             commands: Mutex::new(Vec::new()),
+            scopes: Mutex::new(test_scopes()),
         }
     }
     /// Grants control and session, so command tests can exercise them.
@@ -44,9 +50,11 @@ impl TestHandler {
             policy: Capabilities {
                 query: true,
                 control: true,
+                input: true,
                 session: true,
             },
             commands: Mutex::new(Vec::new()),
+            scopes: Mutex::new(test_scopes()),
         }
     }
 }
@@ -92,6 +100,30 @@ impl Handler for TestHandler {
     fn command(&self, cmd: Command) {
         self.commands.lock().unwrap().push(cmd);
     }
+    fn resolve_scope(&self, name: &str) -> Option<Scope> {
+        self.scopes.lock().unwrap().get(name).cloned()
+    }
+}
+
+fn test_scopes() -> HashMap<String, Scope> {
+    HashMap::from([
+        (
+            "focus-first".into(),
+            Scope {
+                windows: Some(vec![WindowId(1)]),
+                ops: Some(vec![OpClass::Focus]),
+                ..Scope::default()
+            },
+        ),
+        (
+            "input-first".into(),
+            Scope {
+                windows: Some(vec![WindowId(1)]),
+                ops: Some(vec![OpClass::InjectInput]),
+                ..Scope::default()
+            },
+        ),
+    ])
 }
 
 fn sample_windows() -> Vec<Window> {
@@ -118,6 +150,7 @@ fn handshake_reports_query_always_granted() {
         Capabilities {
             query: true,
             control: true,
+            input: true,
             session: true,
         },
     )
@@ -126,6 +159,161 @@ fn handshake_reports_query_always_granted() {
     assert!(caps.query, "query is always granted");
     assert!(!caps.control, "control is refused by the query-only policy");
     assert!(!caps.session, "session is refused by the query-only policy");
+}
+
+#[test]
+fn server_socket_is_owner_only() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::query(vec![]));
+    let _server = Server::start(&path, handler).expect("bind");
+
+    let mode = std::fs::metadata(&path)
+        .expect("socket metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+}
+
+#[test]
+fn start_refuses_to_replace_a_non_socket_path() {
+    let path = scratch();
+    std::fs::write(&path, b"keep me").expect("seed regular file");
+    let handler = Arc::new(TestHandler::query(vec![]));
+
+    let err = Server::start(&path, handler)
+        .err()
+        .expect("regular path must be refused");
+    assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(
+        std::fs::read(&path).expect("regular file preserved"),
+        b"keep me"
+    );
+    std::fs::remove_file(path).expect("cleanup regular file");
+}
+
+#[test]
+fn second_server_cannot_steal_an_active_socket() {
+    let path = scratch();
+    let first = Arc::new(TestHandler::query(sample_windows()));
+    let _server = Server::start(&path, first).expect("first bind");
+
+    let second = Arc::new(TestHandler::query(vec![]));
+    let err = Server::start(&path, second)
+        .err()
+        .expect("active socket must not be replaced");
+    assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+
+    let mut client = Client::connect(&path).expect("first server remains reachable");
+    assert_eq!(client.windows().expect("query first server").len(), 2);
+}
+
+#[test]
+fn named_scope_is_reported_and_enforced() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let requested = Capabilities {
+        query: true,
+        control: true,
+        input: false,
+        session: false,
+    };
+
+    let mut client = Client::connect_scoped(&path, requested, "focus-first").expect("connect");
+    assert_eq!(client.scope().windows, Some(vec![WindowId(1)]));
+    assert_eq!(client.scope().ops, Some(vec![OpClass::Focus]));
+    client
+        .command(Command::Focus { id: WindowId(1) })
+        .expect("allowed focus");
+    let wrong_window = client
+        .command(Command::Focus { id: WindowId(2) })
+        .unwrap_err();
+    assert!(wrong_window.to_string().contains("out of scope"));
+    let wrong_operation = client
+        .command(Command::Close { id: WindowId(1) })
+        .unwrap_err();
+    assert!(wrong_operation.to_string().contains("out of scope"));
+}
+
+#[test]
+fn synthetic_input_requires_a_named_scope_and_separate_capability() {
+    use ass_core::input::SyntheticInputAction;
+
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let requested = Capabilities {
+        query: true,
+        control: false,
+        input: true,
+        session: false,
+    };
+
+    let mut unscoped = Client::connect_with(&path, requested).expect("unscoped connect");
+    assert!(!unscoped.caps().input, "unscoped input must fail closed");
+    let action = SyntheticInputAction::Click {
+        position: ass_core::Point { x: 10, y: 20 },
+        button: 0x110,
+    };
+    let err = unscoped
+        .inject_input(WindowId(1), vec![action])
+        .unwrap_err();
+    assert!(err.to_string().contains("capability not granted"), "{err}");
+
+    let mut scoped = Client::connect_scoped(&path, requested, "input-first").expect("scoped");
+    assert!(scoped.caps().input);
+    scoped
+        .inject_input(WindowId(1), vec![action])
+        .expect("scoped input accepted");
+    assert!(handler
+        .commands
+        .lock()
+        .unwrap()
+        .contains(&Command::InjectInput {
+            id: WindowId(1),
+            actions: vec![action],
+        }));
+
+    let before = handler.commands.lock().unwrap().len();
+    let err = scoped.inject_input(WindowId(1), vec![]).unwrap_err();
+    assert!(err.to_string().contains("action count"), "{err}");
+    assert_eq!(handler.commands.lock().unwrap().len(), before);
+}
+
+#[test]
+fn unknown_named_scope_is_refused_at_handshake() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, handler).expect("bind");
+
+    let err = Client::connect_scoped(&path, Capabilities::QUERY, "missing")
+        .err()
+        .expect("unknown scope must fail");
+    assert!(err.to_string().contains("unknown scope 'missing'"), "{err}");
+}
+
+#[test]
+fn scope_revocation_applies_to_existing_connections() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let requested = Capabilities {
+        query: true,
+        control: true,
+        input: false,
+        session: false,
+    };
+    let mut client = Client::connect_scoped(&path, requested, "focus-first").expect("connect");
+    client
+        .command(Command::Focus { id: WindowId(1) })
+        .expect("allowed before revoke");
+
+    handler.scopes.lock().unwrap().clear();
+    let err = client
+        .command(Command::Focus { id: WindowId(1) })
+        .unwrap_err();
+    assert!(err.to_string().contains("out of scope"), "{err}");
 }
 
 #[test]
@@ -194,6 +382,7 @@ fn control_command_is_queued_and_acked() {
         Capabilities {
             query: true,
             control: true,
+            input: false,
             session: false,
         },
     )
@@ -227,6 +416,7 @@ fn session_command_quit_is_accepted() {
         Capabilities {
             query: true,
             control: false,
+            input: false,
             session: true,
         },
     )
@@ -290,6 +480,7 @@ fn switch_workspace_command_is_queued() {
         Capabilities {
             query: true,
             control: true,
+            input: false,
             session: false,
         },
     )
@@ -330,6 +521,7 @@ fn notify_command_is_queued_and_acked() {
         Capabilities {
             query: true,
             control: true,
+            input: false,
             session: false,
         },
     )

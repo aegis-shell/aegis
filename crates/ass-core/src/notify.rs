@@ -29,6 +29,7 @@ pub struct NotificationQueue {
     entries: Vec<Notification>,
     next_id: u64,
     ttl_ms: u64,
+    do_not_disturb: bool,
 }
 
 impl NotificationQueue {
@@ -38,6 +39,7 @@ impl NotificationQueue {
             entries: Vec::new(),
             next_id: 0,
             ttl_ms,
+            do_not_disturb: false,
         }
     }
 
@@ -96,6 +98,17 @@ impl NotificationQueue {
     /// Whether the queue is empty.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Suppress transient toast presentation while keeping notifications in
+    /// the queue for the control center and IPC history.
+    pub fn set_do_not_disturb(&mut self, enabled: bool) {
+        self.do_not_disturb = enabled;
+    }
+
+    /// Whether transient notification presentation is currently suppressed.
+    pub fn do_not_disturb(&self) -> bool {
+        self.do_not_disturb
     }
 }
 
@@ -156,5 +169,17 @@ mod tests {
         assert!(!q.dismiss(999), "unknown id reports false");
         assert_eq!(q.len(), 1);
         assert_eq!(q.recent()[0].id, b.id);
+    }
+
+    #[test]
+    fn do_not_disturb_suppresses_presentation_without_dropping_history() {
+        let mut queue = NotificationQueue::new(1000);
+        queue.push("kept", "", None, 0);
+        queue.set_do_not_disturb(true);
+        assert!(queue.do_not_disturb());
+        assert_eq!(queue.len(), 1);
+        queue.set_do_not_disturb(false);
+        assert!(!queue.do_not_disturb());
+        assert_eq!(queue.len(), 1);
     }
 }

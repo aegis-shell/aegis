@@ -88,6 +88,11 @@ pub enum LaunchError {
     NoExec(String),
     #[error("spawn: {0}")]
     Spawn(#[from] std::io::Error),
+    #[error("entry {entry} exited with {status}")]
+    Exit {
+        entry: String,
+        status: std::process::ExitStatus,
+    },
 }
 
 /// Launch `source` detached, returning immediately.
@@ -132,8 +137,18 @@ pub fn launch(source: &dyn LaunchSource, opts: &LaunchOpts) -> Result<LaunchRepo
         cmd.current_dir(dir);
     }
 
-    let child = cmd.spawn()?;
-    Ok(LaunchReport { pid: child.id() })
+    let mut child = cmd.spawn()?;
+    let pid = child.id();
+    if opts.foreground {
+        let status = child.wait()?;
+        if !status.success() {
+            return Err(LaunchError::Exit {
+                entry: source.id().into(),
+                status,
+            });
+        }
+    }
+    Ok(LaunchReport { pid })
 }
 
 /// Path to the `setsid` binary. Hard-coded to util-linux's canonical install
@@ -283,9 +298,29 @@ mod tests {
     }
 
     #[test]
-    fn foreground_inherits_session_and_captures_output() {
+    fn foreground_waits_for_completion() {
+        let dir = tempfile_dir();
+        let marker = dir.path().join("foreground.txt");
         let s = Src {
-            exec: Some("printf hello"),
+            exec: Some("sh -c %f"),
+            terminal: false,
+            icon: None,
+            wd: Some(dir.path().to_path_buf()),
+        };
+        let opts = LaunchOpts {
+            files: vec!["printf done > foreground.txt".into()],
+            foreground: true,
+            ..Default::default()
+        };
+        let report = launch(&s as &dyn LaunchSource, &opts).unwrap();
+        assert!(report.pid > 0);
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "done");
+    }
+
+    #[test]
+    fn foreground_reports_nonzero_exit() {
+        let s = Src {
+            exec: Some("exit 7"),
             terminal: false,
             icon: None,
             wd: None,
@@ -294,12 +329,12 @@ mod tests {
             foreground: true,
             ..Default::default()
         };
-        let report = launch(&s as &dyn LaunchSource, &opts).unwrap();
-        assert!(report.pid > 0);
+        let err = launch(&s as &dyn LaunchSource, &opts).unwrap_err();
+        assert!(matches!(err, LaunchError::Exit { .. }), "{err:?}");
     }
 
     #[test]
-    fn terminal_wrapping_runs_without_panic() {
+    fn terminal_wrapping_runs_headlessly() {
         let s = Src {
             exec: Some("true"),
             terminal: true,
@@ -308,10 +343,13 @@ mod tests {
         };
         let opts = LaunchOpts {
             foreground: true,
-            terminal: Some("foot".into()),
+            // `true` accepts the generated `-e <command>` arguments without
+            // opening a real terminal window or depending on the host's
+            // graphical session.
+            terminal: Some("true".into()),
             ..Default::default()
         };
-        let _ = launch(&s as &dyn LaunchSource, &opts);
+        launch(&s as &dyn LaunchSource, &opts).expect("headless terminal wrapper");
     }
 
     #[test]

@@ -22,7 +22,8 @@ windows, or provide arbitrary shell automation. Discovery belongs to
 
 A successful launch returns the spawned process identifier immediately. The
 child runs in a separate session and can survive compositor shutdown. The host
-must provide `/usr/bin/setsid`.
+must provide `/usr/bin/setsid`. `LaunchOpts::foreground` is the diagnostic and
+test mode: it waits for the child and returns an error for a nonzero exit.
 
 ## Use
 
@@ -42,4 +43,3 @@ desktop-entry scan.
 
 - [Application launcher decision](../../docs/adr/0022-application-launcher.md)
 - [Workspace layout](../../docs/dev/project-layout.md)
-

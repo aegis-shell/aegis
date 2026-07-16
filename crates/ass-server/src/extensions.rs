@@ -130,6 +130,322 @@ pub(crate) unsafe fn send_xdg_output_geometry(
     }
 }
 
+// ----- xdg-decoration-unstable-v1 ----------------------------------------
+
+static XDG_DECORATION_MANAGER_IMPL: ffi::zxdg_decoration_manager_v1_interface_impl =
+    ffi::zxdg_decoration_manager_v1_interface_impl {
+        destroy: crate::res_destroy,
+        get_toplevel_decoration: xdg_decoration_get_toplevel,
+    };
+
+static XDG_TOPLEVEL_DECORATION_IMPL: ffi::zxdg_toplevel_decoration_v1_interface_impl =
+    ffi::zxdg_toplevel_decoration_v1_interface_impl {
+        destroy: xdg_toplevel_decoration_destroy,
+        set_mode: xdg_toplevel_decoration_set_mode,
+        unset_mode: xdg_toplevel_decoration_unset_mode,
+    };
+
+pub(crate) unsafe extern "C" fn xdg_decoration_manager_bind(
+    client: *mut ffi::wl_client,
+    data: *mut c_void,
+    version: u32,
+    id: u32,
+) {
+    let resource = ffi::wl_resource_create(
+        client,
+        &ffi::zxdg_decoration_manager_v1_interface,
+        version.min(2) as c_int,
+        id,
+    );
+    if !resource.is_null() {
+        ffi::wl_resource_set_implementation(
+            resource,
+            &XDG_DECORATION_MANAGER_IMPL as *const _ as *const c_void,
+            data,
+            None,
+        );
+    }
+}
+
+unsafe extern "C" fn xdg_decoration_get_toplevel(
+    client: *mut ffi::wl_client,
+    manager: *mut ffi::wl_resource,
+    id: u32,
+    toplevel: *mut ffi::wl_resource,
+) {
+    let rec = ffi::wl_resource_get_user_data(toplevel) as *mut SurfaceRec;
+    if rec.is_null() {
+        return;
+    }
+    if !(*rec).xdg_decoration.is_null() {
+        ffi::wl_resource_post_error(
+            manager,
+            ffi::ZXDG_TOPLEVEL_DECORATION_V1_ERROR_ALREADY_CONSTRUCTED,
+            c"xdg_toplevel already has a decoration object".as_ptr(),
+        );
+        return;
+    }
+    let resource = ffi::wl_resource_create(
+        client,
+        &ffi::zxdg_toplevel_decoration_v1_interface,
+        ffi::wl_resource_get_version(manager),
+        id,
+    );
+    if resource.is_null() {
+        return;
+    }
+    (*rec).xdg_decoration = resource;
+    ffi::wl_resource_set_implementation(
+        resource,
+        &XDG_TOPLEVEL_DECORATION_IMPL as *const _ as *const c_void,
+        rec as *mut c_void,
+        Some(xdg_toplevel_decoration_resource_destroy),
+    );
+    configure_client_side_decoration(resource, rec);
+}
+
+unsafe fn configure_client_side_decoration(resource: *mut ffi::wl_resource, rec: *mut SurfaceRec) {
+    ffi::wl_resource_post_event(
+        resource,
+        ffi::ZXDG_TOPLEVEL_DECORATION_V1_CONFIGURE,
+        ffi::ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE,
+    );
+    crate::reconfigure_with_state(rec);
+}
+
+unsafe extern "C" fn xdg_toplevel_decoration_set_mode(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+    mode: u32,
+) {
+    if mode != ffi::ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
+        && mode != ffi::ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+    {
+        ffi::wl_resource_post_error(
+            resource,
+            ffi::ZXDG_TOPLEVEL_DECORATION_V1_ERROR_INVALID_MODE,
+            c"invalid xdg-decoration mode".as_ptr(),
+        );
+        return;
+    }
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec;
+    if !rec.is_null() {
+        // ASS currently renders client content without an out-of-band frame,
+        // so client-side decorations are the only truthful effective mode.
+        configure_client_side_decoration(resource, rec);
+    }
+}
+
+unsafe extern "C" fn xdg_toplevel_decoration_unset_mode(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+) {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec;
+    if !rec.is_null() {
+        configure_client_side_decoration(resource, rec);
+    }
+}
+
+unsafe extern "C" fn xdg_toplevel_decoration_destroy(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+) {
+    xdg_toplevel_decoration_resource_destroy(resource);
+    ffi::wl_resource_set_user_data(resource, std::ptr::null_mut());
+    ffi::wl_resource_destroy(resource);
+}
+
+unsafe extern "C" fn xdg_toplevel_decoration_resource_destroy(resource: *mut ffi::wl_resource) {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec;
+    if !rec.is_null() && (*rec).xdg_decoration == resource {
+        (*rec).xdg_decoration = std::ptr::null_mut();
+    }
+}
+
+// ----- xdg-activation-v1 --------------------------------------------------
+
+struct ActivationTokenRec {
+    state: *mut State,
+    client: *mut ffi::wl_client,
+    serial: Option<u32>,
+    surface: *mut ffi::wl_resource,
+    committed: bool,
+}
+
+static XDG_ACTIVATION_IMPL: ffi::xdg_activation_v1_interface_impl =
+    ffi::xdg_activation_v1_interface_impl {
+        destroy: crate::res_destroy,
+        get_activation_token: xdg_activation_get_token,
+        activate: xdg_activation_activate,
+    };
+
+static XDG_ACTIVATION_TOKEN_IMPL: ffi::xdg_activation_token_v1_interface_impl =
+    ffi::xdg_activation_token_v1_interface_impl {
+        set_serial: activation_token_set_serial,
+        set_app_id: activation_token_set_app_id,
+        set_surface: activation_token_set_surface,
+        commit: activation_token_commit,
+        destroy: crate::res_destroy,
+    };
+
+pub(crate) unsafe extern "C" fn xdg_activation_bind(
+    client: *mut ffi::wl_client,
+    data: *mut c_void,
+    version: u32,
+    id: u32,
+) {
+    let resource = ffi::wl_resource_create(
+        client,
+        &ffi::xdg_activation_v1_interface,
+        version.min(1) as c_int,
+        id,
+    );
+    if !resource.is_null() {
+        ffi::wl_resource_set_implementation(
+            resource,
+            &XDG_ACTIVATION_IMPL as *const _ as *const c_void,
+            data,
+            None,
+        );
+    }
+}
+
+unsafe extern "C" fn xdg_activation_get_token(
+    client: *mut ffi::wl_client,
+    activation: *mut ffi::wl_resource,
+    id: u32,
+) {
+    let state = ffi::wl_resource_get_user_data(activation) as *mut State;
+    let resource = ffi::wl_resource_create(client, &ffi::xdg_activation_token_v1_interface, 1, id);
+    if resource.is_null() {
+        return;
+    }
+    let rec = Box::into_raw(Box::new(ActivationTokenRec {
+        state,
+        client,
+        serial: None,
+        surface: std::ptr::null_mut(),
+        committed: false,
+    }));
+    ffi::wl_resource_set_implementation(
+        resource,
+        &XDG_ACTIVATION_TOKEN_IMPL as *const _ as *const c_void,
+        rec as *mut c_void,
+        Some(activation_token_resource_destroy),
+    );
+}
+
+unsafe extern "C" fn activation_token_set_serial(
+    _client: *mut ffi::wl_client,
+    token: *mut ffi::wl_resource,
+    serial: u32,
+    _seat: *mut ffi::wl_resource,
+) {
+    let rec = ffi::wl_resource_get_user_data(token) as *mut ActivationTokenRec;
+    if !rec.is_null() && !(*rec).committed {
+        (*rec).serial = Some(serial);
+    }
+}
+
+unsafe extern "C" fn activation_token_set_app_id(
+    _client: *mut ffi::wl_client,
+    token: *mut ffi::wl_resource,
+    _app_id: *const std::os::raw::c_char,
+) {
+    let rec = ffi::wl_resource_get_user_data(token) as *mut ActivationTokenRec;
+    if !rec.is_null() && (*rec).committed {
+        ffi::wl_resource_post_error(
+            token,
+            ffi::XDG_ACTIVATION_TOKEN_V1_ERROR_ALREADY_USED,
+            c"activation token already committed".as_ptr(),
+        );
+    }
+}
+
+unsafe extern "C" fn activation_token_set_surface(
+    client: *mut ffi::wl_client,
+    token: *mut ffi::wl_resource,
+    surface: *mut ffi::wl_resource,
+) {
+    let rec = ffi::wl_resource_get_user_data(token) as *mut ActivationTokenRec;
+    if rec.is_null() || (*rec).committed {
+        return;
+    }
+    if !surface.is_null() && ffi::wl_resource_get_client(surface) == client {
+        (*rec).surface = surface;
+    }
+}
+
+unsafe extern "C" fn activation_token_commit(
+    _client: *mut ffi::wl_client,
+    token_resource: *mut ffi::wl_resource,
+) {
+    let rec = ffi::wl_resource_get_user_data(token_resource) as *mut ActivationTokenRec;
+    if rec.is_null() {
+        return;
+    }
+    if (*rec).committed {
+        ffi::wl_resource_post_error(
+            token_resource,
+            ffi::XDG_ACTIVATION_TOKEN_V1_ERROR_ALREADY_USED,
+            c"activation token already committed".as_ptr(),
+        );
+        return;
+    }
+    (*rec).committed = true;
+    let state = (*rec).state;
+    let serial = if state.is_null() {
+        0
+    } else {
+        ffi::wl_display_next_serial((*state).display)
+    };
+    let token = format!("ass-activation-{serial:08x}");
+    let valid_focus = !state.is_null()
+        && !(*state).keyboard_focus.is_null()
+        && ffi::wl_resource_get_client((*state).keyboard_focus) == (*rec).client;
+    let valid_surface =
+        (*rec).surface.is_null() || ffi::wl_resource_get_client((*rec).surface) == (*rec).client;
+    let valid_serial = (*rec)
+        .serial
+        .is_none_or(|serial| !state.is_null() && serial == (*state).last_button_serial);
+    if valid_focus && valid_surface && valid_serial {
+        (*state).activation_tokens.insert(token.clone());
+    }
+    if let Ok(token) = CString::new(token) {
+        ffi::wl_resource_post_event(
+            token_resource,
+            ffi::XDG_ACTIVATION_TOKEN_V1_DONE,
+            token.as_ptr(),
+        );
+    }
+}
+
+unsafe extern "C" fn activation_token_resource_destroy(resource: *mut ffi::wl_resource) {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut ActivationTokenRec;
+    if !rec.is_null() {
+        drop(Box::from_raw(rec));
+    }
+}
+
+unsafe extern "C" fn xdg_activation_activate(
+    client: *mut ffi::wl_client,
+    activation: *mut ffi::wl_resource,
+    token: *const std::os::raw::c_char,
+    surface: *mut ffi::wl_resource,
+) {
+    if token.is_null() || surface.is_null() || ffi::wl_resource_get_client(surface) != client {
+        return;
+    }
+    let state = ffi::wl_resource_get_user_data(activation) as *mut State;
+    if state.is_null() {
+        return;
+    }
+    let token = CStr::from_ptr(token).to_string_lossy();
+    if (*state).activation_tokens.remove(token.as_ref()) {
+        (*state).pending_activation = surface;
+    }
+}
+
 // ----- presentation-time --------------------------------------------------
 
 static PRESENTATION_IMPL: ffi::wp_presentation_interface_impl =
@@ -166,8 +482,11 @@ pub(crate) unsafe extern "C" fn presentation_bind(
     // sends it as the `clock` event which is opcode... actually presentation
     // has only `feedback` as a request; `clock` is an event (opcode 0).
     const WP_PRESENTATION_CLOCK: u32 = 0;
-    let _ = WP_PRESENTATION_CLOCK;
-    let _ = WL_PRESENTATION_CLOCK_ID_MONOTONIC;
+    ffi::wl_resource_post_event(
+        res,
+        WP_PRESENTATION_CLOCK,
+        WL_PRESENTATION_CLOCK_ID_MONOTONIC,
+    );
 }
 
 unsafe extern "C" fn presentation_feedback(
@@ -188,6 +507,10 @@ unsafe extern "C" fn presentation_feedback(
 }
 
 // ----- fractional-scale-v1 ------------------------------------------------
+
+struct FractionalScaleRec {
+    surface: *mut SurfaceRec,
+}
 
 static FRACTIONAL_SCALE_MANAGER_IMPL: ffi::wp_fractional_scale_manager_v1_interface_impl =
     ffi::wp_fractional_scale_manager_v1_interface_impl {
@@ -231,15 +554,27 @@ unsafe extern "C" fn fractional_scale_manager_get(
 ) {
     let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
     let rec = ffi::wl_resource_get_user_data(surface) as *mut SurfaceRec;
-    let ver = ffi::wl_resource_get_version(mgr);
-    let res = ffi::wl_resource_create(client, &ffi::wp_fractional_scale_v1_interface, ver, id);
-    if res.is_null() || rec.is_null() {
+    if rec.is_null() {
         return;
     }
+    if !(*rec).fractional_scale.is_null() {
+        ffi::wl_resource_post_error(
+            mgr,
+            0,
+            c"wl_surface already has a fractional-scale object".as_ptr(),
+        );
+        return;
+    }
+    let ver = ffi::wl_resource_get_version(mgr);
+    let res = ffi::wl_resource_create(client, &ffi::wp_fractional_scale_v1_interface, ver, id);
+    if res.is_null() {
+        return;
+    }
+    let scale_rec = Box::into_raw(Box::new(FractionalScaleRec { surface: rec }));
     ffi::wl_resource_set_implementation(
         res,
         &FRACTIONAL_SCALE_IMPL as *const _ as *const c_void,
-        rec as *mut c_void,
+        scale_rec as *mut c_void,
         Some(fractional_scale_resource_destroy),
     );
     // Attach to the surface so the server can re-send preferred_scale when
@@ -253,18 +588,38 @@ unsafe extern "C" fn fractional_scale_destroy(
     resource: *mut ffi::wl_resource,
 ) {
     // Detach from the owning surface before libwayland frees the resource.
-    let rec = ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec;
-    if !rec.is_null() && (*rec).fractional_scale == resource {
-        (*rec).fractional_scale = std::ptr::null_mut();
+    let scale = ffi::wl_resource_get_user_data(resource) as *mut FractionalScaleRec;
+    if !scale.is_null() && !(*scale).surface.is_null() {
+        let surface = (*scale).surface;
+        if (*surface).fractional_scale == resource {
+            (*surface).fractional_scale = std::ptr::null_mut();
+        }
+        (*scale).surface = std::ptr::null_mut();
     }
     ffi::wl_resource_destroy(resource);
 }
 
 unsafe extern "C" fn fractional_scale_resource_destroy(resource: *mut ffi::wl_resource) {
-    let rec = ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec;
-    if !rec.is_null() && (*rec).fractional_scale == resource {
-        (*rec).fractional_scale = std::ptr::null_mut();
+    let scale = ffi::wl_resource_get_user_data(resource) as *mut FractionalScaleRec;
+    if scale.is_null() {
+        return;
     }
+    if !(*scale).surface.is_null() && (*(*scale).surface).fractional_scale == resource {
+        (*(*scale).surface).fractional_scale = std::ptr::null_mut();
+    }
+    drop(Box::from_raw(scale));
+}
+
+pub(crate) unsafe fn fractional_scale_surface_destroyed(surface: *mut SurfaceRec) {
+    if surface.is_null() || (*surface).fractional_scale.is_null() {
+        return;
+    }
+    let scale =
+        ffi::wl_resource_get_user_data((*surface).fractional_scale) as *mut FractionalScaleRec;
+    if !scale.is_null() {
+        (*scale).surface = std::ptr::null_mut();
+    }
+    (*surface).fractional_scale = std::ptr::null_mut();
 }
 
 /// Post `wp_fractional_scale_v1.preferred_scale` for one resource, in 120ths
@@ -409,6 +764,11 @@ unsafe extern "C" fn idle_notifier_get(
 
 // ----- relative-pointer-unstable-v1 ---------------------------------------
 
+struct RelativePointerRec {
+    state: *mut State,
+    pointer: *mut ffi::wl_resource,
+}
+
 static RELATIVE_POINTER_MANAGER_IMPL: ffi::zwp_relative_pointer_manager_v1_interface_impl =
     ffi::zwp_relative_pointer_manager_v1_interface_impl {
         destroy: crate::res_destroy,
@@ -422,7 +782,7 @@ static RELATIVE_POINTER_IMPL: ffi::zwp_relative_pointer_v1_interface_impl =
 
 pub(crate) unsafe extern "C" fn relative_pointer_bind(
     client: *mut ffi::wl_client,
-    _data: *mut c_void,
+    data: *mut c_void,
     version: u32,
     id: u32,
 ) {
@@ -438,7 +798,7 @@ pub(crate) unsafe extern "C" fn relative_pointer_bind(
     ffi::wl_resource_set_implementation(
         res,
         &RELATIVE_POINTER_MANAGER_IMPL as *const _ as *const c_void,
-        std::ptr::null_mut(),
+        data,
         None,
     );
 }
@@ -455,12 +815,11 @@ unsafe extern "C" fn relative_pointer_manager_get(
     if res.is_null() {
         return;
     }
-    // Store the owning client's pointer resource in user-data so we can route
-    // deltas to the right client, and track it in State for teardown.
+    let rec = Box::into_raw(Box::new(RelativePointerRec { state, pointer }));
     ffi::wl_resource_set_implementation(
         res,
         &RELATIVE_POINTER_IMPL as *const _ as *const c_void,
-        pointer as *mut c_void,
+        rec as *mut c_void,
         Some(relative_pointer_resource_destroy),
     );
     if !state.is_null() {
@@ -476,23 +835,367 @@ unsafe extern "C" fn relative_pointer_destroy(
 }
 
 unsafe extern "C" fn relative_pointer_resource_destroy(resource: *mut ffi::wl_resource) {
-    let pointer = ffi::wl_resource_get_user_data(resource) as *mut ffi::wl_resource;
-    let client = if pointer.is_null() {
-        std::ptr::null_mut()
-    } else {
-        ffi::wl_resource_get_client(pointer)
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut RelativePointerRec;
+    if rec.is_null() {
+        return;
+    }
+    if !(*rec).state.is_null() {
+        (*(*rec).state).relative_pointers.retain(|r| *r != resource);
+    }
+    let _ = (*rec).pointer;
+    drop(Box::from_raw(rec));
+}
+
+// ----- pointer-gestures-unstable-v1 --------------------------------------
+
+#[derive(Clone, Copy)]
+enum PointerGestureKind {
+    Swipe,
+    Pinch,
+    Hold,
+}
+
+struct PointerGestureRec {
+    state: *mut State,
+    kind: PointerGestureKind,
+}
+
+static POINTER_GESTURES_IMPL: ffi::zwp_pointer_gestures_v1_interface_impl =
+    ffi::zwp_pointer_gestures_v1_interface_impl {
+        destroy: crate::res_destroy,
+        get_swipe_gesture: pointer_gestures_get_swipe,
+        get_pinch_gesture: pointer_gestures_get_pinch,
+        get_hold_gesture: pointer_gestures_get_hold,
     };
-    // Remove from every State whose relative-pointer set contains this
-    // resource. There is one State; find it by scanning: the resource's client
-    // identifies the owner, but the State list is global, so filter by address.
-    // (We don't have a back-pointer to State here; instead we rely on the
-    // wl_display_destroy teardown reclaiming slots — but to keep the live set
-    // accurate for runtime motion routing, null matching entries lazily in the
-    // motion handler.)
-    let _ = client;
+static POINTER_GESTURE_SWIPE_IMPL: ffi::zwp_pointer_gesture_swipe_v1_interface_impl =
+    ffi::zwp_pointer_gesture_swipe_v1_interface_impl {
+        destroy: pointer_gesture_destroy,
+    };
+static POINTER_GESTURE_PINCH_IMPL: ffi::zwp_pointer_gesture_pinch_v1_interface_impl =
+    ffi::zwp_pointer_gesture_pinch_v1_interface_impl {
+        destroy: pointer_gesture_destroy,
+    };
+static POINTER_GESTURE_HOLD_IMPL: ffi::zwp_pointer_gesture_hold_v1_interface_impl =
+    ffi::zwp_pointer_gesture_hold_v1_interface_impl {
+        destroy: pointer_gesture_destroy,
+    };
+
+pub(crate) unsafe extern "C" fn pointer_gestures_bind(
+    client: *mut ffi::wl_client,
+    data: *mut c_void,
+    version: u32,
+    id: u32,
+) {
+    let res = ffi::wl_resource_create(
+        client,
+        &ffi::zwp_pointer_gestures_v1_interface,
+        version.min(3) as c_int,
+        id,
+    );
+    if !res.is_null() {
+        ffi::wl_resource_set_implementation(
+            res,
+            &POINTER_GESTURES_IMPL as *const _ as *const c_void,
+            data,
+            None,
+        );
+    }
+}
+
+unsafe extern "C" fn pointer_gestures_get_swipe(
+    client: *mut ffi::wl_client,
+    manager: *mut ffi::wl_resource,
+    id: u32,
+    pointer: *mut ffi::wl_resource,
+) {
+    create_pointer_gesture(client, manager, id, pointer, PointerGestureKind::Swipe);
+}
+
+unsafe extern "C" fn pointer_gestures_get_pinch(
+    client: *mut ffi::wl_client,
+    manager: *mut ffi::wl_resource,
+    id: u32,
+    pointer: *mut ffi::wl_resource,
+) {
+    create_pointer_gesture(client, manager, id, pointer, PointerGestureKind::Pinch);
+}
+
+unsafe extern "C" fn pointer_gestures_get_hold(
+    client: *mut ffi::wl_client,
+    manager: *mut ffi::wl_resource,
+    id: u32,
+    pointer: *mut ffi::wl_resource,
+) {
+    create_pointer_gesture(client, manager, id, pointer, PointerGestureKind::Hold);
+}
+
+unsafe fn create_pointer_gesture(
+    client: *mut ffi::wl_client,
+    manager: *mut ffi::wl_resource,
+    id: u32,
+    pointer: *mut ffi::wl_resource,
+    kind: PointerGestureKind,
+) {
+    if pointer.is_null() || ffi::wl_resource_get_client(pointer) != client {
+        ffi::wl_resource_post_error(manager, 0, c"pointer belongs to another client".as_ptr());
+        return;
+    }
+    let state = ffi::wl_resource_get_user_data(manager) as *mut State;
+    let (interface, implementation): (&ffi::wl_interface, *const c_void) = match kind {
+        PointerGestureKind::Swipe => (
+            &ffi::zwp_pointer_gesture_swipe_v1_interface,
+            &POINTER_GESTURE_SWIPE_IMPL as *const _ as *const c_void,
+        ),
+        PointerGestureKind::Pinch => (
+            &ffi::zwp_pointer_gesture_pinch_v1_interface,
+            &POINTER_GESTURE_PINCH_IMPL as *const _ as *const c_void,
+        ),
+        PointerGestureKind::Hold => (
+            &ffi::zwp_pointer_gesture_hold_v1_interface,
+            &POINTER_GESTURE_HOLD_IMPL as *const _ as *const c_void,
+        ),
+    };
+    let res = ffi::wl_resource_create(client, interface, 1, id);
+    if res.is_null() {
+        return;
+    }
+    let rec = Box::into_raw(Box::new(PointerGestureRec { state, kind }));
+    ffi::wl_resource_set_implementation(
+        res,
+        implementation,
+        rec as *mut c_void,
+        Some(pointer_gesture_resource_destroy),
+    );
+    match kind {
+        PointerGestureKind::Swipe => (*state).pointer_gesture_swipes.push(res),
+        PointerGestureKind::Pinch => (*state).pointer_gesture_pinches.push(res),
+        PointerGestureKind::Hold => (*state).pointer_gesture_holds.push(res),
+    }
+}
+
+unsafe extern "C" fn pointer_gesture_destroy(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+) {
+    ffi::wl_resource_destroy(resource);
+}
+
+unsafe extern "C" fn pointer_gesture_resource_destroy(resource: *mut ffi::wl_resource) {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut PointerGestureRec;
+    if rec.is_null() {
+        return;
+    }
+    let state = (*rec).state;
+    if !state.is_null() {
+        match (*rec).kind {
+            PointerGestureKind::Swipe => (*state).pointer_gesture_swipes.retain(|r| *r != resource),
+            PointerGestureKind::Pinch => {
+                (*state).pointer_gesture_pinches.retain(|r| *r != resource)
+            }
+            PointerGestureKind::Hold => (*state).pointer_gesture_holds.retain(|r| *r != resource),
+        }
+    }
+    drop(Box::from_raw(rec));
+}
+
+// ----- keyboard-shortcuts-inhibit-unstable-v1 ----------------------------
+
+struct KeyboardShortcutsInhibitorRec {
+    state: *mut State,
+    surface: *mut ffi::wl_resource,
+    active: bool,
+}
+
+static KEYBOARD_SHORTCUTS_INHIBIT_MANAGER_IMPL:
+    ffi::zwp_keyboard_shortcuts_inhibit_manager_v1_interface_impl =
+    ffi::zwp_keyboard_shortcuts_inhibit_manager_v1_interface_impl {
+        destroy: crate::res_destroy,
+        inhibit_shortcuts: keyboard_shortcuts_inhibit,
+    };
+static KEYBOARD_SHORTCUTS_INHIBITOR_IMPL: ffi::zwp_keyboard_shortcuts_inhibitor_v1_interface_impl =
+    ffi::zwp_keyboard_shortcuts_inhibitor_v1_interface_impl {
+        destroy: keyboard_shortcuts_inhibitor_destroy,
+    };
+
+pub(crate) unsafe extern "C" fn keyboard_shortcuts_inhibit_bind(
+    client: *mut ffi::wl_client,
+    data: *mut c_void,
+    version: u32,
+    id: u32,
+) {
+    let resource = ffi::wl_resource_create(
+        client,
+        &ffi::zwp_keyboard_shortcuts_inhibit_manager_v1_interface,
+        version.min(1) as c_int,
+        id,
+    );
+    if !resource.is_null() {
+        ffi::wl_resource_set_implementation(
+            resource,
+            &KEYBOARD_SHORTCUTS_INHIBIT_MANAGER_IMPL as *const _ as *const c_void,
+            data,
+            None,
+        );
+    }
+}
+
+unsafe extern "C" fn keyboard_shortcuts_inhibit(
+    client: *mut ffi::wl_client,
+    manager: *mut ffi::wl_resource,
+    id: u32,
+    surface: *mut ffi::wl_resource,
+    seat: *mut ffi::wl_resource,
+) {
+    if surface.is_null()
+        || seat.is_null()
+        || ffi::wl_resource_get_client(surface) != client
+        || ffi::wl_resource_get_client(seat) != client
+    {
+        ffi::wl_resource_post_error(
+            manager,
+            0,
+            c"surface or seat belongs to another client".as_ptr(),
+        );
+        return;
+    }
+    let state = ffi::wl_resource_get_user_data(manager) as *mut State;
+    let duplicate = (*state)
+        .keyboard_shortcut_inhibitors
+        .iter()
+        .copied()
+        .any(|resource| {
+            let rec =
+                ffi::wl_resource_get_user_data(resource) as *mut KeyboardShortcutsInhibitorRec;
+            !rec.is_null() && (*rec).surface == surface
+        });
+    if duplicate {
+        ffi::wl_resource_post_error(
+            manager,
+            ffi::ZWP_KEYBOARD_SHORTCUTS_INHIBIT_MANAGER_V1_ERROR_ALREADY_INHIBITED,
+            c"shortcuts are already inhibited for this surface and seat".as_ptr(),
+        );
+        return;
+    }
+    let resource = ffi::wl_resource_create(
+        client,
+        &ffi::zwp_keyboard_shortcuts_inhibitor_v1_interface,
+        1,
+        id,
+    );
+    if resource.is_null() {
+        return;
+    }
+    let active = (*state).keyboard_focus == surface;
+    let rec = Box::into_raw(Box::new(KeyboardShortcutsInhibitorRec {
+        state,
+        surface,
+        active,
+    }));
+    ffi::wl_resource_set_implementation(
+        resource,
+        &KEYBOARD_SHORTCUTS_INHIBITOR_IMPL as *const _ as *const c_void,
+        rec as *mut c_void,
+        Some(keyboard_shortcuts_inhibitor_resource_destroy),
+    );
+    (*state).keyboard_shortcut_inhibitors.push(resource);
+    if active {
+        ffi::wl_resource_post_event(resource, ffi::ZWP_KEYBOARD_SHORTCUTS_INHIBITOR_V1_ACTIVE);
+    }
+}
+
+unsafe extern "C" fn keyboard_shortcuts_inhibitor_destroy(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+) {
+    ffi::wl_resource_destroy(resource);
+}
+
+unsafe extern "C" fn keyboard_shortcuts_inhibitor_resource_destroy(
+    resource: *mut ffi::wl_resource,
+) {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut KeyboardShortcutsInhibitorRec;
+    if rec.is_null() {
+        return;
+    }
+    if !(*rec).state.is_null() {
+        (*(*rec).state)
+            .keyboard_shortcut_inhibitors
+            .retain(|r| *r != resource);
+    }
+    drop(Box::from_raw(rec));
+}
+
+pub(crate) unsafe fn keyboard_shortcuts_focus_changed(
+    state: *mut State,
+    new_focus: *mut ffi::wl_resource,
+) {
+    for resource in (*state).keyboard_shortcut_inhibitors.clone() {
+        let rec = ffi::wl_resource_get_user_data(resource) as *mut KeyboardShortcutsInhibitorRec;
+        if rec.is_null() {
+            continue;
+        }
+        let active = !new_focus.is_null() && (*rec).surface == new_focus;
+        if active == (*rec).active {
+            continue;
+        }
+        (*rec).active = active;
+        ffi::wl_resource_post_event(
+            resource,
+            if active {
+                ffi::ZWP_KEYBOARD_SHORTCUTS_INHIBITOR_V1_ACTIVE
+            } else {
+                ffi::ZWP_KEYBOARD_SHORTCUTS_INHIBITOR_V1_INACTIVE
+            },
+        );
+    }
+}
+
+pub(crate) unsafe fn keyboard_shortcuts_inhibited(state: *mut State) -> bool {
+    !(*state).keyboard_focus.is_null()
+        && (*state)
+            .keyboard_shortcut_inhibitors
+            .iter()
+            .copied()
+            .any(|resource| {
+                let rec =
+                    ffi::wl_resource_get_user_data(resource) as *mut KeyboardShortcutsInhibitorRec;
+                !rec.is_null() && (*rec).active && (*rec).surface == (*state).keyboard_focus
+            })
+}
+
+pub(crate) unsafe fn keyboard_shortcuts_surface_destroyed(
+    state: *mut State,
+    surface: *mut ffi::wl_resource,
+) {
+    for resource in (*state).keyboard_shortcut_inhibitors.clone() {
+        let rec = ffi::wl_resource_get_user_data(resource) as *mut KeyboardShortcutsInhibitorRec;
+        if rec.is_null() || (*rec).surface != surface {
+            continue;
+        }
+        if (*rec).active {
+            (*rec).active = false;
+            ffi::wl_resource_post_event(
+                resource,
+                ffi::ZWP_KEYBOARD_SHORTCUTS_INHIBITOR_V1_INACTIVE,
+            );
+        }
+        (*rec).surface = std::ptr::null_mut();
+    }
 }
 
 // ----- pointer-constraints-unstable-v1 ------------------------------------
+
+struct PointerConstraintRec {
+    state: *mut State,
+    surface: *mut ffi::wl_resource,
+    pointer: *mut ffi::wl_resource,
+    locked: bool,
+    lifetime: u32,
+    active: bool,
+    consumed: bool,
+    region: Option<Vec<ass_core::Rect>>,
+    cursor_hint: Option<(f32, f32)>,
+}
 
 static POINTER_CONSTRAINTS_IMPL: ffi::zwp_pointer_constraints_v1_interface_impl =
     ffi::zwp_pointer_constraints_v1_interface_impl {
@@ -503,20 +1206,20 @@ static POINTER_CONSTRAINTS_IMPL: ffi::zwp_pointer_constraints_v1_interface_impl 
 
 static CONFINED_POINTER_IMPL: ffi::zwp_confined_pointer_v1_interface_impl =
     ffi::zwp_confined_pointer_v1_interface_impl {
-        destroy: crate::res_destroy,
-        set_region: crate::noop_region,
+        destroy: pointer_constraint_destroy,
+        set_region: pointer_constraint_set_region,
     };
 
 static LOCKED_POINTER_IMPL: ffi::zwp_locked_pointer_v1_interface_impl =
     ffi::zwp_locked_pointer_v1_interface_impl {
-        destroy: crate::res_destroy,
-        set_cursor_position_hint: crate::noop_fixed2,
-        set_region: crate::noop_region,
+        destroy: pointer_constraint_destroy,
+        set_cursor_position_hint: locked_pointer_set_cursor_hint,
+        set_region: pointer_constraint_set_region,
     };
 
 pub(crate) unsafe extern "C" fn pointer_constraints_bind(
     client: *mut ffi::wl_client,
-    _data: *mut c_void,
+    data: *mut c_void,
     version: u32,
     id: u32,
 ) {
@@ -532,7 +1235,7 @@ pub(crate) unsafe extern "C" fn pointer_constraints_bind(
     ffi::wl_resource_set_implementation(
         res,
         &POINTER_CONSTRAINTS_IMPL as *const _ as *const c_void,
-        std::ptr::null_mut(),
+        data,
         None,
     );
 }
@@ -541,47 +1244,271 @@ unsafe extern "C" fn pc_lock_pointer(
     client: *mut ffi::wl_client,
     pc: *mut ffi::wl_resource,
     id: u32,
-    _surface: *mut ffi::wl_resource,
-    _pointer: *mut ffi::wl_resource,
-    _region: *mut ffi::wl_resource,
-    _lifetime: u32,
+    surface: *mut ffi::wl_resource,
+    pointer: *mut ffi::wl_resource,
+    region: *mut ffi::wl_resource,
+    lifetime: u32,
 ) {
-    let ver = ffi::wl_resource_get_version(pc);
-    let res = ffi::wl_resource_create(client, &ffi::zwp_locked_pointer_v1_interface, ver, id);
-    if res.is_null() {
-        return;
-    }
-    ffi::wl_resource_set_implementation(
-        res,
-        &LOCKED_POINTER_IMPL as *const _ as *const c_void,
-        std::ptr::null_mut(),
-        None,
-    );
-    // Immediately grant the lock.
-    ffi::wl_resource_post_event(res, ffi::ZWP_LOCKED_POINTER_V1_LOCKED);
+    create_pointer_constraint(client, pc, id, surface, pointer, region, lifetime, true);
 }
 
 unsafe extern "C" fn pc_confine_pointer(
     client: *mut ffi::wl_client,
     pc: *mut ffi::wl_resource,
     id: u32,
-    _surface: *mut ffi::wl_resource,
-    _pointer: *mut ffi::wl_resource,
-    _region: *mut ffi::wl_resource,
-    _lifetime: u32,
+    surface: *mut ffi::wl_resource,
+    pointer: *mut ffi::wl_resource,
+    region: *mut ffi::wl_resource,
+    lifetime: u32,
 ) {
-    let ver = ffi::wl_resource_get_version(pc);
-    let res = ffi::wl_resource_create(client, &ffi::zwp_confined_pointer_v1_interface, ver, id);
+    create_pointer_constraint(client, pc, id, surface, pointer, region, lifetime, false);
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn create_pointer_constraint(
+    client: *mut ffi::wl_client,
+    manager: *mut ffi::wl_resource,
+    id: u32,
+    surface: *mut ffi::wl_resource,
+    pointer: *mut ffi::wl_resource,
+    region: *mut ffi::wl_resource,
+    lifetime: u32,
+    locked: bool,
+) {
+    let state = ffi::wl_resource_get_user_data(manager) as *mut State;
+    if state.is_null() || (lifetime != 1 && lifetime != 2) {
+        return;
+    }
+    let duplicate = (*state)
+        .pointer_constraints
+        .iter()
+        .copied()
+        .any(|resource| {
+            if resource.is_null() {
+                return false;
+            }
+            let rec = ffi::wl_resource_get_user_data(resource) as *mut PointerConstraintRec;
+            !rec.is_null() && (*rec).surface == surface && (*rec).pointer == pointer
+        });
+    if duplicate {
+        ffi::wl_resource_post_error(
+            manager,
+            1,
+            c"pointer is already constrained on this surface".as_ptr(),
+        );
+        return;
+    }
+    let ver = ffi::wl_resource_get_version(manager);
+    let interface = if locked {
+        &ffi::zwp_locked_pointer_v1_interface
+    } else {
+        &ffi::zwp_confined_pointer_v1_interface
+    };
+    let res = ffi::wl_resource_create(client, interface, ver, id);
     if res.is_null() {
         return;
     }
+    let region = copy_region(region);
+    let active = (*state).pointer_focus == surface;
+    let rec = Box::into_raw(Box::new(PointerConstraintRec {
+        state,
+        surface,
+        pointer,
+        locked,
+        lifetime,
+        active,
+        consumed: false,
+        region,
+        cursor_hint: None,
+    }));
+    let implementation = if locked {
+        &LOCKED_POINTER_IMPL as *const _ as *const c_void
+    } else {
+        &CONFINED_POINTER_IMPL as *const _ as *const c_void
+    };
     ffi::wl_resource_set_implementation(
         res,
-        &CONFINED_POINTER_IMPL as *const _ as *const c_void,
-        std::ptr::null_mut(),
-        None,
+        implementation,
+        rec as *mut c_void,
+        Some(pointer_constraint_resource_destroy),
     );
-    ffi::wl_resource_post_event(res, ffi::ZWP_CONFINED_POINTER_V1_CONFINED);
+    (*state).pointer_constraints.push(res);
+    if active {
+        ffi::wl_resource_post_event(
+            res,
+            if locked {
+                ffi::ZWP_LOCKED_POINTER_V1_LOCKED
+            } else {
+                ffi::ZWP_CONFINED_POINTER_V1_CONFINED
+            },
+        );
+    }
+}
+
+unsafe fn copy_region(region: *mut ffi::wl_resource) -> Option<Vec<ass_core::Rect>> {
+    if region.is_null() {
+        return None;
+    }
+    let region = ffi::wl_resource_get_user_data(region) as *mut crate::RegionRec;
+    if region.is_null() {
+        Some(Vec::new())
+    } else {
+        Some((*region).rects.clone())
+    }
+}
+
+unsafe extern "C" fn pointer_constraint_set_region(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+    region: *mut ffi::wl_resource,
+) {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut PointerConstraintRec;
+    if !rec.is_null() {
+        (*rec).region = copy_region(region);
+    }
+}
+
+unsafe extern "C" fn locked_pointer_set_cursor_hint(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+    x: i32,
+    y: i32,
+) {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut PointerConstraintRec;
+    if !rec.is_null() && (*rec).locked {
+        (*rec).cursor_hint = Some((x as f32 / 256.0, y as f32 / 256.0));
+    }
+}
+
+unsafe extern "C" fn pointer_constraint_destroy(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+) {
+    ffi::wl_resource_destroy(resource);
+}
+
+unsafe extern "C" fn pointer_constraint_resource_destroy(resource: *mut ffi::wl_resource) {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut PointerConstraintRec;
+    if rec.is_null() {
+        return;
+    }
+    if !(*rec).state.is_null() {
+        (*(*rec).state)
+            .pointer_constraints
+            .retain(|r| *r != resource);
+    }
+    drop(Box::from_raw(rec));
+}
+
+pub(crate) unsafe fn pointer_constraint_focus_changed(
+    state: *mut State,
+    old_focus: *mut ffi::wl_resource,
+    new_focus: *mut ffi::wl_resource,
+) {
+    if state.is_null() {
+        return;
+    }
+    for resource in (*state).pointer_constraints.clone() {
+        if resource.is_null() {
+            continue;
+        }
+        let rec = ffi::wl_resource_get_user_data(resource) as *mut PointerConstraintRec;
+        if rec.is_null() {
+            continue;
+        }
+        if (*rec).active && (*rec).surface == old_focus {
+            (*rec).active = false;
+            ffi::wl_resource_post_event(
+                resource,
+                if (*rec).locked {
+                    ffi::ZWP_LOCKED_POINTER_V1_UNLOCKED
+                } else {
+                    ffi::ZWP_CONFINED_POINTER_V1_UNCONFINED
+                },
+            );
+            if (*rec).locked {
+                if let Some((x, y)) = (*rec).cursor_hint {
+                    let surface = ffi::wl_resource_get_user_data(old_focus) as *mut SurfaceRec;
+                    if !surface.is_null() {
+                        (*state).pointer_x = (*surface).position.x as f32 + x;
+                        (*state).pointer_y = (*surface).position.y as f32 + y;
+                    }
+                }
+            }
+            if (*rec).lifetime == 1 {
+                (*rec).consumed = true;
+            }
+        }
+        if !(*rec).active && !(*rec).consumed && (*rec).surface == new_focus {
+            (*rec).active = true;
+            ffi::wl_resource_post_event(
+                resource,
+                if (*rec).locked {
+                    ffi::ZWP_LOCKED_POINTER_V1_LOCKED
+                } else {
+                    ffi::ZWP_CONFINED_POINTER_V1_CONFINED
+                },
+            );
+        }
+    }
+}
+
+pub(crate) unsafe fn constrain_pointer_motion(state: *mut State, x: f32, y: f32) -> (f32, f32) {
+    if state.is_null() || (*state).pointer_focus.is_null() {
+        return (x, y);
+    }
+    for resource in (*state).pointer_constraints.clone() {
+        if resource.is_null() {
+            continue;
+        }
+        let rec = ffi::wl_resource_get_user_data(resource) as *mut PointerConstraintRec;
+        if rec.is_null() || !(*rec).active || (*rec).surface != (*state).pointer_focus {
+            continue;
+        }
+        if (*rec).locked {
+            return ((*state).pointer_x, (*state).pointer_y);
+        }
+        let surface = ffi::wl_resource_get_user_data((*rec).surface) as *mut SurfaceRec;
+        if surface.is_null() {
+            return (x, y);
+        }
+        let local_x = x - (*surface).position.x as f32;
+        let local_y = y - (*surface).position.y as f32;
+        let bounds = (*rec).region.clone().unwrap_or_else(|| {
+            let size = crate::surface_logical_size(&*surface);
+            vec![ass_core::Rect::new(0, 0, size.w, size.h)]
+        });
+        if bounds.is_empty() {
+            return ((*state).pointer_x, (*state).pointer_y);
+        }
+        if bounds.iter().any(|rect| {
+            rect.contains(ass_core::Point {
+                x: local_x.floor() as i32,
+                y: local_y.floor() as i32,
+            })
+        }) {
+            return (x, y);
+        }
+        let (cx, cy, _) = bounds
+            .iter()
+            .map(|rect| {
+                let min_x = rect.origin.x as f32;
+                let min_y = rect.origin.y as f32;
+                let max_x = (rect.origin.x + rect.size.w).saturating_sub(1) as f32;
+                let max_y = (rect.origin.y + rect.size.h).saturating_sub(1) as f32;
+                let cx = local_x.clamp(min_x, max_x.max(min_x));
+                let cy = local_y.clamp(min_y, max_y.max(min_y));
+                let distance = (local_x - cx).powi(2) + (local_y - cy).powi(2);
+                (cx, cy, distance)
+            })
+            .min_by(|a, b| a.2.total_cmp(&b.2))
+            .unwrap();
+        return (
+            (*surface).position.x as f32 + cx,
+            (*surface).position.y as f32 + cy,
+        );
+    }
+    (x, y)
 }
 
 // ----- ext-session-lock-v1 ------------------------------------------------
@@ -677,13 +1604,13 @@ unsafe extern "C" fn session_lock_get_surface(
 
 static FOREIGN_TOPLEVEL_LIST_IMPL: ffi::ext_foreign_toplevel_list_v1_interface_impl =
     ffi::ext_foreign_toplevel_list_v1_interface_impl {
-        stop: crate::noop_none,
+        stop: foreign_toplevel_stop,
         destroy: crate::res_destroy,
     };
 
 static FOREIGN_TOPLEVEL_HANDLE_IMPL: ffi::ext_foreign_toplevel_handle_v1_interface_impl =
     ffi::ext_foreign_toplevel_handle_v1_interface_impl {
-        destroy: crate::res_destroy,
+        destroy: foreign_toplevel_handle_destroy,
     };
 
 pub(crate) unsafe extern "C" fn foreign_toplevel_bind(
@@ -705,13 +1632,14 @@ pub(crate) unsafe extern "C" fn foreign_toplevel_bind(
         res,
         &FOREIGN_TOPLEVEL_LIST_IMPL as *const _ as *const c_void,
         data,
-        None,
+        Some(foreign_toplevel_list_resource_destroy),
     );
     let state = data as *mut State;
     if !state.is_null() {
         (*state).foreign_toplevel_lists.push(res);
     }
-    // Advertise each currently-live toplevel as a handle, then finish.
+    // Advertise each currently-live toplevel. `finished` is sent only after
+    // the client explicitly calls stop; live lists keep receiving additions.
     if !state.is_null() {
         for p in (*state).live_surfaces_pub() {
             let s = &*p;
@@ -721,7 +1649,24 @@ pub(crate) unsafe extern "C" fn foreign_toplevel_bind(
             create_foreign_handle(res, s as *const SurfaceRec as *mut SurfaceRec, state);
         }
     }
-    ffi::wl_resource_post_event(res, ffi::EXT_FOREIGN_TOPLEVEL_LIST_V1_FINISHED);
+}
+
+unsafe extern "C" fn foreign_toplevel_stop(
+    _client: *mut ffi::wl_client,
+    list: *mut ffi::wl_resource,
+) {
+    let state = ffi::wl_resource_get_user_data(list) as *mut State;
+    if !state.is_null() {
+        (*state).foreign_toplevel_lists.retain(|r| *r != list);
+    }
+    ffi::wl_resource_post_event(list, ffi::EXT_FOREIGN_TOPLEVEL_LIST_V1_FINISHED);
+}
+
+unsafe extern "C" fn foreign_toplevel_list_resource_destroy(list: *mut ffi::wl_resource) {
+    let state = ffi::wl_resource_get_user_data(list) as *mut State;
+    if !state.is_null() {
+        (*state).foreign_toplevel_lists.retain(|r| *r != list);
+    }
 }
 
 /// Create a `ext_foreign_toplevel_handle_v1` for `rec`, advertise it on `list`,
@@ -746,7 +1691,7 @@ unsafe fn create_foreign_handle(
         handle,
         &FOREIGN_TOPLEVEL_HANDLE_IMPL as *const _ as *const c_void,
         rec as *mut c_void,
-        None,
+        Some(foreign_toplevel_handle_resource_destroy),
     );
     ffi::wl_resource_post_event(list, ffi::EXT_FOREIGN_TOPLEVEL_LIST_V1_TOPLEVEL, handle);
     let wid = (*rec).window.id.0;
@@ -777,7 +1722,35 @@ unsafe fn create_foreign_handle(
     }
     ffi::wl_resource_post_event(handle, ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_DONE);
     if !state.is_null() {
-        (*state).foreign_handles.insert(wid, handle);
+        (*state)
+            .foreign_handles
+            .entry(wid)
+            .or_default()
+            .push(handle);
+    }
+}
+
+unsafe extern "C" fn foreign_toplevel_handle_destroy(
+    _client: *mut ffi::wl_client,
+    handle: *mut ffi::wl_resource,
+) {
+    foreign_toplevel_handle_resource_destroy(handle);
+    ffi::wl_resource_set_user_data(handle, std::ptr::null_mut());
+    ffi::wl_resource_destroy(handle);
+}
+
+unsafe extern "C" fn foreign_toplevel_handle_resource_destroy(handle: *mut ffi::wl_resource) {
+    let rec = ffi::wl_resource_get_user_data(handle) as *mut SurfaceRec;
+    if rec.is_null() || (*rec).state.is_null() {
+        return;
+    }
+    let state = (*rec).state;
+    let wid = (*rec).window.id.0;
+    if let Some(handles) = (*state).foreign_handles.get_mut(&wid) {
+        handles.retain(|r| *r != handle);
+        if handles.is_empty() {
+            (*state).foreign_handles.remove(&wid);
+        }
     }
 }
 
@@ -804,28 +1777,30 @@ pub(crate) unsafe fn foreign_toplevel_updated(rec: *mut SurfaceRec, state: *mut 
         return;
     }
     let wid = (*rec).window.id.0;
-    let Some(&handle) = (*state).foreign_handles.get(&wid) else {
+    let Some(handles) = (*state).foreign_handles.get(&wid).cloned() else {
         return;
     };
-    if let Some(title) = &(*rec).window.title {
-        if let Ok(c) = CString::new(title.as_str()) {
-            ffi::wl_resource_post_event(
-                handle,
-                ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_TITLE,
-                c.as_ptr(),
-            );
+    for handle in handles.into_iter().filter(|r| !r.is_null()) {
+        if let Some(title) = &(*rec).window.title {
+            if let Ok(c) = CString::new(title.as_str()) {
+                ffi::wl_resource_post_event(
+                    handle,
+                    ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_TITLE,
+                    c.as_ptr(),
+                );
+            }
         }
-    }
-    if let Some(app_id) = &(*rec).window.app_id {
-        if let Ok(c) = CString::new(app_id.as_str()) {
-            ffi::wl_resource_post_event(
-                handle,
-                ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_APP_ID,
-                c.as_ptr(),
-            );
+        if let Some(app_id) = &(*rec).window.app_id {
+            if let Ok(c) = CString::new(app_id.as_str()) {
+                ffi::wl_resource_post_event(
+                    handle,
+                    ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_APP_ID,
+                    c.as_ptr(),
+                );
+            }
         }
+        ffi::wl_resource_post_event(handle, ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_DONE);
     }
-    ffi::wl_resource_post_event(handle, ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_DONE);
 }
 
 /// Notify `closed` on the handle and drop it from the tracking map.
@@ -833,8 +1808,8 @@ pub(crate) unsafe fn foreign_toplevel_removed(wid: u64, state: *mut State) {
     if state.is_null() {
         return;
     }
-    if let Some(handle) = (*state).foreign_handles.remove(&wid) {
-        if !handle.is_null() {
+    if let Some(handles) = (*state).foreign_handles.remove(&wid) {
+        for handle in handles.into_iter().filter(|r| !r.is_null()) {
             ffi::wl_resource_post_event(handle, ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_CLOSED);
             ffi::wl_resource_destroy(handle);
         }
@@ -950,13 +1925,13 @@ static PRIMARY_SELECTION_DEV_MGR_IMPL: ffi::zwp_primary_selection_device_manager
 
 static PRIMARY_SELECTION_DEVICE_IMPL: ffi::zwp_primary_selection_device_v1_interface_impl =
     ffi::zwp_primary_selection_device_v1_interface_impl {
-        set_selection: crate::noop_obj_serial,
+        set_selection: primary_selection_set,
         destroy: crate::res_destroy,
     };
 
 static PRIMARY_SELECTION_SOURCE_IMPL: ffi::zwp_primary_selection_source_v1_interface_impl =
     ffi::zwp_primary_selection_source_v1_interface_impl {
-        offer: crate::noop_str,
+        offer: primary_source_offer,
         destroy: crate::res_destroy,
     };
 
@@ -968,7 +1943,7 @@ static PRIMARY_SELECTION_OFFER_IMPL: ffi::zwp_primary_selection_offer_v1_interfa
 
 pub(crate) unsafe extern "C" fn primary_selection_bind(
     client: *mut ffi::wl_client,
-    _data: *mut c_void,
+    data: *mut c_void,
     version: u32,
     id: u32,
 ) {
@@ -984,7 +1959,7 @@ pub(crate) unsafe extern "C" fn primary_selection_bind(
     ffi::wl_resource_set_implementation(
         res,
         &PRIMARY_SELECTION_DEV_MGR_IMPL as *const _ as *const c_void,
-        std::ptr::null_mut(),
+        data,
         None,
     );
 }
@@ -1002,13 +1977,63 @@ unsafe extern "C" fn psdm_create_source(
         id,
     );
     if !src.is_null() {
+        let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
+        let rec = Box::into_raw(Box::new(crate::PrimarySourceRec {
+            state,
+            mime_types: Vec::new(),
+        }));
         ffi::wl_resource_set_implementation(
             src,
             &PRIMARY_SELECTION_SOURCE_IMPL as *const _ as *const c_void,
-            std::ptr::null_mut(),
-            None,
+            rec as *mut c_void,
+            Some(primary_source_resource_destroy),
         );
     }
+}
+
+unsafe extern "C" fn primary_source_offer(
+    _client: *mut ffi::wl_client,
+    source: *mut ffi::wl_resource,
+    mime: *const std::os::raw::c_char,
+) {
+    let rec = ffi::wl_resource_get_user_data(source) as *mut crate::PrimarySourceRec;
+    if rec.is_null() || mime.is_null() {
+        return;
+    }
+    let mime = CStr::from_ptr(mime).to_string_lossy().into_owned();
+    if !(*rec).mime_types.contains(&mime) {
+        (*rec).mime_types.push(mime);
+    }
+}
+
+unsafe extern "C" fn primary_source_resource_destroy(source: *mut ffi::wl_resource) {
+    let rec = ffi::wl_resource_get_user_data(source) as *mut crate::PrimarySourceRec;
+    if rec.is_null() {
+        return;
+    }
+    let state = (*rec).state;
+    if !state.is_null() {
+        if (*state)
+            .primary_selection
+            .as_ref()
+            .is_some_and(|s| s.source == source)
+        {
+            (*state).primary_selection = None;
+            notify_primary_selection(state);
+        }
+        for offer in (*state)
+            .primary_offers
+            .iter()
+            .copied()
+            .filter(|r| !r.is_null())
+        {
+            let offer_rec = ffi::wl_resource_get_user_data(offer) as *mut crate::PrimaryOfferRec;
+            if !offer_rec.is_null() && (*offer_rec).source == source {
+                (*offer_rec).source = std::ptr::null_mut();
+            }
+        }
+    }
+    drop(Box::from_raw(rec));
 }
 
 unsafe extern "C" fn psdm_get_data_device(
@@ -1025,21 +2050,208 @@ unsafe extern "C" fn psdm_get_data_device(
         id,
     );
     if !dev.is_null() {
+        let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
         ffi::wl_resource_set_implementation(
             dev,
             &PRIMARY_SELECTION_DEVICE_IMPL as *const _ as *const c_void,
-            std::ptr::null_mut(),
-            None,
+            state as *mut c_void,
+            Some(primary_device_resource_destroy),
         );
+        if !state.is_null() {
+            (*state).primary_devices.push(dev);
+            if !(*state).keyboard_focus.is_null()
+                && ffi::wl_resource_get_client((*state).keyboard_focus) == client
+            {
+                advertise_primary_selection(dev, state);
+            }
+        }
     }
+}
+
+unsafe extern "C" fn primary_device_resource_destroy(device: *mut ffi::wl_resource) {
+    let state = ffi::wl_resource_get_user_data(device) as *mut State;
+    if !state.is_null() {
+        (*state).primary_devices.retain(|r| *r != device);
+    }
+}
+
+unsafe extern "C" fn primary_selection_set(
+    client: *mut ffi::wl_client,
+    device: *mut ffi::wl_resource,
+    source: *mut ffi::wl_resource,
+    _serial: u32,
+) {
+    let state = ffi::wl_resource_get_user_data(device) as *mut State;
+    if state.is_null()
+        || (!source.is_null() && ffi::wl_resource_get_client(source) != client)
+        || (*state).keyboard_focus.is_null()
+        || ffi::wl_resource_get_client((*state).keyboard_focus) != client
+    {
+        return;
+    }
+    let replacement = if source.is_null() {
+        None
+    } else {
+        let rec = ffi::wl_resource_get_user_data(source) as *mut crate::PrimarySourceRec;
+        if rec.is_null() {
+            return;
+        }
+        Some(crate::PrimarySelection {
+            source,
+            mime_types: (*rec).mime_types.clone(),
+        })
+    };
+    if let Some(old) = std::mem::replace(&mut (*state).primary_selection, replacement) {
+        if old.source != source {
+            ffi::wl_resource_post_event(old.source, ffi::ZWP_PRIMARY_SELECTION_SOURCE_V1_CANCELLED);
+        }
+    }
+    notify_primary_selection(state);
+}
+
+unsafe fn create_primary_offer(
+    device: *mut ffi::wl_resource,
+    state: *mut State,
+    selection: &crate::PrimarySelection,
+) -> *mut ffi::wl_resource {
+    let offer = ffi::wl_resource_create(
+        ffi::wl_resource_get_client(device),
+        &ffi::zwp_primary_selection_offer_v1_interface,
+        1,
+        0,
+    );
+    if offer.is_null() {
+        return offer;
+    }
+    let rec = Box::into_raw(Box::new(crate::PrimaryOfferRec {
+        state,
+        source: selection.source,
+    }));
+    ffi::wl_resource_set_implementation(
+        offer,
+        &PRIMARY_SELECTION_OFFER_IMPL as *const _ as *const c_void,
+        rec as *mut c_void,
+        Some(primary_offer_resource_destroy),
+    );
+    (*state).primary_offers.push(offer);
+    ffi::wl_resource_post_event(
+        device,
+        ffi::ZWP_PRIMARY_SELECTION_DEVICE_V1_DATA_OFFER,
+        offer,
+    );
+    for mime in &selection.mime_types {
+        if let Ok(mime) = CString::new(mime.as_str()) {
+            ffi::wl_resource_post_event(
+                offer,
+                ffi::ZWP_PRIMARY_SELECTION_OFFER_V1_OFFER,
+                mime.as_ptr(),
+            );
+        }
+    }
+    offer
+}
+
+unsafe fn advertise_primary_selection(device: *mut ffi::wl_resource, state: *mut State) {
+    let offer = if let Some(selection) = &(*state).primary_selection {
+        create_primary_offer(device, state, selection)
+    } else {
+        std::ptr::null_mut()
+    };
+    ffi::wl_resource_post_event(
+        device,
+        ffi::ZWP_PRIMARY_SELECTION_DEVICE_V1_SELECTION,
+        offer,
+    );
+}
+
+unsafe fn notify_primary_selection(state: *mut State) {
+    let focus_client = if (*state).keyboard_focus.is_null() {
+        std::ptr::null_mut()
+    } else {
+        ffi::wl_resource_get_client((*state).keyboard_focus)
+    };
+    for device in (*state).primary_devices.clone() {
+        if device.is_null() {
+            continue;
+        }
+        if !focus_client.is_null() && ffi::wl_resource_get_client(device) == focus_client {
+            advertise_primary_selection(device, state);
+        } else {
+            ffi::wl_resource_post_event(
+                device,
+                ffi::ZWP_PRIMARY_SELECTION_DEVICE_V1_SELECTION,
+                std::ptr::null_mut::<ffi::wl_resource>(),
+            );
+        }
+    }
+}
+
+pub(crate) unsafe fn primary_selection_focus_changed(
+    state: *mut State,
+    old_focus: *mut ffi::wl_resource,
+    new_focus: *mut ffi::wl_resource,
+) {
+    if state.is_null() {
+        return;
+    }
+    let old_client = if old_focus.is_null() {
+        std::ptr::null_mut()
+    } else {
+        ffi::wl_resource_get_client(old_focus)
+    };
+    let new_client = if new_focus.is_null() {
+        std::ptr::null_mut()
+    } else {
+        ffi::wl_resource_get_client(new_focus)
+    };
+    for device in (*state).primary_devices.clone() {
+        if device.is_null() {
+            continue;
+        }
+        let client = ffi::wl_resource_get_client(device);
+        if !old_client.is_null() && client == old_client {
+            ffi::wl_resource_post_event(
+                device,
+                ffi::ZWP_PRIMARY_SELECTION_DEVICE_V1_SELECTION,
+                std::ptr::null_mut::<ffi::wl_resource>(),
+            );
+        }
+        if !new_client.is_null() && client == new_client {
+            advertise_primary_selection(device, state);
+        }
+    }
+}
+
+unsafe extern "C" fn primary_offer_resource_destroy(offer: *mut ffi::wl_resource) {
+    let rec = ffi::wl_resource_get_user_data(offer) as *mut crate::PrimaryOfferRec;
+    if rec.is_null() {
+        return;
+    }
+    if !(*rec).state.is_null() {
+        (*(*rec).state).primary_offers.retain(|r| *r != offer);
+    }
+    drop(Box::from_raw(rec));
 }
 
 unsafe extern "C" fn pso_receive(
     _client: *mut ffi::wl_client,
-    _offer: *mut ffi::wl_resource,
-    _mime: *const std::os::raw::c_char,
+    offer: *mut ffi::wl_resource,
+    mime: *const std::os::raw::c_char,
     fd: i32,
 ) {
+    let rec = ffi::wl_resource_get_user_data(offer) as *mut crate::PrimaryOfferRec;
+    let source = if rec.is_null() {
+        std::ptr::null_mut()
+    } else {
+        (*rec).source
+    };
+    if source.is_null() {
+        if fd >= 0 {
+            crate::libc_close(fd);
+        }
+        return;
+    }
+    ffi::wl_resource_post_event(source, ffi::ZWP_PRIMARY_SELECTION_SOURCE_V1_SEND, mime, fd);
     if fd >= 0 {
         crate::libc_close(fd);
     }
@@ -1062,7 +2274,7 @@ static CURSOR_SHAPE_DEVICE_IMPL: ffi::wp_cursor_shape_device_v1_interface_impl =
 
 pub(crate) unsafe extern "C" fn cursor_shape_bind(
     client: *mut ffi::wl_client,
-    _data: *mut c_void,
+    data: *mut c_void,
     version: u32,
     id: u32,
 ) {
@@ -1078,7 +2290,7 @@ pub(crate) unsafe extern "C" fn cursor_shape_bind(
     ffi::wl_resource_set_implementation(
         res,
         &CURSOR_SHAPE_MANAGER_IMPL as *const _ as *const c_void,
-        std::ptr::null_mut(),
+        data,
         None,
     );
 }
@@ -1125,18 +2337,32 @@ unsafe extern "C" fn cursor_shape_get_tablet(
 /// renderer can paint the matching cursor. The shape enum follows
 /// `wp_cursor_shape_device_v1.shape` (1=default, 2=context_menu, ...).
 unsafe extern "C" fn cursor_shape_set_shape(
-    _client: *mut ffi::wl_client,
+    client: *mut ffi::wl_client,
     resource: *mut ffi::wl_resource,
-    _serial: u32,
+    serial: u32,
     shape: u32,
 ) {
     let state = ffi::wl_resource_get_user_data(resource) as *mut State;
-    if !state.is_null() {
+    if !state.is_null()
+        && !(*state).pointer_focus.is_null()
+        && ffi::wl_resource_get_client((*state).pointer_focus) == client
+        && serial == (*state).last_pointer_enter_serial
+    {
         (*state).cursor_shape = shape;
+        (*state).cursor_surface = std::ptr::null_mut();
+        (*state).cursor_hidden = false;
     }
 }
 
 // ----- text-input-unstable-v3 ---------------------------------------------
+
+struct TextInputRec {
+    state: *mut State,
+    current_surface: *mut ffi::wl_resource,
+    pending: ass_core::input::TextInputState,
+    current: ass_core::input::TextInputState,
+    commit_serial: u32,
+}
 
 static TEXT_INPUT_MANAGER_IMPL: ffi::zwp_text_input_manager_v3_interface_impl =
     ffi::zwp_text_input_manager_v3_interface_impl {
@@ -1149,16 +2375,16 @@ static TEXT_INPUT_IMPL: ffi::zwp_text_input_v3_interface_impl =
         destroy: text_input_destroy,
         enable: text_input_enable,
         disable: text_input_disable,
-        set_surrounding_text: crate::noop_str_ii,
-        set_text_change_cause: crate::noop_uu_one,
-        set_content_type: crate::noop_uu,
-        set_cursor_rectangle: crate::noop_rect,
-        commit: crate::noop_none,
+        set_surrounding_text: text_input_set_surrounding_text,
+        set_text_change_cause: text_input_set_text_change_cause,
+        set_content_type: text_input_set_content_type,
+        set_cursor_rectangle: text_input_set_cursor_rectangle,
+        commit: text_input_commit,
     };
 
 pub(crate) unsafe extern "C" fn text_input_bind(
     client: *mut ffi::wl_client,
-    _data: *mut c_void,
+    data: *mut c_void,
     version: u32,
     id: u32,
 ) {
@@ -1175,7 +2401,7 @@ pub(crate) unsafe extern "C" fn text_input_bind(
     ffi::wl_resource_set_implementation(
         res,
         &TEXT_INPUT_MANAGER_IMPL as *const _ as *const c_void,
-        std::ptr::null_mut(),
+        data,
         None,
     );
 }
@@ -1192,16 +2418,32 @@ unsafe extern "C" fn text_input_manager_get(
     if res.is_null() {
         return;
     }
-    // Track so the server can send enter/leave on keyboard focus changes. The
-    // paired surface starts null (disabled); `enable` sets the focused surface.
+    let current_surface = if !state.is_null()
+        && !(*state).keyboard_focus.is_null()
+        && ffi::wl_resource_get_client((*state).keyboard_focus) == client
+    {
+        (*state).keyboard_focus
+    } else {
+        std::ptr::null_mut()
+    };
+    let rec = Box::into_raw(Box::new(TextInputRec {
+        state,
+        current_surface,
+        pending: ass_core::input::TextInputState::default(),
+        current: ass_core::input::TextInputState::default(),
+        commit_serial: 0,
+    }));
     ffi::wl_resource_set_implementation(
         res,
         &TEXT_INPUT_IMPL as *const _ as *const c_void,
-        state as *mut c_void,
+        rec as *mut c_void,
         Some(text_input_resource_destroy),
     );
     if !state.is_null() {
-        (*state).text_inputs.push((res, std::ptr::null_mut()));
+        (*state).text_inputs.push(res);
+    }
+    if !current_surface.is_null() {
+        ffi::wl_resource_post_event(res, ffi::ZWP_TEXT_INPUT_V3_ENTER, current_surface);
     }
     let _ = seat;
 }
@@ -1214,11 +2456,20 @@ unsafe extern "C" fn text_input_destroy(
 }
 
 unsafe extern "C" fn text_input_resource_destroy(resource: *mut ffi::wl_resource) {
-    let state = ffi::wl_resource_get_user_data(resource) as *mut State;
-    if state.is_null() {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut TextInputRec;
+    if rec.is_null() {
         return;
     }
-    (*state).text_inputs.retain(|(r, _)| *r != resource);
+    let state = (*rec).state;
+    if !state.is_null() {
+        (*state).text_inputs.retain(|r| *r != resource);
+        if (*rec).current.enabled {
+            (*state)
+                .pending_text_input_states
+                .push(ass_core::input::TextInputState::default());
+        }
+    }
+    drop(Box::from_raw(rec));
 }
 
 /// Mark a text_input as enabled (it now wants IME input) and associate it with
@@ -1227,35 +2478,112 @@ unsafe extern "C" fn text_input_enable(
     _client: *mut ffi::wl_client,
     resource: *mut ffi::wl_resource,
 ) {
-    let state = ffi::wl_resource_get_user_data(resource) as *mut State;
-    if state.is_null() {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut TextInputRec;
+    if rec.is_null() || (*rec).current_surface.is_null() {
         return;
     }
-    let focus = (*state).keyboard_focus;
-    if let Some(slot) = (*state)
-        .text_inputs
-        .iter_mut()
-        .find(|(r, _)| *r == resource)
-    {
-        slot.1 = focus;
-    }
+    (*rec).pending = ass_core::input::TextInputState {
+        enabled: true,
+        ..Default::default()
+    };
 }
 
 unsafe extern "C" fn text_input_disable(
     _client: *mut ffi::wl_client,
     resource: *mut ffi::wl_resource,
 ) {
-    let state = ffi::wl_resource_get_user_data(resource) as *mut State;
-    if state.is_null() {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut TextInputRec;
+    if rec.is_null() || (*rec).current_surface.is_null() {
         return;
     }
-    if let Some(slot) = (*state)
-        .text_inputs
-        .iter_mut()
-        .find(|(r, _)| *r == resource)
-    {
-        slot.1 = std::ptr::null_mut();
+    (*rec).pending = ass_core::input::TextInputState::default();
+}
+
+unsafe extern "C" fn text_input_set_surrounding_text(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+    text: *const std::os::raw::c_char,
+    cursor: i32,
+    anchor: i32,
+) {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut TextInputRec;
+    if rec.is_null() || (*rec).current_surface.is_null() || text.is_null() {
+        return;
     }
+    (*rec).pending.surrounding_text = Some(CStr::from_ptr(text).to_string_lossy().into_owned());
+    (*rec).pending.cursor = cursor;
+    (*rec).pending.anchor = anchor;
+}
+
+unsafe extern "C" fn text_input_set_text_change_cause(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+    cause: u32,
+) {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut TextInputRec;
+    if !rec.is_null() && !(*rec).current_surface.is_null() {
+        (*rec).pending.change_cause = cause;
+    }
+}
+
+unsafe extern "C" fn text_input_set_content_type(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+    hint: u32,
+    purpose: u32,
+) {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut TextInputRec;
+    if !rec.is_null() && !(*rec).current_surface.is_null() {
+        (*rec).pending.content_hint = hint;
+        (*rec).pending.content_purpose = purpose;
+    }
+}
+
+unsafe extern "C" fn text_input_set_cursor_rectangle(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut TextInputRec;
+    if !rec.is_null() && !(*rec).current_surface.is_null() {
+        (*rec).pending.cursor_rect = Some((x, y, width, height));
+    }
+}
+
+unsafe extern "C" fn text_input_commit(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+) {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut TextInputRec;
+    if rec.is_null() || (*rec).current_surface.is_null() {
+        return;
+    }
+    (*rec).commit_serial = (*rec).commit_serial.wrapping_add(1);
+    (*rec).current = (*rec).pending.clone();
+    queue_text_input_state(rec);
+}
+
+unsafe fn queue_text_input_state(rec: *mut TextInputRec) {
+    let state = (*rec).state;
+    if state.is_null() || (*rec).current_surface != (*state).keyboard_focus {
+        return;
+    }
+    let mut value = (*rec).current.clone();
+    if let Some((x, y, width, height)) = value.cursor_rect {
+        let surface = ffi::wl_resource_get_user_data((*rec).current_surface) as *mut SurfaceRec;
+        if !surface.is_null() {
+            value.cursor_rect = Some((
+                x + (*surface).position.x,
+                y + (*surface).position.y,
+                width,
+                height,
+            ));
+        }
+    }
+    (*state).pending_text_input_states.push(value);
 }
 
 /// Send `enter` to the focused client's enabled text_inputs and `leave` to
@@ -1270,31 +2598,94 @@ pub(crate) unsafe fn text_input_focus_changed(
     }
     // Collect the active text_input resource pointers (cloning the slice to
     // avoid borrowing across libwayland calls).
-    let entries: Vec<(*mut ffi::wl_resource, *mut ffi::wl_resource)> =
-        (*state).text_inputs.iter().copied().collect();
-    for (ti, _surf) in entries {
+    let entries: Vec<*mut ffi::wl_resource> = (*state).text_inputs.clone();
+    for ti in entries {
         if ti.is_null() {
             continue;
         }
         let ti_client = ffi::wl_resource_get_client(ti);
+        let rec = ffi::wl_resource_get_user_data(ti) as *mut TextInputRec;
+        if rec.is_null() {
+            continue;
+        }
         // Leave: text_inputs of the old-focus client.
         if !old_focus.is_null() && ffi::wl_resource_get_client(old_focus) == ti_client {
-            ffi::wl_resource_post_event(
-                ti,
-                ffi::ZWP_TEXT_INPUT_V3_LEAVE,
-                std::ptr::null_mut::<ffi::wl_resource>(),
-            );
+            ffi::wl_resource_post_event(ti, ffi::ZWP_TEXT_INPUT_V3_LEAVE, old_focus);
+            if (*rec).current.enabled {
+                (*state)
+                    .pending_text_input_states
+                    .push(ass_core::input::TextInputState::default());
+            }
+            (*rec).current_surface = std::ptr::null_mut();
+            (*rec).pending = Default::default();
+            (*rec).current = Default::default();
         }
         // Enter: text_inputs of the new-focus client.
         if !new_focus.is_null() && ffi::wl_resource_get_client(new_focus) == ti_client {
+            (*rec).current_surface = new_focus;
             ffi::wl_resource_post_event(ti, ffi::ZWP_TEXT_INPUT_V3_ENTER, new_focus);
         }
     }
 }
 
-// Suppress unused-import warnings for helpers reachable only via crate::.
-#[allow(dead_code)]
-fn _unused() {
-    let _ = std::ptr::null::<SurfaceRec>();
-    let _ = CStr::from_bytes_with_nul(b"\0");
+pub(crate) unsafe fn forward_text_input_event(
+    state: *mut State,
+    event: &ass_core::input::TextInputEvent,
+) {
+    if state.is_null() || (*state).keyboard_focus.is_null() {
+        return;
+    }
+    let focus = (*state).keyboard_focus;
+    let client = ffi::wl_resource_get_client(focus);
+    let targets: Vec<*mut ffi::wl_resource> = (*state)
+        .text_inputs
+        .iter()
+        .copied()
+        .filter(|r| !r.is_null() && ffi::wl_resource_get_client(*r) == client)
+        .filter(|r| {
+            let rec = ffi::wl_resource_get_user_data(*r) as *mut TextInputRec;
+            !rec.is_null() && (*rec).current_surface == focus && (*rec).current.enabled
+        })
+        .collect();
+    for target in targets {
+        let rec = ffi::wl_resource_get_user_data(target) as *mut TextInputRec;
+        match event {
+            ass_core::input::TextInputEvent::Preedit {
+                text,
+                cursor_begin,
+                cursor_end,
+            } => {
+                let text = text.as_ref().and_then(|s| CString::new(s.as_str()).ok());
+                ffi::wl_resource_post_event(
+                    target,
+                    ffi::ZWP_TEXT_INPUT_V3_PREEDIT_STRING,
+                    text.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+                    *cursor_begin,
+                    *cursor_end,
+                );
+            }
+            ass_core::input::TextInputEvent::Commit(text) => {
+                let text = text.as_ref().and_then(|s| CString::new(s.as_str()).ok());
+                ffi::wl_resource_post_event(
+                    target,
+                    ffi::ZWP_TEXT_INPUT_V3_COMMIT_STRING,
+                    text.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+                );
+            }
+            ass_core::input::TextInputEvent::DeleteSurrounding {
+                before_length,
+                after_length,
+            } => ffi::wl_resource_post_event(
+                target,
+                ffi::ZWP_TEXT_INPUT_V3_DELETE_SURROUNDING_TEXT,
+                *before_length,
+                *after_length,
+            ),
+            ass_core::input::TextInputEvent::Done => ffi::wl_resource_post_event(
+                target,
+                ffi::ZWP_TEXT_INPUT_V3_DONE,
+                (*rec).commit_serial,
+            ),
+        }
+    }
 }

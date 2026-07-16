@@ -40,8 +40,38 @@ project cuts a tagged release.
   grabs honor size hints and publish the xdg-shell `resizing` state. Focusing
   a window raises it, and hidden-workspace windows no longer participate in
   pointer hit-testing.
+- Borderless window controls now include `Super` + left-drag to move and
+  `Super` + right-drag to resize from the nearest edge or corner. Layout-owned
+  windows become floating before either gesture, and compositor-owned resize
+  cursors identify invisible borders and active grabs.
+- Right-clicking a launcher or Dock application opens a shared context menu
+  that lists every matching window and offers focus/restore, open/new window,
+  minimize, and graceful close actions. The compact menu is anchored to its
+  application tile instead of the pointer, and the Dock freezes its current
+  magnification while the menu is open. Dock application names appear above
+  their animated icons after a short hover. Multi-window minimize and close
+  actions are journaled once per toplevel.
+- Added the scoped IPC `Minimize { id }` command and
+  `ass-ctl minimize <id>`; compositor chrome uses the same command path as IPC
+  so minimization remains observable in the mutation journal.
+- Added deterministic `SetWindowGeometry` IPC control and
+  `ass-ctl set-geometry`, using logical coordinates and client size hints
+  instead of a simulated pointer grab. Added a separate, named-scope-only
+  `input` capability for target-local pointer moves, clicks, scrolls, and key
+  presses. Synthetic input validates the full batch, refuses hidden,
+  overlapping, or shell-covered targets, bypasses global bindings, and records
+  live-state refusals in the mutation journal. Pixel capture remains deferred.
 - The application catalog refreshes every five seconds, dock pins update on
   config reload, and SVG icons render through `rsvg-convert` when available.
+- Application discovery now follows Flatpak-exported desktop-file symlinks,
+  honors `Hidden`, `OnlyShowIn`, `NotShowIn`, executable `TryExec` checks, and
+  XDG base-directory precedence. Relative XDG paths are ignored, and explicit
+  `XDG_DATA_DIRS` values are no longer silently extended with system defaults.
+- Icon lookup now implements `index.theme` directory, scale, size-range, and
+  recursive inheritance rules, followed by `hicolor` and unthemed pixmap
+  fallback. The compositor uses `ASS_ICON_THEME` when set, otherwise the host
+  GTK icon theme, and refreshes cached textures when a theme, output scale, or
+  symlink target changes.
 - The launcher is now a full-screen, responsive application library with a
   live multi-resolution-blurred desktop, spring opening/closing motion, search,
   keyboard grid navigation, wheel/trackpad paging, and access to the complete
@@ -50,6 +80,18 @@ project cuts a tagged release.
 - Configuration rejects unknown fields and invalid layout ranges. Removing
   the config restores default layout parameters instead of retaining stale
   values.
+- Named IPC scopes from `[[agent.scope]]` are now enforced at handshake and
+  command dispatch. Explicit unknown names are refused, and scope changes or
+  removals made by hot reload apply to existing connections. The IPC socket is
+  created with mode `0600`, refuses to replace non-socket paths, and cannot be
+  stolen from a running server by a second instance.
+- The declared minimum Rust version is now 1.88, matching `image 0.25.10`
+  instead of promising an unbuildable 1.74 toolchain. Security-fixed lockfile
+  versions include `crossbeam-epoch 0.9.20`, `anyhow 1.0.103`, and
+  `memmap2 0.9.11`.
+- `LaunchOpts::foreground` now waits for the child and reports nonzero exits as
+  errors. Its tests use a headless command instead of launching the host's
+  graphical terminal.
 
 ### ass-ctl --json
 - `ass-ctl` accepts a global `--json`/`-j` flag: the query commands

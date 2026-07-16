@@ -1,13 +1,14 @@
 # ass Documentation
 
 ass is a Wayland compositor for Linux, written in Rust on
-[flux](../optics/flux) and [lens](../optics/lens). Start with the
-[README](../README.md) for the project pitch and the shortest run path.
+[flux](../../optics/libs/flux) and [lens](../../optics/libs/lens). Start with
+the [README](../README.md) for the project pitch and the shortest run path.
 
 ## Sections
 
 | Section | Purpose |
 |---------|---------|
+| [How-to guides](how-to/index.md) | Task-oriented instructions for daily use |
 | [Explanation](explanation/index.md) | Architecture and conceptual background |
 | [Reference](reference/index.md) | Configuration keys, schemas, and option tables |
 | [Architecture Decision Records](adr/index.md) | Durable technical decisions |
@@ -22,5 +23,9 @@ ass is a Wayland compositor for Linux, written in Rust on
   Xfce: read [Comparative Survey](explanation/comparative-survey.md).
 - Looking for a config key or option: read the
   [Configuration Reference](reference/config.md).
+- Starting applications or using app-level window actions: read
+  [How to Use the Dock and Launcher](how-to/dock-and-launcher.md).
+- Managing a borderless window: read
+  [How to Manage Borderless Windows](how-to/window-management.md).
 - Setting up a build: read [Setup](dev/setup.md).
 - Looking for why a choice was made: scan the [ADR index](adr/index.md).

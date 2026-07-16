@@ -1,7 +1,7 @@
 //! The mutation journal (ADR-0033).
 //!
 //! An in-memory, append-only ring buffer of [`JournalEntry`] records, one per
-//! [`Command`](crate::schema::Command) the compositor applies, regardless of
+//! [`Command`] the compositor applies, regardless of
 //! origin (chrome, keybinding, IPC, or internal cleanup). The journal records
 //! the compositor's *decisions* — what it did, by whom, and with what outcome
 //! — so the agent can reconstruct recent history without polling.

@@ -18,14 +18,16 @@ log diagnostic and never crashes the compositor.
 | `[[window_rule]]` | array of tables | none | Placement rules applied to newly-mapped toplevels. See [Window Rules](#window-rules). |
 | `[layout]` | table | gaps `8`, master_ratio `0.5` | Tiling policy parameters. See [Layout](#layout). |
 | `[dock]` | table | automatic pins | Applications pinned to the dock. See [Dock](#dock). |
-| `[agent]` | table | no scopes | Named automation scopes. Scope parsing is available; compositor enforcement is not wired yet. |
+| `[agent]` | table | no scopes | Named automation scopes enforced by the IPC server. See [Agent Scopes](#agent-scopes). |
 
-## Startup Environment
+## Environment
 
 Wallpaper sources are selected at process startup and are not hot-reloaded.
+The icon-theme override is checked during each application-catalog refresh.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `ASS_ICON_THEME` | GTK `org.gnome.desktop.interface icon-theme`, then `hicolor` | Icon theme used by the dock and launcher. Theme inheritance and `hicolor` fallback still apply. |
 | `ASS_WALLPAPER` | bundled `procedural-generation.png` | Image, animated image, short-video, or model-only `.glb` source. Setting an image or video suppresses the built-in model unless `ASS_WALLPAPER_MODEL` is also set. |
 | `ASS_WALLPAPER_MODEL` | built-in procedural knot for the default wallpaper | Optional `.glb` model drawn over an image or video with an orbiting camera and animated directional light. Ignored when `ASS_WALLPAPER` is itself a `.glb`. |
 
@@ -71,9 +73,11 @@ pinned = ["foot.desktop", "firefox", "org.gnome.Nautilus"]
 ```
 
 The application catalog is rescanned every five seconds. Installed, removed,
-or edited desktop entries appear without restarting ass. Raster icons decode
-in process; SVG icons use `rsvg-convert` when it is installed and otherwise
-fall back to the generic application glyph.
+or edited desktop entries, including Flatpak exports, appear without
+restarting ass. The same refresh detects icon-theme, output-scale, and icon
+file changes. Raster icons decode in process; SVG icons use `rsvg-convert`
+when it is installed and otherwise fall back to the generic application
+glyph.
 
 ## Window Rules
 
@@ -101,6 +105,50 @@ role = "tiled"
 title = "calculator"
 role = "floating"
 ```
+
+## Agent Scopes
+
+Each `[[agent.scope]]` table names an IPC mutation allowlist. An IPC client
+requests the name during its handshake; an explicit unknown name is refused.
+Connections without a scope name remain unrestricted within their granted
+capability classes.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | required | Scope name presented by an IPC client. Duplicate and empty names are ignored. |
+| `ops` | array of strings | unrestricted except input | Allowed operation classes. `InjectInput` must be listed explicitly. An explicit array containing only unknown values grants no operations. |
+| `windows` | array of integers | unrestricted | Allowed durable window IDs. |
+| `workspaces` | array of integers | unrestricted | Allowed workspace IDs. |
+
+Operation names are `Focus`, `Minimize`, `Close`, `Move`,
+`SetWindowGeometry`, `InjectInput`, `Cycle`, `SwitchWorkspace`,
+`SwitchWorkspaceTo`, `MoveToWorkspace`, `ToggleTiling`, `Notify`, and
+`DismissNotification`. Names are case-insensitive; snake-case forms are also
+accepted. Invalid names are logged and grant nothing. `InjectInput` also
+requires the separately negotiated `input` capability and is never granted to
+an unscoped connection. Omitting `ops` never grants `InjectInput`.
+
+```toml
+[[agent.scope]]
+name = "browser-helper"
+ops = ["Focus", "Minimize", "Close"]
+windows = [7, 9]
+
+[[agent.scope]]
+name = "window-input"
+ops = ["InjectInput"]
+windows = [7]
+
+[[agent.scope]]
+name = "workspace-rover"
+ops = ["SwitchWorkspace", "SwitchWorkspaceTo", "MoveToWorkspace"]
+workspaces = [2, 3]
+```
+
+Scope changes are hot-reloaded. Named connections resolve their scope again
+for every command, so narrowing or removing a scope applies without
+reconnecting. The Rust reference client uses `Client::connect_scoped` and
+exposes the granted allowlist through `Client::scope`.
 
 ## Key Bindings
 

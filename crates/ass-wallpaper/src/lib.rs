@@ -5,7 +5,7 @@
 //! of the frame. Multi-frame sources (animated GIF/WebP, video) advance
 //! per-frame inside [`Wallpaper::draw`].
 //!
-//! The crate owns decode state only — like [`ass_render::Renderer`], it
+//! The crate owns decode state only — like `ass_render::Renderer`, it
 //! does not hold a reference to the flux device or canvas. Each frame the
 //! main loop calls [`Wallpaper::draw`] with the current device, canvas,
 //! and output size. See ADR-0018 for the design.

@@ -40,4 +40,6 @@ background and how the decisions fit together, see
 | [0031](0031-agent-as-scoped-ipc-client.md) | The agent as a scoped IPC client (M10 framing) | Accepted |
 | [0032](0032-durable-window-identifiers.md) | Durable window identifiers | Accepted |
 | [0033](0033-mutation-journal.md) | The mutation journal | Accepted |
-| [0034](0034-scoped-capabilities.md) | Scoped capabilities | Accepted |
+| [0034](0034-scoped-capabilities.md) | Scoped capabilities | Superseded by [0035](0035-fail-closed-named-ipc-scopes.md) |
+| [0035](0035-fail-closed-named-ipc-scopes.md) | Fail-closed named IPC scope resolution | Accepted |
+| [0036](0036-scoped-semantic-automation.md) | Scoped semantic geometry and target-local input | Accepted |
