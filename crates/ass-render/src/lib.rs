@@ -181,6 +181,11 @@ fn viewport_uv(
 pub struct Renderer {
     cache: HashMap<usize, (flux::Image, u64)>,
     failed_imports: HashMap<usize, ()>,
+    /// Images removed from the live cache stay alive beyond Flux's maximum
+    /// three in-flight frame slots. Vulkan resources must not be destroyed
+    /// while an older command buffer may still sample them.
+    retired: Vec<(flux::Image, u64)>,
+    frame_epoch: u64,
 }
 
 impl Renderer {
@@ -188,6 +193,29 @@ impl Renderer {
         Renderer {
             cache: HashMap::new(),
             failed_imports: HashMap::new(),
+            retired: Vec::new(),
+            frame_epoch: 0,
+        }
+    }
+
+    /// Advance GPU-resource retirement after `Surface::begin_frame` has
+    /// waited the slot fence. Call exactly once for each rendered frame.
+    pub fn begin_frame(&mut self) {
+        self.frame_epoch = self.frame_epoch.wrapping_add(1);
+        let epoch = self.frame_epoch;
+        self.retired
+            .retain(|(_, retired_at)| epoch.wrapping_sub(*retired_at) <= 4);
+    }
+
+    fn cache_image(&mut self, id: usize, image: flux::Image, generation: u64) {
+        if let Some((old, _)) = self.cache.insert(id, (image, generation)) {
+            self.retired.push((old, self.frame_epoch));
+        }
+    }
+
+    fn retire_cached(&mut self, id: usize) {
+        if let Some((image, _)) = self.cache.remove(&id) {
+            self.retired.push((image, self.frame_epoch));
         }
     }
 
@@ -195,7 +223,17 @@ impl Renderer {
     /// with every live surface id (shm and dma-buf).
     pub fn gc(&mut self, live_ids: impl Iterator<Item = usize>) {
         let live: std::collections::HashSet<usize> = live_ids.collect();
-        self.cache.retain(|k, _| live.contains(k));
+        let dead = self
+            .cache
+            .keys()
+            .copied()
+            .filter(|id| !live.contains(id))
+            .collect::<Vec<_>>();
+        for id in dead {
+            if let Some((image, _)) = self.cache.remove(&id) {
+                self.retired.push((image, self.frame_epoch));
+            }
+        }
         self.failed_imports.retain(|k, _| live.contains(k));
     }
 
@@ -210,6 +248,30 @@ impl Renderer {
         canvas: &flux::Canvas,
         frames: &[SurfacePixels<'_>],
         _origin: (f32, f32),
+    ) {
+        self.draw_toplevels_impl(device, canvas, frames, None);
+    }
+
+    /// As [`draw_toplevels`](Self::draw_toplevels), but each frame's natural
+    /// destination rect is passed through `map` before drawing — the
+    /// overview's grid placement (M9). Window transitions do not apply in
+    /// mapped mode; `map` fully owns placement.
+    pub fn draw_toplevels_mapped(
+        &mut self,
+        device: &flux::Device,
+        canvas: &flux::Canvas,
+        frames: &[SurfacePixels<'_>],
+        map: &dyn Fn(Option<ass_core::window::WindowId>, ass_core::Rect) -> ass_core::Rect,
+    ) {
+        self.draw_toplevels_impl(device, canvas, frames, Some(map));
+    }
+
+    fn draw_toplevels_impl(
+        &mut self,
+        device: &flux::Device,
+        canvas: &flux::Canvas,
+        frames: &[SurfacePixels<'_>],
+        map: Option<&dyn Fn(Option<ass_core::window::WindowId>, ass_core::Rect) -> ass_core::Rect>,
     ) {
         for f in frames.iter() {
             let stale = self
@@ -236,7 +298,7 @@ impl Renderer {
                     flux::Format::FLUX_FORMAT_BGRA8_UNORM,
                     &transformed,
                 ) {
-                    self.cache.insert(f.id, (img, f.generation));
+                    self.cache_image(f.id, img, f.generation);
                 }
             } else if !f.damage.is_empty()
                 && f.geometry.transform == Transform::Normal
@@ -295,12 +357,39 @@ impl Renderer {
                 // after buffer transform *and scale*, so convert them back to
                 // buffer-pixel UVs using buffer_scale.
                 let (tw, th) = transformed_dims(f.width, f.height, f.geometry.transform);
-                let (dst_w, dst_h) = destination_size(
+                let (mut dst_w, mut dst_h) = destination_size(
                     (tw, th),
                     f.geometry.viewport_src,
                     f.geometry.viewport_dst,
                     f.geometry.buffer_scale,
                 );
+                // ADR-0029: an in-flight window transition draws the texture
+                // scaled to the interpolated size instead of the
+                // buffer-implied size. Mapped mode (overview) ignores it;
+                // the map owns placement.
+                if map.is_none() {
+                    if let Some(size) = f.geometry.transition_size {
+                        dst_w = size.w as f32;
+                        dst_h = size.h as f32;
+                    }
+                }
+                if let Some(map) = map {
+                    let natural = ass_core::Rect::new(
+                        x as i32,
+                        y as i32,
+                        dst_w.max(1.0) as i32,
+                        dst_h.max(1.0) as i32,
+                    );
+                    let mapped = map(f.window, natural);
+                    canvas.draw_image(
+                        img,
+                        mapped.origin.x as f32,
+                        mapped.origin.y as f32,
+                        mapped.size.w as f32,
+                        mapped.size.h as f32,
+                    );
+                    continue;
+                }
                 match f.geometry.viewport_src {
                     Some(src) => {
                         let (su, sv, sw, sh) = viewport_uv(src, (tw, th), f.geometry.buffer_scale);
@@ -324,6 +413,29 @@ impl Renderer {
         frames: &[SurfaceDmabuf],
         _origin: (f32, f32),
     ) {
+        self.draw_dmabuf_toplevels_impl(device, canvas, frames, None);
+    }
+
+    /// As [`draw_dmabuf_toplevels`](Self::draw_dmabuf_toplevels), but each
+    /// frame's natural destination rect is passed through `map` first (the
+    /// overview's grid placement, M9).
+    pub fn draw_dmabuf_toplevels_mapped(
+        &mut self,
+        device: &flux::Device,
+        canvas: &flux::Canvas,
+        frames: &[SurfaceDmabuf],
+        map: &dyn Fn(Option<ass_core::window::WindowId>, ass_core::Rect) -> ass_core::Rect,
+    ) {
+        self.draw_dmabuf_toplevels_impl(device, canvas, frames, Some(map));
+    }
+
+    fn draw_dmabuf_toplevels_impl(
+        &mut self,
+        device: &flux::Device,
+        canvas: &flux::Canvas,
+        frames: &[SurfaceDmabuf],
+        map: Option<&dyn Fn(Option<ass_core::window::WindowId>, ass_core::Rect) -> ass_core::Rect>,
+    ) {
         for f in frames.iter() {
             let stale = self
                 .cache
@@ -346,17 +458,48 @@ impl Renderer {
                         }
                         continue;
                     }
+                    let acquire_fence = if f.acquire_fence >= 0 {
+                        let fd = unsafe { dup(f.acquire_fence) };
+                        if fd < 0 {
+                            unsafe { close(import_fd) };
+                            if self.failed_imports.insert(f.id, ()).is_none() {
+                                log::warn!(
+                                    "[render] failed to duplicate acquire fence fd {}",
+                                    f.acquire_fence
+                                );
+                            }
+                            self.retire_cached(f.id);
+                            continue;
+                        }
+                        Some(fd)
+                    } else {
+                        None
+                    };
                     let img = unsafe {
-                        flux::Image::import_dmabuf(
-                            device,
-                            f.width as u32,
-                            f.height as u32,
-                            fmt,
-                            f.modifier,
-                            import_fd,
-                            f.offset,
-                            f.stride,
-                        )
+                        if let Some(acquire_fence) = acquire_fence {
+                            flux::Image::import_dmabuf_with_acquire_fence(
+                                device,
+                                f.width as u32,
+                                f.height as u32,
+                                fmt,
+                                f.modifier,
+                                import_fd,
+                                f.offset,
+                                f.stride,
+                                acquire_fence,
+                            )
+                        } else {
+                            flux::Image::import_dmabuf(
+                                device,
+                                f.width as u32,
+                                f.height as u32,
+                                fmt,
+                                f.modifier,
+                                import_fd,
+                                f.offset,
+                                f.stride,
+                            )
+                        }
                     };
                     match img {
                         Ok(img) => {
@@ -373,11 +516,15 @@ impl Renderer {
                             // the suppression so a transient error is logged
                             // again if it recurs.
                             self.failed_imports.remove(&f.id);
-                            self.cache.insert(f.id, (img, f.generation));
+                            self.cache_image(f.id, img, f.generation);
                         }
                         Err(e) => {
                             // Flux leaves ownership with the caller on error.
                             unsafe { close(import_fd) };
+                            if let Some(acquire_fence) = acquire_fence {
+                                unsafe { close(acquire_fence) };
+                            }
+                            self.retire_cached(f.id);
                             // Suppress repeated identical failures; otherwise a
                             // persistent import problem floods the log every
                             // frame, since `stale` keeps re-triggering the path.
@@ -396,6 +543,8 @@ impl Renderer {
                             }
                         }
                     }
+                } else {
+                    self.retire_cached(f.id);
                 }
             }
             if let Some((img, _)) = self.cache.get(&f.id) {
@@ -405,12 +554,39 @@ impl Renderer {
                 // the shm path. The dmabuf path does not CPU-stage the
                 // buffer transform, so post-transform dims equal the raw
                 // buffer dims here.
-                let (dst_w, dst_h) = destination_size(
+                let (mut dst_w, mut dst_h) = destination_size(
                     (f.width, f.height),
                     f.geometry.viewport_src,
                     f.geometry.viewport_dst,
                     f.geometry.buffer_scale,
                 );
+                // ADR-0029: an in-flight window transition draws the texture
+                // scaled to the interpolated size instead of the
+                // buffer-implied size. Mapped mode (overview) ignores it;
+                // the map owns placement.
+                if map.is_none() {
+                    if let Some(size) = f.geometry.transition_size {
+                        dst_w = size.w as f32;
+                        dst_h = size.h as f32;
+                    }
+                }
+                if let Some(map) = map {
+                    let natural = ass_core::Rect::new(
+                        x as i32,
+                        y as i32,
+                        dst_w.max(1.0) as i32,
+                        dst_h.max(1.0) as i32,
+                    );
+                    let mapped = map(f.window, natural);
+                    canvas.draw_image(
+                        img,
+                        mapped.origin.x as f32,
+                        mapped.origin.y as f32,
+                        mapped.size.w as f32,
+                        mapped.size.h as f32,
+                    );
+                    continue;
+                }
                 match f.geometry.viewport_src {
                     Some(src) => {
                         let (su, sv, sw, sh) =
@@ -447,6 +623,18 @@ impl Renderer {
         self.draw_toplevels(device, canvas, frames, (0.0, 0.0));
     }
 
+    /// As [`draw_subsurfaces`](Self::draw_subsurfaces), with the overview's
+    /// grid mapping applied to every frame's natural rect (M9).
+    pub fn draw_subsurfaces_mapped(
+        &mut self,
+        device: &flux::Device,
+        canvas: &flux::Canvas,
+        frames: &[SurfacePixels<'_>],
+        map: &dyn Fn(Option<ass_core::window::WindowId>, ass_core::Rect) -> ass_core::Rect,
+    ) {
+        self.draw_toplevels_mapped(device, canvas, frames, map);
+    }
+
     /// Composite dma-buf-backed subsurfaces. Mirrors `draw_subsurfaces` for
     /// the zero-copy import path.
     pub fn draw_dmabuf_subsurfaces(
@@ -456,6 +644,18 @@ impl Renderer {
         frames: &[SurfaceDmabuf],
     ) {
         self.draw_dmabuf_toplevels(device, canvas, frames, (0.0, 0.0));
+    }
+
+    /// As [`draw_dmabuf_subsurfaces`](Self::draw_dmabuf_subsurfaces), with
+    /// the overview's grid mapping applied (M9).
+    pub fn draw_dmabuf_subsurfaces_mapped(
+        &mut self,
+        device: &flux::Device,
+        canvas: &flux::Canvas,
+        frames: &[SurfaceDmabuf],
+        map: &dyn Fn(Option<ass_core::window::WindowId>, ass_core::Rect) -> ass_core::Rect,
+    ) {
+        self.draw_dmabuf_toplevels_mapped(device, canvas, frames, map);
     }
 }
 

@@ -62,6 +62,16 @@ pub struct Config {
     #[serde(default)]
     pub dock: DockConfig,
 
+    /// Shell-wide UI policy, written as a `[ui]` table.
+    #[serde(default)]
+    pub ui: UiConfig,
+
+    /// Per-output scale policy (ADR-0028), written as `[[output]]`
+    /// array-of-tables. Each entry overrides the backend-reported scale for
+    /// one connector, for mixed-DPI setups.
+    #[serde(default, rename = "output")]
+    pub outputs: Vec<OutputConfig>,
+
     /// Agent scope declarations (ADR-0034), written as `[[agent.scope]]`
     /// array-of-tables. Each entry names a scope the compositor resolves
     /// when an IPC client presents the name at the Hello handshake.
@@ -110,6 +120,38 @@ pub struct DockConfig {
     pub pinned: Vec<String>,
 }
 
+/// The `[ui]` section: shell-wide UI policy (ADR-0029).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiConfig {
+    /// Accessibility reduced-motion switch. When true, every chrome and lens
+    /// transition resolves to its end state in at most one frame — no fades,
+    /// springs, or slides (ADR-0029). Individual effects do not override it.
+    #[serde(default)]
+    pub reduced_motion: bool,
+    /// XDG cursor theme name for the software cursor on direct display.
+    /// `$XCURSOR_THEME` wins when set; this is the session-independent
+    /// fallback (bare TTY sessions usually have no cursor env vars).
+    #[serde(default)]
+    pub cursor_theme: Option<String>,
+    /// Cursor size in logical pixels. `$XCURSOR_SIZE` wins when set.
+    #[serde(default)]
+    pub cursor_size: Option<u32>,
+}
+
+/// One `[[output]]` entry: a per-connector scale override (ADR-0028).
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputConfig {
+    /// The connector name as reported by the backend (e.g. "DP-1",
+    /// "HDMI-A-1", "nested"). Unmatched names are ignored with a diagnostic
+    /// at load time by the caller, not by the schema.
+    pub connector: String,
+    /// Output scale factor. Integer scales advertise through `wl_output`;
+    /// fractional scales through `wp_fractional_scale_v1`.
+    pub scale: f64,
+}
+
 /// The `[layout]` section: tiling gaps and master ratio. Defaults match the
 /// built-in `ass_core::layout::LayoutParams`.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
@@ -121,6 +163,10 @@ pub struct LayoutConfig {
     /// Fraction of the work-area width for the master column (0.0..=1.0).
     #[serde(default = "default_master_ratio")]
     pub master_ratio: f32,
+    /// Whether newly created workspaces start in tiled mode (ADR-0024).
+    /// Window rules can still force individual windows floating or tiled.
+    #[serde(default)]
+    pub default_tiled: bool,
 }
 
 fn default_gaps() -> i32 {
@@ -135,6 +181,7 @@ impl Default for LayoutConfig {
         LayoutConfig {
             gaps: default_gaps(),
             master_ratio: default_master_ratio(),
+            default_tiled: false,
         }
     }
 }
@@ -260,6 +307,28 @@ impl Config {
                 Some("layout.master_ratio".into()),
                 "must be between 0.0 and 1.0",
             ));
+        }
+        for (index, output) in cfg.outputs.iter().enumerate() {
+            if output.connector.trim().is_empty() {
+                diagnostics.push(Diagnostic::new(
+                    Some(format!("output.{index}.connector")),
+                    "must not be empty",
+                ));
+            }
+            if !output.scale.is_finite() || !(0.25..=4.0).contains(&output.scale) {
+                diagnostics.push(Diagnostic::new(
+                    Some(format!("output.{index}.scale")),
+                    "must be between 0.25 and 4.0",
+                ));
+            }
+        }
+        if let Some(size) = cfg.ui.cursor_size {
+            if !(8..=128).contains(&size) {
+                diagnostics.push(Diagnostic::new(
+                    Some("ui.cursor_size".into()),
+                    "must be between 8 and 128",
+                ));
+            }
         }
         if diagnostics.is_empty() {
             Ok(cfg)
@@ -605,6 +674,61 @@ mod tests {
         // Converts to the core layout params.
         let p = ass_core::layout::LayoutParams::from(cfg.layout.clone());
         assert_eq!(p.gaps, 16);
+    }
+
+    #[test]
+    fn layout_default_tiled_parses_and_defaults_false() {
+        let cfg = Config::parse("schema_version = 1\n[layout]\ndefault_tiled = true\n").unwrap();
+        assert!(cfg.layout.default_tiled);
+        // Absent key → false.
+        let cfg2 = Config::parse("schema_version = 1\n[layout]\ngaps = 4\n").unwrap();
+        assert!(!cfg2.layout.default_tiled);
+        assert!(!LayoutConfig::default().default_tiled);
+    }
+
+    #[test]
+    fn ui_reduced_motion_parses_and_defaults_false() {
+        let cfg = Config::parse("schema_version = 1\n[ui]\nreduced_motion = true\n").unwrap();
+        assert!(cfg.ui.reduced_motion);
+        // Absent section → false.
+        let cfg2 = Config::parse("schema_version = 1\n").unwrap();
+        assert!(!cfg2.ui.reduced_motion);
+        assert_eq!(cfg2.ui, UiConfig::default());
+    }
+
+    #[test]
+    fn output_entries_parse_and_validate() {
+        let cfg = Config::parse(
+            "schema_version = 1\n\
+             [[output]]\n\
+             connector = \"DP-1\"\n\
+             scale = 1.5\n\
+             [[output]]\n\
+             connector = \"HDMI-A-1\"\n\
+             scale = 2.0\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.outputs.len(), 2);
+        assert_eq!(cfg.outputs[0].connector, "DP-1");
+        assert_eq!(cfg.outputs[0].scale, 1.5);
+        assert_eq!(cfg.outputs[1].connector, "HDMI-A-1");
+        // Absent section → empty.
+        let cfg2 = Config::parse("schema_version = 1\n").unwrap();
+        assert!(cfg2.outputs.is_empty());
+        // Out-of-range scale and empty connector are diagnosed.
+        let err = Config::parse(
+            "schema_version = 1\n\
+             [[output]]\n\
+             connector = \"\"\n\
+             scale = 9.0\n",
+        )
+        .unwrap_err();
+        assert!(err
+            .iter()
+            .any(|d| d.field.as_deref() == Some("output.0.connector")));
+        assert!(err
+            .iter()
+            .any(|d| d.field.as_deref() == Some("output.0.scale")));
     }
 
     #[test]

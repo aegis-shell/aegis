@@ -29,8 +29,8 @@ The near-term target is feature parity with a mainstream Linux shell at the
 level that affects daily use: a coherent panel and dock, a launcher and
 overview, dynamic per-output workspaces, floating with optional tiling,
 multi-monitor with mixed DPI, configuration with live reload, animations
-that do not fight the user, and broad application compatibility through
-XWayland. The reference point is GNOME Shell's reach; the constraint is that
+that do not fight the user, and broad Wayland application compatibility.
+The reference point is GNOME Shell's reach; the constraint is that
 ass reaches it with a fraction of the code and a single coherent model.
 
 "More simple and more pure" is the differentiator. Simple means a small
@@ -70,10 +70,10 @@ does not grow a scene graph, a text shaper, or an animation framework in
 tree. When a capability is missing, it is added where it belongs
 ([ADR-0001](../adr/0001-scope-and-responsibility-boundary.md)).
 
-**Wayland-native, X11 through XWayland.** ass will never ship an X11 session.
-Existing X11 applications reach it through XWayland, treated as an optional,
-first-class integration rather than a compatibility afterthought
-([ADR-0030](../adr/0030-xwayland-strategy.md)).
+**Wayland-only.** ass will never ship an X11 session, and XWayland is
+descoped from the supported configuration: X11 applications are simply
+unsupported. The integration strategy remains recorded should it ever be
+revisited ([ADR-0030](../adr/0030-xwayland-strategy.md)).
 
 **Borrow deliberately.** Every borrowed idea is named against its source and
 checked against the principles. The [Comparative Survey](comparative-survey.md)
@@ -102,13 +102,13 @@ The following are in scope for the desktop phase:
   ([ADR-0028](../adr/0028-output-and-monitor-model.md)).
 - A declarative animation layer owned by lens, with reduced-motion
   ([ADR-0029](../adr/0029-animation-and-effect-policy.md)).
-- XWayland integration ([ADR-0030](../adr/0030-xwayland-strategy.md)).
 
 ## Non-Goals
 
 To stay small, ass explicitly does not aim to provide the following:
 
-- **An X11 session.** X11 is supported only through XWayland.
+- **X11 applications.** ass is Wayland-only; XWayland
+  ([ADR-0030](../adr/0030-xwayland-strategy.md)) is descoped.
 - **A bundled application suite.** No file manager, terminal emulator, text
   editor, image viewer, or web browser. The launcher discovers what the host
   installed.

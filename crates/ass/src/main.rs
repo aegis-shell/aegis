@@ -1,11 +1,15 @@
 //! ass — autonomous surface shell.
 //!
-//! The process composition root: creates the nested host, Wayland server,
+//! The process composition root: selects a presentation host, creates the Wayland server,
 //! renderer, shell, wallpaper, configuration, and IPC surfaces, then runs the
 //! compositor event and presentation loop.
 
-use ass_backend::nested::{NestedHost, DEVICE_EXTENSIONS, INSTANCE_EXTENSIONS};
+use ass_backend::drm::DrmError;
+use ass_backend::host::{BackendKind, Host, HostError};
 use ass_backend::Backend;
+use std::os::fd::AsRawFd;
+
+mod cursor;
 
 fn main() {
     // Initialize before anything logs. `RUST_LOG` controls verbosity; default
@@ -269,6 +273,355 @@ fn draw_client_scene(
     canvas.restore();
 }
 
+/// Fail-closed session-lock composition. The opaque physical-pixel fill is
+/// emitted after all normal desktop/chrome work, then only surfaces owned by
+/// the active lock client (plus its cursor) are allowed above it.
+fn draw_lock_scene(
+    canvas: &flux::Canvas,
+    device: &flux::Device,
+    renderer: &mut ass_render::Renderer,
+    server: &ass_server::Server,
+    physical_size: (u32, u32),
+    scale: f32,
+) {
+    canvas.save();
+    canvas.fill_rect(
+        0.0,
+        0.0,
+        physical_size.0 as f32,
+        physical_size.1 as f32,
+        flux::rgba(0, 0, 0, 255),
+    );
+    canvas.restore();
+
+    canvas.save();
+    if scale != 1.0 {
+        canvas.scale(scale, scale);
+    }
+    let shm = server.lock_frames();
+    let dmabuf = server.lock_dmabuf_frames();
+    renderer.gc(shm
+        .iter()
+        .map(|frame| frame.id)
+        .chain(dmabuf.iter().map(|frame| frame.id)));
+    renderer.draw_toplevels(device, canvas, &shm, (0.0, 0.0));
+    renderer.draw_dmabuf_toplevels(device, canvas, &dmabuf, (0.0, 0.0));
+    canvas.restore();
+}
+
+/// Overview scene (M9): the desktop dimmed, then every visible window drawn
+/// as a live thumbnail on the shared `ass_core::overview` grid — the exact
+/// geometry the overview chrome uses for its frames, labels, and hit-testing.
+/// Z-order is preserved bottom-to-top so overlapping thumbnails read like
+/// the desktop stack.
+fn draw_overview_scene(
+    canvas: &flux::Canvas,
+    device: &flux::Device,
+    renderer: &mut ass_render::Renderer,
+    server: &ass_server::Server,
+    logical_size: (u32, u32),
+    scale: f32,
+) {
+    canvas.save();
+    canvas.fill_rect(
+        0.0,
+        0.0,
+        logical_size.0 as f32 * scale,
+        logical_size.1 as f32 * scale,
+        flux::rgba(8, 10, 20, 200),
+    );
+    canvas.restore();
+
+    let windows = server.windows();
+    if windows.is_empty() {
+        return;
+    }
+    let rail = server
+        .workspace_snapshot()
+        .outputs
+        .first()
+        .map(|o| o.workspaces.len() > 1)
+        .unwrap_or(false);
+    let display = ass_core::Rect::new(0, 0, logical_size.0 as i32, logical_size.1 as i32);
+    let area = ass_core::overview::grid_area(display, rail);
+    let slots = ass_core::overview::grid(area, windows.len());
+    let cells: std::collections::HashMap<
+        ass_core::window::WindowId,
+        (ass_core::Rect, ass_core::Point, ass_core::Size),
+    > = windows
+        .iter()
+        .zip(slots.iter())
+        .map(|(w, slot)| {
+            (
+                w.id,
+                (ass_core::overview::fit(*slot, w.size), w.position, w.size),
+            )
+        })
+        .collect();
+    let map = move |window: Option<ass_core::window::WindowId>, natural: ass_core::Rect| {
+        let Some((cell, base, win_size)) = window.and_then(|id| cells.get(&id)) else {
+            return natural;
+        };
+        let k = cell.size.w as f32 / win_size.w.max(1) as f32;
+        let remap = |v: i32, b: i32| (v - b) as f32 * k;
+        ass_core::Rect::new(
+            cell.origin.x + remap(natural.origin.x, base.x).round() as i32,
+            cell.origin.y + remap(natural.origin.y, base.y).round() as i32,
+            (natural.size.w as f32 * k).round().max(1.0) as i32,
+            (natural.size.h as f32 * k).round().max(1.0) as i32,
+        )
+    };
+
+    canvas.save();
+    if scale != 1.0 {
+        canvas.scale(scale, scale);
+    }
+    let shm = server.toplevel_frames();
+    let dmabuf = server.toplevel_dmabuf_frames();
+    let sub_shm_below = server.subsurface_frames_below();
+    let sub_shm_above = server.subsurface_frames_above();
+    let sub_dmabuf_below = server.subsurface_dmabuf_frames_below();
+    let sub_dmabuf_above = server.subsurface_dmabuf_frames_above();
+    renderer.gc(shm
+        .iter()
+        .map(|frame| frame.id)
+        .chain(dmabuf.iter().map(|frame| frame.id))
+        .chain(sub_shm_below.iter().map(|frame| frame.id))
+        .chain(sub_shm_above.iter().map(|frame| frame.id))
+        .chain(sub_dmabuf_below.iter().map(|frame| frame.id))
+        .chain(sub_dmabuf_above.iter().map(|frame| frame.id)));
+    renderer.draw_subsurfaces_mapped(device, canvas, &sub_shm_below, &map);
+    renderer.draw_dmabuf_subsurfaces_mapped(device, canvas, &sub_dmabuf_below, &map);
+    renderer.draw_toplevels_mapped(device, canvas, &shm, &map);
+    renderer.draw_dmabuf_toplevels_mapped(device, canvas, &dmabuf, &map);
+    renderer.draw_subsurfaces_mapped(device, canvas, &sub_shm_above, &map);
+    renderer.draw_dmabuf_subsurfaces_mapped(device, canvas, &sub_dmabuf_above, &map);
+    canvas.restore();
+}
+
+/// Software cursor for direct KMS. First the XDG cursor theme
+/// (`$XCURSOR_THEME`/`$XCURSOR_SIZE`, inheritance included) via
+/// [`cursor::CursorCache`]; the hand-drawn glyph set below remains as the
+/// fallback when the theme ships no image for the requested shape.
+/// Client-provided cursor surfaces are already composited by `ass-server`;
+/// this covers the cursor-shape protocol and compositor-owned cursors.
+fn draw_software_cursor(
+    canvas: &flux::Canvas,
+    device: &flux::Device,
+    cache: &mut cursor::CursorCache,
+    position: (f32, f32),
+    shape: u32,
+    scale: f32,
+) {
+    if let Some(cursor) = cache.get(device, shape, scale) {
+        canvas.save();
+        canvas.scale(scale, scale);
+        let inv = 1.0 / scale.max(0.25);
+        canvas.draw_image(
+            &cursor.image,
+            position.0 - cursor.xhot * inv,
+            position.1 - cursor.yhot * inv,
+            cursor.width * inv,
+            cursor.height * inv,
+        );
+        canvas.restore();
+        return;
+    }
+    draw_glyph_cursor(canvas, position, shape, scale);
+}
+
+/// Hand-drawn glyph fallback: used only when the XDG theme has no image for
+/// the shape (or no theme is installed at all).
+fn draw_glyph_cursor(canvas: &flux::Canvas, position: (f32, f32), shape: u32, scale: f32) {
+    let black = flux::rgba(12, 12, 16, 255);
+    let white = flux::rgba(245, 245, 248, 255);
+    canvas.save();
+    canvas.scale(scale, scale);
+    canvas.translate(position.0, position.1);
+
+    let bar = |canvas: &flux::Canvas, x: f32, y: f32, w: f32, h: f32| {
+        canvas.fill_rrect(x - 1.0, y - 1.0, w + 2.0, h + 2.0, 1.5, black);
+        canvas.fill_rrect(x, y, w, h, 1.0, white);
+    };
+    match shape {
+        7 | 8 | 32 | 36 => {
+            bar(canvas, 8.0, 0.0, 3.0, 19.0);
+            bar(canvas, 0.0, 8.0, 19.0, 3.0);
+        }
+        9 => {
+            bar(canvas, 8.0, 0.0, 3.0, 20.0);
+            bar(canvas, 4.0, 0.0, 11.0, 3.0);
+            bar(canvas, 4.0, 17.0, 11.0, 3.0);
+        }
+        10 => {
+            bar(canvas, 0.0, 8.0, 20.0, 3.0);
+            bar(canvas, 0.0, 4.0, 3.0, 11.0);
+            bar(canvas, 17.0, 4.0, 3.0, 11.0);
+        }
+        18 | 25 | 26 | 30 => {
+            bar(canvas, 0.0, 8.0, 20.0, 3.0);
+            bar(canvas, 0.0, 4.0, 3.0, 11.0);
+            bar(canvas, 17.0, 4.0, 3.0, 11.0);
+        }
+        19 | 22 | 27 | 31 => {
+            bar(canvas, 8.0, 0.0, 3.0, 20.0);
+            bar(canvas, 4.0, 0.0, 11.0, 3.0);
+            bar(canvas, 4.0, 17.0, 11.0, 3.0);
+        }
+        20 | 24 | 28 => {
+            canvas.translate(2.0, 15.0);
+            canvas.rotate(-std::f32::consts::FRAC_PI_4);
+            bar(canvas, 0.0, 0.0, 22.0, 3.0);
+            bar(canvas, 0.0, -3.0, 3.0, 9.0);
+            bar(canvas, 19.0, -3.0, 3.0, 9.0);
+        }
+        21 | 23 | 29 => {
+            canvas.translate(4.0, 0.0);
+            canvas.rotate(std::f32::consts::FRAC_PI_4);
+            bar(canvas, 0.0, 0.0, 22.0, 3.0);
+            bar(canvas, 0.0, -3.0, 3.0, 9.0);
+            bar(canvas, 19.0, -3.0, 3.0, 9.0);
+        }
+        _ => {
+            // Arrow-like diagonal with a short tail; hotspot is (0, 0).
+            canvas.rotate(-std::f32::consts::FRAC_PI_4);
+            bar(canvas, 0.0, 0.0, 18.0, 4.0);
+            bar(canvas, 10.0, 2.0, 4.0, 10.0);
+        }
+    }
+    canvas.restore();
+}
+
+/// Backend-independent screenshot target: an offscreen RGBA8 flux surface
+/// whose pixels the CPU can read back. A windowed (WSI) surface cannot be
+/// read back, so captures re-render the scene here once at request time —
+/// the same draw calls the per-frame path uses, on both the nested and the
+/// direct KMS backend. Recreated whenever the output extent changes.
+struct ShotSurface {
+    surface: flux::Surface,
+    canvas: flux::Canvas,
+    width: u32,
+    height: u32,
+}
+
+impl ShotSurface {
+    fn for_output(device: &flux::Device, size: (u32, u32)) -> Result<ShotSurface, flux::Error> {
+        // Pinned to CPU readback: on dma-buf-capable devices a plain
+        // offscreen surface exports its images and read_pixels refuses them.
+        let surface = flux::Surface::offscreen_readback(device, size.0.max(1), size.1.max(1))?;
+        let canvas = flux::Canvas::new(&surface)?;
+        Ok(ShotSurface {
+            surface,
+            canvas,
+            width: size.0.max(1),
+            height: size.1.max(1),
+        })
+    }
+}
+
+/// Render the current desktop scene (wallpaper, clients, chrome) into the
+/// offscreen shot surface and return `(width, height, png_bytes)`.
+#[allow(clippy::too_many_arguments)]
+fn capture_output_png(
+    device: &flux::Device,
+    shot: &mut Option<ShotSurface>,
+    renderer: &mut ass_render::Renderer,
+    server: &ass_server::Server,
+    shell: &mut ass_shell::Shell,
+    wallpaper: &mut Option<ass_wallpaper::Wallpaper>,
+    input: &ass_shell::Input,
+    render_geometry: RenderGeometry,
+    physical_size: (u32, u32),
+    overview: bool,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    let stale = match shot {
+        Some(s) => (s.width, s.height) != physical_size,
+        None => true,
+    };
+    if stale {
+        *shot = Some(
+            ShotSurface::for_output(device, physical_size)
+                .map_err(|e| format!("shot surface: {e}"))?,
+        );
+    }
+    let shot = shot.as_mut().expect("shot surface just created");
+    let mut frame = shot
+        .surface
+        .begin_frame()
+        .map_err(|e| format!("shot frame: {e}"))?;
+    shot.canvas
+        .begin(&frame, Some(0xFF00_0000))
+        .map_err(|e| format!("shot canvas: {e}"))?;
+    draw_direct_desktop_scene(
+        &shot.canvas,
+        device,
+        &mut frame,
+        wallpaper,
+        renderer,
+        server,
+        render_geometry,
+        overview,
+    )
+    .map_err(|e| format!("shot scene: {e}"))?;
+    // SAFETY: the raw canvas is live for the call, exactly like the per-frame
+    // shell render above.
+    unsafe { shell.render(shot.canvas.as_raw() as *mut _, input) }
+        .map_err(|e| format!("shot chrome: {e}"))?;
+    shot.canvas.end();
+    let submitted = frame.submit().map_err(|e| format!("shot submit: {e}"))?;
+    submitted
+        .present()
+        .map_err(|e| format!("shot present: {e}"))?;
+
+    let mut pixels = vec![0u8; shot.width as usize * shot.height as usize * 4];
+    shot.surface
+        .read_pixels(&mut pixels)
+        .map_err(|e| format!("shot readback: {e}{}", flux_last_error_detail()))?;
+    unpremultiply(&mut pixels);
+    let png = encode_png(shot.width, shot.height, &pixels)?;
+    Ok((shot.width, shot.height, png))
+}
+
+/// Convert premultiplied RGBA8 (the flux/Wayland contract) to the straight
+/// alpha PNG encoders expect.
+fn unpremultiply(pixels: &mut [u8]) {
+    for px in pixels.chunks_exact_mut(4) {
+        let a = u32::from(px[3]);
+        if a > 0 && a < 255 {
+            for channel in &mut px[0..3] {
+                *channel = ((u32::from(*channel) * 255 + a / 2) / a).min(255) as u8;
+            }
+        }
+    }
+}
+
+fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
+    use image::ImageEncoder;
+    let mut out = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut out)
+        .write_image(rgba, width, height, image::ExtendedColorType::Rgba8)
+        .map_err(|e| format!("png encode: {e}"))?;
+    Ok(out)
+}
+
+/// flux's thread-local diagnostic for the most recent error, formatted for
+/// logs; empty when the call carried no detail.
+fn flux_last_error_detail() -> String {
+    let mut info: flux_sys::flux_error_info = unsafe { std::mem::zeroed() };
+    unsafe { flux_sys::flux_get_last_error(&mut info) };
+    if info.message.is_null() {
+        return String::new();
+    }
+    let message = unsafe { std::ffi::CStr::from_ptr(info.message) };
+    format!(" ({})", message.to_string_lossy())
+}
+
+/// One pixel-capture request from an IPC connection thread, answered by the
+/// main loop after it re-renders the scene offscreen (M10 pixel capture).
+struct CaptureRequest {
+    reply: std::sync::mpsc::Sender<Result<(u32, u32, String), String>>,
+}
+
 /// Direct swapchain composition. A model wallpaper inserts one depth-tested
 /// pass between the 2D background and client canvas draws.
 #[derive(Clone, Copy)]
@@ -277,6 +630,7 @@ struct RenderGeometry {
     scale: f32,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_direct_desktop_scene(
     canvas: &flux::Canvas,
     device: &flux::Device,
@@ -285,6 +639,7 @@ fn draw_direct_desktop_scene(
     renderer: &mut ass_render::Renderer,
     server: &ass_server::Server,
     geometry: RenderGeometry,
+    overview: bool,
 ) -> Result<(), flux::Error> {
     let RenderGeometry {
         logical_size,
@@ -301,7 +656,11 @@ fn draw_direct_desktop_scene(
         }
         canvas.begin(frame, None)?;
     }
-    draw_client_scene(canvas, device, renderer, server, scale);
+    if overview {
+        draw_overview_scene(canvas, device, renderer, server, logical_size, scale);
+    } else {
+        draw_client_scene(canvas, device, renderer, server, scale);
+    }
     Ok(())
 }
 
@@ -329,6 +688,15 @@ fn apply_command(
             // Synthetic input needs shell-occlusion validation and is handled
             // beside the physical-input router in the main loop.
             debug_assert!(false, "InjectInput reached the generic command path");
+        }
+        Command::Screenshot { .. } => {
+            // Screenshots need the GPU objects and are handled beside the
+            // frame renderer in the main loop.
+            debug_assert!(false, "Screenshot reached the generic command path");
+        }
+        Command::ToggleOverview => {
+            // The overview is shell-owned; toggled beside the IPC drain.
+            debug_assert!(false, "ToggleOverview reached the generic command path");
         }
         Command::Cycle { forward } => server.cycle_focus(*forward),
         Command::SwitchWorkspace { dir } => server.switch_workspace(*dir),
@@ -492,17 +860,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             ass_core::notify::NotificationQueue::new(5_000),
         ));
 
-    // flux device with the instance extensions a nested Wayland surface needs,
-    // plus the dma-buf import extensions when the driver supports them (fall
-    // back to swapchain-only if device creation rejects them).
-    let mut dev_exts: Vec<&std::ffi::CStr> = DEVICE_EXTENSIONS.to_vec();
-    dev_exts.extend_from_slice(&flux::DMABUF_DEVICE_EXTENSIONS);
-    let device = match flux::Device::new(false, &INSTANCE_EXTENSIONS, &dev_exts) {
-        Ok(d) => d,
-        Err(_) => flux::Device::new(false, &INSTANCE_EXTENSIONS, &DEVICE_EXTENSIONS)?,
-    };
+    // Select the presentation target before Vulkan creation: nested Wayland
+    // requires WSI extensions, while DRM requires exportable offscreen images.
+    // `auto` uses an outer Wayland display when present and atomic DRM on a TTY.
+    let backend_kind = requested_backend()?;
+    let host_bootstrap = Host::open(backend_kind, "ass", 1280, 720)?;
+    let device = host_bootstrap.create_device()?;
+    // Move the host into a binding declared after the device so Rust drops the
+    // host-owned VkSurfaceKHR before Flux destroys its VkInstance.
+    let mut host = host_bootstrap;
     log::info!(
-        "flux: device created (windowed); dma-buf import {}",
+        "flux: device created for {} backend; dma-buf {}",
+        host.name(),
         if flux::dmabuf_supported(&device) {
             "supported"
         } else {
@@ -510,32 +879,68 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
 
-    // Host window + Vulkan surface. The swapchain is sized in *physical*
-    // pixels (logical × output scale) so a HiDPI host maps our buffer 1:1
-    // instead of upscaling it; `set_buffer_scale` tells the host the buffer is
-    // pre-scaled. Chrome and client/wallpaper draws stay in logical
-    // coordinates and are scaled up at draw time, keeping text and edges crisp.
-    let mut host = NestedHost::open("ass", 1280, 720)?;
-    let vk_surface = host.create_vk_surface(&device)?;
+    // Nested mode creates a Vulkan WSI swapchain. DRM mode creates an
+    // exportable offscreen ring that the backend imports into KMS.
     let (w, h) = host.physical_size();
     log::info!(
-        "nested: host window {w}x{h} (scale {}), VkSurfaceKHR created",
+        "{}: presentation target {w}x{h} (scale {})",
+        host.name(),
         host.scale()
     );
 
-    // flux presentable surface + canvas.
-    let mut surface = unsafe { flux::Surface::from_vk(&device, vk_surface, w, h, true) }?;
-    let canvas = flux::Canvas::new(&surface)?;
+    // Flux presentation surface + canvas.
+    let mut surface = host.create_surface(&device)?;
+    let mut canvas = flux::Canvas::new(&surface)?;
     let mut launcher_backdrop = LauncherBackdrop::new(&device)?;
+    // Screenshot/pixel-capture target, created lazily on the first request
+    // (M9/M10). Offscreen so its pixels are CPU-readable on both backends.
+    let mut shot: Option<ShotSurface> = None;
+    // XDG cursor theme cache for the software cursor on direct KMS.
+    let mut cursor_cache = cursor::CursorCache::default();
     // Advertise the pre-scaled buffer to the host; takes effect on the next
     // commit (the first present below).
     host.set_buffer_scale();
+
+    // Declarative configuration (ADR-0026). One TOML file at
+    // `$XDG_CONFIG_HOME/ass/config.toml` is the source of truth; absence is
+    // not an error (built-in defaults apply). A malformed or
+    // schema-incompatible file is logged and skipped, not fatal. Loaded
+    // before the server so output policy applies before icons decode.
+    let config_path = ass_config::default_path();
+    let mut config = load_config(config_path.as_deref());
+
+    // Wayland server: accept client connections on its own socket. Created
+    // before the icon pass so the effective output scale (backend-reported
+    // geometry plus any `[[output]]` override) is known when icons decode.
+    let mut server = ass_server::Server::new_with_render_caps(
+        flux::dmabuf_supported(&device),
+        flux::dmabuf_sync_supported(&device),
+    )?;
+    server.set_outputs(host.output_infos());
+    log::info!("server: listening on WAYLAND_DISPLAY={}", server.socket());
+    if let Some(c) = config.as_ref() {
+        server.set_output_scale_overrides(
+            c.outputs
+                .iter()
+                .map(|o| (o.connector.clone(), o.scale))
+                .collect(),
+        );
+    }
+    // The effective scale the whole frame renders at: the primary output's
+    // geometry after overrides, falling back to the host's own scale
+    // (nested, where the host compositor owns scaling).
+    let effective_scale = server
+        .output_infos()
+        .first()
+        .map(|o| o.geometry.scale.as_f32())
+        .filter(|s| *s > 0.0)
+        .unwrap_or_else(|| host.scale());
 
     // Enumerate launchable `.desktop` entries at startup; the catalog is
     // rescanned periodically below so package installs/removals appear without
     // restarting the compositor.
     let mut icon_theme = selected_icon_theme();
-    let mut icon_scale = host.scale().ceil().max(1.0) as u32;
+    let mut icon_scale = effective_scale.ceil().max(1.0) as u32;
     let mut launcher_apps = application_catalog(&icon_theme, icon_scale);
     log::info!(
         "launcher: {} launchable applications discovered (icon theme: {})",
@@ -572,6 +977,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         launcher_apps.clone(),
         icon_cache.map.clone(),
     )));
+    // The overview (M9): a modal window/workspace picker over the same live
+    // scene; registered with the modal chrome so it covers ordinary overlays.
+    shell.add(Box::new(ass_shell::Overview::new()));
     // Built-in applications share the launcher catalog with XDG entries but
     // render in-process through optics/lens. Register the backing component
     // above the launcher and ordinary chrome, while leaving the dock last.
@@ -582,20 +990,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // `[dock]` pinned list.
     let mut input_acc = InputAccumulator::default();
     // Seed the chrome's logical extent so widgets can lay out before the first
-    // resize arrives. Updated each frame from the host size.
+    // resize arrives. The server's output geometry (backend + overrides) is
+    // authoritative; the host size is the nested fallback.
     {
-        let sz = host.size();
-        input_acc.display_size = (sz.w as f32, sz.h as f32);
+        let logical = server
+            .output_infos()
+            .first()
+            .map(|o| o.geometry.logical_size());
+        let (w, h) = logical
+            .map(|s| (s.w as f32, s.h as f32))
+            .unwrap_or_else(|| {
+                let sz = host.size();
+                (sz.w as f32, sz.h as f32)
+            });
+        input_acc.display_size = (w, h);
     }
-
-    // Wayland server: accept client connections on its own socket.
-    let mut server = ass_server::Server::new()?;
-    log::info!("server: listening on WAYLAND_DISPLAY={}", server.socket());
 
     // Repoint $WAYLAND_DISPLAY at this compositor's socket so children laun-
     // ched from here (the dock / launcher via `ass-launch`) connect back to
     // *us*, not the host session ass is nested in. The host connection was
-    // already captured above as an fd by `NestedHost::open`, which does not
+    // already captured above by `Host::open`, which does not
     // re-read the env var after connect, so overwriting it here is safe.
     // `ass-launch::inherit_display_env` reads this var to seed each child.
     std::env::set_var("WAYLAND_DISPLAY", server.socket());
@@ -672,14 +1086,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // grab/release the keyboard on edges (launcher open/close).
     let mut prev_captured = false;
 
-    // Declarative configuration (ADR-0026). One TOML file at
-    // `$XDG_CONFIG_HOME/ass/config.toml` is the source of truth; absence is
-    // not an error (built-in defaults apply). A malformed or
-    // schema-incompatible file is logged and skipped, not fatal. Key
-    // bindings are the first section; later milestones add more.
-    let config_path = ass_config::default_path();
-    let mut config = load_config(config_path.as_deref());
-
     // Global key bindings: built-in defaults overridden by the config file's
     // `[[keybind]]` entries. The deprecated `$ASS_KEYBINDS` env var is still
     // honored as a transitional override (logged) and takes precedence over
@@ -699,14 +1105,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // geometry (ADR-0028) from the config and the initial host size.
     if let Some(c) = config.as_ref() {
         server.set_layout_params(c.layout.clone().into());
+        server.set_tiling_default(c.layout.default_tiled);
+        shell.set_reduced_motion(c.ui.reduced_motion);
+        server.set_reduced_motion(c.ui.reduced_motion);
+        cursor_cache.set_config(c.ui.cursor_theme.clone(), c.ui.cursor_size);
+        server.set_output_scale_overrides(
+            c.outputs
+                .iter()
+                .map(|o| (o.connector.clone(), o.scale))
+                .collect(),
+        );
     }
-    let (init_w, init_h) = host.size_u32();
-    server.set_output_geometry(output_geometry_from_host(
-        init_w as i32,
-        init_h as i32,
-        host.scale(),
-    ));
-
     // The dock: a persistent strip of pinned `.desktop` app icons (ADR-0022),
     // built from the config's `[dock] pinned` list, or auto-populated from the
     // enumerated apps that have a usable icon when no pins are configured. It
@@ -727,14 +1136,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     )));
 
     // One normalized status snapshot feeds both the compact HUD and the
-    // built-in Control Center. Host probes run on a low-frequency cadence;
-    // compositor-owned fields are refreshed immediately when they change.
+    // built-in Control Center. Host probes (wpctl fork+exec) run on a helper
+    // thread so the compositor never blocks a frame on a subprocess; the
+    // main loop applies the latest snapshot it finds on the channel.
     const SYSTEM_STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
     let mut system_status = ass_shell::SystemStatus::detect();
     system_status.do_not_disturb = notif_queue.lock().unwrap().do_not_disturb();
     system_status.tiled = server.tiling();
     shell.set_system_status(system_status.clone());
-    let mut next_system_status_poll = std::time::Instant::now() + SYSTEM_STATUS_INTERVAL;
+    let (status_tx, status_rx) = std::sync::mpsc::channel::<ass_shell::SystemStatus>();
+    std::thread::Builder::new()
+        .name("ass-status".into())
+        .spawn(move || {
+            while status_tx.send(ass_shell::SystemStatus::detect()).is_ok() {
+                std::thread::sleep(SYSTEM_STATUS_INTERVAL);
+            }
+        })
+        .expect("spawn status poller");
 
     // mtime-based reload watcher, polled each frame. `None` when there is no
     // default config path on this host.
@@ -750,9 +1168,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // IPC rather than crashing. `ipc` is held to the end of `run()` so its
     // `Drop` removes the socket.
     let (ipc_cmd_tx, ipc_cmd_rx) = std::sync::mpsc::channel::<ass_ipc::Command>();
+    let (capture_tx, capture_rx) = std::sync::mpsc::channel::<CaptureRequest>();
     let journal = std::sync::Arc::new(std::sync::Mutex::new(ass_ipc::Journal::default_capacity()));
     let live = std::sync::Arc::new(LiveState::new(
         ipc_cmd_tx,
+        capture_tx,
         std::sync::Arc::clone(&notif_queue),
         std::sync::Arc::clone(&journal),
         build_ipc_scopes(config.as_ref()),
@@ -798,8 +1218,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_cursor_hidden = false;
     // Runtime application rescan: package managers and user-created desktop
     // entries become visible in launcher/dock during a long-running session.
+    // The scan decodes icon files — far too slow for the frame loop — so a
+    // worker thread does the reading and the main loop only applies results
+    // (GPU texture upload + catalog swap) when they arrive.
     const APP_RESCAN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
     let mut next_app_scan = std::time::Instant::now() + APP_RESCAN_INTERVAL;
+    let (scan_req_tx, scan_req_rx) = std::sync::mpsc::channel::<u32>();
+    #[allow(clippy::type_complexity)]
+    let (scan_result_tx, scan_result_rx) = std::sync::mpsc::channel::<(
+        String,
+        Vec<ass_core::app::Entry>,
+        std::collections::BTreeMap<std::path::PathBuf, Option<IconFileStamp>>,
+    )>();
+    std::thread::Builder::new()
+        .name("ass-app-scan".into())
+        .spawn(move || {
+            while let Ok(scale) = scan_req_rx.recv() {
+                let theme = selected_icon_theme();
+                let catalog = application_catalog(&theme, scale);
+                let snapshot = snapshot_icons(&catalog);
+                if scan_result_tx.send((theme, catalog, snapshot)).is_err() {
+                    break;
+                }
+            }
+        })
+        .expect("spawn app scanner");
+    let mut pending_scan_scale = icon_scale;
     let mut previous_frame_at = std::time::Instant::now();
 
     loop {
@@ -822,15 +1266,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if !alive || shell.should_quit() || quit_requested {
             break;
         }
+        // libseat revokes DRM/input devices while another VT owns the seat.
+        // The backend continues dispatching seat events but no rendering or
+        // client input may occur until the enable event restores ownership.
+        if !host.is_active() {
+            continue;
+        }
         let frame_at = std::time::Instant::now();
         let frame_dt = (frame_at - previous_frame_at)
             .as_secs_f32()
             .clamp(0.0, 1.0 / 15.0);
         previous_frame_at = frame_at;
 
-        if frame_at >= next_system_status_poll {
-            next_system_status_poll = frame_at + SYSTEM_STATUS_INTERVAL;
-            let mut detected = ass_shell::SystemStatus::detect();
+        while let Ok(mut detected) = status_rx.try_recv() {
             detected.do_not_disturb = notif_queue.lock().unwrap().do_not_disturb();
             detected.tiled = server.tiling();
             if detected != system_status {
@@ -844,7 +1292,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // previous configuration rather than reverting silently.
         if let Some(path) = config_path.as_deref() {
             if reload.as_mut().is_some_and(|w| w.changed(path))
-                && reload_config(path, &mut config, &mut keymap, &mut server)
+                && reload_config(
+                    path,
+                    &mut config,
+                    &mut keymap,
+                    &mut server,
+                    &mut shell,
+                    &mut cursor_cache,
+                )
             {
                 live.set_scopes(build_ipc_scopes(config.as_ref()));
                 let pinned = build_dock_apps(
@@ -861,10 +1316,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         if std::time::Instant::now() >= next_app_scan {
             next_app_scan = std::time::Instant::now() + APP_RESCAN_INTERVAL;
-            let refreshed_theme = selected_icon_theme();
-            let refreshed_scale = host.scale().ceil().max(1.0) as u32;
-            let refreshed = application_catalog(&refreshed_theme, refreshed_scale);
-            let refreshed_snapshot = snapshot_icons(&refreshed);
+            pending_scan_scale = host.scale().ceil().max(1.0) as u32;
+            let _ = scan_req_tx.send(pending_scan_scale);
+        }
+        while let Ok((refreshed_theme, refreshed, refreshed_snapshot)) = scan_result_rx.try_recv() {
+            let refreshed_scale = pending_scan_scale;
             let catalog_changed = refreshed != launcher_apps;
             let icons_changed = refreshed_snapshot != icon_snapshot;
             let theme_changed = refreshed_theme != icon_theme;
@@ -910,10 +1366,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // threads forward through the channel rather than touching it
         // directly. Mirrors the chrome-intent drain below (ADR-0016/0027).
         let mut pending_synthetic_input = Vec::new();
+        let mut pending_screenshots = Vec::new();
         while let Ok(cmd) = ipc_cmd_rx.try_recv() {
             let ts = start.elapsed().as_millis() as u64;
+            if server.session_locked() {
+                journal_effect_and_broadcast(
+                    &journal,
+                    &ipc,
+                    ts,
+                    ass_ipc::Origin::Ipc { conn_id: 0 },
+                    cmd,
+                    ass_ipc::Effect::Refused {
+                        reason: "session is locked".into(),
+                    },
+                );
+                continue;
+            }
             if matches!(cmd, ass_ipc::Command::InjectInput { .. }) {
                 pending_synthetic_input.push((cmd, ts));
+                continue;
+            }
+            // The overview lives in the shell; toggling it is a presentation
+            // change, not a server mutation, but it still passes the journal.
+            if matches!(cmd, ass_ipc::Command::ToggleOverview) {
+                shell.toggle_overview();
+                journal_and_broadcast(&journal, &ipc, ts, ass_ipc::Origin::Ipc { conn_id: 0 }, cmd);
+                continue;
+            }
+            // Screenshots render with the GPU objects below, not in the
+            // generic command path.
+            if matches!(cmd, ass_ipc::Command::Screenshot { .. }) {
+                pending_screenshots.push((cmd, ts));
                 continue;
             }
             apply_command(
@@ -934,6 +1417,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         // Process client protocol traffic.
         server.dispatch();
+        let session_locked = server.session_locked();
+        if session_locked {
+            super_tap.cancel_current();
+        }
         for state in server.take_text_input_states() {
             host.set_text_input_state(state);
         }
@@ -962,12 +1449,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         input.set_dt(frame_dt);
         let mut shell_scroll = (0.0_f32, 0.0_f32);
         let pointer_before = input_acc.cursor;
-        let events = host.take_input();
+        let mut events = host.take_input();
+        if !events.is_empty() {
+            server.note_user_activity();
+        }
+        // Coordinate contract: backends emit absolute coordinates in their
+        // native space — the nested host in its already-scaled logical
+        // pixels, direct KMS in physical panel pixels. The compositor's
+        // logical space follows the server's output geometry, which may
+        // carry a configured scale override, so convert to logical once
+        // here instead of every consumer doing it. On nested the factor is
+        // 1.0; on DRM with an unmodified backend scale it is 1.0 too —
+        // only a configured override changes it.
+        let effective_scale = server
+            .output_infos()
+            .first()
+            .map(|o| o.geometry.scale.as_f32())
+            .filter(|s| *s > 0.0)
+            .unwrap_or_else(|| host.scale());
+        let coord_factor = host.scale() / effective_scale;
+        if (coord_factor - 1.0).abs() > f32::EPSILON {
+            for ev in &mut events {
+                use ass_core::input::{InputEvent::*, TabletEvent};
+                match ev {
+                    PointerMotion { x, y }
+                    | TouchDown { x, y, .. }
+                    | TouchMotion { x, y, .. }
+                    | Tablet {
+                        event: TabletEvent::Proximity { x, y, .. } | TabletEvent::Axes { x, y, .. },
+                    } => {
+                        *x *= coord_factor;
+                        *y *= coord_factor;
+                    }
+                    _ => {}
+                }
+            }
+        }
         // When chrome (the launcher or a context menu) captures the keyboard,
         // key events go to chrome rather than the focused client. The shell
         // reports capture state from the previous frame's render / key
         // handling, so this is stable for the whole batch.
-        let keyboard_captured = shell.captures_keyboard();
+        let keyboard_captured = !session_locked && shell.captures_keyboard();
         if !events.is_empty() {
             for ev in &events {
                 use ass_core::input::InputEvent::*;
@@ -1013,7 +1535,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         // consistent), and feed the launcher brain only on
                         // press so typed characters are not double-counted.
                         // Captured keys are withheld from clients below.
-                        if super_tap.on_key(code, state.is_pressed()) {
+                        if !session_locked && super_tap.on_key(code, state.is_pressed()) {
                             shell.toggle();
                         }
                         if let Some(kc) = server.key_char(code, state.is_pressed()) {
@@ -1021,12 +1543,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 shell.key_char(kc);
                             }
                         }
+                        // VT switch keys stay compositor-owned while chrome
+                        // holds the keyboard too.
+                        if let Some(vt) = server.take_vt_switch() {
+                            log::info!("{}: VT switch requested to tty{vt}", host.name());
+                            host.switch_vt(vt);
+                        }
                     }
                     Key { code, state } => {
                         // Not capturing: keys forward to the client normally
                         // (below). The Super-tap detector still observes every
                         // key so a clean tap can open the launcher.
-                        if super_tap.on_key(code, state.is_pressed()) {
+                        if !session_locked && super_tap.on_key(code, state.is_pressed()) {
                             shell.toggle();
                         }
                     }
@@ -1040,7 +1568,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     | TouchMotion { .. }
                     | TouchUp { .. }
                     | TouchFrame
-                    | TouchCancel => {}
+                    | TouchCancel
+                    | Tablet { .. } => {}
                 }
             }
             // Route the batch a second time with compositor overlays removed
@@ -1058,7 +1587,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     PointerMotion { x, y } => {
                         synthetic_pointer_active = false;
                         route_cursor = (x, y);
-                        let captured = shell.captures_pointer_at(x, y, display);
+                        let captured = !session_locked && shell.captures_pointer_at(x, y, display);
                         if captured {
                             if !chrome_pointer_captured {
                                 forwarded.push(PointerLeave);
@@ -1076,8 +1605,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         chrome_pointer_captured = captured;
                     }
                     PointerButton { state, .. } => {
-                        let captured =
-                            shell.captures_pointer_at(route_cursor.0, route_cursor.1, display);
+                        let captured = !session_locked
+                            && shell.captures_pointer_at(route_cursor.0, route_cursor.1, display);
                         if synthetic_pointer_active {
                             if !captured {
                                 forwarded.push(PointerMotion {
@@ -1115,8 +1644,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         chrome_pointer_captured = captured;
                     }
                     PointerAxis { .. } => {
-                        let captured =
-                            shell.captures_pointer_at(route_cursor.0, route_cursor.1, display);
+                        let captured = !session_locked
+                            && shell.captures_pointer_at(route_cursor.0, route_cursor.1, display);
                         if synthetic_pointer_active {
                             if !captured {
                                 forwarded.push(PointerMotion {
@@ -1159,6 +1688,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             let actions = server.forward_input(&forwarded, &keymap);
+            // Ctrl+Alt+Fn: the compositor performs console VT switches itself
+            // through libseat (the kernel never sees the key once libinput
+            // owns evdev). No-op on the nested backend.
+            if let Some(vt) = server.take_vt_switch() {
+                log::info!("{}: VT switch requested to tty{vt}", host.name());
+                host.switch_vt(vt);
+            }
             // Dispatch matched global bindings. (Empty while the launcher
             // captures the keyboard — those keys went to the search box.)
             for action in actions {
@@ -1167,6 +1703,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let origin = ass_ipc::Origin::Keybinding;
                 match action {
                     Action::ToggleLauncher => shell.toggle(),
+                    Action::ToggleOverview => shell.toggle_overview(),
                     Action::CloseFocused => {
                         if let Some(id) = server.focused_toplevel_id() {
                             let cmd = ass_ipc::Command::Close { id };
@@ -1313,7 +1850,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 effect,
             );
         }
-        input.set_scroll(shell_scroll.0, shell_scroll.1);
+        if session_locked {
+            // Keep compositor chrome inert while it is hidden beneath the
+            // secure frame. Physical events have already reached the lock
+            // client through the server path above.
+            input = ass_shell::Input::default();
+            input.set_display_size(input_acc.display_size.0, input_acc.display_size.1);
+            input.set_cursor(-1.0, -1.0);
+            input.set_dt(frame_dt);
+        } else {
+            input.set_scroll(shell_scroll.0, shell_scroll.1);
+        }
 
         // A host resize or an output-scale change (window moved to a monitor
         // with a different scale) reports the new *logical* size. The swapchain
@@ -1321,23 +1868,45 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // geometry stay logical. Re-advertise the buffer scale so the host
         // keeps mapping our pre-scaled buffer 1:1.
         if let Some(sz) = host.take_resize() {
-            let (pw, ph) = host.physical_size();
-            surface.resize(pw, ph)?;
+            if host.surface_needs_recreate() {
+                // Direct KMS: a hotplug changed the plane-modifier
+                // intersection the surface was created with. Resize cannot
+                // retcon a modifier, so recreate the surface and its canvas
+                // at the new display set instead.
+                surface = host.create_surface(&device)?;
+                canvas = flux::Canvas::new(&surface)?;
+            } else {
+                let (pw, ph) = host.physical_size();
+                surface.resize(pw, ph)?;
+            }
             host.set_buffer_scale();
-            input_acc.display_size = (sz.w as f32, sz.h as f32);
-            input.set_display_size(sz.w as f32, sz.h as f32);
-            server.set_output_geometry(output_geometry_from_host(sz.w, sz.h, host.scale()));
+            server.set_outputs(host.output_infos());
+            // The logical extent follows the fresh server geometry (backend
+            // + overrides), so a scale override or a hotplug to a
+            // different-scale output re-lays the chrome out correctly.
+            let logical = server
+                .output_infos()
+                .first()
+                .map(|o| o.geometry.logical_size())
+                .map(|s| (s.w as f32, s.h as f32))
+                .unwrap_or((sz.w as f32, sz.h as f32));
+            input_acc.display_size = logical;
+            input.set_display_size(logical.0, logical.1);
         }
 
         // Chrome owns the host cursor while it owns pointer routing. This is
         // what gives the launcher's search field a text caret and interactive
         // HUD/dock controls a pointing hand; leaving chrome restores the
         // focused client's requested cursor (including hidden cursors).
-        let chrome_cursor = shell.cursor_shape_at(
-            input_acc.cursor.0,
-            input_acc.cursor.1,
-            input_acc.display_size,
-        );
+        let chrome_cursor = (!session_locked)
+            .then(|| {
+                shell.cursor_shape_at(
+                    input_acc.cursor.0,
+                    input_acc.cursor.1,
+                    input_acc.display_size,
+                )
+            })
+            .flatten();
         let compositor_cursor = server.compositor_cursor_shape();
         let owned_cursor = if server.interactive().is_some() {
             compositor_cursor
@@ -1369,8 +1938,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         match surface.begin_frame() {
             Ok(mut frame) => {
-                let scale = host.scale();
-                let logical_size = host.size_u32();
+                renderer.begin_frame();
+                // Render scale and logical extent come from the server's
+                // output geometry (backend + `[[output]]` overrides), not
+                // the host, so a configured scale actually changes the
+                // desktop. Nested outputs report the host scale, so the
+                // nested path is unchanged.
+                let (scale, logical_size) = {
+                    let geometry = server.output_infos().first().map(|o| o.geometry);
+                    let scale = geometry
+                        .map(|g| g.scale.as_f32())
+                        .filter(|s| *s > 0.0)
+                        .unwrap_or_else(|| host.scale());
+                    let logical = geometry
+                        .map(|g| g.logical_size())
+                        .map(|s| (s.w.max(1) as u32, s.h.max(1) as u32))
+                        .unwrap_or_else(|| host.size_u32());
+                    (scale, logical)
+                };
                 let render_geometry = RenderGeometry {
                     logical_size,
                     scale,
@@ -1381,13 +1966,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let model_active = wallpaper
                     .as_ref()
                     .is_some_and(ass_wallpaper::Wallpaper::has_model);
-                let backdrop_plan = launcher_backdrop.prepare(
-                    blur_sigma > 0.0 && !backdrop_regions.is_empty(),
-                    &device,
-                    &surface,
-                    &frame,
-                    physical_size,
-                );
+                // Overview mode (M9) swaps the whole client scene for the
+                // thumbnail grid and skips the launcher-blur capture path.
+                let overview_active = shell.overview_active();
+                let backdrop_plan = if overview_active {
+                    BackdropPlan::Direct
+                } else {
+                    launcher_backdrop.prepare(
+                        blur_sigma > 0.0 && !backdrop_regions.is_empty(),
+                        &device,
+                        &surface,
+                        &frame,
+                        physical_size,
+                    )
+                };
 
                 match backdrop_plan {
                     BackdropPlan::Capture
@@ -1437,6 +2029,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             &mut renderer,
                             &server,
                             render_geometry,
+                            overview_active,
                         )?;
                         if let Some(image) = blurred {
                             for region in &backdrop_regions {
@@ -1478,6 +2071,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             &mut renderer,
                             &server,
                             render_geometry,
+                            overview_active,
                         )?;
                     }
                 }
@@ -1524,12 +2118,48 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // a HiDPI host; layout and input stay in logical pixels.
                 shell.set_scale(scale);
                 unsafe { shell.render(canvas.as_raw() as *mut _, &input)? };
+                if session_locked {
+                    draw_lock_scene(
+                        &canvas,
+                        &device,
+                        &mut renderer,
+                        &server,
+                        physical_size,
+                        scale,
+                    );
+                }
                 // Drain chrome interactions and forward through the apply
                 // chokepoint (ADR-0033) so the journal records them.
                 let ts = start.elapsed().as_millis() as u64;
                 let origin = ass_ipc::Origin::Chrome;
                 if let Some(id) = shell.take_clicked_window() {
                     let cmd = ass_ipc::Command::Focus { id };
+                    apply_command(
+                        &mut server,
+                        &notif_queue,
+                        &mut quit_requested,
+                        &cmd,
+                        &ipc,
+                        ts,
+                    );
+                    journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
+                }
+                // Overview intents (M9): a thumbnail pick focuses its window;
+                // a rail tile switches workspace while the overview stays open.
+                if let Some(id) = shell.take_overview_pick() {
+                    let cmd = ass_ipc::Command::Focus { id };
+                    apply_command(
+                        &mut server,
+                        &notif_queue,
+                        &mut quit_requested,
+                        &cmd,
+                        &ipc,
+                        ts,
+                    );
+                    journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
+                }
+                if let Some(id) = shell.take_overview_switch() {
+                    let cmd = ass_ipc::Command::SwitchWorkspaceTo { id };
                     apply_command(
                         &mut server,
                         &notif_queue,
@@ -1628,10 +2258,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     shell.set_system_status(system_status.clone());
-                    // Reconcile optimistic hardware state shortly after the
-                    // detached host command has had time to take effect.
-                    next_system_status_poll =
-                        std::time::Instant::now() + std::time::Duration::from_millis(500);
+                    // Reconcile optimistic hardware state right away: this
+                    // path only fires on an explicit user action (volume,
+                    // brightness, radios), so a one-off detect here is cheap
+                    // and gives the HUD immediate feedback.
+                    let mut detected = ass_shell::SystemStatus::detect();
+                    detected.do_not_disturb = system_status.do_not_disturb;
+                    detected.tiled = system_status.tiled;
+                    system_status = detected;
+                    shell.set_system_status(system_status.clone());
                 }
                 // The dock's Launchpad tile was clicked: toggle the launcher,
                 // the same path as the Super-tap hotkey.
@@ -1658,22 +2293,139 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // focused client and the release sends `wl_keyboard.enter`
                 // back, keeping the focused client's state consistent with the
                 // capture decision. See ADR-0022.
-                let captured = shell.captures_keyboard();
+                let captured = !session_locked && shell.captures_keyboard();
                 if captured && !prev_captured {
                     server.grab_keyboard_focus();
                 } else if !captured && prev_captured {
                     server.release_keyboard_focus();
                 }
                 prev_captured = captured;
+                if host.uses_software_cursor() && !cursor_hidden {
+                    draw_software_cursor(
+                        &canvas,
+                        &device,
+                        &mut cursor_cache,
+                        input_acc.cursor,
+                        cursor_shape,
+                        scale,
+                    );
+                }
                 canvas.end();
-                frame.submit()?.present()?;
+                let submitted = frame.submit()?;
+                let completion_fence = match host.present(&surface, submitted) {
+                    Ok(fence) => fence,
+                    Err(error) => {
+                        // Transient direct-display conditions (VT switch,
+                        // hotplug reconfigure, flip timeout): drop this frame
+                        // and keep the session alive instead of exiting.
+                        if matches!(
+                            error,
+                            HostError::Drm(
+                                DrmError::FlipTimeout | DrmError::Inactive | DrmError::Reconfigured
+                            )
+                        ) {
+                            log::warn!(
+                                "{}: transient present failure; skipping frame: {error}",
+                                host.name()
+                            );
+                            continue;
+                        }
+                        return Err(error.into());
+                    }
+                };
+                if server.lock_confirmation_pending() {
+                    match host.wait_presented(&device) {
+                        Ok(()) => server.presentation_complete(),
+                        Err(error) => log::error!(
+                            "session lock: secure frame was not confirmed; keeping lock request pending: {error}"
+                        ),
+                    }
+                }
+                if server.retired_buffers_pending() {
+                    if completion_fence.is_none() && !host.uses_software_cursor() {
+                        // Nested swapchain presentation has no exportable
+                        // completion fence. This path is development-only;
+                        // wait conservatively before immediate release.
+                        device.wait_idle();
+                    }
+                    server
+                        .release_retired_buffers(completion_fence.as_ref().map(AsRawFd::as_raw_fd));
+                }
 
                 // Pace clients: fire frame callbacks for this presentation.
                 server.send_frame_callbacks(start.elapsed().as_millis() as u32);
 
+                // Answer pixel-capture requests and screenshot commands now
+                // that the scene state for this frame is current. Both paths
+                // re-render the scene into the offscreen shot surface, so a
+                // capture reflects exactly what was just presented. Refused
+                // while locked (privacy) or while the seat is inactive.
+                for req in capture_rx.try_iter() {
+                    let reply = if session_locked || !host.is_active() {
+                        Err("session is locked or inactive".to_owned())
+                    } else {
+                        capture_output_png(
+                            &device,
+                            &mut shot,
+                            &mut renderer,
+                            &server,
+                            &mut shell,
+                            &mut wallpaper,
+                            &input,
+                            render_geometry,
+                            physical_size,
+                            overview_active,
+                        )
+                        .map(|(w, h, png)| (w, h, ass_ipc::base64::encode(&png)))
+                    };
+                    let _ = req.reply.send(reply);
+                }
+                for (cmd, ts) in pending_screenshots.drain(..) {
+                    let ass_ipc::Command::Screenshot { path } = &cmd else {
+                        continue;
+                    };
+                    let effect = if session_locked || !host.is_active() {
+                        ass_ipc::Effect::Refused {
+                            reason: "session is locked or inactive".into(),
+                        }
+                    } else {
+                        match capture_output_png(
+                            &device,
+                            &mut shot,
+                            &mut renderer,
+                            &server,
+                            &mut shell,
+                            &mut wallpaper,
+                            &input,
+                            render_geometry,
+                            physical_size,
+                            overview_active,
+                        ) {
+                            Ok((_, _, png)) => match std::fs::write(path, &png) {
+                                Ok(()) => {
+                                    log::info!("screenshot: wrote {path}");
+                                    ass_ipc::Effect::Applied
+                                }
+                                Err(e) => ass_ipc::Effect::Refused {
+                                    reason: format!("write {path}: {e}"),
+                                },
+                            },
+                            Err(e) => ass_ipc::Effect::Refused { reason: e },
+                        }
+                    };
+                    journal_effect_and_broadcast(
+                        &journal,
+                        &ipc,
+                        ts,
+                        ass_ipc::Origin::Ipc { conn_id: 0 },
+                        cmd,
+                        effect,
+                    );
+                }
+
                 frame_count += 1;
                 if frame_count == 1 {
-                    log::info!("nested: first frame presented (with shell chrome)");
+                    log::info!("{}: first frame presented (with shell chrome)", host.name());
                 }
             }
             Err(_) => {
@@ -1689,14 +2441,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // freshly-started wave (cursor just entered the dock band) is caught
         // the same frame it begins.
         animating = shell.anim_pending()
+            || server.transitions_pending()
             || wallpaper
                 .as_ref()
                 .is_some_and(ass_wallpaper::Wallpaper::has_model);
     }
 
-    log::info!("ass: window closed after {frame_count} frames");
+    log::info!(
+        "ass: {} session ended after {frame_count} frames",
+        host.name()
+    );
     device.wait_idle();
     Ok(())
+}
+
+/// Resolve `--backend auto|drm|nested`, falling back to `$ASS_BACKEND` and
+/// then `auto`. X11/XWayland are intentionally not accepted backends.
+fn requested_backend() -> Result<BackendKind, Box<dyn std::error::Error>> {
+    let mut selected = std::env::var("ASS_BACKEND").unwrap_or_else(|_| "auto".to_owned());
+    let mut args = std::env::args().skip(1);
+    while let Some(argument) = args.next() {
+        if let Some(value) = argument.strip_prefix("--backend=") {
+            selected = value.to_owned();
+        } else if argument == "--backend" {
+            selected = args.next().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "--backend requires auto, drm, or nested",
+                )
+            })?;
+        } else if argument == "--help" || argument == "-h" {
+            println!("Usage: ass [--backend auto|drm|nested]");
+            std::process::exit(0);
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unknown option {argument:?}; try --help"),
+            )
+            .into());
+        }
+    }
+    Ok(selected.parse()?)
 }
 
 /// Load the configuration from `path`, logging diagnostics on failure.
@@ -1732,8 +2517,13 @@ fn reload_config(
     config: &mut Option<ass_config::Config>,
     keymap: &mut ass_core::keybind::Keymap,
     server: &mut ass_server::Server,
+    shell: &mut ass_shell::Shell,
+    cursor_cache: &mut cursor::CursorCache,
 ) -> bool {
-    let apply = |config: &Option<ass_config::Config>, server: &mut ass_server::Server| {
+    let apply = |config: &Option<ass_config::Config>,
+                 server: &mut ass_server::Server,
+                 shell: &mut ass_shell::Shell,
+                 cursor_cache: &mut cursor::CursorCache| {
         server.set_window_rules(
             config
                 .as_ref()
@@ -1742,8 +2532,23 @@ fn reload_config(
         );
         if let Some(c) = config.as_ref() {
             server.set_layout_params(c.layout.clone().into());
+            server.set_tiling_default(c.layout.default_tiled);
+            shell.set_reduced_motion(c.ui.reduced_motion);
+            server.set_reduced_motion(c.ui.reduced_motion);
+            cursor_cache.set_config(c.ui.cursor_theme.clone(), c.ui.cursor_size);
+            server.set_output_scale_overrides(
+                c.outputs
+                    .iter()
+                    .map(|o| (o.connector.clone(), o.scale))
+                    .collect(),
+            );
         } else {
             server.set_layout_params(ass_core::layout::LayoutParams::default());
+            server.set_tiling_default(false);
+            shell.set_reduced_motion(false);
+            server.set_reduced_motion(false);
+            cursor_cache.set_config(None, None);
+            server.set_output_scale_overrides(std::collections::HashMap::new());
         }
     };
     match ass_config::load(path) {
@@ -1751,14 +2556,14 @@ fn reload_config(
             log::info!("config: reloaded {}", path.display());
             *config = Some(new_cfg);
             *keymap = build_keymap(config.as_ref());
-            apply(config, server);
+            apply(config, server, shell, cursor_cache);
             true
         }
         Ok(None) => {
             log::warn!("config: {} removed; reverting to defaults", path.display());
             *config = None;
             *keymap = build_keymap(config.as_ref());
-            apply(config, server);
+            apply(config, server, shell, cursor_cache);
             true
         }
         Err(e) => {
@@ -1781,6 +2586,7 @@ fn reload_config(
 /// pixels while xdg-output derives the original logical size by dividing by
 /// `scale`; keeping both in one constructor prevents the two coordinate spaces
 /// from silently drifting apart.
+#[cfg(test)]
 fn output_geometry_from_host(
     logical_w: i32,
     logical_h: i32,
@@ -1946,12 +2752,14 @@ struct LiveState {
     notifications: std::sync::Arc<std::sync::Mutex<ass_core::notify::NotificationQueue>>,
     journal: std::sync::Arc<std::sync::Mutex<ass_ipc::Journal>>,
     commands: std::sync::Mutex<std::sync::mpsc::Sender<ass_ipc::Command>>,
+    capture: std::sync::Mutex<std::sync::mpsc::Sender<CaptureRequest>>,
     scopes: std::sync::RwLock<std::collections::HashMap<String, ass_ipc::Scope>>,
 }
 
 impl LiveState {
     fn new(
         commands: std::sync::mpsc::Sender<ass_ipc::Command>,
+        capture: std::sync::mpsc::Sender<CaptureRequest>,
         notifications: std::sync::Arc<std::sync::Mutex<ass_core::notify::NotificationQueue>>,
         journal: std::sync::Arc<std::sync::Mutex<ass_ipc::Journal>>,
         scopes: std::collections::HashMap<String, ass_ipc::Scope>,
@@ -1965,6 +2773,7 @@ impl LiveState {
             notifications,
             journal,
             commands: std::sync::Mutex::new(commands),
+            capture: std::sync::Mutex::new(capture),
             scopes: std::sync::RwLock::new(scopes),
         }
     }
@@ -2028,6 +2837,20 @@ impl ass_ipc::Handler for LiveState {
 
     fn resolve_scope(&self, name: &str) -> Option<ass_ipc::Scope> {
         self.scopes.read().unwrap().get(name).cloned()
+    }
+
+    fn capture_output(&self) -> Result<(u32, u32, String), String> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.capture
+            .lock()
+            .unwrap()
+            .send(CaptureRequest { reply: reply_tx })
+            .map_err(|_| "compositor is shutting down".to_owned())?;
+        // The main loop answers after the next frame; two seconds is far
+        // beyond any frame budget and bounds a wedged-GPU stall.
+        reply_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|_| "capture timed out".to_owned())?
     }
 }
 

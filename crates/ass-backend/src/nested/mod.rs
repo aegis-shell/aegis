@@ -1544,6 +1544,35 @@ impl Backend for NestedHost {
         }
     }
 
+    fn physical_size(&self) -> (u32, u32) {
+        NestedHost::physical_size(self)
+    }
+
+    fn scale(&self) -> f32 {
+        NestedHost::scale(self)
+    }
+
+    fn size_u32(&self) -> (u32, u32) {
+        NestedHost::size_u32(self)
+    }
+
+    fn output_infos(&self) -> Vec<ass_core::output::OutputInfo> {
+        let (width, height) = self.physical_size();
+        vec![ass_core::output::OutputInfo {
+            connector: "nested".to_owned(),
+            geometry: ass_core::output::OutputGeometry {
+                mode: ass_core::output::OutputMode {
+                    width: width as i32,
+                    height: height as i32,
+                    refresh_mhz: 0,
+                },
+                scale: ass_core::output::Scale(self.scale()),
+                transform: ass_core::Transform::Normal,
+                logical_origin: ass_core::Point::default(),
+            },
+        }]
+    }
+
     fn dispatch(&mut self) -> bool {
         unsafe {
             if ffi::wl_display_roundtrip(self.display) < 0 {
@@ -1621,6 +1650,30 @@ impl Backend for NestedHost {
         } else {
             None
         }
+    }
+
+    fn set_text_input_state(&mut self, state: TextInputState) {
+        NestedHost::set_text_input_state(self, state);
+    }
+
+    fn take_text_input(&mut self) -> Vec<TextInputEvent> {
+        NestedHost::take_text_input(self)
+    }
+
+    fn take_pointer_gestures(&mut self) -> Vec<PointerGestureEvent> {
+        NestedHost::take_pointer_gestures(self)
+    }
+
+    fn set_cursor_shape(&mut self, shape: u32) {
+        NestedHost::set_cursor_shape(self, shape);
+    }
+
+    fn hide_cursor(&mut self) {
+        NestedHost::hide_cursor(self);
+    }
+
+    fn set_buffer_scale(&self) {
+        NestedHost::set_buffer_scale(self);
     }
 }
 

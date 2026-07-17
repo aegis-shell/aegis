@@ -23,6 +23,10 @@ fn main() {
         // stable
         ("stable/xdg-shell", "xdg-shell"),
         ("unstable/linux-dmabuf", "linux-dmabuf-unstable-v1"),
+        (
+            "unstable/linux-explicit-synchronization",
+            "linux-explicit-synchronization-unstable-v1",
+        ),
         ("stable/viewporter", "viewporter"),
         ("stable/presentation-time", "presentation-time"),
         ("stable/tablet", "tablet-v2"),

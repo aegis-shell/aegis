@@ -24,6 +24,8 @@ compositor or an `XDG_RUNTIME_DIR` value.
 | `ass-ctl tiling` | Toggle tiling on the current workspace. |
 | `ass-ctl notify <summary> [body]` | Post a notification. |
 | `ass-ctl dismiss <id>` | Dismiss an active notification. |
+| `ass-ctl screenshot [path.png]` | Capture the focused output to a PNG file (default: a timestamped file in the working directory). |
+| `ass-ctl overview` | Toggle the window/workspace overview. |
 | `ass-ctl subscribe` | Stream coarse window, workspace, and notification events. |
 | `ass-ctl subscribe-journal` | Stream detailed mutation-journal events. |
 | `ass-ctl quit` | Request compositor shutdown. |

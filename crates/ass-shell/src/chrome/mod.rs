@@ -20,6 +20,7 @@ mod control_center;
 mod decorations;
 mod dock;
 mod launcher;
+mod overview;
 mod toast;
 mod workspace_bar;
 
@@ -27,5 +28,6 @@ pub use control_center::ControlCenter;
 pub use decorations::Decorations;
 pub use dock::{Dock, DockApp};
 pub use launcher::Launcher;
+pub use overview::Overview;
 pub use toast::Toast;
 pub use workspace_bar::{HudBar, WorkspaceBar};

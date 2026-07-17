@@ -24,6 +24,12 @@ pub use ass_protocols::{
     xdg_wm_base_interface,
 };
 pub use ass_protocols::{zwp_linux_buffer_params_v1_interface, zwp_linux_dmabuf_v1_interface};
+pub use ass_protocols::{
+    zwp_tablet_manager_v2_interface, zwp_tablet_pad_group_v2_interface,
+    zwp_tablet_pad_ring_v2_interface, zwp_tablet_pad_strip_v2_interface,
+    zwp_tablet_pad_v2_interface, zwp_tablet_seat_v2_interface, zwp_tablet_tool_v2_interface,
+    zwp_tablet_v2_interface,
+};
 
 // ----- extension protocol interface tables -----
 pub use ass_protocols::{
@@ -49,6 +55,10 @@ pub use ass_protocols::{
     zxdg_output_manager_v1_interface, zxdg_output_v1_interface,
     zxdg_toplevel_decoration_v1_interface,
 };
+pub use ass_protocols::{
+    zwp_linux_buffer_release_v1_interface, zwp_linux_explicit_synchronization_v1_interface,
+    zwp_linux_surface_synchronization_v1_interface,
+};
 
 pub type wl_display = c_void;
 pub type wl_client = c_void;
@@ -68,6 +78,8 @@ pub const WL_OUTPUT_GEOMETRY: u32 = 0;
 pub const WL_OUTPUT_MODE: u32 = 1;
 pub const WL_OUTPUT_DONE: u32 = 2;
 pub const WL_OUTPUT_SCALE: u32 = 3;
+pub const WL_OUTPUT_NAME: u32 = 4;
+pub const WL_OUTPUT_DESCRIPTION: u32 = 5;
 pub const WL_OUTPUT_MODE_CURRENT: u32 = 0x1;
 pub const WL_CALLBACK_DONE: u32 = 0;
 pub const WL_BUFFER_RELEASE: u32 = 0;
@@ -219,6 +231,10 @@ pub const EXT_SESSION_LOCK_V1_FINISHED: u32 = 1;
 // ext_session_lock_surface_v1
 pub const EXT_SESSION_LOCK_SURFACE_V1_CONFIGURE: u32 = 0;
 
+// ext_idle_notification_v1
+pub const EXT_IDLE_NOTIFICATION_V1_IDLED: u32 = 0;
+pub const EXT_IDLE_NOTIFICATION_V1_RESUMED: u32 = 1;
+
 // ext_foreign_toplevel_list_v1
 pub const EXT_FOREIGN_TOPLEVEL_LIST_V1_TOPLEVEL: u32 = 0;
 pub const EXT_FOREIGN_TOPLEVEL_LIST_V1_FINISHED: u32 = 1;
@@ -272,6 +288,32 @@ pub const ZWP_LINUX_BUFFER_PARAMS_V1_FAILED: u32 = 1;
 /// `zwp_linux_buffer_params_v1.error.invalid_wl_buffer` (protocol enum value 7):
 /// fatal for `create_immed` when the params object cannot yield a valid buffer.
 pub const ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_WL_BUFFER: u32 = 7;
+pub const ZWP_LINUX_BUFFER_RELEASE_V1_FENCED_RELEASE: u32 = 0;
+pub const ZWP_LINUX_BUFFER_RELEASE_V1_IMMEDIATE_RELEASE: u32 = 1;
+
+pub const ZWP_TABLET_SEAT_V2_TABLET_ADDED: u32 = 0;
+pub const ZWP_TABLET_SEAT_V2_TOOL_ADDED: u32 = 1;
+pub const ZWP_TABLET_V2_NAME: u32 = 0;
+pub const ZWP_TABLET_V2_ID: u32 = 1;
+pub const ZWP_TABLET_V2_DONE: u32 = 3;
+pub const ZWP_TABLET_TOOL_V2_TYPE: u32 = 0;
+pub const ZWP_TABLET_TOOL_V2_HARDWARE_SERIAL: u32 = 1;
+pub const ZWP_TABLET_TOOL_V2_HARDWARE_ID_WACOM: u32 = 2;
+pub const ZWP_TABLET_TOOL_V2_CAPABILITY: u32 = 3;
+pub const ZWP_TABLET_TOOL_V2_DONE: u32 = 4;
+pub const ZWP_TABLET_TOOL_V2_PROXIMITY_IN: u32 = 6;
+pub const ZWP_TABLET_TOOL_V2_PROXIMITY_OUT: u32 = 7;
+pub const ZWP_TABLET_TOOL_V2_DOWN: u32 = 8;
+pub const ZWP_TABLET_TOOL_V2_UP: u32 = 9;
+pub const ZWP_TABLET_TOOL_V2_MOTION: u32 = 10;
+pub const ZWP_TABLET_TOOL_V2_PRESSURE: u32 = 11;
+pub const ZWP_TABLET_TOOL_V2_DISTANCE: u32 = 12;
+pub const ZWP_TABLET_TOOL_V2_TILT: u32 = 13;
+pub const ZWP_TABLET_TOOL_V2_ROTATION: u32 = 14;
+pub const ZWP_TABLET_TOOL_V2_SLIDER: u32 = 15;
+pub const ZWP_TABLET_TOOL_V2_WHEEL: u32 = 16;
+pub const ZWP_TABLET_TOOL_V2_BUTTON: u32 = 17;
+pub const ZWP_TABLET_TOOL_V2_FRAME: u32 = 18;
 
 extern "C" {
     // Core interface tables (libwayland-server).
@@ -458,6 +500,12 @@ pub struct wl_subsurface_interface_impl {
     pub place_below: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource),
     pub set_sync: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
     pub set_desync: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `wl_output` v3+: release.
+#[repr(C)]
+pub struct wl_output_interface_impl {
+    pub release: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
 }
 
 /// `wl_data_device_manager` requests through version 3.
@@ -881,6 +929,44 @@ pub struct ext_session_lock_v1_interface_impl {
 pub struct ext_session_lock_surface_v1_interface_impl {
     pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
     pub ack_configure: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+}
+
+#[repr(C)]
+pub struct zwp_linux_explicit_synchronization_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub get_synchronization:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+}
+
+#[repr(C)]
+pub struct zwp_linux_surface_synchronization_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub set_acquire_fence: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, c_int),
+    pub get_release: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+}
+
+#[repr(C)]
+pub struct zwp_tablet_manager_v2_interface_impl {
+    pub get_tablet_seat:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+#[repr(C)]
+pub struct zwp_tablet_seat_v2_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+#[repr(C)]
+pub struct zwp_tablet_v2_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+#[repr(C)]
+pub struct zwp_tablet_tool_v2_interface_impl {
+    pub set_cursor:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource, i32, i32),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
 }
 
 /// `ext_foreign_toplevel_list_v1`: stop, destroy.

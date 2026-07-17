@@ -42,7 +42,7 @@ backend, renderer, and shell behind clear seams so the
 | **Model** | `ass-core` | Backend- and renderer-agnostic model: geometry, surface tree, outputs, focus |
 | | `ass-protocols` | Wayland extension interface tables, generated once and shared |
 | **Server / window management** | `ass-server` | Hand-rolled Wayland server: socket, globals, protocol object lifecycle, focus, move/close, tiling, workspaces, xdg-output |
-| | `ass-backend` | Presentation and input targets: the nested backend now, DRM/KMS + libinput + seat later |
+| | `ass-backend` | Presentation and input targets: nested (development) and DRM/KMS + libinput + libseat (bare TTY) |
 | | `ass-render` | Compositing: client buffers to flux textures, scene to the output via flux |
 | **Shell / interaction** | `ass-shell` | Compositor chrome host + components on lens: dock, launcher, workspace bar, decorations, toast |
 | | `ass-wallpaper` | Background layer: multi-format image and short-video wallpaper |
@@ -76,9 +76,10 @@ user sees or can do" tasks:
 
 A backend owns the presentation target and the raw input stream. The
 nested backend runs ass as a client of an existing Wayland session and
-presents into a host window; the planned DRM/KMS backend drives the display
-hardware directly. Both implement one `Backend` trait so the server,
-renderer, and shell are written once.
+presents into a host window; the DRM/KMS backend drives the display
+hardware directly with libinput input and libseat session ownership. Both
+implement one `Backend` trait so the server, renderer, and shell are written
+once.
 
 The nested backend, and the server itself, use raw libwayland over FFI
 rather than a higher-level framework
@@ -119,9 +120,9 @@ dependencies. Each is placed by responsibility per
 | Gap | Owner | Resolution |
 |-----|-------|------------|
 | Import client dmabuf as a texture | flux | dmabuf import API ([ADR-0004](../adr/0004-client-buffers-via-flux-dmabuf-import.md)) |
-| Render target not tied to `VkSurfaceKHR` presentation (for DRM/KMS) | flux | External-image render path, future work |
+| Render target not tied to `VkSurfaceKHR` presentation (for DRM/KMS) | flux | Offscreen dma-buf render path (`flux::Surface::offscreen_dmabuf` + export) |
 | Rust bindings to flux and lens | bindings | `flux-rs` / `lens-rs` crates ([ADR-0023](../adr/0023-split-flux-lens-stack.md)) |
-| Explicit synchronization for buffer release | flux and ass | Timeline semaphores plus the Wayland explicit sync protocol, future work |
+| Explicit synchronization for buffer release | flux and ass | `zwp_linux_explicit_synchronization_v1` with acquire fences through flux import and KMS `IN_FENCE_FD` |
 | Wayland server, DRM/KMS, libinput, seat and session | ass | Implemented in ass ([ADR-0002](../adr/0002-hand-rolled-wayland-server.md)) |
 
 flux does not auto-enable `VK_KHR_swapchain`; the nested backend requests it
@@ -132,19 +133,15 @@ extensions.
 
 The full milestone sequence — from the completed nested bring-up through the
 DRM/KMS backend, configuration and IPC, workspaces and layout, multi-output,
-XWayland, polish, and the agent phase — lives in
-[Roadmap](roadmap.md). The product direction behind it is
+polish, and the agent phase — lives in
+[Roadmap](roadmap.md). XWayland is descoped from the supported
+configuration. The product direction behind it is
 [Vision and Scope](vision.md), and the systems ass borrows from are surveyed
 in [Comparative Survey](comparative-survey.md).
 
-The summary table is kept here as a quick status reference; the verification
-criteria and sequencing rationale are on the roadmap page.
-
-| Milestone | Outcome |
-|-----------|---------|
-| M0 | Nested window: flux presents cleared frames with lens chrome. Complete. |
-| M1 | Wayland server with the core globals; a real `wl_shm` client surface composited; input routed to the focused client. Complete: pointer and keyboard forward end-to-end with xkbcommon keymap and modifier state, click-to-focus, and shell input mirroring. |
-| M2 | `zwp_linux_dmabuf_v1` with flux dmabuf import; GPU clients composited zero-copy. Implemented: per-surface position tracking, subsurface tree (direct children, above/below z-split), `wp_viewport` source crop and destination scale, `wl_surface.set_buffer_transform` via CPU staging (8 cases), and additional fourccs (ARGB/ABGR + X-variants). Buffer scale (`set_buffer_scale`) is stored but not yet applied at composite; nested subsurfaces and damage tracking remain. |
-| M3 | Window management and richer chrome: multiple toplevels, focus, move and resize, decorations, overview. Implemented: toplevel metadata (title, app_id, parent, size hints), maximized/fullscreen/activated/resizing state with configure events, interactive move and resize with serial validation and size-hint clamping, floating-window border resize, a chrome window-list panel with click-to-focus and close, per-window server-side decorations (title bar + close gadget) drawn via flux-ui overlays with click-to-move, a macOS-style bottom-center dock of per-window tiles, SVG icon rasterization, and live application-catalog refresh. `xdg_toplevel.set_window_geometry` frame insets remain. |
-| M4 | DRM/KMS backend with libinput and libseat for bare-TTY operation. |
-| M5 and beyond | Configuration and IPC, workspaces and layout, multi-output, XWayland, polish, and the agent-adaptation layer. See [Roadmap](roadmap.md). |
+The summary table has been retired: it duplicated the
+[Roadmap](roadmap.md), which is the single living status page (per-milestone
+outcomes, shipped state, and verification criteria). M0–M3 are complete; M4
+(DRM/KMS) is code-complete pending hardware verification; M5/M6 are
+complete; M7–M10 are in progress as recorded there, and XWayland is
+descoped.

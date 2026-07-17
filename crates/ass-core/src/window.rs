@@ -105,6 +105,10 @@ pub struct Window {
     /// `size` for hit-testing and decorations.
     pub position: crate::Point,
     pub size: crate::Size,
+    /// In-flight geometry transition (ADR-0029), recorded when the window
+    /// manager changes the rect non-interactively. The model above always
+    /// reports the target; the server interpolates this for rendering only.
+    pub transition: Option<crate::transition::WindowTransition>,
 }
 
 impl Window {

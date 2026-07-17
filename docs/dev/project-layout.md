@@ -12,7 +12,7 @@ ass/
     ass-core/          shared model: geometry, surface tree, outputs, focus, apps
     ass-protocols/     shared generated Wayland protocol interface tables
     ass-server/        Wayland server: socket, globals, object lifecycle
-    ass-backend/       presentation + input targets (nested now, DRM/KMS later)
+    ass-backend/       presentation + input targets (nested, DRM/KMS + libinput + libseat)
     ass-render/        compositing through flux
     ass-shell/         compositor chrome through lens
     ass-wallpaper/     image and short-video background layer

@@ -171,6 +171,9 @@ pub struct Dock {
     hover_elapsed: f32,
     tooltip_tile: Option<String>,
     tooltip_alpha: f32,
+    /// Accessibility reduced-motion (ADR-0029): magnification springs and
+    /// tooltip fades resolve to their targets in one frame.
+    reduced_motion: bool,
 }
 
 /// A damped-spring state for one animated scalar (a tile's edge length).
@@ -199,6 +202,7 @@ impl Dock {
             hover_elapsed: 0.0,
             tooltip_tile: None,
             tooltip_alpha: 0.0,
+            reduced_motion: false,
         }
     }
 
@@ -218,6 +222,7 @@ impl Dock {
             hover_elapsed: 0.0,
             tooltip_tile: None,
             tooltip_alpha: 0.0,
+            reduced_motion: false,
         }
     }
 
@@ -453,6 +458,13 @@ impl Chrome for Dock {
                 eased.push(state.value);
                 continue;
             }
+            if self.reduced_motion {
+                // ADR-0029: springs resolve to their target in one frame.
+                state.value = target;
+                state.vel = 0.0;
+                eased.push(target);
+                continue;
+            }
             eased.push(Self::spring(state, target, dt));
             // A spring is still animating while it is meaningfully off its
             // target or still moving. Sub-pixel drift is ignored so we don't
@@ -667,8 +679,13 @@ impl Chrome for Dock {
                 self.tooltip_tile.clone_from(&self.hovered_tile);
             }
             let target = if wants_tooltip { 1.0 } else { 0.0 };
-            let blend = 1.0 - (-TOOLTIP_FADE_SPEED * dt.min(1.0 / 30.0)).exp();
-            self.tooltip_alpha += (target - self.tooltip_alpha) * blend;
+            if self.reduced_motion {
+                // ADR-0029: no fade; the tooltip appears/disappears at once.
+                self.tooltip_alpha = target;
+            } else {
+                let blend = 1.0 - (-TOOLTIP_FADE_SPEED * dt.min(1.0 / 30.0)).exp();
+                self.tooltip_alpha += (target - self.tooltip_alpha) * blend;
+            }
             if target == 0.0 && self.tooltip_alpha < 0.01 {
                 self.tooltip_alpha = 0.0;
                 self.tooltip_tile = None;
@@ -755,6 +772,10 @@ impl Chrome for Dock {
     /// until every spring has rested.
     fn anim_pending(&self) -> bool {
         self.anim_active
+    }
+
+    fn set_reduced_motion(&mut self, reduced: bool) {
+        self.reduced_motion = reduced;
     }
 
     fn captures_pointer(

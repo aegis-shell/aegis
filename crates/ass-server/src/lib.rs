@@ -10,7 +10,7 @@ mod ffi;
 mod keyboard;
 
 use std::ffi::{c_void, CStr, CString};
-use std::os::raw::c_int;
+use std::os::raw::{c_int, c_ulong};
 
 use ass_core::layout::Layout;
 use ass_core::{SurfaceDmabuf, SurfacePixels};
@@ -27,10 +27,13 @@ struct DmabufBuffer {
     stride: u32,
     /// Set once the plane has been added (`add`), so `create` can validate.
     have_plane: bool,
+    acquire_fence: i32,
+    resource: *mut ffi::wl_resource,
+    state: *mut State,
 }
 
 impl DmabufBuffer {
-    fn empty() -> DmabufBuffer {
+    fn empty(state: *mut State) -> DmabufBuffer {
         DmabufBuffer {
             fd: -1,
             width: 0,
@@ -40,12 +43,26 @@ impl DmabufBuffer {
             offset: 0,
             stride: 0,
             have_plane: false,
+            acquire_fence: -1,
+            resource: std::ptr::null_mut(),
+            state,
         }
     }
 
     fn duplicate(&self) -> Option<DmabufBuffer> {
         let fd = unsafe { dup(self.fd) };
-        (fd >= 0).then_some(DmabufBuffer {
+        let acquire_fence = if self.acquire_fence >= 0 {
+            unsafe { dup(self.acquire_fence) }
+        } else {
+            -1
+        };
+        if fd < 0 || (self.acquire_fence >= 0 && acquire_fence < 0) {
+            if fd >= 0 {
+                unsafe { libc_close(fd) };
+            }
+            return None;
+        }
+        Some(DmabufBuffer {
             fd,
             width: self.width,
             height: self.height,
@@ -54,6 +71,9 @@ impl DmabufBuffer {
             offset: self.offset,
             stride: self.stride,
             have_plane: self.have_plane,
+            acquire_fence,
+            resource: self.resource,
+            state: self.state,
         })
     }
 }
@@ -63,7 +83,15 @@ impl Drop for DmabufBuffer {
         if self.fd >= 0 {
             unsafe { libc_close(self.fd) };
         }
+        if self.acquire_fence >= 0 {
+            unsafe { libc_close(self.acquire_fence) };
+        }
     }
+}
+
+struct RetiredBufferRelease {
+    buffer: *mut ffi::wl_resource,
+    explicit_release: *mut ffi::wl_resource,
 }
 
 /// The active clipboard selection: the `wl_data_source` that owns it and the
@@ -150,6 +178,7 @@ extern "C" {
     fn dup(fd: std::os::raw::c_int) -> std::os::raw::c_int;
     fn malloc(size: usize) -> *mut c_void;
     fn free(ptr: *mut c_void);
+    fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
 }
 pub(crate) unsafe fn libc_close(fd: i32) {
     close(fd);
@@ -166,9 +195,12 @@ pub struct SurfaceRec {
     pub mapped: bool,
     pub width: i32,
     pub height: i32,
-    /// Logical position of the surface's top-left corner in the output. M1
-    /// assigns a placeholder cascade on map; M3's window manager will own
-    /// placement policy.
+    /// Logical position of the window rect's top-left corner in compositor
+    /// space. For surfaces without a client-declared window geometry this is
+    /// also the buffer's draw origin; for CSD surfaces that exclude shadows
+    /// via `set_window_geometry` the buffer is drawn up-left of this point
+    /// (see [`surface_draw_origin`]). M1 assigns a placeholder cascade on
+    /// map; M3's window manager will own placement policy.
     pub position: ass_core::Point,
     /// Last committed contents, tightly packed BGRA8, copied out of the client
     /// shm buffer at commit so the buffer can be released immediately.
@@ -182,6 +214,11 @@ pub struct SurfaceRec {
     /// The client wl_buffer is released immediately after this duplicate is
     /// made, so its later destruction cannot leave a dangling resource ptr.
     dmabuf: Option<DmabufBuffer>,
+    current_buffer: *mut ffi::wl_resource,
+    current_explicit_release: *mut ffi::wl_resource,
+    explicit_sync: *mut c_void,
+    committed_acquire_fence: i32,
+    committed_explicit_release: *mut ffi::wl_resource,
     frame_callbacks: Vec<*mut ffi::wl_resource>,
     // xdg-shell role state.
     xdg_surface: *mut ffi::wl_resource,
@@ -192,6 +229,8 @@ pub struct SurfaceRec {
     popup_grabbed: bool,
     cursor_role: bool,
     drag_icon_role: bool,
+    /// ext-session-lock role record, owned by the protocol resource.
+    session_lock_surface: *mut c_void,
     xdg_configured: bool,
     xdg_configure_acked: bool,
     pending_xdg_configures: Vec<u32>,
@@ -249,7 +288,10 @@ pub struct SurfaceRec {
     /// The `wp_fractional_scale_v1` resource bound for this surface, if any.
     /// The server posts `preferred_scale` here when the output's scale changes.
     pub fractional_scale: *mut ffi::wl_resource,
-    /// Committed xdg-shell window geometry (excluding client shadows).
+    /// Committed xdg-shell window geometry (excluding client shadows). Its
+    /// size is the window rect's size; its origin is the frame inset by
+    /// which the buffer sits up-left of the window rect (see
+    /// [`surface_draw_origin`]).
     window_geometry: Option<ass_core::Rect>,
     pending_window_geometry: Option<ass_core::Rect>,
     /// `None` means the whole surface accepts input; `Some` is the union of
@@ -291,6 +333,11 @@ impl SurfaceRec {
             generation: 0,
             content_is_dmabuf: false,
             dmabuf: None,
+            current_buffer: std::ptr::null_mut(),
+            current_explicit_release: std::ptr::null_mut(),
+            explicit_sync: std::ptr::null_mut(),
+            committed_acquire_fence: -1,
+            committed_explicit_release: std::ptr::null_mut(),
             frame_callbacks: Vec::new(),
             xdg_surface: std::ptr::null_mut(),
             xdg_toplevel: std::ptr::null_mut(),
@@ -300,6 +347,7 @@ impl SurfaceRec {
             popup_grabbed: false,
             cursor_role: false,
             drag_icon_role: false,
+            session_lock_surface: std::ptr::null_mut(),
             xdg_configured: false,
             xdg_configure_acked: false,
             pending_xdg_configures: Vec::new(),
@@ -357,6 +405,75 @@ fn surface_logical_size(surface: &SurfaceRec) -> ass_core::Size {
     }
 }
 
+/// Draw origin of the surface's buffer in compositor space. For surfaces
+/// with a client-declared window geometry (xdg-shell `set_window_geometry`,
+/// used by client-side-decorated windows to exclude shadows), the buffer is
+/// drawn up-left of the window rect by the geometry's insets. A subsurface
+/// is anchored in its parent's buffer space, so its origin resolves through
+/// the parent chain — this is what makes nested subsurfaces (a subsurface
+/// with its own subsurfaces) land at the right compositor position.
+pub(crate) fn surface_draw_origin(surface: &SurfaceRec) -> ass_core::Point {
+    surface_draw_origin_depth(surface, 0)
+}
+
+fn surface_draw_origin_depth(surface: &SurfaceRec, depth: u32) -> ass_core::Point {
+    // The depth cap only breaks reference cycles defensively; the destroy
+    // path orphans children, so a live parent pointer is always valid.
+    if !surface.parent.is_null() && depth < 32 {
+        let parent = unsafe { &*surface.parent };
+        let origin = surface_draw_origin_depth(parent, depth + 1);
+        return ass_core::Point {
+            x: origin.x + surface.subsurface_offset.x,
+            y: origin.y + surface.subsurface_offset.y,
+        };
+    }
+    match surface.window_geometry {
+        Some(geometry) => ass_core::Point {
+            x: surface.position.x - geometry.origin.x,
+            y: surface.position.y - geometry.origin.y,
+        },
+        None => surface.position,
+    }
+}
+
+/// Whether compositor-space `(x, y)` lands on the surface: inside its rect
+/// and accepted by its input region. An xdg-role surface presents its
+/// declared window geometry at `position` (the window-rect origin, so CSD
+/// shadows neither paint nor take input); a subsurface presents its buffer
+/// at its draw origin. The input region is always buffer-local, anchored at
+/// the draw origin.
+fn surface_accepts_point(s: &SurfaceRec, x: f32, y: f32) -> bool {
+    let draw_origin = surface_draw_origin(s);
+    let (sx, sy, logical) = if !s.xdg_toplevel.is_null() || !s.xdg_popup.is_null() {
+        (
+            s.position.x as f32,
+            s.position.y as f32,
+            s.window_geometry
+                .map(|geometry| geometry.size)
+                .unwrap_or_else(|| surface_logical_size(s)),
+        )
+    } else {
+        (
+            draw_origin.x as f32,
+            draw_origin.y as f32,
+            surface_logical_size(s),
+        )
+    };
+    if x < sx || y < sy || x >= sx + logical.w as f32 || y >= sy + logical.h as f32 {
+        return false;
+    }
+    let local_x = x - draw_origin.x as f32;
+    let local_y = y - draw_origin.y as f32;
+    s.input_region.as_ref().is_none_or(|rects| {
+        rects.iter().any(|rect| {
+            rect.contains(ass_core::Point {
+                x: local_x as i32,
+                y: local_y as i32,
+            })
+        })
+    })
+}
+
 /// `wp_cursor_shape_device_v1.shape` value for one xdg-shell resize edge set.
 fn resize_cursor_shape(edges: ass_core::window::ResizeEdges) -> u32 {
     use ass_core::window::ResizeEdges;
@@ -384,6 +501,29 @@ fn surface_has_role(surface: &SurfaceRec) -> bool {
         || !surface.parent.is_null()
         || surface.cursor_role
         || surface.drag_icon_role
+        || !surface.session_lock_surface.is_null()
+}
+
+/// Resolve a newly mapped toplevel's layout role: an explicit window
+/// rule wins; a transient (dialog) always floats (ADR-0024 floating
+/// exception); otherwise the workspace's tiled flag decides.
+fn resolve_layout_role(
+    workspace_tiled: bool,
+    is_transient: bool,
+    rule_role: Option<ass_core::layout::LayoutRole>,
+) -> ass_core::layout::LayoutRole {
+    use ass_core::layout::LayoutRole;
+    if let Some(role) = rule_role {
+        return role;
+    }
+    if is_transient {
+        return LayoutRole::Floating;
+    }
+    if workspace_tiled {
+        LayoutRole::Tiled
+    } else {
+        LayoutRole::Floating
+    }
 }
 
 unsafe fn update_overlay_positions(state: *mut State) {
@@ -435,6 +575,16 @@ unsafe fn surface_root_toplevel(mut surface: *mut SurfaceRec) -> *mut SurfaceRec
     std::ptr::null_mut()
 }
 
+/// One dynamically advertised wl_output global. Boxes remain allocated after
+/// hot-unplug until server teardown because clients may retain resources whose
+/// user-data points here even after the registry global is removed.
+pub(crate) struct OutputGlobal {
+    state: *mut State,
+    info: ass_core::output::OutputInfo,
+    global: *mut ffi::wl_global,
+    active: bool,
+}
+
 /// Server-wide state. Its address is handed to the C bind callbacks, so it is
 /// boxed and never moved out.
 pub(crate) struct State {
@@ -457,9 +607,13 @@ pub(crate) struct State {
     /// Every `wl_output` resource clients have bound. Resent in full when the
     /// output geometry (mode/scale/transform) changes so bound clients update.
     pub(crate) output_resources: Vec<*mut ffi::wl_resource>,
+    // Each address is wl_global callback data and must survive Vec growth.
+    #[allow(clippy::vec_box)]
+    output_globals: Vec<Box<OutputGlobal>>,
     /// Every `xdg_output` resource clients have bound (zxdg-output v1). Resent
     /// together with the wl_output reconfigure path.
     pub(crate) xdg_output_resources: Vec<*mut ffi::wl_resource>,
+    pub(crate) xdg_output_links: std::collections::HashMap<usize, *mut ffi::wl_resource>,
     /// Every `wl_data_device` resource clients have bound. A `set_selection`
     /// advertises a new `wl_data_offer` to each.
     data_devices: Vec<*mut ffi::wl_resource>,
@@ -484,6 +638,27 @@ pub(crate) struct State {
     pinch_gesture_client: *mut ffi::wl_client,
     hold_gesture_client: *mut ffi::wl_client,
     keyboard_shortcut_inhibitors: Vec<*mut ffi::wl_resource>,
+    /// Live ext-idle-notify and idle-inhibit protocol resources. Per-object
+    /// timer/role state is owned by resource user data in `extensions.rs`.
+    pub(crate) idle_notifications: Vec<*mut ffi::wl_resource>,
+    pub(crate) idle_inhibitors: Vec<*mut ffi::wl_resource>,
+    pub(crate) tablet_seats: Vec<*mut ffi::wl_resource>,
+    /// Live `zwp_tablet_v2` resources, one per seat that has been told about
+    /// the compositor's single synthetic tablet device.
+    pub(crate) tablet_devices: Vec<*mut ffi::wl_resource>,
+    /// Live `zwp_tablet_tool_v2` resources. Each carries a `TabletToolRec`
+    /// naming the physical tool id it proxies.
+    pub(crate) tablet_tools: Vec<*mut ffi::wl_resource>,
+    /// Physical tablet tools seen so far, with their announced info. A tool
+    /// is announced to every seat the first time it enters proximity.
+    pub(crate) known_tools: Vec<(u64, ass_core::input::TabletToolInfo)>,
+    /// Whether the synthetic tablet device has been announced yet (set on
+    /// first proximity). Gates `tablet_added` for late-binding seats.
+    pub(crate) tablet_device_seen: bool,
+    /// Surface holding tablet proximity focus, or null when no tool is in
+    /// proximity over a tablet-aware client (the pen emulates the pointer).
+    pub(crate) tablet_focus: *mut ffi::wl_resource,
+    retired_buffer_releases: Vec<RetiredBufferRelease>,
     /// Bound `ext_foreign_toplevel_list_v1` resources. New toplevels, title
     /// changes, and removals are pushed to each.
     foreign_toplevel_lists: Vec<*mut ffi::wl_resource>,
@@ -498,6 +673,14 @@ pub(crate) struct State {
     pending_text_input_states: Vec<ass_core::input::TextInputState>,
     activation_tokens: std::collections::HashSet<String>,
     pending_activation: *mut ffi::wl_resource,
+    /// Active ext-session-lock object and fail-closed visibility state.
+    pub(crate) session_lock: *mut c_void,
+    pub(crate) session_locked: bool,
+    pub(crate) lock_focus_dirty: bool,
+    pub(crate) pending_lock_focus: *mut ffi::wl_resource,
+    pub(crate) pre_lock_keyboard_focus: *mut ffi::wl_resource,
+    pub(crate) session_lock_requested_at: Option<std::time::Instant>,
+    pub(crate) lock_frame_pending: bool,
     /// The last cursor shape requested by the focused client via
     /// `wp_cursor_shape_device_v1.set_shape` (or `wl_pointer.set_cursor`,
     /// once wired). 0 = default arrow. Exposed to the renderer.
@@ -533,6 +716,11 @@ pub(crate) struct State {
     /// Current depressed modifier mask from the compositor's xkb state. Used
     /// for compositor-owned pointer gestures such as Super+drag.
     depressed_mods: ass_core::input::Mods,
+    /// Pending console VT switch requested by a Ctrl+Alt+Fn key press
+    /// (XF86Switch_VT_N). The kernel never sees these keys once libinput owns
+    /// evdev, so the compositor performs the session switch through libseat.
+    /// Drained by the main loop via [`Server::take_vt_switch`].
+    pending_vt_switch: Option<i32>,
     /// xkbcommon keymap and modifier state. Owned by the server so the
     /// keymap fd lives as long as clients may bind a keyboard.
     keyboard: Option<keyboard::Keyboard>,
@@ -549,18 +737,28 @@ pub(crate) struct State {
     /// Parameters for the tiling policy (gaps, master ratio). Per-workspace
     /// tiling on/off lives on each workspace in the model (ADR-0024).
     layout_params: ass_core::layout::LayoutParams,
+    /// Accessibility reduced-motion policy (ADR-0029): when true, window
+    /// transitions resolve in one frame and none are recorded.
+    reduced_motion: bool,
     /// Config-driven window rules (ADR-0026). Evaluated on first map; the
     /// first match prescribes a workspace move and/or a forced layout role.
     window_rules: Vec<ass_core::window_rule::WindowRule>,
     /// The focused output's geometry (ADR-0028): the tiling work-area is its
     /// logical rect. Updated by the backend on resize; defaults to identity.
     pub(crate) output_geometry: ass_core::output::OutputGeometry,
+    /// Backend-reported connector geometry in global logical coordinates.
+    /// The first entry is the primary/focused output exposed through the
+    /// legacy single wl_output global until per-global resources are split.
+    output_infos: Vec<ass_core::output::OutputInfo>,
+    /// Per-connector scale overrides from `[[output]]` config entries
+    /// (ADR-0028). Applied to every backend-reported output set in
+    /// `set_outputs`.
+    output_scale_overrides: std::collections::HashMap<String, f64>,
     /// Dynamic per-output workspaces (ADR-0025). Toplevels are placed on the
     /// current workspace at first map; rendering and input see only the
     /// visible set (`visible_toplevels`).
     workspaces: ass_core::workspace::WorkspaceModel,
-    /// The single output the nested backend presents. Multi-output lands in
-    /// M7 (ADR-0028); until then there is exactly one.
+    /// Focused output for new surfaces and workspace commands.
     output: ass_core::workspace::OutputId,
     /// Monotonic counter for durable window identifiers (ADR-0032). Starts
     /// at 1 so `WindowId(0)` remains reserved for the `Window::default()`
@@ -579,7 +777,9 @@ impl State {
             keyboard_resources: Vec::new(),
             touch_resources: Vec::new(),
             output_resources: Vec::new(),
+            output_globals: Vec::new(),
             xdg_output_resources: Vec::new(),
+            xdg_output_links: std::collections::HashMap::new(),
             data_devices: Vec::new(),
             data_offers: Vec::new(),
             selection: None,
@@ -596,12 +796,28 @@ impl State {
             pinch_gesture_client: std::ptr::null_mut(),
             hold_gesture_client: std::ptr::null_mut(),
             keyboard_shortcut_inhibitors: Vec::new(),
+            idle_notifications: Vec::new(),
+            idle_inhibitors: Vec::new(),
+            tablet_seats: Vec::new(),
+            tablet_devices: Vec::new(),
+            tablet_tools: Vec::new(),
+            known_tools: Vec::new(),
+            tablet_device_seen: false,
+            tablet_focus: std::ptr::null_mut(),
+            retired_buffer_releases: Vec::new(),
             foreign_toplevel_lists: Vec::new(),
             foreign_handles: std::collections::HashMap::new(),
             text_inputs: Vec::new(),
             pending_text_input_states: Vec::new(),
             activation_tokens: std::collections::HashSet::new(),
             pending_activation: std::ptr::null_mut(),
+            session_lock: std::ptr::null_mut(),
+            session_locked: false,
+            lock_focus_dirty: false,
+            pending_lock_focus: std::ptr::null_mut(),
+            pre_lock_keyboard_focus: std::ptr::null_mut(),
+            session_lock_requested_at: None,
+            lock_frame_pending: false,
             cursor_shape: 0,
             cursor_surface: std::ptr::null_mut(),
             cursor_hotspot: ass_core::Point::default(),
@@ -617,14 +833,21 @@ impl State {
             last_button_serial: 0,
             implicit_grab_active: false,
             depressed_mods: ass_core::input::Mods::NONE,
+            pending_vt_switch: None,
             keyboard: None,
             interactive: None,
             compositor_pointer_grab: false,
             workspaces,
             output,
             layout_params: ass_core::layout::LayoutParams::default(),
+            reduced_motion: false,
             window_rules: Vec::new(),
             output_geometry: ass_core::output::OutputGeometry::default(),
+            output_infos: vec![ass_core::output::OutputInfo {
+                connector: "nested".to_owned(),
+                geometry: ass_core::output::OutputGeometry::default(),
+            }],
+            output_scale_overrides: std::collections::HashMap::new(),
             next_window_id: 1,
         }
     }
@@ -665,6 +888,16 @@ impl Server {
     /// Create the display, bind an auto-named socket, and advertise the core
     /// globals.
     pub fn new() -> Result<Server, ServerError> {
+        Self::new_with_render_caps(true, true)
+    }
+
+    /// Create a server whose advertised buffer protocols match the actual
+    /// Vulkan device. Clients must never discover dma-buf or explicit-sync
+    /// globals that the renderer cannot honor.
+    pub fn new_with_render_caps(
+        dmabuf_supported: bool,
+        explicit_sync_supported: bool,
+    ) -> Result<Server, ServerError> {
         unsafe {
             let display = ffi::wl_display_create();
             if display.is_null() {
@@ -703,7 +936,8 @@ impl Server {
                 data,
                 compositor_bind,
             );
-            ffi::wl_global_create(display, &ffi::wl_output_interface, 2, data, output_bind);
+            let initial_output = state.output_infos[0].clone();
+            create_output_global(state.as_mut(), initial_output);
             ffi::wl_global_create(
                 display,
                 &ffi::xdg_wm_base_interface,
@@ -726,13 +960,24 @@ impl Server {
                 data,
                 ddm_bind,
             );
-            ffi::wl_global_create(
-                display,
-                &ffi::zwp_linux_dmabuf_v1_interface,
-                3,
-                data,
-                dmabuf_bind,
-            );
+            if dmabuf_supported {
+                ffi::wl_global_create(
+                    display,
+                    &ffi::zwp_linux_dmabuf_v1_interface,
+                    3,
+                    data,
+                    dmabuf_bind,
+                );
+            }
+            if dmabuf_supported && explicit_sync_supported {
+                ffi::wl_global_create(
+                    display,
+                    &ffi::zwp_linux_explicit_synchronization_v1_interface,
+                    1,
+                    data,
+                    extensions::explicit_sync_bind,
+                );
+            }
             ffi::wl_global_create(
                 display,
                 &ffi::wp_viewporter_interface,
@@ -779,6 +1024,20 @@ impl Server {
             );
             ffi::wl_global_create(
                 display,
+                &ffi::ext_idle_notifier_v1_interface,
+                2,
+                data,
+                extensions::idle_notifier_bind,
+            );
+            ffi::wl_global_create(
+                display,
+                &ffi::ext_session_lock_manager_v1_interface,
+                1,
+                data,
+                extensions::session_lock_bind,
+            );
+            ffi::wl_global_create(
+                display,
                 &ffi::zwp_relative_pointer_manager_v1_interface,
                 1,
                 data,
@@ -797,6 +1056,13 @@ impl Server {
                 3,
                 data,
                 extensions::pointer_gestures_bind,
+            );
+            ffi::wl_global_create(
+                display,
+                &ffi::zwp_tablet_manager_v2_interface,
+                1,
+                data,
+                extensions::tablet_manager_bind,
             );
             ffi::wl_global_create(
                 display,
@@ -866,6 +1132,43 @@ impl Server {
                 std::mem::replace(&mut self.state.pending_activation, std::ptr::null_mut());
             self.change_keyboard_focus(surface);
         }
+        if self.state.lock_focus_dirty {
+            self.state.lock_focus_dirty = false;
+            let focus = self.state.pending_lock_focus;
+            self.change_pointer_focus(focus);
+            self.change_keyboard_focus(focus);
+        }
+        if self.state.session_locked
+            && self
+                .state
+                .session_lock_requested_at
+                .is_some_and(|started| started.elapsed() >= std::time::Duration::from_secs(1))
+        {
+            // The compositor-rendered opaque fallback is sufficient after the
+            // bounded grace period even if the locker has not mapped every
+            // output yet. The event is deferred until presentation_complete.
+            self.state.lock_frame_pending = true;
+        }
+        unsafe { extensions::update_idle_notifications(self.state.as_mut()) };
+    }
+
+    /// Whether normal client content and compositor chrome must be hidden.
+    /// This becomes true as soon as a lock request is accepted, before the
+    /// protocol's `locked` event, so the next frame fails closed.
+    pub fn session_locked(&self) -> bool {
+        self.state.session_locked
+    }
+
+    /// A newly blanked/locked frame must be confirmed on every output before
+    /// the protocol lock request can be acknowledged.
+    pub fn lock_confirmation_pending(&self) -> bool {
+        self.state.session_locked && self.state.lock_frame_pending
+    }
+
+    /// Confirm that the just-submitted secure frame reached all outputs.
+    pub fn presentation_complete(&mut self) {
+        unsafe { extensions::session_lock_presented(self.state.as_mut()) };
+        unsafe { ffi::wl_display_flush_clients(self.state.display) };
     }
 
     /// Mapped xdg-toplevel surfaces backed by shm (CPU pixels), for the renderer
@@ -899,21 +1202,44 @@ impl Server {
                     && !s.pixels.is_empty()
                     && visible.contains(unsafe { &(*root).window.id })
             })
-            .map(|s| SurfacePixels {
-                id: s.resource as usize,
-                width: s.width,
-                height: s.height,
-                generation: s.generation,
-                pixels: &s.pixels,
-                geometry: ass_core::SurfaceGeometry {
-                    position: s.position,
-                    transform: s.buffer_transform,
-                    buffer_scale: s.buffer_scale,
-                    viewport_src: s.viewport_src,
-                    viewport_dst: s.viewport_dst,
-                    ..Default::default()
-                },
-                damage: &s.committed_damage,
+            .map(|s| {
+                // ADR-0029: while a transition is in flight the frame renders
+                // at the interpolated rect; the model stays at the target.
+                // The origin delta carries the whole subsurface tree with it.
+                let render_rect = self.transition_render_rect(s);
+                let mut origin = surface_draw_origin(s);
+                if let Some(r) = render_rect {
+                    origin.x += r.origin.x - s.position.x;
+                    origin.y += r.origin.y - s.position.y;
+                }
+                SurfacePixels {
+                    id: s.resource as usize,
+                    window: if s.xdg_toplevel.is_null() {
+                        let root =
+                            unsafe { surface_root_toplevel(s as *const SurfaceRec as *mut _) };
+                        if root.is_null() {
+                            None
+                        } else {
+                            Some(unsafe { &*root }.window.id)
+                        }
+                    } else {
+                        Some(s.window.id)
+                    },
+                    width: s.width,
+                    height: s.height,
+                    generation: s.generation,
+                    pixels: &s.pixels,
+                    geometry: ass_core::SurfaceGeometry {
+                        position: origin,
+                        transform: s.buffer_transform,
+                        buffer_scale: s.buffer_scale,
+                        viewport_src: s.viewport_src,
+                        viewport_dst: s.viewport_dst,
+                        transition_size: render_rect.map(|r| r.size),
+                        ..Default::default()
+                    },
+                    damage: &s.committed_damage,
+                }
             })
             .collect()
     }
@@ -943,8 +1269,25 @@ impl Server {
             })
             .filter_map(|s| {
                 let db = s.dmabuf.as_ref()?;
+                let render_rect = self.transition_render_rect(s);
+                let mut origin = surface_draw_origin(s);
+                if let Some(r) = render_rect {
+                    origin.x += r.origin.x - s.position.x;
+                    origin.y += r.origin.y - s.position.y;
+                }
                 Some(SurfaceDmabuf {
                     id: s.resource as usize,
+                    window: if s.xdg_toplevel.is_null() {
+                        let root =
+                            unsafe { surface_root_toplevel(s as *const SurfaceRec as *mut _) };
+                        if root.is_null() {
+                            None
+                        } else {
+                            Some(unsafe { &*root }.window.id)
+                        }
+                    } else {
+                        Some(s.window.id)
+                    },
                     width: s.width,
                     height: s.height,
                     generation: s.generation,
@@ -953,17 +1296,169 @@ impl Server {
                     modifier: db.modifier,
                     offset: db.offset,
                     stride: db.stride,
+                    acquire_fence: db.acquire_fence,
                     geometry: ass_core::SurfaceGeometry {
-                        position: s.position,
+                        position: origin,
                         transform: s.buffer_transform,
                         buffer_scale: s.buffer_scale,
                         viewport_src: s.viewport_src,
                         viewport_dst: s.viewport_dst,
+                        transition_size: render_rect.map(|r| r.size),
                         ..Default::default()
                     },
                 })
             })
             .collect()
+    }
+
+    /// Mapped session-lock surfaces backed by shm. The compositor renders
+    /// these over an opaque fallback and never mixes them with normal clients.
+    pub fn lock_frames(&self) -> Vec<SurfacePixels<'_>> {
+        let mut frames = self
+            .state
+            .live_surfaces()
+            .map(|surface| unsafe { &*surface })
+            .filter(|surface| unsafe {
+                extensions::is_active_session_lock_surface(
+                    self.state.as_ref() as *const State as *mut State,
+                    *surface as *const SurfaceRec as *mut SurfaceRec,
+                )
+            })
+            .filter(|surface| {
+                surface.mapped && !surface.content_is_dmabuf && !surface.pixels.is_empty()
+            })
+            .map(|surface| SurfacePixels {
+                window: None,
+                id: surface.resource as usize,
+                width: surface.width,
+                height: surface.height,
+                generation: surface.generation,
+                pixels: &surface.pixels,
+                geometry: ass_core::SurfaceGeometry {
+                    position: surface.position,
+                    transform: surface.buffer_transform,
+                    buffer_scale: surface.buffer_scale,
+                    viewport_src: surface.viewport_src,
+                    viewport_dst: surface.viewport_dst,
+                    ..Default::default()
+                },
+                damage: &surface.committed_damage,
+            })
+            .collect::<Vec<_>>();
+        let cursor = self.state.cursor_surface;
+        if !cursor.is_null()
+            && unsafe {
+                extensions::is_active_session_lock_client_resource(
+                    self.state.as_ref() as *const State as *mut State,
+                    cursor,
+                )
+            }
+        {
+            let surface = unsafe { ffi::wl_resource_get_user_data(cursor) as *mut SurfaceRec };
+            if !surface.is_null() {
+                let surface = unsafe { &*surface };
+                if surface.mapped && !surface.content_is_dmabuf && !surface.pixels.is_empty() {
+                    frames.push(SurfacePixels {
+                        window: None,
+                        id: surface.resource as usize,
+                        width: surface.width,
+                        height: surface.height,
+                        generation: surface.generation,
+                        pixels: &surface.pixels,
+                        geometry: ass_core::SurfaceGeometry {
+                            position: surface.position,
+                            transform: surface.buffer_transform,
+                            buffer_scale: surface.buffer_scale,
+                            viewport_src: surface.viewport_src,
+                            viewport_dst: surface.viewport_dst,
+                            ..Default::default()
+                        },
+                        damage: &surface.committed_damage,
+                    });
+                }
+            }
+        }
+        frames
+    }
+
+    /// dma-buf variant of [`lock_frames`](Self::lock_frames).
+    pub fn lock_dmabuf_frames(&self) -> Vec<SurfaceDmabuf> {
+        let mut frames = self
+            .state
+            .live_surfaces()
+            .map(|surface| unsafe { &*surface })
+            .filter(|surface| unsafe {
+                extensions::is_active_session_lock_surface(
+                    self.state.as_ref() as *const State as *mut State,
+                    *surface as *const SurfaceRec as *mut SurfaceRec,
+                )
+            })
+            .filter(|surface| surface.mapped && surface.content_is_dmabuf)
+            .filter_map(|surface| {
+                let buffer = surface.dmabuf.as_ref()?;
+                Some(SurfaceDmabuf {
+                    window: None,
+                    id: surface.resource as usize,
+                    width: surface.width,
+                    height: surface.height,
+                    generation: surface.generation,
+                    fd: buffer.fd,
+                    drm_format: buffer.drm_format,
+                    modifier: buffer.modifier,
+                    offset: buffer.offset,
+                    stride: buffer.stride,
+                    acquire_fence: buffer.acquire_fence,
+                    geometry: ass_core::SurfaceGeometry {
+                        position: surface.position,
+                        transform: surface.buffer_transform,
+                        buffer_scale: surface.buffer_scale,
+                        viewport_src: surface.viewport_src,
+                        viewport_dst: surface.viewport_dst,
+                        ..Default::default()
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+        let cursor = self.state.cursor_surface;
+        if !cursor.is_null()
+            && unsafe {
+                extensions::is_active_session_lock_client_resource(
+                    self.state.as_ref() as *const State as *mut State,
+                    cursor,
+                )
+            }
+        {
+            let surface = unsafe { ffi::wl_resource_get_user_data(cursor) as *mut SurfaceRec };
+            if !surface.is_null() {
+                let surface = unsafe { &*surface };
+                if surface.mapped && surface.content_is_dmabuf {
+                    if let Some(buffer) = surface.dmabuf.as_ref() {
+                        frames.push(SurfaceDmabuf {
+                            window: None,
+                            id: surface.resource as usize,
+                            width: surface.width,
+                            height: surface.height,
+                            generation: surface.generation,
+                            fd: buffer.fd,
+                            drm_format: buffer.drm_format,
+                            modifier: buffer.modifier,
+                            offset: buffer.offset,
+                            stride: buffer.stride,
+                            acquire_fence: buffer.acquire_fence,
+                            geometry: ass_core::SurfaceGeometry {
+                                position: surface.position,
+                                transform: surface.buffer_transform,
+                                buffer_scale: surface.buffer_scale,
+                                viewport_src: surface.viewport_src,
+                                viewport_dst: surface.viewport_dst,
+                                ..Default::default()
+                            },
+                        });
+                    }
+                }
+            }
+        }
+        frames
     }
 
     /// Cursor and drag-icon role surfaces, composited above all client
@@ -987,6 +1482,7 @@ impl Server {
                     return None;
                 }
                 Some(SurfacePixels {
+                    window: None,
                     id: surface.resource as usize,
                     width: surface.width,
                     height: surface.height,
@@ -1027,6 +1523,7 @@ impl Server {
                 }
                 let buffer = surface.dmabuf.as_ref()?;
                 Some(SurfaceDmabuf {
+                    window: None,
                     id: surface.resource as usize,
                     width: surface.width,
                     height: surface.height,
@@ -1036,6 +1533,7 @@ impl Server {
                     modifier: buffer.modifier,
                     offset: buffer.offset,
                     stride: buffer.stride,
+                    acquire_fence: buffer.acquire_fence,
                     geometry: ass_core::SurfaceGeometry {
                         position: surface.position,
                         transform: surface.buffer_transform,
@@ -1051,9 +1549,9 @@ impl Server {
 
     /// Mapped subsurfaces backed by shm whose `place_below` was the most
     /// recent stacking request — these render *under* their parent toplevel.
-    /// M2 surfaces only direct children of mapped toplevels; nested
-    /// subsurface-of-subsurface chains are deferred. Within this list, order
-    /// is the server's iteration order over the parent's children.
+    /// Nested subsurface chains are walked recursively: each entry carries
+    /// its compositor-space draw origin, and the whole subtree of a
+    /// below-child renders here, in render order.
     pub fn subsurface_frames_below(&self) -> Vec<SurfacePixels<'_>> {
         self.collect_subsurfaces_shm(false)
     }
@@ -1086,41 +1584,91 @@ impl Server {
             {
                 continue;
             }
+            // ADR-0029: the toplevel's in-flight transition shifts its whole
+            // subsurface tree by the same delta.
+            let delta = self
+                .transition_render_rect(parent)
+                .map(|r| {
+                    (
+                        r.origin.x - parent.position.x,
+                        r.origin.y - parent.position.y,
+                    )
+                })
+                .unwrap_or((0, 0));
             for &child_ptr in &parent.children {
                 if child_ptr.is_null() {
                     continue;
                 }
                 let child = unsafe { &*child_ptr };
-                if child.subsurface_above_parent != want_above
-                    || !child.mapped
-                    || child.content_is_dmabuf
-                    || child.pixels.is_empty()
-                {
+                if child.subsurface_above_parent != want_above {
                     continue;
                 }
-                let absolute = ass_core::Point {
-                    x: parent.position.x + child.subsurface_offset.x,
-                    y: parent.position.y + child.subsurface_offset.y,
-                };
-                out.push(SurfacePixels {
-                    id: child.resource as usize,
-                    width: child.width,
-                    height: child.height,
-                    generation: child.generation,
-                    pixels: &child.pixels,
-                    geometry: ass_core::SurfaceGeometry {
-                        position: absolute,
-                        transform: child.buffer_transform,
-                        buffer_scale: child.buffer_scale,
-                        viewport_src: child.viewport_src,
-                        viewport_dst: child.viewport_dst,
-                        ..Default::default()
-                    },
-                    damage: &child.committed_damage,
-                });
+                Self::collect_subtree_shm(child, &mut out, delta, parent.window.id, 0);
             }
         }
         out
+    }
+
+    /// Emit one subsurface subtree in render order: the below-children
+    /// subtrees, the surface itself, then the above-children subtrees. A
+    /// subsurface's descendants render relative to it, so the whole subtree
+    /// of a below-child still renders under the root toplevel. An unmapped
+    /// node hides its entire subtree, per `wl_subsurface` mapping rules.
+    /// `delta` shifts every emitted origin by the root's in-flight window
+    /// transition (ADR-0029); (0, 0) outside transitions.
+    fn collect_subtree_shm<'a>(
+        s: &'a SurfaceRec,
+        out: &mut Vec<SurfacePixels<'a>>,
+        delta: (i32, i32),
+        window: ass_core::window::WindowId,
+        depth: u32,
+    ) {
+        // The depth cap only breaks reference cycles defensively; children
+        // are orphaned on destroy, so live child pointers are always valid.
+        if !s.mapped || depth >= 32 {
+            return;
+        }
+        for &child_ptr in &s.children {
+            if child_ptr.is_null() {
+                continue;
+            }
+            let child = unsafe { &*child_ptr };
+            if !child.subsurface_above_parent {
+                Self::collect_subtree_shm(child, out, delta, window, depth + 1);
+            }
+        }
+        if !s.content_is_dmabuf && !s.pixels.is_empty() {
+            let origin = surface_draw_origin(s);
+            out.push(SurfacePixels {
+                window: Some(window),
+                id: s.resource as usize,
+                width: s.width,
+                height: s.height,
+                generation: s.generation,
+                pixels: &s.pixels,
+                geometry: ass_core::SurfaceGeometry {
+                    position: ass_core::Point {
+                        x: origin.x + delta.0,
+                        y: origin.y + delta.1,
+                    },
+                    transform: s.buffer_transform,
+                    buffer_scale: s.buffer_scale,
+                    viewport_src: s.viewport_src,
+                    viewport_dst: s.viewport_dst,
+                    ..Default::default()
+                },
+                damage: &s.committed_damage,
+            });
+        }
+        for &child_ptr in &s.children {
+            if child_ptr.is_null() {
+                continue;
+            }
+            let child = unsafe { &*child_ptr };
+            if child.subsurface_above_parent {
+                Self::collect_subtree_shm(child, out, delta, window, depth + 1);
+            }
+        }
     }
 
     fn collect_subsurfaces_dmabuf(&self, want_above: bool) -> Vec<SurfaceDmabuf> {
@@ -1134,47 +1682,88 @@ impl Server {
             {
                 continue;
             }
+            let delta = self
+                .transition_render_rect(parent)
+                .map(|r| {
+                    (
+                        r.origin.x - parent.position.x,
+                        r.origin.y - parent.position.y,
+                    )
+                })
+                .unwrap_or((0, 0));
             for &child_ptr in &parent.children {
                 if child_ptr.is_null() {
                     continue;
                 }
                 let child = unsafe { &*child_ptr };
-                if child.subsurface_above_parent != want_above
-                    || !child.mapped
-                    || !child.content_is_dmabuf
-                    || child.dmabuf.is_none()
-                {
+                if child.subsurface_above_parent != want_above {
                     continue;
                 }
-                let Some(db) = child.dmabuf.as_ref() else {
-                    continue;
-                };
-                let absolute = ass_core::Point {
-                    x: parent.position.x + child.subsurface_offset.x,
-                    y: parent.position.y + child.subsurface_offset.y,
-                };
+                Self::collect_subtree_dmabuf(child, &mut out, delta, parent.window.id, 0);
+            }
+        }
+        out
+    }
+
+    /// The dma-buf half of [`Self::collect_subtree_shm`]: same render-order
+    /// tree walk, emitting only dma-buf-backed surfaces.
+    fn collect_subtree_dmabuf(
+        s: &SurfaceRec,
+        out: &mut Vec<SurfaceDmabuf>,
+        delta: (i32, i32),
+        window: ass_core::window::WindowId,
+        depth: u32,
+    ) {
+        if !s.mapped || depth >= 32 {
+            return;
+        }
+        for &child_ptr in &s.children {
+            if child_ptr.is_null() {
+                continue;
+            }
+            let child = unsafe { &*child_ptr };
+            if !child.subsurface_above_parent {
+                Self::collect_subtree_dmabuf(child, out, delta, window, depth + 1);
+            }
+        }
+        if s.content_is_dmabuf {
+            if let Some(db) = s.dmabuf.as_ref() {
+                let origin = surface_draw_origin(s);
                 out.push(SurfaceDmabuf {
-                    id: child.resource as usize,
-                    width: child.width,
-                    height: child.height,
-                    generation: child.generation,
+                    window: Some(window),
+                    id: s.resource as usize,
+                    width: s.width,
+                    height: s.height,
+                    generation: s.generation,
                     fd: db.fd,
                     drm_format: db.drm_format,
                     modifier: db.modifier,
                     offset: db.offset,
                     stride: db.stride,
+                    acquire_fence: db.acquire_fence,
                     geometry: ass_core::SurfaceGeometry {
-                        position: absolute,
-                        transform: child.buffer_transform,
-                        buffer_scale: child.buffer_scale,
-                        viewport_src: child.viewport_src,
-                        viewport_dst: child.viewport_dst,
+                        position: ass_core::Point {
+                            x: origin.x + delta.0,
+                            y: origin.y + delta.1,
+                        },
+                        transform: s.buffer_transform,
+                        buffer_scale: s.buffer_scale,
+                        viewport_src: s.viewport_src,
+                        viewport_dst: s.viewport_dst,
                         ..Default::default()
                     },
                 });
             }
         }
-        out
+        for &child_ptr in &s.children {
+            if child_ptr.is_null() {
+                continue;
+            }
+            let child = unsafe { &*child_ptr };
+            if child.subsurface_above_parent {
+                Self::collect_subtree_dmabuf(child, out, delta, window, depth + 1);
+            }
+        }
     }
 
     /// Fire and clear all pending frame callbacks, pacing clients to the output.
@@ -1192,6 +1781,55 @@ impl Server {
                 }
             }
         }
+        unsafe { ffi::wl_display_flush_clients(self.state.display) };
+    }
+
+    pub fn retired_buffers_pending(&self) -> bool {
+        !self.state.retired_buffer_releases.is_empty()
+    }
+
+    /// Release replaced dma-bufs after the renderer has submitted a frame
+    /// that no longer references them. `completion_fence` is a borrowed Linux
+    /// sync_file fd for that submission; `None` means completion was already
+    /// waited on by the backend.
+    pub fn release_retired_buffers(&mut self, completion_fence: Option<i32>) {
+        let retired = std::mem::take(&mut self.state.retired_buffer_releases);
+        let mut retry = Vec::new();
+        for release in retired {
+            let explicit_fd = if release.explicit_release.is_null() {
+                None
+            } else if let Some(fence) = completion_fence {
+                let fd = unsafe { dup(fence) };
+                if fd < 0 {
+                    retry.push(release);
+                    continue;
+                }
+                Some(fd)
+            } else {
+                None
+            };
+            unsafe {
+                if !release.buffer.is_null() {
+                    ffi::wl_resource_post_event(release.buffer, ffi::WL_BUFFER_RELEASE);
+                }
+                if !release.explicit_release.is_null() {
+                    if let Some(fd) = explicit_fd {
+                        ffi::wl_resource_post_event(
+                            release.explicit_release,
+                            ffi::ZWP_LINUX_BUFFER_RELEASE_V1_FENCED_RELEASE,
+                            fd,
+                        );
+                    } else {
+                        ffi::wl_resource_post_event(
+                            release.explicit_release,
+                            ffi::ZWP_LINUX_BUFFER_RELEASE_V1_IMMEDIATE_RELEASE,
+                        );
+                    }
+                    ffi::wl_resource_destroy(release.explicit_release);
+                }
+            }
+        }
+        self.state.retired_buffer_releases.extend(retry);
         unsafe { ffi::wl_display_flush_clients(self.state.display) };
     }
 
@@ -1228,10 +1866,18 @@ impl Server {
                         actions.push(a);
                     }
                 }
+                Tablet { event } => self.tablet_event(event),
             }
         }
         unsafe { ffi::wl_display_flush_clients(self.state.display) };
         actions
+    }
+
+    /// Mark real user input activity for ext-idle-notify. Synthetic IPC input
+    /// intentionally does not call this method, so automation cannot keep a
+    /// session awake indefinitely.
+    pub fn note_user_activity(&mut self) {
+        unsafe { extensions::idle_user_activity(self.state.as_mut()) };
     }
 
     /// Advance the xkbcommon state with one key event and return the keysym
@@ -1251,11 +1897,26 @@ impl Server {
             .as_mut()?
             .update_key(evdev_code, pressed);
         self.state.depressed_mods = ass_core::input::Mods(o.depressed);
+        // VT switch keys stay compositor-owned even while chrome holds the
+        // keyboard (launcher/overview open); see `keyboard_key`.
+        const XF86_SWITCH_VT_1: u32 = 0x1008_FE01;
+        const XF86_SWITCH_VT_12: u32 = 0x1008_FE0C;
+        if pressed && (XF86_SWITCH_VT_1..=XF86_SWITCH_VT_12).contains(&o.keysym) {
+            self.state.pending_vt_switch = Some((o.keysym - XF86_SWITCH_VT_1 + 1) as i32);
+            return None;
+        }
         Some(ass_core::input::KeyChar {
             keysym: o.keysym,
             ch: o.utf8,
             mods: self.state.depressed_mods,
         })
+    }
+
+    /// Take a pending console VT switch request (Ctrl+Alt+Fn), if any.
+    /// The main loop forwards it to the backend (libseat on DRM; a no-op
+    /// nested).
+    pub fn take_vt_switch(&mut self) -> Option<i32> {
+        self.state.pending_vt_switch.take()
     }
 
     /// Grab the keyboard away from the focused client for compositor-side use
@@ -1321,7 +1982,8 @@ impl Server {
     ) -> Option<Vec<ass_core::input::InputEvent>> {
         use ass_core::input::{ButtonState, InputEvent, SyntheticInputAction};
 
-        if actions.is_empty()
+        if self.state.session_locked
+            || actions.is_empty()
             || actions.len() > 64
             || self.state.interactive.is_some()
             || self.state.drag.is_some()
@@ -1439,7 +2101,22 @@ impl Server {
             .live_surfaces()
             .map(|p| unsafe { &*p })
             .filter(|s| !s.xdg_toplevel.is_null() && visible.contains(&s.window.id))
-            .map(|s| s.window.clone())
+            .map(|s| {
+                let mut w = s.window.clone();
+                // Publish only in-flight transitions; settled ones are noise
+                // to chrome and IPC consumers (ADR-0029).
+                let target = ass_core::Rect {
+                    origin: w.position,
+                    size: w.size,
+                };
+                if w.transition
+                    .and_then(|t| t.rect_at(target, self.now_ms()))
+                    .is_none()
+                {
+                    w.transition = None;
+                }
+                w
+            })
             .collect()
     }
 
@@ -1585,6 +2262,10 @@ impl Server {
             if unchanged {
                 return false;
             }
+            let old = ass_core::Rect {
+                origin: (*rec).position,
+                size: (*rec).window.size,
+            };
             (*rec).position = rect.origin;
             (*rec).window.position = rect.origin;
             (*rec).window.size = size;
@@ -1592,6 +2273,7 @@ impl Server {
             (*rec).layout_target = None;
             (*rec).window.state.maximized = false;
             (*rec).window.state.fullscreen = false;
+            self.note_transition(rec, old);
             reconfigure_with_size(rec, size.w, size.h);
             ffi::wl_display_flush_clients(self.state.display);
         }
@@ -1648,8 +2330,22 @@ impl Server {
         self.state
             .live_surfaces()
             .map(|p| unsafe { &*p })
-            .find(|s| s.resource == f && !s.xdg_toplevel.is_null())
-            .map(|s| s.window.id)
+            .find(|s| s.resource == f)
+            .and_then(|s| {
+                // Keyboard focus may rest on a subsurface (it received the
+                // pointer click); the window it belongs to is the root.
+                let root =
+                    unsafe { surface_root_toplevel(s as *const SurfaceRec as *mut SurfaceRec) };
+                if root.is_null() {
+                    return None;
+                }
+                let root = unsafe { &*root };
+                if root.xdg_toplevel.is_null() {
+                    None
+                } else {
+                    Some(root.window.id)
+                }
+            })
     }
 
     /// The last cursor shape requested by the focused client
@@ -2005,6 +2701,15 @@ impl Server {
                 continue;
             }
             unsafe {
+                // Transient dialogs (xdg_toplevel.set_parent) stay floating
+                // (ADR-0024 floating exception); the sweep skips them.
+                if on && (*rec).window.parent.is_some() {
+                    log::debug!(
+                        "[server] tiling sweep skips transient {:?}",
+                        (*rec).window.id
+                    );
+                    continue;
+                }
                 (*rec).window.layout_role = role;
                 (*rec).layout_target = None;
             }
@@ -2013,6 +2718,13 @@ impl Server {
             "[server] workspace tiling {}",
             if on { "on" } else { "off" }
         );
+    }
+
+    /// Set whether newly created workspaces start in tiled mode (ADR-0024),
+    /// from the config's `[layout] default_tiled`. Existing workspaces keep
+    /// their own flag. Called at startup and on config reload.
+    pub fn set_tiling_default(&mut self, on: bool) {
+        self.state.workspaces.set_default_tiled(on);
     }
 
     /// Replace the window rules (ADR-0026). Called at startup and on config
@@ -2027,12 +2739,169 @@ impl Server {
         self.state.layout_params = params;
     }
 
+    /// Set the reduced-motion policy (ADR-0029, from `[ui] reduced_motion`).
+    /// When enabled, in-flight transitions resolve immediately and no new
+    /// ones are recorded.
+    pub fn set_reduced_motion(&mut self, reduced: bool) {
+        self.state.reduced_motion = reduced;
+        if reduced {
+            for p in self.state.live_surfaces() {
+                unsafe { (*p).window.transition = None };
+            }
+        }
+    }
+
+    /// Compositor-relative millisecond timestamp for transition records.
+    fn now_ms(&self) -> u64 {
+        self.epoch.elapsed().as_millis() as u64
+    }
+
+    /// Record a geometry transition for a non-interactive rect change
+    /// (tiling, IPC geometry). The model moves to the target immediately;
+    /// rendering interpolates from the current on-screen rect — the previous
+    /// transition's mid-flight rect when changes come faster than the
+    /// duration, else the previous model rect (ADR-0029).
+    fn note_transition(&self, rec: *mut SurfaceRec, old: ass_core::Rect) {
+        if self.state.reduced_motion || rec.is_null() {
+            return;
+        }
+        let now = self.now_ms();
+        unsafe {
+            let target = ass_core::Rect {
+                origin: (*rec).position,
+                size: (*rec).window.size,
+            };
+            if old == target {
+                (*rec).window.transition = None;
+                return;
+            }
+            let from = (*rec)
+                .window
+                .transition
+                .and_then(|t| t.rect_at(old, now))
+                .unwrap_or(old);
+            (*rec).window.transition = Some(ass_core::transition::WindowTransition::new(from, now));
+        }
+    }
+
+    /// The rect a surface renders at this frame: `Some(interpolated)` while
+    /// its transition is in flight, `None` at the model target (ADR-0029).
+    fn transition_render_rect(&self, s: &SurfaceRec) -> Option<ass_core::Rect> {
+        let target = ass_core::Rect {
+            origin: s.position,
+            size: s.window.size,
+        };
+        s.window
+            .transition
+            .and_then(|t| t.rect_at(target, self.now_ms()))
+    }
+
+    /// Whether any toplevel has a transition still in flight — the main loop
+    /// keeps ticking frames at cadence instead of blocking on the host queue.
+    pub fn transitions_pending(&self) -> bool {
+        self.state.live_surfaces().any(|p| unsafe {
+            !(*p).xdg_toplevel.is_null() && self.transition_render_rect(&*p).is_some()
+        })
+    }
+
+    /// Reconcile connector identities and geometries reported by the backend.
+    /// Existing connector workspaces survive reordering; removed outputs are
+    /// relocated by `WorkspaceModel`, and a replug restores their origin.
+    pub fn set_outputs(&mut self, mut outputs: Vec<ass_core::output::OutputInfo>) {
+        outputs.retain(|output| !output.connector.is_empty());
+        let mut seen = std::collections::HashSet::new();
+        outputs.retain(|output| seen.insert(output.connector.clone()));
+        if outputs.is_empty() {
+            return;
+        }
+        // Configured per-connector scale policy (ADR-0028) wins over the
+        // backend-reported scale, for mixed-DPI setups.
+        for output in &mut outputs {
+            if let Some(scale) = self.state.output_scale_overrides.get(&output.connector) {
+                output.geometry.scale = ass_core::output::Scale(*scale as f32);
+            }
+        }
+
+        let desired = outputs
+            .iter()
+            .map(|output| output.connector.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        for output in &outputs {
+            if !self
+                .state
+                .workspaces
+                .outputs()
+                .iter()
+                .any(|current| current.connector == output.connector)
+            {
+                self.state.workspaces.add_output(&output.connector);
+            }
+        }
+        let removed = self
+            .state
+            .workspaces
+            .outputs()
+            .iter()
+            .filter(|output| !desired.contains(output.connector.as_str()))
+            .map(|output| output.id)
+            .collect::<Vec<_>>();
+        for output in removed {
+            self.state.workspaces.remove_output(output);
+        }
+
+        let primary = outputs[0].clone();
+        if let Some(output) = self
+            .state
+            .workspaces
+            .outputs()
+            .iter()
+            .find(|output| output.connector == primary.connector)
+        {
+            self.state.output = output.id;
+        }
+        unsafe { reconcile_output_globals(self.state.as_mut(), &outputs) };
+        self.state.output_infos = outputs;
+        self.set_output_geometry(primary.geometry);
+    }
+
+    /// Set per-connector output scale overrides from the config's `[[output]]`
+    /// entries (ADR-0028), and re-apply them to the current output set.
+    /// Unmatched connectors are ignored with a warning, so a monitor that is
+    /// not plugged in yet still applies once it appears.
+    pub fn set_output_scale_overrides(
+        &mut self,
+        overrides: std::collections::HashMap<String, f64>,
+    ) {
+        for connector in overrides.keys() {
+            if !self
+                .state
+                .output_infos
+                .iter()
+                .any(|o| &o.connector == connector)
+            {
+                log::info!(
+                    "[server] output scale override for '{connector}' matches no current output"
+                );
+            }
+        }
+        self.state.output_scale_overrides = overrides;
+        let outputs = self.state.output_infos.clone();
+        if !outputs.is_empty() {
+            self.set_outputs(outputs);
+        }
+    }
+
     /// Replace the focused output's geometry (ADR-0028). The backend calls
     /// this on resize; the tiling work-area is the geometry's logical rect.
     /// Re-sends the wl_output geometry/mode/scale/done sequence to every bound
     /// client so they update their scale and surface buffer scale.
     pub fn set_output_geometry(&mut self, geo: ass_core::output::OutputGeometry) {
         self.state.output_geometry = geo;
+        if let Some(primary) = self.state.output_infos.first_mut() {
+            primary.geometry = geo;
+        }
+        let infos = self.state.output_infos.clone();
+        unsafe { reconcile_output_globals(self.state.as_mut(), &infos) };
         // Resend to every bound wl_output resource.
         let resources: Vec<*mut ffi::wl_resource> = self
             .state
@@ -2042,7 +2911,7 @@ impl Server {
             .filter(|p| !p.is_null())
             .collect();
         for res in resources {
-            unsafe { send_output_geometry(res, self.state.as_ref() as *const State as *mut State) };
+            unsafe { send_output_geometry(res) };
         }
         // Refresh xdg-output logical extents too.
         self.resend_xdg_outputs();
@@ -2050,6 +2919,7 @@ impl Server {
         unsafe {
             extensions::resend_fractional_scales(self.state.as_ref() as *const State as *mut State)
         };
+        unsafe { extensions::session_lock_outputs_changed(self.state.as_mut()) };
         unsafe { ffi::wl_display_flush_clients(self.state.display) };
     }
 
@@ -2064,7 +2934,6 @@ impl Server {
     /// change (resize / scale / transform) so clients reposition. Pairs with
     /// the wl_output geometry re-send in [`Server::set_output_geometry`].
     fn resend_xdg_outputs(&self) {
-        let rect = self.state.output_geometry.logical_rect();
         let resources: Vec<*mut ffi::wl_resource> = self
             .state
             .xdg_output_resources
@@ -2073,22 +2942,19 @@ impl Server {
             .filter(|p| !p.is_null())
             .collect();
         for res in resources {
-            // SAFETY: res is a live zxdg_output_v1 resource we own. The logical
-            // position/size events take i32 pairs; done (v2+) flushes the batch.
             unsafe {
+                let output = self
+                    .state
+                    .xdg_output_links
+                    .get(&(res as usize))
+                    .copied()
+                    .unwrap_or(std::ptr::null_mut());
+                extensions::send_xdg_output_geometry(
+                    res,
+                    output,
+                    self.state.as_ref() as *const State as *mut State,
+                );
                 let version = ffi::wl_resource_get_version(res);
-                ffi::wl_resource_post_event(
-                    res,
-                    ffi::ZXDG_OUTPUT_V1_LOGICAL_POSITION,
-                    rect.origin.x,
-                    rect.origin.y,
-                );
-                ffi::wl_resource_post_event(
-                    res,
-                    ffi::ZXDG_OUTPUT_V1_LOGICAL_SIZE,
-                    rect.size.w,
-                    rect.size.h,
-                );
                 if version >= 2 {
                     ffi::wl_resource_post_event(res, ffi::ZXDG_OUTPUT_V1_DONE);
                 }
@@ -2096,19 +2962,9 @@ impl Server {
         }
     }
 
-    /// The live outputs (connector + geometry) for the IPC and chrome. One
-    /// entry per workspace-model output, paired with the focused geometry
-    /// (multi-output geometry tracking lands with M7).
+    /// The live backend-reported outputs for IPC and chrome.
     pub fn output_infos(&self) -> Vec<ass_core::output::OutputInfo> {
-        self.state
-            .workspaces
-            .outputs()
-            .iter()
-            .map(|o| ass_core::output::OutputInfo {
-                connector: o.connector.clone(),
-                geometry: self.state.output_geometry,
-            })
-            .collect()
+        self.state.output_infos.clone()
     }
 
     /// Apply the master-stack tiling policy to the current workspace's
@@ -2157,11 +3013,16 @@ impl Server {
                 if (*rec).layout_target == Some(*rect) {
                     continue; // already at the target; do not reconfigure
                 }
+                let old = ass_core::Rect {
+                    origin: (*rec).position,
+                    size: (*rec).window.size,
+                };
                 (*rec).position = rect.origin;
                 (*rec).window.position = rect.origin;
                 (*rec).window.size = rect.size;
                 (*rec).window.layout_role = ass_core::layout::LayoutRole::Tiled;
                 (*rec).layout_target = Some(*rect);
+                self.note_transition(rec, old);
                 reconfigure_with_size(rec, rect.size.w, rect.size.h);
                 if !flushed {
                     ffi::wl_display_flush_clients(self.state.display);
@@ -2225,6 +3086,31 @@ impl Server {
     }
 
     fn pointer_button(&mut self, button: u32, state: ass_core::input::ButtonState) {
+        if self.state.session_locked {
+            if state.is_pressed() && !self.state.pointer_focus.is_null() {
+                self.change_keyboard_focus(self.state.pointer_focus);
+            }
+            if self.state.pointer_focus.is_null() {
+                return;
+            }
+            let serial = unsafe { ffi::wl_display_next_serial(self.state.display) };
+            self.state.last_button_serial = serial;
+            self.state.implicit_grab_active = state.is_pressed();
+            let focus_client = unsafe { ffi::wl_resource_get_client(self.state.pointer_focus) };
+            for pointer in self.iter_focus_pointers(focus_client) {
+                unsafe {
+                    ffi::wl_resource_post_event(
+                        pointer,
+                        ffi::WL_POINTER_BUTTON,
+                        serial,
+                        0u32,
+                        button,
+                        u32::from(state.is_pressed()),
+                    );
+                }
+            }
+            return;
+        }
         if !state.is_pressed() {
             self.state.implicit_grab_active = false;
             if self.state.drag.is_some() {
@@ -2408,12 +3294,23 @@ impl Server {
             return None;
         };
         self.state.depressed_mods = ass_core::input::Mods(outcome.depressed);
+        // Console VT switch (Ctrl+Alt+Fn → XF86Switch_VT_N): libinput owns
+        // evdev on a direct backend, so the kernel's built-in handling never
+        // runs — the compositor performs the session switch itself through
+        // libseat. xkb only produces these keysyms with Ctrl+Alt held, and
+        // they are consumed here (never posted to a client).
+        const XF86_SWITCH_VT_1: u32 = 0x1008_FE01;
+        const XF86_SWITCH_VT_12: u32 = 0x1008_FE0C;
+        if state.is_pressed() && (XF86_SWITCH_VT_1..=XF86_SWITCH_VT_12).contains(&outcome.keysym) {
+            self.state.pending_vt_switch = Some((outcome.keysym - XF86_SWITCH_VT_1 + 1) as i32);
+            return None;
+        }
         // A key that matches a global binding on press is consumed (not posted
         // to the focused client) and its action returned for the caller to
         // dispatch. Modifier-only keys never match, so modifiers still post.
         let shortcuts_inhibited =
             unsafe { extensions::keyboard_shortcuts_inhibited(self.state.as_mut()) };
-        let matched = if state.is_pressed() && !shortcuts_inhibited {
+        let matched = if state.is_pressed() && !shortcuts_inhibited && !self.state.session_locked {
             keymap.match_key(ass_core::input::Mods(outcome.depressed), outcome.keysym)
         } else {
             None
@@ -2458,13 +3355,32 @@ impl Server {
 
     /// Hit-test the current pointer position against mapped toplevels,
     /// returning the surface resource under the cursor or null if none. Uses
-    /// each surface's authoritative `position` (assigned at map time); later
-    /// surfaces in the surfaces Vec are considered "above" earlier ones.
+    /// each surface's authoritative `position` (the window-rect origin,
+    /// assigned at map time); later surfaces in the surfaces Vec are
+    /// considered "above" earlier ones.
     fn hit_test_focus(&self, x: f32, y: f32) -> *mut ffi::wl_resource {
         let visible = self.visible();
         let mut hit: *mut ffi::wl_resource = std::ptr::null_mut();
         for p in self.state.live_surfaces() {
             let s = unsafe { &*p };
+            if self.state.session_locked {
+                if !unsafe {
+                    extensions::is_active_session_lock_surface(
+                        self.state.as_ref() as *const State as *mut State,
+                        p,
+                    )
+                } || !s.mapped
+                {
+                    continue;
+                }
+                let sx = s.position.x as f32;
+                let sy = s.position.y as f32;
+                let logical = surface_logical_size(s);
+                if x >= sx && y >= sy && x < sx + logical.w as f32 && y < sy + logical.h as f32 {
+                    hit = s.resource;
+                }
+                continue;
+            }
             let root = unsafe { surface_root_toplevel(p) };
             if !s.mapped
                 || (s.xdg_toplevel.is_null() && s.xdg_popup.is_null())
@@ -2474,28 +3390,42 @@ impl Server {
             {
                 continue;
             }
-            let sx = s.position.x as f32;
-            let sy = s.position.y as f32;
-            let logical = surface_logical_size(s);
-            let sw = logical.w as f32;
-            let sh = logical.h as f32;
-            let local_x = x - sx;
-            let local_y = y - sy;
-            let region_accepts = s.input_region.as_ref().is_none_or(|rects| {
-                rects.iter().any(|rect| {
-                    rect.contains(ass_core::Point {
-                        x: local_x as i32,
-                        y: local_y as i32,
-                    })
-                })
-            });
-            if x >= sx && y >= sy && x < sx + sw && y < sy + sh && region_accepts {
-                // Higher-index surfaces paint on top; keep iterating so the
-                // topmost match wins.
-                hit = s.resource;
-            }
+            Self::hit_test_tree(s, x, y, &mut hit, 0);
         }
         hit
+    }
+
+    /// Walk one surface tree in render order (below-children subtrees, the
+    /// surface itself, above-children subtrees), keeping the last surface
+    /// that accepts `(x, y)` — the topmost. Subsurfaces therefore receive
+    /// input directly when they are topmost under the pointer, per the core
+    /// protocol, instead of the event falling through to the root toplevel.
+    fn hit_test_tree(s: &SurfaceRec, x: f32, y: f32, hit: &mut *mut ffi::wl_resource, depth: u32) {
+        if depth >= 32 {
+            return;
+        }
+        for &child_ptr in &s.children {
+            if child_ptr.is_null() {
+                continue;
+            }
+            let child = unsafe { &*child_ptr };
+            // An unmapped subsurface hides its whole subtree.
+            if !child.subsurface_above_parent && child.mapped {
+                Self::hit_test_tree(child, x, y, hit, depth + 1);
+            }
+        }
+        if surface_accepts_point(s, x, y) {
+            *hit = s.resource;
+        }
+        for &child_ptr in &s.children {
+            if child_ptr.is_null() {
+                continue;
+            }
+            let child = unsafe { &*child_ptr };
+            if child.subsurface_above_parent && child.mapped {
+                Self::hit_test_tree(child, x, y, hit, depth + 1);
+            }
+        }
     }
 
     /// Topmost floating toplevel whose inside border contains `(x, y)`.
@@ -2551,9 +3481,25 @@ impl Server {
         self.state.compositor_pointer_grab = false;
     }
 
+    fn is_lock_resource(&self, resource: *mut ffi::wl_resource) -> bool {
+        if resource.is_null() {
+            return false;
+        }
+        let surface = unsafe { ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec };
+        unsafe {
+            extensions::is_active_session_lock_surface(
+                self.state.as_ref() as *const State as *mut State,
+                surface,
+            )
+        }
+    }
+
     /// Transition focus: post leave to the old client's pointer resources and
     /// enter to the new client's, with a fresh serial.
-    fn change_pointer_focus(&mut self, new_focus: *mut ffi::wl_resource) {
+    fn change_pointer_focus(&mut self, mut new_focus: *mut ffi::wl_resource) {
+        if self.state.session_locked && !self.is_lock_resource(new_focus) {
+            new_focus = std::ptr::null_mut();
+        }
         let serial = unsafe { ffi::wl_display_next_serial(self.state.display) };
         let old = self.state.pointer_focus;
 
@@ -2579,9 +3525,10 @@ impl Server {
             let (local_x, local_y) = if rec.is_null() {
                 (self.state.pointer_x, self.state.pointer_y)
             } else {
+                let origin = unsafe { surface_draw_origin(&*rec) };
                 (
-                    self.state.pointer_x - unsafe { (*rec).position.x as f32 },
-                    self.state.pointer_y - unsafe { (*rec).position.y as f32 },
+                    self.state.pointer_x - origin.x as f32,
+                    self.state.pointer_y - origin.y as f32,
                 )
             };
             let x = ffi::wl_fixed_from_f32(local_x);
@@ -2607,9 +3554,10 @@ impl Server {
         let (local_x, local_y) = if rec.is_null() {
             (self.state.pointer_x, self.state.pointer_y)
         } else {
+            let origin = unsafe { surface_draw_origin(&*rec) };
             (
-                self.state.pointer_x - unsafe { (*rec).position.x as f32 },
-                self.state.pointer_y - unsafe { (*rec).position.y as f32 },
+                self.state.pointer_x - origin.x as f32,
+                self.state.pointer_y - origin.y as f32,
             )
         };
         let x = ffi::wl_fixed_from_f32(local_x);
@@ -2758,16 +3706,13 @@ impl Server {
         let serial = unsafe { ffi::wl_display_next_serial(self.state.display) };
         let client = unsafe { ffi::wl_resource_get_client(focus) };
         let rec = unsafe { ffi::wl_resource_get_user_data(focus) as *mut SurfaceRec };
-        let fx = ffi::wl_fixed_from_f32(if rec.is_null() {
-            x
+        let origin = if rec.is_null() {
+            ass_core::Point::default()
         } else {
-            x - unsafe { (*rec).position.x as f32 }
-        });
-        let fy = ffi::wl_fixed_from_f32(if rec.is_null() {
-            y
-        } else {
-            y - unsafe { (*rec).position.y as f32 }
-        });
+            unsafe { surface_draw_origin(&*rec) }
+        };
+        let fx = ffi::wl_fixed_from_f32(x - origin.x as f32);
+        let fy = ffi::wl_fixed_from_f32(y - origin.y as f32);
         for t in self.iter_client_touch(client) {
             unsafe {
                 ffi::wl_resource_post_event(t, ffi::WL_TOUCH_DOWN, serial, time, focus, id, fx, fy);
@@ -2783,16 +3728,13 @@ impl Server {
         let focus = self.state.pointer_focus;
         let client = unsafe { ffi::wl_resource_get_client(focus) };
         let rec = unsafe { ffi::wl_resource_get_user_data(focus) as *mut SurfaceRec };
-        let fx = ffi::wl_fixed_from_f32(if rec.is_null() {
-            x
+        let origin = if rec.is_null() {
+            ass_core::Point::default()
         } else {
-            x - unsafe { (*rec).position.x as f32 }
-        });
-        let fy = ffi::wl_fixed_from_f32(if rec.is_null() {
-            y
-        } else {
-            y - unsafe { (*rec).position.y as f32 }
-        });
+            unsafe { surface_draw_origin(&*rec) }
+        };
+        let fx = ffi::wl_fixed_from_f32(x - origin.x as f32);
+        let fy = ffi::wl_fixed_from_f32(y - origin.y as f32);
         for t in self.iter_client_touch(client) {
             unsafe {
                 ffi::wl_resource_post_event(t, ffi::WL_TOUCH_MOTION, time, id, fx, fy);
@@ -2846,15 +3788,337 @@ impl Server {
             .collect()
     }
 
+    /// Route one tablet tool event (zwp_tablet-unstable-v2). The first
+    /// proximity of a physical tool announces the compositor's synthetic
+    /// tablet device and the tool to every bound seat; from then on, a pen
+    /// over a surface whose client holds a tablet seat receives the full
+    /// protocol stream (proximity/axes/tip/button, each burst closed by
+    /// `frame`) on that client's tool resource, with surface-local
+    /// coordinates computed exactly like `touch_down`. Over any other
+    /// surface the pen falls back to emulating the pointer — motion plus
+    /// BTN_LEFT for the tip — so tablet-unaware clients still work.
+    fn tablet_event(&mut self, event: ass_core::input::TabletEvent) {
+        use ass_core::input::TabletEvent::*;
+        match event {
+            Proximity {
+                tool,
+                info,
+                in_proximity: true,
+                x,
+                y,
+                ..
+            } => self.tablet_proximity_in(tool, info, x, y),
+            Proximity {
+                tool,
+                in_proximity: false,
+                time,
+                ..
+            } => self.tablet_proximity_out(tool, time),
+            Axes {
+                tool,
+                x,
+                y,
+                pressure,
+                distance,
+                tilt,
+                rotation,
+                slider,
+                wheel,
+                time,
+            } => self.tablet_axes(
+                tool, x, y, pressure, distance, tilt, rotation, slider, wheel, time,
+            ),
+            Tip { tool, state, time } => self.tablet_tip(tool, state, time),
+            Button {
+                tool,
+                button,
+                state,
+                time,
+            } => self.tablet_button(tool, button, state, time),
+        }
+    }
+
+    /// The `zwp_tablet_tool_v2` resource owned by `client` that proxies
+    /// physical tool `tool`, or null.
+    fn tablet_tool_for(&self, client: *mut ffi::wl_client, tool: u64) -> *mut ffi::wl_resource {
+        self.state
+            .tablet_tools
+            .iter()
+            .copied()
+            .filter(|p| !p.is_null())
+            .filter(|p| unsafe { ffi::wl_resource_get_client(*p) == client })
+            .find(|p| unsafe {
+                let rec = ffi::wl_resource_get_user_data(*p) as *mut extensions::TabletToolRec;
+                !rec.is_null() && (*rec).tool == tool
+            })
+            .unwrap_or(std::ptr::null_mut())
+    }
+
+    /// Any live `zwp_tablet_v2` resource owned by `client`. One synthetic
+    /// tablet exists, so the tablet/tool pairing is implicit per client.
+    fn tablet_device_for(&self, client: *mut ffi::wl_client) -> *mut ffi::wl_resource {
+        self.state
+            .tablet_devices
+            .iter()
+            .copied()
+            .filter(|p| !p.is_null())
+            .find(|p| unsafe { ffi::wl_resource_get_client(*p) == client })
+            .unwrap_or(std::ptr::null_mut())
+    }
+
+    /// A tool entered proximity: announce the device/tool to late-bound
+    /// seats, then either open protocol proximity on the hit surface or
+    /// emulate pointer motion when its client has no tablet seat.
+    fn tablet_proximity_in(
+        &mut self,
+        tool: u64,
+        info: ass_core::input::TabletToolInfo,
+        x: f32,
+        y: f32,
+    ) {
+        // Clone the seat list so the announce calls can re-borrow `state`.
+        let seats: Vec<*mut ffi::wl_resource> = self
+            .state
+            .tablet_seats
+            .iter()
+            .copied()
+            .filter(|s| !s.is_null())
+            .collect();
+        // A tool must follow a tablet, so a never-announced device goes out
+        // to every seat before the tool itself.
+        if !self.state.tablet_device_seen {
+            self.state.tablet_device_seen = true;
+            for seat in &seats {
+                unsafe { extensions::announce_tablet(self.state.as_mut(), *seat) };
+            }
+        }
+        if !self.state.known_tools.iter().any(|(id, _)| *id == tool) {
+            self.state.known_tools.push((tool, info));
+            for seat in &seats {
+                unsafe { extensions::announce_tool(self.state.as_mut(), *seat, tool, &info) };
+            }
+        }
+        // Keep chrome/cursor tracking the pen.
+        self.state.pointer_x = x;
+        self.state.pointer_y = y;
+        let focus = self.hit_test_focus(x, y);
+        let focus_client = if focus.is_null() {
+            std::ptr::null_mut()
+        } else {
+            unsafe { ffi::wl_resource_get_client(focus) }
+        };
+        let has_seat = !focus_client.is_null()
+            && seats
+                .iter()
+                .any(|s| unsafe { ffi::wl_resource_get_client(*s) } == focus_client);
+        if !has_seat {
+            self.state.tablet_focus = std::ptr::null_mut();
+            self.pointer_motion(x, y);
+            return;
+        }
+        self.state.tablet_focus = focus;
+        let serial = unsafe { ffi::wl_display_next_serial(self.state.display) };
+        let tablet = self.tablet_device_for(focus_client);
+        let tool_res = self.tablet_tool_for(focus_client, tool);
+        if tablet.is_null() || tool_res.is_null() {
+            return;
+        }
+        unsafe {
+            ffi::wl_resource_post_event(
+                tool_res,
+                ffi::ZWP_TABLET_TOOL_V2_PROXIMITY_IN,
+                serial,
+                tablet,
+                focus,
+            );
+        }
+    }
+
+    /// The tool left proximity: close the burst on the focus client's tool
+    /// resource and drop tablet focus.
+    fn tablet_proximity_out(&mut self, tool: u64, time: u32) {
+        if self.state.tablet_focus.is_null() {
+            return;
+        }
+        let focus_client = unsafe { ffi::wl_resource_get_client(self.state.tablet_focus) };
+        let tool_res = self.tablet_tool_for(focus_client, tool);
+        self.state.tablet_focus = std::ptr::null_mut();
+        if tool_res.is_null() {
+            return;
+        }
+        unsafe {
+            ffi::wl_resource_post_event(tool_res, ffi::ZWP_TABLET_TOOL_V2_PROXIMITY_OUT);
+            ffi::wl_resource_post_event(tool_res, ffi::ZWP_TABLET_TOOL_V2_FRAME, time);
+        }
+    }
+
+    /// Axis updates for the in-proximity tool: motion plus whichever of
+    /// pressure/distance/tilt/rotation/slider/wheel the backend reported,
+    /// closed by `frame`. Pressure and distance are normalized f32 0.0..1.0;
+    /// the protocol wants uint 0..65535.
+    #[allow(clippy::too_many_arguments)]
+    fn tablet_axes(
+        &mut self,
+        tool: u64,
+        x: f32,
+        y: f32,
+        pressure: Option<f32>,
+        distance: Option<f32>,
+        tilt: Option<(f32, f32)>,
+        rotation: Option<f32>,
+        slider: Option<f32>,
+        wheel: Option<(f32, i32)>,
+        time: u32,
+    ) {
+        if self.state.tablet_focus.is_null() {
+            // Emulated path: the pen drives the pointer.
+            self.pointer_motion(x, y);
+            return;
+        }
+        self.state.pointer_x = x;
+        self.state.pointer_y = y;
+        let focus = self.state.tablet_focus;
+        let focus_client = unsafe { ffi::wl_resource_get_client(focus) };
+        let tool_res = self.tablet_tool_for(focus_client, tool);
+        if tool_res.is_null() {
+            return;
+        }
+        let rec = unsafe { ffi::wl_resource_get_user_data(focus) as *mut SurfaceRec };
+        let origin = if rec.is_null() {
+            ass_core::Point::default()
+        } else {
+            unsafe { surface_draw_origin(&*rec) }
+        };
+        let fx = ffi::wl_fixed_from_f32(x - origin.x as f32);
+        let fy = ffi::wl_fixed_from_f32(y - origin.y as f32);
+        unsafe {
+            ffi::wl_resource_post_event(tool_res, ffi::ZWP_TABLET_TOOL_V2_MOTION, fx, fy);
+            if let Some(p) = pressure {
+                ffi::wl_resource_post_event(
+                    tool_res,
+                    ffi::ZWP_TABLET_TOOL_V2_PRESSURE,
+                    (p.clamp(0.0, 1.0) * 65535.0) as u32,
+                );
+            }
+            if let Some(d) = distance {
+                ffi::wl_resource_post_event(
+                    tool_res,
+                    ffi::ZWP_TABLET_TOOL_V2_DISTANCE,
+                    (d.clamp(0.0, 1.0) * 65535.0) as u32,
+                );
+            }
+            if let Some((tx, ty)) = tilt {
+                ffi::wl_resource_post_event(
+                    tool_res,
+                    ffi::ZWP_TABLET_TOOL_V2_TILT,
+                    ffi::wl_fixed_from_f32(tx),
+                    ffi::wl_fixed_from_f32(ty),
+                );
+            }
+            if let Some(r) = rotation {
+                ffi::wl_resource_post_event(
+                    tool_res,
+                    ffi::ZWP_TABLET_TOOL_V2_ROTATION,
+                    ffi::wl_fixed_from_f32(r),
+                );
+            }
+            if let Some(s) = slider {
+                ffi::wl_resource_post_event(
+                    tool_res,
+                    ffi::ZWP_TABLET_TOOL_V2_SLIDER,
+                    ffi::wl_fixed_from_f32(s),
+                );
+            }
+            if let Some((degrees, clicks)) = wheel {
+                ffi::wl_resource_post_event(
+                    tool_res,
+                    ffi::ZWP_TABLET_TOOL_V2_WHEEL,
+                    ffi::wl_fixed_from_f32(degrees),
+                    clicks,
+                );
+            }
+            ffi::wl_resource_post_event(tool_res, ffi::ZWP_TABLET_TOOL_V2_FRAME, time);
+        }
+    }
+
+    /// Tip down/up: protocol `down`/`up` on the focus client's tool resource
+    /// (with click-to-focus parity on down), or a BTN_LEFT click on the
+    /// emulated pointer path.
+    fn tablet_tip(&mut self, tool: u64, state: ass_core::input::ButtonState, time: u32) {
+        const BTN_LEFT: u32 = 0x110;
+        if self.state.tablet_focus.is_null() {
+            self.pointer_button(BTN_LEFT, state);
+            return;
+        }
+        if state.is_pressed() {
+            self.change_keyboard_focus(self.state.tablet_focus);
+        }
+        let focus_client = unsafe { ffi::wl_resource_get_client(self.state.tablet_focus) };
+        let tool_res = self.tablet_tool_for(focus_client, tool);
+        if tool_res.is_null() {
+            return;
+        }
+        unsafe {
+            if state.is_pressed() {
+                let serial = ffi::wl_display_next_serial(self.state.display);
+                ffi::wl_resource_post_event(tool_res, ffi::ZWP_TABLET_TOOL_V2_DOWN, serial);
+            } else {
+                ffi::wl_resource_post_event(tool_res, ffi::ZWP_TABLET_TOOL_V2_UP);
+            }
+            ffi::wl_resource_post_event(tool_res, ffi::ZWP_TABLET_TOOL_V2_FRAME, time);
+        }
+    }
+
+    /// A stylus button: protocol `button` + `frame` on the focus client's
+    /// tool resource. No-op without tablet focus (the emulated pointer path
+    /// has no stylus buttons).
+    fn tablet_button(
+        &mut self,
+        tool: u64,
+        button: u32,
+        state: ass_core::input::ButtonState,
+        time: u32,
+    ) {
+        if self.state.tablet_focus.is_null() {
+            return;
+        }
+        let focus_client = unsafe { ffi::wl_resource_get_client(self.state.tablet_focus) };
+        let tool_res = self.tablet_tool_for(focus_client, tool);
+        if tool_res.is_null() {
+            return;
+        }
+        let serial = unsafe { ffi::wl_display_next_serial(self.state.display) };
+        unsafe {
+            ffi::wl_resource_post_event(
+                tool_res,
+                ffi::ZWP_TABLET_TOOL_V2_BUTTON,
+                serial,
+                button,
+                u32::from(state.is_pressed()),
+            );
+            ffi::wl_resource_post_event(tool_res, ffi::ZWP_TABLET_TOOL_V2_FRAME, time);
+        }
+    }
+
     /// Transition keyboard focus: post leave to the old client's keyboard
     /// resources and enter to the new client's. The "keys" array passed to
     /// `enter` is empty — M1 does not track currently-held keys for resend on
     /// refocus; that's a polish item once the keyboard pipeline stabilizes.
     /// Also flips the `activated` toplevel state bit on the old and new
     /// surfaces so clients update their title-bar chrome to match focus.
-    fn change_keyboard_focus(&mut self, new_focus: *mut ffi::wl_resource) {
+    fn change_keyboard_focus(&mut self, mut new_focus: *mut ffi::wl_resource) {
+        if self.state.session_locked && !self.is_lock_resource(new_focus) {
+            new_focus = std::ptr::null_mut();
+        }
         if !new_focus.is_null() {
-            self.raise_toplevel(new_focus);
+            // The clicked surface may be a subsurface; raise its root
+            // toplevel so the window comes forward as a unit.
+            let rec = unsafe { ffi::wl_resource_get_user_data(new_focus) as *mut SurfaceRec };
+            let root = unsafe { surface_root_toplevel(rec) };
+            if !root.is_null() {
+                let root_resource = unsafe { (*root).resource };
+                self.raise_toplevel(root_resource);
+            }
         }
         if new_focus == self.state.keyboard_focus {
             return;
@@ -2941,23 +4205,34 @@ impl Server {
     /// requested state.
     fn set_activated_for_surface(&mut self, surface: *mut ffi::wl_resource, activated: bool) {
         // Find the SurfaceRec backing this surface resource by walking the
-        // Vec. The search is O(N) but N is small and this only fires on
-        // focus transitions, not per frame.
+        // Vec, then resolve its root toplevel — keyboard focus may rest on
+        // a subsurface, but activation is a property of the window. The
+        // search is O(N) but N is small and this only fires on focus
+        // transitions, not per frame.
         for p in self.state.live_surfaces() {
             let s = unsafe { &mut *p };
-            if s.resource == surface && !s.xdg_toplevel.is_null() {
-                if s.window.state.activated == activated {
-                    return;
-                }
-                s.window.state.activated = activated;
-                // Focusing a minimized toplevel restores it: clear the flag so
-                // the renderer and hit-test pick it up again.
-                if activated {
-                    s.window.minimized = false;
-                }
-                unsafe { reconfigure_with_state(s as *mut SurfaceRec) };
+            if s.resource != surface {
+                continue;
+            }
+            let root = unsafe { surface_root_toplevel(s as *mut SurfaceRec) };
+            if root.is_null() {
                 return;
             }
+            let s = unsafe { &mut *root };
+            if s.xdg_toplevel.is_null() {
+                return;
+            }
+            if s.window.state.activated == activated {
+                return;
+            }
+            s.window.state.activated = activated;
+            // Focusing a minimized toplevel restores it: clear the flag so
+            // the renderer and hit-test pick it up again.
+            if activated {
+                s.window.minimized = false;
+            }
+            unsafe { reconfigure_with_state(s as *mut SurfaceRec) };
+            return;
         }
     }
 
@@ -3089,6 +4364,79 @@ mod tests {
     }
 
     #[test]
+    fn draw_origin_subtracts_window_geometry_insets() {
+        let mut surface = SurfaceRec::new(std::ptr::null_mut());
+        surface.position = ass_core::Point { x: 100, y: 60 };
+
+        // No declared geometry: the buffer draws at the window-rect origin.
+        assert_eq!(
+            surface_draw_origin(&surface),
+            ass_core::Point { x: 100, y: 60 }
+        );
+
+        // CSD insets: the buffer extends up-left of the window rect.
+        surface.window_geometry = Some(ass_core::Rect::new(20, 10, 400, 300));
+        assert_eq!(
+            surface_draw_origin(&surface),
+            ass_core::Point { x: 80, y: 50 }
+        );
+    }
+
+    #[test]
+    fn draw_origin_walks_nested_subsurface_chains() {
+        let mut root = SurfaceRec::new(std::ptr::null_mut());
+        root.position = ass_core::Point { x: 100, y: 60 };
+        // A CSD root: the chain anchors at the buffer draw origin.
+        root.window_geometry = Some(ass_core::Rect::new(20, 10, 400, 300));
+
+        let mut child = SurfaceRec::new(std::ptr::null_mut());
+        child.parent = &mut root;
+        child.subsurface_offset = ass_core::Point { x: 10, y: 5 };
+        let mut grandchild = SurfaceRec::new(std::ptr::null_mut());
+        grandchild.parent = &mut child;
+        grandchild.subsurface_offset = ass_core::Point { x: 3, y: 2 };
+
+        // 100-20+10+3, 60-10+5+2: offsets accumulate in each parent's
+        // buffer space down to the root's draw origin.
+        assert_eq!(
+            surface_draw_origin(&grandchild),
+            ass_core::Point { x: 93, y: 57 }
+        );
+        assert_eq!(
+            surface_draw_origin(&child),
+            ass_core::Point { x: 90, y: 55 }
+        );
+
+        // Detaching (wl_subsurface.destroy / parent destroyed) stops the walk.
+        grandchild.parent = std::ptr::null_mut();
+        assert_eq!(surface_draw_origin(&grandchild), ass_core::Point::default());
+    }
+
+    #[test]
+    fn accepts_point_uses_buffer_space_for_subsurfaces() {
+        let mut root = SurfaceRec::new(std::ptr::null_mut());
+        root.position = ass_core::Point { x: 100, y: 60 };
+        let mut child = SurfaceRec::new(std::ptr::null_mut());
+        child.parent = &mut root;
+        child.subsurface_offset = ass_core::Point { x: 10, y: 5 };
+        child.width = 40;
+        child.height = 30;
+        child.buffer_scale = 1;
+
+        // Inside the child's buffer rect (anchored at 110,65).
+        assert!(surface_accepts_point(&child, 120.0, 70.0));
+        // Outside it, but inside the parent's rect — the parent test would
+        // catch that point instead.
+        assert!(!surface_accepts_point(&child, 105.0, 62.0));
+
+        // An input region further restricts the accepted area, in
+        // buffer-local coordinates.
+        child.input_region = Some(vec![ass_core::Rect::new(0, 0, 20, 30)]);
+        assert!(surface_accepts_point(&child, 115.0, 70.0));
+        assert!(!surface_accepts_point(&child, 135.0, 70.0));
+    }
+
+    #[test]
     fn region_subtraction_preserves_the_uncut_area() {
         let pieces = subtract_rect(
             ass_core::Rect::new(0, 0, 100, 100),
@@ -3119,6 +4467,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn layout_role_resolution_prefers_rule_then_transient_then_workspace() {
+        use ass_core::layout::LayoutRole;
+        // An explicit window rule always wins (even over a transient).
+        assert_eq!(
+            resolve_layout_role(true, true, Some(LayoutRole::Tiled)),
+            LayoutRole::Tiled
+        );
+        assert_eq!(
+            resolve_layout_role(true, false, Some(LayoutRole::Floating)),
+            LayoutRole::Floating
+        );
+        // No rule: a transient (dialog) floats even on a tiled workspace.
+        assert_eq!(resolve_layout_role(true, true, None), LayoutRole::Floating);
+        assert_eq!(resolve_layout_role(false, true, None), LayoutRole::Floating);
+        // No rule, not transient: the workspace's tiled flag decides.
+        assert_eq!(resolve_layout_role(true, false, None), LayoutRole::Tiled);
+        assert_eq!(
+            resolve_layout_role(false, false, None),
+            LayoutRole::Floating
+        );
+    }
+
     /// `Server::new` brings up the display, binds an auto-named socket, and
     /// returns a non-empty socket name. The socket lives in `XDG_RUNTIME_DIR`
     /// (libwayland's convention) and is removed by `wl_display_destroy`.
@@ -3142,6 +4513,54 @@ mod tests {
         assert!(
             !std::path::Path::new(&path).exists(),
             "socket file should be removed after drop: {path}"
+        );
+    }
+
+    #[test]
+    fn backend_outputs_reconcile_workspace_connectors_and_geometry() {
+        if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+            eprintln!("skipping: XDG_RUNTIME_DIR not set");
+            return;
+        }
+        let mut server = Server::new().expect("Server::new");
+        let geometry = |x, width| ass_core::output::OutputGeometry {
+            mode: ass_core::output::OutputMode {
+                width,
+                height: 1080,
+                refresh_mhz: 60_000,
+            },
+            scale: ass_core::output::Scale::IDENTITY,
+            transform: ass_core::Transform::Normal,
+            logical_origin: ass_core::Point { x, y: 0 },
+        };
+        server.set_outputs(vec![
+            ass_core::output::OutputInfo {
+                connector: "DP-1".into(),
+                geometry: geometry(0, 1920),
+            },
+            ass_core::output::OutputInfo {
+                connector: "HDMI-A-1".into(),
+                geometry: geometry(1920, 2560),
+            },
+        ]);
+
+        assert_eq!(
+            server
+                .output_infos()
+                .iter()
+                .map(|output| output.connector.as_str())
+                .collect::<Vec<_>>(),
+            vec!["DP-1", "HDMI-A-1"]
+        );
+        assert_eq!(server.output_logical_rect().size.w, 1920);
+        assert_eq!(
+            server
+                .workspace_snapshot()
+                .outputs
+                .iter()
+                .map(|output| output.connector.as_str())
+                .collect::<std::collections::HashSet<_>>(),
+            std::collections::HashSet::from(["DP-1", "HDMI-A-1"])
         );
     }
 }
@@ -3258,6 +4677,23 @@ unsafe extern "C" fn surface_attach(
     (*rec).pending_attach_offset = ass_core::Point { x, y };
 }
 
+unsafe fn retire_surface_buffer(rec: *mut SurfaceRec) {
+    if rec.is_null() || (*rec).state.is_null() {
+        return;
+    }
+    let buffer = std::mem::replace(&mut (*rec).current_buffer, std::ptr::null_mut());
+    let explicit_release =
+        std::mem::replace(&mut (*rec).current_explicit_release, std::ptr::null_mut());
+    if !buffer.is_null() || !explicit_release.is_null() {
+        (*(*rec).state)
+            .retired_buffer_releases
+            .push(RetiredBufferRelease {
+                buffer,
+                explicit_release,
+            });
+    }
+}
+
 unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut ffi::wl_resource) {
     let rec = ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec;
     if !(*rec).parent.is_null() && (*rec).subsurface_sync && !(*rec).subsurface_applying_cached {
@@ -3302,6 +4738,9 @@ unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut
     let was_mapped = (*rec).mapped;
     let buffer = (*rec).pending_buffer;
     let buffer_set = std::mem::take(&mut (*rec).pending_buffer_set);
+    if !extensions::explicit_sync_surface_committed(rec, buffer_set, buffer) {
+        return;
+    }
     if buffer_set
         && !buffer.is_null()
         && !(*rec).xdg_surface.is_null()
@@ -3325,6 +4764,7 @@ unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut
     // Bounding boxes are clamped to surface bounds when surfaced.
     (*rec).committed_damage = std::mem::take(&mut (*rec).pending_damage);
     if buffer_set && buffer.is_null() {
+        retire_surface_buffer(rec);
         (*rec).dmabuf = None;
         (*rec).mapped = false;
         (*rec).pixels.clear();
@@ -3344,15 +4784,28 @@ unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut
             let db = ffi::wl_resource_get_user_data(buffer) as *const DmabufBuffer;
             if !db.is_null() && (*db).have_plane {
                 if let Some(owned) = (*db).duplicate() {
+                    retire_surface_buffer(rec);
+                    let mut owned = owned;
+                    if (*rec).committed_acquire_fence >= 0 {
+                        if owned.acquire_fence >= 0 {
+                            libc_close(owned.acquire_fence);
+                        }
+                        owned.acquire_fence =
+                            std::mem::replace(&mut (*rec).committed_acquire_fence, -1);
+                    }
                     (*rec).width = owned.width;
                     (*rec).height = owned.height;
                     (*rec).dmabuf = Some(owned);
                     (*rec).content_is_dmabuf = true;
                     (*rec).generation = (*rec).generation.wrapping_add(1);
                     (*rec).mapped = true;
+                    (*rec).current_buffer = buffer;
+                    (*rec).current_explicit_release = std::mem::replace(
+                        &mut (*rec).committed_explicit_release,
+                        std::ptr::null_mut(),
+                    );
                 }
             }
-            ffi::wl_resource_post_event(buffer, ffi::WL_BUFFER_RELEASE);
             (*rec).pending_buffer = std::ptr::null_mut();
         } else {
             // shm: copy the contents out into our own tightly packed BGRA store
@@ -3385,6 +4838,7 @@ unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut
                         }
                     }
                     (*rec).pixels = pixels;
+                    retire_surface_buffer(rec);
                     (*rec).dmabuf = None;
                     (*rec).content_is_dmabuf = false;
                     (*rec).width = w;
@@ -3394,6 +4848,15 @@ unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut
                 }
             }
             ffi::wl_resource_post_event(buffer, ffi::WL_BUFFER_RELEASE);
+            if !(*rec).committed_explicit_release.is_null() {
+                let release =
+                    std::mem::replace(&mut (*rec).committed_explicit_release, std::ptr::null_mut());
+                ffi::wl_resource_post_event(
+                    release,
+                    ffi::ZWP_LINUX_BUFFER_RELEASE_V1_IMMEDIATE_RELEASE,
+                );
+                ffi::wl_resource_destroy(release);
+            }
             (*rec).pending_buffer = std::ptr::null_mut();
         }
     }
@@ -3442,11 +4905,12 @@ unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut
             // follow-up.
             let app_id = (*rec).window.app_id.clone();
             let title = (*rec).window.title.clone();
-            if let Some(rule) = st
+            let rule = st
                 .window_rules
                 .iter()
-                .find(|r| r.matches(app_id.as_deref(), title.as_deref()))
-            {
+                .find(|r| r.matches(app_id.as_deref(), title.as_deref()));
+            let rule_role = rule.and_then(|r| r.role);
+            if let Some(rule) = rule {
                 if let Some(ws_idx1) = rule.workspace {
                     let idx = (ws_idx1 as usize).saturating_sub(1);
                     if let Some(o) = st.workspaces.output(st.output) {
@@ -3455,10 +4919,18 @@ unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut
                         }
                     }
                 }
-                if let Some(role) = rule.role {
-                    (*rec).window.layout_role = role;
-                }
             }
+            // Pick the layout role (ADR-0024/0026): an explicit rule role
+            // wins; a transient dialog always floats; otherwise the tiled
+            // flag of the workspace the toplevel landed on decides.
+            let workspace_tiled = st
+                .workspaces
+                .workspace_of(id)
+                .and_then(|wid| st.workspaces.workspace(wid))
+                .map(|ws| ws.tiled)
+                .unwrap_or(false);
+            (*rec).window.layout_role =
+                resolve_layout_role(workspace_tiled, (*rec).window.parent.is_some(), rule_role);
         }
         // Live-update the foreign-toplevel list so taskbars see the new window.
         if !(*rec).state.is_null() {
@@ -3482,6 +4954,7 @@ unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut
     if !(*rec).state.is_null() && ((*rec).cursor_role || (*rec).drag_icon_role) {
         update_overlay_positions((*rec).state);
     }
+    extensions::session_lock_surface_committed(rec);
 }
 
 unsafe extern "C" fn surface_frame(
@@ -3627,6 +5100,20 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
         (*rec).viewport_resource = std::ptr::null_mut();
     }
     extensions::fractional_scale_surface_destroyed(rec);
+    extensions::session_lock_surface_destroyed(rec);
+    extensions::idle_inhibit_surface_destroyed(rec);
+    extensions::explicit_sync_surface_destroyed(rec);
+    retire_surface_buffer(rec);
+    if (*rec).committed_acquire_fence >= 0 {
+        libc_close((*rec).committed_acquire_fence);
+        (*rec).committed_acquire_fence = -1;
+    }
+    if !(*rec).committed_explicit_release.is_null() {
+        let release =
+            std::mem::replace(&mut (*rec).committed_explicit_release, std::ptr::null_mut());
+        ffi::wl_resource_post_event(release, ffi::ZWP_LINUX_BUFFER_RELEASE_V1_IMMEDIATE_RELEASE);
+        ffi::wl_resource_destroy(release);
+    }
     // Drop the toplevel from its workspace (ADR-0025). Idempotent: a no-op
     // for surfaces that never mapped or had no toplevel role. Run before the
     // slot is nulled so the resource address is still readable.
@@ -3647,6 +5134,9 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
         }
         if (*(*rec).state).keyboard_focus == resource {
             (*(*rec).state).keyboard_focus = std::ptr::null_mut();
+        }
+        if (*(*rec).state).tablet_focus == resource {
+            (*(*rec).state).tablet_focus = std::ptr::null_mut();
         }
         let id = (*rec).window.id;
         if (*(*rec).state).pending_activation == resource {
@@ -3763,9 +5253,72 @@ unsafe extern "C" fn region_resource_destroy(resource: *mut ffi::wl_resource) {
 
 // ----- wl_output ----------------------------------------------------------
 
+static OUTPUT_IMPL: ffi::wl_output_interface_impl = ffi::wl_output_interface_impl {
+    release: res_destroy,
+};
+
+unsafe fn create_output_global(state: &mut State, info: ass_core::output::OutputInfo) {
+    let mut record = Box::new(OutputGlobal {
+        state: state as *mut State,
+        info,
+        global: std::ptr::null_mut(),
+        active: true,
+    });
+    let data = record.as_mut() as *mut OutputGlobal as *mut c_void;
+    record.global = ffi::wl_global_create(
+        state.display,
+        &ffi::wl_output_interface,
+        4,
+        data,
+        output_bind,
+    );
+    if record.global.is_null() {
+        log::error!("[server] wl_output global creation failed");
+        record.active = false;
+    }
+    state.output_globals.push(record);
+}
+
+unsafe fn reconcile_output_globals(state: &mut State, outputs: &[ass_core::output::OutputInfo]) {
+    for global in &mut state.output_globals {
+        if !global.active {
+            continue;
+        }
+        if let Some(info) = outputs
+            .iter()
+            .find(|output| output.connector == global.info.connector)
+        {
+            global.info = info.clone();
+        } else {
+            ffi::wl_global_destroy(global.global);
+            global.global = std::ptr::null_mut();
+            global.active = false;
+        }
+    }
+    for output in outputs {
+        let exists = state
+            .output_globals
+            .iter()
+            .any(|global| global.active && global.info.connector == output.connector);
+        if !exists {
+            create_output_global(state, output.clone());
+        }
+    }
+}
+
+pub(crate) unsafe fn output_info_for_resource(
+    resource: *mut ffi::wl_resource,
+) -> Option<ass_core::output::OutputInfo> {
+    if resource.is_null() {
+        return None;
+    }
+    let global = ffi::wl_resource_get_user_data(resource) as *mut OutputGlobal;
+    (!global.is_null()).then(|| (*global).info.clone())
+}
+
 /// Compute the (mode, integer-scale, transform) tuple from the state's
-/// `output_geometry`, with a sane default before the first resize.
-unsafe fn output_params(state: *mut State) -> (ass_core::output::OutputMode, i32, i32) {
+/// output record, with a sane default before the first backend update.
+unsafe fn output_params(global: *mut OutputGlobal) -> (ass_core::output::OutputMode, i32, i32) {
     let mut mode = ass_core::output::OutputMode {
         width: 1280,
         height: 720,
@@ -3773,8 +5326,8 @@ unsafe fn output_params(state: *mut State) -> (ass_core::output::OutputMode, i32
     };
     let mut scale_i = 1i32;
     let mut transform = 0i32;
-    if !state.is_null() {
-        let g = (*state).output_geometry;
+    if !global.is_null() {
+        let g = (*global).info.geometry;
         if g.mode.width > 0 && g.mode.height > 0 {
             mode = g.mode;
         }
@@ -3793,16 +5346,25 @@ fn integer_output_scale(scale: f32) -> i32 {
 
 /// Post the full geometry + mode + scale + done sequence to one wl_output
 /// resource. Version-gated: scale/done require v2.
-unsafe fn send_output_geometry(res: *mut ffi::wl_resource, state: *mut State) {
-    let (mode, scale_i, transform) = output_params(state);
+unsafe fn send_output_geometry(res: *mut ffi::wl_resource) {
+    let global = ffi::wl_resource_get_user_data(res) as *mut OutputGlobal;
+    let (mode, scale_i, transform) = output_params(global);
     let version = ffi::wl_resource_get_version(res);
     let make = CString::new("ass").unwrap();
-    let model = CString::new("nested").unwrap();
+    let (origin, model_name) = if global.is_null() {
+        (ass_core::Point::default(), "unknown")
+    } else {
+        (
+            (*global).info.geometry.logical_origin,
+            (*global).info.connector.as_str(),
+        )
+    };
+    let model = CString::new(model_name).unwrap_or_else(|_| CString::new("output").unwrap());
     ffi::wl_resource_post_event(
         res,
         ffi::WL_OUTPUT_GEOMETRY,
-        0i32,
-        0i32,
+        origin.x,
+        origin.y,
         300i32,
         200i32,
         0i32,
@@ -3820,15 +5382,26 @@ unsafe fn send_output_geometry(res: *mut ffi::wl_resource, state: *mut State) {
     );
     if version >= 2 {
         ffi::wl_resource_post_event(res, ffi::WL_OUTPUT_SCALE, scale_i);
+    }
+    if version >= 4 {
+        let name = CString::new((*global).info.connector.as_str())
+            .unwrap_or_else(|_| CString::new("unknown").unwrap());
+        let description = CString::new(format!("ass output {}", (*global).info.connector))
+            .unwrap_or_else(|_| CString::new("ass output").unwrap());
+        ffi::wl_resource_post_event(res, ffi::WL_OUTPUT_NAME, name.as_ptr());
+        ffi::wl_resource_post_event(res, ffi::WL_OUTPUT_DESCRIPTION, description.as_ptr());
+    }
+    if version >= 2 {
         ffi::wl_resource_post_event(res, ffi::WL_OUTPUT_DONE);
     }
 }
 
 unsafe extern "C" fn output_resource_destroy(resource: *mut ffi::wl_resource) {
-    let state = ffi::wl_resource_get_user_data(resource) as *mut State;
-    if state.is_null() {
+    let global = ffi::wl_resource_get_user_data(resource) as *mut OutputGlobal;
+    if global.is_null() || (*global).state.is_null() {
         return;
     }
+    let state = (*global).state;
     for slot in (*state).output_resources.iter_mut() {
         if *slot == resource {
             *slot = std::ptr::null_mut();
@@ -3847,18 +5420,19 @@ unsafe extern "C" fn output_bind(
     if res.is_null() {
         return;
     }
-    let state = data as *mut State;
+    let global = data as *mut OutputGlobal;
     ffi::wl_resource_set_implementation(
         res,
-        std::ptr::null(),
-        state as *mut c_void,
+        &OUTPUT_IMPL as *const _ as *const c_void,
+        global as *mut c_void,
         Some(output_resource_destroy),
     );
-    if !state.is_null() {
+    if !global.is_null() && !(*global).state.is_null() {
+        let state = (*global).state;
         (*state).output_resources.push(res);
     }
 
-    send_output_geometry(res, state);
+    send_output_geometry(res);
 }
 
 // ----- xdg_wm_base --------------------------------------------------------
@@ -4174,7 +5748,10 @@ unsafe extern "C" fn xdg_surface_get_popup(
     let (px, py) = if parent_rec.is_null() {
         (0, 0)
     } else {
-        ((*parent_rec).position.x, (*parent_rec).position.y)
+        // Positioner coordinates are parent-surface-local: anchor at the
+        // parent's buffer draw origin, not its window-rect origin.
+        let origin = surface_draw_origin(&*parent_rec);
+        (origin.x, origin.y)
     };
     let anchor_rect = if !pos_state.is_null() {
         (*pos_state)
@@ -6035,12 +7612,13 @@ unsafe fn update_drag_focus(
         if !target_device.is_null() {
             let surface = ffi::wl_resource_get_user_data(focus) as *mut SurfaceRec;
             if !surface.is_null() {
+                let origin = surface_draw_origin(&*surface);
                 ffi::wl_resource_post_event(
                     target_device,
                     ffi::WL_DATA_DEVICE_MOTION,
                     time,
-                    ffi::wl_fixed_from_f32(x - (*surface).position.x as f32),
-                    ffi::wl_fixed_from_f32(y - (*surface).position.y as f32),
+                    ffi::wl_fixed_from_f32(x - origin.x as f32),
+                    ffi::wl_fixed_from_f32(y - origin.y as f32),
                 );
             }
         }
@@ -6079,13 +7657,14 @@ unsafe fn update_drag_focus(
         let surface = ffi::wl_resource_get_user_data(focus) as *mut SurfaceRec;
         if !surface.is_null() {
             let serial = ffi::wl_display_next_serial((*state).display);
+            let origin = surface_draw_origin(&*surface);
             ffi::wl_resource_post_event(
                 target_device,
                 ffi::WL_DATA_DEVICE_ENTER,
                 serial,
                 focus,
-                ffi::wl_fixed_from_f32(x - (*surface).position.x as f32),
-                ffi::wl_fixed_from_f32(y - (*surface).position.y as f32),
+                ffi::wl_fixed_from_f32(x - origin.x as f32),
+                ffi::wl_fixed_from_f32(y - origin.y as f32),
                 drag.offer,
             );
         }
@@ -6220,7 +7799,8 @@ unsafe extern "C" fn dmabuf_create_params(
     if params.is_null() {
         return;
     }
-    let acc = Box::into_raw(Box::new(DmabufBuffer::empty()));
+    let state = ffi::wl_resource_get_user_data(dmabuf) as *mut State;
+    let acc = Box::into_raw(Box::new(DmabufBuffer::empty(state)));
     ffi::wl_resource_set_implementation(
         params,
         &PARAMS_IMPL as *const _ as *const c_void,
@@ -6288,6 +7868,7 @@ unsafe fn params_finalize(
         acc as *mut c_void,
         Some(buffer_resource_destroy),
     );
+    (*acc).resource = buffer;
     buffer
 }
 
@@ -6340,6 +7921,19 @@ unsafe extern "C" fn params_resource_destroy(resource: *mut ffi::wl_resource) {
 unsafe extern "C" fn buffer_resource_destroy(resource: *mut ffi::wl_resource) {
     let db = ffi::wl_resource_get_user_data(resource) as *mut DmabufBuffer;
     if !db.is_null() {
+        let state = (*db).state;
+        if !state.is_null() {
+            for surface in (*state).live_surfaces() {
+                if (*surface).current_buffer == resource {
+                    (*surface).current_buffer = std::ptr::null_mut();
+                }
+            }
+            for retired in &mut (*state).retired_buffer_releases {
+                if retired.buffer == resource {
+                    retired.buffer = std::ptr::null_mut();
+                }
+            }
+        }
         drop(Box::from_raw(db));
     }
 }
@@ -6616,13 +8210,6 @@ pub(crate) unsafe extern "C" fn noop_obj_serial(
     _c: *mut ffi::wl_client,
     _r: *mut ffi::wl_resource,
     _obj: *mut ffi::wl_resource,
-    _serial: u32,
-) {
-}
-
-pub(crate) unsafe extern "C" fn noop_serial(
-    _c: *mut ffi::wl_client,
-    _r: *mut ffi::wl_resource,
     _serial: u32,
 ) {
 }

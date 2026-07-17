@@ -5,8 +5,8 @@ Wayland compositor built on flux and lens.
 
 ## Responsibilities
 
-- Initialize logging, configuration, the nested backend, and the graphics
-  stack.
+- Initialize logging, configuration, the presentation backend, and the
+  graphics stack.
 - Construct the Wayland server, renderer, shell components, wallpaper, and
   IPC server.
 - Run the frame loop and route input, window actions, application launches,
@@ -16,14 +16,15 @@ Wayland compositor built on flux and lens.
 
 Reusable models and mechanisms do not belong in this crate. They live in the
 corresponding `ass-*` library so the executable remains wiring and lifecycle
-code. The current executable runs through the nested backend; direct DRM/KMS
-operation belongs in `ass-backend` when implemented.
+code. The executable selects the presentation backend (`--backend
+auto|drm|nested` or `ASS_BACKEND`): nested inside an existing session for
+development, direct DRM/KMS on a bare TTY via `ass-backend`.
 
 ## Runtime Effect
 
-Running `ass` creates a nested compositor window, exposes a Wayland display to
-clients, draws client surfaces and shell chrome, and exposes the control socket
-at `$XDG_RUNTIME_DIR/ass.sock`.
+Running `ass` composites client surfaces and shell chrome into a nested
+window or directly onto a KMS display, exposes a Wayland display to clients,
+and serves the control socket at `$XDG_RUNTIME_DIR/ass.sock`.
 
 ## Use
 

@@ -22,6 +22,8 @@ use crate::input::{
 pub enum Action {
     /// Open or close the application launcher.
     ToggleLauncher,
+    /// Open or close the window/workspace overview (M9).
+    ToggleOverview,
     /// Close the currently focused toplevel.
     CloseFocused,
     /// Move keyboard focus to the next mapped toplevel (forward).
@@ -66,10 +68,11 @@ impl Keymap {
                     Action::CycleFocusBack,
                 ),
                 kb(Mods::SUPER, XKB_KEY_Return, Action::ToggleLauncher),
-                kb(Mods::SUPER, 0x71, Action::CloseFocused), /* 'q' */
+                kb(Mods::SUPER, 0x6f, Action::ToggleOverview), /* 'o' */
+                kb(Mods::SUPER, 0x71, Action::CloseFocused),   /* 'q' */
                 kb(Mods::SUPER, 0xff53, Action::WorkspaceNext), /* Right */
                 kb(Mods::SUPER, 0xff51, Action::WorkspacePrev), /* Left */
-                kb(Mods::SUPER, 0x74, Action::ToggleTiling), /* 't' */
+                kb(Mods::SUPER, 0x74, Action::ToggleTiling),   /* 't' */
                 kb(Mods::SUPER | Mods::SHIFT, 0xff0d, Action::Quit),
             ],
         }
@@ -179,6 +182,7 @@ pub fn mod_from_name(s: &str) -> Option<Mods> {
 pub fn action_from_name(s: &str) -> Option<Action> {
     Some(match s.to_ascii_lowercase().as_str() {
         "launcher" | "togglelauncher" | "apps" => Action::ToggleLauncher,
+        "overview" | "toggleoverview" => Action::ToggleOverview,
         "close" | "closefocused" => Action::CloseFocused,
         "cycle" | "next" => Action::CycleFocus,
         "prev" | "previous" | "cycleback" => Action::CycleFocusBack,

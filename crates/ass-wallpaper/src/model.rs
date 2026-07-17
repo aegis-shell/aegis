@@ -19,7 +19,12 @@ pub(super) struct ModelLayer {
     scene: Scene,
     material: Material,
     bounds: Bounds,
-    depth_by_slot: Vec<Option<Target>>,
+    /// A frame may render the model twice at different extents (launcher
+    /// backdrop capture followed by the full-size desktop). Keep every depth
+    /// attachment referenced by that slot's command buffer alive through
+    /// submission; replacing a single per-slot target here would destroy an
+    /// image while recorded GPU commands still reference it.
+    depth_by_slot: Vec<Vec<Target>>,
     started: Instant,
 }
 
@@ -87,25 +92,25 @@ impl ModelLayer {
     ) -> Result<(), flux::Error> {
         let slot = frame.index() as usize;
         if self.depth_by_slot.len() <= slot {
-            self.depth_by_slot.resize_with(slot + 1, || None);
+            self.depth_by_slot.resize_with(slot + 1, Vec::new);
         }
 
-        // Recreate only this slot's target after a resize or when switching
-        // between direct and downsampled offscreen composition. begin_frame
-        // already waited for the slot fence, so replacement cannot race GPU.
         let surface_size = color_target.map_or_else(|| frame.surface_size(), flux::Image::size);
-        let replace = self.depth_by_slot[slot]
-            .as_ref()
-            .is_none_or(|target| target.size() != surface_size);
-        if replace {
-            self.depth_by_slot[slot] = Some(Target::depth(
+        let target_index = self.depth_by_slot[slot]
+            .iter()
+            .position(|target| target.size() == surface_size);
+        let target_index = if let Some(index) = target_index {
+            index
+        } else {
+            self.depth_by_slot[slot].push(Target::depth(
                 device,
                 surface_size.0,
                 surface_size.1,
                 DEPTH_FORMAT,
             )?);
-        }
-        let depth = self.depth_by_slot[slot].as_ref().unwrap();
+            self.depth_by_slot[slot].len() - 1
+        };
+        let depth = &self.depth_by_slot[slot][target_index];
 
         let elapsed = self.started.elapsed().as_secs_f32();
         let aspect = surface_size.0 as f32 / surface_size.1.max(1) as f32;
@@ -378,6 +383,39 @@ mod tests {
         canvas.end();
         frame.submit().unwrap().present().unwrap();
 
+        let mut pixels = vec![0u8; 160 * 96 * 4];
+        surface.read_pixels(&mut pixels).unwrap();
+        assert!(pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel[0] > 20 || pixel[1] > 20 || pixel[2] > 20));
+    }
+
+    #[test]
+    fn procedural_model_keeps_two_same_frame_depth_targets_alive() {
+        let Ok(device) = flux::Device::new(true, &[], &[]) else {
+            return;
+        };
+        let surface = flux::Surface::offscreen(&device, 160, 96).unwrap();
+        let canvas = flux::Canvas::new(&surface).unwrap();
+        let target = flux::Image::render_target(&device, 80, 48, surface.format()).unwrap();
+        let mut model = ModelLayer::builtin(&device, &surface).unwrap();
+
+        let mut frame = surface.begin_frame().unwrap();
+        canvas
+            .begin_target(&frame, &target, Some(flux::rgba(2, 3, 6, 255)))
+            .unwrap();
+        canvas.end_target();
+        model.draw(&device, &mut frame, Some(&target)).unwrap();
+
+        canvas
+            .begin(&frame, Some(flux::rgba(2, 3, 6, 255)))
+            .unwrap();
+        canvas.end();
+        model.draw(&device, &mut frame, None).unwrap();
+        frame.submit().unwrap().present().unwrap();
+
+        // Both extents remain cached until their slot can be safely reused.
+        assert_eq!(model.depth_by_slot[0].len(), 2);
         let mut pixels = vec![0u8; 160 * 96 * 4];
         surface.read_pixels(&mut pixels).unwrap();
         assert!(pixels

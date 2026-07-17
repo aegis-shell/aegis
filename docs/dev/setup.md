@@ -26,8 +26,13 @@ meson compile -C ../optics/build
 If a build tree does not exist yet, configure it once before compiling:
 
 ```bash
-meson setup ../optics/build ../optics -Dtests=false
+meson setup ../optics/build ../optics -Dtests=false -Dbuildtype=debugoptimized
 ```
+
+`debugoptimized` keeps assertions but compiles the C libraries with `-O2`;
+a plain `debug` (`-O0`) build is visibly slow on HiDPI outputs. An existing
+tree can be switched in place with `meson configure ../optics/build
+-Dbuildtype=debugoptimized && meson compile -C ../optics/build`.
 
 The `-sys` build scripts locate the tree through
 `meson-uninstalled/flux-uninstalled.pc` and

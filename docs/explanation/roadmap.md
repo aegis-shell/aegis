@@ -24,13 +24,13 @@ committed; the verification criteria are.
 | [M0](#m0-nested-bring-up) | Nested window: flux presents cleared frames with lens chrome | Complete |
 | [M1](#m1-core-wayland-server) | Core globals, `wl_shm` client surface composited, input routed | Complete |
 | [M2](#m2-gpu-client-buffers) | `zwp_linux_dmabuf_v1` with flux dmabuf import | Complete |
-| [M3](#m3-window-management-and-first-chrome) | Window management and first-party chrome | In progress |
-| [M4](#m4-drmkms-backend) | DRM/KMS backend with libinput and libseat | Planned |
-| [M5](#m5-configuration-and-ipc) | Declarative configuration and versioned IPC | In progress |
+| [M3](#m3-window-management-and-first-chrome) | Window management and first-party chrome | Complete |
+| [M4](#m4-drmkms-backend) | DRM/KMS backend with libinput and libseat | In progress (hardware verification) |
+| [M5](#m5-configuration-and-ipc) | Declarative configuration and versioned IPC | Complete |
 | [M6](#m6-workspaces-and-layout) | Dynamic per-output workspaces; floating with tiling policy | Complete (single-output) |
-| [M7](#m7-multi-output-and-input-completeness) | Multi-output, mixed DPI, gestures, tablet, color | In progress (model) |
-| [M8](#m8-xwayland-and-application-coverage) | XWayland integration and broad application coverage | Planned |
-| [M9](#m9-polish-and-completeness) | Animations, overview, notifications, accessibility | Planned |
+| [M7](#m7-multi-output-and-input-completeness) | Multi-output, mixed DPI, gestures, tablet, color | In progress |
+| [M8](#m8-xwayland-and-application-coverage) | XWayland integration and broad application coverage | Descoped |
+| [M9](#m9-polish-and-completeness) | Animations, overview, notifications, accessibility | In progress |
 | [M10](#m10-the-agent-phase) | The agent adaptation layer | In progress (framing) |
 
 ## M0: Nested Bring-up
@@ -62,8 +62,12 @@ tracking are all in place.
 [ADR-0011](../adr/0011-subsurface-tree-and-z-split-rendering.md),
 [ADR-0014](../adr/0014-buffer-transform-and-viewport-crop.md),
 [ADR-0015](../adr/0015-damage-tracking.md), and
-[ADR-0020](../adr/0020-buffer-scale-applied-at-composite.md). Remaining:
-nested subsurfaces, explicit-sync buffer release.
+[ADR-0020](../adr/0020-buffer-scale-applied-at-composite.md). Explicit-sync
+buffer release landed with `zwp_linux_explicit_synchronization_v1` (acquire
+fences through Flux import and KMS `IN_FENCE_FD`; deferred `wl_buffer.release`).
+Nested subsurfaces are walked recursively for both rendering and input: a
+subsurface's own subsurfaces anchor in its buffer space, stack relative to
+it, and receive pointer input directly when topmost.
 
 ## M3: Window Management and First Chrome
 
@@ -73,7 +77,7 @@ and an application launcher, all behind the `Chrome` trait. Key bindings are
 configurable through `$ASS_KEYBINDS`. Real application icons render in the
 dock.
 
-**Status.** In progress. Shipped: toplevel metadata and state machine
+**Status.** Complete. Shipped: toplevel metadata and state machine
 ([ADR-0012](../adr/0012-toplevel-metadata-and-state-machine.md)),
 interactive move and resize
 ([ADR-0013](../adr/0013-interactive-move-and-resize.md)),
@@ -83,14 +87,12 @@ decorations ([ADR-0017](../adr/0017-server-side-decorations-via-overlays.md)),
 dock ([ADR-0019](../adr/0019-dock-as-bottom-center-overlay.md)),
 the `Chrome` trait ([ADR-0021](../adr/0021-chrome-component-trait.md)),
 and the launcher ([ADR-0022](../adr/0022-application-launcher.md)).
-Floating-window borders now start edge and corner resize grabs, SVG desktop
-icons are rasterized when librsvg is available, and the application catalog
-is refreshed while the compositor is running.
-
-**Remaining for M3 close.** Honour
-`xdg_toplevel.set_window_geometry` frame insets. This closes the remaining
-protocol gap between "demo on the nested backend" and "a complete
-floating-only desktop on the nested backend".
+Floating-window borders start edge and corner resize grabs, SVG desktop
+icons are rasterized when librsvg is available, the application catalog is
+refreshed while the compositor is running, and
+`xdg_toplevel.set_window_geometry` frame insets are honored end to end —
+client-decorated windows place, hit-test, and receive input by their visible
+window rect, excluding shadow margins.
 
 ## M4: DRM/KMS Backend
 
@@ -99,13 +101,24 @@ DRM/KMS backend, with libinput for input and libseat for session and device
 ownership. The nested backend remains for development. Both implement the
 `Backend` trait, so the server, renderer, and shell are unchanged.
 
-**Status.** Planned. The backend abstraction is already in place
-([`ass-backend`](../../crates/ass-backend)); the nested backend is the only
-implementation. The DRM/KMS path needs explicit-sync render targets in flux
-(noted as a dependency gap in [Architecture](architecture.md)).
+**Status.** In progress — code complete, pending hardware verification. The
+backend abstraction ships in
+([`ass-backend`](../../crates/ass-backend)) with two implementations behind
+the `Backend` trait: nested (development) and DRM/KMS. The DRM backend does
+atomic modesetting with a TEST_ONLY preflight, scans out Flux offscreen
+dma-bufs (GBM-less) through a two-slot page-flip ring with explicit-sync
+`IN_FENCE_FD` when the plane set allows, takes input from libinput
+(pointer, keyboard, touch, touchpad gestures, tablet tools), owns the session
+through libseat with VT switch suspend/resume, and handles udev hotplug with
+per-connector workspace restore (ADR-0025) and surface recreation when the
+modifier set changes. `--backend auto|drm|nested` (or `ASS_BACKEND`) selects
+the target at startup.
 
 **Verification.** ass starts from a TTY on a single monitor, lights the
 display, and runs M3's chrome against real clients without a host session.
+The known-risk paths to exercise first are the flip-wait under input load,
+VT round-trip with a flip in flight, and monitor unplug/replug during
+presentation.
 
 ## M5: Configuration and IPC
 
@@ -115,20 +128,20 @@ live reload. A versioned IPC over a unix socket exposes the same model the
 shell reads, so external programs can query and mutate windows, workspaces,
 outputs, and inputs.
 
-**Status.** In progress, nearly complete. The configuration system shipped
+**Status.** Complete. The configuration system shipped
 (ADR-0026): one TOML file at `$XDG_CONFIG_HOME/ass/config.toml`, schema
 version 1, mtime live reload, structured diagnostics, with `$ASS_KEYBINDS`
 retained as a deprecated transitional override. The IPC shipped its full
 seed surface (ADR-0027): versioned length-framed JSON over
 `$XDG_RUNTIME_DIR/ass.sock`, capability-gated handshake, `query`
-(`GetWindows`), `control`/`session` commands (`Focus`/`Close`/`Move`/`Cycle`/`Quit`)
-applied on the main loop, and a `WindowsChanged` event stream. See
+(`GetWindows`, `GetWorkspaces`, `GetOutputs`, `GetNotifications`),
+`control`/`session` commands (`Focus`/`Close`/`Move`/`Cycle`/
+`SwitchWorkspace[To]`/`MoveToWorkspace`/`ToggleTiling`/`Quit`) applied on the
+main loop, and `WindowsChanged`/`WorkspaceChanged`/`Notified` event streams.
+Layout, dock, UI policy, window rules, and agent scopes all load from the
+same file and apply live. See
 [ADR-0026](../adr/0026-configuration-system.md) and
 [ADR-0027](../adr/0027-ipc-and-introspection.md).
-
-**Remaining for M5 close.** Richer config sections as M6 lands; workspace
-and output commands/events once those models exist. The seam itself is
-complete.
 
 **Verification.** Editing the config file changes behavior without a
 restart and reports schema errors to the user. An external tool enumerates
@@ -171,10 +184,12 @@ unit-tested. See [ADR-0024](../adr/0024-layout-model.md) and
 [ADR-0025](../adr/0025-workspace-model.md).
 
 **M6 status: functionally complete for the single-output compositor.** The
-remaining items are polish and M7-dependent: server-side output hotplug
-(actual unplug/replug needs the multi-output backend, ADR-0028); per-workspace
-tiling policy config; floating-role exceptions; chrome-aware tiling margins
-(the dock now reserves the bottom edge; other chrome can follow).
+previously remaining items have landed: server-side output hotplug ships with
+the DRM/KMS backend (M4), including replug-restore against real connectors;
+the per-workspace tiling default is configurable (`[layout] default_tiled`);
+transient dialogs are floating-role exceptions, both at map time and during
+the tiling sweep. What remains is polish: chrome-aware tiling margins for
+chrome beyond the dock (which already reserves the bottom edge).
 
 **Verification.** Each output has its own workspace set with an empty
 workspace always available. A window can be tiled or floated independently.
@@ -188,17 +203,22 @@ scale through `wp_fractional_scale_v1`. Touchpad gestures, tablet support
 with per-output mapping, and basic color management land with the libinput
 backend.
 
-**Status.** In progress (model groundwork). The per-output geometry model
-landed in `ass-core::output` (`OutputMode`, `Scale`, `OutputGeometry`) with
-the logical-size derivation (physical mode, axis-swap for 90°/270°
-transforms, divide by integer or fractional scale) — pure and unit-tested.
-See [ADR-0028](../adr/0028-output-and-monitor-model.md).
+**Status.** In progress. The per-output geometry model landed in
+`ass-core::output` (`OutputMode`, `Scale`, `OutputGeometry`) — see
+[ADR-0028](../adr/0028-output-and-monitor-model.md) — and is now wired end to
+end: backends report real connectors and geometry, the server advertises
+per-connector `wl_output` (v4, with name/description) and `zxdg_output_v1`,
+and the workspace model and tiling work-area track live output geometry.
+`wp_fractional_scale_v1` and `wp_viewporter` are advertised. Touchpad
+gestures (`zwp_pointer_gestures_v1`) and tablet tools
+(`zwp_tablet_manager_v2`, full axis routing with pointer-emulation fallback)
+land with the libinput backend.
 
-**Remaining for M7.** Server/backend wiring: track real output geometry
-from the backend, expose it to the workspace model and the tiling work-area,
-and advertise `wp_fractional_scale_v1` + `wp_viewporter`. Touchpad gestures,
-tablet mapping, and color management arrive with the libinput/DRM-KMS
-backend (M4). Needs real multi-monitor or DRM hardware to verify.
+**Remaining for M7.** Color management (needs color-space support in the
+flux engine first). Multi-monitor rendering correctness and gesture/tablet
+feel need real hardware to verify. Per-output scale policy for mixed-DPI
+setups landed as `[[output]]` config entries overriding the
+backend-reported scale per connector.
 
 **Verification.** Two outputs at different scales render correctly and the
 compositor's own chrome stays pixel-perfect. A touchpad three-finger swipe
@@ -206,15 +226,11 @@ switches workspaces. A tablet stylus maps to a chosen output.
 
 ## M8: XWayland and Application Coverage
 
-**Outcome.** XWayland is integrated as an optional, lazily-started backend.
-X11 windows enter the same window model as Wayland toplevels, so focus,
-workspaces, decorations, and the IPC treat them uniformly.
-
-**Status.** Planned. See [ADR-0030](../adr/0030-xwayland-strategy.md).
-
-**Verification.** A representative set of X11 applications (an IDE, a
-browser, an emulator) run under ass with correct focus, decoration,
-clipboard, drag-and-drop, and workspace placement.
+**Status.** Descoped — XWayland is not in the support scope. X11
+applications are out of scope for the supported configuration; the
+integration strategy remains recorded in
+[ADR-0030](../adr/0030-xwayland-strategy.md) should the decision ever be
+revisited.
 
 ## M9: Polish and Completeness
 
@@ -226,8 +242,23 @@ Overview model), notifications served by the `Chrome` trait, screen lock and
 idle, a screenshot and screencast path through `xdg-desktop-portal`, and
 screen-reader and basic accessibility hooks.
 
-**Status.** Planned. The animation ADR is recorded; the rest are described
-at the level of intent and will be expanded when the milestone opens.
+**Status.** In progress. Landed: notifications served by the `Chrome` trait
+(queue, IPC, toast and HUD chrome), screen lock
+(`ext-session-lock-v1`, fail-closed with secure-frame confirmation) and idle
+(`ext-idle-notify-v1` + `zwp-idle-inhibit-v1`), the reduced-motion half
+of the animation policy ([ADR-0029](../adr/0029-animation-and-effect-policy.md)) —
+one `[ui] reduced_motion` switch resolves every chrome and lens transition
+in a single frame, live on reload — and the declarative transition mechanism
+itself: non-interactive window geometry changes (tiling, IPC geometry)
+record previous and target rectangles, publish them in the snapshot, and
+interpolate at draw time, with subsurface trees glued to their root. The
+unified overview (window grid + workspace rail, live thumbnails, click to
+focus, `Super+O` or `ass-ctl overview`) is in daily use, and a screenshot
+path (`ass-ctl screenshot`, scoped `CaptureOutput` pixel capture per
+[ADR-0037](../adr/0037-scoped-pixel-capture-over-ipc.md)) covers the
+single-frame half of the capture story. Still planned: window open/close
+transitions and the workspace-switch slide, screencast streaming through
+`xdg-desktop-portal`, and screen-reader accessibility hooks.
 
 **Verification.** Reduced-motion is respected end to end. The overview
 lists every window across workspaces and switches to a chosen one.
@@ -242,12 +273,15 @@ model that bounds what the agent may do. The agent is an IPC client with a
 defined scope, never a special client of the compositor.
 
 **Status.** In progress. Durable window ids, the mutation journal, fail-closed
-named scopes, deterministic floating-window geometry, and bounded target-local
-input are implemented. The blueprint is in
+named scopes, deterministic floating-window geometry, bounded target-local
+input, and scoped pixel capture
+([ADR-0037](../adr/0037-scoped-pixel-capture-over-ipc.md)) are implemented.
+The blueprint is in
 [The Agent Phase](agent-phase.md); decisions are recorded in
 [ADR-0031](../adr/0031-agent-as-scoped-ipc-client.md) through
-[ADR-0036](../adr/0036-scoped-semantic-automation.md). Pixel capture and the
-remaining desktop-dependent semantic surface stay open.
+[ADR-0036](../adr/0036-scoped-semantic-automation.md). The remaining
+desktop-dependent semantic surface (window-content capture per window,
+semantic element trees) stays open.
 
 ## Sequencing Rationale
 

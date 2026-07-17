@@ -170,6 +170,40 @@ impl Client {
         self.command(Command::DismissNotification { id })
     }
 
+    /// Capture the focused output and have the compositor write it as a PNG
+    /// file (M9 screenshot path). Queued like every other command; the file
+    /// appears once the main loop applies it.
+    pub fn screenshot(&mut self, path: impl Into<String>) -> io::Result<()> {
+        self.command(Command::Screenshot { path: path.into() })
+    }
+
+    /// Capture the focused output as a PNG, returning `(width, height, png
+    /// bytes)` (M10 pixel capture). Requires the `control` capability and an
+    /// explicit `CaptureOutput` op in the connection's scope.
+    pub fn capture_output(&mut self) -> io::Result<(u32, u32, Vec<u8>)> {
+        write_msg(&mut self.stream, &Request::CaptureOutput)?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::CaptureOutput {
+                width,
+                height,
+                png_base64,
+            } => {
+                let png = crate::base64::decode(&png_base64).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "invalid base64 in CaptureOutput",
+                    )
+                })?;
+                Ok((width, height, png))
+            }
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected CaptureOutput, got {other:?}"),
+            )),
+        }
+    }
+
     /// Fetch the live notification queue.
     pub fn notifications(&mut self) -> io::Result<Vec<ass_core::notify::Notification>> {
         write_msg(&mut self.stream, &Request::GetNotifications)?;

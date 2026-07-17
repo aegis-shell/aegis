@@ -26,6 +26,7 @@ requests the capability and server policy otherwise permits it.
 | `GetNotifications` | `Notifications` | `query` |
 | `GetOutputs` | `Outputs` | `query` |
 | `GetJournal { since }` | `Journal` | `query` |
+| `CaptureOutput` | `CaptureOutput` | `control` + explicit scope op |
 
 `Subscribe` enables coarse events. `SubscribeJournal` enables one `Journal`
 event per applied main-loop command.
@@ -45,8 +46,10 @@ event per applied main-loop command.
 | `SwitchWorkspaceTo { id }` | `control` | `SwitchWorkspaceTo` | Workspace |
 | `MoveToWorkspace { window, workspace }` | `control` | `MoveToWorkspace` | Window and workspace |
 | `ToggleTiling` | `control` | `ToggleTiling` | Current workspace |
+| `ToggleOverview` | `control` | `ToggleOverview` | — |
 | `Notify { summary, body, app_id }` | `control` | `Notify` | — |
 | `DismissNotification { id }` | `control` | `DismissNotification` | Notification |
+| `Screenshot { path }` | `control` | `Screenshot` | Focused output |
 | `Quit` | `session` | — | Session |
 
 `Do` returns `Ok` after the command is queued, not after it is applied. Read
@@ -127,10 +130,22 @@ after queuing appears as `Effect::Refused` in the mutation journal.
 
 ## Capture
 
-The IPC does not expose screenshots, background window capture, or frame
-streaming. Pixel capture remains behind the perceptual-path decision described
-by [ADR-0031](../adr/0031-agent-as-scoped-ipc-client.md). The launcher's
-offscreen backdrop is private rendering state and is not a capture endpoint.
+ass exposes pixel capture through two fail-closed operations that share one
+offscreen re-render path (ADR-0037). Both are refused while the session is
+locked or the seat is inactive, and both capture exactly what the user sees,
+including the overview grid while overview mode is active.
+
+`Command::Screenshot { path }` is a journaled `control` command that writes
+the focused output as a PNG file; `ass-ctl screenshot` is its reference
+frontend. `Request::CaptureOutput` is a synchronous query returning
+`Response::CaptureOutput { width, height, png_base64 }` — the frame as a
+base64-encoded PNG. The request requires the `control` capability and an
+explicit `CaptureOutput` entry in the connection's scope `ops`; like
+`InjectInput`, the operation is never inherited through the `None`-means-all
+default. PNG payloads are bounded by the codec's 16 MiB frame limit.
+
+Continuous frame streaming (screencast, `xdg-desktop-portal`) is future
+work and will reuse the same readback path.
 
 ## Named Scopes
 

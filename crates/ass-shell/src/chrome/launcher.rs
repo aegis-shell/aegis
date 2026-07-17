@@ -71,6 +71,9 @@ pub struct Launcher {
     /// Right-click application menu. It resolves stored window ids against
     /// the live snapshot on every frame, so closed windows disappear safely.
     app_menu: AppMenu,
+    /// Accessibility reduced-motion (ADR-0029): the reveal spring and page
+    /// slide resolve to their targets in one frame.
+    reduced_motion: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -177,6 +180,7 @@ impl Launcher {
             search_focused: false,
             modal_reserved: Reserved::default(),
             app_menu: AppMenu::new("ass-launcher-context-menu"),
+            reduced_motion: false,
         }
     }
 
@@ -212,6 +216,13 @@ impl Launcher {
     }
 
     fn advance_visibility(&mut self, target: f32, dt: f32) -> f32 {
+        if self.reduced_motion {
+            // ADR-0029: the reveal resolves to its end state in one frame.
+            self.visibility.value = target;
+            self.visibility.velocity = 0.0;
+            self.anim_active = false;
+            return target;
+        }
         let omega = OPEN_STIFFNESS.sqrt();
         let damping = 2.0 * OPEN_DAMPING * omega;
         let dt = dt.clamp(0.0, 1.0 / 30.0);
@@ -310,7 +321,10 @@ impl Chrome for Launcher {
         frame.set_theme(faded_theme(original_theme, progress));
 
         let dt = raw.dt_seconds.clamp(0.0, 1.0 / 15.0);
-        if self.page_shift.abs() > 0.05 {
+        if self.reduced_motion {
+            // ADR-0029: no page-change slide.
+            self.page_shift = 0.0;
+        } else if self.page_shift.abs() > 0.05 {
             self.page_shift *= (-18.0 * dt).exp();
         } else {
             self.page_shift = 0.0;
@@ -795,6 +809,10 @@ impl Chrome for Launcher {
             }
     }
 
+    fn set_reduced_motion(&mut self, reduced: bool) {
+        self.reduced_motion = reduced;
+    }
+
     fn backdrop_blur_sigma(&self) -> f32 {
         if self.brain.is_open() || self.visibility.value > 0.01 {
             BACKDROP_BLUR_SIGMA
@@ -1022,6 +1040,25 @@ mod tests {
         launcher.toggle(&mut ChromeEvents::default());
         assert!(launcher.brain.is_open());
         assert!(!launcher.search_focused);
+    }
+
+    #[test]
+    fn reduced_motion_snaps_visibility_in_one_frame() {
+        let mut launcher = Launcher::new(Vec::new());
+        // Without the policy the reveal spring eases over many frames.
+        let eased = launcher.advance_visibility(1.0, 0.016);
+        assert!(eased < 1.0, "spring eases: {eased}");
+        assert!(launcher.anim_active);
+
+        // With the policy the first frame lands on the target, settled.
+        let mut reduced = Launcher::new(Vec::new());
+        reduced.set_reduced_motion(true);
+        let snapped = reduced.advance_visibility(1.0, 0.016);
+        assert_eq!(snapped, 1.0, "one frame to the end state");
+        assert!(!reduced.anim_active, "nothing left in flight");
+        let snapped_down = reduced.advance_visibility(0.0, 0.016);
+        assert_eq!(snapped_down, 0.0);
+        assert!(!reduced.anim_active);
     }
 
     #[test]

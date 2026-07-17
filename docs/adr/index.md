@@ -43,3 +43,4 @@ background and how the decisions fit together, see
 | [0034](0034-scoped-capabilities.md) | Scoped capabilities | Superseded by [0035](0035-fail-closed-named-ipc-scopes.md) |
 | [0035](0035-fail-closed-named-ipc-scopes.md) | Fail-closed named IPC scope resolution | Accepted |
 | [0036](0036-scoped-semantic-automation.md) | Scoped semantic geometry and target-local input | Accepted |
+| [0037](0037-scoped-pixel-capture-over-ipc.md) | Scoped pixel capture over the IPC | Accepted |

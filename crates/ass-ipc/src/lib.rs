@@ -25,6 +25,8 @@ pub mod journal;
 pub mod schema;
 pub mod server;
 
+pub mod base64;
+
 pub use client::Client;
 pub use journal::{Effect, Journal, JournalEntry, JournalSnapshot, Origin, DEFAULT_CAPACITY};
 pub use schema::{

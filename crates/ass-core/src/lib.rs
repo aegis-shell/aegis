@@ -12,6 +12,8 @@ pub mod launcher;
 pub mod layout;
 pub mod notify;
 pub mod output;
+pub mod overview;
+pub mod transition;
 pub mod window;
 pub mod window_rule;
 pub mod workspace;
@@ -158,6 +160,10 @@ pub struct SurfaceGeometry {
     /// `wp_viewport.set_destination` size in logical pixels, or None for
     /// "buffer or source size".
     pub viewport_dst: Option<Size>,
+    /// Interpolated size while a window transition (ADR-0029) is in flight.
+    /// The renderer draws the root texture scaled to this instead of the
+    /// buffer-implied size. `None` outside transitions and for subsurfaces.
+    pub transition_size: Option<Size>,
 }
 
 impl Default for SurfaceGeometry {
@@ -173,6 +179,7 @@ impl Default for SurfaceGeometry {
             buffer_scale: 1,
             viewport_src: None,
             viewport_dst: None,
+            transition_size: None,
         }
     }
 }
@@ -184,6 +191,10 @@ impl Default for SurfaceGeometry {
 pub struct SurfacePixels<'a> {
     /// Stable identifier for the surface (its record address).
     pub id: usize,
+    /// Toplevel the surface belongs to (its root's window id), or `None`
+    /// for compositor-owned overlays. Lets the renderer's mapped drawing
+    /// (overview) group frames per window.
+    pub window: Option<crate::window::WindowId>,
     pub width: i32,
     pub height: i32,
     pub generation: u64,
@@ -203,6 +214,10 @@ pub struct SurfacePixels<'a> {
 /// the surface backing is replaced or destroyed. `drm_format` is a DRM fourcc.
 pub struct SurfaceDmabuf {
     pub id: usize,
+    /// Toplevel the surface belongs to (its root's window id), or `None`
+    /// for compositor-owned overlays. Lets the renderer's mapped drawing
+    /// (overview) group frames per window.
+    pub window: Option<crate::window::WindowId>,
     pub width: i32,
     pub height: i32,
     pub generation: u64,
@@ -211,5 +226,8 @@ pub struct SurfaceDmabuf {
     pub modifier: u64,
     pub offset: u32,
     pub stride: u32,
+    /// Borrowed Linux sync_file fd for this generation, or -1 when implicit
+    /// synchronization applies. The renderer duplicates it before import.
+    pub acquire_fence: i32,
     pub geometry: SurfaceGeometry,
 }

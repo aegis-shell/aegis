@@ -31,6 +31,20 @@ env_logger = "0.11"
 # Typed errors without handwritten Display/From impls.
 thiserror = "1"
 
+# Direct-display backend: drm-rs provides atomic KMS, libseat mediates
+# privileged device access/session switching, and input is the maintained
+# libinput wrapper. Keep the libinput feature pinned to the host ABI floor we
+# build and test against rather than relying on its crate defaults.
+drm = "0.15"
+libseat = { version = "0.2.4", default-features = false }
+input = { version = "0.10", default-features = false, features = [
+    "udev",
+    "log",
+    "libinput_1_30",
+] }
+udev = "0.9"
+libc = "0.2"
+
 # Launcher (ass-apps): XDG base-directory resolution and .desktop / index.theme
 # INI parsing. Kept off every other crate.
 dirs = "5"

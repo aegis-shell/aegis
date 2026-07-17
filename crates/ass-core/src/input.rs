@@ -67,6 +67,54 @@ pub enum InputEvent {
     /// Keyboard state changed. `code` is a Linux evdev scancode, suitable for
     /// forwarding directly to `wl_keyboard.key`.
     Key { code: u32, state: ButtonState },
+    /// Graphics-tablet tool event. Kept distinct from the mouse pointer so
+    /// tablet-aware clients receive pressure/tilt and independent proximity.
+    Tablet { event: TabletEvent },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TabletToolInfo {
+    pub serial: u64,
+    pub hardware_id: u64,
+    /// `zwp_tablet_tool_v2.type` wire value (0x140..0x147).
+    pub kind: u32,
+    /// Bit N means protocol capability N is present (tilt=1..wheel=6).
+    pub capabilities: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum TabletEvent {
+    Proximity {
+        tool: u64,
+        info: TabletToolInfo,
+        in_proximity: bool,
+        x: f32,
+        y: f32,
+        time: u32,
+    },
+    Axes {
+        tool: u64,
+        x: f32,
+        y: f32,
+        pressure: Option<f32>,
+        distance: Option<f32>,
+        tilt: Option<(f32, f32)>,
+        rotation: Option<f32>,
+        slider: Option<f32>,
+        wheel: Option<(f32, i32)>,
+        time: u32,
+    },
+    Tip {
+        tool: u64,
+        state: ButtonState,
+        time: u32,
+    },
+    Button {
+        tool: u64,
+        button: u32,
+        state: ButtonState,
+        time: u32,
+    },
 }
 
 /// One self-contained input action requested by a trusted automation client.

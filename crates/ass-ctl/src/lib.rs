@@ -161,6 +161,22 @@ fn dispatch(client: &mut Client, args: &[String], json: bool) -> Result<String, 
             client.dismiss_notification(id as u64).map_err(io_err)?;
             Ok(format!("dismissed {id}"))
         }
+        "screenshot" => {
+            // Default: a timestamped file in the working directory.
+            let path = args.get(1).cloned().unwrap_or_else(|| {
+                let ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0);
+                format!("ass-screenshot-{ms}.png")
+            });
+            client.screenshot(path.clone()).map_err(io_err)?;
+            Ok(format!("screenshot queued → {path}"))
+        }
+        "overview" => {
+            client.command(Command::ToggleOverview).map_err(io_err)?;
+            Ok("toggled overview".into())
+        }
         "quit" => {
             client.command(Command::Quit).map_err(io_err)?;
             Ok("quit requested".into())
@@ -403,6 +419,8 @@ commands:
   tiling                  toggle the current workspace tiled/floating
   notify <summary> [body] post a notification
   dismiss <id>            dismiss a notification by id
+  screenshot [path.png]   capture the focused output to a PNG file
+  overview                toggle the window/workspace overview
   subscribe               stream server events until disconnected
   subscribe-journal       stream detailed mutation events
   quit                    ask the compositor to quit

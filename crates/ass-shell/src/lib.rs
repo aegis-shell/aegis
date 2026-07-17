@@ -22,7 +22,7 @@ pub mod chrome;
 pub mod i18n;
 pub mod system;
 pub use chrome::{
-    ControlCenter, Decorations, Dock, DockApp, HudBar, Launcher, Toast, WorkspaceBar,
+    ControlCenter, Decorations, Dock, DockApp, HudBar, Launcher, Overview, Toast, WorkspaceBar,
 };
 pub use i18n::{Language, Localizer, Message};
 pub use system::{BatteryStatus, NetworkState, SystemAction, SystemStatus};
@@ -138,6 +138,13 @@ pub struct ChromeEvents {
     /// Notification id the toast stack asked to dismiss. Drained through the
     /// same command/journal path as an IPC dismissal.
     pub dismissed_notification: Option<u64>,
+    /// Window id the overview asked to focus this frame (a thumbnail click).
+    /// Drained through the focus command/journal path; picking also closes
+    /// the overview.
+    pub overview_pick: Option<ass_core::window::WindowId>,
+    /// Workspace id the overview's rail asked to switch to. Drained through
+    /// the same command/journal path as `SwitchWorkspaceTo`.
+    pub overview_switch: Option<ass_core::workspace::WorkspaceId>,
     /// Ordered host-system mutations requested by compositor-owned UI.
     pub system_actions: Vec<SystemAction>,
 }
@@ -247,6 +254,24 @@ pub trait Chrome {
     /// usable content above a dock that remains visible during the modal.
     fn set_modal_reserved(&mut self, _reserved: Reserved) {}
 
+    /// Toggle the component's overview mode (M9). Default no-op; the
+    /// overview component flips its open state. Fanned out by
+    /// [`Shell::toggle_overview`], mirroring [`Chrome::toggle`].
+    fn toggle_overview(&mut self, _out: &mut ChromeEvents) {}
+
+    /// Whether the component's overview mode is currently open — the main
+    /// loop swaps the desktop scene for the overview thumbnail grid.
+    /// Default `false`.
+    fn overview_active(&self) -> bool {
+        false
+    }
+
+    /// Accessibility reduced-motion policy (ADR-0029). When enabled, every
+    /// component transition (springs, fades, slides) resolves to its end
+    /// state in at most one frame. The shell fans this out to all components
+    /// and to lens itself; default no-op for static components.
+    fn set_reduced_motion(&mut self, _reduced: bool) {}
+
     /// Refresh the host application catalog and decoded icon map. Components
     /// that do not display applications ignore it; the launcher and dock
     /// replace their snapshots in place.
@@ -320,6 +345,9 @@ pub struct Shell {
     system_status: SystemStatus,
     events: ChromeEvents,
     components: Vec<Box<dyn Chrome>>,
+    /// Accessibility reduced-motion policy (ADR-0029), fanned out to every
+    /// registered component (including ones added later) and to lens.
+    reduced_motion: bool,
 }
 
 impl Shell {
@@ -343,6 +371,7 @@ impl Shell {
             system_status: SystemStatus::default(),
             events: ChromeEvents::default(),
             components: Vec::new(),
+            reduced_motion: false,
         })
     }
 
@@ -350,7 +379,23 @@ impl Shell {
     /// registration order.
     pub fn add(&mut self, mut component: Box<dyn Chrome>) {
         component.update_system_status(&self.system_status);
+        component.set_reduced_motion(self.reduced_motion);
         self.components.push(component);
+    }
+
+    /// Set the shell-wide reduced-motion policy (ADR-0029): every component
+    /// transition and every lens eased value resolves in one frame when on.
+    pub fn set_reduced_motion(&mut self, reduced: bool) {
+        self.reduced_motion = reduced;
+        self.ui.set_reduced_motion(reduced);
+        for component in &mut self.components {
+            component.set_reduced_motion(reduced);
+        }
+    }
+
+    /// Whether the reduced-motion policy is currently enabled.
+    pub fn reduced_motion(&self) -> bool {
+        self.reduced_motion
     }
 
     /// Set the device-pixel (HiDPI) scale for the chrome. Layout and input
@@ -463,6 +508,32 @@ impl Shell {
     /// Launchpad tile). The main loop calls [`Shell::toggle`] when set.
     pub fn take_toggle_launcher(&mut self) -> bool {
         std::mem::take(&mut self.events.toggle_launcher)
+    }
+
+    /// Toggle overview mode on the component that owns it (M9). Mirrors
+    /// [`Shell::toggle`]: fanned out to every component; static components
+    /// ignore it.
+    pub fn toggle_overview(&mut self) {
+        let events = &mut self.events;
+        for component in self.components.iter_mut() {
+            component.toggle_overview(events);
+        }
+    }
+
+    /// Whether overview mode is currently open — the main loop swaps the
+    /// desktop scene for the overview thumbnail grid while this holds.
+    pub fn overview_active(&self) -> bool {
+        self.components.iter().any(|c| c.overview_active())
+    }
+
+    /// Window id the overview asked to focus this frame, if any.
+    pub fn take_overview_pick(&mut self) -> Option<ass_core::window::WindowId> {
+        self.events.overview_pick.take()
+    }
+
+    /// Workspace id the overview's rail asked to switch to, if any.
+    pub fn take_overview_switch(&mut self) -> Option<ass_core::workspace::WorkspaceId> {
+        self.events.overview_switch.take()
     }
 
     /// Whether any registered component currently captures keyboard input

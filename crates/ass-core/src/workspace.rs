@@ -139,6 +139,10 @@ pub struct WorkspaceModel {
     outputs: Vec<Output>,
     /// Every live workspace, keyed by id.
     workspaces: HashMap<WorkspaceId, Workspace>,
+    /// Whether newly created workspaces start in tiled mode (ADR-0024).
+    /// Existing workspaces keep their own flag; [`Self::set_tiled`] overrides
+    /// per workspace.
+    default_tiled: bool,
     next_workspace_id: u64,
     next_output_id: u64,
 }
@@ -303,6 +307,13 @@ impl WorkspaceModel {
         }
     }
 
+    /// Whether newly created workspaces start in tiled mode (ADR-0024). This
+    /// only affects workspaces created after the call; existing workspaces
+    /// keep their flag and [`Self::set_tiled`] still overrides per workspace.
+    pub fn set_default_tiled(&mut self, on: bool) {
+        self.default_tiled = on;
+    }
+
     /// Switch the current workspace on `oid` by a relative step, clamped to
     /// the available range. Reaps the workspace left behind if it is empty.
     pub fn switch(&mut self, oid: OutputId, dir: Switch) -> Option<WorkspaceId> {
@@ -444,7 +455,7 @@ impl WorkspaceModel {
                 output: oid,
                 origin: connector.to_string(),
                 toplevels: Vec::new(),
-                tiled: false,
+                tiled: self.default_tiled,
                 label: None,
             },
         );
@@ -750,6 +761,40 @@ mod tests {
             .find(|w| w.id == ws1)
             .unwrap();
         assert!(entry1.tiled);
+    }
+
+    #[test]
+    fn new_workspaces_inherit_default_tiled() {
+        let mut m = WorkspaceModel::new();
+        m.set_default_tiled(true);
+        let oid = m.add_output("a");
+        let ws0 = m.current_workspace(oid).unwrap();
+        assert!(m.workspace(ws0).unwrap().tiled, "first workspace tiled");
+        // The trailing empty appended when ws0 fills inherits the default too.
+        m.place_toplevel(ws0, WindowId(1));
+        let last = *m.output(oid).unwrap().workspaces.last().unwrap();
+        assert_ne!(last, ws0);
+        assert!(m.workspace(last).unwrap().tiled, "appended workspace tiled");
+        // The default is false out of the box.
+        let m2 = WorkspaceModel::new();
+        assert!(!m2.default_tiled);
+    }
+
+    #[test]
+    fn explicit_set_tiled_survives_later_default_changes() {
+        let (mut m, _oid, wid) = one_output();
+        m.set_tiled(wid, false);
+        m.set_default_tiled(true);
+        assert!(
+            !m.workspace(wid).unwrap().tiled,
+            "existing workspace unaffected by a later default change"
+        );
+        m.set_tiled(wid, true);
+        m.set_default_tiled(false);
+        assert!(
+            m.workspace(wid).unwrap().tiled,
+            "explicit set_tiled wins over the default"
+        );
     }
 
     #[test]

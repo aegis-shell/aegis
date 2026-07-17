@@ -61,6 +61,18 @@ extern "C" {
     pub static zwp_linux_dmabuf_v1_interface: wl_interface;
     pub static zwp_linux_buffer_params_v1_interface: wl_interface;
     pub static zwp_linux_dmabuf_feedback_v1_interface: wl_interface;
+    pub static zwp_linux_explicit_synchronization_v1_interface: wl_interface;
+    pub static zwp_linux_surface_synchronization_v1_interface: wl_interface;
+    pub static zwp_linux_buffer_release_v1_interface: wl_interface;
+
+    pub static zwp_tablet_manager_v2_interface: wl_interface;
+    pub static zwp_tablet_seat_v2_interface: wl_interface;
+    pub static zwp_tablet_v2_interface: wl_interface;
+    pub static zwp_tablet_tool_v2_interface: wl_interface;
+    pub static zwp_tablet_pad_v2_interface: wl_interface;
+    pub static zwp_tablet_pad_group_v2_interface: wl_interface;
+    pub static zwp_tablet_pad_ring_v2_interface: wl_interface;
+    pub static zwp_tablet_pad_strip_v2_interface: wl_interface;
 
     pub static wp_viewporter_interface: wl_interface;
     pub static wp_viewport_interface: wl_interface;

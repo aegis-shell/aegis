@@ -12,7 +12,13 @@ build = "build.rs"
 ass-core = { workspace = true }
 ass-protocols = { workspace = true }
 flux = { workspace = true }
+flux-sys = { workspace = true }
 ash = "0.38"
+drm.workspace = true
+libseat.workspace = true
+input.workspace = true
+udev.workspace = true
+libc.workspace = true
 log.workspace = true
 thiserror.workspace = true
 

@@ -88,6 +88,9 @@ pub enum OpClass {
     ToggleTiling,
     Notify,
     DismissNotification,
+    Screenshot,
+    ToggleOverview,
+    CaptureOutput,
 }
 
 /// A resource-and-operation allowlist layered on top of capabilities
@@ -209,6 +212,11 @@ pub enum Command {
     },
     /// Dismiss a notification by id before its TTL elapses. `control`.
     DismissNotification { id: u64 },
+    /// Capture the focused output and write it as a PNG file (M9 screenshot
+    /// path). The compositor refuses while the session is locked. `control`.
+    Screenshot { path: String },
+    /// Toggle the window/workspace overview (M9). `control`.
+    ToggleOverview,
     /// Quit the compositor. `session`.
     Quit,
 }
@@ -304,6 +312,8 @@ impl Command {
             Command::ToggleTiling => OpClass::ToggleTiling,
             Command::Notify { .. } => OpClass::Notify,
             Command::DismissNotification { .. } => OpClass::DismissNotification,
+            Command::Screenshot { .. } => OpClass::Screenshot,
+            Command::ToggleOverview => OpClass::ToggleOverview,
             Command::Quit => OpClass::ToggleTiling, // unreachable: scope skips session cmds
         }
     }
@@ -366,6 +376,11 @@ pub enum Request {
     /// from [`Subscribe`](Self::Subscribe) so status bars that only need the
     /// coarse re-query signal are not flooded with per-command entries.
     SubscribeJournal,
+    /// Capture the focused output as a PNG, base64-encoded (M10 pixel
+    /// capture). Privacy-sensitive: requires `control`, an explicit
+    /// [`OpClass::CaptureOutput`] entry in a named scope's `ops` (never
+    /// inherited), and is refused while the session is locked.
+    CaptureOutput,
 }
 
 /// A server → client message.
@@ -392,6 +407,13 @@ pub enum Response {
     Outputs { outputs: Vec<OutputInfo> },
     /// Reply to [`Request::GetJournal`] (ADR-0033).
     Journal { snapshot: JournalSnapshot },
+    /// Reply to [`Request::CaptureOutput`]: the output's physical size and
+    /// the PNG encoding of the frame, base64 (M10 pixel capture).
+    CaptureOutput {
+        width: u32,
+        height: u32,
+        png_base64: String,
+    },
     /// Acknowledgment of a queued [`Request::Do`].
     Ok,
     /// Reply to [`Request::Subscribe`]: events will now be pushed.

@@ -100,6 +100,9 @@ impl Handler for TestHandler {
     fn command(&self, cmd: Command) {
         self.commands.lock().unwrap().push(cmd);
     }
+    fn capture_output(&self) -> Result<(u32, u32, String), String> {
+        Ok((2, 1, ass_ipc::base64::encode(&[1u8, 2, 3, 4, 5])))
+    }
     fn resolve_scope(&self, name: &str) -> Option<Scope> {
         self.scopes.lock().unwrap().get(name).cloned()
     }
@@ -120,6 +123,13 @@ fn test_scopes() -> HashMap<String, Scope> {
             Scope {
                 windows: Some(vec![WindowId(1)]),
                 ops: Some(vec![OpClass::InjectInput]),
+                ..Scope::default()
+            },
+        ),
+        (
+            "capture".into(),
+            Scope {
+                ops: Some(vec![OpClass::CaptureOutput]),
                 ..Scope::default()
             },
         ),
@@ -279,6 +289,42 @@ fn synthetic_input_requires_a_named_scope_and_separate_capability() {
     let err = scoped.inject_input(WindowId(1), vec![]).unwrap_err();
     assert!(err.to_string().contains("action count"), "{err}");
     assert_eq!(handler.commands.lock().unwrap().len(), before);
+}
+
+#[test]
+fn capture_output_requires_control_and_an_explicit_scope_op() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+
+    // Scoped with the explicit CaptureOutput op + control: succeeds and the
+    // payload round-trips through base64.
+    let requested = Capabilities {
+        query: true,
+        control: true,
+        input: false,
+        session: false,
+    };
+    let mut scoped = Client::connect_scoped(&path, requested, "capture").expect("scoped connect");
+    let (w, h, png) = scoped.capture_output().expect("capture succeeds");
+    assert_eq!((w, h), (2, 1));
+    assert_eq!(png, vec![1u8, 2, 3, 4, 5]);
+
+    // A scope without the op is refused even though it has control.
+    let mut focus_scope =
+        Client::connect_scoped(&path, requested, "focus-first").expect("scoped connect");
+    let err = focus_scope.capture_output().unwrap_err();
+    assert!(err.to_string().contains("out of scope"), "{err}");
+
+    // Unscoped connections never inherit the op (fail-closed, like input).
+    let mut unscoped = Client::connect_with(&path, requested).expect("unscoped connect");
+    let err = unscoped.capture_output().unwrap_err();
+    assert!(err.to_string().contains("out of scope"), "{err}");
+
+    // Without the control capability the request is refused earlier.
+    let mut query_only = Client::connect(&path).expect("query connect");
+    let err = query_only.capture_output().unwrap_err();
+    assert!(err.to_string().contains("control capability"), "{err}");
 }
 
 #[test]

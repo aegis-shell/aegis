@@ -69,6 +69,13 @@ pub trait Handler: Send + Sync {
     /// because the Wayland server state is not `Send`. Fire-and-forget: the
     /// caller acknowledges queuing, not completion.
     fn command(&self, cmd: Command);
+    /// Capture the focused output as a PNG. Called from a connection thread;
+    /// the implementation forwards to the main loop and blocks briefly for
+    /// the reply. Returns `(width, height, png_base64)` or an error message
+    /// (unsupported, locked session, capture failure).
+    fn capture_output(&self) -> Result<(u32, u32, String), String> {
+        Err("capture unsupported".into())
+    }
 }
 
 /// A bound IPC server. The accept thread runs until the handle is dropped
@@ -424,6 +431,34 @@ fn drive_read_loop<H: Handler>(
                     journal_sub_id = Some(id);
                 }
                 Response::Subscribed
+            }
+            Request::CaptureOutput => {
+                // Pixel capture reads the screen back to the client, so it is
+                // fail-closed like InjectInput: `control` plus an explicit
+                // CaptureOutput op in the granted scope — never inherited
+                // through None-means-all (ADR-0034).
+                let op_allowed = granted_scope
+                    .ops
+                    .as_ref()
+                    .is_some_and(|ops| ops.contains(&crate::schema::OpClass::CaptureOutput));
+                if !granted.control {
+                    Response::Error {
+                        message: "CaptureOutput requires the control capability".into(),
+                    }
+                } else if !op_allowed {
+                    Response::Error {
+                        message: "out of scope".into(),
+                    }
+                } else {
+                    match handler.capture_output() {
+                        Ok((width, height, png_base64)) => Response::CaptureOutput {
+                            width,
+                            height,
+                            png_base64,
+                        },
+                        Err(message) => Response::Error { message },
+                    }
+                }
             }
         };
         if tx.send(Outbound::Response(resp)).is_err() {

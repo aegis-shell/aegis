@@ -246,9 +246,10 @@ tablet support arrive with the libinput backend in the DRM/KMS milestone.
 To stay small, ass deliberately leaves the following to other layers or to
 later phases:
 
-- **An X11 server.** ass is Wayland-native; X11 applications reach it through
-  XWayland only ([ADR-0030](../adr/0030-xwayland-strategy.md)). ass will not
-  grow an X11 session like the KDE `kwin_x11` split.
+- **An X11 server.** ass is Wayland-only; X11 applications are unsupported
+  (XWayland descoped; the strategy remains in
+  [ADR-0030](../adr/0030-xwayland-strategy.md) should it be revisited). ass
+  will not grow an X11 session like the KDE `kwin_x11` split.
 - **In-process shell scripting.** No JavaScript, no QML, no Lua inside the
   compositor. Power and automation go through the IPC
   ([ADR-0027](../adr/0027-ipc-and-introspection.md)).

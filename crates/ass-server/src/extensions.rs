@@ -75,6 +75,7 @@ unsafe extern "C" fn xdg_output_manager_get_xdg_output(
     // Track so geometry changes can re-send.
     if !state.is_null() {
         (*state).xdg_output_resources.push(res);
+        (*state).xdg_output_links.insert(res as usize, output);
     }
     send_xdg_output_geometry(res, output, state);
     // The xdg-output spec requires a final `done`; for v3+ that is the
@@ -96,26 +97,27 @@ unsafe extern "C" fn xdg_output_resource_destroy(resource: *mut ffi::wl_resource
             break;
         }
     }
+    (*state).xdg_output_links.remove(&(resource as usize));
 }
 
 /// Post the logical_position / logical_size / (name) events for one
-/// xdg_output resource. `output` is the wl_output resource the client paired
-/// with; we ignore it (there is one output).
+/// xdg_output resource paired with one wl_output resource.
 pub(crate) unsafe fn send_xdg_output_geometry(
     res: *mut ffi::wl_resource,
-    _output: *mut ffi::wl_resource,
+    output: *mut ffi::wl_resource,
     state: *mut State,
 ) {
-    let origin = if state.is_null() {
-        crate::ass_core_point(0, 0)
-    } else {
-        (*state).output_geometry.logical_origin
-    };
-    let size = if state.is_null() {
-        crate::ass_core_size(1280, 720)
-    } else {
-        (*state).output_geometry.logical_size()
-    };
+    let info = crate::output_info_for_resource(output);
+    let geometry = info
+        .as_ref()
+        .map(|info| info.geometry)
+        .or_else(|| (!state.is_null()).then(|| (*state).output_geometry));
+    let origin = geometry
+        .map(|geometry| geometry.logical_origin)
+        .unwrap_or_else(|| crate::ass_core_point(0, 0));
+    let size = geometry
+        .map(|geometry| geometry.logical_size())
+        .unwrap_or_else(|| crate::ass_core_size(1280, 720));
     ffi::wl_resource_post_event(
         res,
         ffi::ZXDG_OUTPUT_V1_LOGICAL_POSITION,
@@ -125,7 +127,11 @@ pub(crate) unsafe fn send_xdg_output_geometry(
     ffi::wl_resource_post_event(res, ffi::ZXDG_OUTPUT_V1_LOGICAL_SIZE, size.w, size.h);
     let ver = ffi::wl_resource_get_version(res);
     if ver >= 2 {
-        let name = CString::new("nested").unwrap();
+        let connector = info
+            .as_ref()
+            .map(|info| info.connector.as_str())
+            .unwrap_or("unknown");
+        let name = CString::new(connector).unwrap_or_else(|_| CString::new("output").unwrap());
         ffi::wl_resource_post_event(res, ffi::ZXDG_OUTPUT_V1_NAME, name.as_ptr());
     }
 }
@@ -184,7 +190,7 @@ unsafe extern "C" fn xdg_decoration_get_toplevel(
             c"xdg_toplevel already has a decoration object".as_ptr(),
         );
         return;
-    }
+    };
     let resource = ffi::wl_resource_create(
         client,
         &ffi::zxdg_toplevel_decoration_v1_interface,
@@ -660,9 +666,18 @@ static IDLE_INHIBITOR_IMPL: ffi::zwp_idle_inhibitor_v1_interface_impl =
         destroy: crate::res_destroy,
     };
 
+struct IdleInhibitorRec {
+    state: *mut State,
+    surface: *mut SurfaceRec,
+    resource: *mut ffi::wl_resource,
+    /// False when created after the session was already idle. The protocol
+    /// says such a late inhibitor takes effect only after new user activity.
+    honored: bool,
+}
+
 pub(crate) unsafe extern "C" fn idle_inhibit_bind(
     client: *mut ffi::wl_client,
-    _data: *mut c_void,
+    data: *mut c_void,
     version: u32,
     id: u32,
 ) {
@@ -678,7 +693,7 @@ pub(crate) unsafe extern "C" fn idle_inhibit_bind(
     ffi::wl_resource_set_implementation(
         res,
         &IDLE_INHIBIT_MANAGER_IMPL as *const _ as *const c_void,
-        std::ptr::null_mut(),
+        data,
         None,
     );
 }
@@ -687,21 +702,76 @@ unsafe extern "C" fn idle_inhibit_create_inhibitor(
     client: *mut ffi::wl_client,
     mgr: *mut ffi::wl_resource,
     id: u32,
-    _surface: *mut ffi::wl_resource,
+    surface: *mut ffi::wl_resource,
 ) {
     let ver = ffi::wl_resource_get_version(mgr);
     let res = ffi::wl_resource_create(client, &ffi::zwp_idle_inhibitor_v1_interface, ver, id);
     if res.is_null() {
         return;
     }
-    // The compositor does not yet drive a screensaver; accepting the
-    // inhibitor keeps the client's lifecycle correct.
+    let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
+    let surface = ffi::wl_resource_get_user_data(surface) as *mut SurfaceRec;
+    if state.is_null() || surface.is_null() {
+        ffi::wl_resource_destroy(res);
+        return;
+    }
+    let already_idle = (*state).idle_notifications.iter().any(|resource| {
+        if resource.is_null() {
+            return false;
+        }
+        let notification = ffi::wl_resource_get_user_data(*resource) as *mut IdleNotificationRec;
+        !notification.is_null() && !(*notification).ignore_inhibitors && (*notification).idle
+    });
+    let record = Box::new(IdleInhibitorRec {
+        state,
+        surface,
+        resource: res,
+        honored: !already_idle,
+    });
     ffi::wl_resource_set_implementation(
         res,
         &IDLE_INHIBITOR_IMPL as *const _ as *const c_void,
-        std::ptr::null_mut(),
-        None,
+        Box::into_raw(record) as *mut c_void,
+        Some(idle_inhibitor_resource_destroy),
     );
+    (*state).idle_inhibitors.push(res);
+    update_idle_notifications(state);
+}
+
+unsafe extern "C" fn idle_inhibitor_resource_destroy(resource: *mut ffi::wl_resource) {
+    let record = ffi::wl_resource_get_user_data(resource) as *mut IdleInhibitorRec;
+    if record.is_null() {
+        return;
+    }
+    let state = (*record).state;
+    if !state.is_null() {
+        for slot in &mut (*state).idle_inhibitors {
+            if *slot == (*record).resource {
+                *slot = std::ptr::null_mut();
+                break;
+            }
+        }
+    }
+    drop(Box::from_raw(record));
+    if !state.is_null() {
+        update_idle_notifications(state);
+    }
+}
+
+pub(crate) unsafe fn idle_inhibit_surface_destroyed(surface: *mut SurfaceRec) {
+    if surface.is_null() || (*surface).state.is_null() {
+        return;
+    }
+    let state = (*surface).state;
+    for resource in &(*state).idle_inhibitors {
+        if resource.is_null() {
+            continue;
+        }
+        let record = ffi::wl_resource_get_user_data(*resource) as *mut IdleInhibitorRec;
+        if !record.is_null() && (*record).surface == surface {
+            (*record).surface = std::ptr::null_mut();
+        }
+    }
 }
 
 // ----- ext-idle-notify-v1 -------------------------------------------------
@@ -710,7 +780,7 @@ static IDLE_NOTIFIER_IMPL: ffi::ext_idle_notifier_v1_interface_impl =
     ffi::ext_idle_notifier_v1_interface_impl {
         destroy: crate::res_destroy,
         get_idle_notification: idle_notifier_get,
-        get_input_idle_notification: idle_notifier_get,
+        get_input_idle_notification: idle_notifier_get_input,
     };
 
 static IDLE_NOTIFICATION_IMPL: ffi::ext_idle_notification_v1_interface_impl =
@@ -720,7 +790,7 @@ static IDLE_NOTIFICATION_IMPL: ffi::ext_idle_notification_v1_interface_impl =
 
 pub(crate) unsafe extern "C" fn idle_notifier_bind(
     client: *mut ffi::wl_client,
-    _data: *mut c_void,
+    data: *mut c_void,
     version: u32,
     id: u32,
 ) {
@@ -736,7 +806,7 @@ pub(crate) unsafe extern "C" fn idle_notifier_bind(
     ffi::wl_resource_set_implementation(
         res,
         &IDLE_NOTIFIER_IMPL as *const _ as *const c_void,
-        std::ptr::null_mut(),
+        data,
         None,
     );
 }
@@ -745,21 +815,446 @@ unsafe extern "C" fn idle_notifier_get(
     client: *mut ffi::wl_client,
     notifier: *mut ffi::wl_resource,
     id: u32,
-    _timeout: u32,
-    _seat: *mut ffi::wl_resource,
+    timeout: u32,
+    seat: *mut ffi::wl_resource,
+) {
+    idle_notifier_create(client, notifier, id, timeout, seat, false);
+}
+
+unsafe extern "C" fn idle_notifier_get_input(
+    client: *mut ffi::wl_client,
+    notifier: *mut ffi::wl_resource,
+    id: u32,
+    timeout: u32,
+    seat: *mut ffi::wl_resource,
+) {
+    idle_notifier_create(client, notifier, id, timeout, seat, true);
+}
+
+struct IdleNotificationRec {
+    state: *mut State,
+    resource: *mut ffi::wl_resource,
+    timeout: std::time::Duration,
+    activity_at: std::time::Instant,
+    idle: bool,
+    ignore_inhibitors: bool,
+}
+
+unsafe fn idle_notifier_create(
+    client: *mut ffi::wl_client,
+    notifier: *mut ffi::wl_resource,
+    id: u32,
+    timeout: u32,
+    seat: *mut ffi::wl_resource,
+    ignore_inhibitors: bool,
 ) {
     let ver = ffi::wl_resource_get_version(notifier);
     let res = ffi::wl_resource_create(client, &ffi::ext_idle_notification_v1_interface, ver, id);
     if res.is_null() {
         return;
     }
-    // No idle-detection timer yet; create an inert notification.
+    let state = ffi::wl_resource_get_user_data(notifier) as *mut State;
+    if state.is_null() || ffi::wl_resource_get_user_data(seat) as *mut State != state {
+        ffi::wl_resource_destroy(res);
+        return;
+    }
+    let record = Box::new(IdleNotificationRec {
+        state,
+        resource: res,
+        timeout: std::time::Duration::from_millis(timeout as u64),
+        activity_at: std::time::Instant::now(),
+        idle: false,
+        ignore_inhibitors,
+    });
     ffi::wl_resource_set_implementation(
         res,
         &IDLE_NOTIFICATION_IMPL as *const _ as *const c_void,
-        std::ptr::null_mut(),
-        None,
+        Box::into_raw(record) as *mut c_void,
+        Some(idle_notification_resource_destroy),
     );
+    (*state).idle_notifications.push(res);
+}
+
+unsafe extern "C" fn idle_notification_resource_destroy(resource: *mut ffi::wl_resource) {
+    let record = ffi::wl_resource_get_user_data(resource) as *mut IdleNotificationRec;
+    if record.is_null() {
+        return;
+    }
+    if !(*record).state.is_null() {
+        for slot in &mut (*(*record).state).idle_notifications {
+            if *slot == (*record).resource {
+                *slot = std::ptr::null_mut();
+                break;
+            }
+        }
+    }
+    drop(Box::from_raw(record));
+}
+
+unsafe fn idle_inhibitor_is_active(record: *mut IdleInhibitorRec) -> bool {
+    if record.is_null()
+        || !(*record).honored
+        || (*record).state.is_null()
+        || (*record).surface.is_null()
+        || (*(*record).state).session_locked
+        || !(*(*record).surface).mapped
+    {
+        return false;
+    }
+    let root = crate::surface_root_toplevel((*record).surface);
+    !root.is_null()
+        && (*(*record).state)
+            .workspaces
+            .visible_toplevels()
+            .contains(&(*root).window.id)
+}
+
+pub(crate) unsafe fn update_idle_notifications(state: *mut State) {
+    if state.is_null() {
+        return;
+    }
+    let inhibited = (*state).idle_inhibitors.iter().any(|resource| {
+        if resource.is_null() {
+            return false;
+        }
+        let record = ffi::wl_resource_get_user_data(*resource) as *mut IdleInhibitorRec;
+        idle_inhibitor_is_active(record)
+    });
+    let now = std::time::Instant::now();
+    for resource in &(*state).idle_notifications {
+        if resource.is_null() {
+            continue;
+        }
+        let record = ffi::wl_resource_get_user_data(*resource) as *mut IdleNotificationRec;
+        if record.is_null() {
+            continue;
+        }
+        let should_idle = now.duration_since((*record).activity_at) >= (*record).timeout
+            && ((*record).ignore_inhibitors || !inhibited);
+        if should_idle && !(*record).idle {
+            (*record).idle = true;
+            ffi::wl_resource_post_event((*record).resource, ffi::EXT_IDLE_NOTIFICATION_V1_IDLED);
+        } else if !should_idle && (*record).idle {
+            (*record).idle = false;
+            ffi::wl_resource_post_event((*record).resource, ffi::EXT_IDLE_NOTIFICATION_V1_RESUMED);
+        }
+    }
+}
+
+pub(crate) unsafe fn idle_user_activity(state: *mut State) {
+    if state.is_null() {
+        return;
+    }
+    let now = std::time::Instant::now();
+    for resource in &(*state).idle_notifications {
+        if resource.is_null() {
+            continue;
+        }
+        let record = ffi::wl_resource_get_user_data(*resource) as *mut IdleNotificationRec;
+        if !record.is_null() {
+            (*record).activity_at = now;
+            if (*record).idle {
+                (*record).idle = false;
+                ffi::wl_resource_post_event(
+                    (*record).resource,
+                    ffi::EXT_IDLE_NOTIFICATION_V1_RESUMED,
+                );
+            }
+        }
+    }
+    for resource in &(*state).idle_inhibitors {
+        if resource.is_null() {
+            continue;
+        }
+        let record = ffi::wl_resource_get_user_data(*resource) as *mut IdleInhibitorRec;
+        if !record.is_null() {
+            (*record).honored = true;
+        }
+    }
+}
+
+// ----- linux-explicit-synchronization-unstable-v1 -------------------------
+
+struct SurfaceSyncRec {
+    state: *mut State,
+    resource: *mut ffi::wl_resource,
+    surface: *mut SurfaceRec,
+    pending_acquire_fence: i32,
+    pending_release: *mut ffi::wl_resource,
+}
+
+struct ExplicitReleaseRec {
+    owner: *mut SurfaceSyncRec,
+    state: *mut State,
+}
+
+#[repr(C)]
+struct SyncFileInfo {
+    name: [u8; 32],
+    status: i32,
+    flags: u32,
+    num_fences: u32,
+    pad: u32,
+    sync_fence_info: u64,
+}
+
+// _IOWR('>', 4, struct sync_file_info) from linux/sync_file.h.
+const SYNC_IOC_FILE_INFO: std::os::raw::c_ulong = 0xc038_3e04;
+
+static EXPLICIT_SYNC_MANAGER_IMPL: ffi::zwp_linux_explicit_synchronization_v1_interface_impl =
+    ffi::zwp_linux_explicit_synchronization_v1_interface_impl {
+        destroy: crate::res_destroy,
+        get_synchronization: explicit_sync_get_surface,
+    };
+
+static SURFACE_SYNC_IMPL: ffi::zwp_linux_surface_synchronization_v1_interface_impl =
+    ffi::zwp_linux_surface_synchronization_v1_interface_impl {
+        destroy: surface_sync_destroy,
+        set_acquire_fence: surface_sync_set_acquire,
+        get_release: surface_sync_get_release,
+    };
+
+pub(crate) unsafe extern "C" fn explicit_sync_bind(
+    client: *mut ffi::wl_client,
+    data: *mut c_void,
+    version: u32,
+    id: u32,
+) {
+    let resource = ffi::wl_resource_create(
+        client,
+        &ffi::zwp_linux_explicit_synchronization_v1_interface,
+        version as c_int,
+        id,
+    );
+    if !resource.is_null() {
+        ffi::wl_resource_set_implementation(
+            resource,
+            &EXPLICIT_SYNC_MANAGER_IMPL as *const _ as *const c_void,
+            data,
+            None,
+        );
+    }
+}
+
+unsafe extern "C" fn explicit_sync_get_surface(
+    client: *mut ffi::wl_client,
+    manager: *mut ffi::wl_resource,
+    id: u32,
+    surface: *mut ffi::wl_resource,
+) {
+    let surface = ffi::wl_resource_get_user_data(surface) as *mut SurfaceRec;
+    if surface.is_null() {
+        return;
+    }
+    if !(*surface).explicit_sync.is_null() {
+        ffi::wl_resource_post_error(manager, 0, c"surface already has explicit sync".as_ptr());
+        return;
+    }
+    let resource = ffi::wl_resource_create(
+        client,
+        &ffi::zwp_linux_surface_synchronization_v1_interface,
+        ffi::wl_resource_get_version(manager),
+        id,
+    );
+    if resource.is_null() {
+        return;
+    }
+    let state = ffi::wl_resource_get_user_data(manager) as *mut State;
+    let record = Box::into_raw(Box::new(SurfaceSyncRec {
+        state,
+        resource,
+        surface,
+        pending_acquire_fence: -1,
+        pending_release: std::ptr::null_mut(),
+    }));
+    (*surface).explicit_sync = record as *mut c_void;
+    ffi::wl_resource_set_implementation(
+        resource,
+        &SURFACE_SYNC_IMPL as *const _ as *const c_void,
+        record as *mut c_void,
+        Some(surface_sync_resource_destroy),
+    );
+}
+
+unsafe extern "C" fn surface_sync_destroy(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+) {
+    ffi::wl_resource_destroy(resource);
+}
+
+unsafe extern "C" fn surface_sync_set_acquire(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+    fd: i32,
+) {
+    let record = ffi::wl_resource_get_user_data(resource) as *mut SurfaceSyncRec;
+    if record.is_null() || (*record).surface.is_null() {
+        if fd >= 0 {
+            crate::libc_close(fd);
+        }
+        ffi::wl_resource_post_error(resource, 3, c"associated surface was destroyed".as_ptr());
+        return;
+    }
+    if (*record).pending_acquire_fence >= 0 {
+        crate::libc_close(fd);
+        ffi::wl_resource_post_error(resource, 1, c"duplicate acquire fence".as_ptr());
+        return;
+    }
+    let mut info = SyncFileInfo {
+        name: [0; 32],
+        status: 0,
+        flags: 0,
+        num_fences: 0,
+        pad: 0,
+        sync_fence_info: 0,
+    };
+    if fd < 0 || crate::ioctl(fd, SYNC_IOC_FILE_INFO, &mut info) != 0 {
+        if fd >= 0 {
+            crate::libc_close(fd);
+        }
+        ffi::wl_resource_post_error(resource, 0, c"invalid sync_file acquire fence".as_ptr());
+        return;
+    }
+    (*record).pending_acquire_fence = fd;
+}
+
+unsafe extern "C" fn surface_sync_get_release(
+    client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+    id: u32,
+) {
+    let record = ffi::wl_resource_get_user_data(resource) as *mut SurfaceSyncRec;
+    if record.is_null() || (*record).surface.is_null() {
+        ffi::wl_resource_post_error(resource, 3, c"associated surface was destroyed".as_ptr());
+        return;
+    }
+    if !(*record).pending_release.is_null() {
+        ffi::wl_resource_post_error(resource, 2, c"duplicate buffer release".as_ptr());
+        return;
+    }
+    let release =
+        ffi::wl_resource_create(client, &ffi::zwp_linux_buffer_release_v1_interface, 1, id);
+    if release.is_null() {
+        return;
+    }
+    let release_record = Box::into_raw(Box::new(ExplicitReleaseRec {
+        owner: record,
+        state: (*record).state,
+    }));
+    ffi::wl_resource_set_implementation(
+        release,
+        std::ptr::null(),
+        release_record as *mut c_void,
+        Some(explicit_release_resource_destroy),
+    );
+    (*record).pending_release = release;
+}
+
+unsafe extern "C" fn explicit_release_resource_destroy(resource: *mut ffi::wl_resource) {
+    let release = ffi::wl_resource_get_user_data(resource) as *mut ExplicitReleaseRec;
+    if release.is_null() {
+        return;
+    }
+    let owner = (*release).owner;
+    if !owner.is_null() && (*owner).pending_release == resource {
+        (*owner).pending_release = std::ptr::null_mut();
+    }
+    let state = (*release).state;
+    if !state.is_null() {
+        for surface in (*state).live_surfaces() {
+            if (*surface).current_explicit_release == resource {
+                (*surface).current_explicit_release = std::ptr::null_mut();
+            }
+        }
+        for retired in &mut (*state).retired_buffer_releases {
+            if retired.explicit_release == resource {
+                retired.explicit_release = std::ptr::null_mut();
+            }
+        }
+    }
+    drop(Box::from_raw(release));
+}
+
+unsafe extern "C" fn surface_sync_resource_destroy(resource: *mut ffi::wl_resource) {
+    let record = ffi::wl_resource_get_user_data(resource) as *mut SurfaceSyncRec;
+    if record.is_null() {
+        return;
+    }
+    if (*record).pending_acquire_fence >= 0 {
+        crate::libc_close((*record).pending_acquire_fence);
+    }
+    if !(*record).pending_release.is_null() {
+        let release = (*record).pending_release;
+        let release_record = ffi::wl_resource_get_user_data(release) as *mut ExplicitReleaseRec;
+        if !release_record.is_null() {
+            (*release_record).owner = std::ptr::null_mut();
+        }
+        ffi::wl_resource_post_event(release, ffi::ZWP_LINUX_BUFFER_RELEASE_V1_IMMEDIATE_RELEASE);
+        ffi::wl_resource_destroy(release);
+    }
+    if !(*record).surface.is_null() {
+        (*(*record).surface).explicit_sync = std::ptr::null_mut();
+    }
+    drop(Box::from_raw(record));
+}
+
+pub(crate) unsafe fn explicit_sync_surface_committed(
+    surface: *mut SurfaceRec,
+    buffer_set: bool,
+    buffer: *mut ffi::wl_resource,
+) -> bool {
+    if surface.is_null() || (*surface).explicit_sync.is_null() {
+        return true;
+    }
+    let record = (*surface).explicit_sync as *mut SurfaceSyncRec;
+    let has_fence = (*record).pending_acquire_fence >= 0;
+    let has_release = !(*record).pending_release.is_null();
+    if !has_fence && !has_release {
+        return true;
+    }
+    if !buffer_set || buffer.is_null() {
+        ffi::wl_resource_post_error(
+            (*record).resource,
+            5,
+            c"explicit sync commit has no buffer".as_ptr(),
+        );
+        return false;
+    }
+    let is_dmabuf = ffi::wl_resource_instance_of(
+        buffer,
+        &ffi::wl_buffer_interface,
+        &crate::WL_BUFFER_IMPL as *const _ as *const c_void,
+    ) != 0;
+    if has_fence && !is_dmabuf {
+        ffi::wl_resource_post_error(
+            (*record).resource,
+            4,
+            c"acquire fence buffer is not a supported dma-buf".as_ptr(),
+        );
+        return false;
+    }
+    (*surface).committed_acquire_fence =
+        std::mem::replace(&mut (*record).pending_acquire_fence, -1);
+    (*surface).committed_explicit_release =
+        std::mem::replace(&mut (*record).pending_release, std::ptr::null_mut());
+    if !(*surface).committed_explicit_release.is_null() {
+        let release = ffi::wl_resource_get_user_data((*surface).committed_explicit_release)
+            as *mut ExplicitReleaseRec;
+        if !release.is_null() {
+            (*release).owner = std::ptr::null_mut();
+        }
+    }
+    true
+}
+
+pub(crate) unsafe fn explicit_sync_surface_destroyed(surface: *mut SurfaceRec) {
+    if surface.is_null() || (*surface).explicit_sync.is_null() {
+        return;
+    }
+    let record = (*surface).explicit_sync as *mut SurfaceSyncRec;
+    (*record).surface = std::ptr::null_mut();
+    (*surface).explicit_sync = std::ptr::null_mut();
 }
 
 // ----- relative-pointer-unstable-v1 ---------------------------------------
@@ -1430,8 +1925,11 @@ pub(crate) unsafe fn pointer_constraint_focus_changed(
                 if let Some((x, y)) = (*rec).cursor_hint {
                     let surface = ffi::wl_resource_get_user_data(old_focus) as *mut SurfaceRec;
                     if !surface.is_null() {
-                        (*state).pointer_x = (*surface).position.x as f32 + x;
-                        (*state).pointer_y = (*surface).position.y as f32 + y;
+                        // The hint is surface-local; restore it relative to
+                        // the buffer's draw origin (window-geometry insets).
+                        let origin = crate::surface_draw_origin(&*surface);
+                        (*state).pointer_x = origin.x as f32 + x;
+                        (*state).pointer_y = origin.y as f32 + y;
                     }
                 }
             }
@@ -1472,8 +1970,8 @@ pub(crate) unsafe fn constrain_pointer_motion(state: *mut State, x: f32, y: f32)
         if surface.is_null() {
             return (x, y);
         }
-        let local_x = x - (*surface).position.x as f32;
-        let local_y = y - (*surface).position.y as f32;
+        let local_x = x - crate::surface_draw_origin(&*surface).x as f32;
+        let local_y = y - crate::surface_draw_origin(&*surface).y as f32;
         let bounds = (*rec).region.clone().unwrap_or_else(|| {
             let size = crate::surface_logical_size(&*surface);
             vec![ass_core::Rect::new(0, 0, size.w, size.h)]
@@ -1503,15 +2001,30 @@ pub(crate) unsafe fn constrain_pointer_motion(state: *mut State, x: f32, y: f32)
             })
             .min_by(|a, b| a.2.total_cmp(&b.2))
             .unwrap();
-        return (
-            (*surface).position.x as f32 + cx,
-            (*surface).position.y as f32 + cy,
-        );
+        let origin = crate::surface_draw_origin(&*surface);
+        return (origin.x as f32 + cx, origin.y as f32 + cy);
     }
     (x, y)
 }
 
 // ----- ext-session-lock-v1 ------------------------------------------------
+
+struct SessionLockRec {
+    state: *mut State,
+    resource: *mut ffi::wl_resource,
+    surfaces: Vec<*mut LockSurfaceRec>,
+    locked_sent: bool,
+    finished_sent: bool,
+}
+
+struct LockSurfaceRec {
+    lock: *mut SessionLockRec,
+    resource: *mut ffi::wl_resource,
+    surface: *mut SurfaceRec,
+    connector: String,
+    pending_configures: Vec<(u32, ass_core::Size)>,
+    acked_configure: Option<(u32, ass_core::Size)>,
+}
 
 static SESSION_LOCK_MANAGER_IMPL: ffi::ext_session_lock_manager_v1_interface_impl =
     ffi::ext_session_lock_manager_v1_interface_impl {
@@ -1521,15 +2034,15 @@ static SESSION_LOCK_MANAGER_IMPL: ffi::ext_session_lock_manager_v1_interface_imp
 
 static SESSION_LOCK_IMPL: ffi::ext_session_lock_v1_interface_impl =
     ffi::ext_session_lock_v1_interface_impl {
-        destroy: crate::res_destroy,
+        destroy: session_lock_destroy,
         get_lock_surface: session_lock_get_surface,
-        unlock_and_destroy: crate::res_destroy,
+        unlock_and_destroy: session_lock_unlock,
     };
 
 static SESSION_LOCK_SURFACE_IMPL: ffi::ext_session_lock_surface_v1_interface_impl =
     ffi::ext_session_lock_surface_v1_interface_impl {
-        destroy: crate::res_destroy,
-        ack_configure: crate::noop_serial,
+        destroy: session_lock_surface_destroy,
+        ack_configure: session_lock_surface_ack,
     };
 
 pub(crate) unsafe extern "C" fn session_lock_bind(
@@ -1565,39 +2078,400 @@ unsafe extern "C" fn session_lock_manager_lock(
     if res.is_null() {
         return;
     }
+    let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
+    let mut record = Box::new(SessionLockRec {
+        state,
+        resource: res,
+        surfaces: Vec::new(),
+        locked_sent: false,
+        finished_sent: false,
+    });
+    let record_ptr = record.as_mut() as *mut SessionLockRec;
     ffi::wl_resource_set_implementation(
         res,
         &SESSION_LOCK_IMPL as *const _ as *const c_void,
-        std::ptr::null_mut(),
-        None,
+        Box::into_raw(record) as *mut c_void,
+        Some(session_lock_resource_destroy),
     );
-    // Acknowledge the lock. A full implementation would block input to other
-    // surfaces and render the lock surface above everything; this stub grants
-    // the lock so the locker's lifecycle proceeds.
-    ffi::wl_resource_post_event(res, ffi::EXT_SESSION_LOCK_V1_LOCKED);
+    if state.is_null() || !(*state).session_lock.is_null() || (*state).session_locked {
+        (*record_ptr).finished_sent = true;
+        ffi::wl_resource_post_event(res, ffi::EXT_SESSION_LOCK_V1_FINISHED);
+        return;
+    }
+    (*state).session_lock = record_ptr as *mut c_void;
+    (*state).session_locked = true;
+    log::info!("[server] session lock requested; normal content hidden");
+    (*state).session_lock_requested_at = Some(std::time::Instant::now());
+    (*state).lock_frame_pending = false;
+    (*state).pre_lock_keyboard_focus = (*state).keyboard_focus;
+    (*state).pending_lock_focus = std::ptr::null_mut();
+    (*state).lock_focus_dirty = true;
+    (*state).interactive = None;
+    (*state).compositor_pointer_grab = false;
+    (*state).implicit_grab_active = false;
+    if (*state).drag.is_some() {
+        crate::cancel_drag(state, true);
+    }
 }
 
 unsafe extern "C" fn session_lock_get_surface(
     client: *mut ffi::wl_client,
     lock: *mut ffi::wl_resource,
     id: u32,
-    _surface: *mut ffi::wl_resource,
-    _output: *mut ffi::wl_resource,
+    surface: *mut ffi::wl_resource,
+    output: *mut ffi::wl_resource,
 ) {
     let ver = ffi::wl_resource_get_version(lock);
+    let lock_rec = ffi::wl_resource_get_user_data(lock) as *mut SessionLockRec;
+    let surface_rec = ffi::wl_resource_get_user_data(surface) as *mut SurfaceRec;
+    if lock_rec.is_null() || surface_rec.is_null() {
+        return;
+    }
+    if crate::surface_has_role(&*surface_rec) {
+        ffi::wl_resource_post_error(lock, 2, c"wl_surface already has a role".as_ptr());
+        return;
+    }
+    if (*surface_rec).mapped || (*surface_rec).pending_buffer_set || (*surface_rec).generation != 0
+    {
+        ffi::wl_resource_post_error(lock, 4, c"wl_surface was already constructed".as_ptr());
+        return;
+    }
+    let Some(output_info) = crate::output_info_for_resource(output) else {
+        ffi::wl_resource_post_error(lock, 3, c"unknown lock output".as_ptr());
+        return;
+    };
+    if (*lock_rec)
+        .surfaces
+        .iter()
+        .any(|surface| !surface.is_null() && (**surface).connector == output_info.connector)
+    {
+        ffi::wl_resource_post_error(lock, 3, c"duplicate lock output".as_ptr());
+        return;
+    }
     let res = ffi::wl_resource_create(client, &ffi::ext_session_lock_surface_v1_interface, ver, id);
     if res.is_null() {
         return;
     }
+    let state = (*lock_rec).state;
+    let geometry = output_info.geometry;
+    let size = geometry.logical_size();
+    let serial = ffi::wl_display_next_serial((*state).display);
+    let mut record = Box::new(LockSurfaceRec {
+        lock: lock_rec,
+        resource: res,
+        surface: surface_rec,
+        connector: output_info.connector,
+        pending_configures: vec![(serial, size)],
+        acked_configure: None,
+    });
+    let record_ptr = record.as_mut() as *mut LockSurfaceRec;
     ffi::wl_resource_set_implementation(
         res,
         &SESSION_LOCK_SURFACE_IMPL as *const _ as *const c_void,
-        std::ptr::null_mut(),
-        None,
+        Box::into_raw(record) as *mut c_void,
+        Some(session_lock_surface_resource_destroy),
     );
-    // Send an initial configure so the client can size its buffer.
-    let serial = ffi::wl_display_next_serial(ffi::wl_resource_get_client(lock) as *mut _);
-    let _ = serial;
+    (*surface_rec).session_lock_surface = record_ptr as *mut c_void;
+    (*surface_rec).state = state;
+    (*surface_rec).display = (*state).display;
+    (*surface_rec).position = geometry.logical_origin;
+    (*lock_rec).surfaces.push(record_ptr);
+    ffi::wl_resource_post_event(
+        res,
+        ffi::EXT_SESSION_LOCK_SURFACE_V1_CONFIGURE,
+        serial,
+        size.w as u32,
+        size.h as u32,
+    );
+}
+
+unsafe extern "C" fn session_lock_destroy(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+) {
+    let record = ffi::wl_resource_get_user_data(resource) as *mut SessionLockRec;
+    if !record.is_null() && (*record).locked_sent {
+        ffi::wl_resource_post_error(resource, 0, c"locked session requires unlock".as_ptr());
+        return;
+    }
+    ffi::wl_resource_destroy(resource);
+}
+
+unsafe extern "C" fn session_lock_unlock(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+) {
+    let record = ffi::wl_resource_get_user_data(resource) as *mut SessionLockRec;
+    if record.is_null() || !(*record).locked_sent {
+        ffi::wl_resource_post_error(resource, 1, c"lock was never acknowledged".as_ptr());
+        return;
+    }
+    let state = (*record).state;
+    if !state.is_null() && (*state).session_lock == record as *mut c_void {
+        (*state).session_lock = std::ptr::null_mut();
+        (*state).session_locked = false;
+        (*state).session_lock_requested_at = None;
+        (*state).lock_frame_pending = false;
+        (*state).pending_lock_focus = (*state).pre_lock_keyboard_focus;
+        (*state).pre_lock_keyboard_focus = std::ptr::null_mut();
+        (*state).lock_focus_dirty = true;
+        log::info!("[server] session unlocked by lock client");
+    }
+    for surface in &(*record).surfaces {
+        if !surface.is_null() {
+            (**surface).lock = std::ptr::null_mut();
+            if !(**surface).surface.is_null() {
+                (*(**surface).surface).session_lock_surface = std::ptr::null_mut();
+                (*(**surface).surface).mapped = false;
+            }
+        }
+    }
+    ffi::wl_resource_destroy(resource);
+}
+
+unsafe extern "C" fn session_lock_resource_destroy(resource: *mut ffi::wl_resource) {
+    let record = ffi::wl_resource_get_user_data(resource) as *mut SessionLockRec;
+    if record.is_null() {
+        return;
+    }
+    let state = (*record).state;
+    if !state.is_null() && (*state).session_lock == record as *mut c_void {
+        // Fail closed if the client dies after locking.
+        (*state).session_lock = std::ptr::null_mut();
+        if !(*record).locked_sent {
+            (*state).session_locked = false;
+            (*state).session_lock_requested_at = None;
+            (*state).lock_frame_pending = false;
+            log::warn!("[server] session lock client exited before lock confirmation");
+        } else {
+            log::error!(
+                "[server] session lock client exited while locked; retaining fail-closed black screen"
+            );
+        }
+    }
+    for surface in &(*record).surfaces {
+        if !surface.is_null() {
+            (**surface).lock = std::ptr::null_mut();
+        }
+    }
+    drop(Box::from_raw(record));
+}
+
+unsafe extern "C" fn session_lock_surface_destroy(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+) {
+    ffi::wl_resource_destroy(resource);
+}
+
+unsafe extern "C" fn session_lock_surface_resource_destroy(resource: *mut ffi::wl_resource) {
+    let record = ffi::wl_resource_get_user_data(resource) as *mut LockSurfaceRec;
+    if record.is_null() {
+        return;
+    }
+    if !(*record).surface.is_null() {
+        (*(*record).surface).session_lock_surface = std::ptr::null_mut();
+        (*(*record).surface).mapped = false;
+    }
+    if !(*record).lock.is_null() {
+        let state = (*(*record).lock).state;
+        if !state.is_null() && (*state).session_locked {
+            // A destroyed lock surface immediately reveals the compositor's
+            // solid fallback on its output. Confirm that replacement frame
+            // before acknowledging an in-flight lock request.
+            (*state).lock_frame_pending = true;
+        }
+        for slot in &mut (*(*record).lock).surfaces {
+            if *slot == record {
+                *slot = std::ptr::null_mut();
+                break;
+            }
+        }
+    }
+    drop(Box::from_raw(record));
+}
+
+unsafe extern "C" fn session_lock_surface_ack(
+    _client: *mut ffi::wl_client,
+    resource: *mut ffi::wl_resource,
+    serial: u32,
+) {
+    let record = ffi::wl_resource_get_user_data(resource) as *mut LockSurfaceRec;
+    if record.is_null() {
+        return;
+    }
+    let Some(index) = (*record)
+        .pending_configures
+        .iter()
+        .position(|candidate| candidate.0 == serial)
+    else {
+        ffi::wl_resource_post_error(resource, 3, c"invalid configure serial".as_ptr());
+        return;
+    };
+    let size = (&(*record).pending_configures)[index].1;
+    (*record).pending_configures.drain(..=index);
+    (*record).acked_configure = Some((serial, size));
+}
+
+pub(crate) unsafe fn session_lock_surface_committed(surface: *mut SurfaceRec) {
+    if surface.is_null() || (*surface).session_lock_surface.is_null() {
+        return;
+    }
+    let lock_surface = (*surface).session_lock_surface as *mut LockSurfaceRec;
+    let Some((_, configured_size)) = (*lock_surface).acked_configure else {
+        ffi::wl_resource_post_error(
+            (*lock_surface).resource,
+            0,
+            c"commit before first ack_configure".as_ptr(),
+        );
+        return;
+    };
+    if !(*surface).mapped {
+        ffi::wl_resource_post_error(
+            (*lock_surface).resource,
+            1,
+            c"lock surface requires a buffer".as_ptr(),
+        );
+        return;
+    }
+    if crate::surface_logical_size(&*surface) != configured_size {
+        ffi::wl_resource_post_error(
+            (*lock_surface).resource,
+            2,
+            c"lock surface dimensions do not match configure".as_ptr(),
+        );
+        return;
+    }
+    let lock = (*lock_surface).lock;
+    if lock.is_null() || (*lock).state.is_null() {
+        return;
+    }
+    let state = (*lock).state;
+    let all_mapped = (*state).output_infos.iter().all(|output| {
+        (*lock).surfaces.iter().any(|candidate| {
+            !candidate.is_null()
+                && (**candidate).connector == output.connector
+                && (**candidate).acked_configure.is_some()
+                && !(**candidate).surface.is_null()
+                && (*(**candidate).surface).mapped
+        })
+    });
+    if all_mapped {
+        (*state).lock_frame_pending = true;
+        (*state).pending_lock_focus = (*surface).resource;
+        (*state).lock_focus_dirty = true;
+    }
+}
+
+pub(crate) unsafe fn session_lock_presented(state: *mut State) {
+    if state.is_null() || !(*state).session_locked || !(*state).lock_frame_pending {
+        return;
+    }
+    let lock = (*state).session_lock as *mut SessionLockRec;
+    (*state).lock_frame_pending = false;
+    if lock.is_null() || (*lock).locked_sent || (*lock).finished_sent {
+        return;
+    }
+    (*state).session_lock_requested_at = None;
+    (*lock).locked_sent = true;
+    ffi::wl_resource_post_event((*lock).resource, ffi::EXT_SESSION_LOCK_V1_LOCKED);
+    log::info!("[server] secure frame confirmed on all outputs; session locked");
+}
+
+/// Detach the role record before a `wl_surface` allocation is reclaimed.
+/// The protocol role object may outlive its surface resource, so keeping its
+/// raw back-pointer would otherwise turn a later destroy into a use-after-free.
+pub(crate) unsafe fn session_lock_surface_destroyed(surface: *mut SurfaceRec) {
+    if surface.is_null() || (*surface).session_lock_surface.is_null() {
+        return;
+    }
+    let record = (*surface).session_lock_surface as *mut LockSurfaceRec;
+    (*record).surface = std::ptr::null_mut();
+    (*surface).session_lock_surface = std::ptr::null_mut();
+    if !(*record).lock.is_null() {
+        let state = (*(*record).lock).state;
+        if !state.is_null() && (*state).session_locked {
+            (*state).lock_frame_pending = true;
+        }
+    }
+}
+
+pub(crate) unsafe fn is_active_session_lock_surface(
+    state: *mut State,
+    surface: *mut SurfaceRec,
+) -> bool {
+    if state.is_null()
+        || surface.is_null()
+        || !(*state).session_locked
+        || (*state).session_lock.is_null()
+        || (*surface).session_lock_surface.is_null()
+    {
+        return false;
+    }
+    let record = (*surface).session_lock_surface as *mut LockSurfaceRec;
+    (*record).lock as *mut c_void == (*state).session_lock
+        && (*state)
+            .output_infos
+            .iter()
+            .any(|output| output.connector == (*record).connector)
+}
+
+pub(crate) unsafe fn is_active_session_lock_client_resource(
+    state: *mut State,
+    resource: *mut ffi::wl_resource,
+) -> bool {
+    if state.is_null() || resource.is_null() || (*state).session_lock.is_null() {
+        return false;
+    }
+    let lock = (*state).session_lock as *mut SessionLockRec;
+    ffi::wl_resource_get_client(resource) == ffi::wl_resource_get_client((*lock).resource)
+}
+
+/// Reposition and reconfigure lock surfaces after an output mode/layout
+/// change. Removed-output role objects remain valid but are not rendered;
+/// clients normally destroy them after the `wl_output` global disappears.
+pub(crate) unsafe fn session_lock_outputs_changed(state: *mut State) {
+    if state.is_null() || !(*state).session_locked {
+        return;
+    }
+    (*state).lock_frame_pending = true;
+    let lock = (*state).session_lock as *mut SessionLockRec;
+    if lock.is_null() {
+        return;
+    }
+    for candidate in &(*lock).surfaces {
+        if candidate.is_null() || (**candidate).surface.is_null() {
+            continue;
+        }
+        let Some(output) = (*state)
+            .output_infos
+            .iter()
+            .find(|output| output.connector == (**candidate).connector)
+        else {
+            continue;
+        };
+        let size = output.geometry.logical_size();
+        (*(**candidate).surface).position = output.geometry.logical_origin;
+        let already_configured = (**candidate)
+            .pending_configures
+            .last()
+            .is_some_and(|(_, pending)| *pending == size)
+            || (**candidate)
+                .acked_configure
+                .is_some_and(|(_, acked)| acked == size);
+        if already_configured {
+            continue;
+        }
+        let serial = ffi::wl_display_next_serial((*state).display);
+        (**candidate).pending_configures.push((serial, size));
+        ffi::wl_resource_post_event(
+            (**candidate).resource,
+            ffi::EXT_SESSION_LOCK_SURFACE_V1_CONFIGURE,
+            serial,
+            size.w as u32,
+            size.h as u32,
+        );
+    }
 }
 
 // ----- ext-foreign-toplevel-list-v1 ---------------------------------------
@@ -2575,12 +3449,10 @@ unsafe fn queue_text_input_state(rec: *mut TextInputRec) {
     if let Some((x, y, width, height)) = value.cursor_rect {
         let surface = ffi::wl_resource_get_user_data((*rec).current_surface) as *mut SurfaceRec;
         if !surface.is_null() {
-            value.cursor_rect = Some((
-                x + (*surface).position.x,
-                y + (*surface).position.y,
-                width,
-                height,
-            ));
+            // The cursor rect is surface-local; publish it in compositor
+            // space relative to the buffer's draw origin.
+            let origin = crate::surface_draw_origin(&*surface);
+            value.cursor_rect = Some((x + origin.x, y + origin.y, width, height));
         }
     }
     (*state).pending_text_input_states.push(value);
@@ -2688,4 +3560,235 @@ pub(crate) unsafe fn forward_text_input_event(
             ),
         }
     }
+}
+
+// ----- tablet-unstable-v2 ---------------------------------------------------
+
+struct TabletSeatRec {
+    state: *mut State,
+}
+
+struct TabletRec {
+    state: *mut State,
+}
+
+pub(crate) struct TabletToolRec {
+    state: *mut State,
+    /// Physical tool id (from the backend) this resource proxies.
+    pub(crate) tool: u64,
+}
+
+static TABLET_MANAGER_IMPL: ffi::zwp_tablet_manager_v2_interface_impl =
+    ffi::zwp_tablet_manager_v2_interface_impl {
+        get_tablet_seat: tablet_manager_get_tablet_seat,
+        destroy: crate::res_destroy,
+    };
+static TABLET_SEAT_IMPL: ffi::zwp_tablet_seat_v2_interface_impl =
+    ffi::zwp_tablet_seat_v2_interface_impl {
+        destroy: crate::res_destroy,
+    };
+static TABLET_IMPL: ffi::zwp_tablet_v2_interface_impl = ffi::zwp_tablet_v2_interface_impl {
+    destroy: crate::res_destroy,
+};
+static TABLET_TOOL_IMPL: ffi::zwp_tablet_tool_v2_interface_impl =
+    ffi::zwp_tablet_tool_v2_interface_impl {
+        set_cursor: tablet_tool_set_cursor,
+        destroy: crate::res_destroy,
+    };
+
+pub(crate) unsafe extern "C" fn tablet_manager_bind(
+    client: *mut ffi::wl_client,
+    data: *mut c_void,
+    version: u32,
+    id: u32,
+) {
+    let res = ffi::wl_resource_create(
+        client,
+        &ffi::zwp_tablet_manager_v2_interface,
+        version.min(1) as c_int,
+        id,
+    );
+    if !res.is_null() {
+        ffi::wl_resource_set_implementation(
+            res,
+            &TABLET_MANAGER_IMPL as *const _ as *const c_void,
+            data,
+            None,
+        );
+    }
+}
+
+unsafe extern "C" fn tablet_manager_get_tablet_seat(
+    client: *mut ffi::wl_client,
+    mgr: *mut ffi::wl_resource,
+    id: u32,
+    seat: *mut ffi::wl_resource,
+) {
+    if seat.is_null() || ffi::wl_resource_get_client(seat) != client {
+        ffi::wl_resource_post_error(mgr, 0, c"seat belongs to another client".as_ptr());
+        return;
+    }
+    let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
+    let ver = ffi::wl_resource_get_version(mgr);
+    let res = ffi::wl_resource_create(client, &ffi::zwp_tablet_seat_v2_interface, ver, id);
+    if res.is_null() {
+        return;
+    }
+    let rec = Box::into_raw(Box::new(TabletSeatRec { state }));
+    ffi::wl_resource_set_implementation(
+        res,
+        &TABLET_SEAT_IMPL as *const _ as *const c_void,
+        rec as *mut c_void,
+        Some(tablet_seat_resource_destroy),
+    );
+    if !state.is_null() {
+        (*state).tablet_seats.push(res);
+        announce_tablets(state, res);
+    }
+}
+
+unsafe extern "C" fn tablet_seat_resource_destroy(resource: *mut ffi::wl_resource) {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut TabletSeatRec;
+    if rec.is_null() {
+        return;
+    }
+    let state = (*rec).state;
+    if !state.is_null() {
+        (*state).tablet_seats.retain(|r| *r != resource);
+    }
+    drop(Box::from_raw(rec));
+}
+
+unsafe extern "C" fn tablet_resource_destroy(resource: *mut ffi::wl_resource) {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut TabletRec;
+    if rec.is_null() {
+        return;
+    }
+    let state = (*rec).state;
+    if !state.is_null() {
+        (*state).tablet_devices.retain(|r| *r != resource);
+    }
+    drop(Box::from_raw(rec));
+}
+
+unsafe extern "C" fn tablet_tool_resource_destroy(resource: *mut ffi::wl_resource) {
+    let rec = ffi::wl_resource_get_user_data(resource) as *mut TabletToolRec;
+    if rec.is_null() {
+        return;
+    }
+    let state = (*rec).state;
+    if !state.is_null() {
+        (*state).tablet_tools.retain(|r| *r != resource);
+    }
+    drop(Box::from_raw(rec));
+}
+
+/// The compositor renders its own cursor, so a tool cursor surface is
+/// accepted and ignored.
+unsafe extern "C" fn tablet_tool_set_cursor(
+    _client: *mut ffi::wl_client,
+    _resource: *mut ffi::wl_resource,
+    _serial: u32,
+    _surface: *mut ffi::wl_resource,
+    _hotspot_x: i32,
+    _hotspot_y: i32,
+) {
+}
+
+/// Announce the compositor's synthetic tablet (once one has been seen) and
+/// every known tool to a newly bound tablet seat. The tablet goes first:
+/// per the protocol a tool must always follow a tablet.
+pub(crate) unsafe fn announce_tablets(state: *mut State, seat: *mut ffi::wl_resource) {
+    if (*state).tablet_device_seen {
+        announce_tablet(state, seat);
+    }
+    // Clone the list so the loop can re-borrow `state` freely.
+    let tools = (*state).known_tools.clone();
+    for (tool, info) in tools {
+        announce_tool(state, seat, tool, &info);
+    }
+}
+
+/// Create the seat's `zwp_tablet_v2` object for the compositor's single
+/// synthetic tablet and post `tablet_added` + the name/id/done burst.
+pub(crate) unsafe fn announce_tablet(state: *mut State, seat: *mut ffi::wl_resource) {
+    let client = ffi::wl_resource_get_client(seat);
+    let ver = ffi::wl_resource_get_version(seat);
+    let res = ffi::wl_resource_create(client, &ffi::zwp_tablet_v2_interface, ver, 0);
+    if res.is_null() {
+        return;
+    }
+    let rec = Box::into_raw(Box::new(TabletRec { state }));
+    ffi::wl_resource_set_implementation(
+        res,
+        &TABLET_IMPL as *const _ as *const c_void,
+        rec as *mut c_void,
+        Some(tablet_resource_destroy),
+    );
+    (*state).tablet_devices.push(res);
+    ffi::wl_resource_post_event(seat, ffi::ZWP_TABLET_SEAT_V2_TABLET_ADDED, res);
+    ffi::wl_resource_post_event(res, ffi::ZWP_TABLET_V2_NAME, c"ass tablet".as_ptr());
+    // No real hardware: vid/pid are 0/0.
+    ffi::wl_resource_post_event(res, ffi::ZWP_TABLET_V2_ID, 0u32, 0u32);
+    ffi::wl_resource_post_event(res, ffi::ZWP_TABLET_V2_DONE);
+}
+
+/// Create a `zwp_tablet_tool_v2` resource on `seat`'s client for physical
+/// tool `tool`. The caller posts `tool_added` and the describe burst.
+pub(crate) unsafe fn tablet_tool_resource(
+    state: *mut State,
+    seat: *mut ffi::wl_resource,
+    tool: u64,
+) -> *mut ffi::wl_resource {
+    let client = ffi::wl_resource_get_client(seat);
+    let ver = ffi::wl_resource_get_version(seat);
+    let res = ffi::wl_resource_create(client, &ffi::zwp_tablet_tool_v2_interface, ver, 0);
+    if res.is_null() {
+        return std::ptr::null_mut();
+    }
+    let rec = Box::into_raw(Box::new(TabletToolRec { state, tool }));
+    ffi::wl_resource_set_implementation(
+        res,
+        &TABLET_TOOL_IMPL as *const _ as *const c_void,
+        rec as *mut c_void,
+        Some(tablet_tool_resource_destroy),
+    );
+    (*state).tablet_tools.push(res);
+    res
+}
+
+/// Announce tool `tool` to `seat`: `tool_added` with a fresh tool resource,
+/// then type/hardware serial/id/capabilities and `done`. The 64-bit ids are
+/// split high word first, per the protocol.
+pub(crate) unsafe fn announce_tool(
+    state: *mut State,
+    seat: *mut ffi::wl_resource,
+    tool: u64,
+    info: &ass_core::input::TabletToolInfo,
+) {
+    let res = tablet_tool_resource(state, seat, tool);
+    if res.is_null() {
+        return;
+    }
+    ffi::wl_resource_post_event(seat, ffi::ZWP_TABLET_SEAT_V2_TOOL_ADDED, res);
+    ffi::wl_resource_post_event(res, ffi::ZWP_TABLET_TOOL_V2_TYPE, info.kind);
+    ffi::wl_resource_post_event(
+        res,
+        ffi::ZWP_TABLET_TOOL_V2_HARDWARE_SERIAL,
+        (info.serial >> 32) as u32,
+        (info.serial & 0xffff_ffff) as u32,
+    );
+    ffi::wl_resource_post_event(
+        res,
+        ffi::ZWP_TABLET_TOOL_V2_HARDWARE_ID_WACOM,
+        (info.hardware_id >> 32) as u32,
+        (info.hardware_id & 0xffff_ffff) as u32,
+    );
+    // Capability bit N maps to protocol capability N (tilt=1..wheel=6).
+    for capability in 1..=6u32 {
+        if info.capabilities & (1 << capability) != 0 {
+            ffi::wl_resource_post_event(res, ffi::ZWP_TABLET_TOOL_V2_CAPABILITY, capability);
+        }
+    }
+    ffi::wl_resource_post_event(res, ffi::ZWP_TABLET_TOOL_V2_DONE);
 }

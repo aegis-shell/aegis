@@ -7,6 +7,95 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### Overview, window transitions, and pixel capture
+
+- Bare-metal polish: the software cursor on DRM now loads real XDG cursor
+  themes (`$XCURSOR_THEME`/`$XCURSOR_SIZE` or `[ui] cursor_theme/cursor_size`
+  for sessions without them, `index.theme` inheritance, nearest-larger size
+  selection, animated files pinned to their first frame), with the
+  hand-drawn glyphs kept only as a no-theme fallback; `Ctrl+Alt+Fn`
+  switches virtual terminals through libseat, matching the console behavior
+  users expect while testing (no-op nested); VT resume now closes and
+  re-opens the GPU through the seat instead of failing with
+  `drm/kms error: permission denied` on the revoked fd, and the present and
+  event-read paths treat a masterless fd during the switch window as a
+  transient frame skip instead of a fatal error; per-connector scale
+  overrides apply to the internal panel the same way as to external
+  monitors, and the configured scale now drives the actual render scale,
+  logical layout extent, and icon decode — not just the `wl_output`
+  advertisement; pointer, touch, and tablet absolute coordinates now
+  convert from the backend's native space (physical on KMS) into the
+  compositor's logical space in one place in the main loop, so a
+  configured scale no longer strands input in a physical-pixel dead zone;
+  frame pacing no
+  longer stalls on periodic work — the system-status probe (wpctl
+  fork+exec) and the application/icon rescan moved off the compositor's
+  frame thread onto helper threads; per-connector scale overrides apply to
+  the internal panel the same way as to external monitors.
+
+- Unified overview (M9): `Super+O` or `ass-ctl overview` opens a modal
+  window/workspace picker — live window thumbnails on a shared grid, a
+  workspace rail on the left, title labels, click a thumbnail to focus it,
+  click a rail tile to switch workspaces, Escape or click-away to dismiss.
+- Declarative window transitions (ADR-0029): non-interactive geometry
+  changes (tiling layout, IPC `set-geometry`) interpolate position and size
+  over 150 ms with an ease-out curve; subsurface trees move with their
+  root. The window model, chrome, and IPC always report the target rect,
+  and `[ui] reduced_motion` resolves every transition in one frame.
+- Screenshots and scoped pixel capture (ADR-0037): `ass-ctl screenshot
+  [path.png]` writes the focused output as a PNG, and the new IPC
+  `Request::CaptureOutput` returns the frame as base64 PNG to scoped
+  agents (explicit `CaptureOutput` op, never inherited; refused while the
+  session is locked or the seat is inactive). Captures re-render the scene
+  into a new CPU-readable flux offscreen surface, so they work identically
+  on the nested and DRM/KMS backends — and show the overview grid when it
+  is open.
+- Per-output scale policy (ADR-0028): `[[output]]` config entries override
+  the backend-reported scale per connector for mixed-DPI setups, applied
+  live on reload.
+- flux gains `flux_surface_readback_desc` (and `Surface::offscreen_readback`
+  in the Rust bindings): an offscreen surface pinned to CPU readback that
+  stays non-exportable on dma-buf-capable devices, and lens gains
+  `lens_set_reduced_motion` so every eased widget value resolves in one
+  frame under the policy.
+
+### Direct-display backend, session lock, and production hardening
+
+- New DRM/KMS backend: ass drives display hardware directly from a bare TTY
+  with atomic modesetting, GBM-less dma-buf scanout of Flux offscreen images,
+  libinput input (pointer, keyboard, touch, touchpad gestures, tablet tools
+  with pressure/tilt), libseat session and device ownership, VT switching,
+  and udev hotplug with per-connector output restore. `--backend auto|drm|nested`
+  (or `ASS_BACKEND`) selects the presentation target; `auto` nests under an
+  existing Wayland session and drives KMS on a TTY.
+- Session lock (`ext-session-lock-v1`) and idle management
+  (`ext-idle-notify-v1`, `zwp-idle-inhibit-v1`): fail-closed locking with a
+  secure-frame confirmation, lock surfaces per output, and idle notifications
+  that honor inhibitors only while their window is visible. While locked,
+  input focus, chrome shortcuts, and IPC mutations are refused.
+- Explicit synchronization (`zwp_linux_explicit_synchronization_v1`): dma-buf
+  client buffers carry acquire fences through Flux import and KMS `IN_FENCE_FD`,
+  and `wl_buffer.release` is deferred until the presented frame retires.
+- Tablet protocol (`zwp_tablet_manager_v2`): tool announce, proximity, full
+  axis routing (pressure, distance, tilt, rotation, slider, wheel), tip and
+  button events with click-to-focus, and pointer emulation for clients that
+  do not bind the tablet protocol.
+- `xdg_toplevel.set_window_geometry` frame insets are honored end to end:
+  client-decorated windows place, hit-test, and receive input by their
+  visible window rect, excluding shadow margins.
+- Nested subsurfaces render and receive input correctly: subsurface trees
+  walk recursively with per-node stacking, and pointer input routes to the
+  topmost surface in the tree rather than always to the root toplevel.
+- `[layout] default_tiled` starts new workspaces tiled; transient dialogs
+  always float, even on tiled workspaces and during the tiling sweep.
+- `[ui] reduced_motion` accessibility switch: every chrome and lens
+  transition (dock magnification, launcher reveal, fades, slides) resolves
+  in one frame, live on config reload.
+- DRM backend resilience: the present path tolerates transient flip timeouts,
+  VT-switch and hotplug races (re-modeset on resume, surface recreation when
+  the modifier set changes), and exits cleanly on GPU removal instead of
+  spinning.
+
 ### Animated 3D wallpapers
 
 - The default procedural wallpaper now includes a depth-tested torus-knot

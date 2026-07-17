@@ -25,7 +25,7 @@ Build the C libraries with meson first, then run the nested backend inside an
 existing Wayland session:
 
 ```bash
-meson setup ../optics/build ../optics -Dtests=false
+meson setup ../optics/build ../optics -Dtests=false -Dbuildtype=debugoptimized
 meson compile -C ../optics/build
 source scripts/env.sh
 cargo run
@@ -35,7 +35,10 @@ Skip `meson setup` when `../optics/build` already exists.
 
 `scripts/env.sh` points the flux, scene-graph, and lens bindings at the unified
 build tree and exposes their shared libraries to test harnesses. `cargo run`
-opens a nested window on `$WAYLAND_DISPLAY` and presents the shell. See
+opens a nested window on `$WAYLAND_DISPLAY` and presents the shell. On a bare
+TTY (no host session) the same binary drives the display directly through the
+DRM/KMS backend; force a target with `--backend auto|drm|nested` or
+`ASS_BACKEND`. See
 [Setup](docs/dev/setup.md) for prerequisites and details.
 
 ## Documentation

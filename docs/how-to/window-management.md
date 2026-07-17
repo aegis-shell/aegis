@@ -58,6 +58,15 @@ required window action. Follow [How to Use the Dock and
 Launcher](dock-and-launcher.md#use-the-application-menu) for multi-window and
 restore behavior.
 
+## Pick a Window in the Overview
+
+Press `Super+O` (or run `ass-ctl overview`) to open the overview: every
+window on the current workspace appears as a live thumbnail, with a
+workspace rail on the left. Click a thumbnail to focus that window and
+close the overview; click a rail tile to switch workspaces while the
+overview stays open. `Escape`, `Super+O` again, or a click on empty space
+dismisses it.
+
 ## Control a Window from the Command Line
 
 Query the current ids, then issue a control command:

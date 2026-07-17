@@ -18,6 +18,8 @@ log diagnostic and never crashes the compositor.
 | `[[window_rule]]` | array of tables | none | Placement rules applied to newly-mapped toplevels. See [Window Rules](#window-rules). |
 | `[layout]` | table | gaps `8`, master_ratio `0.5` | Tiling policy parameters. See [Layout](#layout). |
 | `[dock]` | table | automatic pins | Applications pinned to the dock. See [Dock](#dock). |
+| `[ui]` | table | reduced_motion `false` | Shell-wide UI policy. See [UI](#ui). |
+| `[[output]]` | array of tables | none | Per-connector scale overrides. See [Outputs](#outputs). |
 | `[agent]` | table | no scopes | Named automation scopes enforced by the IPC server. See [Agent Scopes](#agent-scopes). |
 
 ## Environment
@@ -46,16 +48,64 @@ live on reload.
 |-------|------|---------|-------------|
 | `gaps` | integer | `8` | Gap in logical pixels between tiles and around the work-area edge. |
 | `master_ratio` | float | `0.5` | Fraction of the work-area width (0.0–1.0) for the master column. |
+| `default_tiled` | boolean | `false` | Whether newly created workspaces start in tiled mode. |
 
 ```toml
 [layout]
 gaps = 16
 master_ratio = 0.6
+default_tiled = true
 ```
 
 The work area is the focused output's logical rectangle minus reserved shell
 chrome, including the dock. Negative gaps and master ratios outside
 `0.0`–`1.0` reject the configuration.
+
+Window rules (`role`) and transient dialogs override `default_tiled` for the
+windows they cover.
+
+## UI
+
+The `[ui]` table holds shell-wide UI policy (ADR-0029). Applied live on
+reload.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `reduced_motion` | boolean | `false` | Accessibility reduced-motion switch. When `true`, every chrome and lens transition (dock magnification, launcher reveal, fades, slides) resolves to its end state in at most one frame. |
+| `cursor_theme` | string | none | XDG cursor theme for the software cursor on direct display. `$XCURSOR_THEME` wins when set; use this on bare-metal sessions with no cursor environment. |
+| `cursor_size` | integer | `24` | Cursor size in logical pixels, 8–128. `$XCURSOR_SIZE` wins when set. |
+
+```toml
+[ui]
+reduced_motion = true
+cursor_theme = "Bibata-Modern-Ice"
+cursor_size = 24
+```
+
+This is the single switch for animation policy; individual effects do not
+override it.
+
+## Outputs
+
+Each `[[output]]` table overrides the backend-reported scale of one
+connector (ADR-0028), for mixed-DPI setups. Applied live on reload; an
+entry whose connector is not currently plugged in is ignored until the
+connector appears.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `connector` | string | required | The backend's connector name, as shown by `ass-ctl outputs` (e.g. `"DP-1"`, `"HDMI-A-1"`, `"nested"`). |
+| `scale` | float | required | Output scale factor, 0.25–4.0. Integer scales advertise through `wl_output`; fractional scales through `wp_fractional_scale_v1`. |
+
+```toml
+[[output]]
+connector = "DP-1"
+scale = 1.5
+
+[[output]]
+connector = "HDMI-A-1"
+scale = 2.0
+```
 
 ## Dock
 
