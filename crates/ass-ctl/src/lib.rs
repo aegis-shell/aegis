@@ -9,8 +9,11 @@
 
 use std::path::Path;
 
+use ass_core::realm::{
+    RealmId, RealmMutation, RealmSnapshot, RealmState, SeatCapabilities, VirtualOutput, HUMAN_REALM,
+};
 use ass_core::workspace::Switch;
-use ass_ipc::{Capabilities, Client, Command, Event};
+use ass_ipc::{Capabilities, Client, Command, Event, RealmAction, RealmActionResult};
 use serde::Serialize;
 
 /// Serialize a query result as a JSON string (for `--json`).
@@ -22,35 +25,40 @@ fn to_json<T: Serialize>(v: &T) -> Result<String, String> {
 /// return the formatted output. Errors are human-readable strings the binary
 /// prints to stderr before exiting non-zero.
 pub fn run(socket: &Path, args: &[String]) -> Result<String, String> {
-    // `--json`/`-j` (anywhere) selects machine-readable output for the query
-    // commands; strip it before dispatching.
-    let json = args.iter().any(|a| a == "--json" || a == "-j");
-    // `--region x,y,w,h` (anywhere) applies to the screenshot command.
-    let region = parse_region_flag(args);
-    let args: Vec<String> = args
-        .iter()
-        .filter(|a| a != &"--json" && a != &"-j")
-        .enumerate()
-        .filter(|(i, a)| !(a == &"--region" || (i > &0 && args[*i - 1] == "--region")))
-        .map(|(_, a)| a.clone())
-        .collect();
+    let ParsedArgs { args, json, region } = parse_global_options(args)?;
     // Help needs no connection; answer after stripping global flags so
     // `ass-ctl --json --help` is just as local as `ass-ctl help`.
     let cmd = args.first().map(String::as_str).unwrap_or("help");
     if cmd.is_empty() || matches!(cmd, "help" | "--help" | "-h") {
         return Ok(usage().to_string());
     }
-    let mut client = Client::connect_with(
-        socket,
-        Capabilities {
-            query: true,
-            control: true,
-            input: false,
-            session: true,
-        },
-    )
+    if region.is_some() && !matches!(cmd, "screenshot" | "realm-capture") {
+        return Err(format!(
+            "--region is valid only for screenshot and realm-capture\n\n{}",
+            usage()
+        ));
+    }
+    let requested = Capabilities {
+        query: true,
+        control: true,
+        input: false,
+        session: true,
+        realm: is_realm_command(cmd),
+    };
+    let mut client = if is_realm_command(cmd) {
+        Client::connect_scoped(socket, requested, ass_ipc::LOCAL_REALM_ADMIN_SCOPE)
+    } else {
+        Client::connect_with(socket, requested)
+    }
     .map_err(|e| format!("connect: {e}"))?;
     dispatch(&mut client, &args, json, region)
+}
+
+/// Return the command after removing global flags. The binary uses this to
+/// keep help local and route streaming commands without duplicating argv
+/// indexing rules.
+pub fn command_name(args: &[String]) -> Result<Option<String>, String> {
+    Ok(parse_global_options(args)?.args.into_iter().next())
 }
 
 fn dispatch(
@@ -104,6 +112,121 @@ fn dispatch(
                 to_json(&snapshot)
             } else {
                 Ok(format_journal(&snapshot))
+            }
+        }
+        "realms" => {
+            let snapshot = client.realms().map_err(io_err)?;
+            if json {
+                to_json(&snapshot)
+            } else {
+                Ok(format_realms(&snapshot))
+            }
+        }
+        "realm-create" => {
+            let label = args
+                .get(1)
+                .cloned()
+                .unwrap_or_else(|| "AI Workspace".into());
+            let result = client
+                .realm_action(RealmAction::Create {
+                    label,
+                    capabilities: SeatCapabilities::POINTER_KEYBOARD,
+                    output: Some(VirtualOutput::DEFAULT_AGENT),
+                })
+                .map_err(io_err)?;
+            format_realm_action(result, json)
+        }
+        "realm-pause" | "realm-resume" => {
+            let realm = parse_realm_id(args, 1)?;
+            let snapshot = client.realms().map_err(io_err)?;
+            let state = if cmd == "realm-pause" {
+                RealmState::Paused
+            } else {
+                RealmState::Active
+            };
+            let result = client
+                .realm_action(RealmAction::Transact {
+                    expected_revision: Some(snapshot.revision),
+                    mutations: vec![RealmMutation::SetState { realm, state }],
+                })
+                .map_err(io_err)?;
+            format_realm_action(result, json)
+        }
+        "realm-transfer" => {
+            let window = parse_window_id(args, 1)?;
+            let target = parse_realm_id(args, 2)?;
+            let retain_source_as_observer = !args.iter().any(|arg| arg == "--no-mirror");
+            let snapshot = client.realms().map_err(io_err)?;
+            let result = client
+                .realm_action(RealmAction::Transact {
+                    expected_revision: Some(snapshot.revision),
+                    mutations: vec![RealmMutation::TransferWindow {
+                        window,
+                        target,
+                        retain_source_as_observer,
+                    }],
+                })
+                .map_err(io_err)?;
+            format_realm_action(result, json)
+        }
+        "realm-revoke" => {
+            let realm = parse_realm_id(args, 1)?;
+            let fallback = args
+                .get(2)
+                .map(|_| parse_realm_id(args, 2))
+                .transpose()?
+                .unwrap_or(HUMAN_REALM);
+            let snapshot = client.realms().map_err(io_err)?;
+            let result = client
+                .realm_action(RealmAction::Revoke {
+                    realm,
+                    fallback,
+                    expected_revision: Some(snapshot.revision),
+                })
+                .map_err(io_err)?;
+            format_realm_action(result, json)
+        }
+        "realm-launch" => {
+            let realm = parse_realm_id(args, 1)?;
+            let desktop_id = args
+                .get(2)
+                .ok_or_else(|| format!("missing desktop id\n\n{}", usage()))?;
+            client
+                .launch_in_realm(realm, desktop_id.clone())
+                .map_err(io_err)?;
+            Ok(format!(
+                "launch of {desktop_id} queued in Realm {}",
+                realm.0
+            ))
+        }
+        "realm-capture" => {
+            let realm = parse_realm_id(args, 1)?;
+            let capture = client.capture_realm(realm, region).map_err(io_err)?;
+            let path = match args.get(2) {
+                Some(path) => std::path::PathBuf::from(path),
+                None => realm_capture_path(&ass_config::default_screenshot_dir(), realm)?,
+            };
+            atomic_write(&path, &capture.png)?;
+            if json {
+                to_json(&serde_json::json!({
+                    "realm": capture.realm,
+                    "width": capture.width,
+                    "height": capture.height,
+                    "scale_milli": capture.scale_milli,
+                    "region": capture.region,
+                    "placements": capture.placements,
+                    "revision": capture.revision,
+                    "path": path,
+                }))
+            } else {
+                Ok(format!(
+                    "captured Realm {} at {}x{} (r{}) → {}",
+                    realm.0,
+                    capture.width,
+                    capture.height,
+                    capture.revision,
+                    path.display()
+                ))
             }
         }
         "focus" => {
@@ -199,6 +322,121 @@ fn io_err(e: std::io::Error) -> String {
     e.to_string()
 }
 
+fn is_realm_command(command: &str) -> bool {
+    command == "realms" || command.starts_with("realm-")
+}
+
+fn parse_realm_id(args: &[String], idx: usize) -> Result<RealmId, String> {
+    let id = parse_u64(args, idx)?;
+    if id == 0 {
+        return Err("Realm id zero is invalid".into());
+    }
+    Ok(RealmId(id))
+}
+
+fn format_realm_action(result: RealmActionResult, json: bool) -> Result<String, String> {
+    if json {
+        return to_json(&result);
+    }
+    Ok(match result {
+        RealmActionResult::Created { bundle } => format!(
+            "created Realm {} with seat {} (r{}); launches use private mount-scoped portals",
+            bundle.realm.0, bundle.seat.0, bundle.revision
+        ),
+        RealmActionResult::TransactionCommitted { receipt } => format!(
+            "committed {} Realm mutation(s), r{} → r{}",
+            receipt.results.len(),
+            receipt.before_revision,
+            receipt.after_revision
+        ),
+        RealmActionResult::Revoked { receipt } => format!(
+            "revoked Realm {}; {} interaction group(s) returned to Realm {} (r{})",
+            receipt.realm.0,
+            receipt.transferred_groups.len(),
+            receipt.fallback.0,
+            receipt.revision
+        ),
+    })
+}
+
+fn format_realms(snapshot: &RealmSnapshot) -> String {
+    let mut out = format!("authority revision {}\n", snapshot.revision);
+    for realm in &snapshot.realms {
+        let seats = snapshot
+            .seats
+            .iter()
+            .filter(|seat| seat.realm == realm.id)
+            .map(|seat| seat.name.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let windows = snapshot
+            .interaction_groups
+            .iter()
+            .filter(|group| group.control_realm == realm.id)
+            .map(|group| group.windows.len())
+            .sum::<usize>();
+        out.push_str(&format!(
+            "{:<5} {:<20} {:?} {:?} seats=[{}] windows={}\n",
+            realm.id.0, realm.label, realm.kind, realm.state, seats, windows
+        ));
+    }
+    out
+}
+
+fn realm_capture_path(dir: &Path, realm: RealmId) -> Result<std::path::PathBuf, String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|error| format!("create screenshot directory {}: {error}", dir.display()))?;
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    Ok(dir.join(format!("ass-realm-{}-{ms}.png", realm.0)))
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("capture path {} has no file name", path.display()))?
+        .to_string_lossy();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let temporary = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&temporary)
+            .map_err(|error| format!("create {}: {error}", temporary.display()))?;
+        file.write_all(bytes)
+            .map_err(|error| format!("write {}: {error}", temporary.display()))?;
+        file.sync_all()
+            .map_err(|error| format!("sync {}: {error}", temporary.display()))?;
+        std::fs::rename(&temporary, path).map_err(|error| {
+            format!(
+                "commit capture {} → {}: {error}",
+                temporary.display(),
+                path.display()
+            )
+        })
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
 /// Generate a timestamped screenshot path and ensure its parent exists.
 fn screenshot_path(dir: &Path) -> Result<String, String> {
     std::fs::create_dir_all(dir)
@@ -213,20 +451,66 @@ fn screenshot_path(dir: &Path) -> Result<String, String> {
         .into_owned())
 }
 
-/// Extract `--region x,y,w,h` from `args` if present. The flag and its value
-/// are stripped before command dispatch.
-fn parse_region_flag(args: &[String]) -> Option<ass_core::Rect> {
-    let idx = args.iter().position(|a| a == "--region")?;
-    let value = args.get(idx + 1)?;
-    let parts: Vec<&str> = value.split(',').collect();
+struct ParsedArgs {
+    args: Vec<String>,
+    json: bool,
+    region: Option<ass_core::Rect>,
+}
+
+/// Parse global flags in one pass so stripping `--json` cannot shift the index
+/// used to remove `--region` and its value. Malformed or duplicate regions are
+/// rejected rather than silently broadening a requested crop to a full-output
+/// capture.
+fn parse_global_options(args: &[String]) -> Result<ParsedArgs, String> {
+    let mut parsed = ParsedArgs {
+        args: Vec::with_capacity(args.len()),
+        json: false,
+        region: None,
+    };
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" | "-j" => parsed.json = true,
+            "--region" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--region requires x,y,w,h".to_owned())?;
+                if parsed.region.is_some() {
+                    return Err("--region may be specified only once".into());
+                }
+                parsed.region = Some(parse_region(value)?);
+                index += 1;
+            }
+            value if value.starts_with("--region=") => {
+                if parsed.region.is_some() {
+                    return Err("--region may be specified only once".into());
+                }
+                parsed.region = Some(parse_region(&value["--region=".len()..])?);
+            }
+            _ => parsed.args.push(args[index].clone()),
+        }
+        index += 1;
+    }
+    Ok(parsed)
+}
+
+fn parse_region(value: &str) -> Result<ass_core::Rect, String> {
+    let parts = value.split(',').collect::<Vec<_>>();
     if parts.len() != 4 {
-        return None;
+        return Err(format!("invalid region '{value}'; expected x,y,w,h"));
     }
-    let nums: Vec<i32> = parts.iter().filter_map(|s| s.parse::<i32>().ok()).collect();
-    if nums.len() != 4 {
-        return None;
+    let mut numbers = [0i32; 4];
+    for (index, part) in parts.into_iter().enumerate() {
+        numbers[index] = part
+            .parse()
+            .map_err(|_| format!("invalid region '{value}'; expected integer x,y,w,h"))?;
     }
-    Some(ass_core::Rect::new(nums[0], nums[1], nums[2], nums[3]))
+    if numbers[2] <= 0 || numbers[3] <= 0 {
+        return Err("region width and height must be positive".into());
+    }
+    Ok(ass_core::Rect::new(
+        numbers[0], numbers[1], numbers[2], numbers[3],
+    ))
 }
 
 fn parse_usize(args: &[String], idx: usize) -> Result<usize, String> {
@@ -399,7 +683,7 @@ fn format_journal(snapshot: &ass_ipc::JournalSnapshot) -> String {
             entry.seq,
             format!("{}ms", entry.ts_mono_ms),
             entry.origin,
-            entry.cmd,
+            entry.mutation,
             entry.effect,
         ));
     }
@@ -419,8 +703,21 @@ pub fn format_event(ev: &Event) -> String {
             }
         }
         Event::Journal { entry } => {
-            format!("journal #{} {:?}: {:?}", entry.seq, entry.origin, entry.cmd)
+            format!(
+                "journal #{} {:?}: {:?}",
+                entry.seq, entry.origin, entry.mutation
+            )
         }
+        Event::RealmsChanged { revision } => format!("realms changed r{revision}"),
+        Event::RealmDamaged {
+            realm,
+            sequence,
+            revision,
+            ..
+        } => format!(
+            "realm {} damaged {} at authority revision {}",
+            realm.0, sequence, revision
+        ),
     }
 }
 
@@ -444,6 +741,7 @@ fn run_stream(socket: &Path, journal: bool) -> Result<(), String> {
             control: false,
             input: false,
             session: false,
+            realm: false,
         },
     )
     .map_err(|e| format!("connect: {e}"))?;
@@ -472,6 +770,18 @@ commands:
   outputs                 list outputs and their geometry
   notifications           list active notifications
   journal [since]         list mutation journal entries after a sequence
+  realms                  list authority domains, seats, and controlled windows
+  realm-create [label]    create an isolated AI workspace
+  realm-pause <realm>     disable a Realm seat and freeze its authority
+  realm-resume <realm>    re-enable a paused Realm
+  realm-transfer <win> <realm> [--no-mirror]
+                           atomically transfer a window interaction group
+  realm-launch <realm> <desktop-id>
+                           launch an app through the Realm process sandbox
+  realm-capture <realm> [path.png]
+                           capture a Realm virtual output atomically
+  realm-revoke <realm> [fallback]
+                           permanently revoke a Realm (fallback defaults to 1)
   focus <id>              focus a toplevel by id
   minimize <id>           minimize a toplevel by id
   close <id>              request a toplevel to close
@@ -532,18 +842,22 @@ mod tests {
     }
 
     #[test]
-    fn parse_region_flag_extracts_rectangle() {
+    fn global_flags_are_stripped_without_index_aliasing() {
         let args = vec![
+            "--json".to_string(),
             "--region".to_string(),
             "10,20,100,80".to_string(),
             "screenshot".to_string(),
+            "capture.png".to_string(),
         ];
-        let rect = parse_region_flag(&args).unwrap();
-        assert_eq!(rect, ass_core::Rect::new(10, 20, 100, 80));
+        let parsed = parse_global_options(&args).unwrap();
+        assert!(parsed.json);
+        assert_eq!(parsed.region, Some(ass_core::Rect::new(10, 20, 100, 80)));
+        assert_eq!(parsed.args, ["screenshot", "capture.png"]);
 
-        assert!(parse_region_flag(&["--region".into(), "1,2,3".into()]).is_none());
-        assert!(parse_region_flag(&["--region".into(), "a,b,c,d".into()]).is_none());
-        assert!(parse_region_flag(&["screenshot".into()]).is_none());
+        assert!(parse_global_options(&["--region".into(), "1,2,3".into()]).is_err());
+        assert!(parse_global_options(&["--region".into(), "a,b,c,d".into()]).is_err());
+        assert!(parse_global_options(&["--region=1,2,0,4".into()]).is_err());
     }
 
     #[test]

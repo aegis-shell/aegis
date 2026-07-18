@@ -24,7 +24,10 @@ development, direct DRM/KMS on a bare TTY via `ass-backend`.
 
 Running `ass` composites client surfaces and shell chrome into a nested
 window or directly onto a KMS display, exposes a Wayland display to clients,
-and serves the control socket at `$XDG_RUNTIME_DIR/ass.sock`.
+and serves the control socket at `$XDG_RUNTIME_DIR/ass.sock`. Realm
+application launch additionally requires the packaged systemd user service
+with delegated `cpu`, `memory`, and `pids` controllers; other compositor
+functions remain available when that preflight fails.
 
 ## Use
 
@@ -43,4 +46,3 @@ dependency build sequence.
 - [Architecture](../../docs/explanation/architecture.md)
 - [Setup](../../docs/dev/setup.md)
 - [Workspace layout](../../docs/dev/project-layout.md)
-

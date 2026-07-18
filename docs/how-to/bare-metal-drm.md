@@ -27,6 +27,10 @@ so plain `cargo run` from a TTY also works. `ASS_DRM_DEVICE=/dev/dri/card1`
 overrides the GPU when there is more than one. `RUST_LOG=info` shows the
 device, seat, connector, and modifier choices as they happen.
 
+Use the packaged `ass.service` instead of direct `cargo run` when testing
+Realm application launch. The service delegates the cgroup controllers that
+mandatory memory, process, CPU, freeze, and revoke boundaries require.
+
 ## Smoke checklist
 
 First bare-metal run, in order:

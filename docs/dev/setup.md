@@ -13,6 +13,7 @@ How to build and run ass for development.
 | Wayland client and protocols | `wayland-client`, `wayland-protocols`, and `wayland-scanner` for the nested backend |
 | libxkbcommon | Server compiles the default keymap at startup for `wl_keyboard` |
 | A running Wayland session | `$WAYLAND_DISPLAY` must be set to run the nested backend |
+| bubblewrap + systemd user manager | Required for real Realm application sandbox tests |
 
 ## Build the dependencies
 
@@ -81,6 +82,20 @@ the rest need the sibling flux and lens meson trees to be built first, same
 as `cargo build`. Source `scripts/env.sh` first so the `-sys` crates locate
 the build trees.
 
+The ordinary workspace run skips kernel-level Realm launcher tests when the
+test process is not alone in a controller-delegated cgroup. Run those tests
+in the production topology with:
+
+```bash
+scripts/test-realm-sandbox.sh
+```
+
+The script starts the compiled `ass-launch` test binary as a transient
+systemd user service with delegated `cpu`, `memory`, and `pids` controllers.
+It verifies mount-scoped multi-connection Wayland portals, mandatory resource
+limits, cgroup freeze/resume, and `cgroup.kill` against a worker that escapes
+its process group.
+
 ## Troubleshooting
 
 | Symptom | First check |
@@ -89,6 +104,7 @@ the build trees.
 | Missing `flux-uninstalled.pc`, `flux-scene-graph-uninstalled.pc`, or `lens-uninstalled.pc` | The Meson build tree is not built with the required components; build the dependencies first |
 | `vkCreateSwapchainKHR: function pointer was NULL` | `VK_KHR_swapchain` not enabled; the backend requests it, so check the flux device extensions |
 | `error while loading shared libraries: libflux*.so` / `liblens*.so` | Run through `cargo run` so the rpath relay applies, or rebuild after moving the meson trees |
+| `Realm cgroup isolation is unavailable` | Run ASS in the packaged systemd user service; a shared terminal scope cannot satisfy controller delegation |
 
 ## See Also
 

@@ -7,6 +7,66 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### AI Workspaces and independent input Realms
+
+- Added first-class Realms with durable principals, independent Wayland
+  seats, interaction groups, atomic control transfer, read-only observer
+  mirrors, pause/resume, fail-closed revocation, and Realm-local virtual
+  outputs. A transferred window keeps the same `wl_surface` and client
+  instance; every toplevel on one Wayland client connection moves as one
+  interaction group, independent of app-side multi-seat behavior.
+- Overview now reserves a Realm shelf on the right. Dragging a live window
+  thumbnail onto an active AI Workspace transfers its complete interaction
+  group while retaining a non-interactive physical-desktop mirror. Dragging
+  the mirror onto **Physical desktop** returns control. Mirrors are physical
+  input barriers, preventing accidental click-through to covered windows.
+  Control Center adds
+  bilingual AI Workspace creation, status, pause/resume, and confirmed
+  revocation controls.
+- IPC protocol version 3 adds the `realm` capability, connection-bound leases,
+  `GetRealms`, synchronous optimistic Realm actions and receipts,
+  `InjectRealmInput`, `LaunchInRealm`, `CaptureRealm`, Realm events, explicit
+  Realm scope axes, and the owner-only `ass-ctl-realm-admin` recovery scope.
+  The ordered mutation journal now records both commands and synchronous
+  Realm actions with real connection ids and before/after authority
+  revisions; capability, lease, validation, scope, and live-state refusals
+  are retained as decisions. Interaction-group operations expand scope checks
+  to every affected sibling window.
+  `ass-ctl` adds `realms` and the `realm-create`, `realm-pause`,
+  `realm-resume`, `realm-transfer`, `realm-launch`, `realm-capture`, and
+  `realm-revoke` commands.
+- Each sandboxed application receives a mount-scoped Wayland listener and
+  only its Realm's `wl_seat`. The randomized host pathname is unlinked and
+  every pre-gate connection is dropped before application execution, while
+  the private mount supports multiple Wayland connections from one
+  multi-process application instance. Agent input uses target-local
+  coordinates without moving physical focus, modifiers, grabs, selection,
+  drag-and-drop, text input, or compositor shortcuts.
+- Realm applications launch through a fail-closed bubblewrap policy with
+  user, mount, PID, IPC, UTS, cgroup, and network isolation, no Linux
+  capabilities, an ephemeral home, no host network or user files by default,
+  a private Realm portal, and GPU render nodes without KMS card nodes.
+  Mandatory cgroup v2 memory, process, and CPU controls are installed under a
+  controller-delegated systemd user service. Realm pause, session lock, and
+  inactive VT freeze the complete cgroup; resume continues it; revocation and
+  compositor shutdown use `cgroup.kill` and reap it. `[realm_sandbox]` adds
+  default and per-desktop-entry network, canonical path, and resource policy;
+  changes apply to new launches.
+- Directed Realm capture renders only the Realm surface graph into a bounded
+  offscreen target. Optimistic revisions correlate pixels with authority
+  state; a monotonically increasing security generation rejects in-flight
+  work across lock, seat revocation, pause, and quick relock/unlock
+  transitions. Final file/IPC delivery is authorized on the compositor thread
+  after background encoding. `RealmDamaged` events expose bounded,
+  virtual-output-local conservative damage for every surface or topology
+  change, so observers do not poll. Screenshot and Realm-capture files use
+  mode-`0600` atomic replace instead of exposing partial PNGs. IPC capture
+  metadata is followed by a fully sealed PNG `memfd` over `SCM_RIGHTS`, which
+  removes base64 expansion and correlates Realm pixels, logical region,
+  window placements, target-local sizes, scale, and authority revision.
+  The IPC writer rechecks the live scope, lock/VT security gate, Realm state,
+  authority revision, and lease immediately before attaching that descriptor.
+
 ### Frame-time fixes (optics + compositor)
 
 - Smoother frames under client updates: flux texture/buffer uploads
@@ -59,9 +119,9 @@ project cuts a tagged release.
   over 150 ms with an ease-out curve; subsurface trees move with their
   root. The window model, chrome, and IPC always report the target rect,
   and `[ui] reduced_motion` resolves every transition in one frame.
-- Screenshots and scoped pixel capture (ADR-0037): `ass-ctl screenshot
+- Screenshots and scoped pixel capture (ADR-0041): `ass-ctl screenshot
   [path.png]` writes the focused output as a PNG, and the new IPC
-  `Request::CaptureOutput` returns the frame as base64 PNG to scoped
+  `Request::CaptureOutput` returns a sealed PNG `memfd` to scoped
   agents (explicit `CaptureOutput` op, never inherited; refused while the
   session is locked or the seat is inactive). Captures now copy the exact
   output frame being submitted, including its current client buffers,
@@ -72,8 +132,8 @@ project cuts a tagged release.
   lowercase `screenshots` subdirectory, and logical capture regions are
   converted to physical pixels so HiDPI captures match the displayed region.
   Readback staging is preallocated, GPU completion is polled across frames
-  instead of waited synchronously, and PNG compression, base64 conversion,
-  and file writes run on a bounded capture worker instead of pausing the
+  instead of waited synchronously, and PNG compression and file writes run
+  on a bounded capture worker instead of pausing the
   compositor frame thread. Overlapping capture requests are refused rather
   than stacking full-frame jobs.
 - Per-output scale policy (ADR-0028): `[[output]]` config entries override

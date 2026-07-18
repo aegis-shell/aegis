@@ -206,6 +206,7 @@ version = "0.0.1"
 dependencies = [
  "log",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -217,6 +218,7 @@ dependencies = [
  "ass-ipc",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -224,6 +226,7 @@ name = "ass-ipc"
 version = "0.0.1"
 dependencies = [
  "ass-core",
+ "libc",
  "log",
  "serde",
  "serde_json",
@@ -235,6 +238,7 @@ version = "0.0.1"
 dependencies = [
  "ass-apps",
  "ass-core",
+ "libc",
  "log",
  "tempfile",
  "thiserror 1.0.69",

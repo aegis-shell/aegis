@@ -1,8 +1,10 @@
 # IPC Reference
 
-The ass IPC is protocol version 2, carried as length-framed JSON over the
+The ass IPC is protocol version 3, carried as length-framed JSON over the
 owner-only Unix socket at `$XDG_RUNTIME_DIR/ass.sock`. Every connection starts
 with `Hello`; commands are accepted only after capability and scope checks.
+JSON messages are limited to 16 MiB. Large immutable capture payloads use a
+separate sealed-file-descriptor transfer described under [Capture](#capture).
 
 ## Capabilities
 
@@ -12,10 +14,17 @@ with `Hello`; commands are accepted only after capability and scope checks.
 | `control` | Mutate windows, workspaces, layout, and notifications. | Server policy. |
 | `input` | Inject bounded actions into a target window. | Named scope required. |
 | `session` | Quit or perform other session-level operations. | Server policy. |
+| `realm` | Create, configure, capture, pause, transfer, launch into, and revoke Realms. | Named scope and explicit operation required. |
 
-An absent `input` field is `false`, including messages from an older
-version-2 peer. An unscoped connection never receives `input`, even when it
-requests the capability and server policy otherwise permits it.
+Absent `input` and `realm` fields are `false`. An unscoped connection never
+receives `input`; Realm operations also require an explicit operation in a
+named scope.
+
+Every privileged connection supplies `lease: { ttl_ms }` in `Hello`.
+Omitting it strips `control`, `input`, `session`, and `realm`. The allowed
+duration is 1,000 through 86,400,000 milliseconds. `RenewLease { ttl_ms }`
+renews a live connection-bound lease; an expired lease cannot be renewed.
+The reference client requests 900,000 milliseconds by default.
 
 ## Queries
 
@@ -26,10 +35,32 @@ requests the capability and server policy otherwise permits it.
 | `GetNotifications` | `Notifications` | `query` |
 | `GetOutputs` | `Outputs` | `query` |
 | `GetJournal { since }` | `Journal` | `query` |
+| `GetRealms` | `Realms` | `query` |
+| `Realm { action }` | `Realm` with a commit receipt | `realm` + explicit scope op |
 | `CaptureOutput` | `CaptureOutput` | `control` + explicit scope op |
+| `CaptureRealm { realm, region }` | `CaptureRealm` | `realm` + `CaptureRealm` scope op |
 
-`Subscribe` enables coarse events. `SubscribeJournal` enables one `Journal`
-event per applied main-loop command.
+`Subscribe` enables coarse events:
+
+- `WindowsChanged`, `WorkspaceChanged`, and `RealmsChanged { revision }`
+  invalidate the corresponding snapshots.
+- `RealmDamaged { realm, sequence, revision, damage }` reports that an active
+  Realm's directed scene changed. `damage` contains at most 64 rectangles in
+  virtual-output logical coordinates. Surface commits conservatively
+  invalidate the complete Realm-local window placement; mapping, removal,
+  transfer, observer, and output-layout changes may invalidate the complete
+  output. Pixels remain pull-based through `CaptureRealm`.
+
+`SubscribeJournal` additionally enables one ordered `Journal` event per
+mutation decision. Each `JournalEntry` contains a real per-connection
+`Origin::Ipc { conn_id }`, an `effect`, and one tagged `mutation`:
+
+- `Command { cmd }`; or
+- `Realm { action, before_revision, after_revision }`.
+
+Capability, lease, validation, and scope refusals are journaled even when the
+mutation never reaches the compositor main loop. Realm actions rejected by
+live state carry the unchanged revision in both revision fields.
 
 ## Commands
 
@@ -41,6 +72,8 @@ event per applied main-loop command.
 | `Move { id }` | `control` | `Move` | Window |
 | `SetWindowGeometry { id, rect }` | `control` | `SetWindowGeometry` | Window |
 | `InjectInput { id, actions }` | `input` | `InjectInput` | Window |
+| `InjectRealmInput { realm, id, actions }` | `input` | `InjectRealmInput` | Realm and window |
+| `LaunchInRealm { realm, desktop_id }` | `realm` | `LaunchInRealm` | Realm |
 | `Cycle { forward }` | `control` | `Cycle` | — |
 | `SwitchWorkspace { dir }` | `control` | `SwitchWorkspace` | Focused output |
 | `SwitchWorkspaceTo { id }` | `control` | `SwitchWorkspaceTo` | Workspace |
@@ -54,6 +87,75 @@ event per applied main-loop command.
 
 `Do` returns `Ok` after the command is queued, not after it is applied. Read
 the next snapshot or journal entry to observe the result.
+Window-targeted physical commands are reauthorized on the compositor thread.
+If the human Realm is only an observer, focus, minimize, close, move,
+geometry, and workspace mutations produce `Effect::Refused` and do not reach
+the client. Its mirror also blocks physical hit-testing, so a refused click
+cannot fall through to an unrelated window underneath.
+
+## Realm Authority
+
+A Realm is an interaction and presentation authority domain. Realm `1` is
+the physical human desktop. Each agent Realm owns an independent `wl_seat`,
+a directed virtual output, and private mount-scoped launch portals.
+
+`GetRealms` returns one `RealmSnapshot` with:
+
+- `revision`;
+- principals and Realms;
+- seats and their enabled state;
+- connected Wayland clients and observed multi-seat support; and
+- interaction groups, their controlling Realm, observing Realms, and windows.
+
+`Realm { action }` is synchronous. It returns only after the compositor main
+loop commits or rejects the operation and records that decision in the
+mutation journal.
+
+| Action | Operation class | Result |
+|--------|-----------------|--------|
+| `Create { label, capabilities, output }` | `CreateRealm` | `Created { bundle }` |
+| `Transact { expected_revision, mutations }` | `TransactRealm` | `TransactionCommitted { receipt }` |
+| `Revoke { realm, fallback, expected_revision }` | `RevokeRealm` | `Revoked { receipt }` |
+
+A transaction contains 1–64 mutations and commits all or none:
+
+| Mutation | Effect |
+|----------|--------|
+| `TransferWindow { window, target, retain_source_as_observer }` | Transfers the complete interaction group containing `window`. |
+| `SetObserver { group, realm, observe }` | Adds or removes a read-only presentation Realm. |
+| `ConfigureOutput { realm, output }` | Changes a virtual output. |
+| `SetState { realm, state }` | Pauses or resumes a Realm. Permanent revocation is a separate action. |
+
+Scope authorization expands `TransferWindow` and `SetObserver` to the
+complete interaction group before commit. If any affected sibling window is
+outside `scope.windows`, the whole action is refused; allowlisting one
+toplevel cannot smuggle another toplevel on the same client connection.
+
+`expected_revision` is optional on the wire. When present, a stale value
+rejects the complete operation. The reference shell and CLI always supply
+the revision they observed.
+
+Virtual output dimensions are logical pixels. `scale_milli` is scale times
+1,000 and `refresh_mhz` is millihertz. Width and height are each limited to
+16,384, scale to 0.25–8.0, refresh to 1–1,000 Hz, and one physical RGBA frame
+to 256 MiB.
+
+`InjectRealmInput` uses target-window-local coordinates and the Realm's
+independent seat. It never changes physical pointer or keyboard focus and
+does not execute compositor shortcuts.
+
+`LaunchInRealm` accepts an enumerated desktop-entry id. The compositor
+launches it through a private mount-scoped Wayland listener and a fail-closed
+Linux namespace sandbox. The randomized host socket path is removed and
+pre-gate connections are dropped before application code runs. One sandbox
+may open several Wayland connections without exposing a reusable host
+pathname. Network and host filesystem access are denied unless
+`[realm_sandbox]` policy explicitly grants them.
+
+Every managed launch receives mandatory cgroup memory, process-count, and CPU
+weight controls. Realm pause, session lock, and inactive VT freeze the
+complete cgroup; revocation terminates and reaps it. Missing bubblewrap,
+cgroup v2, controller delegation, or portal setup refuses the launch.
 
 ## Window Geometry
 
@@ -137,27 +239,57 @@ being submitted; later client commits, animations, or wallpaper frames cannot
 change the detached snapshot. Captures include the overview grid while
 overview mode is active.
 
-`Command::Screenshot { path }` is a journaled `control` command that writes
+`Command::Screenshot { path, region }` is a journaled `control` command that writes
 the focused output as a PNG file; `ass-ctl screenshot` is its reference
 frontend. `Request::CaptureOutput` is a synchronous query returning
-`Response::CaptureOutput { width, height, png_base64 }` — the frame as a
-base64-encoded PNG. The request requires the `control` capability and an
-explicit `CaptureOutput` entry in the connection's scope `ops`; like
-`InjectInput`, the operation is never inherited through the `None`-means-all
-default. PNG payloads are bounded by the codec's 16 MiB frame limit.
+`Response::CaptureOutput { width, height, png_bytes }` followed by one sealed
+PNG `memfd` transferred with `SCM_RIGHTS`. The request requires the `control`
+capability and an explicit `CaptureOutput` entry in the connection's scope
+`ops`; like `InjectInput`, the operation is never inherited through the
+unrestricted default.
+
+The receiver must read the descriptor immediately after the JSON response,
+check that its file length equals `png_bytes`, and require
+`F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE`. Capture blobs are
+limited to 288 MiB independently of the 16 MiB JSON frame limit.
 
 Capture regions use compositor logical pixels. The returned PNG and
 `width`/`height` use physical output pixels, so a region captured at 200%
 scale has twice the logical width and height.
 
-Continuous frame streaming (screencast, `xdg-desktop-portal`) is future
-work and can reuse the same scale-aware frame-copy path.
+Continuous physical-output frame streaming (screencast,
+`xdg-desktop-portal`) is future work and can reuse the same scale-aware
+frame-copy path. Realm observers do not need to poll: `RealmDamaged` tells
+them when a directed scene should be recaptured.
+
+`CaptureRealm` reads only the selected Realm's directed virtual output. It
+does not contain physical-desktop chrome, the cursor, or another Realm. The
+response contains `capture` metadata with `realm`, physical `width` and
+`height`, `scale_milli`, the logical `region`, `placements`, `png_bytes`, and
+the authority `revision`, followed by the sealed PNG descriptor. Each
+placement contains a window id, its rectangle in virtual-output logical
+coordinates, and the target-local surface size. The metadata, scene, and
+revision are one atomic observation, so an agent can map captured pixels to
+`InjectRealmInput` coordinates without racing a layout change.
+
+A security generation invalidates in-flight pixels across session-lock,
+inactive-seat, pause, and revocation boundaries, including a lock followed by
+a quick unlock. Encoding runs in a bounded worker. The compositor main thread
+checks scope, lease, security generation, and Realm state before queuing the
+result; the sole IPC writer checks the live scope, lock/VT gate, Realm state,
+authority revision, and lease again immediately before it sends the sealed
+descriptor.
 
 ## Named Scopes
 
-Named scopes are configured with `[[agent.scope]]`. Every command resolves the
-named scope again, so a configuration reload can narrow or revoke authority
-without reconnecting. An explicit unknown or removed scope fails closed.
+Named scopes are configured with `[[agent.scope]]`. Every mutation and
+capture resolves the named scope again, including final pixel delivery, so a
+configuration reload can narrow or revoke authority without reconnecting. An
+explicit unknown or removed scope fails closed.
+
+`ass-ctl` uses the built-in owner-only `ass-ctl-realm-admin` scope for Realm
+recovery commands. It grants the local user all Realm ids and the explicit
+Realm operation set; it does not weaken the socket's mode `0600` boundary.
 
 See the [Configuration Reference](config.md#agent-scopes) for fields and
 operation names.

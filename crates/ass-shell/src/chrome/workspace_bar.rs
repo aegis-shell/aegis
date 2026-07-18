@@ -130,6 +130,7 @@ impl HudBar {
         let mut seen = HashSet::new();
         windows
             .iter()
+            .filter(|window| !window.read_only)
             .filter_map(|window| {
                 let app_id = window.app_id.as_deref()?.to_ascii_lowercase();
                 if !seen.insert(app_id.clone()) {

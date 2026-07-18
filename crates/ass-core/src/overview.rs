@@ -18,25 +18,36 @@ pub const RAIL_WIDTH: i32 = 120;
 pub const RAIL_TILE_H: i32 = 64;
 /// Gap between rail tiles, in logical pixels.
 pub const RAIL_GAP: i32 = 12;
+/// Width reserved for the Realm authority shelf along the right edge.
+pub const REALM_SHELF_WIDTH: i32 = 188;
+/// Height of one Realm transfer target.
+pub const REALM_TILE_H: i32 = 74;
+/// Gap between Realm targets.
+pub const REALM_GAP: i32 = 12;
 
 /// The area the thumbnail grid occupies within `display` (the full logical
 /// output rect): the display minus the rail when `rail` is set. Shared by
 /// the compositor's thumbnail pass and the chrome's hit-testing so both
 /// agree on every cell.
 pub fn grid_area(display: Rect, rail: bool) -> Rect {
-    if rail {
-        Rect {
-            origin: Point {
-                x: display.origin.x + RAIL_WIDTH,
-                y: display.origin.y,
-            },
-            size: Size {
-                w: (display.size.w - RAIL_WIDTH).max(1),
-                h: display.size.h,
-            },
-        }
-    } else {
-        display
+    grid_area_with_realm_shelf(display, rail, false)
+}
+
+/// Thumbnail area with independent workspace and Realm shelves. Keeping this
+/// geometry in core lets the compositor's client-texture pass and the shell's
+/// hit testing use exactly the same cells.
+pub fn grid_area_with_realm_shelf(display: Rect, rail: bool, realm_shelf: bool) -> Rect {
+    let left = if rail { RAIL_WIDTH } else { 0 };
+    let right = if realm_shelf { REALM_SHELF_WIDTH } else { 0 };
+    Rect {
+        origin: Point {
+            x: display.origin.x + left,
+            y: display.origin.y,
+        },
+        size: Size {
+            w: (display.size.w - left - right).max(1),
+            h: display.size.h,
+        },
     }
 }
 
@@ -54,6 +65,26 @@ pub fn rail(display: Rect, count: usize) -> Vec<Rect> {
         .map(|_| {
             let tile = Rect::new(x, y, w, RAIL_TILE_H);
             y += RAIL_TILE_H + RAIL_GAP;
+            tile
+        })
+        .collect()
+}
+
+/// Realm authority transfer targets along the right edge. The human desktop
+/// and every live agent Realm use the same geometry so a controlled window can
+/// be dragged in either direction.
+pub fn realm_shelf(display: Rect, count: usize) -> Vec<Rect> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let x = display.origin.x + display.size.w - REALM_SHELF_WIDTH + REALM_GAP;
+    let w = REALM_SHELF_WIDTH - 2 * REALM_GAP;
+    let total = count as i32 * REALM_TILE_H + (count as i32 - 1) * REALM_GAP;
+    let mut y = display.origin.y + (display.size.h - total).max(REALM_GAP) / 2;
+    (0..count)
+        .map(|_| {
+            let tile = Rect::new(x, y, w, REALM_TILE_H);
+            y += REALM_TILE_H + REALM_GAP;
             tile
         })
         .collect()
@@ -184,6 +215,9 @@ mod tests {
         assert_eq!(with_rail.origin.x, RAIL_WIDTH);
         assert_eq!(with_rail.size.w, 1000 - RAIL_WIDTH);
         assert_eq!(with_rail.size.h, 700);
+        let with_both = grid_area_with_realm_shelf(display, true, true);
+        assert_eq!(with_both.origin.x, RAIL_WIDTH);
+        assert_eq!(with_both.size.w, 1000 - RAIL_WIDTH - REALM_SHELF_WIDTH);
     }
 
     #[test]
@@ -201,6 +235,21 @@ mod tests {
         assert_eq!(
             tiles[1].origin.y - tiles[0].origin.y,
             RAIL_TILE_H + RAIL_GAP
+        );
+    }
+
+    #[test]
+    fn realm_shelf_stays_on_the_right_edge() {
+        let display = Rect::new(20, 10, 1000, 700);
+        let tiles = realm_shelf(display, 3);
+        assert_eq!(tiles.len(), 3);
+        assert!(tiles.iter().all(|tile| {
+            tile.origin.x >= display.origin.x + display.size.w - REALM_SHELF_WIDTH
+                && tile.origin.x + tile.size.w <= display.origin.x + display.size.w
+        }));
+        assert_eq!(
+            tiles[1].origin.y - tiles[0].origin.y,
+            REALM_TILE_H + REALM_GAP
         );
     }
 }

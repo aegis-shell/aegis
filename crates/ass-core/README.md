@@ -5,12 +5,14 @@ the compositor.
 
 ## Responsibilities
 
-- Define logical geometry, output, input, window, workspace, and application
-  types.
+- Define logical geometry, output, input, window, workspace, realm, principal,
+  seat, and application types.
 - Hold pure layout, key-binding, launcher, notification, and window-rule
   logic.
 - Provide the stable models exchanged by the server, renderer, shell,
   configuration, and IPC crates.
+- Enforce the single-controller, explicit-observer, and atomic interaction
+  authority invariants shared by human and agent realms.
 - Optionally derive serialization through the `serde` feature.
 
 ## Boundaries
@@ -42,4 +44,4 @@ shared model.
 - [Architecture](../../docs/explanation/architecture.md)
 - [Responsibility boundary decision](../../docs/adr/0001-scope-and-responsibility-boundary.md)
 - [Workspace layout](../../docs/dev/project-layout.md)
-
+- [Realm and seat decision](../../docs/adr/0040-realms-seats-and-transferable-interaction-authority.md)

@@ -10,7 +10,23 @@ use std::path::Path;
 
 use crate::codec::{read_msg, write_msg};
 use crate::journal::JournalSnapshot;
-use crate::schema::{Capabilities, Command, Event, Request, Response, Scope, PROTOCOL_VERSION};
+use crate::schema::{
+    Capabilities, Command, Event, LeaseGrant, LeaseRequest, RealmAction, RealmActionResult,
+    Request, Response, Scope, PROTOCOL_VERSION,
+};
+
+/// Decoded Realm observation returned by [`Client::capture_realm`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedRealm {
+    pub realm: ass_core::realm::RealmId,
+    pub width: u32,
+    pub height: u32,
+    pub scale_milli: u32,
+    pub region: ass_core::Rect,
+    pub placements: Vec<ass_core::realm::RealmWindowPlacement>,
+    pub png: Vec<u8>,
+    pub revision: u64,
+}
 
 /// A connected IPC client. The handshake is complete on construction; the
 /// granted capabilities are available via [`Client::caps`].
@@ -18,6 +34,7 @@ pub struct Client {
     stream: UnixStream,
     caps: Capabilities,
     scope: Scope,
+    lease: Option<LeaseGrant>,
 }
 
 impl Client {
@@ -55,15 +72,17 @@ impl Client {
                 version: PROTOCOL_VERSION,
                 caps: requested,
                 scope: scope_name,
+                lease: requested.privileged().then(LeaseRequest::default),
             },
         )?;
         let resp: Response = read_msg(&mut stream)?;
-        let (caps, scope) = match resp {
+        let (caps, scope, lease) = match resp {
             Response::Hello {
                 version,
                 caps,
                 scope,
-            } if version == PROTOCOL_VERSION => (caps, scope),
+                lease,
+            } if version == PROTOCOL_VERSION => (caps, scope, lease),
             Response::Error { message } => {
                 return Err(io::Error::new(io::ErrorKind::ConnectionRefused, message));
             }
@@ -78,6 +97,7 @@ impl Client {
             stream,
             caps,
             scope,
+            lease,
         })
     }
 
@@ -89,6 +109,25 @@ impl Client {
     /// The resource/operation scope granted by the compositor at handshake.
     pub fn scope(&self) -> &Scope {
         &self.scope
+    }
+
+    pub fn lease(&self) -> Option<LeaseGrant> {
+        self.lease
+    }
+
+    pub fn renew_lease(&mut self, ttl_ms: u64) -> io::Result<LeaseGrant> {
+        write_msg(&mut self.stream, &Request::RenewLease { ttl_ms })?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::LeaseRenewed { lease } => {
+                self.lease = Some(lease);
+                Ok(lease)
+            }
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected LeaseRenewed, got {other:?}"),
+            )),
+        }
     }
 
     /// Fetch the live toplevel snapshot.
@@ -151,6 +190,26 @@ impl Client {
         self.command(Command::InjectInput { id, actions })
     }
 
+    pub fn inject_realm_input(
+        &mut self,
+        realm: ass_core::realm::RealmId,
+        id: ass_core::window::WindowId,
+        actions: Vec<ass_core::input::SyntheticInputAction>,
+    ) -> io::Result<()> {
+        self.command(Command::InjectRealmInput { realm, id, actions })
+    }
+
+    pub fn launch_in_realm(
+        &mut self,
+        realm: ass_core::realm::RealmId,
+        desktop_id: impl Into<String>,
+    ) -> io::Result<()> {
+        self.command(Command::LaunchInRealm {
+            realm,
+            desktop_id: desktop_id.into(),
+        })
+    }
+
     /// Post a notification.
     pub fn notify(
         &mut self,
@@ -208,16 +267,12 @@ impl Client {
             Response::CaptureOutput {
                 width,
                 height,
-                png_base64,
-            } => {
-                let png = crate::base64::decode(&png_base64).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "invalid base64 in CaptureOutput",
-                    )
-                })?;
-                Ok((width, height, png))
-            }
+                png_bytes,
+            } => Ok((
+                width,
+                height,
+                crate::blob::receive(&self.stream, png_bytes)?,
+            )),
             Response::Error { message } => Err(io::Error::other(message)),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -261,6 +316,58 @@ impl Client {
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("expected Journal, got {other:?}"),
+            )),
+        }
+    }
+
+    pub fn realms(&mut self) -> io::Result<ass_core::realm::RealmSnapshot> {
+        write_msg(&mut self.stream, &Request::GetRealms)?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::Realms { snapshot } => Ok(snapshot),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected Realms, got {other:?}"),
+            )),
+        }
+    }
+
+    pub fn realm_action(&mut self, action: RealmAction) -> io::Result<RealmActionResult> {
+        write_msg(&mut self.stream, &Request::Realm { action })?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::Realm { result } => Ok(result),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected Realm, got {other:?}"),
+            )),
+        }
+    }
+
+    pub fn capture_realm(
+        &mut self,
+        realm: ass_core::realm::RealmId,
+        region: Option<ass_core::Rect>,
+    ) -> io::Result<CapturedRealm> {
+        write_msg(&mut self.stream, &Request::CaptureRealm { realm, region })?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::CaptureRealm { capture } if capture.realm == realm => {
+                let png = crate::blob::receive(&self.stream, capture.png_bytes)?;
+                Ok(CapturedRealm {
+                    realm: capture.realm,
+                    width: capture.width,
+                    height: capture.height,
+                    scale_milli: capture.scale_milli,
+                    region: capture.region,
+                    placements: capture.placements,
+                    png,
+                    revision: capture.revision,
+                })
+            }
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected CaptureRealm, got {other:?}"),
             )),
         }
     }

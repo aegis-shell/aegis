@@ -2,8 +2,8 @@
 
 ass is a Wayland compositor for Linux, written in Rust. It composites
 client windows and draws its own shell chrome through
-[flux](../../optics/flux), a Vulkan-first rendering engine, and
-[lens](../../optics/lens), an immediate-mode UI engine that draws through
+[flux](../../../optics/libs/flux), a Vulkan-first rendering engine, and
+[lens](../../../optics/libs/lens), an immediate-mode UI engine that draws through
 flux.
 
 This page explains how the components fit together and where the project is
@@ -39,17 +39,17 @@ backend, renderer, and shell behind clear seams so the
 
 | Role | Crate | Responsibility |
 |------|-------|----------------|
-| **Model** | `ass-core` | Backend- and renderer-agnostic model: geometry, surface tree, outputs, focus |
+| **Model** | `ass-core` | Backend- and renderer-agnostic model: geometry, surface graph, outputs, Realms, seats, and interaction authority |
 | | `ass-protocols` | Wayland extension interface tables, generated once and shared |
-| **Server / window management** | `ass-server` | Hand-rolled Wayland server: socket, globals, protocol object lifecycle, focus, move/close, tiling, workspaces, xdg-output |
+| **Server / window management** | `ass-server` | Hand-rolled Wayland server: globals, protocol object lifecycle, per-Realm seats and outputs, focus, authority transfer, tiling, and workspaces |
 | | `ass-backend` | Presentation and input targets: nested (development) and DRM/KMS + libinput + libseat (bare TTY) |
 | | `ass-render` | Compositing: client buffers to flux textures, scene to the output via flux |
 | **Shell / interaction** | `ass-shell` | Compositor chrome host + components on lens: dock, launcher, workspace bar, decorations, toast |
 | | `ass-wallpaper` | Background layer: multi-format image and short-video wallpaper |
 | | `ass-config` | Declarative configuration: versioned TOML schema, loader, live reload |
 | **Convenience channels** | `ass-apps` | freedesktop.org desktop-entry enumeration and icon-theme lookup |
-| | `ass-launch` | Detached, XDG-environment-aware launching of desktop applications |
-| | `ass-ipc` | Versioned IPC and introspection surface for ass over a unix socket |
+| | `ass-launch` | Ordinary app detachment and fail-closed Realm namespace/cgroup launch |
+| | `ass-ipc` | Versioned scoped IPC, sealed capture transport, and introspection over a Unix socket |
 | | `ass-ctl` | Command-line driver for the ass IPC (the reference external tool) |
 | **Binary** | `ass` | The binary: wires the parts together and runs the event loop |
 
@@ -112,14 +112,38 @@ In nested operation, each frame runs the following sequence:
    `ass-wallpaper` draws it as the bottom-most layer before the renderer
    runs.
 4. The frame is submitted and presented to the host surface.
-5. Input is routed: the backend's input goes to the focused client through
-   `wl_seat`, with a copy to the chrome when the pointer is over it.
+5. Input is routed through the physical Realm's seat. Agent input uses an
+   independent Realm seat and never shares focus, modifiers, grabs,
+   selection, drag-and-drop, or text-input state with the physical stream.
 6. Client buffers are released once the GPU no longer needs them — against
    the completion fence on DRM, or a few frames late on nested
    ([ADR-0038](../adr/0038-frame-pacing.md)).
 
 Client GPU buffers reach flux through a dmabuf import path added to flux
 ([ADR-0004](../adr/0004-client-buffers-via-flux-dmabuf-import.md)).
+
+## Realm Authority
+
+One compositor owns one surface graph. A **Realm** selects which interaction
+groups it controls, which groups it observes, which seat state can send
+input, and which physical or virtual output presents the result. Moving a
+live window between Realms changes authority and scene selection; it does not
+recreate or reparent the `wl_surface`.
+
+The human desktop is Realm `1`. An agent Realm has an independent seat and
+directed virtual output. A physical read-only mirror is rendered but excluded
+from hit-testing and all window-control command paths. Clients without proven
+native multi-seat behavior move as a complete interaction group, so a normal
+single-instance application needs no app-side changes.
+
+Applications started inside a Realm additionally receive a mount-scoped
+Wayland portal and namespace/cgroup sandbox. That process boundary is
+separate from transferring an already-running surface: compositor authority
+can move immediately, while Linux namespaces cannot be applied
+retroactively. See
+[ADR-0040](../adr/0040-realms-seats-and-transferable-interaction-authority.md)
+and
+[ADR-0042](../adr/0042-mount-scoped-realm-portals-and-cgroup-sandboxes.md).
 
 ## Dependency Gaps
 

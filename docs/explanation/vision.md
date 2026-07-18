@@ -1,7 +1,7 @@
 # Vision and Scope
 
 ass is a Wayland compositor and graphical shell for Linux, written in Rust
-on [flux](../../optics/flux) and [lens](../../optics/lens). This page states
+on [flux](../../../optics/libs/flux) and [lens](../../../optics/libs/lens). This page states
 what the project is for, what it is not for, and the design principles that
 keep it small as it grows toward the feature richness of a full desktop
 shell. The concrete milestone sequence is [Roadmap](roadmap.md); the

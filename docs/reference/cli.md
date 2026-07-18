@@ -14,6 +14,14 @@ compositor or an `XDG_RUNTIME_DIR` value.
 | `ass-ctl outputs` | List output modes, scales, transforms, and logical sizes, plus the modes each connector advertises (the live one marked `current`). |
 | `ass-ctl notifications` | List active notifications. |
 | `ass-ctl journal [since]` | List mutation entries with a sequence greater than `since`; the default is `0`. |
+| `ass-ctl realms` | List the authority revision, Realms, states, seats, and controlled-window counts. |
+| `ass-ctl realm-create [label]` | Create an active agent Realm with a 1920×1080 virtual output and pointer/keyboard seat. |
+| `ass-ctl realm-pause <realm>` | Atomically pause a Realm and freeze its managed cgroups. |
+| `ass-ctl realm-resume <realm>` | Resume a paused Realm and its managed cgroups. |
+| `ass-ctl realm-transfer <window> <realm> [--no-mirror]` | Transfer the window's complete interaction group. The source stays a read-only observer unless `--no-mirror` is set. |
+| `ass-ctl realm-launch <realm> <desktop-id>` | Launch an enumerated desktop entry through a private mount-scoped portal and process sandbox. |
+| `ass-ctl realm-capture <realm> [path.png]` | Capture the Realm's directed virtual output. The default path is a timestamped PNG in the screenshot directory. |
+| `ass-ctl realm-revoke <realm> [fallback]` | Permanently revoke a Realm and return controlled groups to `fallback` (default Realm `1`). |
 | `ass-ctl focus <id>` | Focus and raise a toplevel. |
 | `ass-ctl minimize <id>` | Minimize a toplevel while keeping its client alive. |
 | `ass-ctl close <id>` | Request that a toplevel close. |
@@ -34,15 +42,30 @@ compositor or an `XDG_RUNTIME_DIR` value.
 
 Add `--json` or `-j` anywhere in a query command to print the IPC model as
 JSON. The flag applies to `windows`, `workspaces`, `outputs`,
-`notifications`, and `journal`.
+`notifications`, `journal`, `realms`, Realm lifecycle receipts, and Realm
+capture metadata.
 
 ```bash
 ass-ctl windows --json
 ass-ctl journal 120 -j
+ass-ctl realms --json
 ```
 
 Control commands print a short text acknowledgment. An acknowledgment means
 the command was queued; re-query or subscribe to observe the applied state.
+Realm lifecycle commands are different: they print a synchronous commit
+receipt and fail on a stale optimistic authority revision.
+
+## Realm Administration
+
+Realm commands automatically request the built-in
+`ass-ctl-realm-admin` scope and a 15-minute connection-bound lease. The
+compositor socket is owner-only. Agent integrations should use a narrower
+configured `[[agent.scope]]` instead of this local recovery scope.
+
+`realm-capture` writes through a mode-`0600` temporary file, synchronizes it,
+and atomically renames it to the destination. A failed capture does not leave
+a partial PNG at the requested path.
 
 ## Exit Status
 

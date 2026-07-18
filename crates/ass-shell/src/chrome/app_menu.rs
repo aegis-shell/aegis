@@ -32,6 +32,7 @@ pub(super) enum PinAction {
 
 #[derive(Clone)]
 enum MenuAction {
+    None,
     Spawn(Box<Entry>),
     Focus(WindowId),
     Minimize(Vec<WindowId>),
@@ -193,7 +194,9 @@ impl AppMenu {
             });
         }
         for window in live.iter().skip(self.window_offset).take(MAX_WINDOW_ROWS) {
-            let state = if window.minimized {
+            let state = if window.read_only {
+                "◉"
+            } else if window.minimized {
                 "◌"
             } else if window.state.activated {
                 "●"
@@ -204,9 +207,18 @@ impl AppMenu {
                 .title
                 .as_deref()
                 .unwrap_or_else(|| i18n.text(Message::UntitledWindow));
+            let label = if window.read_only {
+                format!("{state} {title} · {}", i18n.text(Message::ReadOnlyMirror))
+            } else {
+                format!("{state} {title}")
+            };
             window_rows.push(Row {
-                label: truncate(&format!("{state} {title}"), 29),
-                action: MenuAction::Focus(window.id),
+                label: truncate(&label, 29),
+                action: if window.read_only {
+                    MenuAction::None
+                } else {
+                    MenuAction::Focus(window.id)
+                },
             });
         }
         if self.window_offset + MAX_WINDOW_ROWS < live.len() {
@@ -245,7 +257,7 @@ impl AppMenu {
         let mut lifecycle_rows = Vec::new();
         let visible: Vec<WindowId> = live
             .iter()
-            .filter(|window| !window.minimized)
+            .filter(|window| !window.read_only && !window.minimized)
             .map(|window| window.id)
             .collect();
         if !visible.is_empty() {
@@ -258,7 +270,11 @@ impl AppMenu {
                 action: MenuAction::Minimize(visible),
             });
         }
-        let all_ids: Vec<WindowId> = live.iter().map(|window| window.id).collect();
+        let all_ids: Vec<WindowId> = live
+            .iter()
+            .filter(|window| !window.read_only)
+            .map(|window| window.id)
+            .collect();
         if !all_ids.is_empty() {
             lifecycle_rows.push(Row {
                 label: if all_ids.len() == 1 {
@@ -325,6 +341,7 @@ impl AppMenu {
 
         if let Some(action) = selected {
             match action {
+                MenuAction::None => return,
                 MenuAction::Page(offset) => {
                     self.window_offset = offset;
                     return;

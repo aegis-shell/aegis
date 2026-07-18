@@ -8,6 +8,8 @@ for ass.
 - Create the Wayland display socket and advertise supported globals.
 - Own protocol objects, surface commits, buffers, seats, clipboard state, and
   extension lifecycles.
+- Own Realm authority routing, private launch listeners, virtual outputs, and
+  read-only observation filtering.
 - Maintain window, focus, workspace, output, and interactive move/resize state.
 - Route backend-neutral input to clients and apply compositor actions.
 - Expose renderer- and shell-friendly snapshots built from `ass-core` models.
@@ -24,7 +26,9 @@ and IPC crates.
 Creating a `Server` allocates a libwayland display and an automatically named
 Wayland socket. Dispatching it accepts clients and updates the surface tree;
 window-management methods translate compositor intents into protocol state and
-configure events.
+configure events. Activated Realm portals have no host pathname; dispatch
+accepts their sandbox-only connections and assigns Realm identity before
+registry enumeration.
 
 ## Use
 
@@ -43,4 +47,4 @@ This crate is an integration mechanism, not a standalone server binary.
 - [Architecture](../../docs/explanation/architecture.md)
 - [Wayland server decision](../../docs/adr/0002-hand-rolled-wayland-server.md)
 - [Workspace layout](../../docs/dev/project-layout.md)
-
+- [Realm and seat decision](../../docs/adr/0040-realms-seats-and-transferable-interaction-authority.md)

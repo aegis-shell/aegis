@@ -22,9 +22,9 @@ The stack, from the rendering layer up:
 | Layer | Owner | What lives here |
 |-------|-------|-----------------|
 | Rendering and UI | flux, lens (out of tree) | Vulkan presentation; immediate-mode chrome drawing |
-| The model | `ass-core` | Windows, workspaces, outputs, focus, layout — the one truth |
-| The compositor | `ass-server`, `ass-backend`, `ass-render`, `ass-shell` | Wayland, input, output, the chrome host |
-| The seam | `ass-ipc` | Versioned JSON over a unix socket; capabilities and scope; the journal |
+| The model | `ass-core` | Windows, workspaces, outputs, Realms, seats, authority, layout — the one truth |
+| The compositor | `ass-server`, `ass-backend`, `ass-render`, `ass-shell` | Wayland, per-Realm input and output, the chrome host |
+| The seam | `ass-ipc` | Versioned JSON and sealed descriptors over a Unix socket; leases, scope, capture, and the journal |
 | IPC clients | any number, all equal | Status bars, `ass-ctl`, the agent, future bridges |
 | Skill and tool layer | out of tree, many projects | Model-specific adapters, prompts, schemas |
 
@@ -57,18 +57,23 @@ output snapshot the chrome renders. It does not reconstruct state from
 pixels unless it has to. The model is typed, versioned, and self-describing
 on the wire. See [ADR-0027](../adr/0027-ipc-and-introspection.md).
 
-**The mutation journal.** Every mutation the compositor applies — from
-chrome, keybinding, IPC, or internal cleanup — is recorded with origin and
-outcome in an append-only, subscribable log. The agent reconstructs recent
-history, filters its own echoes, and distinguishes "the user did this"
+**The mutation journal.** Every command and Realm authority decision — from
+chrome, keybinding, IPC, or internal cleanup — is recorded with its real
+connection origin and outcome in an append-only, subscribable log. Realm
+entries also carry before/after authority revisions. The agent reconstructs
+recent history, filters its own echoes, and distinguishes "the user did this"
 from "I did this". See
 [ADR-0033](../adr/0033-mutation-journal.md).
 
-**Scoped capabilities.** The agent's authority is bounded by a
+**Scoped capabilities and Realms.** The agent's authority is bounded by a
 user-approved scope declared in the configuration file: which resources,
-which operations. The compositor enforces the scope on every command and
-records refusals in the journal. The agent is bounded without being
-special. See [ADR-0034](../adr/0034-scoped-capabilities.md).
+which operations. The compositor enforces the scope on every mutation and
+capture and records refusals in the journal. An independent Realm adds a virtual output,
+seat, focus, selection, grabs, and transferable interaction authority without
+creating another compositor. The agent is bounded without becoming an
+in-process special case. See
+[ADR-0035](../adr/0035-fail-closed-named-ipc-scopes.md) and
+[ADR-0040](../adr/0040-realms-seats-and-transferable-interaction-authority.md).
 
 Together these close the gap [Vision and Scope](vision.md#the-agent-phase)
 names: the implicit state a human-only compositor accumulates — focus
@@ -86,7 +91,7 @@ pattern, not a reimplementation per pattern. The compositor stays put.
 |-----------------|-----------------|--------------|
 | Function calling / tool use | Claude, GPT, Gemini, Qwen, Mistral | Each IPC request becomes a tool; the adapter translates between the model's tool-call schema and ass's JSON. |
 | Model Context Protocol | Claude Desktop, Cline, Cursor | One adapter exposes IPC operations as MCP tools, the model snapshot as MCP resources, and the journal as MCP subscriptions. |
-| Vision-based computer use | Claude Computer Use, OpenAI Operator | Bounded target-local input is available; pixel capture and arbitrary gestures remain the deferred perceptual path for applications the structured model cannot reach. |
+| Vision-based computer use | Claude Computer Use, OpenAI Operator | Damage-driven Realm capture supplies correlated pixels and window-to-input mappings; bounded target-local actions enter the Realm's independent seat. |
 | Agent SDKs | Claude Agent SDK, LangGraph, custom | The agent process uses an SDK; tools call through the IPC. The SDK is indifferent to the transport. |
 | Local models | Ollama, llama.cpp, MLX | Same tool-calling interface, routed to a local endpoint. Smaller models benefit most from the structured path. |
 | Multi-agent orchestration | CrewAI, AutoGen, sub-agents | Each agent is a separate connection with its own scope; the journal lets them observe each other. Scoped capabilities are what make this safe. |
@@ -102,11 +107,12 @@ build? — and the answer is the same shape both times.
 
 The vision-based computer-use pattern is the exception. Scoped, target-local
 clicks, scrolls, pointer moves, and key presses cover bounded interaction
-without granting a client arbitrary desktop input. Raw pixels, background
-capture, and arbitrary gestures remain outside the structured path. ass treats
-those as a measured fallback, opened only when the structured path plus the M9
-accessibility output demonstrably cannot cover a class of agent tasks. Pixels
-earn their own capability gate and ADR if and when that case is established.
+without granting a client arbitrary physical-desktop input. A Realm observer
+receives damage notifications and requests an atomic directed capture whose
+pixels, layout placements, surface sizes, scale, and authority revision agree.
+This remains a measured fallback: the structured model is cheaper and more
+stable, while pixels require an explicit capability, live lease, and
+fail-closed lock and lifecycle checks.
 
 ## The Strategic Bet
 
@@ -121,10 +127,11 @@ enough that structured APIs look obsolete, the journal, the scope, and the
 durable identifiers still matter: a vision model also needs to know what
 it did and to be bounded while doing it.
 
-The agent phase is not a feature. It is the claim that a compositor built
+The agent phase is not a model feature. It is the claim that a compositor built
 for humans — with its state made explicit, its mutations journaled, and
-its surface bounded — is most of what an agent needs. The remaining work
-is small, structural, and on the right side of the seam.
+its surface bounded — is most of what an agent needs. Model adapters,
+semantic element bridges, and streaming integrations remain on the other side
+of the seam.
 
 ## What ass Does Not Do
 
@@ -137,8 +144,9 @@ The shape is defined as much by what it refuses as by what it adds.
 - **No retrieval index inside the compositor.** If the agent needs semantic
   search over its history, the agent indexes the journal; the compositor
   provides the data, not the index.
-- **No "AI features" in the chrome.** No smart placement, no AI launcher.
-  The chrome is for humans; the agent is another client.
+- **No model-driven chrome.** AI Workspace controls expose human-owned
+  security and authority state; they do not run inference, choose actions, or
+  embed an agent in the shell.
 - **No special agent client.** The agent connects as `control` under a
   scope, dispatches through the same main-loop handler as a status bar,
   and is refused the same way when it steps outside the scope.
@@ -159,6 +167,9 @@ without committing to.
   decision.
 - [ADR-0032](../adr/0032-durable-window-identifiers.md),
   [ADR-0033](../adr/0033-mutation-journal.md),
-  [ADR-0034](../adr/0034-scoped-capabilities.md) — the three follow-ons.
+  [ADR-0040](../adr/0040-realms-seats-and-transferable-interaction-authority.md),
+  [ADR-0041](../adr/0041-sealed-file-descriptor-pixel-transport.md), and
+  [ADR-0042](../adr/0042-mount-scoped-realm-portals-and-cgroup-sandboxes.md)
+  — the authority, observation, and isolation follow-ons.
 - [Comparative Survey — Extension and Automation](comparative-survey.md#extension-and-automation)
   — the systems whose patterns ass borrows from and rejects.

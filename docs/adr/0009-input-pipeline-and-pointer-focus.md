@@ -1,6 +1,6 @@
 # ADR-0009: Input pipeline and pointer focus model
 
-- Status: Accepted
+- Status: Superseded by [ADR-0040](0040-realms-seats-and-transferable-interaction-authority.md)
 - Date: 2026-06-18
 
 ## Context

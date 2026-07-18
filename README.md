@@ -41,6 +41,13 @@ DRM/KMS backend; force a target with `--backend auto|drm|nested` or
 `ASS_BACKEND`. See
 [Setup](docs/dev/setup.md) for prerequisites and details.
 
+Realm application sandboxes require ASS to run in its own systemd user
+service with delegated `cpu`, `memory`, and `pids` cgroup v2 controllers. The
+packaging unit is [ass.service](contrib/systemd/user/ass.service). A direct
+`cargo run` remains suitable for compositor development, but `realm-launch`
+fails closed there when the containing scope is shared or not delegated. See
+[How to Use AI Workspaces](docs/how-to/ai-workspaces.md).
+
 ## Documentation
 
 - [Documentation index](docs/index.md)

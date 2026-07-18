@@ -74,7 +74,7 @@ impl SizeHints {
 /// lifetime (ADR-0032). Outlives the surface: a retired id remains valid as
 /// a journal or scope reference but is never reassigned.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct WindowId(pub u64);
 
 /// Per-toplevel metadata. The server owns one per mapped `xdg_toplevel`; the
@@ -89,6 +89,11 @@ pub struct Window {
     pub parent: Option<usize>,
     pub size_hints: SizeHints,
     pub state: WindowState,
+    /// This snapshot is a presentation-only mirror for the physical human
+    /// seat. Chrome may display and transfer it, but must not emit focus,
+    /// move, resize, minimize, close, or client input operations.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub read_only: bool,
     /// Compositor-internal minimized flag. Unlike the `state` bits this is not
     /// an `xdg_toplevel` configure state (the protocol has no minimized
     /// state); it records that the client requested `set_minimized` and the

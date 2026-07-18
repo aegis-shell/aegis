@@ -1,7 +1,7 @@
 //! The mutation journal (ADR-0033).
 //!
 //! An in-memory, append-only ring buffer of [`JournalEntry`] records, one per
-//! [`Command`] the compositor applies, regardless of
+//! command or Realm authority action the compositor decides, regardless of
 //! origin (chrome, keybinding, IPC, or internal cleanup). The journal records
 //! the compositor's *decisions* — what it did, by whom, and with what outcome
 //! — so the agent can reconstruct recent history without polling.
@@ -12,7 +12,7 @@
 //!
 //! See [ADR-0033](../../docs/adr/0033-mutation-journal.md).
 
-use crate::schema::Command;
+use crate::schema::{Command, RealmAction};
 
 /// Who caused a mutation. The agent filters its own echoes and models user
 /// intent from the origin.
@@ -42,6 +42,24 @@ pub enum Effect {
     NoOp,
 }
 
+/// The exact mutation the compositor decided.
+///
+/// Realm actions carry both authority revisions so an observer can correlate
+/// a transfer, observer change, lifecycle transition, or output reconfigure
+/// with snapshots and captured pixels without racing a later action.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum JournalMutation {
+    Command {
+        cmd: Command,
+    },
+    Realm {
+        action: RealmAction,
+        before_revision: u64,
+        after_revision: u64,
+    },
+}
+
 /// One record in the mutation journal. Entries are append-only and ordered
 /// by [`seq`](Self::seq), which is monotonic and never reused.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -54,8 +72,8 @@ pub struct JournalEntry {
     pub ts_mono_ms: u64,
     /// Who caused the command.
     pub origin: Origin,
-    /// The exact command applied.
-    pub cmd: Command,
+    /// The exact command or Realm authority action decided.
+    pub mutation: JournalMutation,
     /// What happened.
     pub effect: Effect,
 }
@@ -113,7 +131,7 @@ impl Journal {
         &mut self,
         ts_mono_ms: u64,
         origin: Origin,
-        cmd: Command,
+        mutation: JournalMutation,
         effect: Effect,
     ) -> JournalEntry {
         let seq = self.next_seq;
@@ -125,7 +143,7 @@ impl Journal {
             seq,
             ts_mono_ms,
             origin,
-            cmd,
+            mutation,
             effect,
         };
         self.entries.push_back(entry.clone());
@@ -185,12 +203,16 @@ mod tests {
         }
     }
 
+    fn command(n: u64) -> JournalMutation {
+        JournalMutation::Command { cmd: cmd(n) }
+    }
+
     #[test]
     fn append_assigns_monotonic_seq() {
         let mut j = Journal::new(8);
-        let e1 = j.append(0, Origin::Chrome, cmd(1), Effect::Applied);
+        let e1 = j.append(0, Origin::Chrome, command(1), Effect::Applied);
         let s1 = e1.seq;
-        let e2 = j.append(1, Origin::Keybinding, cmd(2), Effect::Applied);
+        let e2 = j.append(1, Origin::Keybinding, command(2), Effect::Applied);
         assert!(e2.seq > s1);
         assert_eq!(j.latest_seq(), e2.seq);
     }
@@ -198,12 +220,12 @@ mod tests {
     #[test]
     fn ring_evicts_oldest_when_full() {
         let mut j = Journal::new(3);
-        j.append(0, Origin::Chrome, cmd(1), Effect::Applied);
-        j.append(1, Origin::Chrome, cmd(2), Effect::Applied);
-        j.append(2, Origin::Chrome, cmd(3), Effect::Applied);
+        j.append(0, Origin::Chrome, command(1), Effect::Applied);
+        j.append(1, Origin::Chrome, command(2), Effect::Applied);
+        j.append(2, Origin::Chrome, command(3), Effect::Applied);
         assert_eq!(j.len(), 3);
         // Fourth append evicts the first.
-        j.append(3, Origin::Chrome, cmd(4), Effect::Applied);
+        j.append(3, Origin::Chrome, command(4), Effect::Applied);
         assert_eq!(j.len(), 3);
         let snap = j.since(0);
         assert_eq!(snap.entries.len(), 3);
@@ -214,10 +236,10 @@ mod tests {
     #[test]
     fn since_filters_by_seq() {
         let mut j = Journal::new(8);
-        j.append(0, Origin::Chrome, cmd(1), Effect::Applied);
+        j.append(0, Origin::Chrome, command(1), Effect::Applied);
         let mid = j.latest_seq();
-        j.append(1, Origin::Ipc { conn_id: 7 }, cmd(2), Effect::Applied);
-        j.append(2, Origin::Keybinding, cmd(3), Effect::Applied);
+        j.append(1, Origin::Ipc { conn_id: 7 }, command(2), Effect::Applied);
+        j.append(2, Origin::Keybinding, command(3), Effect::Applied);
         let snap = j.since(mid);
         assert_eq!(snap.entries.len(), 2);
         assert!(snap.entries.iter().all(|e| e.seq > mid));
@@ -226,9 +248,9 @@ mod tests {
     #[test]
     fn gap_detection_via_oldest_seq() {
         let mut j = Journal::new(2);
-        j.append(0, Origin::Chrome, cmd(1), Effect::Applied);
-        j.append(1, Origin::Chrome, cmd(2), Effect::Applied);
-        j.append(2, Origin::Chrome, cmd(3), Effect::Applied);
+        j.append(0, Origin::Chrome, command(1), Effect::Applied);
+        j.append(1, Origin::Chrome, command(2), Effect::Applied);
+        j.append(2, Origin::Chrome, command(3), Effect::Applied);
         // Client asks for everything since seq=0, but seq=1 was evicted.
         let snap = j.since(0);
         assert_eq!(snap.oldest_seq, 2, "oldest in ring is seq=2");
@@ -249,7 +271,7 @@ mod tests {
             seq: 42,
             ts_mono_ms: 12345,
             origin: Origin::Ipc { conn_id: 7 },
-            cmd: cmd(99),
+            mutation: command(99),
             effect: Effect::Refused {
                 reason: "out of scope".into(),
             },
@@ -260,12 +282,36 @@ mod tests {
     }
 
     #[test]
+    fn realm_action_round_trips_with_authority_revisions() {
+        let mutation = JournalMutation::Realm {
+            action: RealmAction::Create {
+                label: "research".into(),
+                capabilities: ass_core::realm::SeatCapabilities::POINTER_KEYBOARD,
+                output: Some(ass_core::realm::VirtualOutput::DEFAULT_AGENT),
+            },
+            before_revision: 7,
+            after_revision: 8,
+        };
+        let mut journal = Journal::new(4);
+        let entry = journal.append(
+            5,
+            Origin::Ipc { conn_id: 9 },
+            mutation.clone(),
+            Effect::Applied,
+        );
+        assert_eq!(entry.mutation, mutation);
+        let encoded = serde_json::to_string(&entry).unwrap();
+        let decoded: JournalEntry = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, entry);
+    }
+
+    #[test]
     fn origin_tags_distinguish_sources() {
         let mut j = Journal::new(8);
-        j.append(0, Origin::Chrome, cmd(1), Effect::Applied);
-        j.append(1, Origin::Keybinding, cmd(2), Effect::Applied);
-        j.append(2, Origin::Ipc { conn_id: 3 }, cmd(3), Effect::Applied);
-        j.append(3, Origin::Internal, cmd(4), Effect::Applied);
+        j.append(0, Origin::Chrome, command(1), Effect::Applied);
+        j.append(1, Origin::Keybinding, command(2), Effect::Applied);
+        j.append(2, Origin::Ipc { conn_id: 3 }, command(3), Effect::Applied);
+        j.append(3, Origin::Internal, command(4), Effect::Applied);
         let snap = j.since(0);
         assert_eq!(snap.entries.len(), 4);
         assert!(matches!(snap.entries[0].origin, Origin::Chrome));

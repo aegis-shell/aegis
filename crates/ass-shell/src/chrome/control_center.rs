@@ -9,13 +9,14 @@ use std::ffi::c_void;
 
 use ass_core::app::{BuiltInApplication, Entry};
 use ass_core::input::{key_action, KeyAction, KeyChar, TouchpadScrollMethod};
+use ass_core::realm::{RealmId, RealmKind, RealmSnapshot, RealmState};
 use ass_core::window::Window;
 use ass_core::workspace::WorkspaceSnapshot;
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
 
 use crate::{
-    BackdropRegion, Chrome, ChromeEvents, CursorShape, DockApp, Localizer, Message, Reserved,
-    SystemAction, SystemStatus,
+    BackdropRegion, Chrome, ChromeEvents, CursorShape, DockApp, Localizer, Message, RealmIntent,
+    Reserved, SystemAction, SystemStatus,
 };
 
 const APP_MAX_W: f32 = 860.0;
@@ -33,6 +34,8 @@ pub struct ControlCenter {
     volume: f32,
     brightness: f32,
     page: i32,
+    realms: RealmSnapshot,
+    pending_revoke: Option<RealmId>,
 }
 
 impl ControlCenter {
@@ -49,6 +52,8 @@ impl ControlCenter {
             volume: 0.0,
             brightness: 0.0,
             page: 0,
+            realms: ass_core::realm::RealmModel::new().snapshot(),
+            pending_revoke: None,
         }
     }
 
@@ -398,12 +403,123 @@ impl ControlCenter {
         }
     }
 
+    fn render_realms(&mut self, frame: &mut Frame, i18n: &Localizer, out: &mut ChromeEvents) {
+        frame.column_ex(
+            &LayoutOpts {
+                gap: 5.0,
+                cross: Align::Stretch,
+                ..Default::default()
+            },
+            |frame| {
+                frame.heading(i18n.text(Message::AiWorkspaces), 2);
+                frame.label_wrapped_sized(i18n.text(Message::AiWorkspacesDescription), 12.0, 560.0);
+            },
+        );
+        frame.size_next(0.0, 32.0);
+        if frame.button(i18n.text(Message::NewAiWorkspace)) {
+            let ordinal = self
+                .realms
+                .realms
+                .iter()
+                .filter(|realm| realm.kind == RealmKind::Agent)
+                .count()
+                + 1;
+            out.realm_intents.push(RealmIntent::Create {
+                label: format!("AI Workspace {ordinal}"),
+            });
+        }
+
+        let realms = self
+            .realms
+            .realms
+            .iter()
+            .filter(|realm| realm.kind == RealmKind::Agent)
+            .cloned()
+            .collect::<Vec<_>>();
+        for realm in realms {
+            let controlled_windows = self
+                .realms
+                .interaction_groups
+                .iter()
+                .filter(|group| group.control_realm == realm.id)
+                .map(|group| group.windows.len())
+                .sum::<usize>();
+            frame.column_ex(&settings_card_layout(), |frame| {
+                frame.row_ex(&section_heading_layout(), |frame| {
+                    frame.heading(&realm.label, 3);
+                    frame.flex(1.0);
+                    frame.spacer(0.0);
+                    let state = match realm.state {
+                        RealmState::Active => i18n.text(Message::RealmActive),
+                        RealmState::Paused => i18n.text(Message::RealmPaused),
+                        RealmState::Revoked => i18n.text(Message::RealmRevoked),
+                    };
+                    frame.label_sized(state, 11.0);
+                });
+                frame.label_sized(
+                    &format!("Realm {} · {}", realm.id.0, controlled_windows),
+                    11.0,
+                );
+                if realm.state != RealmState::Revoked {
+                    frame.row_ex(
+                        &LayoutOpts {
+                            height: 30.0,
+                            gap: 8.0,
+                            cross: Align::Center,
+                            ..Default::default()
+                        },
+                        |frame| {
+                            frame.flex(1.0);
+                            frame.size_next(116.0, 28.0);
+                            let next = if realm.state == RealmState::Active {
+                                RealmState::Paused
+                            } else {
+                                RealmState::Active
+                            };
+                            let label = if next == RealmState::Paused {
+                                i18n.text(Message::PauseRealm)
+                            } else {
+                                i18n.text(Message::ResumeRealm)
+                            };
+                            if frame.button(label) {
+                                out.realm_intents.push(RealmIntent::SetState {
+                                    realm: realm.id,
+                                    state: next,
+                                    expected_revision: self.realms.revision,
+                                });
+                            }
+                            frame.size_next(132.0, 28.0);
+                            let confirming = self.pending_revoke == Some(realm.id);
+                            let label = if confirming {
+                                i18n.text(Message::ConfirmRevokeRealm)
+                            } else {
+                                i18n.text(Message::RevokeRealm)
+                            };
+                            if frame.button(label) {
+                                if confirming {
+                                    out.realm_intents.push(RealmIntent::Revoke {
+                                        realm: realm.id,
+                                        expected_revision: self.realms.revision,
+                                    });
+                                    self.pending_revoke = None;
+                                } else {
+                                    self.pending_revoke = Some(realm.id);
+                                }
+                            }
+                        },
+                    );
+                }
+            });
+        }
+    }
+
     fn render_navigation(&mut self, frame: &mut Frame, i18n: &Localizer) {
         for (page, icon, label) in [
             (0, Icon::Grid, i18n.text(Message::Desktop)),
             (1, Icon::MousePointer, i18n.text(Message::Touchpad)),
             (2, Icon::Radio, i18n.text(Message::Connectivity)),
             (3, Icon::Sliders, i18n.text(Message::SoundAndDisplay)),
+            (4, Icon::Grid, i18n.text(Message::AiWorkspaces)),
         ] {
             if frame.selectable_icon(icon, label, self.page == page) {
                 self.page = page;
@@ -420,6 +536,10 @@ impl ControlCenter {
             [
                 (2, i18n.text(Message::Connectivity)),
                 (3, i18n.text(Message::Sound)),
+            ],
+            [
+                (4, i18n.text(Message::AiWorkspaces)),
+                (0, i18n.text(Message::Desktop)),
             ],
         ] {
             frame.row_ex(
@@ -452,6 +572,7 @@ impl ControlCenter {
                 self.render_sound(frame, i18n, out);
                 self.render_brightness(frame, i18n, out);
             }
+            4 => self.render_realms(frame, i18n, out),
             _ => {
                 frame.heading(i18n.text(Message::Desktop), 2);
                 self.render_desktop(frame, i18n, out);
@@ -610,6 +731,19 @@ impl Chrome for ControlCenter {
         self.status = status.clone();
         self.volume = status.volume.unwrap_or(0) as f32;
         self.brightness = status.brightness.unwrap_or(0) as f32;
+    }
+
+    fn update_realms(&mut self, snapshot: &RealmSnapshot) {
+        self.realms = snapshot.clone();
+        if self.pending_revoke.is_some_and(|id| {
+            snapshot
+                .realms
+                .iter()
+                .find(|realm| realm.id == id)
+                .is_none_or(|realm| realm.state == RealmState::Revoked)
+        }) {
+            self.pending_revoke = None;
+        }
     }
 
     fn update_app_catalog(

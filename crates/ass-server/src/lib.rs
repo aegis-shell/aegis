@@ -4,15 +4,32 @@
 //! socket, advertises the core globals, and owns protocol object lifecycle. The
 //! shm implementation and the core `wl_*` interface tables come from
 //! libwayland-server; ass implements the request handlers.
+//!
+//! libwayland callbacks receive the stable boxed `State` as a raw pointer.
+//! Accessing human-seat fields through `State`'s `Deref<SeatRuntime>` creates
+//! the same short-lived references that direct fields previously created.
+//! The callback lifetime invariant is documented on `State`.
+#![allow(dangerous_implicit_autorefs)]
 
 mod extensions;
 mod ffi;
 mod keyboard;
 
 use std::ffi::{c_void, CStr, CString};
+use std::ops::{Deref, DerefMut};
+use std::os::fd::IntoRawFd;
 use std::os::raw::{c_int, c_ulong};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::net::UnixListener;
+use std::path::{Path, PathBuf};
 
 use ass_core::layout::Layout;
+use ass_core::realm::{
+    AuthorityTransfer, PresentationTarget, PrincipalId, RealmBundle, RealmError, RealmId,
+    RealmModel, RealmMutation, RealmMutationResult, RealmRevocation, RealmSnapshot,
+    RealmTransactionReceipt, SeatCapabilities, SeatId, TransferOptions, VirtualOutput,
+    HUMAN_PRINCIPAL, HUMAN_REALM, HUMAN_SEAT,
+};
 use ass_core::{SurfaceDmabuf, SurfacePixels};
 
 /// Single-plane dma-buf parameters backing a `wl_buffer`, or accumulating in a
@@ -188,6 +205,7 @@ pub(crate) unsafe fn libc_close(fd: i32) {
 /// of shm, and its xdg role.
 pub struct SurfaceRec {
     pub resource: *mut ffi::wl_resource,
+    client_id: ass_core::realm::ClientId,
     pending_buffer: *mut ffi::wl_resource,
     pending_buffer_set: bool,
     pending_attach_offset: ass_core::Point,
@@ -321,6 +339,7 @@ impl SurfaceRec {
     fn new(resource: *mut ffi::wl_resource) -> SurfaceRec {
         SurfaceRec {
             resource,
+            client_id: ass_core::realm::ClientId::default(),
             pending_buffer: std::ptr::null_mut(),
             pending_buffer_set: false,
             pending_attach_offset: ass_core::Point::default(),
@@ -403,6 +422,53 @@ fn surface_logical_size(surface: &SurfaceRec) -> ass_core::Size {
         w: (width as f32 / scale).round().max(1.0) as i32,
         h: (height as f32 / scale).round().max(1.0) as i32,
     }
+}
+
+fn intersect_rect(a: ass_core::Rect, b: ass_core::Rect) -> Option<ass_core::Rect> {
+    let ax1 = i64::from(a.origin.x) + i64::from(a.size.w.max(0));
+    let ay1 = i64::from(a.origin.y) + i64::from(a.size.h.max(0));
+    let bx1 = i64::from(b.origin.x) + i64::from(b.size.w.max(0));
+    let by1 = i64::from(b.origin.y) + i64::from(b.size.h.max(0));
+    let x0 = i64::from(a.origin.x).max(i64::from(b.origin.x));
+    let y0 = i64::from(a.origin.y).max(i64::from(b.origin.y));
+    let x1 = ax1.min(bx1);
+    let y1 = ay1.min(by1);
+    (x1 > x0 && y1 > y0)
+        .then(|| ass_core::Rect::new(x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32))
+}
+
+/// Clip, deduplicate and bound one Realm's damage metadata. The compositor
+/// never exposes unchecked client coordinates through IPC.
+fn normalize_realm_damage(rects: &mut Vec<ass_core::Rect>, output: ass_core::Rect) {
+    *rects = rects
+        .drain(..)
+        .filter_map(|rect| intersect_rect(rect, output))
+        .collect();
+    rects.sort_by_key(|rect| (rect.origin.x, rect.origin.y, rect.size.w, rect.size.h));
+    rects.dedup();
+    const MAX_DAMAGE_RECTS: usize = 64;
+    if rects.len() <= MAX_DAMAGE_RECTS {
+        return;
+    }
+    let x0 = rects.iter().map(|rect| rect.origin.x).min().unwrap_or(0);
+    let y0 = rects.iter().map(|rect| rect.origin.y).min().unwrap_or(0);
+    let x1 = rects
+        .iter()
+        .map(|rect| i64::from(rect.origin.x) + i64::from(rect.size.w))
+        .max()
+        .unwrap_or(i64::from(x0));
+    let y1 = rects
+        .iter()
+        .map(|rect| i64::from(rect.origin.y) + i64::from(rect.size.h))
+        .max()
+        .unwrap_or(i64::from(y0));
+    rects.clear();
+    rects.push(ass_core::Rect::new(
+        x0,
+        y0,
+        (x1 - i64::from(x0)) as i32,
+        (y1 - i64::from(y0)) as i32,
+    ));
 }
 
 /// Draw origin of the surface's buffer in compositor space. For surfaces
@@ -527,24 +593,35 @@ fn resolve_layout_role(
 }
 
 unsafe fn update_overlay_positions(state: *mut State) {
-    if !(*state).cursor_surface.is_null() {
-        let rec = ffi::wl_resource_get_user_data((*state).cursor_surface) as *mut SurfaceRec;
+    update_overlay_positions_for_seat(state, (*state).active_seat);
+}
+
+unsafe fn update_overlay_positions_for_seat(state: *mut State, seat: SeatId) {
+    let Some(runtime) = (*state).seat_runtime(seat) else {
+        return;
+    };
+    let cursor_surface = runtime.cursor_surface;
+    let pointer_x = runtime.pointer_x;
+    let pointer_y = runtime.pointer_y;
+    let cursor_hotspot = runtime.cursor_hotspot;
+    let drag = runtime.drag;
+
+    if !cursor_surface.is_null() {
+        let rec = ffi::wl_resource_get_user_data(cursor_surface) as *mut SurfaceRec;
         if !rec.is_null() {
             (*rec).position = ass_core::Point {
-                x: (*state).pointer_x.round() as i32 - (*state).cursor_hotspot.x
-                    + (*rec).attach_offset.x,
-                y: (*state).pointer_y.round() as i32 - (*state).cursor_hotspot.y
-                    + (*rec).attach_offset.y,
+                x: pointer_x.round() as i32 - cursor_hotspot.x + (*rec).attach_offset.x,
+                y: pointer_y.round() as i32 - cursor_hotspot.y + (*rec).attach_offset.y,
             };
         }
     }
-    if let Some(drag) = (*state).drag {
+    if let Some(drag) = drag {
         if !drag.icon.is_null() {
             let rec = ffi::wl_resource_get_user_data(drag.icon) as *mut SurfaceRec;
             if !rec.is_null() {
                 (*rec).position = ass_core::Point {
-                    x: (*state).pointer_x.round() as i32 + (*rec).attach_offset.x,
-                    y: (*state).pointer_y.round() as i32 + (*rec).attach_offset.y,
+                    x: pointer_x.round() as i32 + (*rec).attach_offset.x,
+                    y: pointer_y.round() as i32 + (*rec).attach_offset.y,
                 };
             }
         }
@@ -581,29 +658,210 @@ unsafe fn surface_root_toplevel(mut surface: *mut SurfaceRec) -> *mut SurfaceRec
 pub(crate) struct OutputGlobal {
     state: *mut State,
     info: ass_core::output::OutputInfo,
+    /// `None` for a physical backend output; directed virtual outputs belong
+    /// to exactly one Realm.
+    realm: Option<RealmId>,
     global: *mut ffi::wl_global,
     active: bool,
+}
+
+/// Runtime protocol and input state for one logical `wl_seat`.
+///
+/// The authority model in `ass-core` owns durable identities and policy.
+/// This structure owns the libwayland resources and ephemeral protocol state
+/// for exactly one seat. Keeping these records separate is what prevents
+/// agent input, focus, grabs, clipboard, and cursor state from contending
+/// with the physical user's state.
+pub(crate) struct SeatRuntime {
+    id: SeatId,
+    realm: RealmId,
+    principal: PrincipalId,
+    capabilities: SeatCapabilities,
+    seat_resources: Vec<*mut ffi::wl_resource>,
+    pointer_resources: Vec<*mut ffi::wl_resource>,
+    keyboard_resources: Vec<*mut ffi::wl_resource>,
+    touch_resources: Vec<*mut ffi::wl_resource>,
+    data_devices: Vec<*mut ffi::wl_resource>,
+    data_offers: Vec<*mut ffi::wl_resource>,
+    selection: Option<Selection>,
+    primary_devices: Vec<*mut ffi::wl_resource>,
+    primary_offers: Vec<*mut ffi::wl_resource>,
+    primary_selection: Option<PrimarySelection>,
+    drag: Option<DragState>,
+    relative_pointers: Vec<*mut ffi::wl_resource>,
+    pointer_constraints: Vec<*mut ffi::wl_resource>,
+    pointer_gesture_swipes: Vec<*mut ffi::wl_resource>,
+    pointer_gesture_pinches: Vec<*mut ffi::wl_resource>,
+    pointer_gesture_holds: Vec<*mut ffi::wl_resource>,
+    cursor_shape_devices: Vec<*mut ffi::wl_resource>,
+    swipe_gesture_client: *mut ffi::wl_client,
+    pinch_gesture_client: *mut ffi::wl_client,
+    hold_gesture_client: *mut ffi::wl_client,
+    keyboard_shortcut_inhibitors: Vec<*mut ffi::wl_resource>,
+    pub(crate) tablet_seats: Vec<*mut ffi::wl_resource>,
+    pub(crate) tablet_devices: Vec<*mut ffi::wl_resource>,
+    pub(crate) tablet_tools: Vec<*mut ffi::wl_resource>,
+    pub(crate) tablet_device_seen: bool,
+    pub(crate) tablet_focus: *mut ffi::wl_resource,
+    text_inputs: Vec<*mut ffi::wl_resource>,
+    pending_text_input_states: Vec<ass_core::input::TextInputState>,
+    cursor_shape: u32,
+    cursor_surface: *mut ffi::wl_resource,
+    cursor_hotspot: ass_core::Point,
+    cursor_hidden: bool,
+    last_pointer_enter_serial: u32,
+    pointer_focus: *mut ffi::wl_resource,
+    keyboard_focus: *mut ffi::wl_resource,
+    saved_keyboard_focus: *mut ffi::wl_resource,
+    pointer_x: f32,
+    pointer_y: f32,
+    raw_pointer_x: f32,
+    raw_pointer_y: f32,
+    last_button_serial: u32,
+    implicit_grab_active: bool,
+    depressed_mods: ass_core::input::Mods,
+    keyboard: Option<keyboard::Keyboard>,
+    interactive: Option<ass_core::window::Interactive>,
+    compositor_pointer_grab: bool,
+    /// Window-local automation pins hit-testing to one authorized root for
+    /// the duration of an atomic input batch. This prevents overlapping
+    /// surfaces in another workspace (or another virtual placement) from
+    /// stealing agent pointer focus while coordinates are translated through
+    /// the client's compositor-global surface position.
+    synthetic_target: Option<ass_core::window::WindowId>,
+}
+
+impl SeatRuntime {
+    fn new(
+        id: SeatId,
+        realm: RealmId,
+        principal: PrincipalId,
+        capabilities: SeatCapabilities,
+    ) -> Self {
+        Self {
+            id,
+            realm,
+            principal,
+            capabilities,
+            seat_resources: Vec::new(),
+            pointer_resources: Vec::new(),
+            keyboard_resources: Vec::new(),
+            touch_resources: Vec::new(),
+            data_devices: Vec::new(),
+            data_offers: Vec::new(),
+            selection: None,
+            primary_devices: Vec::new(),
+            primary_offers: Vec::new(),
+            primary_selection: None,
+            drag: None,
+            relative_pointers: Vec::new(),
+            pointer_constraints: Vec::new(),
+            pointer_gesture_swipes: Vec::new(),
+            pointer_gesture_pinches: Vec::new(),
+            pointer_gesture_holds: Vec::new(),
+            cursor_shape_devices: Vec::new(),
+            swipe_gesture_client: std::ptr::null_mut(),
+            pinch_gesture_client: std::ptr::null_mut(),
+            hold_gesture_client: std::ptr::null_mut(),
+            keyboard_shortcut_inhibitors: Vec::new(),
+            tablet_seats: Vec::new(),
+            tablet_devices: Vec::new(),
+            tablet_tools: Vec::new(),
+            tablet_device_seen: false,
+            tablet_focus: std::ptr::null_mut(),
+            text_inputs: Vec::new(),
+            pending_text_input_states: Vec::new(),
+            cursor_shape: 0,
+            cursor_surface: std::ptr::null_mut(),
+            cursor_hotspot: ass_core::Point::default(),
+            cursor_hidden: false,
+            last_pointer_enter_serial: 0,
+            pointer_focus: std::ptr::null_mut(),
+            keyboard_focus: std::ptr::null_mut(),
+            saved_keyboard_focus: std::ptr::null_mut(),
+            pointer_x: 0.0,
+            pointer_y: 0.0,
+            raw_pointer_x: 0.0,
+            raw_pointer_y: 0.0,
+            last_button_serial: 0,
+            implicit_grab_active: false,
+            depressed_mods: ass_core::input::Mods::NONE,
+            keyboard: None,
+            interactive: None,
+            compositor_pointer_grab: false,
+            synthetic_target: None,
+        }
+    }
+}
+
+/// Stable callback data for one dynamically advertised `wl_seat` global.
+/// Boxes are retained after revocation because already-bound resources can
+/// outlive the registry global.
+struct SeatGlobal {
+    state: *mut State,
+    seat: SeatId,
+    global: *mut ffi::wl_global,
+    active: bool,
+}
+
+/// `wl_client` destroy listener. `listener` must remain the first field so the
+/// libwayland callback can recover the allocation with a direct pointer cast.
+#[repr(C)]
+struct ClientDestroyRecord {
+    listener: ffi::wl_listener,
+    state: *mut State,
+    client: *mut ffi::wl_client,
+    id: ass_core::realm::ClientId,
 }
 
 /// Server-wide state. Its address is handed to the C bind callbacks, so it is
 /// boxed and never moved out.
 pub(crate) struct State {
     pub(crate) display: *mut ffi::wl_display,
+    authority: RealmModel,
+    seats: std::collections::BTreeMap<SeatId, Box<SeatRuntime>>,
+    /// Seat whose event/request path is currently executing. The server main
+    /// loop is single-threaded; an RAII guard changes this only for the bounded
+    /// duration of one routed input batch or seat-owned protocol callback.
+    active_seat: SeatId,
+    #[allow(clippy::vec_box)]
+    seat_globals: Vec<Box<SeatGlobal>>,
+    /// Registry globals that are physical-session authority and must never be
+    /// advertised to clients launched through a Realm portal.
+    realm_hidden_globals: std::collections::HashSet<usize>,
+    /// Reverse lookup for every seat-owned protocol resource. Entries remain
+    /// until the resource destroy callback, so stale protocol objects fail
+    /// closed after a realm is revoked.
+    seat_resource_owners: std::collections::HashMap<usize, SeatId>,
+    /// Client-facing seat from which a routed child resource was created.
+    /// Compatibility routing may change its runtime owner; native multi-seat
+    /// rebinding restores the resource to this advertised origin.
+    seat_resource_origins: std::collections::HashMap<usize, SeatId>,
+    clients: std::collections::HashMap<usize, ass_core::realm::ClientId>,
+    /// Trusted launch-portal origin for clients accepted on a private Realm
+    /// listener.
+    /// Human/default-socket clients are omitted.
+    client_initial_realms: std::collections::HashMap<ass_core::realm::ClientId, RealmId>,
+    client_bound_seats: std::collections::HashMap<usize, std::collections::BTreeSet<SeatId>>,
+    realm_placements:
+        std::collections::BTreeMap<(RealmId, ass_core::window::WindowId), ass_core::Rect>,
+    /// Realm layouts are recomputed after the current Wayland dispatch batch.
+    /// Deferring keeps role creation and surface commits atomic from the
+    /// client's perspective while ensuring newly mapped Realm windows receive
+    /// a virtual-output placement before observers are notified.
+    pending_realm_layouts: std::collections::BTreeSet<RealmId>,
+    /// Windows whose committed scene content changed during this dispatch
+    /// batch. `Server::take_realm_damage` maps these durable ids into each
+    /// observing Realm's virtual-output coordinate space after layouts settle.
+    damaged_windows: std::collections::BTreeSet<ass_core::window::WindowId>,
+    /// Conservative damage queued for topology changes where an old placement
+    /// may no longer be recoverable (remove, transfer, output reconfigure).
+    pending_realm_damage: std::collections::BTreeMap<RealmId, Vec<ass_core::Rect>>,
     /// Surface pointers in stacking order (bottom to top). Entries are nulled
     /// when a surface's destroy notify fires; focusing a toplevel moves its
     /// pointer to the end and updates affected live records' slot indices.
     /// Iterators must skip null entries.
     surfaces: Vec<*mut SurfaceRec>,
-    /// Every `wl_pointer` resource clients have bound. Entries null out when
-    /// the resource's destroy notify fires. Pointer events are forwarded only
-    /// to the resources owned by the currently focused surface's client.
-    pointer_resources: Vec<*mut ffi::wl_resource>,
-    /// Every `wl_keyboard` resource clients have bound. Same lifecycle as
-    /// pointer_resources; the keymap event is sent to each on creation.
-    keyboard_resources: Vec<*mut ffi::wl_resource>,
-    /// Every `wl_touch` resource clients have bound. Same lifecycle as the
-    /// pointer/keyboard lists.
-    touch_resources: Vec<*mut ffi::wl_resource>,
     /// Every `wl_output` resource clients have bound. Resent in full when the
     /// output geometry (mode/scale/transform) changes so bound clients update.
     pub(crate) output_resources: Vec<*mut ffi::wl_resource>,
@@ -614,50 +872,13 @@ pub(crate) struct State {
     /// together with the wl_output reconfigure path.
     pub(crate) xdg_output_resources: Vec<*mut ffi::wl_resource>,
     pub(crate) xdg_output_links: std::collections::HashMap<usize, *mut ffi::wl_resource>,
-    /// Every `wl_data_device` resource clients have bound. A `set_selection`
-    /// advertises a new `wl_data_offer` to each.
-    data_devices: Vec<*mut ffi::wl_resource>,
-    /// Every live `wl_data_offer`; destroy callbacks null their slot. Tracking
-    /// lets source teardown invalidate late receive requests safely.
-    data_offers: Vec<*mut ffi::wl_resource>,
-    /// The current clipboard selection, if any.
-    selection: Option<Selection>,
-    primary_devices: Vec<*mut ffi::wl_resource>,
-    primary_offers: Vec<*mut ffi::wl_resource>,
-    primary_selection: Option<PrimarySelection>,
-    /// Active data-device drag, if a client owns the pointer implicit grab.
-    drag: Option<DragState>,
-    /// Active `zwp_relative_pointer_v1` resources. Relative-motion deltas are
-    /// posted to each (filtered to the focused client's set).
-    relative_pointers: Vec<*mut ffi::wl_resource>,
-    pointer_constraints: Vec<*mut ffi::wl_resource>,
-    pointer_gesture_swipes: Vec<*mut ffi::wl_resource>,
-    pointer_gesture_pinches: Vec<*mut ffi::wl_resource>,
-    pointer_gesture_holds: Vec<*mut ffi::wl_resource>,
-    swipe_gesture_client: *mut ffi::wl_client,
-    pinch_gesture_client: *mut ffi::wl_client,
-    hold_gesture_client: *mut ffi::wl_client,
-    keyboard_shortcut_inhibitors: Vec<*mut ffi::wl_resource>,
     /// Live ext-idle-notify and idle-inhibit protocol resources. Per-object
     /// timer/role state is owned by resource user data in `extensions.rs`.
     pub(crate) idle_notifications: Vec<*mut ffi::wl_resource>,
     pub(crate) idle_inhibitors: Vec<*mut ffi::wl_resource>,
-    pub(crate) tablet_seats: Vec<*mut ffi::wl_resource>,
-    /// Live `zwp_tablet_v2` resources, one per seat that has been told about
-    /// the compositor's single synthetic tablet device.
-    pub(crate) tablet_devices: Vec<*mut ffi::wl_resource>,
-    /// Live `zwp_tablet_tool_v2` resources. Each carries a `TabletToolRec`
-    /// naming the physical tool id it proxies.
-    pub(crate) tablet_tools: Vec<*mut ffi::wl_resource>,
     /// Physical tablet tools seen so far, with their announced info. A tool
     /// is announced to every seat the first time it enters proximity.
     pub(crate) known_tools: Vec<(u64, ass_core::input::TabletToolInfo)>,
-    /// Whether the synthetic tablet device has been announced yet (set on
-    /// first proximity). Gates `tablet_added` for late-binding seats.
-    pub(crate) tablet_device_seen: bool,
-    /// Surface holding tablet proximity focus, or null when no tool is in
-    /// proximity over a tablet-aware client (the pen emulates the pointer).
-    pub(crate) tablet_focus: *mut ffi::wl_resource,
     retired_buffer_releases: Vec<RetiredBufferRelease>,
     /// Bound `ext_foreign_toplevel_list_v1` resources. New toplevels, title
     /// changes, and removals are pushed to each.
@@ -665,14 +886,8 @@ pub(crate) struct State {
     /// Per-toplevel foreign handle resources, keyed by window id. Lets the
     /// server push title/app_id/closed updates to the right handle.
     foreign_handles: std::collections::HashMap<u64, Vec<*mut ffi::wl_resource>>,
-    /// Active `zwp_text_input_v3` resources. Per-object double-buffered state
-    /// lives in the resource's `TextInputRec` user data.
-    text_inputs: Vec<*mut ffi::wl_resource>,
-    /// Committed state waiting to be mirrored to the nested host's text-input
-    /// object. The main loop drains this after dispatching client requests.
-    pending_text_input_states: Vec<ass_core::input::TextInputState>,
-    activation_tokens: std::collections::HashSet<String>,
-    pending_activation: *mut ffi::wl_resource,
+    activation_tokens: std::collections::HashMap<String, SeatId>,
+    pending_activation: Option<(SeatId, *mut ffi::wl_resource)>,
     /// Active ext-session-lock object and fail-closed visibility state.
     pub(crate) session_lock: *mut c_void,
     pub(crate) session_locked: bool,
@@ -681,59 +896,11 @@ pub(crate) struct State {
     pub(crate) pre_lock_keyboard_focus: *mut ffi::wl_resource,
     pub(crate) session_lock_requested_at: Option<std::time::Instant>,
     pub(crate) lock_frame_pending: bool,
-    /// The last cursor shape requested by the focused client via
-    /// `wp_cursor_shape_device_v1.set_shape` (or `wl_pointer.set_cursor`,
-    /// once wired). 0 = default arrow. Exposed to the renderer.
-    cursor_shape: u32,
-    cursor_surface: *mut ffi::wl_resource,
-    cursor_hotspot: ass_core::Point,
-    cursor_hidden: bool,
-    last_pointer_enter_serial: u32,
-    /// Surface resource currently under the pointer, or null when the pointer
-    /// is outside any mapped toplevel. Drives enter/leave transitions.
-    pointer_focus: *mut ffi::wl_resource,
-    /// Surface resource that currently has keyboard focus, or null. Decoupled
-    /// from `pointer_focus` because click-to-focus sets keyboard focus only on
-    /// button press, not on motion.
-    keyboard_focus: *mut ffi::wl_resource,
-    /// Surface that had keyboard focus before chrome (the launcher) grabbed
-    /// it, or null. While a grab is active, `keyboard_focus` is null and the
-    /// saved surface receives a `wl_keyboard.leave`; releasing the grab
-    /// restores it via `wl_keyboard.enter` — but only if nothing else took
-    /// focus in the meantime. See `grab_keyboard_focus` / ADR-0022.
-    saved_keyboard_focus: *mut ffi::wl_resource,
-    /// Last reported pointer position in compositor logical space.
-    pointer_x: f32,
-    pointer_y: f32,
-    raw_pointer_x: f32,
-    raw_pointer_y: f32,
-    /// Last serial handed to a `wl_pointer.button` event, for clients that
-    /// gate interactive moves on a press serial (xdg_toplevel.move &c.).
-    last_button_serial: u32,
-    /// Whether the press that produced `last_button_serial` still owns an
-    /// implicit pointer grab. Move/resize/start_drag requests require it.
-    implicit_grab_active: bool,
-    /// Current depressed modifier mask from the compositor's xkb state. Used
-    /// for compositor-owned pointer gestures such as Super+drag.
-    depressed_mods: ass_core::input::Mods,
     /// Pending console VT switch requested by a Ctrl+Alt+Fn key press
     /// (XF86Switch_VT_N). The kernel never sees these keys once libinput owns
     /// evdev, so the compositor performs the session switch through libseat.
     /// Drained by the main loop via [`Server::take_vt_switch`].
     pending_vt_switch: Option<i32>,
-    /// xkbcommon keymap and modifier state. Owned by the server so the
-    /// keymap fd lives as long as clients may bind a keyboard.
-    keyboard: Option<keyboard::Keyboard>,
-    /// Ongoing interactive move or resize, started by `xdg_toplevel.move` /
-    /// `resize` when the supplied serial matches the last pointer button
-    /// press. Cleared on button release. While active, pointer motion
-    /// updates the window's geometry instead of (only) being forwarded to
-    /// the focused client.
-    interactive: Option<ass_core::window::Interactive>,
-    /// The active interactive grab was initiated by the compositor's
-    /// invisible floating-window border. Its initiating button press was not
-    /// sent to the client, so the matching release must also be consumed.
-    compositor_pointer_grab: bool,
     /// Parameters for the tiling policy (gaps, master ratio). Per-workspace
     /// tiling on/off lives on each workspace in the model (ADR-0024).
     layout_params: ass_core::layout::LayoutParams,
@@ -770,47 +937,42 @@ impl State {
     fn new(display: *mut ffi::wl_display) -> State {
         let mut workspaces = ass_core::workspace::WorkspaceModel::new();
         let output = workspaces.add_output("nested");
+        let authority = RealmModel::new();
+        let human_seat = Box::new(SeatRuntime::new(
+            HUMAN_SEAT,
+            HUMAN_REALM,
+            HUMAN_PRINCIPAL,
+            SeatCapabilities::ALL,
+        ));
         State {
             display,
+            authority,
+            seats: std::collections::BTreeMap::from([(HUMAN_SEAT, human_seat)]),
+            active_seat: HUMAN_SEAT,
+            seat_globals: Vec::new(),
+            realm_hidden_globals: std::collections::HashSet::new(),
+            seat_resource_owners: std::collections::HashMap::new(),
+            seat_resource_origins: std::collections::HashMap::new(),
+            clients: std::collections::HashMap::new(),
+            client_initial_realms: std::collections::HashMap::new(),
+            client_bound_seats: std::collections::HashMap::new(),
+            realm_placements: std::collections::BTreeMap::new(),
+            pending_realm_layouts: std::collections::BTreeSet::new(),
+            damaged_windows: std::collections::BTreeSet::new(),
+            pending_realm_damage: std::collections::BTreeMap::new(),
             surfaces: Vec::new(),
-            pointer_resources: Vec::new(),
-            keyboard_resources: Vec::new(),
-            touch_resources: Vec::new(),
             output_resources: Vec::new(),
             output_globals: Vec::new(),
             xdg_output_resources: Vec::new(),
             xdg_output_links: std::collections::HashMap::new(),
-            data_devices: Vec::new(),
-            data_offers: Vec::new(),
-            selection: None,
-            primary_devices: Vec::new(),
-            primary_offers: Vec::new(),
-            primary_selection: None,
-            drag: None,
-            relative_pointers: Vec::new(),
-            pointer_constraints: Vec::new(),
-            pointer_gesture_swipes: Vec::new(),
-            pointer_gesture_pinches: Vec::new(),
-            pointer_gesture_holds: Vec::new(),
-            swipe_gesture_client: std::ptr::null_mut(),
-            pinch_gesture_client: std::ptr::null_mut(),
-            hold_gesture_client: std::ptr::null_mut(),
-            keyboard_shortcut_inhibitors: Vec::new(),
             idle_notifications: Vec::new(),
             idle_inhibitors: Vec::new(),
-            tablet_seats: Vec::new(),
-            tablet_devices: Vec::new(),
-            tablet_tools: Vec::new(),
             known_tools: Vec::new(),
-            tablet_device_seen: false,
-            tablet_focus: std::ptr::null_mut(),
             retired_buffer_releases: Vec::new(),
             foreign_toplevel_lists: Vec::new(),
             foreign_handles: std::collections::HashMap::new(),
-            text_inputs: Vec::new(),
-            pending_text_input_states: Vec::new(),
-            activation_tokens: std::collections::HashSet::new(),
-            pending_activation: std::ptr::null_mut(),
+            activation_tokens: std::collections::HashMap::new(),
+            pending_activation: None,
             session_lock: std::ptr::null_mut(),
             session_locked: false,
             lock_focus_dirty: false,
@@ -818,25 +980,7 @@ impl State {
             pre_lock_keyboard_focus: std::ptr::null_mut(),
             session_lock_requested_at: None,
             lock_frame_pending: false,
-            cursor_shape: 0,
-            cursor_surface: std::ptr::null_mut(),
-            cursor_hotspot: ass_core::Point::default(),
-            cursor_hidden: false,
-            last_pointer_enter_serial: 0,
-            pointer_focus: std::ptr::null_mut(),
-            keyboard_focus: std::ptr::null_mut(),
-            saved_keyboard_focus: std::ptr::null_mut(),
-            pointer_x: 0.0,
-            pointer_y: 0.0,
-            raw_pointer_x: 0.0,
-            raw_pointer_y: 0.0,
-            last_button_serial: 0,
-            implicit_grab_active: false,
-            depressed_mods: ass_core::input::Mods::NONE,
             pending_vt_switch: None,
-            keyboard: None,
-            interactive: None,
-            compositor_pointer_grab: false,
             workspaces,
             output,
             layout_params: ass_core::layout::LayoutParams::default(),
@@ -851,6 +995,393 @@ impl State {
             output_policies: std::collections::HashMap::new(),
             next_window_id: 1,
         }
+    }
+
+    fn seat_runtime(&self, seat: SeatId) -> Option<&SeatRuntime> {
+        self.seats.get(&seat).map(Box::as_ref)
+    }
+
+    fn seat_runtime_mut(&mut self, seat: SeatId) -> Option<&mut SeatRuntime> {
+        self.seats.get_mut(&seat).map(Box::as_mut)
+    }
+
+    fn seat_for_resource(&self, resource: *mut ffi::wl_resource) -> Option<SeatId> {
+        self.seat_resource_owners.get(&(resource as usize)).copied()
+    }
+
+    fn seat_origin_for_resource(&self, resource: *mut ffi::wl_resource) -> Option<SeatId> {
+        self.seat_resource_origins
+            .get(&(resource as usize))
+            .copied()
+    }
+
+    fn track_seat_resource(&mut self, resource: *mut ffi::wl_resource, seat: SeatId) {
+        self.seat_resource_owners.insert(resource as usize, seat);
+        self.seat_resource_origins
+            .entry(resource as usize)
+            .or_insert(seat);
+    }
+
+    fn track_routed_seat_resource(
+        &mut self,
+        resource: *mut ffi::wl_resource,
+        advertised: SeatId,
+        routed: SeatId,
+    ) {
+        self.seat_resource_owners.insert(resource as usize, routed);
+        self.seat_resource_origins
+            .insert(resource as usize, advertised);
+    }
+
+    fn untrack_seat_resource(&mut self, resource: *mut ffi::wl_resource) -> Option<SeatId> {
+        self.seat_resource_origins.remove(&(resource as usize));
+        self.seat_resource_owners.remove(&(resource as usize))
+    }
+
+    unsafe fn ensure_client(&mut self, client: *mut ffi::wl_client) -> ass_core::realm::ClientId {
+        self.ensure_client_with_realm(client, None)
+    }
+
+    unsafe fn ensure_client_with_realm(
+        &mut self,
+        client: *mut ffi::wl_client,
+        realm: Option<RealmId>,
+    ) -> ass_core::realm::ClientId {
+        if let Some(id) = self.clients.get(&(client as usize)).copied() {
+            return id;
+        }
+        let security_context = realm.map(|realm| format!("ass.realm.{}", realm.0));
+        let id = self.authority.register_client(security_context);
+        self.clients.insert(client as usize, id);
+        if let Some(realm) = realm {
+            self.client_initial_realms.insert(id, realm);
+        }
+        let record = Box::new(ClientDestroyRecord {
+            listener: ffi::wl_listener {
+                link: ffi::wl_list {
+                    prev: std::ptr::null_mut(),
+                    next: std::ptr::null_mut(),
+                },
+                notify: Some(client_destroyed),
+            },
+            state: self as *mut State,
+            client,
+            id,
+        });
+        let record = Box::into_raw(record);
+        ffi::wl_client_add_destroy_listener(client, &mut (*record).listener);
+        id
+    }
+
+    fn client_view_realm(&self, client: *mut ffi::wl_client) -> RealmId {
+        self.clients
+            .get(&(client as usize))
+            .and_then(|client| self.client_initial_realms.get(client))
+            .copied()
+            .unwrap_or(HUMAN_REALM)
+    }
+
+    fn client_observes_window(
+        &self,
+        client: *mut ffi::wl_client,
+        window: ass_core::window::WindowId,
+    ) -> bool {
+        self.authority
+            .realm_observes_window(self.client_view_realm(client), window)
+    }
+
+    fn register_window(
+        &mut self,
+        client: ass_core::realm::ClientId,
+        window: ass_core::window::WindowId,
+    ) -> Result<(), RealmError> {
+        let existing = self
+            .authority
+            .interaction_groups_for_client(client)
+            .next()
+            .map(|group| group.id);
+        if let Some(group) = existing {
+            self.authority.add_window_to_group(group, window)?;
+        } else {
+            let initial_realm = self
+                .client_initial_realms
+                .get(&client)
+                .copied()
+                .unwrap_or(HUMAN_REALM);
+            self.authority
+                .create_interaction_group(client, &[window], initial_realm)?;
+        }
+        self.queue_realm_layouts_for_window(window);
+        Ok(())
+    }
+
+    fn unregister_window(&mut self, window: ass_core::window::WindowId) {
+        if self
+            .authority
+            .interaction_group_for_window(window)
+            .is_some()
+        {
+            let realms = self.realms_for_window(window);
+            for realm in realms {
+                self.queue_full_realm_damage(realm);
+                self.pending_realm_layouts.insert(realm);
+            }
+            self.damaged_windows.remove(&window);
+            let _ = self.authority.remove_window(window);
+            self.realm_placements
+                .retain(|(_, placement_window), _| *placement_window != window);
+        }
+    }
+
+    fn realms_for_window(&self, window: ass_core::window::WindowId) -> Vec<RealmId> {
+        let Some(group) = self.authority.interaction_group_for_window(window) else {
+            return Vec::new();
+        };
+        let mut realms = Vec::with_capacity(group.observer_realms.len() + 1);
+        realms.push(group.control_realm);
+        realms.extend(group.observer_realms.iter().copied());
+        realms.sort_unstable();
+        realms.dedup();
+        realms
+    }
+
+    fn queue_realm_layouts_for_window(&mut self, window: ass_core::window::WindowId) {
+        for realm in self.realms_for_window(window) {
+            if realm != HUMAN_REALM {
+                self.pending_realm_layouts.insert(realm);
+            }
+        }
+    }
+
+    fn queue_full_realm_damage(&mut self, realm: RealmId) {
+        let Some(record) = self.authority.realm(realm) else {
+            return;
+        };
+        let PresentationTarget::Virtual { output } = record.presentation else {
+            return;
+        };
+        self.pending_realm_damage
+            .entry(realm)
+            .or_default()
+            .push(ass_core::Rect::new(
+                0,
+                0,
+                output.width as i32,
+                output.height as i32,
+            ));
+    }
+
+    unsafe fn note_client_used_seat(&mut self, client: *mut ffi::wl_client, seat: SeatId) {
+        let id = self.ensure_client(client);
+        let bound = self.client_bound_seats.entry(client as usize).or_default();
+        if self.client_initial_realms.contains_key(&id) {
+            bound.insert(seat);
+            return;
+        }
+        let was_multi_seat = bound.len() > 1;
+        bound.insert(seat);
+        if !was_multi_seat && bound.len() > 1 {
+            let _ = self
+                .authority
+                .set_client_multi_seat(id, ass_core::realm::MultiSeatSupport::Supported);
+            self.restore_native_multiseat_resources(client);
+        }
+    }
+
+    fn client_routed_seat(&self, client: *mut ffi::wl_client, advertised: SeatId) -> SeatId {
+        let Some(client_id) = self.clients.get(&(client as usize)).copied() else {
+            return advertised;
+        };
+        if self
+            .authority
+            .client(client_id)
+            .is_some_and(|client| client.multi_seat == ass_core::realm::MultiSeatSupport::Supported)
+        {
+            return advertised;
+        }
+        let realm = self
+            .authority
+            .interaction_groups_for_client(client_id)
+            .next()
+            .map(|group| group.control_realm)
+            .or_else(|| self.client_initial_realms.get(&client_id).copied());
+        let Some(realm) = realm else {
+            return advertised;
+        };
+        self.authority
+            .snapshot()
+            .seats
+            .into_iter()
+            .find(|seat| seat.realm == realm && seat.enabled)
+            .map(|seat| seat.id)
+            .unwrap_or(advertised)
+    }
+
+    unsafe fn migrate_compatibility_resources(
+        &mut self,
+        client_id: ass_core::realm::ClientId,
+        target: SeatId,
+    ) {
+        if self
+            .authority
+            .client(client_id)
+            .is_some_and(|client| client.multi_seat == ass_core::realm::MultiSeatSupport::Supported)
+        {
+            return;
+        }
+        let Some(client) = self
+            .clients
+            .iter()
+            .find_map(|(raw, id)| (*id == client_id).then_some(*raw as *mut ffi::wl_client))
+        else {
+            return;
+        };
+        if !self.seats.contains_key(&target) {
+            return;
+        }
+
+        // Revoke offers that originated in the source realm before moving the
+        // destination devices. Already-issued offers are capabilities and
+        // must not remain usable across an authority boundary.
+        for (seat, runtime) in &mut self.seats {
+            if *seat == target {
+                continue;
+            }
+            for device in runtime.data_devices.iter().copied().filter(|resource| {
+                !resource.is_null() && ffi::wl_resource_get_client(*resource) == client
+            }) {
+                ffi::wl_resource_post_event(
+                    device,
+                    ffi::WL_DATA_DEVICE_SELECTION,
+                    std::ptr::null_mut::<ffi::wl_resource>(),
+                );
+            }
+            for offer in runtime.data_offers.iter().copied().filter(|resource| {
+                !resource.is_null() && ffi::wl_resource_get_client(*resource) == client
+            }) {
+                let record = ffi::wl_resource_get_user_data(offer) as *mut DataOfferRec;
+                if !record.is_null() {
+                    (*record).source = std::ptr::null_mut();
+                }
+            }
+            for device in runtime.primary_devices.iter().copied().filter(|resource| {
+                !resource.is_null() && ffi::wl_resource_get_client(*resource) == client
+            }) {
+                ffi::wl_resource_post_event(
+                    device,
+                    ffi::ZWP_PRIMARY_SELECTION_DEVICE_V1_SELECTION,
+                    std::ptr::null_mut::<ffi::wl_resource>(),
+                );
+            }
+            for offer in runtime.primary_offers.iter().copied().filter(|resource| {
+                !resource.is_null() && ffi::wl_resource_get_client(*resource) == client
+            }) {
+                let record = ffi::wl_resource_get_user_data(offer) as *mut PrimaryOfferRec;
+                if !record.is_null() {
+                    (*record).source = std::ptr::null_mut();
+                }
+            }
+        }
+
+        macro_rules! migrate {
+            ($field:ident) => {{
+                let mut moved = Vec::new();
+                for (seat, runtime) in &mut self.seats {
+                    if *seat == target {
+                        continue;
+                    }
+                    runtime.$field.retain(|resource| {
+                        let belongs =
+                            !resource.is_null() && ffi::wl_resource_get_client(*resource) == client;
+                        if belongs {
+                            moved.push(*resource);
+                        }
+                        !belongs
+                    });
+                }
+                for resource in &moved {
+                    self.seat_resource_owners.insert(*resource as usize, target);
+                }
+                self.seats
+                    .get_mut(&target)
+                    .expect("validated target seat disappeared")
+                    .$field
+                    .extend(moved);
+            }};
+        }
+
+        migrate!(pointer_resources);
+        migrate!(keyboard_resources);
+        migrate!(touch_resources);
+        migrate!(data_devices);
+        migrate!(primary_devices);
+        migrate!(relative_pointers);
+        migrate!(pointer_constraints);
+        migrate!(pointer_gesture_swipes);
+        migrate!(pointer_gesture_pinches);
+        migrate!(pointer_gesture_holds);
+        migrate!(cursor_shape_devices);
+        migrate!(keyboard_shortcut_inhibitors);
+        migrate!(tablet_seats);
+        migrate!(tablet_devices);
+        migrate!(tablet_tools);
+        migrate!(text_inputs);
+    }
+
+    unsafe fn restore_native_multiseat_resources(&mut self, client: *mut ffi::wl_client) {
+        let live_seats = self
+            .seats
+            .keys()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        macro_rules! restore {
+            ($field:ident) => {{
+                let mut moved = Vec::<(SeatId, *mut ffi::wl_resource)>::new();
+                for (current, runtime) in &mut self.seats {
+                    runtime.$field.retain(|resource| {
+                        if resource.is_null() || ffi::wl_resource_get_client(*resource) != client {
+                            return true;
+                        }
+                        let origin = self
+                            .seat_resource_origins
+                            .get(&(*resource as usize))
+                            .copied()
+                            .unwrap_or(*current);
+                        if origin != *current && live_seats.contains(&origin) {
+                            moved.push((origin, *resource));
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                }
+                for (origin, resource) in moved {
+                    self.seat_resource_owners.insert(resource as usize, origin);
+                    self.seats
+                        .get_mut(&origin)
+                        .expect("validated original seat disappeared")
+                        .$field
+                        .push(resource);
+                }
+            }};
+        }
+
+        restore!(pointer_resources);
+        restore!(keyboard_resources);
+        restore!(touch_resources);
+        restore!(data_devices);
+        restore!(primary_devices);
+        restore!(relative_pointers);
+        restore!(pointer_constraints);
+        restore!(pointer_gesture_swipes);
+        restore!(pointer_gesture_pinches);
+        restore!(pointer_gesture_holds);
+        restore!(cursor_shape_devices);
+        restore!(keyboard_shortcut_inhibitors);
+        restore!(tablet_seats);
+        restore!(tablet_devices);
+        restore!(tablet_tools);
+        restore!(text_inputs);
     }
 
     /// Allocate a fresh, never-reused `WindowId` (ADR-0032). Called on the
@@ -872,6 +1403,189 @@ impl State {
     pub(crate) fn live_surfaces_pub(&self) -> impl Iterator<Item = *mut SurfaceRec> + '_ {
         self.surfaces.iter().copied().filter(|p| !p.is_null())
     }
+}
+
+/// Existing compositor paths are the physical human-seat path. Dereferencing
+/// `State` to that runtime keeps those paths source-compatible while the
+/// generic seat-aware entry points use `seat_runtime(_mut)` explicitly.
+impl Deref for State {
+    type Target = SeatRuntime;
+
+    fn deref(&self) -> &Self::Target {
+        self.seat_runtime(self.active_seat)
+            .expect("active seat runtime is missing")
+    }
+}
+
+impl DerefMut for State {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.seat_runtime_mut(self.active_seat)
+            .expect("active seat runtime is missing")
+    }
+}
+
+unsafe extern "C" fn client_destroyed(listener: *mut ffi::wl_listener, _data: *mut c_void) {
+    let record = listener as *mut ClientDestroyRecord;
+    if record.is_null() {
+        return;
+    }
+    let record = Box::from_raw(record);
+    if !record.state.is_null() {
+        let state = &mut *record.state;
+        if state.clients.get(&(record.client as usize)) == Some(&record.id) {
+            state.clients.remove(&(record.client as usize));
+        }
+        state.client_bound_seats.remove(&(record.client as usize));
+        state.client_initial_realms.remove(&record.id);
+        let _ = state.authority.disconnect_client(record.id);
+    }
+}
+
+/// One-shot Realm launch connections are a trusted client-identity portal.
+/// Such clients see only their own `wl_seat` global, so a sandboxed app cannot
+/// bind the physical user's seat even if it deliberately enumerates every
+/// registry object. Ordinary desktop clients remain unrestricted for
+/// compatibility with native multi-seat software.
+unsafe extern "C" fn realm_global_filter(
+    client: *const ffi::wl_client,
+    global: *const ffi::wl_global,
+    data: *mut c_void,
+) -> bool {
+    let state = data as *mut State;
+    if state.is_null() || client.is_null() || global.is_null() {
+        return true;
+    }
+    let realm = (*state)
+        .clients
+        .get(&(client as usize))
+        .and_then(|client_id| (*state).client_initial_realms.get(client_id))
+        .copied();
+    if realm.is_some() && (*state).realm_hidden_globals.contains(&(global as usize)) {
+        return false;
+    }
+    if let Some(output) = (*state)
+        .output_globals
+        .iter()
+        .find(|output| std::ptr::eq(output.global as *const ffi::wl_global, global))
+    {
+        return match realm {
+            Some(realm) => output.realm == Some(realm),
+            // Ordinary host clients need virtual outputs announced just like
+            // hot-plugged monitors: an already-running surface can transfer
+            // there and must receive correct enter/leave and scale state.
+            // Portal clients remain confined to their own directed output.
+            None => true,
+        };
+    }
+    if let Some(seat) = (*state)
+        .seat_globals
+        .iter()
+        .find(|seat| std::ptr::eq(seat.global as *const ffi::wl_global, global))
+    {
+        return realm.is_none_or(|realm| {
+            (*state)
+                .authority
+                .seat(seat.seat)
+                .is_some_and(|seat| seat.realm == realm)
+        });
+    }
+    true
+}
+
+struct ActiveSeatGuard {
+    state: *mut State,
+    previous: SeatId,
+}
+
+impl ActiveSeatGuard {
+    fn enter(state: &mut State, seat: SeatId) -> Option<Self> {
+        if !state
+            .authority
+            .seat(seat)
+            .is_some_and(|model| model.enabled)
+            || !state.seats.contains_key(&seat)
+        {
+            return None;
+        }
+        let previous = state.active_seat;
+        state.active_seat = seat;
+        Some(Self {
+            state: state as *mut State,
+            previous,
+        })
+    }
+
+    fn enter_existing(state: &mut State, seat: SeatId) -> Option<Self> {
+        if !state.seats.contains_key(&seat) {
+            return None;
+        }
+        let previous = state.active_seat;
+        state.active_seat = seat;
+        Some(Self {
+            state: state as *mut State,
+            previous,
+        })
+    }
+
+    unsafe fn for_resource(
+        state: *mut State,
+        resource: *mut ffi::wl_resource,
+        require_enabled: bool,
+    ) -> Option<Self> {
+        if state.is_null() {
+            return None;
+        }
+        let seat = (*state).seat_for_resource(resource)?;
+        if require_enabled {
+            Self::enter(&mut *state, seat)
+        } else {
+            Self::enter_existing(&mut *state, seat)
+        }
+    }
+
+    unsafe fn for_client_seat_resource(
+        state: *mut State,
+        client: *mut ffi::wl_client,
+        seat_resource: *mut ffi::wl_resource,
+        require_enabled: bool,
+    ) -> Option<Self> {
+        if state.is_null() {
+            return None;
+        }
+        let advertised = (*state).seat_for_resource(seat_resource)?;
+        let routed = (*state).client_routed_seat(client, advertised);
+        if require_enabled {
+            Self::enter(&mut *state, routed)
+        } else {
+            Self::enter_existing(&mut *state, routed)
+        }
+    }
+}
+
+impl Drop for ActiveSeatGuard {
+    fn drop(&mut self) {
+        unsafe {
+            (*self.state).active_seat = self.previous;
+        }
+    }
+}
+
+unsafe fn create_seat_global(state: &mut State, seat: SeatId) -> *mut ffi::wl_global {
+    let mut record = Box::new(SeatGlobal {
+        state: state as *mut State,
+        seat,
+        global: std::ptr::null_mut(),
+        active: true,
+    });
+    let data = record.as_mut() as *mut SeatGlobal as *mut c_void;
+    record.global =
+        ffi::wl_global_create(state.display, &ffi::wl_seat_interface, 9, data, seat_bind);
+    if record.global.is_null() {
+        return std::ptr::null_mut();
+    }
+    let global = record.global;
+    state.seat_globals.push(record);
+    global
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -922,7 +1636,7 @@ fn pointer_axis_wire_events(
                     .map(|value| value as f32 * 10.0)
             });
 
-        if value.is_some() {
+        if let Some(value) = value {
             if version >= 8 {
                 let value120 = axis
                     .value120
@@ -967,7 +1681,7 @@ fn pointer_axis_wire_events(
             events.push(PointerAxisWireEvent::Axis {
                 time: frame.time,
                 axis: axis_id,
-                value: value.unwrap(),
+                value,
             });
         }
 
@@ -1033,10 +1747,58 @@ unsafe fn post_pointer_axis_wire_event(
 pub struct Server {
     state: Box<State>,
     socket: String,
+    realm_portals: Vec<RealmPortal>,
     /// Monotonic epoch for pointer buttons, touch, relative motion, and
     /// synthetic events that do not carry a backend timestamp. Axis frames
     /// retain their DRM/libinput or nested-host timestamps end to end.
     epoch: std::time::Instant,
+}
+
+/// Prepared capability endpoint for one sandboxed application instance.
+///
+/// Before activation the socket has a short-lived randomized host pathname so
+/// bubblewrap can bind-mount the socket inode. The launcher must unlink that
+/// pathname and close all connections queued before the sandbox gate opens.
+/// Once activated, only the bind mount inside that sandbox can reach it.
+pub struct RealmPortal {
+    realm: RealmId,
+    path: PathBuf,
+    listener: UnixListener,
+}
+
+impl RealmPortal {
+    pub fn realm(&self) -> RealmId {
+        self.realm
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn try_clone_listener(&self) -> std::io::Result<UnixListener> {
+        self.listener.try_clone()
+    }
+}
+
+impl Drop for RealmPortal {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+}
+
+fn random_portal_token() -> std::io::Result<String> {
+    let mut bytes = [0u8; 16];
+    let mut random = std::fs::File::open("/dev/urandom")?;
+    std::io::Read::read_exact(&mut random, &mut bytes)?;
+    let mut token = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut token, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    Ok(token)
 }
 
 impl Server {
@@ -1092,7 +1854,7 @@ impl Server {
                 compositor_bind,
             );
             let initial_output = state.output_infos[0].clone();
-            create_output_global(state.as_mut(), initial_output);
+            create_output_global(state.as_mut(), initial_output, None);
             ffi::wl_global_create(
                 display,
                 &ffi::xdg_wm_base_interface,
@@ -1107,7 +1869,10 @@ impl Server {
                 data,
                 subcompositor_bind,
             );
-            ffi::wl_global_create(display, &ffi::wl_seat_interface, 9, data, seat_bind);
+            if create_seat_global(state.as_mut(), HUMAN_SEAT).is_null() {
+                ffi::wl_display_destroy(display);
+                return Err(ServerError::SeatGlobal);
+            }
             ffi::wl_global_create(
                 display,
                 &ffi::wl_data_device_manager_interface,
@@ -1170,13 +1935,16 @@ impl Server {
                 data,
                 extensions::fractional_scale_bind,
             );
-            ffi::wl_global_create(
+            let idle_inhibit_global = ffi::wl_global_create(
                 display,
                 &ffi::zwp_idle_inhibit_manager_v1_interface,
                 1,
                 data,
                 extensions::idle_inhibit_bind,
             );
+            state
+                .realm_hidden_globals
+                .insert(idle_inhibit_global as usize);
             ffi::wl_global_create(
                 display,
                 &ffi::ext_idle_notifier_v1_interface,
@@ -1184,13 +1952,16 @@ impl Server {
                 data,
                 extensions::idle_notifier_bind,
             );
-            ffi::wl_global_create(
+            let session_lock_global = ffi::wl_global_create(
                 display,
                 &ffi::ext_session_lock_manager_v1_interface,
                 1,
                 data,
                 extensions::session_lock_bind,
             );
+            state
+                .realm_hidden_globals
+                .insert(session_lock_global as usize);
             ffi::wl_global_create(
                 display,
                 &ffi::zwp_relative_pointer_manager_v1_interface,
@@ -1226,13 +1997,16 @@ impl Server {
                 data,
                 extensions::keyboard_shortcuts_inhibit_bind,
             );
-            ffi::wl_global_create(
+            let foreign_toplevel_global = ffi::wl_global_create(
                 display,
                 &ffi::ext_foreign_toplevel_list_v1_interface,
                 1,
                 data,
                 extensions::foreign_toplevel_bind,
             );
+            state
+                .realm_hidden_globals
+                .insert(foreign_toplevel_global as usize);
             ffi::wl_global_create(
                 display,
                 &ffi::zwp_primary_selection_device_manager_v1_interface,
@@ -1261,10 +2035,12 @@ impl Server {
                 data,
                 extensions::xdg_activation_bind,
             );
+            ffi::wl_display_set_global_filter(display, Some(realm_global_filter), data);
 
             Ok(Server {
                 state,
                 socket,
+                realm_portals: Vec::new(),
                 epoch: std::time::Instant::now(),
             })
         }
@@ -1275,17 +2051,814 @@ impl Server {
         &self.socket
     }
 
+    /// Point-in-time authority state for the shell and IPC layers.
+    pub fn realm_snapshot(&self) -> RealmSnapshot {
+        self.state.authority.snapshot()
+    }
+
+    /// Prepare a capability listener for one compositor-mediated Realm launch.
+    ///
+    /// The randomized host pathname exists only while bubblewrap installs a
+    /// bind mount of the socket inode. [`Self::activate_realm_portal`] refuses
+    /// the portal until the launcher has removed that ambient pathname.
+    pub fn prepare_realm_portal(&self, realm: RealmId) -> Result<RealmPortal, RealmRuntimeError> {
+        let record = self
+            .state
+            .authority
+            .realm(realm)
+            .ok_or(RealmError::UnknownRealm(realm))?;
+        if record.state != ass_core::realm::RealmState::Active {
+            return Err(RealmError::RealmNotActive(realm).into());
+        }
+
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+            .ok_or_else(|| RealmRuntimeError::Portal("XDG_RUNTIME_DIR is not available".into()))?;
+        let base = PathBuf::from(runtime).join("ass-portals");
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(&base)
+            .map_err(|error| RealmRuntimeError::Portal(error.to_string()))?;
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| RealmRuntimeError::Portal(error.to_string()))?;
+
+        let mut last_error = None;
+        for _ in 0..8 {
+            let token = random_portal_token()
+                .map_err(|error| RealmRuntimeError::Portal(error.to_string()))?;
+            let directory = base.join(format!("realm-{}-{token}", realm.0));
+            match std::fs::DirBuilder::new().mode(0o700).create(&directory) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    last_error = Some(error);
+                    continue;
+                }
+                Err(error) => return Err(RealmRuntimeError::Portal(error.to_string())),
+            }
+            let path = directory.join("wayland");
+            let listener = match UnixListener::bind(&path) {
+                Ok(listener) => listener,
+                Err(error) => {
+                    let _ = std::fs::remove_dir(&directory);
+                    return Err(RealmRuntimeError::Portal(error.to_string()));
+                }
+            };
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|error| RealmRuntimeError::Portal(error.to_string()))?;
+            listener
+                .set_nonblocking(true)
+                .map_err(|error| RealmRuntimeError::Portal(error.to_string()))?;
+            return Ok(RealmPortal {
+                realm,
+                path,
+                listener,
+            });
+        }
+        Err(RealmRuntimeError::Portal(format!(
+            "could not allocate a unique portal path: {}",
+            last_error
+                .map(|error| error.to_string())
+                .unwrap_or_else(|| "random-name collision".into())
+        )))
+    }
+
+    /// Activate a portal after bubblewrap has made its socket inode private to
+    /// the sandbox mount namespace.
+    pub fn activate_realm_portal(&mut self, portal: RealmPortal) -> Result<(), RealmRuntimeError> {
+        let record = self
+            .state
+            .authority
+            .realm(portal.realm)
+            .ok_or(RealmError::UnknownRealm(portal.realm))?;
+        if record.state != ass_core::realm::RealmState::Active {
+            return Err(RealmError::RealmNotActive(portal.realm).into());
+        }
+        if portal.path.exists() {
+            return Err(RealmRuntimeError::Portal(
+                "sandbox launch gate did not remove the ambient portal path".into(),
+            ));
+        }
+        self.realm_portals.push(portal);
+        Ok(())
+    }
+
+    fn accept_realm_portal_clients(&mut self) {
+        for portal in &self.realm_portals {
+            loop {
+                let (stream, _) = match portal.listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => {
+                        log::warn!("Realm {} portal accept failed: {error}", portal.realm.0);
+                        break;
+                    }
+                };
+                if let Err(error) = stream.set_nonblocking(true) {
+                    log::warn!(
+                        "Realm {} portal client could not become non-blocking: {error}",
+                        portal.realm.0
+                    );
+                    continue;
+                }
+                let fd = stream.into_raw_fd();
+                let wl_client = unsafe { ffi::wl_client_create(self.state.display, fd) };
+                if wl_client.is_null() {
+                    unsafe { libc_close(fd) };
+                    log::warn!("Realm {} portal client was rejected", portal.realm.0);
+                    continue;
+                }
+                unsafe {
+                    self.state
+                        .ensure_client_with_realm(wl_client, Some(portal.realm));
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn realm_portal_count(&self) -> usize {
+        self.realm_portals.len()
+    }
+
+    pub fn configure_realm_output(
+        &mut self,
+        realm: RealmId,
+        output: VirtualOutput,
+    ) -> Result<(), RealmRuntimeError> {
+        self.state
+            .authority
+            .configure_virtual_output(realm, output)?;
+        unsafe { update_realm_output_global(self.state.as_mut(), realm, output) };
+        self.layout_virtual_realm(realm)?;
+        Ok(())
+    }
+
+    pub fn realm_output(&self, realm: RealmId) -> Option<VirtualOutput> {
+        match self.state.authority.realm(realm)?.presentation {
+            PresentationTarget::Virtual { output } => Some(output),
+            _ => None,
+        }
+    }
+
+    /// Window layout metadata corresponding to the directed Realm render.
+    pub fn realm_window_placements(
+        &self,
+        realm: RealmId,
+    ) -> Vec<ass_core::realm::RealmWindowPlacement> {
+        let mut placements = self
+            .state
+            .realm_placements
+            .iter()
+            .filter_map(|((placement_realm, window), output_rect)| {
+                if *placement_realm != realm
+                    || !self.state.authority.realm_observes_window(realm, *window)
+                {
+                    return None;
+                }
+                let rec = self.find_surface_by_window_id(*window);
+                if rec.is_null() || unsafe { !(*rec).mapped || (*rec).window.minimized } {
+                    return None;
+                }
+                let surface_size = unsafe {
+                    if (*rec).window.size.w > 0 && (*rec).window.size.h > 0 {
+                        (*rec).window.size
+                    } else {
+                        surface_logical_size(&*rec)
+                    }
+                };
+                (surface_size.w > 0 && surface_size.h > 0).then_some(
+                    ass_core::realm::RealmWindowPlacement {
+                        window: *window,
+                        output_rect: *output_rect,
+                        surface_size,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        placements.sort_by_key(|placement| placement.window);
+        placements
+    }
+
+    /// Create an independently advertised agent seat and its authority realm.
+    ///
+    /// The XKB state is prepared before the authority mutation. If advertising
+    /// the Wayland global fails, the new realm is immediately revoked so no
+    /// active-but-unreachable authority survives the failed operation.
+    pub fn create_agent_realm(
+        &mut self,
+        label: impl Into<String>,
+        capabilities: SeatCapabilities,
+    ) -> Result<RealmBundle, RealmRuntimeError> {
+        let keyboard = if capabilities.keyboard {
+            Some(
+                keyboard::Keyboard::new()
+                    .map_err(|error| RealmRuntimeError::Keyboard(error.to_string()))?,
+            )
+        } else {
+            None
+        };
+        let bundle = self.state.authority.create_agent_realm(label, capabilities);
+        let mut runtime = Box::new(SeatRuntime::new(
+            bundle.seat,
+            bundle.realm,
+            bundle.principal,
+            capabilities,
+        ));
+        runtime.keyboard = keyboard;
+        self.state.seats.insert(bundle.seat, runtime);
+
+        let global = unsafe { create_seat_global(self.state.as_mut(), bundle.seat) };
+        if global.is_null() {
+            self.state
+                .authority
+                .revoke_realm(bundle.realm, HUMAN_REALM)
+                .expect("new agent realm must be revocable");
+            self.state.seats.remove(&bundle.seat);
+            return Err(RealmRuntimeError::SeatGlobal);
+        }
+        let output = self
+            .realm_output(bundle.realm)
+            .expect("new agent realm must have a virtual output");
+        if !unsafe { create_realm_output_global(self.state.as_mut(), bundle.realm, output) } {
+            let _ = self.revoke_realm(bundle.realm, HUMAN_REALM);
+            return Err(RealmRuntimeError::OutputGlobal);
+        }
+        debug_assert!(self.state.authority.validate().is_ok());
+        Ok(bundle)
+    }
+
+    /// Stop all input delivery from a realm while preserving its identity and
+    /// transferable window authority for a later resume.
+    pub fn pause_realm(&mut self, realm: RealmId) -> Result<(), RealmRuntimeError> {
+        let seat_ids = self.realm_seat_ids(realm)?;
+        self.state.authority.pause_realm(realm)?;
+        for seat in seat_ids {
+            self.quiesce_seat(seat);
+            self.publish_seat_capabilities(seat);
+        }
+        Ok(())
+    }
+
+    /// Resume a paused realm with clean keyboard/modifier/grab state.
+    pub fn resume_realm(&mut self, realm: RealmId) -> Result<(), RealmRuntimeError> {
+        let seat_ids = self.realm_seat_ids(realm)?;
+        for seat in &seat_ids {
+            if let Some(runtime) = self.state.seat_runtime_mut(*seat) {
+                if runtime.capabilities.keyboard && runtime.keyboard.is_none() {
+                    runtime.keyboard = Some(
+                        keyboard::Keyboard::new()
+                            .map_err(|error| RealmRuntimeError::Keyboard(error.to_string()))?,
+                    );
+                }
+            }
+        }
+        self.state.authority.resume_realm(realm)?;
+        for seat in seat_ids {
+            self.publish_seat_capabilities(seat);
+        }
+        self.state.queue_full_realm_damage(realm);
+        Ok(())
+    }
+
+    /// Permanently revoke an agent realm, remove its registry globals, quiesce
+    /// every bound resource, and atomically return controlled groups to the
+    /// fallback realm in the core authority model.
+    pub fn revoke_realm(
+        &mut self,
+        realm: RealmId,
+        fallback: RealmId,
+    ) -> Result<RealmRevocation, RealmRuntimeError> {
+        let seat_ids = self.realm_seat_ids(realm)?;
+        let fallback_seat = self
+            .realm_seat_ids(fallback)?
+            .into_iter()
+            .next()
+            .ok_or(RealmRuntimeError::RealmHasNoSeat(fallback))?;
+        let groups = self.state.authority.snapshot().interaction_groups;
+        let output_membership_before = groups
+            .iter()
+            .filter(|group| group.control_realm == realm || group.observer_realms.contains(&realm))
+            .map(|group| {
+                (
+                    group.id,
+                    (
+                        group.windows.iter().copied().collect::<Vec<_>>(),
+                        std::iter::once(group.control_realm)
+                            .chain(group.observer_realms.iter().copied())
+                            .collect::<std::collections::BTreeSet<_>>(),
+                    ),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let transfers = groups
+            .into_iter()
+            .filter(|group| group.control_realm == realm)
+            .map(|group| (group.client, group.windows.into_iter().collect::<Vec<_>>()))
+            .collect::<Vec<_>>();
+        let all_windows = transfers
+            .iter()
+            .flat_map(|(_, windows)| windows.iter().copied())
+            .collect::<Vec<_>>();
+        // Close every sandbox-only listener before changing authority so no
+        // connection can enter while revocation is in progress.
+        self.realm_portals.retain(|portal| portal.realm != realm);
+        self.clear_transferred_focus(realm, &all_windows);
+        let receipt = self.state.authority.revoke_realm(realm, fallback)?;
+        for (client, _) in &transfers {
+            unsafe {
+                self.state
+                    .migrate_compatibility_resources(*client, fallback_seat);
+            }
+        }
+        for (group, (windows, before)) in output_membership_before {
+            let after = self.interaction_group_output_realms(group);
+            unsafe {
+                update_windows_output_membership(self.state.as_ref(), &windows, &before, &after);
+            }
+        }
+        // Clients launched through this Realm's private portals are part of
+        // the revoked sandbox, not transferable host applications. Disconnect
+        // them synchronously so they cannot create new surfaces in the gap
+        // before the process supervisor delivers SIGKILL.
+        let launched_clients = self
+            .state
+            .clients
+            .iter()
+            .filter_map(|(raw, client)| {
+                (self.state.client_initial_realms.get(client) == Some(&realm))
+                    .then_some(*raw as *mut ffi::wl_client)
+            })
+            .collect::<Vec<_>>();
+        for client in launched_clients {
+            unsafe { ffi::wl_client_destroy(client) };
+        }
+        self.refresh_foreign_toplevel_visibility(&all_windows);
+        for seat in seat_ids {
+            self.quiesce_seat(seat);
+            self.publish_seat_capabilities(seat);
+            for global in &mut self.state.seat_globals {
+                if global.seat == seat && global.active {
+                    unsafe { ffi::wl_global_destroy(global.global) };
+                    global.active = false;
+                }
+            }
+        }
+        for output in &mut self.state.output_globals {
+            if output.realm == Some(realm) && output.active {
+                unsafe { ffi::wl_global_destroy(output.global) };
+                output.global = std::ptr::null_mut();
+                output.active = false;
+            }
+        }
+        let _ = self.layout_virtual_realm(realm);
+        let _ = self.layout_virtual_realm(fallback);
+        debug_assert!(self.state.authority.validate().is_ok());
+        Ok(receipt)
+    }
+
+    /// Atomically move control of the target window's complete client
+    /// interaction group to another realm. ass intentionally groups every
+    /// toplevel on one Wayland client connection; a single-instance
+    /// application therefore needs no app-side changes, while split authority
+    /// can never create an ambiguous seat stream. Native multi-seat detection
+    /// affects resource routing, not the transfer unit.
+    pub fn transfer_window_control(
+        &mut self,
+        window: ass_core::window::WindowId,
+        target: RealmId,
+        retain_source_as_observer: bool,
+    ) -> Result<AuthorityTransfer, RealmRuntimeError> {
+        let (group, client) = self
+            .state
+            .authority
+            .interaction_group_for_window(window)
+            .map(|group| (group.id, group.client))
+            .ok_or(RealmError::UnknownWindow(window))?;
+        let output_realms_before = self.interaction_group_output_realms(group);
+        let target_seat = self
+            .realm_seat_ids(target)?
+            .into_iter()
+            .next()
+            .ok_or(RealmRuntimeError::RealmHasNoSeat(target))?;
+        let receipt = self.state.authority.transfer_control(
+            group,
+            target,
+            TransferOptions {
+                retain_source_as_observer,
+            },
+        )?;
+        let output_realms_after = self.interaction_group_output_realms(group);
+        unsafe {
+            update_windows_output_membership(
+                self.state.as_ref(),
+                &receipt.windows,
+                &output_realms_before,
+                &output_realms_after,
+            );
+        }
+        self.clear_transferred_focus(receipt.from, &receipt.windows);
+        unsafe {
+            self.state
+                .migrate_compatibility_resources(client, target_seat);
+        }
+        self.layout_virtual_realm(target)?;
+        if receipt.from != HUMAN_REALM {
+            self.layout_virtual_realm(receipt.from)?;
+        }
+        self.refresh_foreign_toplevel_visibility(&receipt.windows);
+        debug_assert!(self.state.authority.validate().is_ok());
+        Ok(receipt)
+    }
+
+    fn interaction_group_output_realms(
+        &self,
+        group: ass_core::realm::InteractionGroupId,
+    ) -> std::collections::BTreeSet<RealmId> {
+        self.state
+            .authority
+            .interaction_group(group)
+            .map(|group| {
+                std::iter::once(group.control_realm)
+                    .chain(group.observer_realms.iter().copied())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Commit a bounded, optimistic Realm transaction and then apply its
+    /// infallible protocol/runtime consequences. XKB objects needed by resume
+    /// operations and target-seat existence are prepared before the authority
+    /// model commits, so an error cannot leave model and protocol state split.
+    pub fn transact_realms(
+        &mut self,
+        expected_revision: Option<u64>,
+        mutations: &[RealmMutation],
+    ) -> Result<RealmTransactionReceipt, RealmRuntimeError> {
+        let mut prepared_keyboards = std::collections::BTreeMap::new();
+        let mut output_membership_before = std::collections::BTreeMap::new();
+        for mutation in mutations {
+            match *mutation {
+                RealmMutation::TransferWindow { window, target, .. } => {
+                    if self.realm_seat_ids(target)?.is_empty() {
+                        return Err(RealmRuntimeError::RealmHasNoSeat(target));
+                    }
+                    if let Some(group) = self
+                        .state
+                        .authority
+                        .interaction_group_for_window(window)
+                        .map(|group| group.id)
+                    {
+                        output_membership_before.entry(group).or_insert_with(|| {
+                            (
+                                self.state
+                                    .authority
+                                    .interaction_group(group)
+                                    .map(|group| group.windows.iter().copied().collect::<Vec<_>>())
+                                    .unwrap_or_default(),
+                                self.interaction_group_output_realms(group),
+                            )
+                        });
+                    }
+                }
+                RealmMutation::SetObserver { group, .. } => {
+                    output_membership_before.entry(group).or_insert_with(|| {
+                        (
+                            self.state
+                                .authority
+                                .interaction_group(group)
+                                .map(|group| group.windows.iter().copied().collect::<Vec<_>>())
+                                .unwrap_or_default(),
+                            self.interaction_group_output_realms(group),
+                        )
+                    });
+                }
+                RealmMutation::SetState {
+                    realm,
+                    state: ass_core::realm::RealmState::Active,
+                } => {
+                    for seat in self.realm_seat_ids(realm)? {
+                        let needs_keyboard = self.state.seat_runtime(seat).is_some_and(|runtime| {
+                            runtime.capabilities.keyboard && runtime.keyboard.is_none()
+                        });
+                        if needs_keyboard && !prepared_keyboards.contains_key(&seat) {
+                            prepared_keyboards.insert(
+                                seat,
+                                keyboard::Keyboard::new().map_err(|error| {
+                                    RealmRuntimeError::Keyboard(error.to_string())
+                                })?,
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let receipt = self
+            .state
+            .authority
+            .transact(expected_revision, mutations)?;
+
+        for (mutation, result) in mutations.iter().zip(&receipt.results) {
+            match result {
+                RealmMutationResult::Transferred { receipt: transfer } => {
+                    self.clear_transferred_focus(transfer.from, &transfer.windows);
+                    let (client, target_seat) = self
+                        .state
+                        .authority
+                        .interaction_group(transfer.group)
+                        .and_then(|group| {
+                            self.realm_seat_ids(transfer.to)
+                                .ok()
+                                .and_then(|seats| seats.into_iter().next())
+                                .map(|seat| (group.client, seat))
+                        })
+                        .expect("transaction preflight guaranteed a target seat");
+                    unsafe {
+                        self.state
+                            .migrate_compatibility_resources(client, target_seat);
+                    }
+                    let _ = self.layout_virtual_realm(transfer.to);
+                    if transfer.from != HUMAN_REALM {
+                        let _ = self.layout_virtual_realm(transfer.from);
+                    }
+                    self.refresh_foreign_toplevel_visibility(&transfer.windows);
+                }
+                RealmMutationResult::ObserverChanged { group, realm, .. } => {
+                    let _ = self.layout_virtual_realm(*realm);
+                    let windows = self
+                        .state
+                        .authority
+                        .interaction_group(*group)
+                        .map(|group| group.windows.iter().copied().collect::<Vec<_>>())
+                        .unwrap_or_default();
+                    self.refresh_foreign_toplevel_visibility(&windows);
+                }
+                RealmMutationResult::OutputConfigured { realm, output, .. } => {
+                    unsafe {
+                        update_realm_output_global(self.state.as_mut(), *realm, *output);
+                    }
+                    let _ = self.layout_virtual_realm(*realm);
+                }
+                RealmMutationResult::StateChanged { realm, state, .. } => {
+                    let seats = self
+                        .realm_seat_ids(*realm)
+                        .expect("committed state mutation references a known realm");
+                    match state {
+                        ass_core::realm::RealmState::Active => {
+                            for seat in &seats {
+                                if let Some(keyboard) = prepared_keyboards.remove(seat) {
+                                    self.state
+                                        .seat_runtime_mut(*seat)
+                                        .expect("authority seat must have runtime")
+                                        .keyboard = Some(keyboard);
+                                }
+                            }
+                            self.state.queue_full_realm_damage(*realm);
+                        }
+                        ass_core::realm::RealmState::Paused => {
+                            for seat in &seats {
+                                self.quiesce_seat(*seat);
+                            }
+                        }
+                        ass_core::realm::RealmState::Revoked => {
+                            unreachable!("revocation is not a transactional state")
+                        }
+                    }
+                    for seat in seats {
+                        self.publish_seat_capabilities(seat);
+                    }
+                }
+            }
+            debug_assert!(matches!(
+                (mutation, result),
+                (
+                    RealmMutation::TransferWindow { .. },
+                    RealmMutationResult::Transferred { .. }
+                ) | (
+                    RealmMutation::SetObserver { .. },
+                    RealmMutationResult::ObserverChanged { .. },
+                ) | (
+                    RealmMutation::ConfigureOutput { .. },
+                    RealmMutationResult::OutputConfigured { .. },
+                ) | (
+                    RealmMutation::SetState { .. },
+                    RealmMutationResult::StateChanged { .. }
+                )
+            ));
+        }
+        for (group, (windows, before)) in output_membership_before {
+            let after = self.interaction_group_output_realms(group);
+            unsafe {
+                update_windows_output_membership(self.state.as_ref(), &windows, &before, &after);
+            }
+        }
+        debug_assert!(self.state.authority.validate().is_ok());
+        Ok(receipt)
+    }
+
+    fn refresh_foreign_toplevel_visibility(&mut self, windows: &[ass_core::window::WindowId]) {
+        for window in windows {
+            let surface = self.find_surface_by_window_id(*window);
+            if !surface.is_null() {
+                unsafe {
+                    extensions::foreign_toplevel_authority_changed(surface, self.state.as_mut())
+                };
+            }
+        }
+    }
+
+    fn realm_seat_ids(&self, realm: RealmId) -> Result<Vec<SeatId>, RealmError> {
+        if self.state.authority.realm(realm).is_none() {
+            return Err(RealmError::UnknownRealm(realm));
+        }
+        Ok(self
+            .state
+            .authority
+            .snapshot()
+            .seats
+            .into_iter()
+            .filter(|seat| seat.realm == realm)
+            .map(|seat| seat.id)
+            .collect())
+    }
+
+    fn clear_transferred_focus(
+        &mut self,
+        source_realm: RealmId,
+        windows: &[ass_core::window::WindowId],
+    ) {
+        let seats = self.realm_seat_ids(source_realm).unwrap_or_default();
+        for seat in seats {
+            let pointer = self
+                .state
+                .seat_runtime(seat)
+                .map(|runtime| runtime.pointer_focus)
+                .unwrap_or(std::ptr::null_mut());
+            let keyboard = self
+                .state
+                .seat_runtime(seat)
+                .map(|runtime| runtime.keyboard_focus)
+                .unwrap_or(std::ptr::null_mut());
+            let pointer_moved = self.resource_belongs_to_windows(pointer, windows);
+            let keyboard_moved = self.resource_belongs_to_windows(keyboard, windows);
+            if !pointer_moved && !keyboard_moved {
+                continue;
+            }
+            let Some(_guard) = ActiveSeatGuard::enter(self.state.as_mut(), seat) else {
+                continue;
+            };
+            if pointer_moved {
+                self.change_pointer_focus(std::ptr::null_mut());
+            }
+            if keyboard_moved {
+                self.change_keyboard_focus(std::ptr::null_mut());
+            }
+            if self
+                .state
+                .interactive
+                .is_some_and(|grab| windows.contains(&grab.window_id()))
+            {
+                self.finish_interactive();
+            }
+            if self.state.drag.is_some() {
+                unsafe { cancel_drag(self.state.as_mut(), true) };
+            }
+            self.state.implicit_grab_active = false;
+        }
+    }
+
+    fn resource_belongs_to_windows(
+        &self,
+        resource: *mut ffi::wl_resource,
+        windows: &[ass_core::window::WindowId],
+    ) -> bool {
+        if resource.is_null() {
+            return false;
+        }
+        let rec = unsafe { ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec };
+        let root = unsafe { surface_root_toplevel(rec) };
+        !root.is_null() && windows.contains(unsafe { &(*root).window.id })
+    }
+
+    fn layout_virtual_realm(&mut self, realm: RealmId) -> Result<(), RealmRuntimeError> {
+        let Some(output) = self.realm_output(realm) else {
+            if self.state.authority.realm(realm).is_some() {
+                return Ok(());
+            }
+            return Err(RealmError::UnknownRealm(realm).into());
+        };
+        let mut windows = self
+            .state
+            .authority
+            .snapshot()
+            .interaction_groups
+            .into_iter()
+            .filter(|group| group.control_realm == realm || group.observer_realms.contains(&realm))
+            .flat_map(|group| group.windows)
+            .collect::<Vec<_>>();
+        windows.sort_unstable();
+        windows.dedup();
+        self.state
+            .realm_placements
+            .retain(|(placement_realm, window), _| {
+                *placement_realm != realm || windows.contains(window)
+            });
+        let area = ass_core::Rect::new(0, 0, output.width as i32, output.height as i32);
+        let slots = ass_core::overview::grid(area, windows.len());
+        for (window, slot) in windows.into_iter().zip(slots) {
+            let rec = self.find_surface_by_window_id(window);
+            let size = if rec.is_null() {
+                slot.size
+            } else {
+                unsafe {
+                    if (*rec).window.size.w > 0 && (*rec).window.size.h > 0 {
+                        (*rec).window.size
+                    } else {
+                        surface_logical_size(&*rec)
+                    }
+                }
+            };
+            self.state
+                .realm_placements
+                .insert((realm, window), ass_core::overview::fit(slot, size));
+        }
+        // Placements may have shifted for every window, so a full-output
+        // invalidation is the only conservative damage until the new layout is
+        // presented. Surface commits use window-local damage thereafter.
+        self.state.queue_full_realm_damage(realm);
+        Ok(())
+    }
+
+    fn publish_seat_capabilities(&mut self, seat: SeatId) {
+        let capabilities = seat_wire_capabilities(&self.state, seat);
+        let resources = self
+            .state
+            .seat_runtime(seat)
+            .map(|runtime| runtime.seat_resources.clone())
+            .unwrap_or_default();
+        for resource in resources.into_iter().filter(|resource| !resource.is_null()) {
+            unsafe {
+                ffi::wl_resource_post_event(resource, ffi::WL_SEAT_CAPABILITIES, capabilities)
+            };
+        }
+    }
+
+    fn quiesce_seat(&mut self, seat: SeatId) {
+        let Some(_guard) = ActiveSeatGuard::enter_existing(self.state.as_mut(), seat) else {
+            return;
+        };
+        self.change_pointer_focus(std::ptr::null_mut());
+        self.change_keyboard_focus(std::ptr::null_mut());
+        let Some(runtime) = self.state.seat_runtime_mut(seat) else {
+            return;
+        };
+        unsafe {
+            for touch in runtime
+                .touch_resources
+                .iter()
+                .copied()
+                .filter(|resource| !resource.is_null())
+            {
+                ffi::wl_resource_post_event(touch, ffi::WL_TOUCH_CANCEL);
+            }
+        }
+        runtime.pointer_focus = std::ptr::null_mut();
+        runtime.keyboard_focus = std::ptr::null_mut();
+        runtime.saved_keyboard_focus = std::ptr::null_mut();
+        runtime.tablet_focus = std::ptr::null_mut();
+        runtime.implicit_grab_active = false;
+        runtime.interactive = None;
+        runtime.compositor_pointer_grab = false;
+        runtime.drag = None;
+        runtime.swipe_gesture_client = std::ptr::null_mut();
+        runtime.pinch_gesture_client = std::ptr::null_mut();
+        runtime.hold_gesture_client = std::ptr::null_mut();
+        runtime.depressed_mods = ass_core::input::Mods::NONE;
+        runtime.keyboard = None;
+        runtime.cursor_surface = std::ptr::null_mut();
+        runtime.cursor_hidden = false;
+        runtime.cursor_shape = 1;
+    }
+
     /// Process pending client events and flush queued events. Non-blocking.
     pub fn dispatch(&mut self) {
+        self.accept_realm_portal_clients();
         unsafe {
             let loop_ = ffi::wl_display_get_event_loop(self.state.display);
             ffi::wl_event_loop_dispatch(loop_, 0);
             ffi::wl_display_flush_clients(self.state.display);
         }
-        if !self.state.pending_activation.is_null() {
-            let surface =
-                std::mem::replace(&mut self.state.pending_activation, std::ptr::null_mut());
-            self.change_keyboard_focus(surface);
+        let pending_layouts = std::mem::take(&mut self.state.pending_realm_layouts);
+        for realm in pending_layouts {
+            if let Err(error) = self.layout_virtual_realm(realm) {
+                log::warn!("could not update Realm {} layout: {error}", realm.0);
+            }
+        }
+        if let Some((seat, surface)) = self.state.pending_activation.take() {
+            if let Some(_guard) = ActiveSeatGuard::enter(self.state.as_mut(), seat) {
+                self.change_keyboard_focus(surface);
+            }
         }
         if self.state.lock_focus_dirty {
             self.state.lock_focus_dirty = false;
@@ -1305,6 +2878,62 @@ impl Server {
             self.state.lock_frame_pending = true;
         }
         unsafe { extensions::update_idle_notifications(self.state.as_mut()) };
+    }
+
+    /// Drain scene damage in virtual-output logical coordinates.
+    ///
+    /// A surface commit invalidates the complete Realm-local placement of its
+    /// root toplevel. This is deliberately conservative: transform, viewport,
+    /// subsurface and layout changes cannot under-report pixels, while agents
+    /// can still avoid polling or recapturing unrelated outputs. Topology
+    /// changes enqueue full-output damage. The queue is bounded to at most 64
+    /// rectangles per Realm, collapsing excess entries to one bounding box.
+    pub fn take_realm_damage(
+        &mut self,
+    ) -> std::collections::BTreeMap<RealmId, Vec<ass_core::Rect>> {
+        let changed_windows = std::mem::take(&mut self.state.damaged_windows);
+        let mut damage = std::mem::take(&mut self.state.pending_realm_damage);
+
+        if self.state.session_locked {
+            return std::collections::BTreeMap::new();
+        }
+
+        for window in changed_windows {
+            for ((realm, placement_window), placement) in &self.state.realm_placements {
+                if *placement_window != window
+                    || !self.state.authority.realm_observes_window(*realm, window)
+                {
+                    continue;
+                }
+                let Some(record) = self.state.authority.realm(*realm) else {
+                    continue;
+                };
+                if record.state != ass_core::realm::RealmState::Active
+                    || !matches!(record.presentation, PresentationTarget::Virtual { .. })
+                {
+                    continue;
+                }
+                damage.entry(*realm).or_default().push(*placement);
+            }
+        }
+
+        damage.retain(|realm, rects| {
+            let Some(record) = self.state.authority.realm(*realm) else {
+                return false;
+            };
+            let PresentationTarget::Virtual { output } = record.presentation else {
+                return false;
+            };
+            if record.state != ass_core::realm::RealmState::Active {
+                return false;
+            }
+            normalize_realm_damage(
+                rects,
+                ass_core::Rect::new(0, 0, output.width as i32, output.height as i32),
+            );
+            !rects.is_empty()
+        });
+        damage
     }
 
     /// Whether normal client content and compositor chrome must be hidden.
@@ -1356,6 +2985,10 @@ impl Server {
                     && !s.content_is_dmabuf
                     && !s.pixels.is_empty()
                     && visible.contains(unsafe { &(*root).window.id })
+                    && self
+                        .state
+                        .authority
+                        .realm_observes_window(HUMAN_REALM, unsafe { (*root).window.id })
             })
             .map(|s| {
                 // ADR-0029: while a transition is in flight the frame renders
@@ -1421,6 +3054,10 @@ impl Server {
                     && s.content_is_dmabuf
                     && s.dmabuf.is_some()
                     && visible.contains(unsafe { &(*root).window.id })
+                    && self
+                        .state
+                        .authority
+                        .realm_observes_window(HUMAN_REALM, unsafe { (*root).window.id })
             })
             .filter_map(|s| {
                 let db = s.dmabuf.as_ref()?;
@@ -1464,6 +3101,128 @@ impl Server {
                 })
             })
             .collect()
+    }
+
+    /// Directed offscreen scene for one realm. Unlike the physical desktop,
+    /// virtual realms are independent of the user's currently visible
+    /// workspace and use realm-local placements on their virtual output.
+    pub fn realm_toplevel_frames(&self, realm: RealmId) -> Vec<SurfacePixels<'_>> {
+        if self.state.session_locked || self.realm_output(realm).is_none() {
+            return Vec::new();
+        }
+        self.state
+            .live_surfaces()
+            .map(|pointer| unsafe { &*pointer })
+            .filter_map(|surface| {
+                let root = unsafe {
+                    surface_root_toplevel(surface as *const SurfaceRec as *mut SurfaceRec)
+                };
+                if !surface.mapped
+                    || (surface.xdg_toplevel.is_null() && surface.xdg_popup.is_null())
+                    || root.is_null()
+                    || unsafe { (*root).window.minimized }
+                    || surface.content_is_dmabuf
+                    || surface.pixels.is_empty()
+                    || !self
+                        .state
+                        .authority
+                        .realm_observes_window(realm, unsafe { (*root).window.id })
+                {
+                    return None;
+                }
+                Some(SurfacePixels {
+                    id: surface.resource as usize,
+                    window: Some(unsafe { (*root).window.id }),
+                    width: surface.width,
+                    height: surface.height,
+                    generation: surface.generation,
+                    pixels: &surface.pixels,
+                    geometry: self.realm_surface_geometry(surface, root, realm)?,
+                    damage: &surface.committed_damage,
+                })
+            })
+            .collect()
+    }
+
+    pub fn realm_toplevel_dmabuf_frames(&self, realm: RealmId) -> Vec<SurfaceDmabuf> {
+        if self.state.session_locked || self.realm_output(realm).is_none() {
+            return Vec::new();
+        }
+        self.state
+            .live_surfaces()
+            .map(|pointer| unsafe { &*pointer })
+            .filter_map(|surface| {
+                let root = unsafe {
+                    surface_root_toplevel(surface as *const SurfaceRec as *mut SurfaceRec)
+                };
+                if !surface.mapped
+                    || (surface.xdg_toplevel.is_null() && surface.xdg_popup.is_null())
+                    || root.is_null()
+                    || unsafe { (*root).window.minimized }
+                    || !surface.content_is_dmabuf
+                    || !self
+                        .state
+                        .authority
+                        .realm_observes_window(realm, unsafe { (*root).window.id })
+                {
+                    return None;
+                }
+                let dmabuf = surface.dmabuf.as_ref()?;
+                Some(SurfaceDmabuf {
+                    id: surface.resource as usize,
+                    window: Some(unsafe { (*root).window.id }),
+                    width: surface.width,
+                    height: surface.height,
+                    generation: surface.generation,
+                    fd: dmabuf.fd,
+                    drm_format: dmabuf.drm_format,
+                    modifier: dmabuf.modifier,
+                    offset: dmabuf.offset,
+                    stride: dmabuf.stride,
+                    acquire_fence: dmabuf.acquire_fence,
+                    geometry: self.realm_surface_geometry(surface, root, realm)?,
+                })
+            })
+            .collect()
+    }
+
+    fn realm_surface_geometry(
+        &self,
+        surface: &SurfaceRec,
+        root: *mut SurfaceRec,
+        realm: RealmId,
+    ) -> Option<ass_core::SurfaceGeometry> {
+        let root = unsafe { &*root };
+        let placement = self.state.realm_placements.get(&(realm, root.window.id))?;
+        let root_size = if root.window.size.w > 0 && root.window.size.h > 0 {
+            root.window.size
+        } else {
+            surface_logical_size(root)
+        };
+        if root_size.w <= 0 || root_size.h <= 0 {
+            return None;
+        }
+        let scale = (placement.size.w as f32 / root_size.w as f32)
+            .min(placement.size.h as f32 / root_size.h as f32);
+        let source_origin = surface_draw_origin(surface);
+        let relative_x = source_origin.x - root.position.x;
+        let relative_y = source_origin.y - root.position.y;
+        let logical_size = surface_logical_size(surface);
+        Some(ass_core::SurfaceGeometry {
+            position: ass_core::Point {
+                x: placement.origin.x + (relative_x as f32 * scale).round() as i32,
+                y: placement.origin.y + (relative_y as f32 * scale).round() as i32,
+            },
+            transform: surface.buffer_transform,
+            buffer_scale: surface.buffer_scale,
+            viewport_src: surface.viewport_src,
+            viewport_dst: surface.viewport_dst,
+            transition_size: Some(ass_core::Size {
+                w: (logical_size.w as f32 * scale).round().max(1.0) as i32,
+                h: (logical_size.h as f32 * scale).round().max(1.0) as i32,
+            }),
+            ..Default::default()
+        })
     }
 
     /// Mapped session-lock surfaces backed by shm. The compositor renders
@@ -1728,6 +3487,215 @@ impl Server {
         self.collect_subsurfaces_dmabuf(true)
     }
 
+    pub fn realm_subsurface_frames_below(&self, realm: RealmId) -> Vec<SurfacePixels<'_>> {
+        self.collect_realm_subsurfaces_shm(realm, false)
+    }
+
+    pub fn realm_subsurface_frames_above(&self, realm: RealmId) -> Vec<SurfacePixels<'_>> {
+        self.collect_realm_subsurfaces_shm(realm, true)
+    }
+
+    pub fn realm_subsurface_dmabuf_frames_below(&self, realm: RealmId) -> Vec<SurfaceDmabuf> {
+        self.collect_realm_subsurfaces_dmabuf(realm, false)
+    }
+
+    pub fn realm_subsurface_dmabuf_frames_above(&self, realm: RealmId) -> Vec<SurfaceDmabuf> {
+        self.collect_realm_subsurfaces_dmabuf(realm, true)
+    }
+
+    fn collect_realm_subsurfaces_shm(
+        &self,
+        realm: RealmId,
+        want_above: bool,
+    ) -> Vec<SurfacePixels<'_>> {
+        if self.state.session_locked || self.realm_output(realm).is_none() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for root in self.state.live_surfaces() {
+            let parent = unsafe { &*root };
+            if !parent.mapped
+                || parent.xdg_toplevel.is_null()
+                || parent.window.minimized
+                || !self
+                    .state
+                    .authority
+                    .realm_observes_window(realm, parent.window.id)
+            {
+                continue;
+            }
+            for &child_ptr in &parent.children {
+                if child_ptr.is_null() {
+                    continue;
+                }
+                let child = unsafe { &*child_ptr };
+                if child.subsurface_above_parent == want_above {
+                    self.collect_realm_subtree_shm(
+                        child,
+                        root,
+                        realm,
+                        parent.window.id,
+                        &mut out,
+                        0,
+                    );
+                }
+            }
+        }
+        out
+    }
+
+    fn collect_realm_subtree_shm<'a>(
+        &'a self,
+        surface: &'a SurfaceRec,
+        root: *mut SurfaceRec,
+        realm: RealmId,
+        window: ass_core::window::WindowId,
+        out: &mut Vec<SurfacePixels<'a>>,
+        depth: u32,
+    ) {
+        if !surface.mapped || depth >= 32 {
+            return;
+        }
+        for &child_ptr in &surface.children {
+            if !child_ptr.is_null() && unsafe { !(*child_ptr).subsurface_above_parent } {
+                self.collect_realm_subtree_shm(
+                    unsafe { &*child_ptr },
+                    root,
+                    realm,
+                    window,
+                    out,
+                    depth + 1,
+                );
+            }
+        }
+        if !surface.content_is_dmabuf && !surface.pixels.is_empty() {
+            if let Some(geometry) = self.realm_surface_geometry(surface, root, realm) {
+                out.push(SurfacePixels {
+                    window: Some(window),
+                    id: surface.resource as usize,
+                    width: surface.width,
+                    height: surface.height,
+                    generation: surface.generation,
+                    pixels: &surface.pixels,
+                    geometry,
+                    damage: &surface.committed_damage,
+                });
+            }
+        }
+        for &child_ptr in &surface.children {
+            if !child_ptr.is_null() && unsafe { (*child_ptr).subsurface_above_parent } {
+                self.collect_realm_subtree_shm(
+                    unsafe { &*child_ptr },
+                    root,
+                    realm,
+                    window,
+                    out,
+                    depth + 1,
+                );
+            }
+        }
+    }
+
+    fn collect_realm_subsurfaces_dmabuf(
+        &self,
+        realm: RealmId,
+        want_above: bool,
+    ) -> Vec<SurfaceDmabuf> {
+        if self.state.session_locked || self.realm_output(realm).is_none() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for root in self.state.live_surfaces() {
+            let parent = unsafe { &*root };
+            if !parent.mapped
+                || parent.xdg_toplevel.is_null()
+                || parent.window.minimized
+                || !self
+                    .state
+                    .authority
+                    .realm_observes_window(realm, parent.window.id)
+            {
+                continue;
+            }
+            for &child_ptr in &parent.children {
+                if child_ptr.is_null() {
+                    continue;
+                }
+                let child = unsafe { &*child_ptr };
+                if child.subsurface_above_parent == want_above {
+                    self.collect_realm_subtree_dmabuf(
+                        child,
+                        root,
+                        realm,
+                        parent.window.id,
+                        &mut out,
+                        0,
+                    );
+                }
+            }
+        }
+        out
+    }
+
+    fn collect_realm_subtree_dmabuf(
+        &self,
+        surface: &SurfaceRec,
+        root: *mut SurfaceRec,
+        realm: RealmId,
+        window: ass_core::window::WindowId,
+        out: &mut Vec<SurfaceDmabuf>,
+        depth: u32,
+    ) {
+        if !surface.mapped || depth >= 32 {
+            return;
+        }
+        for &child_ptr in &surface.children {
+            if !child_ptr.is_null() && unsafe { !(*child_ptr).subsurface_above_parent } {
+                self.collect_realm_subtree_dmabuf(
+                    unsafe { &*child_ptr },
+                    root,
+                    realm,
+                    window,
+                    out,
+                    depth + 1,
+                );
+            }
+        }
+        if surface.content_is_dmabuf {
+            if let (Some(dmabuf), Some(geometry)) = (
+                surface.dmabuf.as_ref(),
+                self.realm_surface_geometry(surface, root, realm),
+            ) {
+                out.push(SurfaceDmabuf {
+                    window: Some(window),
+                    id: surface.resource as usize,
+                    width: surface.width,
+                    height: surface.height,
+                    generation: surface.generation,
+                    fd: dmabuf.fd,
+                    drm_format: dmabuf.drm_format,
+                    modifier: dmabuf.modifier,
+                    offset: dmabuf.offset,
+                    stride: dmabuf.stride,
+                    acquire_fence: dmabuf.acquire_fence,
+                    geometry,
+                });
+            }
+        }
+        for &child_ptr in &surface.children {
+            if !child_ptr.is_null() && unsafe { (*child_ptr).subsurface_above_parent } {
+                self.collect_realm_subtree_dmabuf(
+                    unsafe { &*child_ptr },
+                    root,
+                    realm,
+                    window,
+                    out,
+                    depth + 1,
+                );
+            }
+        }
+    }
+
     fn collect_subsurfaces_shm(&self, want_above: bool) -> Vec<SurfacePixels<'_>> {
         let visible = self.visible();
         let mut out = Vec::new();
@@ -1735,7 +3703,12 @@ impl Server {
             let parent = unsafe { &*p };
             if !parent.mapped
                 || parent.xdg_toplevel.is_null()
+                || parent.window.minimized
                 || !visible.contains(&parent.window.id)
+                || !self
+                    .state
+                    .authority
+                    .realm_observes_window(HUMAN_REALM, parent.window.id)
             {
                 continue;
             }
@@ -1833,7 +3806,12 @@ impl Server {
             let parent = unsafe { &*p };
             if !parent.mapped
                 || parent.xdg_toplevel.is_null()
+                || parent.window.minimized
                 || !visible.contains(&parent.window.id)
+                || !self
+                    .state
+                    .authority
+                    .realm_observes_window(HUMAN_REALM, parent.window.id)
             {
                 continue;
             }
@@ -2000,6 +3978,56 @@ impl Server {
         events: &[ass_core::input::InputEvent],
         keymap: &ass_core::keybind::Keymap,
     ) -> Vec<ass_core::keybind::Action> {
+        let _guard = ActiveSeatGuard::enter(self.state.as_mut(), HUMAN_SEAT)
+            .expect("bootstrap human seat must remain enabled");
+        self.forward_input_active(events, Some(keymap))
+    }
+
+    /// Route a synthetic batch through an agent's independent logical seat.
+    /// Compositor-global key bindings and VT switching are deliberately
+    /// disabled on this path; the batch can only become client protocol input.
+    pub fn forward_agent_input(
+        &mut self,
+        seat: SeatId,
+        events: &[ass_core::input::InputEvent],
+    ) -> Result<(), RealmRuntimeError> {
+        let _guard = ActiveSeatGuard::enter(self.state.as_mut(), seat)
+            .ok_or(RealmRuntimeError::SeatUnavailable(seat))?;
+        self.forward_input_active(events, None);
+        Ok(())
+    }
+
+    /// Deliver a previously validated target-local batch through one agent
+    /// seat. The target is re-authorized on the main thread immediately
+    /// before delivery, keyboard focus is scoped to that seat, and pointer
+    /// hit-testing is pinned to the target root for the complete batch.
+    pub fn forward_agent_input_to(
+        &mut self,
+        seat: SeatId,
+        window: ass_core::window::WindowId,
+        events: &[ass_core::input::InputEvent],
+    ) -> Result<(), RealmRuntimeError> {
+        if !self.state.authority.seat_controls_window(seat, window) {
+            return Err(RealmError::UnknownWindow(window).into());
+        }
+        let rec = self.find_surface_by_window_id(window);
+        if rec.is_null() || unsafe { (*rec).xdg_toplevel.is_null() || !(*rec).mapped } {
+            return Err(RealmError::UnknownWindow(window).into());
+        }
+        let _guard = ActiveSeatGuard::enter(self.state.as_mut(), seat)
+            .ok_or(RealmRuntimeError::SeatUnavailable(seat))?;
+        self.state.synthetic_target = Some(window);
+        self.change_keyboard_focus(unsafe { (*rec).resource });
+        self.forward_input_active(events, None);
+        self.state.synthetic_target = None;
+        Ok(())
+    }
+
+    fn forward_input_active(
+        &mut self,
+        events: &[ass_core::input::InputEvent],
+        keymap: Option<&ass_core::keybind::Keymap>,
+    ) -> Vec<ass_core::keybind::Action> {
         let mut actions = Vec::new();
         let time = self.epoch.elapsed().as_millis() as u32;
         for event in events {
@@ -2133,15 +4161,39 @@ impl Server {
         window_id: ass_core::window::WindowId,
         actions: &[ass_core::input::SyntheticInputAction],
     ) -> Option<Vec<ass_core::input::InputEvent>> {
+        self.prepare_synthetic_input_for_seat(HUMAN_SEAT, window_id, actions, true)
+    }
+
+    /// Validate an agent's target-local batch without consulting the physical
+    /// desktop workspace. The window must be controlled by `seat`; observation
+    /// authority alone never permits input.
+    pub fn prepare_agent_synthetic_input(
+        &self,
+        seat: SeatId,
+        window_id: ass_core::window::WindowId,
+        actions: &[ass_core::input::SyntheticInputAction],
+    ) -> Option<Vec<ass_core::input::InputEvent>> {
+        self.prepare_synthetic_input_for_seat(seat, window_id, actions, false)
+    }
+
+    fn prepare_synthetic_input_for_seat(
+        &self,
+        seat: SeatId,
+        window_id: ass_core::window::WindowId,
+        actions: &[ass_core::input::SyntheticInputAction],
+        require_physical_visibility: bool,
+    ) -> Option<Vec<ass_core::input::InputEvent>> {
         use ass_core::input::{ButtonState, InputEvent, SyntheticInputAction};
 
+        let runtime = self.state.seat_runtime(seat)?;
         if self.state.session_locked
             || actions.is_empty()
             || actions.len() > 64
-            || self.state.interactive.is_some()
-            || self.state.drag.is_some()
-            || self.state.implicit_grab_active
-            || self.state.depressed_mods != ass_core::input::Mods::NONE
+            || runtime.interactive.is_some()
+            || runtime.drag.is_some()
+            || runtime.implicit_grab_active
+            || runtime.depressed_mods != ass_core::input::Mods::NONE
+            || !self.state.authority.seat_controls_window(seat, window_id)
         {
             return None;
         }
@@ -2151,7 +4203,7 @@ impl Server {
                 (*rec).xdg_toplevel.is_null()
                     || !(*rec).mapped
                     || (*rec).window.minimized
-                    || !self.visible().contains(&window_id)
+                    || (require_physical_visibility && !self.visible().contains(&window_id))
             }
         {
             return None;
@@ -2173,7 +4225,8 @@ impl Server {
             }
             let x = origin.x.checked_add(local.x)?;
             let y = origin.y.checked_add(local.y)?;
-            let hit = self.hit_test_focus(x as f32, y as f32);
+            let mut hit = std::ptr::null_mut();
+            unsafe { Self::hit_test_tree(&*rec, x as f32, y as f32, &mut hit, 0) };
             if hit.is_null() {
                 return None;
             }
@@ -2263,6 +4316,8 @@ impl Server {
             .filter(|s| !s.xdg_toplevel.is_null() && visible.contains(&s.window.id))
             .map(|s| {
                 let mut w = s.window.clone();
+                w.read_only = !self.state.authority.seat_controls_window(HUMAN_SEAT, w.id);
+                w.state.activated = self.seat_focuses_window(HUMAN_SEAT, w.id);
                 // Publish only in-flight transitions; settled ones are noise
                 // to chrome and IPC consumers (ADR-0029).
                 let target = ass_core::Rect {
@@ -2280,10 +4335,36 @@ impl Server {
             .collect()
     }
 
+    /// Whether compositor-owned physical chrome may mutate this window.
+    /// Presentation-only mirrors deliberately return false even though they
+    /// remain visible and can be transferred through Realm management.
+    pub fn human_controls_window(&self, window: ass_core::window::WindowId) -> bool {
+        self.state
+            .authority
+            .seat_controls_window(HUMAN_SEAT, window)
+    }
+
+    fn seat_focuses_window(&self, seat: SeatId, window: ass_core::window::WindowId) -> bool {
+        let Some(runtime) = self.state.seat_runtime(seat) else {
+            return false;
+        };
+        if runtime.keyboard_focus.is_null() {
+            return false;
+        }
+        let focused =
+            unsafe { ffi::wl_resource_get_user_data(runtime.keyboard_focus) as *mut SurfaceRec };
+        let root = unsafe { surface_root_toplevel(focused) };
+        !root.is_null() && unsafe { (*root).window.id == window }
+    }
+
     /// Ask a toplevel to close by posting `xdg_toplevel.close`. The client
     /// responds by destroying its `xdg_toplevel` (and usually the surface).
-    /// No-op if `surface_id` does not name a live toplevel.
+    /// No-op if `surface_id` does not name a live toplevel or the physical
+    /// human seat has observation-only authority for it.
     pub fn close_toplevel(&mut self, surface_id: ass_core::window::WindowId) {
+        if !self.human_controls_window(surface_id) {
+            return;
+        }
         for p in self.state.live_surfaces() {
             let s = unsafe { &*p };
             if s.window.id == surface_id && !s.xdg_toplevel.is_null() {
@@ -2299,7 +4380,11 @@ impl Server {
     /// Minimize a toplevel from compositor chrome or IPC. This is the
     /// compositor-side counterpart of the client's
     /// `xdg_toplevel.set_minimized` request and shares the same focus cleanup.
+    /// Presentation-only mirrors are immutable from the physical session.
     pub fn minimize_toplevel(&mut self, surface_id: ass_core::window::WindowId) {
+        if !self.human_controls_window(surface_id) {
+            return;
+        }
         let rec = self.find_surface_by_window_id(surface_id);
         if rec.is_null() || unsafe { (*rec).xdg_toplevel.is_null() } {
             return;
@@ -2334,9 +4419,17 @@ impl Server {
     /// overview drag, etc.). Unlike the client-initiated
     /// `xdg_toplevel.move` path, no serial validation is performed — the
     /// compositor is initiating the grab itself. No-op if a grab is already
-    /// active or the surface is not a live toplevel.
+    /// active, the surface is not a live toplevel, or the active seat does not
+    /// control the surface. The latter check is deliberately repeated below
+    /// the main-loop command gateway so future compositor callers cannot turn
+    /// an observation mirror into an input target.
     pub fn start_interactive_move(&mut self, surface_id: ass_core::window::WindowId) {
-        if self.state.interactive.is_some() {
+        if self.state.interactive.is_some()
+            || !self
+                .state
+                .authority
+                .seat_controls_window(self.state.active_seat, surface_id)
+        {
             return;
         }
         let rec = self.find_surface_by_window_id(surface_id);
@@ -2359,7 +4452,12 @@ impl Server {
         surface_id: ass_core::window::WindowId,
         edges: ass_core::window::ResizeEdges,
     ) {
-        if self.state.interactive.is_some() {
+        if self.state.interactive.is_some()
+            || !self
+                .state
+                .authority
+                .seat_controls_window(self.state.active_seat, surface_id)
+        {
             return;
         }
         let rec = self.find_surface_by_window_id(surface_id);
@@ -2398,7 +4496,7 @@ impl Server {
         window_id: ass_core::window::WindowId,
         rect: ass_core::Rect,
     ) -> bool {
-        if rect.size.w <= 0 || rect.size.h <= 0 {
+        if !self.human_controls_window(window_id) || rect.size.w <= 0 || rect.size.h <= 0 {
             return false;
         }
         let rec = self.find_surface_by_window_id(window_id);
@@ -2777,6 +4875,10 @@ impl Server {
                     && s.mapped
                     && !s.window.minimized
                     && visible.contains(&s.window.id)
+                    && self
+                        .state
+                        .authority
+                        .seat_controls_window(self.state.active_seat, s.window.id)
             })
             .map(|s| s.window.id)
             .collect();
@@ -2820,12 +4922,16 @@ impl Server {
 
     /// Move a toplevel to a workspace by id (ADR-0025). If the target is not
     /// the current workspace, the window leaves the visible set. No-op if the
-    /// window or workspace is unknown.
+    /// window or workspace is unknown, or the physical session only observes
+    /// the window.
     pub fn move_to_workspace(
         &mut self,
         window_id: ass_core::window::WindowId,
         workspace: ass_core::workspace::WorkspaceId,
     ) {
+        if !self.human_controls_window(window_id) {
+            return;
+        }
         self.state.workspaces.move_toplevel(window_id, workspace);
         self.drop_focus_if_hidden();
     }
@@ -3241,7 +5347,9 @@ impl Server {
         let (x, y) = unsafe { extensions::constrain_pointer_motion(self.state.as_mut(), x, y) };
         self.state.pointer_x = x;
         self.state.pointer_y = y;
-        unsafe { update_overlay_positions(self.state.as_mut()) };
+        if self.state.active_seat == HUMAN_SEAT {
+            unsafe { update_overlay_positions(self.state.as_mut()) };
+        }
         if self.state.drag.is_some() {
             let focus = self.hit_test_focus(x, y);
             let time = self.epoch.elapsed().as_millis() as u32;
@@ -3349,7 +5457,8 @@ impl Server {
         // anywhere in their content. Super+left moves; Super+right resizes
         // from the nearest edge/corner. Both detach a layout-owned window so
         // tiling policy does not overwrite the interactive geometry.
-        if state.is_pressed()
+        if self.state.active_seat == HUMAN_SEAT
+            && state.is_pressed()
             && (button == BTN_LEFT || button == BTN_RIGHT)
             && self.state.depressed_mods.has(ass_core::input::Mods::SUPER)
             && self.state.interactive.is_none()
@@ -3394,7 +5503,11 @@ impl Server {
                 }
             }
         }
-        if state.is_pressed() && button == BTN_LEFT && self.state.interactive.is_none() {
+        if self.state.active_seat == HUMAN_SEAT
+            && state.is_pressed()
+            && button == BTN_LEFT
+            && self.state.interactive.is_none()
+        {
             if let Some((rec, edges)) =
                 self.resize_target_at(self.state.pointer_x, self.state.pointer_y, BORDER)
             {
@@ -3468,7 +5581,7 @@ impl Server {
         &mut self,
         evdev_code: u32,
         state: ass_core::input::ButtonState,
-        keymap: &ass_core::keybind::Keymap,
+        keymap: Option<&ass_core::keybind::Keymap>,
     ) -> Option<ass_core::keybind::Action> {
         // Always advance xkbcommon state so modifier tracking and global
         // bindings work even with no focused client (e.g. an empty desktop).
@@ -3488,7 +5601,10 @@ impl Server {
         // they are consumed here (never posted to a client).
         const XF86_SWITCH_VT_1: u32 = 0x1008_FE01;
         const XF86_SWITCH_VT_12: u32 = 0x1008_FE0C;
-        if state.is_pressed() && (XF86_SWITCH_VT_1..=XF86_SWITCH_VT_12).contains(&outcome.keysym) {
+        if self.state.active_seat == HUMAN_SEAT
+            && state.is_pressed()
+            && (XF86_SWITCH_VT_1..=XF86_SWITCH_VT_12).contains(&outcome.keysym)
+        {
             self.state.pending_vt_switch = Some((outcome.keysym - XF86_SWITCH_VT_1 + 1) as i32);
             return None;
         }
@@ -3498,7 +5614,9 @@ impl Server {
         let shortcuts_inhibited =
             unsafe { extensions::keyboard_shortcuts_inhibited(self.state.as_mut()) };
         let matched = if state.is_pressed() && !shortcuts_inhibited && !self.state.session_locked {
-            keymap.match_key(ass_core::input::Mods(outcome.depressed), outcome.keysym)
+            keymap.and_then(|keymap| {
+                keymap.match_key(ass_core::input::Mods(outcome.depressed), outcome.keysym)
+            })
         } else {
             None
         };
@@ -3547,6 +5665,8 @@ impl Server {
     /// considered "above" earlier ones.
     fn hit_test_focus(&self, x: f32, y: f32) -> *mut ffi::wl_resource {
         let visible = self.visible();
+        let physical = self.state.active_seat == HUMAN_SEAT;
+        let synthetic_target = self.state.synthetic_target;
         let mut hit: *mut ffi::wl_resource = std::ptr::null_mut();
         for p in self.state.live_surfaces() {
             let s = unsafe { &*p };
@@ -3573,8 +5693,38 @@ impl Server {
                 || (s.xdg_toplevel.is_null() && s.xdg_popup.is_null())
                 || root.is_null()
                 || unsafe { (*root).window.minimized }
-                || !visible.contains(unsafe { &(*root).window.id })
+                || (physical && !visible.contains(unsafe { &(*root).window.id }))
+                || synthetic_target.is_some_and(|target| target != unsafe { (*root).window.id })
             {
+                continue;
+            }
+            let window = unsafe { (*root).window.id };
+            if !self
+                .state
+                .authority
+                .seat_controls_window(self.state.active_seat, window)
+            {
+                // A presentation-only mirror is an input barrier, not a hole
+                // in the scene. If its input region covers the point, clear a
+                // hit from a lower surface but never give the mirror focus.
+                // This prevents a physical click on an agent-controlled
+                // window from accidentally activating whatever is behind it.
+                let observed = self
+                    .state
+                    .authority
+                    .seat(self.state.active_seat)
+                    .is_some_and(|seat| {
+                        self.state
+                            .authority
+                            .realm_observes_window(seat.realm, window)
+                    });
+                if observed {
+                    let mut barrier = std::ptr::null_mut();
+                    Self::hit_test_tree(s, x, y, &mut barrier, 0);
+                    if !barrier.is_null() {
+                        hit = std::ptr::null_mut();
+                    }
+                }
                 continue;
             }
             Self::hit_test_tree(s, x, y, &mut hit, 0);
@@ -3633,6 +5783,10 @@ impl Server {
                 || s.window.state.fullscreen
                 || s.window.layout_role != ass_core::layout::LayoutRole::Floating
                 || !visible.contains(&s.window.id)
+                || !self
+                    .state
+                    .authority
+                    .seat_controls_window(self.state.active_seat, s.window.id)
             {
                 continue;
             }
@@ -3684,7 +5838,12 @@ impl Server {
     /// Transition focus: post leave to the old client's pointer resources and
     /// enter to the new client's, with a fresh serial.
     fn change_pointer_focus(&mut self, mut new_focus: *mut ffi::wl_resource) {
-        if self.state.session_locked && !self.is_lock_resource(new_focus) {
+        let allowed = if self.state.session_locked {
+            self.is_lock_resource(new_focus)
+        } else {
+            !new_focus.is_null() && self.active_seat_controls_resource(new_focus)
+        };
+        if !allowed {
             new_focus = std::ptr::null_mut();
         }
         let serial = unsafe { ffi::wl_display_next_serial(self.state.display) };
@@ -4224,7 +6383,12 @@ impl Server {
     /// Also flips the `activated` toplevel state bit on the old and new
     /// surfaces so clients update their title-bar chrome to match focus.
     fn change_keyboard_focus(&mut self, mut new_focus: *mut ffi::wl_resource) {
-        if self.state.session_locked && !self.is_lock_resource(new_focus) {
+        let allowed = if self.state.session_locked {
+            self.is_lock_resource(new_focus)
+        } else {
+            !new_focus.is_null() && self.active_seat_controls_resource(new_focus)
+        };
+        if !allowed {
             new_focus = std::ptr::null_mut();
         }
         if !new_focus.is_null() {
@@ -4274,10 +6438,13 @@ impl Server {
                     ffi::wl_resource_post_event(k, ffi::WL_KEYBOARD_LEAVE, serial, old);
                 }
             }
-            // Clear activated on the surface losing keyboard focus.
-            self.set_activated_for_surface(old, false);
         }
         self.state.keyboard_focus = new_focus;
+        if !old.is_null() && !self.any_seat_focuses_toplevel(old) {
+            // `activated` is not seat-indexed in xdg-shell. Keep it set while
+            // any logical seat still focuses this toplevel.
+            self.set_activated_for_surface(old, false);
+        }
         if !new_focus.is_null() {
             let new_client = unsafe { ffi::wl_resource_get_client(new_focus) };
             for k in self.iter_focus_keyboards(new_client) {
@@ -4374,6 +6541,36 @@ impl Server {
             .filter(|p| unsafe { ffi::wl_resource_get_client(*p) == client })
             .collect()
     }
+
+    fn active_seat_controls_resource(&self, resource: *mut ffi::wl_resource) -> bool {
+        if resource.is_null() {
+            return false;
+        }
+        let rec = unsafe { ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec };
+        let root = unsafe { surface_root_toplevel(rec) };
+        !root.is_null()
+            && self
+                .state
+                .authority
+                .seat_controls_window(self.state.active_seat, unsafe { (*root).window.id })
+    }
+
+    fn any_seat_focuses_toplevel(&self, resource: *mut ffi::wl_resource) -> bool {
+        let rec = unsafe { ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec };
+        let root = unsafe { surface_root_toplevel(rec) };
+        if root.is_null() {
+            return false;
+        }
+        self.state.seats.values().any(|runtime| {
+            if runtime.keyboard_focus.is_null() {
+                return false;
+            }
+            let focused = unsafe {
+                ffi::wl_resource_get_user_data(runtime.keyboard_focus) as *mut SurfaceRec
+            };
+            unsafe { surface_root_toplevel(focused) == root }
+        })
+    }
 }
 
 impl Drop for Server {
@@ -4402,6 +6599,51 @@ impl Drop for Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn realm_registry_filter_isolates_outputs_and_physical_authority_globals() {
+        let mut state = State::new(std::ptr::null_mut());
+        let bundle = state
+            .authority
+            .create_agent_realm("filter-agent", SeatCapabilities::POINTER_KEYBOARD);
+        let client_id = state
+            .authority
+            .register_client(Some(format!("ass.realm.{}", bundle.realm.0)));
+        let realm_client = 0x10usize as *mut ffi::wl_client;
+        let human_client = 0x20usize as *mut ffi::wl_client;
+        state.clients.insert(realm_client as usize, client_id);
+        state.client_initial_realms.insert(client_id, bundle.realm);
+
+        let physical_global = 0x100usize as *mut ffi::wl_global;
+        let virtual_global = 0x200usize as *mut ffi::wl_global;
+        let session_global = 0x300usize as *mut ffi::wl_global;
+        let info = state.output_infos[0].clone();
+        state.output_globals.push(Box::new(OutputGlobal {
+            state: std::ptr::null_mut(),
+            info: info.clone(),
+            realm: None,
+            global: physical_global,
+            active: true,
+        }));
+        state.output_globals.push(Box::new(OutputGlobal {
+            state: std::ptr::null_mut(),
+            info,
+            realm: Some(bundle.realm),
+            global: virtual_global,
+            active: true,
+        }));
+        state.realm_hidden_globals.insert(session_global as usize);
+        let data = (&mut state as *mut State).cast();
+
+        unsafe {
+            assert!(realm_global_filter(realm_client, virtual_global, data));
+            assert!(!realm_global_filter(realm_client, physical_global, data));
+            assert!(!realm_global_filter(realm_client, session_global, data));
+            assert!(realm_global_filter(human_client, physical_global, data));
+            assert!(realm_global_filter(human_client, virtual_global, data));
+            assert!(realm_global_filter(human_client, session_global, data));
+        }
+    }
 
     #[test]
     fn finger_scroll_updates_do_not_emit_stop_or_discrete_steps() {
@@ -4502,6 +6744,31 @@ mod tests {
         assert_eq!(integer_output_scale(1.25), 2);
         assert_eq!(integer_output_scale(1.5), 2);
         assert_eq!(integer_output_scale(2.0), 2);
+    }
+
+    #[test]
+    fn realm_damage_is_clipped_deduplicated_and_bounded() {
+        let output = ass_core::Rect::new(0, 0, 100, 80);
+        let mut damage = vec![
+            ass_core::Rect::new(-10, -10, 20, 20),
+            ass_core::Rect::new(-10, -10, 20, 20),
+            ass_core::Rect::new(90, 70, 30, 30),
+            ass_core::Rect::new(150, 150, 10, 10),
+        ];
+        normalize_realm_damage(&mut damage, output);
+        assert_eq!(
+            damage,
+            vec![
+                ass_core::Rect::new(0, 0, 10, 10),
+                ass_core::Rect::new(90, 70, 10, 10),
+            ]
+        );
+
+        let mut many = (0..65)
+            .map(|x| ass_core::Rect::new(x, 0, 1, 1))
+            .collect::<Vec<_>>();
+        normalize_realm_damage(&mut many, output);
+        assert_eq!(many, vec![ass_core::Rect::new(0, 0, 65, 1)]);
     }
 
     #[test]
@@ -4727,6 +6994,278 @@ mod tests {
     }
 
     #[test]
+    fn agent_seat_lifecycle_is_fail_closed() {
+        if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+            eprintln!("skipping: XDG_RUNTIME_DIR not set");
+            return;
+        }
+        let mut server = Server::new().expect("Server::new");
+        let bundle = server
+            .create_agent_realm("test-agent", SeatCapabilities::POINTER_KEYBOARD)
+            .expect("create agent realm");
+        let portal = server
+            .prepare_realm_portal(bundle.realm)
+            .expect("prepare Realm portal");
+        let _realm_client =
+            std::os::unix::net::UnixStream::connect(portal.path()).expect("connect Realm portal");
+        std::fs::remove_file(portal.path()).expect("remove ambient portal name");
+        std::fs::remove_dir(portal.path().parent().unwrap()).expect("remove portal directory");
+        server
+            .activate_realm_portal(portal)
+            .expect("activate private Realm portal");
+        server.dispatch();
+        assert_eq!(server.realm_portal_count(), 1);
+        assert!(server.realm_snapshot().clients.iter().any(|client| {
+            client.connected
+                && client.security_context.as_deref()
+                    == Some(format!("ass.realm.{}", bundle.realm.0).as_str())
+        }));
+        assert!(server
+            .realm_snapshot()
+            .seats
+            .iter()
+            .any(|seat| seat.id == bundle.seat && seat.enabled));
+
+        server.pause_realm(bundle.realm).expect("pause");
+        assert!(matches!(
+            server.forward_agent_input(bundle.seat, &[]),
+            Err(RealmRuntimeError::SeatUnavailable(id)) if id == bundle.seat
+        ));
+
+        server.resume_realm(bundle.realm).expect("resume");
+        server
+            .forward_agent_input(bundle.seat, &[])
+            .expect("resumed input route");
+
+        server
+            .revoke_realm(bundle.realm, HUMAN_REALM)
+            .expect("revoke");
+        assert_eq!(server.realm_portal_count(), 0);
+        assert!(server.realm_snapshot().clients.iter().all(|client| {
+            client.security_context.as_deref()
+                != Some(format!("ass.realm.{}", bundle.realm.0).as_str())
+                || !client.connected
+        }));
+        assert!(matches!(
+            server.prepare_realm_portal(bundle.realm),
+            Err(RealmRuntimeError::Model(RealmError::RealmNotActive(id))) if id == bundle.realm
+        ));
+        assert!(matches!(
+            server.forward_agent_input(bundle.seat, &[]),
+            Err(RealmRuntimeError::SeatUnavailable(id)) if id == bundle.seat
+        ));
+    }
+
+    #[test]
+    fn realm_window_registration_schedules_layout_and_damage_observation() {
+        if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+            eprintln!("skipping: XDG_RUNTIME_DIR not set");
+            return;
+        }
+        let mut server = Server::new().expect("Server::new");
+        let bundle = server
+            .create_agent_realm("damage-agent", SeatCapabilities::POINTER_KEYBOARD)
+            .expect("create agent realm");
+        // Model the trusted identity assignment performed for a private
+        // compositor-mediated launch portal.
+        let client = server
+            .state
+            .authority
+            .register_client(Some(format!("ass.realm.{}", bundle.realm.0)));
+        server
+            .state
+            .client_initial_realms
+            .insert(client, bundle.realm);
+        let window = ass_core::window::WindowId(4242);
+        server
+            .state
+            .register_window(client, window)
+            .expect("register Realm window");
+        assert!(server.state.pending_realm_layouts.contains(&bundle.realm));
+
+        server.dispatch();
+        assert!(server
+            .state
+            .realm_placements
+            .contains_key(&(bundle.realm, window)));
+        // Discard the full-layout notification, then prove a later surface
+        // commit is mapped to only the registered window's placement.
+        let _ = server.take_realm_damage();
+        server.state.damaged_windows.insert(window);
+        let damage = server.take_realm_damage();
+        assert_eq!(
+            damage.get(&bundle.realm).and_then(|rects| rects.first()),
+            server.state.realm_placements.get(&(bundle.realm, window))
+        );
+    }
+
+    #[test]
+    fn single_seat_client_route_follows_atomic_group_authority() {
+        let mut state = State::new(std::ptr::null_mut());
+        let agent = state
+            .authority
+            .create_agent_realm("agent", SeatCapabilities::POINTER_KEYBOARD);
+        state.seats.insert(
+            agent.seat,
+            Box::new(SeatRuntime::new(
+                agent.seat,
+                agent.realm,
+                agent.principal,
+                SeatCapabilities::POINTER_KEYBOARD,
+            )),
+        );
+        let client = state.authority.register_client(None);
+        let raw_client = std::ptr::dangling_mut::<ffi::wl_client>();
+        state.clients.insert(raw_client as usize, client);
+        let group = state
+            .authority
+            .create_interaction_group(client, &[ass_core::window::WindowId(1)], HUMAN_REALM)
+            .unwrap();
+
+        unsafe { state.note_client_used_seat(raw_client, HUMAN_SEAT) };
+        assert_eq!(state.client_routed_seat(raw_client, HUMAN_SEAT), HUMAN_SEAT);
+        state
+            .authority
+            .transfer_control(group, agent.realm, TransferOptions::default())
+            .unwrap();
+        assert_eq!(
+            state.client_routed_seat(raw_client, HUMAN_SEAT),
+            agent.seat,
+            "one client-facing seat is a compatibility gateway"
+        );
+
+        unsafe { state.note_client_used_seat(raw_client, agent.seat) };
+        assert_eq!(
+            state.client_routed_seat(raw_client, HUMAN_SEAT),
+            HUMAN_SEAT,
+            "requesting child resources on two advertised seats proves native multi-seat support"
+        );
+    }
+
+    #[test]
+    fn observers_are_surface_output_members_without_receiving_control() {
+        let mut state = State::new(std::ptr::null_mut());
+        let agent = state
+            .authority
+            .create_agent_realm("agent", SeatCapabilities::POINTER_KEYBOARD);
+        let window = ass_core::window::WindowId(7);
+        let client = state.authority.register_client(None);
+        let group = state
+            .authority
+            .create_interaction_group(client, &[window], HUMAN_REALM)
+            .unwrap();
+
+        state
+            .authority
+            .set_observer(group, agent.realm, true)
+            .unwrap();
+        assert_eq!(
+            output_realms_for_window(&state, window),
+            [HUMAN_REALM, agent.realm].into_iter().collect()
+        );
+
+        state
+            .authority
+            .transfer_control(
+                group,
+                agent.realm,
+                TransferOptions {
+                    retain_source_as_observer: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            output_realms_for_window(&state, window),
+            [HUMAN_REALM, agent.realm].into_iter().collect(),
+            "retaining the source as an observer preserves its output membership"
+        );
+        assert_eq!(
+            state
+                .authority
+                .interaction_group(group)
+                .unwrap()
+                .control_realm,
+            agent.realm
+        );
+    }
+
+    #[test]
+    fn physical_observer_mirror_blocks_click_through_without_taking_focus() {
+        let mut state = State::new(std::ptr::null_mut());
+        let agent = state
+            .authority
+            .create_agent_realm("agent", SeatCapabilities::POINTER_KEYBOARD);
+        let bottom_window = ass_core::window::WindowId(1);
+        let mirror_window = ass_core::window::WindowId(2);
+        let bottom_client = state.authority.register_client(None);
+        let mirror_client = state.authority.register_client(None);
+        state
+            .authority
+            .create_interaction_group(bottom_client, &[bottom_window], HUMAN_REALM)
+            .unwrap();
+        let mirror_group = state
+            .authority
+            .create_interaction_group(mirror_client, &[mirror_window], HUMAN_REALM)
+            .unwrap();
+        state
+            .authority
+            .transfer_control(
+                mirror_group,
+                agent.realm,
+                TransferOptions {
+                    retain_source_as_observer: true,
+                },
+            )
+            .unwrap();
+
+        let workspace = state
+            .workspaces
+            .current_workspace(state.output)
+            .expect("bootstrap workspace");
+        state.workspaces.place_toplevel(workspace, bottom_window);
+        state.workspaces.place_toplevel(workspace, mirror_window);
+
+        let make_surface =
+            |window: ass_core::window::WindowId, resource: usize| -> Box<SurfaceRec> {
+                let mut surface = Box::new(SurfaceRec::new(resource as *mut ffi::wl_resource));
+                surface.mapped = true;
+                surface.xdg_toplevel = resource as *mut ffi::wl_resource;
+                surface.width = 100;
+                surface.height = 100;
+                surface.window.id = window;
+                surface.window.size = ass_core::Size { w: 100, h: 100 };
+                surface
+            };
+        let mut bottom = make_surface(bottom_window, 0x100);
+        let mut mirror = make_surface(mirror_window, 0x200);
+        state.surfaces = vec![bottom.as_mut(), mirror.as_mut()];
+
+        // Avoid Server::drop: these are synthetic resource pointers and
+        // there is no wl_display to destroy in this pure hit-test fixture.
+        let mut server = std::mem::ManuallyDrop::new(Server {
+            state: Box::new(state),
+            socket: String::new(),
+            realm_portals: Vec::new(),
+            epoch: std::time::Instant::now(),
+        });
+        assert!(
+            server.hit_test_focus(10.0, 10.0).is_null(),
+            "the visible mirror consumes the visual hit but receives no focus"
+        );
+
+        server
+            .state
+            .authority
+            .set_observer(mirror_group, HUMAN_REALM, false)
+            .unwrap();
+        assert_eq!(
+            server.hit_test_focus(10.0, 10.0),
+            bottom.resource,
+            "a non-presented Realm window must not block the physical scene"
+        );
+    }
+
+    #[test]
     fn backend_outputs_reconcile_workspace_connectors_and_geometry() {
         if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
             eprintln!("skipping: XDG_RUNTIME_DIR not set");
@@ -4857,6 +7396,27 @@ pub enum ServerError {
     Socket,
     #[error("wl_display_init_shm failed")]
     Shm,
+    #[error("wl_global_create failed for the bootstrap seat")]
+    SeatGlobal,
+}
+
+/// Errors changing live realm/seat topology after server startup.
+#[derive(Debug, thiserror::Error)]
+pub enum RealmRuntimeError {
+    #[error(transparent)]
+    Model(#[from] RealmError),
+    #[error("failed to initialize independent XKB state: {0}")]
+    Keyboard(String),
+    #[error("wl_global_create failed for the agent seat")]
+    SeatGlobal,
+    #[error("wl_global_create failed for the Realm virtual output")]
+    OutputGlobal,
+    #[error("seat {} is unknown, paused, or revoked", .0.0)]
+    SeatUnavailable(SeatId),
+    #[error("realm {} has no logical seat", .0.0)]
+    RealmHasNoSeat(RealmId),
+    #[error("failed to create Realm launch portal: {0}")]
+    Portal(String),
 }
 
 // ----- wl_compositor ------------------------------------------------------
@@ -4872,6 +7432,11 @@ unsafe extern "C" fn compositor_bind(
     version: u32,
     id: u32,
 ) {
+    let state = data as *mut State;
+    if state.is_null() {
+        return;
+    }
+    (*state).ensure_client(client);
     let res = ffi::wl_resource_create(client, &ffi::wl_compositor_interface, version as c_int, id);
     if res.is_null() {
         return;
@@ -4897,6 +7462,7 @@ unsafe extern "C" fn compositor_create_surface(
     }
     let rec = Box::into_raw(Box::new(SurfaceRec::new(surface)));
     (*rec).state = state;
+    (*rec).client_id = (*state).ensure_client(client);
     (*rec).index = (*state).surfaces.len();
     ffi::wl_resource_set_implementation(
         surface,
@@ -4984,6 +7550,13 @@ unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut
         return;
     }
     (*rec).subsurface_cached_commit = false;
+    let visual_metadata_changed = (*rec).pending_window_geometry.is_some()
+        || (*rec).pending_viewport_src.is_some()
+        || (*rec).pending_viewport_dst.is_some()
+        || (*rec).pending_transform != (*rec).buffer_transform
+        || (*rec).pending_scale != (*rec).buffer_scale
+        || !(*rec).pending_damage.is_empty();
+    let old_window_size = (*rec).window.size;
     if let Some(region) = (*rec).pending_input_region.take() {
         (*rec).input_region = region;
     }
@@ -5021,6 +7594,7 @@ unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut
     let was_mapped = (*rec).mapped;
     let buffer = (*rec).pending_buffer;
     let buffer_set = std::mem::take(&mut (*rec).pending_buffer_set);
+    let scene_changed = buffer_set || visual_metadata_changed;
     if !extensions::explicit_sync_surface_committed(rec, buffer_set, buffer) {
         return;
     }
@@ -5291,6 +7865,29 @@ unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut
             .map(|geometry| geometry.size)
             .unwrap_or_else(|| surface_logical_size(&*rec));
     }
+    if !(*rec).state.is_null() && !(*rec).xdg_toplevel.is_null() {
+        let window = (*rec).window.id;
+        if was_mapped != (*rec).mapped || old_window_size != (*rec).window.size {
+            (*(*rec).state).queue_realm_layouts_for_window(window);
+        }
+    }
+    if (*rec).mapped && !was_mapped && !(*rec).state.is_null() {
+        let root = surface_root_toplevel(rec);
+        if !root.is_null() {
+            let state = &*(*rec).state;
+            for realm in output_realms_for_window(state, (*root).window.id) {
+                post_surface_output_event(state, (*rec).resource, realm, ffi::WL_SURFACE_ENTER);
+            }
+        }
+    } else if !(*rec).mapped && was_mapped && !(*rec).state.is_null() {
+        let root = surface_root_toplevel(rec);
+        if !root.is_null() {
+            let state = &*(*rec).state;
+            for realm in output_realms_for_window(state, (*root).window.id) {
+                post_surface_output_event(state, (*rec).resource, realm, ffi::WL_SURFACE_LEAVE);
+            }
+        }
+    }
     let children = (*rec).children.clone();
     for child in children {
         if child.is_null() || !(*child).subsurface_cached_commit {
@@ -5302,6 +7899,12 @@ unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut
     }
     if !(*rec).state.is_null() && ((*rec).cursor_role || (*rec).drag_icon_role) {
         update_overlay_positions((*rec).state);
+    }
+    if scene_changed && (was_mapped || (*rec).mapped) && !(*rec).state.is_null() {
+        let root = surface_root_toplevel(rec);
+        if !root.is_null() && (*root).window.id.0 != 0 {
+            (*(*rec).state).damaged_windows.insert((*root).window.id);
+        }
     }
     extensions::session_lock_surface_committed(rec);
 }
@@ -5467,36 +8070,58 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
     // for surfaces that never mapped or had no toplevel role. Run before the
     // slot is nulled so the resource address is still readable.
     if !(*rec).state.is_null() {
-        extensions::keyboard_shortcuts_surface_destroyed((*rec).state, resource);
-        if (*(*rec).state).cursor_surface == resource {
-            (*(*rec).state).cursor_surface = std::ptr::null_mut();
-            (*(*rec).state).cursor_hidden = false;
-            (*(*rec).state).cursor_shape = 1;
-        }
-        if let Some(drag) = (*(*rec).state).drag.as_mut() {
-            if drag.icon == resource {
-                drag.icon = std::ptr::null_mut();
+        let state = &mut *(*rec).state;
+        let seats = state.seats.keys().copied().collect::<Vec<_>>();
+        for seat in seats {
+            let Some(_guard) = ActiveSeatGuard::enter_existing(state, seat) else {
+                continue;
+            };
+            extensions::keyboard_shortcuts_surface_destroyed(state, resource);
+            if state.pointer_focus == resource {
+                extensions::pointer_constraint_focus_changed(state, resource, std::ptr::null_mut());
+            }
+            if state.keyboard_focus == resource {
+                extensions::text_input_focus_changed(state, resource, std::ptr::null_mut());
+                extensions::primary_selection_focus_changed(state, resource, std::ptr::null_mut());
+                data_device_focus_changed(state, resource, std::ptr::null_mut());
+                extensions::keyboard_shortcuts_focus_changed(state, std::ptr::null_mut());
             }
         }
-        if (*(*rec).state).pointer_focus == resource {
-            (*(*rec).state).pointer_focus = std::ptr::null_mut();
-        }
-        if (*(*rec).state).keyboard_focus == resource {
-            (*(*rec).state).keyboard_focus = std::ptr::null_mut();
-        }
-        if (*(*rec).state).tablet_focus == resource {
-            (*(*rec).state).tablet_focus = std::ptr::null_mut();
+        for runtime in state.seats.values_mut().map(Box::as_mut) {
+            if runtime.cursor_surface == resource {
+                runtime.cursor_surface = std::ptr::null_mut();
+                runtime.cursor_hidden = false;
+                runtime.cursor_shape = 1;
+            }
+            if let Some(drag) = runtime.drag.as_mut() {
+                if drag.icon == resource {
+                    drag.icon = std::ptr::null_mut();
+                }
+            }
+            if runtime.pointer_focus == resource {
+                runtime.pointer_focus = std::ptr::null_mut();
+            }
+            if runtime.keyboard_focus == resource {
+                runtime.keyboard_focus = std::ptr::null_mut();
+            }
+            if runtime.tablet_focus == resource {
+                runtime.tablet_focus = std::ptr::null_mut();
+            }
         }
         let id = (*rec).window.id;
-        if (*(*rec).state).pending_activation == resource {
-            (*(*rec).state).pending_activation = std::ptr::null_mut();
+        state.unregister_window(id);
+        if state
+            .pending_activation
+            .is_some_and(|(_, pending)| pending == resource)
+        {
+            state.pending_activation = None;
         }
-        (*(*rec).state).workspaces.remove_toplevel(id);
+        state.workspaces.remove_toplevel(id);
         // Notify foreign-toplevel listeners the window is gone.
         if !(*rec).xdg_toplevel.is_null() {
-            extensions::foreign_toplevel_removed(id.0, (*rec).state);
+            extensions::foreign_toplevel_removed(id.0, state);
         }
-        for child in (*(*rec).state).live_surfaces() {
+        for child in state.live_surfaces() {
             if (*child).popup_parent == rec {
                 (*child).popup_parent = std::ptr::null_mut();
             }
@@ -5606,10 +8231,144 @@ static OUTPUT_IMPL: ffi::wl_output_interface_impl = ffi::wl_output_interface_imp
     release: res_destroy,
 };
 
-unsafe fn create_output_global(state: &mut State, info: ass_core::output::OutputInfo) {
+fn realm_output_info(realm: RealmId, output: VirtualOutput) -> ass_core::output::OutputInfo {
+    let physical = |logical: u32| {
+        u64::from(logical)
+            .saturating_mul(u64::from(output.scale_milli))
+            .div_ceil(1000)
+            .min(i32::MAX as u64) as i32
+    };
+    ass_core::output::OutputInfo {
+        connector: format!("realm-{}", realm.0),
+        geometry: ass_core::output::OutputGeometry {
+            mode: ass_core::output::OutputMode {
+                width: physical(output.width),
+                height: physical(output.height),
+                refresh_mhz: output.refresh_mhz,
+            },
+            scale: ass_core::output::Scale(output.scale_milli as f32 / 1000.0),
+            transform: ass_core::Transform::Normal,
+            logical_origin: ass_core::Point::default(),
+        },
+        available_modes: Vec::new(),
+    }
+}
+
+fn output_realms_for_window(
+    state: &State,
+    window: ass_core::window::WindowId,
+) -> std::collections::BTreeSet<RealmId> {
+    state
+        .authority
+        .interaction_group_for_window(window)
+        .map(|group| {
+            std::iter::once(group.control_realm)
+                .chain(group.observer_realms.iter().copied())
+                .collect()
+        })
+        .unwrap_or_else(|| std::iter::once(HUMAN_REALM).collect())
+}
+
+unsafe fn output_global_matches_realm(
+    state: &State,
+    global: *mut OutputGlobal,
+    realm: RealmId,
+) -> bool {
+    if global.is_null() || !(*global).active {
+        return false;
+    }
+    if realm == HUMAN_REALM {
+        (*global).realm.is_none()
+            && state
+                .output_infos
+                .first()
+                .is_some_and(|primary| primary.connector == (*global).info.connector)
+    } else {
+        (*global).realm == Some(realm)
+    }
+}
+
+unsafe fn post_surface_output_event(
+    state: &State,
+    surface: *mut ffi::wl_resource,
+    realm: RealmId,
+    opcode: u32,
+) {
+    if surface.is_null() {
+        return;
+    }
+    let client = ffi::wl_resource_get_client(surface);
+    for output in state.output_resources.iter().copied().filter(|output| {
+        if output.is_null() || ffi::wl_resource_get_client(*output) != client {
+            return false;
+        }
+        let global = ffi::wl_resource_get_user_data(*output) as *mut OutputGlobal;
+        output_global_matches_realm(state, global, realm)
+    }) {
+        ffi::wl_resource_post_event(surface, opcode, output);
+    }
+}
+
+unsafe fn update_windows_output_membership(
+    state: &State,
+    windows: &[ass_core::window::WindowId],
+    before: &std::collections::BTreeSet<RealmId>,
+    after: &std::collections::BTreeSet<RealmId>,
+) {
+    for pointer in state.live_surfaces() {
+        let root = surface_root_toplevel(pointer);
+        if root.is_null() || !windows.contains(&(*root).window.id) || !(*pointer).mapped {
+            continue;
+        }
+        for realm in before.difference(after) {
+            post_surface_output_event(state, (*pointer).resource, *realm, ffi::WL_SURFACE_LEAVE);
+        }
+        for realm in after.difference(before) {
+            post_surface_output_event(state, (*pointer).resource, *realm, ffi::WL_SURFACE_ENTER);
+        }
+    }
+}
+
+unsafe fn create_realm_output_global(
+    state: &mut State,
+    realm: RealmId,
+    output: VirtualOutput,
+) -> bool {
+    create_output_global(state, realm_output_info(realm, output), Some(realm))
+}
+
+unsafe fn update_realm_output_global(state: &mut State, realm: RealmId, output: VirtualOutput) {
+    let info = realm_output_info(realm, output);
+    let mut found = false;
+    for global in &mut state.output_globals {
+        if global.realm == Some(realm) && global.active {
+            global.info = info.clone();
+            found = true;
+        }
+    }
+    if !found {
+        create_realm_output_global(state, realm, output);
+    }
+    for resource in state.output_resources.iter().copied().filter(|resource| {
+        if resource.is_null() {
+            return false;
+        }
+        let global = ffi::wl_resource_get_user_data(*resource) as *mut OutputGlobal;
+        !global.is_null() && (*global).realm == Some(realm)
+    }) {
+        send_output_geometry(resource);
+    }
+}
+
+unsafe fn create_output_global(
+    state: &mut State,
+    info: ass_core::output::OutputInfo,
+    realm: Option<RealmId>,
+) -> bool {
     let mut record = Box::new(OutputGlobal {
         state: state as *mut State,
         info,
+        realm,
         global: std::ptr::null_mut(),
         active: true,
     });
@@ -5625,12 +8384,14 @@ unsafe fn create_output_global(state: &mut State, info: ass_core::output::Output
         log::error!("[server] wl_output global creation failed");
         record.active = false;
     }
+    let created = record.active;
     state.output_globals.push(record);
+    created
 }
 
 unsafe fn reconcile_output_globals(state: &mut State, outputs: &[ass_core::output::OutputInfo]) {
     for global in &mut state.output_globals {
-        if !global.active {
+        if !global.active || global.realm.is_some() {
             continue;
         }
         if let Some(info) = outputs
@@ -5645,12 +8406,11 @@ unsafe fn reconcile_output_globals(state: &mut State, outputs: &[ass_core::outpu
         }
     }
     for output in outputs {
-        let exists = state
-            .output_globals
-            .iter()
-            .any(|global| global.active && global.info.connector == output.connector);
+        let exists = state.output_globals.iter().any(|global| {
+            global.active && global.realm.is_none() && global.info.connector == output.connector
+        });
         if !exists {
-            create_output_global(state, output.clone());
+            create_output_global(state, output.clone(), None);
         }
     }
 }
@@ -5782,6 +8542,24 @@ unsafe extern "C" fn output_bind(
     }
 
     send_output_geometry(res);
+    if !global.is_null() && !(*global).state.is_null() {
+        let state = &*(*global).state;
+        for pointer in state.live_surfaces() {
+            if !(*pointer).mapped || ffi::wl_resource_get_client((*pointer).resource) != client {
+                continue;
+            }
+            let root = surface_root_toplevel(pointer);
+            if root.is_null() {
+                continue;
+            }
+            if output_realms_for_window(state, (*root).window.id)
+                .into_iter()
+                .any(|realm| output_global_matches_realm(state, global, realm))
+            {
+                ffi::wl_resource_post_event((*pointer).resource, ffi::WL_SURFACE_ENTER, res);
+            }
+        }
+    }
 }
 
 // ----- xdg_wm_base --------------------------------------------------------
@@ -6054,6 +8832,18 @@ unsafe extern "C" fn xdg_surface_get_toplevel(
         ass_core::window::WindowId(0)
     };
     (*rec).window = ass_core::window::Window::new(window_id);
+    if !(*rec).state.is_null() {
+        if let Err(error) = (*(*rec).state).register_window((*rec).client_id, window_id) {
+            // A window without an interaction group cannot receive input. Keep
+            // the surface alive for protocol correctness, but fail closed and
+            // make the model failure visible in diagnostics.
+            log::error!(
+                "[realm] failed to register window {} for client {}: {error}",
+                window_id.0,
+                (*rec).client_id.0
+            );
+        }
+    }
     ffi::wl_resource_set_implementation(
         toplevel,
         &XDG_TOPLEVEL_IMPL as *const _ as *const c_void,
@@ -6258,6 +9048,9 @@ unsafe extern "C" fn xdg_toplevel_destroy(
                 c"xdg_toplevel destroyed before its decoration object".as_ptr(),
             );
             return;
+        }
+        if !(*rec).state.is_null() {
+            (*(*rec).state).unregister_window((*rec).window.id);
         }
         (*rec).xdg_toplevel = std::ptr::null_mut();
         (*rec).mapped = false;
@@ -7032,10 +9825,18 @@ unsafe extern "C" fn pointer_set_cursor(
     hotspot_y: i32,
 ) {
     let state = ffi::wl_resource_get_user_data(pointer) as *mut State;
-    if state.is_null()
-        || (*state).pointer_focus.is_null()
-        || ffi::wl_resource_get_client((*state).pointer_focus) != client
-        || serial != (*state).last_pointer_enter_serial
+    if state.is_null() {
+        return;
+    }
+    let Some(seat) = (*state).seat_for_resource(pointer) else {
+        return;
+    };
+    let Some(runtime) = (*state).seat_runtime(seat) else {
+        return;
+    };
+    if runtime.pointer_focus.is_null()
+        || ffi::wl_resource_get_client(runtime.pointer_focus) != client
+        || serial != runtime.last_pointer_enter_serial
     {
         return;
     }
@@ -7059,14 +9860,17 @@ unsafe extern "C" fn pointer_set_cursor(
         }
         (*rec).cursor_role = true;
     }
-    (*state).cursor_surface = surface;
-    (*state).cursor_hotspot = ass_core::Point {
+    let Some(runtime) = (*state).seat_runtime_mut(seat) else {
+        return;
+    };
+    runtime.cursor_surface = surface;
+    runtime.cursor_hotspot = ass_core::Point {
         x: hotspot_x,
         y: hotspot_y,
     };
-    (*state).cursor_shape = 0;
-    (*state).cursor_hidden = true;
-    update_overlay_positions(state);
+    runtime.cursor_shape = 0;
+    runtime.cursor_hidden = true;
+    update_overlay_positions_for_seat(state, seat);
 }
 
 unsafe extern "C" fn seat_bind(
@@ -7075,35 +9879,97 @@ unsafe extern "C" fn seat_bind(
     version: u32,
     id: u32,
 ) {
+    let record = data as *mut SeatGlobal;
+    if record.is_null() || !(*record).active || (*record).state.is_null() {
+        return;
+    }
+    let state = (*record).state;
+    let seat_id = (*record).seat;
     let res = ffi::wl_resource_create(client, &ffi::wl_seat_interface, version as c_int, id);
     if res.is_null() {
         return;
     }
-    ffi::wl_resource_set_implementation(res, &SEAT_IMPL as *const _ as *const c_void, data, None);
-    let state = data as *mut State;
-    // Pointer is available through the nested backend; keyboard only when the
-    // xkbcommon keymap compiled successfully. Do not advertise touch until a
-    // backend actually supplies touch events.
-    let mut caps = ffi::WL_SEAT_CAPABILITY_POINTER;
-    if !state.is_null() && (*state).keyboard.is_some() {
-        caps |= ffi::WL_SEAT_CAPABILITY_KEYBOARD;
+    ffi::wl_resource_set_implementation(
+        res,
+        &SEAT_IMPL as *const _ as *const c_void,
+        state as *mut c_void,
+        Some(seat_resource_destroy),
+    );
+    (*state).track_seat_resource(res, seat_id);
+    if let Some(runtime) = (*state).seat_runtime_mut(seat_id) {
+        runtime.seat_resources.push(res);
     }
+    let caps = seat_wire_capabilities(&*state, seat_id);
     ffi::wl_resource_post_event(res, ffi::WL_SEAT_CAPABILITIES, caps);
     if version >= 2 {
-        let name = CString::new("seat0").unwrap();
+        let name = (*state)
+            .authority
+            .seat(seat_id)
+            .map(|seat| seat.name.as_str())
+            .unwrap_or("revoked");
+        let name = CString::new(name).unwrap_or_else(|_| CString::new("invalid-seat").unwrap());
         ffi::wl_resource_post_event(res, ffi::WL_SEAT_NAME, name.as_ptr());
     }
 }
 
-// Each pointer resource is tracked in `state.pointer_resources` so the main
-// loop can fan out pointer events to the right client. A destroy notify nulls
-// the slot when the client goes away or releases the pointer.
+fn seat_wire_capabilities(state: &State, seat: SeatId) -> u32 {
+    let Some(model) = state.authority.seat(seat) else {
+        return 0;
+    };
+    let Some(runtime) = state.seat_runtime(seat) else {
+        return 0;
+    };
+    if runtime.id != seat
+        || runtime.realm != model.realm
+        || runtime.principal != model.principal
+        || !model.enabled
+    {
+        return 0;
+    }
+    let mut caps = 0;
+    if runtime.capabilities.pointer {
+        caps |= ffi::WL_SEAT_CAPABILITY_POINTER;
+    }
+    if runtime.capabilities.keyboard && runtime.keyboard.is_some() {
+        caps |= ffi::WL_SEAT_CAPABILITY_KEYBOARD;
+    }
+    if runtime.capabilities.touch {
+        caps |= ffi::WL_SEAT_CAPABILITY_TOUCH;
+    }
+    caps
+}
+
+unsafe extern "C" fn seat_resource_destroy(resource: *mut ffi::wl_resource) {
+    let state = ffi::wl_resource_get_user_data(resource) as *mut State;
+    if state.is_null() {
+        return;
+    }
+    let Some(seat) = (*state).untrack_seat_resource(resource) else {
+        return;
+    };
+    if let Some(runtime) = (*state).seat_runtime_mut(seat) {
+        runtime
+            .seat_resources
+            .retain(|candidate| *candidate != resource);
+    }
+}
+
+// Each pointer resource is tracked by its owning SeatRuntime so the main loop
+// can fan events out without crossing realm boundaries.
 unsafe extern "C" fn seat_get_pointer(
     client: *mut ffi::wl_client,
     seat: *mut ffi::wl_resource,
     id: u32,
 ) {
     let state = ffi::wl_resource_get_user_data(seat) as *mut State;
+    if state.is_null() {
+        return;
+    }
+    let Some(advertised_seat) = (*state).seat_for_resource(seat) else {
+        return;
+    };
+    (*state).note_client_used_seat(client, advertised_seat);
+    let seat_id = (*state).client_routed_seat(client, advertised_seat);
     let ver = ffi::wl_resource_get_version(seat).min(9);
     let p = ffi::wl_resource_create(client, &ffi::wl_pointer_interface, ver, id);
     if p.is_null() {
@@ -7117,8 +9983,9 @@ unsafe extern "C" fn seat_get_pointer(
         state as *mut c_void,
         Some(pointer_resource_destroy),
     );
-    if !state.is_null() {
-        (*state).pointer_resources.push(p);
+    (*state).track_routed_seat_resource(p, advertised_seat, seat_id);
+    if let Some(runtime) = (*state).seat_runtime_mut(seat_id) {
+        runtime.pointer_resources.push(p);
     }
 }
 
@@ -7127,8 +9994,14 @@ unsafe extern "C" fn pointer_resource_destroy(resource: *mut ffi::wl_resource) {
     if state.is_null() {
         return;
     }
+    let Some(seat) = (*state).untrack_seat_resource(resource) else {
+        return;
+    };
+    let Some(runtime) = (*state).seat_runtime_mut(seat) else {
+        return;
+    };
     // Null the slot. Iterators skip null entries; the slot is never reused.
-    for slot in (*state).pointer_resources.iter_mut() {
+    for slot in runtime.pointer_resources.iter_mut() {
         if *slot == resource {
             *slot = std::ptr::null_mut();
             break;
@@ -7136,16 +10009,16 @@ unsafe extern "C" fn pointer_resource_destroy(resource: *mut ffi::wl_resource) {
     }
     // If the focused client no longer has any pointer resources, clear focus
     // so the next motion event re-evaluates enter against remaining clients.
-    if !(*state).pointer_focus.is_null() {
-        let focus_client = ffi::wl_resource_get_client((*state).pointer_focus);
-        let orphaned = (*state)
+    if !runtime.pointer_focus.is_null() {
+        let focus_client = ffi::wl_resource_get_client(runtime.pointer_focus);
+        let orphaned = runtime
             .pointer_resources
             .iter()
             .copied()
             .filter(|p| !p.is_null())
             .all(|p| ffi::wl_resource_get_client(p) != focus_client);
         if orphaned {
-            (*state).pointer_focus = std::ptr::null_mut();
+            runtime.pointer_focus = std::ptr::null_mut();
         }
     }
 }
@@ -7156,6 +10029,14 @@ unsafe extern "C" fn seat_get_keyboard(
     id: u32,
 ) {
     let state = ffi::wl_resource_get_user_data(seat) as *mut State;
+    if state.is_null() {
+        return;
+    }
+    let Some(advertised_seat) = (*state).seat_for_resource(seat) else {
+        return;
+    };
+    (*state).note_client_used_seat(client, advertised_seat);
+    let seat_id = (*state).client_routed_seat(client, advertised_seat);
     let ver = ffi::wl_resource_get_version(seat).min(7);
     let k = ffi::wl_resource_create(client, &ffi::wl_keyboard_interface, ver, id);
     if k.is_null() {
@@ -7169,8 +10050,8 @@ unsafe extern "C" fn seat_get_keyboard(
         state as *mut c_void,
         Some(keyboard_resource_destroy),
     );
-    if !state.is_null() {
-        if let Some(kb) = &(*state).keyboard {
+    if let Some(runtime) = (*state).seat_runtime_mut(seat_id) {
+        if let Some(kb) = &runtime.keyboard {
             // Send the keymap event immediately so the client can decode
             // subsequent key/modifier events. libwayland dups the fd
             // internally; the original stays open for the next client.
@@ -7194,8 +10075,9 @@ unsafe extern "C" fn seat_get_keyboard(
                 ffi::wl_resource_post_event(k, ffi::WL_KEYBOARD_REPEAT_INFO, 25u32, 250u32);
             }
         }
-        (*state).keyboard_resources.push(k);
+        runtime.keyboard_resources.push(k);
     }
+    (*state).track_routed_seat_resource(k, advertised_seat, seat_id);
 }
 
 unsafe extern "C" fn keyboard_resource_destroy(resource: *mut ffi::wl_resource) {
@@ -7203,22 +10085,28 @@ unsafe extern "C" fn keyboard_resource_destroy(resource: *mut ffi::wl_resource) 
     if state.is_null() {
         return;
     }
-    for slot in (*state).keyboard_resources.iter_mut() {
+    let Some(seat) = (*state).untrack_seat_resource(resource) else {
+        return;
+    };
+    let Some(runtime) = (*state).seat_runtime_mut(seat) else {
+        return;
+    };
+    for slot in runtime.keyboard_resources.iter_mut() {
         if *slot == resource {
             *slot = std::ptr::null_mut();
             break;
         }
     }
-    if !(*state).keyboard_focus.is_null() {
-        let focus_client = ffi::wl_resource_get_client((*state).keyboard_focus);
-        let orphaned = (*state)
+    if !runtime.keyboard_focus.is_null() {
+        let focus_client = ffi::wl_resource_get_client(runtime.keyboard_focus);
+        let orphaned = runtime
             .keyboard_resources
             .iter()
             .copied()
             .filter(|p| !p.is_null())
             .all(|p| ffi::wl_resource_get_client(p) != focus_client);
         if orphaned {
-            (*state).keyboard_focus = std::ptr::null_mut();
+            runtime.keyboard_focus = std::ptr::null_mut();
         }
     }
 }
@@ -7228,6 +10116,14 @@ unsafe extern "C" fn seat_get_touch(
     id: u32,
 ) {
     let state = ffi::wl_resource_get_user_data(seat) as *mut State;
+    if state.is_null() {
+        return;
+    }
+    let Some(advertised_seat) = (*state).seat_for_resource(seat) else {
+        return;
+    };
+    (*state).note_client_used_seat(client, advertised_seat);
+    let seat_id = (*state).client_routed_seat(client, advertised_seat);
     let ver = ffi::wl_resource_get_version(seat).min(8);
     let t = ffi::wl_resource_create(client, &ffi::wl_touch_interface, ver, id);
     if t.is_null() {
@@ -7239,8 +10135,9 @@ unsafe extern "C" fn seat_get_touch(
         state as *mut c_void,
         Some(touch_resource_destroy),
     );
-    if !state.is_null() {
-        (*state).touch_resources.push(t);
+    (*state).track_routed_seat_resource(t, advertised_seat, seat_id);
+    if let Some(runtime) = (*state).seat_runtime_mut(seat_id) {
+        runtime.touch_resources.push(t);
     }
 }
 
@@ -7249,7 +10146,13 @@ unsafe extern "C" fn touch_resource_destroy(resource: *mut ffi::wl_resource) {
     if state.is_null() {
         return;
     }
-    for slot in (*state).touch_resources.iter_mut() {
+    let Some(seat) = (*state).untrack_seat_resource(resource) else {
+        return;
+    };
+    let Some(runtime) = (*state).seat_runtime_mut(seat) else {
+        return;
+    };
+    for slot in runtime.touch_resources.iter_mut() {
         if *slot == resource {
             *slot = std::ptr::null_mut();
             break;
@@ -7346,6 +10249,7 @@ unsafe extern "C" fn data_source_resource_destroy(resource: *mut ffi::wl_resourc
     }
     let state = (*rec).state;
     if !state.is_null() {
+        let _guard = ActiveSeatGuard::for_resource(state, resource, false);
         if (*state)
             .selection
             .as_ref()
@@ -7374,6 +10278,7 @@ unsafe extern "C" fn data_source_resource_destroy(resource: *mut ffi::wl_resourc
                 (*offer_rec).source = std::ptr::null_mut();
             }
         }
+        (*state).untrack_seat_resource(resource);
     }
     drop(Box::from_raw(rec));
 }
@@ -7431,6 +10336,16 @@ unsafe extern "C" fn ddm_get_data_device(
     seat: *mut ffi::wl_resource,
 ) {
     let state = ffi::wl_resource_get_user_data(seat) as *mut State;
+    if state.is_null() {
+        return;
+    }
+    let Some(advertised_seat) = (*state).seat_for_resource(seat) else {
+        return;
+    };
+    let Some(_guard) = ActiveSeatGuard::for_client_seat_resource(state, client, seat, true) else {
+        return;
+    };
+    let seat_id = (*state).active_seat;
     let ver = ffi::wl_resource_get_version(mgr);
     let dev = ffi::wl_resource_create(client, &ffi::wl_data_device_interface, ver, id);
     if dev.is_null() {
@@ -7442,15 +10357,14 @@ unsafe extern "C" fn ddm_get_data_device(
         state as *mut c_void,
         Some(data_device_resource_destroy),
     );
-    if !state.is_null() {
-        (*state).data_devices.push(dev);
-        // If a selection is already active, advertise it to this new device.
-        if !(*state).keyboard_focus.is_null()
-            && ffi::wl_resource_get_client((*state).keyboard_focus) == client
-        {
-            if let Some(sel) = &(*state).selection {
-                advertise_selection_offer(dev, sel);
-            }
+    (*state).track_routed_seat_resource(dev, advertised_seat, seat_id);
+    (*state).data_devices.push(dev);
+    // If a selection is already active, advertise it to this new device.
+    if !(*state).keyboard_focus.is_null()
+        && ffi::wl_resource_get_client((*state).keyboard_focus) == client
+    {
+        if let Some(sel) = &(*state).selection {
+            advertise_selection_offer(dev, sel);
         }
     }
 }
@@ -7460,6 +10374,9 @@ unsafe extern "C" fn data_device_resource_destroy(resource: *mut ffi::wl_resourc
     if state.is_null() {
         return;
     }
+    let Some(_guard) = ActiveSeatGuard::for_resource(state, resource, false) else {
+        return;
+    };
     for slot in (*state).data_devices.iter_mut() {
         if *slot == resource {
             *slot = std::ptr::null_mut();
@@ -7473,6 +10390,7 @@ unsafe extern "C" fn data_device_resource_destroy(resource: *mut ffi::wl_resourc
             drag.offer = std::ptr::null_mut();
         }
     }
+    (*state).untrack_seat_resource(resource);
 }
 
 unsafe fn notify_selection_cleared(state: *mut State) {
@@ -7501,9 +10419,9 @@ unsafe extern "C" fn ddev_set_selection(
     _serial: u32,
 ) {
     let state = ffi::wl_resource_get_user_data(_r) as *mut State;
-    if state.is_null() {
+    let Some(_guard) = ActiveSeatGuard::for_resource(state, _r, true) else {
         return;
-    }
+    };
     if (*state).keyboard_focus.is_null()
         || ffi::wl_resource_get_client((*state).keyboard_focus) != client
         || (!source.is_null() && ffi::wl_resource_get_client(source) != client)
@@ -7537,6 +10455,7 @@ unsafe extern "C" fn ddev_set_selection(
         source,
         mime_types: mimes,
     };
+    (*state).track_seat_resource(source, (*state).active_seat);
     if let Some(old) = (*state).selection.replace(sel) {
         if old.source != source {
             ffi::wl_resource_post_event(old.source, ffi::WL_DATA_SOURCE_CANCELLED);
@@ -7634,6 +10553,7 @@ unsafe fn create_data_offer(
         Some(data_offer_resource_destroy),
     );
     (*state).data_offers.push(offer);
+    (*state).track_seat_resource(offer, (*state).active_seat);
     ffi::wl_resource_post_event(dev, ffi::WL_DATA_DEVICE_DATA_OFFER, offer);
     for mime in mime_types {
         let c = CString::new(mime.as_str()).unwrap();
@@ -7671,6 +10591,7 @@ unsafe extern "C" fn data_offer_resource_destroy(resource: *mut ffi::wl_resource
         return;
     }
     let state = (*rec).state;
+    let _guard = ActiveSeatGuard::for_resource(state, resource, false);
     let cancel_unfinished = (*rec).is_drag
         && (*rec).dropped
         && !(*rec).finished
@@ -7683,6 +10604,7 @@ unsafe extern "C" fn data_offer_resource_destroy(resource: *mut ffi::wl_resource
                 break;
             }
         }
+        (*state).untrack_seat_resource(resource);
         if let Some(drag) = (*state).drag.as_mut() {
             if drag.offer == resource {
                 drag.offer = std::ptr::null_mut();
@@ -7846,8 +10768,10 @@ unsafe extern "C" fn ddev_start_drag(
     serial: u32,
 ) {
     let state = ffi::wl_resource_get_user_data(data_device) as *mut State;
-    if state.is_null()
-        || !(*state).implicit_grab_active
+    let Some(_guard) = ActiveSeatGuard::for_resource(state, data_device, true) else {
+        return;
+    };
+    if !(*state).implicit_grab_active
         || serial != (*state).last_button_serial
         || origin.is_null()
         || ffi::wl_resource_get_client(origin) != client
@@ -7892,6 +10816,7 @@ unsafe extern "C" fn ddev_start_drag(
             return;
         }
         (*source_rec).used_for_drag = true;
+        (*state).track_seat_resource(source, (*state).active_seat);
     }
     if (*state).drag.is_some() {
         cancel_drag(state, true);

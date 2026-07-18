@@ -14,10 +14,9 @@
 //!
 //! # Status
 //!
-//! Protocol version 2 supports state queries, typed control and session
-//! commands, coarse event subscriptions, detailed mutation-journal streams,
-//! and configuration-defined agent scopes. The capability handshake limits
-//! each connection to its negotiated operations.
+//! Protocol version 3 supports Realm authority, connection-bound capability
+//! leases, optimistic transactions, directed virtual-output capture, state
+//! queries, typed commands, and event/journal subscriptions.
 
 pub mod client;
 pub mod codec;
@@ -25,11 +24,15 @@ pub mod journal;
 pub mod schema;
 pub mod server;
 
-pub mod base64;
+mod blob;
 
-pub use client::Client;
-pub use journal::{Effect, Journal, JournalEntry, JournalSnapshot, Origin, DEFAULT_CAPACITY};
-pub use schema::{
-    Capabilities, Command, Event, OpClass, Request, Response, Scope, PROTOCOL_VERSION,
+pub use client::{CapturedRealm, Client};
+pub use journal::{
+    Effect, Journal, JournalEntry, JournalMutation, JournalSnapshot, Origin, DEFAULT_CAPACITY,
 };
-pub use server::{Handler, Server};
+pub use schema::{
+    Capabilities, Command, Event, LeaseGrant, LeaseRequest, OpClass, RealmAction,
+    RealmActionResult, RealmCapture, Request, Response, Scope, LOCAL_REALM_ADMIN_SCOPE,
+    PROTOCOL_VERSION,
+};
+pub use server::{CaptureOutputPayload, CaptureRealmPayload, Handler, Server};

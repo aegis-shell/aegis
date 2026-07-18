@@ -15,6 +15,12 @@ pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Serialize and write one framed message, then flush.
 pub fn write_msg<W: Write, T: Serialize>(w: &mut W, msg: &T) -> io::Result<()> {
     let bytes = serde_json::to_vec(msg).map_err(json_io_err)?;
+    if bytes.len() > MAX_FRAME {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("frame length {} exceeds {MAX_FRAME}", bytes.len()),
+        ));
+    }
     let len = bytes.len() as u32;
     w.write_all(&len.to_le_bytes())?;
     w.write_all(&bytes)?;
@@ -55,6 +61,7 @@ mod tests {
             version: PROTOCOL_VERSION,
             caps: crate::schema::Capabilities::QUERY,
             scope: None,
+            lease: None,
         };
         let mut buf = Vec::new();
         write_msg(&mut buf, &req).unwrap();
@@ -81,5 +88,14 @@ mod tests {
         let r: io::Result<Request> = read_msg(&mut cur);
         let err = r.unwrap_err();
         assert!(err.to_string().contains("exceeds"), "{}", err);
+    }
+
+    #[test]
+    fn oversize_write_is_rejected_before_emitting_a_header() {
+        let mut output = Vec::new();
+        let value = "x".repeat(MAX_FRAME + 1);
+        let err = write_msg(&mut output, &value).unwrap_err();
+        assert!(err.to_string().contains("exceeds"), "{err}");
+        assert!(output.is_empty());
     }
 }

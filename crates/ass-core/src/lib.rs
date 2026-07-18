@@ -13,6 +13,7 @@ pub mod layout;
 pub mod notify;
 pub mod output;
 pub mod overview;
+pub mod realm;
 pub mod transition;
 pub mod window;
 pub mod window_rule;

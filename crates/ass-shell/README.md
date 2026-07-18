@@ -7,10 +7,12 @@ as typed intents to the compositor loop.
 
 - Own the lens UI context bound to the compositor's flux device.
 - Host pluggable `Chrome` components in a defined render order.
-- Draw decorations, the dock, launcher, workspace bar, and notification toasts.
-- Consume window, workspace, application, notification, and input snapshots.
+- Draw decorations, the dock, launcher, workspace bar, notification toasts,
+  Control Center, Overview, and the Realm transfer shelf.
+- Consume window, workspace, Realm, application, notification, and input
+  snapshots.
 - Report focus, minimize, close, move, launch, workspace, and notification
-  intents.
+  intents plus optimistic Realm lifecycle and authority-transfer intents.
 
 ## Boundaries
 
@@ -28,6 +30,9 @@ fixed-cost multi-resolution filter while the shell renders the responsive app
 grid above it.
 Modal chrome suppresses covered components; the launcher opts in as modal and
 the dock explicitly remains available during that presentation.
+Overview supports click-to-focus and drag-to-transfer. A window dropped on a
+Realm emits one interaction-group transfer intent; the shell never mutates
+Wayland or authority state directly.
 
 ## Use
 
@@ -42,5 +47,5 @@ shell.
 - [Architecture](../../docs/explanation/architecture.md)
 - [Dock and launcher operations](../../docs/how-to/dock-and-launcher.md)
 - [Borderless window operations](../../docs/how-to/window-management.md)
+- [AI Workspace operations](../../docs/how-to/ai-workspaces.md)
 - [Chrome component decision](../../docs/adr/0021-chrome-component-trait.md)
-- [Workspace layout](../../docs/dev/project-layout.md)

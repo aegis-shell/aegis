@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use ass_core::window::{Window, WindowId, WindowState};
 use ass_core::workspace::{OutputSnapshot, WorkspaceEntry, WorkspaceId, WorkspaceSnapshot};
-use ass_ipc::{Command, Handler, Server};
+use ass_ipc::{Command, Handler, RealmAction, RealmActionResult, Server};
 
 static N: AtomicU64 = AtomicU64::new(0);
 
@@ -23,12 +23,14 @@ fn scratch() -> PathBuf {
 /// A handler returning a fixed window/workspace set and recording commands.
 struct CtlHandler {
     commands: Mutex<Vec<Command>>,
+    realm_actions: Mutex<Vec<RealmAction>>,
 }
 
 impl CtlHandler {
     fn new() -> Self {
         CtlHandler {
             commands: Mutex::new(Vec::new()),
+            realm_actions: Mutex::new(Vec::new()),
         }
     }
 }
@@ -41,6 +43,7 @@ impl Handler for CtlHandler {
             control: true,
             input: false,
             session: true,
+            realm: true,
         }
     }
     fn windows(&self) -> Vec<Window> {
@@ -104,7 +107,7 @@ impl Handler for CtlHandler {
             ],
         }]
     }
-    fn command(&self, cmd: Command) {
+    fn command(&self, _conn_id: u64, cmd: Command) {
         self.commands.lock().unwrap().push(cmd);
     }
     fn journal_since(&self, _since: u64) -> ass_ipc::JournalSnapshot {
@@ -113,12 +116,101 @@ impl Handler for CtlHandler {
                 seq: 3,
                 ts_mono_ms: 42,
                 origin: ass_ipc::Origin::Chrome,
-                cmd: Command::Focus { id: WindowId(1) },
+                mutation: ass_ipc::JournalMutation::Command {
+                    cmd: Command::Focus { id: WindowId(1) },
+                },
                 effect: ass_ipc::Effect::Applied,
             }],
             oldest_seq: 1,
             latest_seq: 3,
         }
+    }
+
+    fn resolve_scope(&self, name: &str) -> Option<ass_ipc::Scope> {
+        (name == ass_ipc::LOCAL_REALM_ADMIN_SCOPE).then(|| ass_ipc::Scope {
+            windows: None,
+            workspaces: None,
+            outputs: None,
+            realms: None,
+            ops: Some(vec![
+                ass_ipc::OpClass::CreateRealm,
+                ass_ipc::OpClass::TransactRealm,
+                ass_ipc::OpClass::RevokeRealm,
+                ass_ipc::OpClass::CaptureRealm,
+                ass_ipc::OpClass::LaunchInRealm,
+            ]),
+        })
+    }
+
+    fn realms(&self) -> ass_core::realm::RealmSnapshot {
+        let mut model = ass_core::realm::RealmModel::new();
+        model.create_agent_realm(
+            "Test Agent",
+            ass_core::realm::SeatCapabilities::POINTER_KEYBOARD,
+        );
+        model.snapshot()
+    }
+
+    fn realm_action(
+        &self,
+        _conn_id: u64,
+        action: RealmAction,
+    ) -> Result<RealmActionResult, String> {
+        self.realm_actions.lock().unwrap().push(action.clone());
+        match action {
+            RealmAction::Create { .. } => Ok(RealmActionResult::Created {
+                bundle: ass_core::realm::RealmBundle {
+                    principal: ass_core::realm::PrincipalId(2),
+                    realm: ass_core::realm::RealmId(2),
+                    seat: ass_core::realm::SeatId(2),
+                    revision: 2,
+                },
+            }),
+            RealmAction::Transact {
+                expected_revision,
+                mutations,
+            } => Ok(RealmActionResult::TransactionCommitted {
+                receipt: ass_core::realm::RealmTransactionReceipt {
+                    before_revision: expected_revision.unwrap_or(2),
+                    after_revision: expected_revision.unwrap_or(2) + mutations.len() as u64,
+                    results: Vec::new(),
+                },
+            }),
+            RealmAction::Revoke {
+                realm, fallback, ..
+            } => Ok(RealmActionResult::Revoked {
+                receipt: ass_core::realm::RealmRevocation {
+                    realm,
+                    fallback,
+                    transferred_groups: Vec::new(),
+                    revision: 3,
+                },
+            }),
+        }
+    }
+
+    fn capture_realm(
+        &self,
+        realm: ass_core::realm::RealmId,
+        region: Option<ass_core::Rect>,
+    ) -> Result<ass_ipc::CaptureRealmPayload, String> {
+        Ok(ass_ipc::CaptureRealmPayload {
+            capture: ass_ipc::RealmCapture {
+                realm,
+                width: 2,
+                height: 1,
+                scale_milli: 1000,
+                region: region.unwrap_or_else(|| ass_core::Rect::new(0, 0, 2, 1)),
+                placements: vec![ass_core::realm::RealmWindowPlacement {
+                    window: WindowId(1),
+                    output_rect: ass_core::Rect::new(0, 0, 2, 1),
+                    surface_size: ass_core::Size { w: 2, h: 1 },
+                }],
+                png_bytes: 3,
+                revision: 2,
+            },
+            png: b"png".to_vec(),
+        })
     }
 }
 
@@ -178,6 +270,90 @@ fn journal_command_lists_entries() {
     let out = ass_ctl::run(&path, &["journal".into(), "2".into()]).unwrap();
     assert!(out.contains("#3"), "{out}");
     assert!(out.contains("Focus"), "{out}");
+}
+
+#[test]
+fn realms_command_uses_admin_scope_and_lists_agent_realm() {
+    let path = scratch();
+    let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
+    let out = ass_ctl::run(&path, &["realms".into()]).unwrap();
+    assert!(out.contains("Test Agent"), "{out}");
+    assert!(out.contains("agent-2"), "{out}");
+}
+
+#[test]
+fn realm_create_and_transfer_use_optimistic_actions() {
+    let path = scratch();
+    let handler = Arc::new(CtlHandler::new());
+    let _s = Server::start(&path, Arc::clone(&handler)).unwrap();
+    let created = ass_ctl::run(&path, &["realm-create".into(), "Builder".into()]).unwrap();
+    assert!(created.contains("created Realm 2"), "{created}");
+    let transferred =
+        ass_ctl::run(&path, &["realm-transfer".into(), "1".into(), "2".into()]).unwrap();
+    assert!(transferred.contains("committed"), "{transferred}");
+    let actions = handler.realm_actions.lock().unwrap();
+    assert!(matches!(
+        &actions[0],
+        RealmAction::Create { label, .. } if label == "Builder"
+    ));
+    assert!(matches!(
+        &actions[1],
+        RealmAction::Transact {
+            expected_revision: Some(2),
+            mutations,
+        } if matches!(
+            mutations.as_slice(),
+            [ass_core::realm::RealmMutation::TransferWindow {
+                window: WindowId(1),
+                target: ass_core::realm::RealmId(2),
+                retain_source_as_observer: true,
+            }]
+        )
+    ));
+}
+
+#[test]
+fn realm_capture_is_committed_atomically_to_requested_path() {
+    let path = scratch();
+    let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let capture = dir.path().join("realm.png");
+    let out = ass_ctl::run(
+        &path,
+        &[
+            "realm-capture".into(),
+            "2".into(),
+            capture.to_string_lossy().into_owned(),
+        ],
+    )
+    .unwrap();
+    assert!(out.contains("2x1"), "{out}");
+    assert_eq!(std::fs::read(capture).unwrap(), b"png");
+}
+
+#[test]
+fn realm_capture_json_exposes_pixel_to_input_mapping() {
+    let path = scratch();
+    let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let capture = dir.path().join("realm.png");
+    let out = ass_ctl::run(
+        &path,
+        &[
+            "--json".into(),
+            "--region=0,0,2,1".into(),
+            "realm-capture".into(),
+            "2".into(),
+            capture.to_string_lossy().into_owned(),
+        ],
+    )
+    .unwrap();
+    let json: serde_json::Value = serde_json::from_str(&out).expect("capture metadata JSON");
+    assert_eq!(json["scale_milli"], 1000);
+    assert_eq!(json["region"]["size"]["w"], 2);
+    assert_eq!(json["placements"][0]["window"], 1);
+    assert_eq!(json["placements"][0]["surface_size"]["h"], 1);
+    assert_eq!(std::fs::read(capture).unwrap(), b"png");
 }
 
 #[test]

@@ -1,6 +1,6 @@
 # ADR-0037: Scoped pixel capture over the IPC
 
-- Status: Accepted
+- Status: Superseded by ADR-0041
 - Date: 2026-07-17
 
 ## Context

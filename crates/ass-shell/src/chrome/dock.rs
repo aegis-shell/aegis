@@ -332,10 +332,10 @@ impl Dock {
                         window_ids.push(w.id);
                     }
                     // Prefer the activated window as the focus target.
-                    if w.state.activated {
+                    if !w.read_only && w.state.activated {
                         activated = true;
                         focus = Some(w.id);
-                    } else if focus.is_none() {
+                    } else if !w.read_only && focus.is_none() {
                         focus = Some(w.id);
                     }
                 }
@@ -368,7 +368,7 @@ impl Dock {
                 icon,
                 running: true,
                 activated: w.state.activated,
-                focus: Some(w.id),
+                focus: (!w.read_only).then_some(w.id),
                 windows: vec![w.id],
                 app: None,
                 spawn: None,
@@ -1221,6 +1221,17 @@ mod tests {
         assert!(gimp.running);
         assert!(!gimp.pinned, "the window tile is transient, not kept");
         assert_eq!(gimp.focus, Some(ass_core::window::WindowId(3)));
+    }
+
+    #[test]
+    fn read_only_mirror_has_no_physical_focus_action() {
+        let dock = Dock::new();
+        let mut mirror = window(7, "org.example.App", false);
+        mirror.read_only = true;
+        let tiles = dock.tiles(&[mirror]);
+        assert_eq!(tiles.len(), 1);
+        assert_eq!(tiles[0].focus, None);
+        assert_eq!(tiles[0].windows, vec![ass_core::window::WindowId(7)]);
     }
 
     #[test]

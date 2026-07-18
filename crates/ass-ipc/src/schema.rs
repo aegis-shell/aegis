@@ -9,6 +9,10 @@
 use ass_core::input::SyntheticInputAction;
 use ass_core::notify::Notification;
 use ass_core::output::OutputInfo;
+use ass_core::realm::{
+    RealmBundle, RealmId, RealmMutation, RealmRevocation, RealmSnapshot, RealmTransactionReceipt,
+    RealmWindowPlacement, SeatCapabilities, VirtualOutput,
+};
 use ass_core::window::{Window, WindowId};
 use ass_core::workspace::{OutputId, Switch, WorkspaceId, WorkspaceSnapshot};
 use ass_core::Rect;
@@ -16,10 +20,15 @@ use ass_core::Rect;
 use crate::journal::{JournalEntry, JournalSnapshot};
 
 /// The protocol major version this build speaks. A client must offer the
-/// same major version at the [`Request::Hello`] handshake. Bumped to 2 by
-/// ADR-0032 (durable `WindowId` replacing the recycled surface-address id);
-/// the wire encoding is unchanged, the non-reuse guarantee is new.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// same major version at the [`Request::Hello`] handshake. Version 3 adds
+/// Realm authority, explicit time-bounded leases, optimistic transactions,
+/// and directed virtual-output capture.
+pub const PROTOCOL_VERSION: u32 = 3;
+/// Built-in owner-only scope used by the compositor's reference CLI for
+/// Realm recovery and administration. The Unix socket remains user-private;
+/// naming this scope opts the connection into the high-risk Realm operation
+/// allowlist and its time-bounded lease.
+pub const LOCAL_REALM_ADMIN_SCOPE: &str = "ass-ctl-realm-admin";
 
 /// The capability classes a client may hold (ADR-0027).
 ///
@@ -38,6 +47,9 @@ pub struct Capabilities {
     pub input: bool,
     /// Session-level actions: quit, reload config, change outputs.
     pub session: bool,
+    /// Create, configure, transfer, pause, and revoke Realm authority.
+    #[serde(default)]
+    pub realm: bool,
 }
 
 impl Capabilities {
@@ -47,6 +59,7 @@ impl Capabilities {
         control: false,
         input: false,
         session: false,
+        realm: false,
     };
 
     /// Intersection of two capability sets. Used to fold the client's request
@@ -57,6 +70,7 @@ impl Capabilities {
             control: self.control && other.control,
             input: self.input && other.input,
             session: self.session && other.session,
+            realm: self.realm && other.realm,
         }
     }
 
@@ -67,6 +81,32 @@ impl Capabilities {
             ..self
         }
     }
+
+    pub fn privileged(self) -> bool {
+        self.control || self.input || self.session || self.realm
+    }
+}
+
+/// Requested duration for the connection's privileged capability lease.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LeaseRequest {
+    pub ttl_ms: u64,
+}
+
+impl Default for LeaseRequest {
+    fn default() -> Self {
+        Self { ttl_ms: 900_000 }
+    }
+}
+
+/// Server-issued, connection-bound lease. The id is audit metadata; clients
+/// do not echo it on each request, so it cannot be replayed on another
+/// connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LeaseGrant {
+    pub id: u64,
+    pub ttl_ms: u64,
+    pub renewable: bool,
 }
 
 /// One operation family, used by [`Scope`] to enumerate which commands a
@@ -81,6 +121,7 @@ pub enum OpClass {
     Move,
     SetWindowGeometry,
     InjectInput,
+    InjectRealmInput,
     Cycle,
     SwitchWorkspace,
     SwitchWorkspaceTo,
@@ -92,6 +133,11 @@ pub enum OpClass {
     ScreenshotRegion,
     ToggleOverview,
     CaptureOutput,
+    CreateRealm,
+    TransactRealm,
+    RevokeRealm,
+    CaptureRealm,
+    LaunchInRealm,
 }
 
 /// A resource-and-operation allowlist layered on top of capabilities
@@ -110,6 +156,11 @@ pub struct Scope {
     /// Allowed output ids. `None` = all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outputs: Option<Vec<OutputId>>,
+    /// Allowed Realm ids. `None` = all existing realms. Creating a new Realm
+    /// is governed only by the operation allowlist because its id does not
+    /// exist yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realms: Option<Vec<RealmId>>,
     /// Allowed operation families. `None` = all ordinary operations, but no
     /// synthetic input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -128,6 +179,53 @@ impl Scope {
         opt.as_ref().is_none_or(|v| v.contains(&val))
     }
 
+    pub fn permits_window(&self, window: WindowId) -> bool {
+        Self::allows(&self.windows, window)
+    }
+
+    pub fn permits_realm(&self, realm: RealmId) -> bool {
+        Self::allows(&self.realms, realm)
+    }
+
+    pub fn permits_realm_action(&self, action: &RealmAction) -> bool {
+        let op = action.op_class();
+        if !self
+            .ops
+            .as_ref()
+            .is_some_and(|operations| operations.contains(&op))
+        {
+            return false;
+        }
+        match action {
+            RealmAction::Create { .. } => true,
+            RealmAction::Transact { mutations, .. } => mutations.iter().all(|mutation| {
+                let realm = match mutation {
+                    RealmMutation::TransferWindow { target, .. } => *target,
+                    RealmMutation::SetObserver { realm, .. }
+                    | RealmMutation::ConfigureOutput { realm, .. }
+                    | RealmMutation::SetState { realm, .. } => *realm,
+                };
+                Self::allows(&self.realms, realm)
+                    && match mutation {
+                        RealmMutation::TransferWindow { window, .. } => {
+                            Self::allows(&self.windows, *window)
+                        }
+                        _ => true,
+                    }
+            }),
+            RealmAction::Revoke {
+                realm, fallback, ..
+            } => Self::allows(&self.realms, *realm) && Self::allows(&self.realms, *fallback),
+        }
+    }
+
+    pub fn permits_realm_capture(&self, realm: RealmId) -> bool {
+        self.ops
+            .as_ref()
+            .is_some_and(|operations| operations.contains(&OpClass::CaptureRealm))
+            && Self::allows(&self.realms, realm)
+    }
+
     /// Whether this scope permits the given command (ADR-0034). Session
     /// commands bypass scope; control commands check ops + resources.
     pub fn permits(&self, cmd: &Command) -> bool {
@@ -135,10 +233,9 @@ impl Scope {
         if need.session {
             return true;
         }
-        if cmd.required_cap().input {
-            // Input is a high-risk capability with no compatibility caller:
-            // a named scope must opt in explicitly rather than inheriting the
-            // general `None`-means-unrestricted behavior.
+        if need.input || need.realm {
+            // Input and Realm lifecycle are high-risk capabilities with no
+            // compatibility caller: a named scope must opt in explicitly.
             if !self
                 .ops
                 .as_ref()
@@ -158,6 +255,10 @@ impl Scope {
             | Command::Move { id }
             | Command::SetWindowGeometry { id, .. }
             | Command::InjectInput { id, .. } => Self::allows(&self.windows, *id),
+            Command::InjectRealmInput { realm, id, .. } => {
+                Self::allows(&self.realms, *realm) && Self::allows(&self.windows, *id)
+            }
+            Command::LaunchInRealm { realm, .. } => Self::allows(&self.realms, *realm),
             Command::MoveToWorkspace { window, workspace } => {
                 Self::allows(&self.windows, *window) && Self::allows(&self.workspaces, *workspace)
             }
@@ -165,6 +266,91 @@ impl Scope {
             _ => true,
         }
     }
+}
+
+/// Synchronous Realm lifecycle operation. Unlike ordinary compositor
+/// commands, the response confirms commit and carries its authoritative
+/// receipt.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum RealmAction {
+    Create {
+        label: String,
+        capabilities: SeatCapabilities,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<VirtualOutput>,
+    },
+    Transact {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_revision: Option<u64>,
+        mutations: Vec<RealmMutation>,
+    },
+    Revoke {
+        realm: RealmId,
+        fallback: RealmId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_revision: Option<u64>,
+    },
+}
+
+impl RealmAction {
+    pub fn op_class(&self) -> OpClass {
+        match self {
+            Self::Create { .. } => OpClass::CreateRealm,
+            Self::Transact { .. } => OpClass::TransactRealm,
+            Self::Revoke { .. } => OpClass::RevokeRealm,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            Self::Create {
+                label,
+                capabilities,
+                output,
+            } => {
+                if label.trim().is_empty() || label.len() > 128 {
+                    return Err("realm label length is out of range");
+                }
+                if !capabilities.pointer && !capabilities.keyboard && !capabilities.touch {
+                    return Err("realm must expose at least one input capability");
+                }
+                if output.is_some_and(|output| !output.validate()) {
+                    return Err("virtual output parameters are invalid");
+                }
+                Ok(())
+            }
+            Self::Transact { mutations, .. } if mutations.is_empty() || mutations.len() > 64 => {
+                Err("realm transaction size is out of range")
+            }
+            Self::Transact { mutations, .. } => {
+                if mutations.iter().any(|mutation| {
+                    matches!(
+                        mutation,
+                        RealmMutation::SetState {
+                            state: ass_core::realm::RealmState::Revoked,
+                            ..
+                        }
+                    )
+                }) {
+                    return Err("revocation is a separate lifecycle operation");
+                }
+                Ok(())
+            }
+            Self::Revoke {
+                realm, fallback, ..
+            } if realm == fallback => Err("realm and fallback must differ"),
+            Self::Revoke { .. } => Ok(()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum RealmActionResult {
+    Created { bundle: RealmBundle },
+    TransactionCommitted { receipt: RealmTransactionReceipt },
+    Revoked { receipt: RealmRevocation },
 }
 
 /// A mutation the compositor applies on its main loop. Mirrors the operations
@@ -192,6 +378,17 @@ pub enum Command {
         id: WindowId,
         actions: Vec<SyntheticInputAction>,
     },
+    /// Deliver target-local input through the independent seat owned by a
+    /// Realm. The compositor resolves the live seat and rechecks authority at
+    /// apply time; physical desktop focus and chrome are never consulted.
+    InjectRealmInput {
+        realm: RealmId,
+        id: WindowId,
+        actions: Vec<SyntheticInputAction>,
+    },
+    /// Launch a desktop entry through a private mount-scoped Wayland portal
+    /// and Linux namespace sandbox.
+    LaunchInRealm { realm: RealmId, desktop_id: String },
     /// Cycle keyboard focus. `forward = true` for next, `false` for previous. `control`.
     Cycle { forward: bool },
     /// Switch to an adjacent workspace on the focused output. `control`.
@@ -236,18 +433,28 @@ impl Command {
                 control: false,
                 input: false,
                 session: true,
+                realm: false,
             },
-            Command::InjectInput { .. } => Capabilities {
+            Command::InjectInput { .. } | Command::InjectRealmInput { .. } => Capabilities {
                 query: false,
                 control: false,
                 input: true,
                 session: false,
+                realm: false,
+            },
+            Command::LaunchInRealm { .. } => Capabilities {
+                query: false,
+                control: false,
+                input: false,
+                session: false,
+                realm: true,
             },
             _ => Capabilities {
                 query: false,
                 control: true,
                 input: false,
                 session: false,
+                realm: false,
             },
         }
     }
@@ -270,12 +477,12 @@ impl Command {
             {
                 Err("geometry size is out of range")
             }
-            Command::InjectInput { actions, .. }
+            Command::InjectInput { actions, .. } | Command::InjectRealmInput { actions, .. }
                 if actions.is_empty() || actions.len() > MAX_INPUT_ACTIONS =>
             {
                 Err("input action count is out of range")
             }
-            Command::InjectInput { actions, .. } => {
+            Command::InjectInput { actions, .. } | Command::InjectRealmInput { actions, .. } => {
                 for action in actions {
                     match *action {
                         SyntheticInputAction::Click { button, .. }
@@ -299,6 +506,11 @@ impl Command {
                 }
                 Ok(())
             }
+            Command::LaunchInRealm { desktop_id, .. }
+                if desktop_id.trim().is_empty() || desktop_id.len() > 512 =>
+            {
+                Err("desktop id length is out of range")
+            }
             _ => Ok(()),
         }
     }
@@ -313,6 +525,8 @@ impl Command {
             Command::Move { .. } => OpClass::Move,
             Command::SetWindowGeometry { .. } => OpClass::SetWindowGeometry,
             Command::InjectInput { .. } => OpClass::InjectInput,
+            Command::InjectRealmInput { .. } => OpClass::InjectRealmInput,
+            Command::LaunchInRealm { .. } => OpClass::LaunchInRealm,
             Command::Cycle { .. } => OpClass::Cycle,
             Command::SwitchWorkspace { .. } => OpClass::SwitchWorkspace,
             Command::SwitchWorkspaceTo { .. } => OpClass::SwitchWorkspaceTo,
@@ -349,6 +563,40 @@ pub enum Event {
     /// A mutation was applied and recorded in the journal (ADR-0033). Pushed
     /// only to connections that sent [`Request::SubscribeJournal`].
     Journal { entry: JournalEntry },
+    /// Realm authority, lifecycle, or presentation changed. Consumers re-query
+    /// the snapshot and can use `revision` to discard stale state.
+    RealmsChanged { revision: u64 },
+    /// A Realm-directed scene changed. Damage is expressed in that Realm's
+    /// virtual-output logical coordinates and is conservative: every changed
+    /// pixel is included, but topology changes may invalidate the full output.
+    /// Pixels remain pull-based through `CaptureRealm`.
+    RealmDamaged {
+        realm: RealmId,
+        sequence: u64,
+        revision: u64,
+        damage: Vec<Rect>,
+    },
+}
+
+/// One atomic observation of a Realm's directed virtual output.
+///
+/// `region` and every placement use virtual-output logical coordinates.
+/// `width` and `height` are the encoded PNG's physical-pixel extent after
+/// applying `scale_milli`. The placement snapshot, pixels, and authority
+/// `revision` are captured together on the compositor thread, so callers can
+/// safely map a pixel observation back to target-local input coordinates.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RealmCapture {
+    pub realm: RealmId,
+    pub width: u32,
+    pub height: u32,
+    pub scale_milli: u32,
+    pub region: Rect,
+    pub placements: Vec<RealmWindowPlacement>,
+    /// Byte length of the sealed PNG memfd sent immediately after this JSON
+    /// response through `SCM_RIGHTS`.
+    pub png_bytes: u64,
+    pub revision: u64,
 }
 
 /// A client → server message.
@@ -365,6 +613,10 @@ pub enum Request {
         /// configuration; `None` means unscoped (back-compat).
         #[serde(default)]
         scope: Option<String>,
+        /// Required to retain any privileged capability. Query-only
+        /// connections may omit it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease: Option<LeaseRequest>,
     },
     /// Fetch the live toplevel snapshot, in z-order. Requires `query`.
     GetWindows,
@@ -378,6 +630,10 @@ pub enum Request {
     /// The response carries the ring's `oldest_seq` and `latest_seq` so the
     /// client detects gaps from evicted entries.
     GetJournal { since: u64 },
+    /// Fetch the complete authority snapshot.
+    GetRealms,
+    /// Commit a Realm lifecycle operation and return its receipt.
+    Realm { action: RealmAction },
     /// Submit a [`Command`]. Fire-and-forget: the server acknowledges queuing
     /// with [`Response::Ok`], not completion. Requires the command's capability.
     Do { cmd: Command },
@@ -387,12 +643,23 @@ pub enum Request {
     /// from [`Subscribe`](Self::Subscribe) so status bars that only need the
     /// coarse re-query signal are not flooded with per-command entries.
     SubscribeJournal,
-    /// Capture the focused output as a PNG, base64-encoded (M10 pixel
-    /// capture). Privacy-sensitive: requires `control`, an explicit
+    /// Renew the connection-bound privileged lease. A lease cannot outlive
+    /// this connection and is capped by server policy.
+    RenewLease { ttl_ms: u64 },
+    /// Capture the focused output as a PNG (M10 pixel capture). The response
+    /// metadata is followed by a sealed memfd sent with `SCM_RIGHTS`.
+    /// Privacy-sensitive: requires `control`, an explicit
     /// [`OpClass::CaptureOutput`] entry in a named scope's `ops` (never
     /// inherited), and is refused while the session is locked.
     /// When `region` is present, only that logical-pixel rectangle is captured.
     CaptureOutput {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region: Option<Rect>,
+    },
+    /// Capture one Realm's directed virtual output. Coordinates are Realm
+    /// logical pixels and never include compositor chrome or another Realm.
+    CaptureRealm {
+        realm: RealmId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         region: Option<Rect>,
     },
@@ -411,23 +678,48 @@ pub enum Response {
         /// client did not request a scope name.
         #[serde(default = "Scope::unscoped")]
         scope: Scope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease: Option<LeaseGrant>,
     },
     /// Reply to [`Request::GetWindows`].
-    Windows { windows: Vec<Window> },
+    Windows {
+        windows: Vec<Window>,
+    },
     /// Reply to [`Request::GetWorkspaces`].
-    Workspaces { snapshot: WorkspaceSnapshot },
+    Workspaces {
+        snapshot: WorkspaceSnapshot,
+    },
     /// Reply to [`Request::GetNotifications`].
-    Notifications { notifications: Vec<Notification> },
+    Notifications {
+        notifications: Vec<Notification>,
+    },
     /// Reply to [`Request::GetOutputs`].
-    Outputs { outputs: Vec<OutputInfo> },
+    Outputs {
+        outputs: Vec<OutputInfo>,
+    },
     /// Reply to [`Request::GetJournal`] (ADR-0033).
-    Journal { snapshot: JournalSnapshot },
+    Journal {
+        snapshot: JournalSnapshot,
+    },
+    Realms {
+        snapshot: RealmSnapshot,
+    },
+    Realm {
+        result: RealmActionResult,
+    },
     /// Reply to [`Request::CaptureOutput`]: the output's physical size and
-    /// the PNG encoding of the frame, base64 (M10 pixel capture).
+    /// length of the sealed PNG memfd that immediately follows it.
     CaptureOutput {
         width: u32,
         height: u32,
-        png_base64: String,
+        /// Byte length of the sealed PNG memfd that follows this metadata.
+        png_bytes: u64,
+    },
+    CaptureRealm {
+        capture: RealmCapture,
+    },
+    LeaseRenewed {
+        lease: LeaseGrant,
     },
     /// Acknowledgment of a queued [`Request::Do`].
     Ok,
@@ -435,7 +727,9 @@ pub enum Response {
     Subscribed,
     /// An error servicing a request. The connection stays open unless the
     /// error is a protocol violation (wrong version, missing handshake).
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 #[cfg(test)]
@@ -457,8 +751,10 @@ mod tests {
                 control: false,
                 input: false,
                 session: true,
+                realm: false,
             },
             scope: None,
+            lease: Some(LeaseRequest::default()),
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: Request = serde_json::from_str(&json).unwrap();
@@ -472,6 +768,7 @@ mod tests {
             control: true,
             input: true,
             session: true,
+            realm: true,
         };
         let policy = Capabilities::QUERY; // query only
         let granted = policy.intersect(client).with_query_always();
@@ -771,11 +1068,44 @@ mod tests {
     }
 
     #[test]
+    fn realm_capture_response_round_trips_correlated_layout_metadata() {
+        let capture = RealmCapture {
+            realm: RealmId(7),
+            width: 500,
+            height: 250,
+            scale_milli: 1250,
+            region: Rect::new(100, 50, 400, 200),
+            placements: vec![RealmWindowPlacement {
+                window: WindowId(42),
+                output_rect: Rect::new(120, 70, 300, 150),
+                surface_size: ass_core::Size { w: 900, h: 450 },
+            }],
+            png_bytes: 3,
+            revision: 19,
+        };
+        let json =
+            serde_json::to_string(&Response::CaptureRealm { capture }).expect("serialize capture");
+        let decoded: Response = serde_json::from_str(&json).expect("deserialize capture");
+        let Response::CaptureRealm { capture } = decoded else {
+            panic!("expected Realm capture response");
+        };
+        assert_eq!(capture.realm, RealmId(7));
+        assert_eq!(capture.region, Rect::new(100, 50, 400, 200));
+        assert_eq!(capture.placements[0].window, WindowId(42));
+        assert_eq!(
+            capture.placements[0].surface_size,
+            ass_core::Size { w: 900, h: 450 }
+        );
+        assert_eq!(capture.revision, 19);
+    }
+
+    #[test]
     fn hello_with_scope_name_round_trips() {
         let req = Request::Hello {
             version: PROTOCOL_VERSION,
             caps: Capabilities::QUERY,
             scope: Some("browser-helper".into()),
+            lease: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: Request = serde_json::from_str(&json).unwrap();

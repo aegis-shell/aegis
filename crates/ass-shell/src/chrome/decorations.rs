@@ -81,21 +81,29 @@ impl Chrome for Decorations {
                 f.row(|f| {
                     // Title text grows to fill; click starts move.
                     f.flex(1.0);
-                    let label = w
+                    let title = w
                         .title
                         .as_deref()
                         .unwrap_or_else(|| i18n.text(Message::Untitled));
-                    f.selectable(label, false);
+                    let label = if w.read_only {
+                        format!("{title} · {}", i18n.text(Message::ReadOnlyMirror))
+                    } else {
+                        title.to_owned()
+                    };
+                    f.selectable(&label, false);
                     // Begin the compositor grab on the press edge. A normal
                     // widget click fires on release, which is too late to
                     // receive the drag motion between press and release.
-                    if left_pressed && f.response().pressed {
+                    if !w.read_only && left_pressed && f.response().pressed {
                         out.move_requested = Some(w.id);
                     }
-                    // Close gadget.
+                    // A mirror remains visibly marked but exposes no client or
+                    // window-management action from the physical seat.
                     f.flex(0.0);
                     f.size_next(CLOSE_BUTTON_WIDTH, TITLE_BAR_HEIGHT - 8.0);
-                    if f.button("x") {
+                    if w.read_only {
+                        f.selectable("◉", false);
+                    } else if f.button("x") {
                         out.closed = Some(w.id);
                     }
                 });

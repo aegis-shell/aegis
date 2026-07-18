@@ -23,6 +23,7 @@ log diagnostic and never crashes the compositor.
 | `[[output]]` | array of tables | none | Per-connector display policy: mode, scale, position, transform, primary. See [Outputs](#outputs). |
 | `[screenshot]` | table | XDG Pictures directory | Screenshot save location. See [Screenshots](#screenshots). |
 | `[agent]` | table | no scopes | Named automation scopes enforced by the IPC server. See [Agent Scopes](#agent-scopes). |
+| `[realm_sandbox]` | table | default deny | Network, filesystem, and cgroup policy for new Realm application launches. See [Realm Sandbox](#realm-sandbox). |
 
 ## Environment
 
@@ -225,6 +226,50 @@ title = "calculator"
 role = "floating"
 ```
 
+## Realm Sandbox
+
+`[realm_sandbox]` defines the default policy for applications launched with
+`LaunchInRealm`. `[[realm_sandbox.app]]` entries match an exact desktop-entry
+id. Later matching entries override only the fields they contain. Policy
+changes apply to new launches; revoke and relaunch a sandbox to narrow
+existing kernel grants.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `network` | boolean | `false` | Share the host network namespace. When `false`, the sandbox receives an isolated network namespace and no resolver configuration. |
+| `readable_paths` | array of absolute paths | `[]` | Host files or directories mounted read-only at their canonical absolute paths. |
+| `writable_paths` | array of absolute paths | `[]` | Host files or directories mounted read-write at their canonical absolute paths. Protected `/proc`, `/dev`, `/run`, and `/sys` trees cannot be granted; system executable and configuration trees cannot be writable. |
+| `memory_max_mib` | integer | `8192` | Hard cgroup memory limit in MiB, 256–1,048,576. Swap is disabled and an out-of-memory event kills the sandbox as one group. |
+| `pids_max` | integer | `1024` | Hard cgroup process limit, 16–65,536. |
+| `cpu_weight` | integer | `100` | cgroup CPU weight, 1–10,000. |
+| `[[realm_sandbox.app]]` | array of tables | none | Exact per-desktop-entry overrides. |
+
+Each `[[realm_sandbox.app]]` table requires `desktop_id`. The other fields
+have the same types and limits as the default table. An omitted field
+inherits the default; an explicit empty path array removes inherited paths
+for that application.
+
+```toml
+[realm_sandbox]
+memory_max_mib = 8192
+pids_max = 1024
+cpu_weight = 100
+
+[[realm_sandbox.app]]
+desktop_id = "org.mozilla.firefox.desktop"
+network = true
+readable_paths = ["/home/alice/Research"]
+writable_paths = ["/home/alice/Downloads"]
+memory_max_mib = 4096
+```
+
+Every path must be absolute and must exist when the application launches.
+The launcher resolves symlinks before mounting and rejects protected or
+non-file/non-directory targets. Realm launch also requires `/usr/bin/bwrap`,
+cgroup v2, and an ASS systemd user service with delegated `cpu`, `memory`,
+and `pids` controllers. Missing isolation or controller support rejects the
+launch.
+
 ## Agent Scopes
 
 Each `[[agent.scope]]` table names an IPC mutation allowlist. An IPC client
@@ -238,14 +283,18 @@ capability classes.
 | `ops` | array of strings | unrestricted except input | Allowed operation classes. `InjectInput` must be listed explicitly. An explicit array containing only unknown values grants no operations. |
 | `windows` | array of integers | unrestricted | Allowed durable window IDs. |
 | `workspaces` | array of integers | unrestricted | Allowed workspace IDs. |
+| `realms` | array of integers | unrestricted | Allowed Realm IDs. |
 
 Operation names are `Focus`, `Minimize`, `Close`, `Move`,
-`SetWindowGeometry`, `InjectInput`, `Cycle`, `SwitchWorkspace`,
-`SwitchWorkspaceTo`, `MoveToWorkspace`, `ToggleTiling`, `Notify`, and
-`DismissNotification`. Names are case-insensitive; snake-case forms are also
-accepted. Invalid names are logged and grant nothing. `InjectInput` also
-requires the separately negotiated `input` capability and is never granted to
-an unscoped connection. Omitting `ops` never grants `InjectInput`.
+`SetWindowGeometry`, `InjectInput`, `InjectRealmInput`, `Cycle`,
+`SwitchWorkspace`, `SwitchWorkspaceTo`, `MoveToWorkspace`, `ToggleTiling`,
+`ToggleOverview`, `Notify`, `DismissNotification`, `Screenshot`,
+`ScreenshotRegion`, `CaptureOutput`, `CreateRealm`, `TransactRealm`,
+`RevokeRealm`, `CaptureRealm`, and `LaunchInRealm`. Names are
+case-insensitive; snake-case forms are also accepted. Invalid names are
+logged and grant nothing. Input, capture, and Realm operations must be listed
+explicitly and require their separately negotiated capability; omitting
+`ops` never grants them.
 
 ```toml
 [[agent.scope]]
@@ -265,9 +314,11 @@ workspaces = [2, 3]
 ```
 
 Scope changes are hot-reloaded. Named connections resolve their scope again
-for every command, so narrowing or removing a scope applies without
-reconnecting. The Rust reference client uses `Client::connect_scoped` and
-exposes the granted allowlist through `Client::scope`.
+for every mutation and capture, including final descriptor delivery, so
+narrowing or removing a scope applies without reconnecting. A Realm
+interaction-group mutation must include every affected window in the window
+allowlist. The Rust reference client uses `Client::connect_scoped` and exposes
+the granted allowlist through `Client::scope`.
 
 ## Key Bindings
 

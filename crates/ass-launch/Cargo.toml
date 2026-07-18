@@ -12,6 +12,7 @@ ass-core = { workspace = true }
 ass-apps = { workspace = true }
 log.workspace = true
 thiserror.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

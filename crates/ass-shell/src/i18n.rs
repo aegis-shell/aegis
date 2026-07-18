@@ -130,6 +130,20 @@ pub enum Message {
     ScrollMethod,
     TwoFingerScroll,
     EdgeScroll,
+    AiWorkspaces,
+    AiWorkspacesDescription,
+    NewAiWorkspace,
+    PauseRealm,
+    ResumeRealm,
+    RevokeRealm,
+    ConfirmRevokeRealm,
+    RealmActive,
+    RealmPaused,
+    RealmRevoked,
+    PhysicalDesktop,
+    DropWindowHere,
+    MoveToRealm,
+    ReadOnlyMirror,
 }
 
 /// Lightweight locale handle passed to chrome components for each frame.
@@ -228,6 +242,20 @@ impl Localizer {
             Message::ScrollMethod => &catalog.scroll_method,
             Message::TwoFingerScroll => &catalog.two_finger_scroll,
             Message::EdgeScroll => &catalog.edge_scroll,
+            Message::AiWorkspaces => &catalog.ai_workspaces,
+            Message::AiWorkspacesDescription => &catalog.ai_workspaces_description,
+            Message::NewAiWorkspace => &catalog.new_ai_workspace,
+            Message::PauseRealm => &catalog.pause_realm,
+            Message::ResumeRealm => &catalog.resume_realm,
+            Message::RevokeRealm => &catalog.revoke_realm,
+            Message::ConfirmRevokeRealm => &catalog.confirm_revoke_realm,
+            Message::RealmActive => &catalog.realm_active,
+            Message::RealmPaused => &catalog.realm_paused,
+            Message::RealmRevoked => &catalog.realm_revoked,
+            Message::PhysicalDesktop => &catalog.physical_desktop,
+            Message::DropWindowHere => &catalog.drop_window_here,
+            Message::MoveToRealm => &catalog.move_to_realm,
+            Message::ReadOnlyMirror => &catalog.read_only_mirror,
         }
     }
 
@@ -341,6 +369,20 @@ struct Catalog {
     scroll_method: String,
     two_finger_scroll: String,
     edge_scroll: String,
+    ai_workspaces: String,
+    ai_workspaces_description: String,
+    new_ai_workspace: String,
+    pause_realm: String,
+    resume_realm: String,
+    revoke_realm: String,
+    confirm_revoke_realm: String,
+    realm_active: String,
+    realm_paused: String,
+    realm_revoked: String,
+    physical_desktop: String,
+    drop_window_here: String,
+    move_to_realm: String,
+    read_only_mirror: String,
 }
 
 static ENGLISH: OnceLock<Catalog> = OnceLock::new();

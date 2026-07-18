@@ -29,6 +29,7 @@ pub use i18n::{Language, Localizer, Message};
 pub use system::{BatteryStatus, NetworkState, SystemAction, SystemStatus};
 
 use ass_core::app::{ApplicationTarget, BuiltInApplication, Entry};
+use ass_core::realm::{RealmId, RealmSnapshot, RealmState};
 use ass_core::window::Window;
 use ass_core::workspace::WorkspaceSnapshot;
 
@@ -99,6 +100,33 @@ pub enum WindowAction {
     Close(ass_core::window::WindowId),
 }
 
+/// Trusted Realm-management intent emitted by compositor-owned chrome.
+///
+/// The shell never mutates compositor authority directly. The main loop
+/// translates these values into the same optimistic Realm transactions used
+/// by IPC clients, preserving one validation and commit path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RealmIntent {
+    Create {
+        label: String,
+    },
+    SetState {
+        realm: RealmId,
+        state: RealmState,
+        expected_revision: u64,
+    },
+    Revoke {
+        realm: RealmId,
+        expected_revision: u64,
+    },
+    TransferWindow {
+        window: ass_core::window::WindowId,
+        target: RealmId,
+        retain_source_as_observer: bool,
+        expected_revision: u64,
+    },
+}
+
 /// Interaction intents chrome components emit during a frame. The core
 /// collects these and the main loop drains them into server window-management
 /// actions (`focus_surface_by_id`, `close_toplevel`,
@@ -155,6 +183,9 @@ pub struct ChromeEvents {
     /// main loop, which updates `[dock] pinned` in the config and refreshes the
     /// dock catalog.
     pub dock_pin_toggles: Vec<String>,
+    /// Ordered Realm lifecycle and authority mutations requested by trusted
+    /// shell surfaces.
+    pub realm_intents: Vec<RealmIntent>,
 }
 
 impl ChromeEvents {
@@ -215,6 +246,10 @@ pub trait Chrome {
     /// Receive a normalized host-system snapshot. Components keep their own
     /// presentation copy so the render trait remains focused on frame data.
     fn update_system_status(&mut self, _status: &SystemStatus) {}
+
+    /// Receive the complete Realm authority snapshot. Only trusted
+    /// compositor-owned components consume this high-level state.
+    fn update_realms(&mut self, _snapshot: &RealmSnapshot) {}
 
     /// Whether this component owns pointer input at the given output-space
     /// position. The main loop uses this before client routing so clicks on
@@ -359,6 +394,7 @@ pub struct Shell {
     workspaces: WorkspaceSnapshot,
     i18n: Localizer,
     system_status: SystemStatus,
+    realms: RealmSnapshot,
     events: ChromeEvents,
     components: Vec<Box<dyn Chrome>>,
     /// Accessibility reduced-motion policy (ADR-0029), fanned out to every
@@ -385,6 +421,7 @@ impl Shell {
             },
             i18n: Localizer::from_env(),
             system_status: SystemStatus::default(),
+            realms: ass_core::realm::RealmModel::new().snapshot(),
             events: ChromeEvents::default(),
             components: Vec::new(),
             reduced_motion: false,
@@ -395,6 +432,7 @@ impl Shell {
     /// registration order.
     pub fn add(&mut self, mut component: Box<dyn Chrome>) {
         component.update_system_status(&self.system_status);
+        component.update_realms(&self.realms);
         component.set_reduced_motion(self.reduced_motion);
         self.components.push(component);
     }
@@ -503,6 +541,15 @@ impl Shell {
         }
     }
 
+    /// Replace the Realm authority snapshot and notify the overview and
+    /// Control Center before their next frame.
+    pub fn set_realms(&mut self, snapshot: RealmSnapshot) {
+        self.realms = snapshot;
+        for component in self.components.iter_mut() {
+            component.update_realms(&self.realms);
+        }
+    }
+
     /// Drain ordered system mutations requested by trusted shell UI.
     pub fn take_system_actions(&mut self) -> Vec<SystemAction> {
         std::mem::take(&mut self.events.system_actions)
@@ -511,6 +558,11 @@ impl Shell {
     /// Drain desktop ids the dock asked to pin/unpin this frame.
     pub fn take_dock_pin_toggles(&mut self) -> Vec<String> {
         std::mem::take(&mut self.events.dock_pin_toggles)
+    }
+
+    /// Drain trusted Realm-management intents in UI order.
+    pub fn take_realm_intents(&mut self) -> Vec<RealmIntent> {
+        std::mem::take(&mut self.events.realm_intents)
     }
 
     /// Drain the workspace id the chrome asked to switch to this frame, if

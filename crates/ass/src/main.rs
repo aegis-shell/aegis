@@ -342,8 +342,12 @@ fn draw_overview_scene(
         .first()
         .map(|o| o.workspaces.len() > 1)
         .unwrap_or(false);
+    let realm_shelf = server.realm_snapshot().realms.iter().any(|realm| {
+        realm.kind == ass_core::realm::RealmKind::Agent
+            && realm.state != ass_core::realm::RealmState::Revoked
+    });
     let display = ass_core::Rect::new(0, 0, logical_size.0 as i32, logical_size.1 as i32);
-    let area = ass_core::overview::grid_area(display, rail);
+    let area = ass_core::overview::grid_area_with_realm_shelf(display, rail, realm_shelf);
     let slots = ass_core::overview::grid(area, windows.len());
     let cells: std::collections::HashMap<
         ass_core::window::WindowId,
@@ -501,12 +505,14 @@ struct CapturedPixels {
     height: u32,
     readback: flux::Readback,
     crop: Option<ass_core::Rect>,
+    security_generation: u64,
 }
 
 struct PendingReadback {
     width: u32,
     height: u32,
     crop: Option<ass_core::Rect>,
+    security_generation: u64,
 }
 
 enum CaptureTarget {
@@ -514,9 +520,14 @@ enum CaptureTarget {
         path: String,
         command: ass_ipc::Command,
         ts_mono_ms: u64,
+        origin: ass_ipc::Origin,
     },
     Reply {
-        reply: std::sync::mpsc::Sender<Result<(u32, u32, String), String>>,
+        reply: std::sync::mpsc::Sender<Result<ass_ipc::CaptureOutputPayload, String>>,
+    },
+    RealmReply {
+        context: RealmCaptureContext,
+        reply: std::sync::mpsc::Sender<Result<ass_ipc::CaptureRealmPayload, String>>,
     },
 }
 
@@ -531,17 +542,38 @@ enum CaptureJob {
         path: String,
         command: ass_ipc::Command,
         ts_mono_ms: u64,
+        origin: ass_ipc::Origin,
     },
     Reply {
         capture: CapturedPixels,
-        reply: std::sync::mpsc::Sender<Result<(u32, u32, String), String>>,
+        reply: std::sync::mpsc::Sender<Result<ass_ipc::CaptureOutputPayload, String>>,
+    },
+    RealmReply {
+        capture: CapturedPixels,
+        context: RealmCaptureContext,
+        reply: std::sync::mpsc::Sender<Result<ass_ipc::CaptureRealmPayload, String>>,
     },
 }
 
-struct ScreenshotCompletion {
-    command: ass_ipc::Command,
-    ts_mono_ms: u64,
-    effect: ass_ipc::Effect,
+enum CaptureCompletion {
+    Screenshot {
+        path: String,
+        command: ass_ipc::Command,
+        ts_mono_ms: u64,
+        origin: ass_ipc::Origin,
+        security_generation: u64,
+        encoded: Result<Vec<u8>, String>,
+    },
+    Reply {
+        reply: std::sync::mpsc::Sender<Result<ass_ipc::CaptureOutputPayload, String>>,
+        security_generation: u64,
+        encoded: Result<ass_ipc::CaptureOutputPayload, String>,
+    },
+    RealmReply {
+        reply: std::sync::mpsc::Sender<Result<ass_ipc::CaptureRealmPayload, String>>,
+        security_generation: u64,
+        encoded: Result<ass_ipc::CaptureRealmPayload, String>,
+    },
 }
 
 fn read_captured_pixels(
@@ -556,7 +588,24 @@ fn read_captured_pixels(
         height: pending.height,
         readback,
         crop: pending.crop,
+        security_generation: pending.security_generation,
     })
+}
+
+/// Intersect a logical capture request with a virtual output without relying
+/// on overflowing `i32` endpoint arithmetic.
+fn clamp_logical_region(rect: ass_core::Rect, width: u32, height: u32) -> Option<ass_core::Rect> {
+    if rect.size.w <= 0 || rect.size.h <= 0 {
+        return None;
+    }
+    let right = i64::from(rect.origin.x) + i64::from(rect.size.w);
+    let bottom = i64::from(rect.origin.y) + i64::from(rect.size.h);
+    let x0 = i64::from(rect.origin.x).clamp(0, i64::from(width));
+    let y0 = i64::from(rect.origin.y).clamp(0, i64::from(height));
+    let x1 = right.clamp(x0, i64::from(width));
+    let y1 = bottom.clamp(y0, i64::from(height));
+    (x1 > x0 && y1 > y0)
+        .then(|| ass_core::Rect::new(x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32))
 }
 
 /// Convert a compositor-logical crop rectangle to physical output pixels.
@@ -630,21 +679,72 @@ fn encode_rgba_capture(
     Ok((width, height, png))
 }
 
+fn atomic_write_capture(path: &str, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let destination = std::path::Path::new(path);
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    let name = destination
+        .file_name()
+        .ok_or_else(|| format!("capture path {path:?} has no file name"))?
+        .to_string_lossy();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let temporary = parent.join(format!(".{name}.{}.{}.tmp", std::process::id(), nonce));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&temporary)
+            .map_err(|error| format!("create {}: {error}", temporary.display()))?;
+        file.write_all(bytes)
+            .map_err(|error| format!("write {}: {error}", temporary.display()))?;
+        file.sync_all()
+            .map_err(|error| format!("sync {}: {error}", temporary.display()))?;
+        std::fs::rename(&temporary, destination).map_err(|error| {
+            format!(
+                "commit capture {} → {}: {error}",
+                temporary.display(),
+                destination.display()
+            )
+        })
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
 /// Single bounded post-processing lane for screenshots and IPC pixel
 /// captures. Only one full-frame payload may be in flight, which keeps
 /// repeated requests from consuming unbounded memory or compounding stalls.
 struct CaptureWorker {
     jobs: std::sync::mpsc::Sender<CaptureJob>,
-    completions: std::sync::mpsc::Receiver<ScreenshotCompletion>,
+    completions: std::sync::mpsc::Receiver<CaptureCompletion>,
     busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    allowed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    security_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl CaptureWorker {
     fn spawn() -> std::io::Result<Self> {
         let (job_tx, job_rx) = std::sync::mpsc::channel::<CaptureJob>();
-        let (completion_tx, completion_rx) = std::sync::mpsc::channel::<ScreenshotCompletion>();
+        let (completion_tx, completion_rx) = std::sync::mpsc::channel::<CaptureCompletion>();
         let busy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_busy = std::sync::Arc::clone(&busy);
+        let allowed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let worker_allowed = std::sync::Arc::clone(&allowed);
+        let security_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let worker_security_generation = std::sync::Arc::clone(&security_generation);
         std::thread::Builder::new()
             .name("ass-capture".into())
             .spawn(move || {
@@ -655,22 +755,27 @@ impl CaptureWorker {
                             path,
                             command,
                             ts_mono_ms,
+                            origin,
                         } => {
-                            let effect = match encode_capture(capture).and_then(|(_, _, png)| {
-                                std::fs::write(&path, png)
-                                    .map_err(|error| format!("write {path}: {error}"))
-                            }) {
-                                Ok(()) => {
-                                    log::info!("screenshot: wrote {path}");
-                                    ass_ipc::Effect::Applied
-                                }
-                                Err(reason) => ass_ipc::Effect::Refused { reason },
+                            let generation = capture.security_generation;
+                            let encoded = if worker_allowed
+                                .load(std::sync::atomic::Ordering::Acquire)
+                                && generation
+                                    == worker_security_generation
+                                        .load(std::sync::atomic::Ordering::Acquire)
+                            {
+                                encode_capture(capture).map(|(_, _, png)| png)
+                            } else {
+                                Err("session locked before capture completed".into())
                             };
                             if completion_tx
-                                .send(ScreenshotCompletion {
+                                .send(CaptureCompletion::Screenshot {
+                                    path,
                                     command,
                                     ts_mono_ms,
-                                    effect,
+                                    origin,
+                                    security_generation: generation,
+                                    encoded,
                                 })
                                 .is_err()
                             {
@@ -681,11 +786,72 @@ impl CaptureWorker {
                             // completion, keeping the loop awake until then.
                         }
                         CaptureJob::Reply { capture, reply } => {
-                            let result = encode_capture(capture).map(|(width, height, png)| {
-                                (width, height, ass_ipc::base64::encode(&png))
-                            });
-                            let _ = reply.send(result);
-                            worker_busy.store(false, std::sync::atomic::Ordering::Release);
+                            let generation = capture.security_generation;
+                            let encoded = if worker_allowed
+                                .load(std::sync::atomic::Ordering::Acquire)
+                                && generation
+                                    == worker_security_generation
+                                        .load(std::sync::atomic::Ordering::Acquire)
+                            {
+                                encode_capture(capture).map(|(width, height, png)| {
+                                    ass_ipc::CaptureOutputPayload { width, height, png }
+                                })
+                            } else {
+                                Err("session locked before capture completed".into())
+                            };
+                            if completion_tx
+                                .send(CaptureCompletion::Reply {
+                                    reply,
+                                    security_generation: generation,
+                                    encoded,
+                                })
+                                .is_err()
+                            {
+                                worker_busy.store(false, std::sync::atomic::Ordering::Release);
+                                break;
+                            }
+                        }
+                        CaptureJob::RealmReply {
+                            capture,
+                            context,
+                            reply,
+                        } => {
+                            let generation = capture.security_generation;
+                            let encoded = if worker_allowed
+                                .load(std::sync::atomic::Ordering::Acquire)
+                                && generation
+                                    == worker_security_generation
+                                        .load(std::sync::atomic::Ordering::Acquire)
+                            {
+                                encode_capture(capture).map(|(width, height, png)| {
+                                    ass_ipc::CaptureRealmPayload {
+                                        capture: ass_ipc::RealmCapture {
+                                            realm: context.realm,
+                                            width,
+                                            height,
+                                            scale_milli: context.scale_milli,
+                                            region: context.region,
+                                            placements: context.placements,
+                                            png_bytes: png.len() as u64,
+                                            revision: context.revision,
+                                        },
+                                        png,
+                                    }
+                                })
+                            } else {
+                                Err("session locked before Realm capture completed".into())
+                            };
+                            if completion_tx
+                                .send(CaptureCompletion::RealmReply {
+                                    reply,
+                                    security_generation: generation,
+                                    encoded,
+                                })
+                                .is_err()
+                            {
+                                worker_busy.store(false, std::sync::atomic::Ordering::Release);
+                                break;
+                            }
                         }
                     }
                 }
@@ -695,6 +861,8 @@ impl CaptureWorker {
             jobs: job_tx,
             completions: completion_rx,
             busy,
+            allowed,
+            security_generation,
         })
     }
 
@@ -717,6 +885,35 @@ impl CaptureWorker {
         self.busy.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    fn delivery_gate(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::clone(&self.allowed)
+    }
+
+    fn set_allowed(&self, allowed: bool) {
+        let was_allowed = self
+            .allowed
+            .swap(allowed, std::sync::atomic::Ordering::AcqRel);
+        if was_allowed && !allowed {
+            self.security_generation
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+
+    fn security_generation(&self) -> u64 {
+        self.security_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn permits(&self, security_generation: u64) -> bool {
+        self.allowed.load(std::sync::atomic::Ordering::Acquire)
+            && self.security_generation() == security_generation
+    }
+
+    fn invalidate_security_context(&self) {
+        self.security_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+
     fn submit(&self, job: CaptureJob) -> Result<(), Box<CaptureJob>> {
         self.jobs.send(job).map_err(|error| Box::new(error.0))
     }
@@ -734,16 +931,20 @@ fn refuse_capture_target(
         CaptureTarget::Screenshot {
             command,
             ts_mono_ms,
+            origin,
             ..
         } => journal_effect_and_broadcast(
             journal,
             ipc,
             ts_mono_ms,
-            ass_ipc::Origin::Ipc { conn_id: 0 },
+            origin,
             command,
             ass_ipc::Effect::Refused { reason },
         ),
         CaptureTarget::Reply { reply } => {
+            let _ = reply.send(Err(reason));
+        }
+        CaptureTarget::RealmReply { reply, .. } => {
             let _ = reply.send(Err(reason));
         }
     }
@@ -761,13 +962,20 @@ fn queue_captured_pixels(
             path,
             command,
             ts_mono_ms,
+            origin,
         } => CaptureJob::Screenshot {
             capture,
             path,
             command,
             ts_mono_ms,
+            origin,
         },
         CaptureTarget::Reply { reply } => CaptureJob::Reply { capture, reply },
+        CaptureTarget::RealmReply { context, reply } => CaptureJob::RealmReply {
+            capture,
+            context,
+            reply,
+        },
     };
     if let Err(job) = worker.submit(job) {
         let target = match *job {
@@ -775,13 +983,18 @@ fn queue_captured_pixels(
                 path,
                 command,
                 ts_mono_ms,
+                origin,
                 ..
             } => CaptureTarget::Screenshot {
                 path,
                 command,
                 ts_mono_ms,
+                origin,
             },
             CaptureJob::Reply { reply, .. } => CaptureTarget::Reply { reply },
+            CaptureJob::RealmReply { context, reply, .. } => {
+                CaptureTarget::RealmReply { context, reply }
+            }
         };
         refuse_capture_target(
             worker,
@@ -830,9 +1043,302 @@ fn flux_last_error_detail() -> String {
 /// One pixel-capture request from an IPC connection thread, answered by the
 /// main loop after it copies the exact output frame being submitted.
 struct CaptureRequest {
-    reply: std::sync::mpsc::Sender<Result<(u32, u32, String), String>>,
+    reply: std::sync::mpsc::Sender<Result<ass_ipc::CaptureOutputPayload, String>>,
     /// Logical-pixel region to capture, or `None` for the full output.
     region: Option<ass_core::Rect>,
+}
+
+struct RealmCaptureRequest {
+    realm: ass_core::realm::RealmId,
+    reply: std::sync::mpsc::Sender<Result<ass_ipc::CaptureRealmPayload, String>>,
+    region: Option<ass_core::Rect>,
+}
+
+struct IpcCommandRequest {
+    origin: ass_ipc::Origin,
+    command: ass_ipc::Command,
+}
+
+struct RealmControlRequest {
+    origin: ass_ipc::Origin,
+    action: ass_ipc::RealmAction,
+    reply: std::sync::mpsc::Sender<Result<ass_ipc::RealmActionResult, String>>,
+}
+
+struct JournalRefusalRequest {
+    origin: ass_ipc::Origin,
+    mutation: ass_ipc::JournalMutation,
+    reason: String,
+}
+
+#[derive(Default)]
+struct RealmProcesses {
+    launches: std::collections::BTreeMap<ass_core::realm::RealmId, Vec<ass_launch::ManagedLaunch>>,
+}
+
+impl RealmProcesses {
+    fn insert(&mut self, realm: ass_core::realm::RealmId, launch: ass_launch::ManagedLaunch) {
+        self.launches.entry(realm).or_default().push(launch);
+    }
+
+    fn reap(&mut self) {
+        self.launches.retain(|realm, launches| {
+            launches.retain_mut(|launch| match launch.is_running() {
+                Ok(running) => running,
+                Err(error) => {
+                    log::warn!(
+                        "Realm {} sandbox {} status failed: {error}",
+                        realm.0,
+                        launch.report().pid
+                    );
+                    false
+                }
+            });
+            !launches.is_empty()
+        });
+    }
+
+    fn pause(&mut self, realm: ass_core::realm::RealmId) {
+        if let Some(launches) = self.launches.get_mut(&realm) {
+            launches.retain_mut(|launch| {
+                if let Err(error) = launch.pause() {
+                    log::error!(
+                        "Realm {} sandbox {} could not be paused; terminating: {error}",
+                        realm.0,
+                        launch.report().pid
+                    );
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+    }
+
+    fn resume(&mut self, realm: ass_core::realm::RealmId) {
+        if let Some(launches) = self.launches.get_mut(&realm) {
+            launches.retain_mut(|launch| {
+                if let Err(error) = launch.resume() {
+                    log::error!(
+                        "Realm {} sandbox {} could not be resumed; terminating: {error}",
+                        realm.0,
+                        launch.report().pid
+                    );
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+    }
+
+    fn revoke(&mut self, realm: ass_core::realm::RealmId) {
+        // Dropping ManagedLaunch kills the complete sandbox cgroup and reaps
+        // bubblewrap before this method returns.
+        self.launches.remove(&realm);
+    }
+
+    fn apply_committed_action(&mut self, action: &ass_ipc::RealmAction) {
+        match action {
+            ass_ipc::RealmAction::Create { .. } => {}
+            ass_ipc::RealmAction::Transact { mutations, .. } => {
+                for mutation in mutations {
+                    if let ass_core::realm::RealmMutation::SetState { realm, state } = mutation {
+                        match state {
+                            ass_core::realm::RealmState::Active => self.resume(*realm),
+                            ass_core::realm::RealmState::Paused => self.pause(*realm),
+                            ass_core::realm::RealmState::Revoked => self.revoke(*realm),
+                        }
+                    }
+                }
+            }
+            ass_ipc::RealmAction::Revoke { realm, .. } => self.revoke(*realm),
+        }
+    }
+}
+
+struct RealmRenderTarget {
+    output: ass_core::realm::VirtualOutput,
+    surface: flux::Surface,
+    canvas: flux::Canvas,
+}
+
+struct RealmCaptureContext {
+    realm: ass_core::realm::RealmId,
+    revision: u64,
+    scale_milli: u32,
+    region: ass_core::Rect,
+    placements: Vec<ass_core::realm::RealmWindowPlacement>,
+}
+
+struct PendingRealmCapture {
+    readback: PendingReadback,
+    context: RealmCaptureContext,
+    reply: std::sync::mpsc::Sender<Result<ass_ipc::CaptureRealmPayload, String>>,
+}
+
+struct PreparedRealmCapture {
+    readback: PendingReadback,
+    context: RealmCaptureContext,
+}
+
+fn virtual_output_physical_size(
+    output: ass_core::realm::VirtualOutput,
+) -> Result<(u32, u32), String> {
+    if !output.validate() {
+        return Err("virtual output parameters are invalid".into());
+    }
+    let scaled = |value: u32| {
+        u64::from(value)
+            .saturating_mul(u64::from(output.scale_milli))
+            .div_ceil(1000)
+    };
+    let width = u32::try_from(scaled(output.width)).map_err(|_| "virtual output is too wide")?;
+    let height = u32::try_from(scaled(output.height)).map_err(|_| "virtual output is too tall")?;
+    Ok((width.max(1), height.max(1)))
+}
+
+fn begin_realm_capture(
+    targets: &mut std::collections::BTreeMap<ass_core::realm::RealmId, RealmRenderTarget>,
+    device: &flux::Device,
+    renderer: &mut ass_render::Renderer,
+    server: &ass_server::Server,
+    realm: ass_core::realm::RealmId,
+    region: Option<ass_core::Rect>,
+    security_generation: u64,
+) -> Result<PreparedRealmCapture, String> {
+    let snapshot = server.realm_snapshot();
+    let realm_state = snapshot
+        .realms
+        .iter()
+        .find(|record| record.id == realm)
+        .ok_or_else(|| format!("unknown realm {}", realm.0))?
+        .state;
+    if realm_state != ass_core::realm::RealmState::Active {
+        return Err(format!("realm {} is not active ({realm_state:?})", realm.0));
+    }
+    let output = server
+        .realm_output(realm)
+        .ok_or_else(|| format!("realm {} has no virtual output", realm.0))?;
+    let region = match region {
+        Some(region) => {
+            clamp_logical_region(region, output.width, output.height).ok_or_else(|| {
+                "Realm capture region does not intersect the virtual output".to_owned()
+            })?
+        }
+        None => ass_core::Rect::new(0, 0, output.width as i32, output.height as i32),
+    };
+    let placements = server.realm_window_placements(realm);
+    let physical_size = virtual_output_physical_size(output)?;
+    if targets
+        .get(&realm)
+        .is_none_or(|target| target.output != output)
+    {
+        let surface = flux::Surface::offscreen_readback(device, physical_size.0, physical_size.1)
+            .map_err(|error| {
+            format!(
+                "allocate realm {} render target: {error}{}",
+                realm.0,
+                flux_last_error_detail()
+            )
+        })?;
+        surface.prepare_readback().map_err(|error| {
+            format!(
+                "prepare realm {} readback: {error}{}",
+                realm.0,
+                flux_last_error_detail()
+            )
+        })?;
+        let canvas = flux::Canvas::new(&surface).map_err(|error| {
+            format!(
+                "create realm {} canvas: {error}{}",
+                realm.0,
+                flux_last_error_detail()
+            )
+        })?;
+        targets.insert(
+            realm,
+            RealmRenderTarget {
+                output,
+                surface,
+                canvas,
+            },
+        );
+    }
+    let target = targets
+        .get_mut(&realm)
+        .expect("realm render target was just installed");
+    let mut frame = target.surface.begin_frame().map_err(|error| {
+        format!(
+            "begin realm {} frame: {error}{}",
+            realm.0,
+            flux_last_error_detail()
+        )
+    })?;
+    renderer.begin_frame();
+    target
+        .canvas
+        .begin(&frame, Some(flux::rgba(17, 20, 27, 255)))
+        .map_err(|error| {
+            format!(
+                "begin realm {} canvas: {error}{}",
+                realm.0,
+                flux_last_error_detail()
+            )
+        })?;
+    let scale = output.scale_milli as f32 / 1000.0;
+    target.canvas.save();
+    if scale != 1.0 {
+        target.canvas.scale(scale, scale);
+    }
+    let shm = server.realm_toplevel_frames(realm);
+    let dmabuf = server.realm_toplevel_dmabuf_frames(realm);
+    let sub_shm_below = server.realm_subsurface_frames_below(realm);
+    let sub_shm_above = server.realm_subsurface_frames_above(realm);
+    let sub_dmabuf_below = server.realm_subsurface_dmabuf_frames_below(realm);
+    let sub_dmabuf_above = server.realm_subsurface_dmabuf_frames_above(realm);
+    renderer.draw_subsurfaces(device, &target.canvas, &sub_shm_below);
+    renderer.draw_dmabuf_subsurfaces(device, &target.canvas, &sub_dmabuf_below);
+    renderer.draw_toplevels(device, &target.canvas, &shm, (0.0, 0.0));
+    renderer.draw_dmabuf_toplevels(device, &target.canvas, &dmabuf, (0.0, 0.0));
+    renderer.draw_subsurfaces(device, &target.canvas, &sub_shm_above);
+    renderer.draw_dmabuf_subsurfaces(device, &target.canvas, &sub_dmabuf_above);
+    target.canvas.restore();
+    target.canvas.end();
+    frame.request_readback().map_err(|error| {
+        format!(
+            "request realm {} readback: {error}{}",
+            realm.0,
+            flux_last_error_detail()
+        )
+    })?;
+    frame
+        .submit()
+        .and_then(flux::SubmittedFrame::present)
+        .map_err(|error| {
+            format!(
+                "submit realm {} frame: {error}{}",
+                realm.0,
+                flux_last_error_detail()
+            )
+        })?;
+    let full_region = ass_core::Rect::new(0, 0, output.width as i32, output.height as i32);
+    Ok(PreparedRealmCapture {
+        readback: PendingReadback {
+            width: physical_size.0,
+            height: physical_size.1,
+            crop: (region != full_region)
+                .then(|| logical_rect_to_physical(region, scale, physical_size.0, physical_size.1)),
+            security_generation,
+        },
+        context: RealmCaptureContext {
+            realm,
+            revision: snapshot.revision,
+            scale_milli: output.scale_milli,
+            region,
+            placements,
+        },
+    })
 }
 
 /// Direct swapchain composition. A model wallpaper inserts one depth-tested
@@ -877,9 +1383,22 @@ fn draw_direct_desktop_scene(
     Ok(())
 }
 
+fn physical_window_target(cmd: &ass_ipc::Command) -> Option<ass_core::window::WindowId> {
+    use ass_ipc::Command;
+    match cmd {
+        Command::Focus { id }
+        | Command::Minimize { id }
+        | Command::Close { id }
+        | Command::Move { id }
+        | Command::SetWindowGeometry { id, .. } => Some(*id),
+        Command::MoveToWorkspace { window, .. } => Some(*window),
+        _ => None,
+    }
+}
+
 /// Dispatch an [`ass_ipc::Command`] to the server and side-effect targets. Extracted
-/// from the three mutation sources (IPC, keybindings, chrome) so the journal
-/// chokepoint (ADR-0033) sees every mutation through one path.
+/// from the three mutation sources (IPC, keybindings, chrome) so both the
+/// physical-seat authority check and journal chokepoint (ADR-0033) are shared.
 fn apply_command(
     server: &mut ass_server::Server,
     notif_queue: &std::sync::Arc<std::sync::Mutex<ass_core::notify::NotificationQueue>>,
@@ -887,7 +1406,11 @@ fn apply_command(
     cmd: &ass_ipc::Command,
     ipc: &Option<ass_ipc::Server>,
     ts_mono_ms: u64,
-) {
+) -> Result<(), String> {
+    if physical_window_target(cmd).is_some_and(|window| !server.human_controls_window(window)) {
+        return Err("physical seat has observation-only authority for this window".into());
+    }
+
     use ass_ipc::Command;
     match cmd {
         Command::Focus { id } => server.focus_surface_by_id(*id),
@@ -897,10 +1420,13 @@ fn apply_command(
         Command::SetWindowGeometry { id, rect } => {
             server.set_window_geometry(*id, *rect);
         }
-        Command::InjectInput { .. } => {
+        Command::InjectInput { .. } | Command::InjectRealmInput { .. } => {
             // Synthetic input needs shell-occlusion validation and is handled
             // beside the physical-input router in the main loop.
             debug_assert!(false, "InjectInput reached the generic command path");
+        }
+        Command::LaunchInRealm { .. } => {
+            debug_assert!(false, "LaunchInRealm reached the generic command path");
         }
         Command::Screenshot { .. } => {
             // Screenshots need the GPU objects and are handled beside the
@@ -938,6 +1464,133 @@ fn apply_command(
         }
         Command::Quit => *quit = true,
     }
+    Ok(())
+}
+
+fn apply_realm_action(
+    server: &mut ass_server::Server,
+    action: ass_ipc::RealmAction,
+) -> Result<ass_ipc::RealmActionResult, String> {
+    match action {
+        ass_ipc::RealmAction::Create {
+            label,
+            capabilities,
+            output,
+        } => {
+            let bundle = server
+                .create_agent_realm(label, capabilities)
+                .map_err(|error| error.to_string())?;
+            if let Some(output) = output {
+                if let Err(error) = server.configure_realm_output(bundle.realm, output) {
+                    let _ = server.revoke_realm(bundle.realm, ass_core::realm::HUMAN_REALM);
+                    return Err(error.to_string());
+                }
+            }
+            Ok(ass_ipc::RealmActionResult::Created { bundle })
+        }
+        ass_ipc::RealmAction::Transact {
+            expected_revision,
+            mutations,
+        } => server
+            .transact_realms(expected_revision, &mutations)
+            .map(|receipt| ass_ipc::RealmActionResult::TransactionCommitted { receipt })
+            .map_err(|error| error.to_string()),
+        ass_ipc::RealmAction::Revoke {
+            realm,
+            fallback,
+            expected_revision,
+        } => {
+            let actual = server.realm_snapshot().revision;
+            if expected_revision.is_some_and(|expected| expected != actual) {
+                return Err(format!(
+                    "Realm revision conflict: expected {}, actual {actual}",
+                    expected_revision.unwrap()
+                ));
+            }
+            server
+                .revoke_realm(realm, fallback)
+                .map(|receipt| ass_ipc::RealmActionResult::Revoked { receipt })
+                .map_err(|error| error.to_string())
+        }
+    }
+}
+
+fn realm_intent_to_action(intent: ass_shell::RealmIntent) -> ass_ipc::RealmAction {
+    match intent {
+        ass_shell::RealmIntent::Create { label } => ass_ipc::RealmAction::Create {
+            label,
+            capabilities: ass_core::realm::SeatCapabilities::POINTER_KEYBOARD,
+            output: Some(ass_core::realm::VirtualOutput::DEFAULT_AGENT),
+        },
+        ass_shell::RealmIntent::SetState {
+            realm,
+            state,
+            expected_revision,
+        } => ass_ipc::RealmAction::Transact {
+            expected_revision: Some(expected_revision),
+            mutations: vec![ass_core::realm::RealmMutation::SetState { realm, state }],
+        },
+        ass_shell::RealmIntent::Revoke {
+            realm,
+            expected_revision,
+        } => ass_ipc::RealmAction::Revoke {
+            realm,
+            fallback: ass_core::realm::HUMAN_REALM,
+            expected_revision: Some(expected_revision),
+        },
+        ass_shell::RealmIntent::TransferWindow {
+            window,
+            target,
+            retain_source_as_observer,
+            expected_revision,
+        } => ass_ipc::RealmAction::Transact {
+            expected_revision: Some(expected_revision),
+            mutations: vec![ass_core::realm::RealmMutation::TransferWindow {
+                window,
+                target,
+                retain_source_as_observer,
+            }],
+        },
+    }
+}
+
+fn realm_action_invalidates_capture(
+    action: &ass_ipc::RealmAction,
+) -> std::collections::BTreeSet<ass_core::realm::RealmId> {
+    match action {
+        ass_ipc::RealmAction::Create { .. } => std::collections::BTreeSet::new(),
+        ass_ipc::RealmAction::Revoke { realm, .. } => std::collections::BTreeSet::from([*realm]),
+        ass_ipc::RealmAction::Transact { mutations, .. } => mutations
+            .iter()
+            .filter_map(|mutation| match mutation {
+                ass_core::realm::RealmMutation::SetState {
+                    realm,
+                    state:
+                        ass_core::realm::RealmState::Paused | ass_core::realm::RealmState::Revoked,
+                } => Some(*realm),
+                _ => None,
+            })
+            .collect(),
+    }
+}
+
+fn realms_explicitly_stopped(
+    action: &ass_ipc::RealmAction,
+) -> std::collections::BTreeSet<ass_core::realm::RealmId> {
+    match action {
+        ass_ipc::RealmAction::Revoke { realm, .. } => std::collections::BTreeSet::from([*realm]),
+        ass_ipc::RealmAction::Transact { mutations, .. } => mutations
+            .iter()
+            .filter_map(|mutation| match mutation {
+                ass_core::realm::RealmMutation::SetState {
+                    realm,
+                    state: ass_core::realm::RealmState::Paused,
+                } => Some(*realm),
+                _ => None,
+            })
+            .collect(),
+        ass_ipc::RealmAction::Create { .. } => std::collections::BTreeSet::new(),
+    }
 }
 
 /// Record a mutation in the journal and push it to journal subscribers
@@ -967,11 +1620,70 @@ fn journal_effect_and_broadcast(
     cmd: ass_ipc::Command,
     effect: ass_ipc::Effect,
 ) {
+    journal_mutation_effect_and_broadcast(
+        journal,
+        ipc,
+        ts_mono_ms,
+        origin,
+        ass_ipc::JournalMutation::Command { cmd },
+        effect,
+    );
+}
+
+fn journal_mutation_effect_and_broadcast(
+    journal: &std::sync::Arc<std::sync::Mutex<ass_ipc::Journal>>,
+    ipc: &Option<ass_ipc::Server>,
+    ts_mono_ms: u64,
+    origin: ass_ipc::Origin,
+    mutation: ass_ipc::JournalMutation,
+    effect: ass_ipc::Effect,
+) {
     let mut j = journal.lock().unwrap();
-    let entry = j.append(ts_mono_ms, origin, cmd, effect);
+    let entry = j.append(ts_mono_ms, origin, mutation, effect);
     if let Some(s) = ipc.as_ref() {
         s.broadcast_journal(entry.clone());
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_command_and_journal(
+    server: &mut ass_server::Server,
+    notifications: &std::sync::Arc<std::sync::Mutex<ass_core::notify::NotificationQueue>>,
+    quit: &mut bool,
+    command: ass_ipc::Command,
+    ipc: &Option<ass_ipc::Server>,
+    journal: &std::sync::Arc<std::sync::Mutex<ass_ipc::Journal>>,
+    ts_mono_ms: u64,
+    origin: ass_ipc::Origin,
+) {
+    let effect = match apply_command(server, notifications, quit, &command, ipc, ts_mono_ms) {
+        Ok(()) => ass_ipc::Effect::Applied,
+        Err(reason) => ass_ipc::Effect::Refused { reason },
+    };
+    journal_effect_and_broadcast(journal, ipc, ts_mono_ms, origin, command, effect);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_chrome_window_command(
+    server: &mut ass_server::Server,
+    notifications: &std::sync::Arc<std::sync::Mutex<ass_core::notify::NotificationQueue>>,
+    quit: &mut bool,
+    command: ass_ipc::Command,
+    ipc: &Option<ass_ipc::Server>,
+    journal: &std::sync::Arc<std::sync::Mutex<ass_ipc::Journal>>,
+    ts_mono_ms: u64,
+) {
+    debug_assert!(physical_window_target(&command).is_some());
+    apply_command_and_journal(
+        server,
+        notifications,
+        quit,
+        command,
+        ipc,
+        journal,
+        ts_mono_ms,
+        ass_ipc::Origin::Chrome,
+    );
 }
 
 /// Apply one trusted Control Center mutation. Compositor-native layout changes
@@ -1066,6 +1778,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "ass {} — autonomous surface shell",
         env!("CARGO_PKG_VERSION")
     );
+    match ass_launch::prepare_realm_host() {
+        Ok(root) => log::info!(
+            "Realm cgroup host prepared under delegated root {}",
+            root.display()
+        ),
+        Err(error) => log::warn!(
+            "Realm application launch disabled until ASS runs in its own \
+             cpu/memory/pids-delegated systemd service: {error}"
+        ),
+    }
 
     // Notification queue (M9, over the IPC): shared between the IPC handler
     // (reads), the toast chrome component (renders), and this loop (pushes
@@ -1138,8 +1860,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // A requested presentation frame remains in mapped readback staging until
     // the main loop copies it into an owned CPU buffer.
     let mut pending_capture: Option<PendingCapture> = None;
-    // PNG compression, base64 conversion, and file writes run here instead
-    // of pausing the compositor frame thread after GPU readback.
+    // PNG compression and file writes run here instead of pausing the
+    // compositor frame thread after GPU readback.
     let capture_worker = CaptureWorker::spawn()?;
     // XDG cursor theme cache for the software cursor on direct KMS.
     let mut cursor_cache = cursor::CursorCache::default();
@@ -1258,6 +1980,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Compositing of client surfaces.
     let mut renderer = ass_render::Renderer::new();
+    let mut realm_processes = RealmProcesses::default();
+    let mut realm_render_targets: std::collections::BTreeMap<
+        ass_core::realm::RealmId,
+        RealmRenderTarget,
+    > = std::collections::BTreeMap::new();
+    let mut pending_realm_capture: Option<PendingRealmCapture> = None;
+    let mut realm_damage_sequence = 0u64;
     let start = std::time::Instant::now();
 
     // Wallpaper: a still image (png/jpg/webp/gif/…) or a short video decoded by
@@ -1411,12 +2140,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // this thread. Bind failure is non-fatal so the compositor runs without
     // IPC rather than crashing. `ipc` is held to the end of `run()` so its
     // `Drop` removes the socket.
-    let (ipc_cmd_tx, ipc_cmd_rx) = std::sync::mpsc::channel::<ass_ipc::Command>();
+    let (ipc_cmd_tx, ipc_cmd_rx) = std::sync::mpsc::channel::<IpcCommandRequest>();
     let (capture_tx, capture_rx) = std::sync::mpsc::channel::<CaptureRequest>();
+    let (realm_control_tx, realm_control_rx) = std::sync::mpsc::channel::<RealmControlRequest>();
+    let (realm_capture_tx, realm_capture_rx) = std::sync::mpsc::channel::<RealmCaptureRequest>();
+    let (journal_refusal_tx, journal_refusal_rx) =
+        std::sync::mpsc::channel::<JournalRefusalRequest>();
     let journal = std::sync::Arc::new(std::sync::Mutex::new(ass_ipc::Journal::default_capacity()));
     let live = std::sync::Arc::new(LiveState::new(
-        ipc_cmd_tx,
-        capture_tx,
+        LiveChannels {
+            commands: ipc_cmd_tx,
+            capture: capture_tx,
+            realm_controls: realm_control_tx,
+            realm_capture: realm_capture_tx,
+            journal_refusals: journal_refusal_tx,
+        },
+        capture_worker.delivery_gate(),
         std::sync::Arc::clone(&notif_queue),
         std::sync::Arc::clone(&journal),
         build_ipc_scopes(config.as_ref()),
@@ -1444,6 +2183,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_win_sig: Option<Vec<(ass_core::window::WindowId, bool, Option<String>)>> = None;
     // Last broadcast workspace snapshot, used to detect model changes.
     let mut last_ws_snap: Option<ass_core::workspace::WorkspaceSnapshot> = None;
+    let mut last_realm_revision: Option<u64> = None;
+    let mut previous_agent_suspended = false;
+    let mut automatically_paused_realms = std::collections::BTreeSet::new();
     // Whether chrome reported a multi-frame animation in flight last frame.
     // While true the loop pumps non-blocking dispatches and renders at a
     // ~60fps cadence so the animation advances even with the pointer still;
@@ -1512,15 +2254,119 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if !alive || shell.should_quit() || quit_requested {
             break;
         }
+        realm_processes.reap();
+        // Process security-sensitive protocol transitions before completing
+        // any pixel readback. In particular, an ext-session-lock request that
+        // woke this iteration must become visible before a pending Realm or
+        // desktop capture can be handed to its requester.
+        server.dispatch();
+        capture_worker.set_allowed(!server.session_locked() && host.is_active());
+        let agent_suspended = server.session_locked() || !host.is_active();
+        if agent_suspended && !previous_agent_suspended {
+            let snapshot = server.realm_snapshot();
+            for realm in snapshot.realms.into_iter().filter(|realm| {
+                realm.kind == ass_core::realm::RealmKind::Agent
+                    && realm.state == ass_core::realm::RealmState::Active
+            }) {
+                if server.pause_realm(realm.id).is_ok() {
+                    realm_processes.pause(realm.id);
+                    automatically_paused_realms.insert(realm.id);
+                }
+            }
+        } else if !agent_suspended && previous_agent_suspended {
+            for realm in std::mem::take(&mut automatically_paused_realms) {
+                if server.resume_realm(realm).is_ok() {
+                    realm_processes.resume(realm);
+                }
+            }
+        }
+        previous_agent_suspended = agent_suspended;
+        if server.session_locked() {
+            if let Some(pending) = pending_capture.take() {
+                refuse_capture_target(
+                    &capture_worker,
+                    pending.target,
+                    "session locked before capture completed".into(),
+                    &journal,
+                    &ipc,
+                );
+            }
+            if let Some(pending) = pending_realm_capture.take() {
+                refuse_capture_target(
+                    &capture_worker,
+                    CaptureTarget::RealmReply {
+                        context: pending.context,
+                        reply: pending.reply,
+                    },
+                    "session locked before Realm capture completed".into(),
+                    &journal,
+                    &ipc,
+                );
+            }
+        }
         while let Ok(completion) = capture_worker.completions.try_recv() {
-            journal_effect_and_broadcast(
-                &journal,
-                &ipc,
-                completion.ts_mono_ms,
-                ass_ipc::Origin::Ipc { conn_id: 0 },
-                completion.command,
-                completion.effect,
-            );
+            match completion {
+                CaptureCompletion::Screenshot {
+                    path,
+                    command,
+                    ts_mono_ms,
+                    origin,
+                    security_generation,
+                    encoded,
+                } => {
+                    let result = if capture_worker.permits(security_generation) {
+                        encoded.and_then(|png| atomic_write_capture(&path, &png))
+                    } else {
+                        Err("capture authority changed before delivery".into())
+                    };
+                    let effect = match result {
+                        Ok(()) => {
+                            log::info!("screenshot: wrote {path}");
+                            ass_ipc::Effect::Applied
+                        }
+                        Err(reason) => ass_ipc::Effect::Refused { reason },
+                    };
+                    journal_effect_and_broadcast(
+                        &journal, &ipc, ts_mono_ms, origin, command, effect,
+                    );
+                }
+                CaptureCompletion::Reply {
+                    reply,
+                    security_generation,
+                    encoded,
+                } => {
+                    let result = if capture_worker.permits(security_generation) {
+                        encoded
+                    } else {
+                        Err("capture authority changed before delivery".into())
+                    };
+                    let _ = reply.send(result);
+                }
+                CaptureCompletion::RealmReply {
+                    reply,
+                    security_generation,
+                    encoded,
+                } => {
+                    let current_revision = server.realm_snapshot().revision;
+                    let result = if !capture_worker.permits(security_generation) {
+                        Err("Realm capture authority changed before delivery".into())
+                    } else {
+                        encoded.and_then(|capture| {
+                            let captured_revision = capture.capture.revision;
+                            (captured_revision == current_revision)
+                                .then_some(capture)
+                                .ok_or_else(|| {
+                                    format!(
+                                        "Realm authority changed before delivery \
+                                         (captured r{}, current r{current_revision})",
+                                        captured_revision
+                                    )
+                                })
+                        })
+                    };
+                    let _ = reply.send(result);
+                }
+            }
             capture_worker.release();
         }
         if pending_capture.is_some() {
@@ -1554,6 +2400,67 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 Err(reason) => {
                     let pending = pending_capture.take().expect("checked above");
                     refuse_capture_target(&capture_worker, pending.target, reason, &journal, &ipc);
+                }
+            }
+        }
+        if pending_realm_capture.is_some() {
+            let realm = pending_realm_capture
+                .as_ref()
+                .expect("checked above")
+                .context
+                .realm;
+            let readiness = realm_render_targets
+                .get(&realm)
+                .ok_or_else(|| format!("realm {} render target disappeared", realm.0))
+                .and_then(|target| {
+                    target.surface.read_pixels_ready().map_err(|error| {
+                        format!(
+                            "realm {} readback readiness: {error}{}",
+                            realm.0,
+                            flux_last_error_detail()
+                        )
+                    })
+                });
+            match readiness {
+                Ok(false) => {}
+                Ok(true) => {
+                    let pending = pending_realm_capture.take().expect("checked above");
+                    let target = realm_render_targets
+                        .get(&realm)
+                        .expect("readiness target disappeared");
+                    let reply_target = CaptureTarget::RealmReply {
+                        context: pending.context,
+                        reply: pending.reply,
+                    };
+                    match read_captured_pixels(&target.surface, pending.readback) {
+                        Ok(capture) => queue_captured_pixels(
+                            &capture_worker,
+                            capture,
+                            reply_target,
+                            &journal,
+                            &ipc,
+                        ),
+                        Err(reason) => refuse_capture_target(
+                            &capture_worker,
+                            reply_target,
+                            reason,
+                            &journal,
+                            &ipc,
+                        ),
+                    }
+                }
+                Err(reason) => {
+                    let pending = pending_realm_capture.take().expect("checked above");
+                    refuse_capture_target(
+                        &capture_worker,
+                        CaptureTarget::RealmReply {
+                            context: pending.context,
+                            reply: pending.reply,
+                        },
+                        reason,
+                        &journal,
+                        &ipc,
+                    );
                 }
             }
         }
@@ -1682,16 +2589,114 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // loop — the Wayland server state is not `Send`, so connection
         // threads forward through the channel rather than touching it
         // directly. Mirrors the chrome-intent drain below (ADR-0016/0027).
+        for request in journal_refusal_rx.try_iter() {
+            journal_mutation_effect_and_broadcast(
+                &journal,
+                &ipc,
+                start.elapsed().as_millis() as u64,
+                request.origin,
+                request.mutation,
+                ass_ipc::Effect::Refused {
+                    reason: request.reason,
+                },
+            );
+        }
+        while let Ok(request) = realm_control_rx.try_recv() {
+            let committed_action = request.action.clone();
+            let before_revision = server.realm_snapshot().revision;
+            let allowed_while_locked = match &request.action {
+                ass_ipc::RealmAction::Revoke { .. } => true,
+                ass_ipc::RealmAction::Transact { mutations, .. } => {
+                    !mutations.is_empty()
+                        && mutations.iter().all(|mutation| {
+                            matches!(
+                                mutation,
+                                ass_core::realm::RealmMutation::SetState {
+                                    state: ass_core::realm::RealmState::Paused,
+                                    ..
+                                }
+                            )
+                        })
+                }
+                ass_ipc::RealmAction::Create { .. } => false,
+            };
+            let result = if server.session_locked() && !allowed_while_locked {
+                Err("session is locked".into())
+            } else {
+                apply_realm_action(&mut server, request.action)
+            };
+            if result.is_ok() {
+                for realm in realms_explicitly_stopped(&committed_action) {
+                    automatically_paused_realms.remove(&realm);
+                }
+                let invalidated = realm_action_invalidates_capture(&committed_action);
+                if !invalidated.is_empty() {
+                    capture_worker.invalidate_security_context();
+                    if pending_realm_capture
+                        .as_ref()
+                        .is_some_and(|pending| invalidated.contains(&pending.context.realm))
+                    {
+                        let pending = pending_realm_capture
+                            .take()
+                            .expect("capture invalidation predicate checked");
+                        refuse_capture_target(
+                            &capture_worker,
+                            CaptureTarget::RealmReply {
+                                context: pending.context,
+                                reply: pending.reply,
+                            },
+                            "Realm authority changed before capture completed".into(),
+                            &journal,
+                            &ipc,
+                        );
+                    }
+                }
+                if let ass_ipc::RealmAction::Revoke { realm, .. } = &committed_action {
+                    realm_render_targets.remove(realm);
+                }
+                realm_processes.apply_committed_action(&committed_action);
+                let snapshot = server.realm_snapshot();
+                last_realm_revision = Some(snapshot.revision);
+                live.set_realms(snapshot.clone());
+                if let Some(ipc) = &ipc {
+                    ipc.broadcast(ass_ipc::Event::RealmsChanged {
+                        revision: snapshot.revision,
+                    });
+                }
+            }
+            let after_revision = server.realm_snapshot().revision;
+            let effect = match &result {
+                Ok(_) => ass_ipc::Effect::Applied,
+                Err(reason) => ass_ipc::Effect::Refused {
+                    reason: reason.clone(),
+                },
+            };
+            journal_mutation_effect_and_broadcast(
+                &journal,
+                &ipc,
+                start.elapsed().as_millis() as u64,
+                request.origin,
+                ass_ipc::JournalMutation::Realm {
+                    action: committed_action,
+                    before_revision,
+                    after_revision,
+                },
+                effect,
+            );
+            let _ = request.reply.send(result);
+        }
         let mut pending_synthetic_input = Vec::new();
         let mut pending_screenshots = Vec::new();
-        while let Ok(cmd) = ipc_cmd_rx.try_recv() {
+        while let Ok(request) = ipc_cmd_rx.try_recv() {
+            let cmd = request.command;
+            let origin = request.origin;
             let ts = start.elapsed().as_millis() as u64;
             if server.session_locked() {
                 journal_effect_and_broadcast(
                     &journal,
                     &ipc,
                     ts,
-                    ass_ipc::Origin::Ipc { conn_id: 0 },
+                    origin,
                     cmd,
                     ass_ipc::Effect::Refused {
                         reason: "session is locked".into(),
@@ -1699,32 +2704,98 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 continue;
             }
-            if matches!(cmd, ass_ipc::Command::InjectInput { .. }) {
-                pending_synthetic_input.push((cmd, ts));
+            if let ass_ipc::Command::LaunchInRealm { realm, desktop_id } = &cmd {
+                let effect = match launcher_apps.iter().find(|entry| entry.id == *desktop_id) {
+                    Some(entry) => {
+                        let launched = (|| -> Result<ass_launch::ManagedLaunch, String> {
+                            let portal = server
+                                .prepare_realm_portal(*realm)
+                                .map_err(|error| error.to_string())?;
+                            let wayland_listener = portal
+                                .try_clone_listener()
+                                .map_err(|error| error.to_string())?;
+                            let wayland_socket_path = portal.path().to_path_buf();
+                            let sandbox_policy = config
+                                .as_ref()
+                                .map(|config| config.realm_sandbox.policy_for(&entry.id))
+                                .unwrap_or_else(|| {
+                                    ass_config::RealmSandboxConfig::default().policy_for(&entry.id)
+                                });
+                            let opts = ass_launch::LaunchOpts {
+                                sandbox: Some(ass_launch::RealmSandbox {
+                                    realm_id: realm.0,
+                                    wayland_listener,
+                                    wayland_socket_path,
+                                    app_id: entry.id.clone(),
+                                    network: sandbox_policy.network,
+                                    writable_paths: sandbox_policy.writable_paths,
+                                    readable_paths: sandbox_policy.readable_paths,
+                                    limits: ass_launch::RealmResourceLimits {
+                                        memory_max_bytes: sandbox_policy.memory_max_bytes,
+                                        pids_max: sandbox_policy.pids_max,
+                                        cpu_weight: sandbox_policy.cpu_weight,
+                                    },
+                                }),
+                                ..Default::default()
+                            };
+                            let launch = ass_launch::launch_managed(entry, &opts)
+                                .map_err(|error| error.to_string())?;
+                            server
+                                .activate_realm_portal(portal)
+                                .map_err(|error| error.to_string())?;
+                            Ok(launch)
+                        })();
+                        match launched {
+                            Ok(launch) => {
+                                log::info!(
+                                    "Realm {}: launched {} in sandbox cgroup (supervisor {})",
+                                    realm.0,
+                                    entry.id,
+                                    launch.report().pid
+                                );
+                                realm_processes.insert(*realm, launch);
+                                ass_ipc::Effect::Applied
+                            }
+                            Err(reason) => ass_ipc::Effect::Refused { reason },
+                        }
+                    }
+                    None => ass_ipc::Effect::Refused {
+                        reason: format!("unknown desktop entry {desktop_id:?}"),
+                    },
+                };
+                journal_effect_and_broadcast(&journal, &ipc, ts, origin, cmd, effect);
+                continue;
+            }
+            if matches!(
+                cmd,
+                ass_ipc::Command::InjectInput { .. } | ass_ipc::Command::InjectRealmInput { .. }
+            ) {
+                pending_synthetic_input.push((cmd, ts, origin));
                 continue;
             }
             // The overview lives in the shell; toggling it is a presentation
             // change, not a server mutation, but it still passes the journal.
             if matches!(cmd, ass_ipc::Command::ToggleOverview) {
                 shell.toggle_overview();
-                journal_and_broadcast(&journal, &ipc, ts, ass_ipc::Origin::Ipc { conn_id: 0 }, cmd);
+                journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                 continue;
             }
             // Screenshots render with the GPU objects below, not in the
             // generic command path.
             if matches!(cmd, ass_ipc::Command::Screenshot { .. }) {
-                pending_screenshots.push((cmd, ts));
+                pending_screenshots.push((cmd, ts, origin));
                 continue;
             }
-            apply_command(
+            apply_command_and_journal(
                 &mut server,
                 &notif_queue,
                 &mut quit_requested,
-                &cmd,
+                cmd,
                 &ipc,
+                &journal,
                 ts,
+                origin,
             );
-            journal_and_broadcast(&journal, &ipc, ts, ass_ipc::Origin::Ipc { conn_id: 0 }, cmd);
         }
         // Age out expired notifications once per frame.
         notif_queue
@@ -1735,6 +2806,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // Process client protocol traffic.
         server.dispatch();
         let session_locked = server.session_locked();
+        let realm_revision = server.realm_snapshot().revision;
+        for (realm, damage) in server.take_realm_damage() {
+            realm_damage_sequence = realm_damage_sequence.saturating_add(1);
+            if let Some(ipc) = &ipc {
+                ipc.broadcast(ass_ipc::Event::RealmDamaged {
+                    realm,
+                    sequence: realm_damage_sequence,
+                    revision: realm_revision,
+                    damage,
+                });
+            }
+        }
         if session_locked {
             super_tap.cancel_current();
         }
@@ -2034,92 +3117,99 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     Action::CloseFocused => {
                         if let Some(id) = server.focused_toplevel_id() {
                             let cmd = ass_ipc::Command::Close { id };
-                            apply_command(
+                            apply_command_and_journal(
                                 &mut server,
                                 &notif_queue,
                                 &mut quit_requested,
-                                &cmd,
+                                cmd,
                                 &ipc,
+                                &journal,
                                 ts,
+                                origin,
                             );
-                            journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                         }
                     }
                     Action::CycleFocus => {
                         let cmd = ass_ipc::Command::Cycle { forward: true };
-                        apply_command(
+                        apply_command_and_journal(
                             &mut server,
                             &notif_queue,
                             &mut quit_requested,
-                            &cmd,
+                            cmd,
                             &ipc,
+                            &journal,
                             ts,
+                            origin,
                         );
-                        journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                     }
                     Action::CycleFocusBack => {
                         let cmd = ass_ipc::Command::Cycle { forward: false };
-                        apply_command(
+                        apply_command_and_journal(
                             &mut server,
                             &notif_queue,
                             &mut quit_requested,
-                            &cmd,
+                            cmd,
                             &ipc,
+                            &journal,
                             ts,
+                            origin,
                         );
-                        journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                     }
                     Action::WorkspaceNext => {
                         let cmd = ass_ipc::Command::SwitchWorkspace {
                             dir: ass_core::workspace::Switch::Next,
                         };
-                        apply_command(
+                        apply_command_and_journal(
                             &mut server,
                             &notif_queue,
                             &mut quit_requested,
-                            &cmd,
+                            cmd,
                             &ipc,
+                            &journal,
                             ts,
+                            origin,
                         );
-                        journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                     }
                     Action::WorkspacePrev => {
                         let cmd = ass_ipc::Command::SwitchWorkspace {
                             dir: ass_core::workspace::Switch::Prev,
                         };
-                        apply_command(
+                        apply_command_and_journal(
                             &mut server,
                             &notif_queue,
                             &mut quit_requested,
-                            &cmd,
+                            cmd,
                             &ipc,
+                            &journal,
                             ts,
+                            origin,
                         );
-                        journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                     }
                     Action::ToggleTiling => {
                         let cmd = ass_ipc::Command::ToggleTiling;
-                        apply_command(
+                        apply_command_and_journal(
                             &mut server,
                             &notif_queue,
                             &mut quit_requested,
-                            &cmd,
+                            cmd,
                             &ipc,
+                            &journal,
                             ts,
+                            origin,
                         );
-                        journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                     }
                     Action::Quit => {
                         let cmd = ass_ipc::Command::Quit;
-                        apply_command(
+                        apply_command_and_journal(
                             &mut server,
                             &notif_queue,
                             &mut quit_requested,
-                            &cmd,
+                            cmd,
                             &ipc,
+                            &journal,
                             ts,
+                            origin,
                         );
-                        journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                     }
                     Action::Screenshot => {
                         // Refuse to open the selector while locked or inactive;
@@ -2139,53 +3229,93 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // xkb modifier state. The target-local batch was authorized on the IPC
         // thread; this main-loop pass validates live geometry, z-order, and
         // shell occlusion before sending any event.
-        for (cmd, ts) in pending_synthetic_input {
-            let ass_ipc::Command::InjectInput { id, actions } = &cmd else {
-                unreachable!();
-            };
-            let prepared = server.prepare_synthetic_input(*id, actions);
-            let effect = if let Some(events) = prepared {
-                let has_key = events
-                    .iter()
-                    .any(|event| matches!(event, ass_core::input::InputEvent::Key { .. }));
-                let blocked_by_chrome = (has_key && shell.captures_keyboard())
-                    || events.iter().any(|event| {
-                        matches!(
-                            *event,
-                            ass_core::input::InputEvent::PointerMotion { x, y }
-                                if shell.captures_pointer_at(x, y, input_acc.display_size)
-                        )
-                    });
-                if blocked_by_chrome {
-                    ass_ipc::Effect::Refused {
-                        reason: "target is covered by compositor chrome".into(),
+        for (cmd, ts, origin) in pending_synthetic_input {
+            let effect = match &cmd {
+                ass_ipc::Command::InjectInput { id, actions } => {
+                    let prepared = server.prepare_synthetic_input(*id, actions);
+                    if let Some(events) = prepared {
+                        let has_key = events
+                            .iter()
+                            .any(|event| matches!(event, ass_core::input::InputEvent::Key { .. }));
+                        let blocked_by_chrome = (has_key && shell.captures_keyboard())
+                            || events.iter().any(|event| {
+                                matches!(
+                                    *event,
+                                    ass_core::input::InputEvent::PointerMotion { x, y }
+                                        if shell.captures_pointer_at(
+                                            x,
+                                            y,
+                                            input_acc.display_size
+                                        )
+                                )
+                            });
+                        if blocked_by_chrome {
+                            ass_ipc::Effect::Refused {
+                                reason: "target is covered by compositor chrome".into(),
+                            }
+                        } else {
+                            server.focus_surface_by_id(*id);
+                            let no_bindings = ass_core::keybind::Keymap::default();
+                            let actions = server.forward_input(&events, &no_bindings);
+                            debug_assert!(actions.is_empty());
+                            if events.iter().any(|event| {
+                                matches!(event, ass_core::input::InputEvent::PointerMotion { .. })
+                            }) {
+                                synthetic_pointer_active = true;
+                                chrome_pointer_captured = false;
+                            }
+                            ass_ipc::Effect::Applied
+                        }
+                    } else {
+                        ass_ipc::Effect::Refused {
+                            reason: "invalid, hidden, stale, or occluded target".into(),
+                        }
                     }
-                } else {
-                    server.focus_surface_by_id(*id);
-                    let no_bindings = ass_core::keybind::Keymap::default();
-                    let actions = server.forward_input(&events, &no_bindings);
-                    debug_assert!(actions.is_empty());
-                    if events.iter().any(|event| {
-                        matches!(event, ass_core::input::InputEvent::PointerMotion { .. })
-                    }) {
-                        synthetic_pointer_active = true;
-                        chrome_pointer_captured = false;
+                }
+                ass_ipc::Command::InjectRealmInput { realm, id, actions } => {
+                    let seat = server
+                        .realm_snapshot()
+                        .seats
+                        .into_iter()
+                        .find(|seat| seat.realm == *realm && seat.enabled)
+                        .map(|seat| seat.id);
+                    let Some(seat) = seat else {
+                        journal_effect_and_broadcast(
+                            &journal,
+                            &ipc,
+                            ts,
+                            origin,
+                            cmd.clone(),
+                            ass_ipc::Effect::Refused {
+                                reason: "realm has no active seat".into(),
+                            },
+                        );
+                        continue;
+                    };
+                    let Some(events) = server.prepare_agent_synthetic_input(seat, *id, actions)
+                    else {
+                        journal_effect_and_broadcast(
+                            &journal,
+                            &ipc,
+                            ts,
+                            origin,
+                            cmd.clone(),
+                            ass_ipc::Effect::Refused {
+                                reason: "invalid, stale, or unauthorized realm target".into(),
+                            },
+                        );
+                        continue;
+                    };
+                    match server.forward_agent_input_to(seat, *id, &events) {
+                        Ok(()) => ass_ipc::Effect::Applied,
+                        Err(error) => ass_ipc::Effect::Refused {
+                            reason: error.to_string(),
+                        },
                     }
-                    ass_ipc::Effect::Applied
                 }
-            } else {
-                ass_ipc::Effect::Refused {
-                    reason: "invalid, hidden, stale, or occluded target".into(),
-                }
+                _ => unreachable!(),
             };
-            journal_effect_and_broadcast(
-                &journal,
-                &ipc,
-                ts,
-                ass_ipc::Origin::Ipc { conn_id: 0 },
-                cmd,
-                effect,
-            );
+            journal_effect_and_broadcast(&journal, &ipc, ts, origin, cmd, effect);
         }
         if session_locked {
             // Keep compositor chrome inert while it is hidden beneath the
@@ -2289,6 +3419,42 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // the dock (ADR-0024 chrome-aware work-area).
         server.apply_tiling(shell.reserved().inset(server.output_logical_rect()));
 
+        for request in realm_capture_rx.try_iter() {
+            if server.session_locked() || !host.is_active() {
+                let _ = request
+                    .reply
+                    .send(Err("session is locked or inactive".into()));
+                continue;
+            }
+            if !capture_worker.reserve() {
+                let _ = request
+                    .reply
+                    .send(Err("another capture is still being processed".into()));
+                continue;
+            }
+            match begin_realm_capture(
+                &mut realm_render_targets,
+                &device,
+                &mut renderer,
+                &server,
+                request.realm,
+                request.region,
+                capture_worker.security_generation(),
+            ) {
+                Ok(prepared) => {
+                    pending_realm_capture = Some(PendingRealmCapture {
+                        readback: prepared.readback,
+                        context: prepared.context,
+                        reply: request.reply,
+                    });
+                }
+                Err(reason) => {
+                    capture_worker.release();
+                    let _ = request.reply.send(Err(reason));
+                }
+            }
+        }
+
         match surface.begin_frame() {
             Ok(mut frame) => {
                 renderer.begin_frame();
@@ -2333,7 +3499,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             Some((req.region, CaptureTarget::Reply { reply: req.reply }));
                     }
                 }
-                for (cmd, ts) in pending_screenshots.drain(..) {
+                for (cmd, ts, origin) in pending_screenshots.drain(..) {
                     let ass_ipc::Command::Screenshot { path, region } = &cmd else {
                         continue;
                     };
@@ -2342,7 +3508,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             &journal,
                             &ipc,
                             ts,
-                            ass_ipc::Origin::Ipc { conn_id: 0 },
+                            origin,
                             cmd,
                             ass_ipc::Effect::Refused {
                                 reason: "session is locked or inactive".into(),
@@ -2353,7 +3519,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             &journal,
                             &ipc,
                             ts,
-                            ass_ipc::Origin::Ipc { conn_id: 0 },
+                            origin,
                             cmd,
                             ass_ipc::Effect::Refused {
                                 reason: "another capture is still being processed".into(),
@@ -2366,6 +3532,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 path: path.clone(),
                                 command: cmd,
                                 ts_mono_ms: ts,
+                                origin,
                             },
                         ));
                     }
@@ -2510,6 +3677,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 live.set_workspaces(ws_snap.clone());
                 shell.set_workspaces(ws_snap.clone());
                 live.set_outputs(server.output_infos());
+                let realm_snapshot = server.realm_snapshot();
+                live.set_realms(realm_snapshot.clone());
+                shell.set_realms(realm_snapshot.clone());
+                if last_realm_revision != Some(realm_snapshot.revision) {
+                    last_realm_revision = Some(realm_snapshot.revision);
+                    if let Some(s) = ipc.as_ref() {
+                        s.broadcast(ass_ipc::Event::RealmsChanged {
+                            revision: realm_snapshot.revision,
+                        });
+                    }
+                }
                 if ws_changed {
                     last_ws_snap = Some(ws_snap);
                     if let Some(s) = ipc.as_ref() {
@@ -2544,6 +3722,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 path,
                                 command,
                                 ts_mono_ms: ts,
+                                origin: ass_ipc::Origin::Chrome,
                             },
                         ));
                     } else {
@@ -2551,7 +3730,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             &journal,
                             &ipc,
                             ts,
-                            ass_ipc::Origin::Ipc { conn_id: 0 },
+                            ass_ipc::Origin::Chrome,
                             command,
                             ass_ipc::Effect::Refused {
                                 reason: "another capture is still being processed".into(),
@@ -2574,66 +3753,63 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let ts = start.elapsed().as_millis() as u64;
                 let origin = ass_ipc::Origin::Chrome;
                 if let Some(id) = shell.take_clicked_window() {
-                    let cmd = ass_ipc::Command::Focus { id };
-                    apply_command(
+                    apply_chrome_window_command(
                         &mut server,
                         &notif_queue,
                         &mut quit_requested,
-                        &cmd,
+                        ass_ipc::Command::Focus { id },
                         &ipc,
+                        &journal,
                         ts,
                     );
-                    journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                 }
                 // Overview intents (M9): a thumbnail pick focuses its window;
                 // a rail tile switches workspace while the overview stays open.
                 if let Some(id) = shell.take_overview_pick() {
-                    let cmd = ass_ipc::Command::Focus { id };
-                    apply_command(
+                    apply_chrome_window_command(
                         &mut server,
                         &notif_queue,
                         &mut quit_requested,
-                        &cmd,
+                        ass_ipc::Command::Focus { id },
                         &ipc,
+                        &journal,
                         ts,
                     );
-                    journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                 }
                 if let Some(id) = shell.take_overview_switch() {
                     let cmd = ass_ipc::Command::SwitchWorkspaceTo { id };
-                    apply_command(
+                    apply_command_and_journal(
                         &mut server,
                         &notif_queue,
                         &mut quit_requested,
-                        &cmd,
+                        cmd,
                         &ipc,
+                        &journal,
                         ts,
+                        origin,
                     );
-                    journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                 }
                 if let Some(id) = shell.take_closed_window() {
-                    let cmd = ass_ipc::Command::Close { id };
-                    apply_command(
+                    apply_chrome_window_command(
                         &mut server,
                         &notif_queue,
                         &mut quit_requested,
-                        &cmd,
+                        ass_ipc::Command::Close { id },
                         &ipc,
+                        &journal,
                         ts,
                     );
-                    journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                 }
                 if let Some(id) = shell.take_move_requested() {
-                    let cmd = ass_ipc::Command::Move { id };
-                    apply_command(
+                    apply_chrome_window_command(
                         &mut server,
                         &notif_queue,
                         &mut quit_requested,
-                        &cmd,
+                        ass_ipc::Command::Move { id },
                         &ipc,
+                        &journal,
                         ts,
                     );
-                    journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                 }
                 for action in shell.take_window_actions() {
                     let cmd = match action {
@@ -2641,42 +3817,119 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         ass_shell::WindowAction::Minimize(id) => ass_ipc::Command::Minimize { id },
                         ass_shell::WindowAction::Close(id) => ass_ipc::Command::Close { id },
                     };
-                    apply_command(
+                    apply_chrome_window_command(
                         &mut server,
                         &notif_queue,
                         &mut quit_requested,
-                        &cmd,
+                        cmd,
                         &ipc,
+                        &journal,
                         ts,
                     );
-                    journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                 }
                 if let Some(id) = shell.take_switch_workspace() {
                     let cmd = ass_ipc::Command::SwitchWorkspaceTo { id };
-                    apply_command(
+                    apply_command_and_journal(
                         &mut server,
                         &notif_queue,
                         &mut quit_requested,
-                        &cmd,
+                        cmd,
                         &ipc,
+                        &journal,
                         ts,
+                        origin,
                     );
-                    journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                 }
                 if let Some(id) = shell.take_dismissed_notification() {
                     let cmd = ass_ipc::Command::DismissNotification { id };
-                    apply_command(
+                    apply_command_and_journal(
                         &mut server,
                         &notif_queue,
                         &mut quit_requested,
-                        &cmd,
+                        cmd,
                         &ipc,
+                        &journal,
                         ts,
+                        origin,
                     );
-                    journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                 }
                 if let Some(app) = shell.take_open_builtin() {
                     shell.open_builtin(app);
+                }
+                for intent in shell.take_realm_intents() {
+                    let action = realm_intent_to_action(intent);
+                    let before_revision = server.realm_snapshot().revision;
+                    let result = apply_realm_action(&mut server, action.clone());
+                    match &result {
+                        Ok(_) => {
+                            for realm in realms_explicitly_stopped(&action) {
+                                automatically_paused_realms.remove(&realm);
+                            }
+                            let invalidated = realm_action_invalidates_capture(&action);
+                            if !invalidated.is_empty() {
+                                capture_worker.invalidate_security_context();
+                                if pending_realm_capture.as_ref().is_some_and(|pending| {
+                                    invalidated.contains(&pending.context.realm)
+                                }) {
+                                    let pending = pending_realm_capture
+                                        .take()
+                                        .expect("capture invalidation predicate checked");
+                                    refuse_capture_target(
+                                        &capture_worker,
+                                        CaptureTarget::RealmReply {
+                                            context: pending.context,
+                                            reply: pending.reply,
+                                        },
+                                        "Realm authority changed before capture completed".into(),
+                                        &journal,
+                                        &ipc,
+                                    );
+                                }
+                            }
+                            if let ass_ipc::RealmAction::Revoke { realm, .. } = &action {
+                                realm_render_targets.remove(realm);
+                            }
+                            realm_processes.apply_committed_action(&action);
+                            let snapshot = server.realm_snapshot();
+                            last_realm_revision = Some(snapshot.revision);
+                            live.set_realms(snapshot.clone());
+                            shell.set_realms(snapshot.clone());
+                            if let Some(ipc) = &ipc {
+                                ipc.broadcast(ass_ipc::Event::RealmsChanged {
+                                    revision: snapshot.revision,
+                                });
+                            }
+                        }
+                        Err(error) => {
+                            log::warn!("Realm action from shell refused: {error}");
+                            let notification = notif_queue.lock().unwrap().push(
+                                "AI Workspace",
+                                error.clone(),
+                                Some("ass-control-center".into()),
+                                ts,
+                            );
+                            if let Some(ipc) = &ipc {
+                                ipc.broadcast(ass_ipc::Event::Notified { notification });
+                            }
+                        }
+                    }
+                    let after_revision = server.realm_snapshot().revision;
+                    let effect = match result {
+                        Ok(_) => ass_ipc::Effect::Applied,
+                        Err(reason) => ass_ipc::Effect::Refused { reason },
+                    };
+                    journal_mutation_effect_and_broadcast(
+                        &journal,
+                        &ipc,
+                        ts,
+                        ass_ipc::Origin::Chrome,
+                        ass_ipc::JournalMutation::Realm {
+                            action,
+                            before_revision,
+                            after_revision,
+                        },
+                        effect,
+                    );
                 }
                 let system_actions = shell.take_system_actions();
                 if !system_actions.is_empty() {
@@ -2705,15 +3958,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             &mut system_status,
                             action,
                         ) {
-                            apply_command(
+                            apply_command_and_journal(
                                 &mut server,
                                 &notif_queue,
                                 &mut quit_requested,
-                                &cmd,
+                                cmd,
                                 &ipc,
+                                &journal,
                                 ts,
+                                origin,
                             );
-                            journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                         }
                     }
                     shell.set_system_status(system_status.clone());
@@ -2823,6 +4077,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 physical_size.1,
                             )
                         }),
+                        security_generation: capture_worker.security_generation(),
                     };
                     match frame.request_readback() {
                         Ok(()) => Some(PendingCapture { readback, target }),
@@ -2927,12 +4182,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             Err(error) if error.0 == flux_sys::flux_result::FLUX_ERROR_TIMEOUT => {
-                for (command, ts_mono_ms) in pending_screenshots.drain(..) {
+                for (command, ts_mono_ms, origin) in pending_screenshots.drain(..) {
                     journal_effect_and_broadcast(
                         &journal,
                         &ipc,
                         ts_mono_ms,
-                        ass_ipc::Origin::Ipc { conn_id: 0 },
+                        origin,
                         command,
                         ass_ipc::Effect::Refused {
                             reason: "output frame timed out before capture".to_owned(),
@@ -2947,12 +4202,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
             Err(_) => {
-                for (command, ts_mono_ms) in pending_screenshots.drain(..) {
+                for (command, ts_mono_ms, origin) in pending_screenshots.drain(..) {
                     journal_effect_and_broadcast(
                         &journal,
                         &ipc,
                         ts_mono_ms,
-                        ass_ipc::Origin::Ipc { conn_id: 0 },
+                        origin,
                         command,
                         ass_ipc::Effect::Refused {
                             reason: "output changed before capture".to_owned(),
@@ -3223,7 +4478,23 @@ fn build_keymap(config: Option<&ass_config::Config>) -> ass_core::keybind::Keyma
 fn build_ipc_scopes(
     config: Option<&ass_config::Config>,
 ) -> std::collections::HashMap<String, ass_ipc::Scope> {
-    let mut scopes = std::collections::HashMap::new();
+    let mut scopes = std::collections::HashMap::from([(
+        ass_ipc::LOCAL_REALM_ADMIN_SCOPE.to_string(),
+        ass_ipc::Scope {
+            windows: None,
+            workspaces: None,
+            outputs: None,
+            realms: None,
+            ops: Some(vec![
+                ass_ipc::OpClass::InjectRealmInput,
+                ass_ipc::OpClass::CreateRealm,
+                ass_ipc::OpClass::TransactRealm,
+                ass_ipc::OpClass::RevokeRealm,
+                ass_ipc::OpClass::CaptureRealm,
+                ass_ipc::OpClass::LaunchInRealm,
+            ]),
+        },
+    )]);
     let Some(config) = config else {
         return scopes;
     };
@@ -3272,17 +4543,64 @@ fn build_ipc_scopes(
                 .map(ass_core::workspace::WorkspaceId)
                 .collect()
         });
+        let realms = (!declared.realms.is_empty()).then(|| {
+            declared
+                .realms
+                .iter()
+                .copied()
+                .map(ass_core::realm::RealmId)
+                .collect()
+        });
         scopes.insert(
             name.to_string(),
             ass_ipc::Scope {
                 windows,
                 workspaces,
                 outputs: None,
+                realms,
                 ops,
             },
         );
     }
     scopes
+}
+
+fn authorize_realm_action_against_snapshot(
+    scope: &ass_ipc::Scope,
+    action: &ass_ipc::RealmAction,
+    snapshot: &ass_core::realm::RealmSnapshot,
+) -> Result<(), String> {
+    if !scope.permits_realm_action(action) {
+        return Err("out of scope".into());
+    }
+    let ass_ipc::RealmAction::Transact { mutations, .. } = action else {
+        return Ok(());
+    };
+    for mutation in mutations {
+        let group = match mutation {
+            ass_core::realm::RealmMutation::TransferWindow { window, .. } => snapshot
+                .interaction_groups
+                .iter()
+                .find(|group| group.windows.contains(window)),
+            ass_core::realm::RealmMutation::SetObserver { group, .. } => snapshot
+                .interaction_groups
+                .iter()
+                .find(|candidate| candidate.id == *group),
+            ass_core::realm::RealmMutation::ConfigureOutput { .. }
+            | ass_core::realm::RealmMutation::SetState { .. } => None,
+        };
+        if group.is_some_and(|group| {
+            group
+                .windows
+                .iter()
+                .any(|window| !scope.permits_window(*window))
+        }) {
+            return Err(
+                "out of scope: Realm mutation affects another interaction-group window".into(),
+            );
+        }
+    }
+    Ok(())
 }
 
 fn ipc_op_class(name: &str) -> Option<ass_ipc::OpClass> {
@@ -3294,6 +4612,12 @@ fn ipc_op_class(name: &str) -> Option<ass_ipc::OpClass> {
         "move" => Some(OpClass::Move),
         "setwindowgeometry" | "set_window_geometry" => Some(OpClass::SetWindowGeometry),
         "injectinput" | "inject_input" => Some(OpClass::InjectInput),
+        "injectrealminput" | "inject_realm_input" => Some(OpClass::InjectRealmInput),
+        "createrealm" | "create_realm" => Some(OpClass::CreateRealm),
+        "transactrealm" | "transact_realm" => Some(OpClass::TransactRealm),
+        "revokerealm" | "revoke_realm" => Some(OpClass::RevokeRealm),
+        "capturerealm" | "capture_realm" => Some(OpClass::CaptureRealm),
+        "launchinrealm" | "launch_in_realm" => Some(OpClass::LaunchInRealm),
         "cycle" => Some(OpClass::Cycle),
         "switchworkspace" | "switch_workspace" => Some(OpClass::SwitchWorkspace),
         "switchworkspaceto" | "switch_workspace_to" => Some(OpClass::SwitchWorkspaceTo),
@@ -3312,21 +4636,34 @@ fn ipc_op_class(name: &str) -> Option<ass_ipc::OpClass> {
 /// `session` commands arrive through [`ass_ipc::Handler::command`] and are forwarded
 /// to the main loop via the channel the binary owns — the Wayland server
 /// state is not `Send`, so connection threads must not touch it directly.
+struct LiveChannels {
+    commands: std::sync::mpsc::Sender<IpcCommandRequest>,
+    capture: std::sync::mpsc::Sender<CaptureRequest>,
+    realm_controls: std::sync::mpsc::Sender<RealmControlRequest>,
+    realm_capture: std::sync::mpsc::Sender<RealmCaptureRequest>,
+    journal_refusals: std::sync::mpsc::Sender<JournalRefusalRequest>,
+}
+
 struct LiveState {
     windows: std::sync::RwLock<Vec<ass_core::window::Window>>,
     workspaces: std::sync::RwLock<ass_core::workspace::WorkspaceSnapshot>,
     outputs: std::sync::RwLock<Vec<ass_core::output::OutputInfo>>,
+    realms: std::sync::RwLock<ass_core::realm::RealmSnapshot>,
     notifications: std::sync::Arc<std::sync::Mutex<ass_core::notify::NotificationQueue>>,
     journal: std::sync::Arc<std::sync::Mutex<ass_ipc::Journal>>,
-    commands: std::sync::Mutex<std::sync::mpsc::Sender<ass_ipc::Command>>,
+    commands: std::sync::Mutex<std::sync::mpsc::Sender<IpcCommandRequest>>,
     capture: std::sync::Mutex<std::sync::mpsc::Sender<CaptureRequest>>,
+    realm_controls: std::sync::Mutex<std::sync::mpsc::Sender<RealmControlRequest>>,
+    realm_capture: std::sync::Mutex<std::sync::mpsc::Sender<RealmCaptureRequest>>,
+    journal_refusals: std::sync::mpsc::Sender<JournalRefusalRequest>,
+    capture_delivery_gate: std::sync::Arc<std::sync::atomic::AtomicBool>,
     scopes: std::sync::RwLock<std::collections::HashMap<String, ass_ipc::Scope>>,
 }
 
 impl LiveState {
     fn new(
-        commands: std::sync::mpsc::Sender<ass_ipc::Command>,
-        capture: std::sync::mpsc::Sender<CaptureRequest>,
+        channels: LiveChannels,
+        capture_delivery_gate: std::sync::Arc<std::sync::atomic::AtomicBool>,
         notifications: std::sync::Arc<std::sync::Mutex<ass_core::notify::NotificationQueue>>,
         journal: std::sync::Arc<std::sync::Mutex<ass_ipc::Journal>>,
         scopes: std::collections::HashMap<String, ass_ipc::Scope>,
@@ -3337,10 +4674,15 @@ impl LiveState {
                 ass_core::workspace::WorkspaceModel::new().snapshot(),
             ),
             outputs: std::sync::RwLock::new(Vec::new()),
+            realms: std::sync::RwLock::new(ass_core::realm::RealmModel::new().snapshot()),
             notifications,
             journal,
-            commands: std::sync::Mutex::new(commands),
-            capture: std::sync::Mutex::new(capture),
+            commands: std::sync::Mutex::new(channels.commands),
+            capture: std::sync::Mutex::new(channels.capture),
+            realm_controls: std::sync::Mutex::new(channels.realm_controls),
+            realm_capture: std::sync::Mutex::new(channels.realm_capture),
+            journal_refusals: channels.journal_refusals,
+            capture_delivery_gate,
             scopes: std::sync::RwLock::new(scopes),
         }
     }
@@ -3355,6 +4697,10 @@ impl LiveState {
 
     fn set_outputs(&self, outputs: Vec<ass_core::output::OutputInfo>) {
         *self.outputs.write().unwrap() = outputs;
+    }
+
+    fn set_realms(&self, snapshot: ass_core::realm::RealmSnapshot) {
+        *self.realms.write().unwrap() = snapshot;
     }
 
     fn set_scopes(&self, scopes: std::collections::HashMap<String, ass_ipc::Scope>) {
@@ -3372,6 +4718,7 @@ impl ass_ipc::Handler for LiveState {
             control: true,
             input: true,
             session: true,
+            realm: true,
         }
     }
 
@@ -3395,18 +4742,50 @@ impl ass_ipc::Handler for LiveState {
         self.journal.lock().unwrap().since(since)
     }
 
-    fn command(&self, cmd: ass_ipc::Command) {
+    fn realms(&self) -> ass_core::realm::RealmSnapshot {
+        self.realms.read().unwrap().clone()
+    }
+
+    fn authorize_realm_action(
+        &self,
+        scope: &ass_ipc::Scope,
+        action: &ass_ipc::RealmAction,
+    ) -> Result<(), String> {
+        let snapshot = self.realms.read().unwrap();
+        authorize_realm_action_against_snapshot(scope, action, &snapshot)
+    }
+
+    fn audit_refusal(&self, conn_id: u64, mutation: ass_ipc::JournalMutation, reason: String) {
+        let _ = self.journal_refusals.send(JournalRefusalRequest {
+            origin: ass_ipc::Origin::Ipc { conn_id },
+            mutation,
+            reason,
+        });
+    }
+
+    fn capture_security_active(&self) -> bool {
+        self.capture_delivery_gate
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn command(&self, conn_id: u64, cmd: ass_ipc::Command) {
         // Best-effort: a send fails only if the main loop has dropped the
         // receiver (compositor shutting down); the command is then lost,
         // which is the right outcome.
-        let _ = self.commands.lock().unwrap().send(cmd);
+        let _ = self.commands.lock().unwrap().send(IpcCommandRequest {
+            origin: ass_ipc::Origin::Ipc { conn_id },
+            command: cmd,
+        });
     }
 
     fn resolve_scope(&self, name: &str) -> Option<ass_ipc::Scope> {
         self.scopes.read().unwrap().get(name).cloned()
     }
 
-    fn capture_output(&self, region: Option<ass_core::Rect>) -> Result<(u32, u32, String), String> {
+    fn capture_output(
+        &self,
+        region: Option<ass_core::Rect>,
+    ) -> Result<ass_ipc::CaptureOutputPayload, String> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         self.capture
             .lock()
@@ -3421,6 +4800,46 @@ impl ass_ipc::Handler for LiveState {
         reply_rx
             .recv_timeout(std::time::Duration::from_secs(2))
             .map_err(|_| "capture timed out".to_owned())?
+    }
+
+    fn realm_action(
+        &self,
+        conn_id: u64,
+        action: ass_ipc::RealmAction,
+    ) -> Result<ass_ipc::RealmActionResult, String> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.realm_controls
+            .lock()
+            .unwrap()
+            .send(RealmControlRequest {
+                origin: ass_ipc::Origin::Ipc { conn_id },
+                action,
+                reply: reply_tx,
+            })
+            .map_err(|_| "compositor is shutting down".to_owned())?;
+        reply_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|_| "realm operation timed out".to_owned())?
+    }
+
+    fn capture_realm(
+        &self,
+        realm: ass_core::realm::RealmId,
+        region: Option<ass_core::Rect>,
+    ) -> Result<ass_ipc::CaptureRealmPayload, String> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.realm_capture
+            .lock()
+            .unwrap()
+            .send(RealmCaptureRequest {
+                realm,
+                reply: reply_tx,
+                region,
+            })
+            .map_err(|_| "compositor is shutting down".to_owned())?;
+        reply_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|_| "realm capture timed out".to_owned())?
     }
 }
 
@@ -3782,6 +5201,30 @@ mod tests {
     }
 
     #[test]
+    fn realm_capture_region_is_intersected_in_logical_space() {
+        assert_eq!(
+            clamp_logical_region(ass_core::Rect::new(-10, 5, 30, 40), 100, 30),
+            Some(ass_core::Rect::new(0, 5, 20, 25))
+        );
+        assert_eq!(
+            clamp_logical_region(ass_core::Rect::new(100, 0, 20, 20), 100, 100),
+            None
+        );
+        assert_eq!(
+            clamp_logical_region(ass_core::Rect::new(0, 0, 0, 20), 100, 100),
+            None
+        );
+        assert_eq!(
+            clamp_logical_region(
+                ass_core::Rect::new(i32::MAX - 1, i32::MAX - 1, i32::MAX, i32::MAX),
+                16_384,
+                16_384,
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn logical_capture_region_scales_endpoints_and_clamps() {
         assert_eq!(
             logical_rect_to_physical(ass_core::Rect::new(-10, 10, 30, 20), 1.5, 30, 40),
@@ -3805,6 +5248,23 @@ mod tests {
         assert_eq!((width, height), (1, 1));
         let decoded = image::load_from_memory(&png).unwrap().into_rgba8();
         assert_eq!(decoded.into_raw(), vec![100, 50, 0, 128]);
+    }
+
+    #[test]
+    fn capture_security_generation_invalidates_pre_lock_frames() {
+        let worker = CaptureWorker::spawn().unwrap();
+        let before = worker.security_generation();
+        assert!(worker.permits(before));
+        worker.set_allowed(false);
+        let locked = worker.security_generation();
+        assert!(locked > before);
+        assert!(!worker.permits(before));
+        assert!(!worker.permits(locked));
+        worker.set_allowed(true);
+        assert_eq!(worker.security_generation(), locked);
+        assert!(worker.permits(locked));
+        worker.set_allowed(false);
+        assert!(worker.security_generation() > locked);
     }
 
     #[test]
@@ -3844,6 +5304,72 @@ mod tests {
         assert!(!scope.permits(&ass_ipc::Command::Close {
             id: ass_core::window::WindowId(7),
         }));
+        let admin = scopes
+            .get(ass_ipc::LOCAL_REALM_ADMIN_SCOPE)
+            .expect("built-in Realm recovery scope");
+        assert!(admin.permits(&ass_ipc::Command::LaunchInRealm {
+            realm: ass_core::realm::RealmId(9),
+            desktop_id: "foot.desktop".into(),
+        }));
+    }
+
+    #[test]
+    fn realm_scope_expands_atomic_groups_before_authorizing() {
+        let mut model = ass_core::realm::RealmModel::new();
+        let agent =
+            model.create_agent_realm("agent", ass_core::realm::SeatCapabilities::POINTER_KEYBOARD);
+        let client = model.register_client(None);
+        let first = ass_core::window::WindowId(7);
+        let sibling = ass_core::window::WindowId(8);
+        let group = model
+            .create_interaction_group(client, &[first, sibling], ass_core::realm::HUMAN_REALM)
+            .unwrap();
+        let action = ass_ipc::RealmAction::Transact {
+            expected_revision: None,
+            mutations: vec![ass_core::realm::RealmMutation::TransferWindow {
+                window: first,
+                target: agent.realm,
+                retain_source_as_observer: true,
+            }],
+        };
+        let one_window = ass_ipc::Scope {
+            windows: Some(vec![first]),
+            workspaces: None,
+            outputs: None,
+            realms: Some(vec![agent.realm]),
+            ops: Some(vec![ass_ipc::OpClass::TransactRealm]),
+        };
+        assert!(one_window.permits_realm_action(&action));
+        assert!(
+            authorize_realm_action_against_snapshot(&one_window, &action, &model.snapshot())
+                .is_err(),
+            "an allowlisted member cannot smuggle its interaction-group sibling"
+        );
+
+        let complete_group = ass_ipc::Scope {
+            windows: Some(vec![first, sibling]),
+            ..one_window
+        };
+        assert!(authorize_realm_action_against_snapshot(
+            &complete_group,
+            &action,
+            &model.snapshot()
+        )
+        .is_ok());
+        let observe = ass_ipc::RealmAction::Transact {
+            expected_revision: None,
+            mutations: vec![ass_core::realm::RealmMutation::SetObserver {
+                group,
+                realm: agent.realm,
+                observe: true,
+            }],
+        };
+        assert!(authorize_realm_action_against_snapshot(
+            &complete_group,
+            &observe,
+            &model.snapshot()
+        )
+        .is_ok());
     }
 
     #[test]

@@ -67,8 +67,30 @@ pub type wl_global = c_void;
 pub type wl_event_loop = c_void;
 pub type wl_shm_buffer = c_void;
 
+#[repr(C)]
+pub struct wl_list {
+    pub prev: *mut wl_list,
+    pub next: *mut wl_list,
+}
+
+pub type wl_notify_func_t =
+    Option<unsafe extern "C" fn(listener: *mut wl_listener, data: *mut c_void)>;
+
+#[repr(C)]
+pub struct wl_listener {
+    pub link: wl_list,
+    pub notify: wl_notify_func_t,
+}
+
 /// Global bind callback: `void (*)(wl_client*, void *data, uint32_t version, uint32_t id)`.
 pub type wl_global_bind_func = unsafe extern "C" fn(*mut wl_client, *mut c_void, u32, u32);
+pub type wl_display_global_filter_func = Option<
+    unsafe extern "C" fn(
+        client: *const wl_client,
+        global: *const wl_global,
+        data: *mut c_void,
+    ) -> bool,
+>;
 
 /// Resource destroy callback: `void (*)(wl_resource*)`.
 pub type wl_resource_destroy_func = unsafe extern "C" fn(*mut wl_resource);
@@ -81,6 +103,8 @@ pub const WL_OUTPUT_SCALE: u32 = 3;
 pub const WL_OUTPUT_NAME: u32 = 4;
 pub const WL_OUTPUT_DESCRIPTION: u32 = 5;
 pub const WL_OUTPUT_MODE_CURRENT: u32 = 0x1;
+pub const WL_SURFACE_ENTER: u32 = 0;
+pub const WL_SURFACE_LEAVE: u32 = 1;
 pub const WL_CALLBACK_DONE: u32 = 0;
 pub const WL_BUFFER_RELEASE: u32 = 0;
 
@@ -349,6 +373,11 @@ extern "C" {
     pub fn wl_display_next_serial(display: *mut wl_display) -> u32;
     pub fn wl_display_get_event_loop(display: *mut wl_display) -> *mut wl_event_loop;
     pub fn wl_display_flush_clients(display: *mut wl_display);
+    pub fn wl_display_set_global_filter(
+        display: *mut wl_display,
+        filter: wl_display_global_filter_func,
+        data: *mut c_void,
+    );
     pub fn wl_event_loop_dispatch(loop_: *mut wl_event_loop, timeout: c_int) -> c_int;
     pub fn wl_event_loop_get_fd(loop_: *mut wl_event_loop) -> c_int;
 
@@ -361,6 +390,9 @@ extern "C" {
         bind: wl_global_bind_func,
     ) -> *mut wl_global;
     pub fn wl_global_destroy(global: *mut wl_global);
+    pub fn wl_client_create(display: *mut wl_display, fd: c_int) -> *mut wl_client;
+    pub fn wl_client_destroy(client: *mut wl_client);
+    pub fn wl_client_add_destroy_listener(client: *mut wl_client, listener: *mut wl_listener);
 
     pub fn wl_resource_create(
         client: *mut wl_client,

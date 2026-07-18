@@ -10,7 +10,8 @@ use std::sync::{Arc, Mutex};
 
 use ass_core::window::{Window, WindowId};
 use ass_ipc::{
-    Capabilities, Client, Command, Event, Handler, OpClass, Scope, Server, PROTOCOL_VERSION,
+    Capabilities, Client, Command, Event, Handler, OpClass, RealmAction, RealmActionResult, Scope,
+    Server, PROTOCOL_VERSION,
 };
 
 /// A unique throwaway socket path under the temp dir, namespaced by pid +
@@ -30,7 +31,13 @@ struct TestHandler {
     windows: Vec<Window>,
     policy: Capabilities,
     commands: Mutex<Vec<Command>>,
+    command_connections: Mutex<Vec<u64>>,
+    realm_actions: Mutex<Vec<RealmAction>>,
+    realm_connections: Mutex<Vec<u64>>,
+    refusals: Mutex<Vec<(u64, ass_ipc::JournalMutation, String)>>,
     scopes: Mutex<HashMap<String, Scope>>,
+    capture_delay_ms: AtomicU64,
+    capture_security_active: std::sync::atomic::AtomicBool,
 }
 
 impl TestHandler {
@@ -40,7 +47,13 @@ impl TestHandler {
             windows,
             policy: Capabilities::QUERY,
             commands: Mutex::new(Vec::new()),
+            command_connections: Mutex::new(Vec::new()),
+            realm_actions: Mutex::new(Vec::new()),
+            realm_connections: Mutex::new(Vec::new()),
+            refusals: Mutex::new(Vec::new()),
             scopes: Mutex::new(test_scopes()),
+            capture_delay_ms: AtomicU64::new(0),
+            capture_security_active: std::sync::atomic::AtomicBool::new(true),
         }
     }
     /// Grants control and session, so command tests can exercise them.
@@ -52,9 +65,16 @@ impl TestHandler {
                 control: true,
                 input: true,
                 session: true,
+                realm: true,
             },
             commands: Mutex::new(Vec::new()),
+            command_connections: Mutex::new(Vec::new()),
+            realm_actions: Mutex::new(Vec::new()),
+            realm_connections: Mutex::new(Vec::new()),
+            refusals: Mutex::new(Vec::new()),
             scopes: Mutex::new(test_scopes()),
+            capture_delay_ms: AtomicU64::new(0),
+            capture_security_active: std::sync::atomic::AtomicBool::new(true),
         }
     }
 }
@@ -97,17 +117,98 @@ impl Handler for TestHandler {
             latest_seq: 0,
         }
     }
-    fn command(&self, cmd: Command) {
+    fn command(&self, conn_id: u64, cmd: Command) {
+        self.command_connections.lock().unwrap().push(conn_id);
         self.commands.lock().unwrap().push(cmd);
+    }
+    fn realms(&self) -> ass_core::realm::RealmSnapshot {
+        let mut model = ass_core::realm::RealmModel::new();
+        model.create_agent_realm("test", ass_core::realm::SeatCapabilities::POINTER_KEYBOARD);
+        let mut snapshot = model.snapshot();
+        snapshot.revision = 4;
+        snapshot
+    }
+    fn realm_action(&self, conn_id: u64, action: RealmAction) -> Result<RealmActionResult, String> {
+        self.realm_connections.lock().unwrap().push(conn_id);
+        self.realm_actions.lock().unwrap().push(action.clone());
+        match action {
+            RealmAction::Create { .. } => Ok(RealmActionResult::Created {
+                bundle: ass_core::realm::RealmBundle {
+                    principal: ass_core::realm::PrincipalId(2),
+                    realm: ass_core::realm::RealmId(2),
+                    seat: ass_core::realm::SeatId(2),
+                    revision: 2,
+                },
+            }),
+            RealmAction::Transact { .. } => Ok(RealmActionResult::TransactionCommitted {
+                receipt: ass_core::realm::RealmTransactionReceipt {
+                    before_revision: 1,
+                    after_revision: 2,
+                    results: Vec::new(),
+                },
+            }),
+            RealmAction::Revoke {
+                realm, fallback, ..
+            } => Ok(RealmActionResult::Revoked {
+                receipt: ass_core::realm::RealmRevocation {
+                    realm,
+                    fallback,
+                    transferred_groups: Vec::new(),
+                    revision: 3,
+                },
+            }),
+        }
     }
     fn capture_output(
         &self,
         _region: Option<ass_core::Rect>,
-    ) -> Result<(u32, u32, String), String> {
-        Ok((2, 1, ass_ipc::base64::encode(&[1u8, 2, 3, 4, 5])))
+    ) -> Result<ass_ipc::CaptureOutputPayload, String> {
+        std::thread::sleep(std::time::Duration::from_millis(
+            self.capture_delay_ms.load(Ordering::Relaxed),
+        ));
+        Ok(ass_ipc::CaptureOutputPayload {
+            width: 2,
+            height: 1,
+            png: vec![1u8, 2, 3, 4, 5],
+        })
     }
     fn resolve_scope(&self, name: &str) -> Option<Scope> {
         self.scopes.lock().unwrap().get(name).cloned()
+    }
+    fn audit_refusal(&self, conn_id: u64, mutation: ass_ipc::JournalMutation, reason: String) {
+        self.refusals
+            .lock()
+            .unwrap()
+            .push((conn_id, mutation, reason));
+    }
+    fn capture_security_active(&self) -> bool {
+        self.capture_security_active.load(Ordering::Acquire)
+    }
+    fn capture_realm(
+        &self,
+        realm: ass_core::realm::RealmId,
+        region: Option<ass_core::Rect>,
+    ) -> Result<ass_ipc::CaptureRealmPayload, String> {
+        std::thread::sleep(std::time::Duration::from_millis(
+            self.capture_delay_ms.load(Ordering::Relaxed),
+        ));
+        Ok(ass_ipc::CaptureRealmPayload {
+            capture: ass_ipc::RealmCapture {
+                realm,
+                width: 2,
+                height: 1,
+                scale_milli: 1250,
+                region: region.unwrap_or_else(|| ass_core::Rect::new(0, 0, 2, 1)),
+                placements: vec![ass_core::realm::RealmWindowPlacement {
+                    window: WindowId(1),
+                    output_rect: ass_core::Rect::new(0, 0, 2, 1),
+                    surface_size: ass_core::Size { w: 20, h: 10 },
+                }],
+                png_bytes: 3,
+                revision: 4,
+            },
+            png: vec![9u8, 8, 7],
+        })
     }
 }
 
@@ -133,6 +234,22 @@ fn test_scopes() -> HashMap<String, Scope> {
             "capture".into(),
             Scope {
                 ops: Some(vec![OpClass::CaptureOutput]),
+                ..Scope::default()
+            },
+        ),
+        (
+            "realm".into(),
+            Scope {
+                realms: Some(vec![
+                    ass_core::realm::HUMAN_REALM,
+                    ass_core::realm::RealmId(2),
+                ]),
+                ops: Some(vec![
+                    OpClass::CreateRealm,
+                    OpClass::TransactRealm,
+                    OpClass::RevokeRealm,
+                    OpClass::CaptureRealm,
+                ]),
                 ..Scope::default()
             },
         ),
@@ -165,6 +282,7 @@ fn handshake_reports_query_always_granted() {
             control: true,
             input: true,
             session: true,
+            realm: true,
         },
     )
     .expect("connect");
@@ -231,6 +349,7 @@ fn named_scope_is_reported_and_enforced() {
         control: true,
         input: false,
         session: false,
+        realm: false,
     };
 
     let mut client = Client::connect_scoped(&path, requested, "focus-first").expect("connect");
@@ -261,6 +380,7 @@ fn synthetic_input_requires_a_named_scope_and_separate_capability() {
         control: false,
         input: true,
         session: false,
+        realm: false,
     };
 
     let mut unscoped = Client::connect_with(&path, requested).expect("unscoped connect");
@@ -301,12 +421,13 @@ fn capture_output_requires_control_and_an_explicit_scope_op() {
     let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
 
     // Scoped with the explicit CaptureOutput op + control: succeeds and the
-    // payload round-trips through base64.
+    // payload round-trips through a sealed descriptor.
     let requested = Capabilities {
         query: true,
         control: true,
         input: false,
         session: false,
+        realm: false,
     };
     let mut scoped = Client::connect_scoped(&path, requested, "capture").expect("scoped connect");
     let (w, h, png) = scoped.capture_output().expect("capture succeeds");
@@ -331,6 +452,133 @@ fn capture_output_requires_control_and_an_explicit_scope_op() {
 }
 
 #[test]
+fn realm_lifecycle_capture_and_lease_are_scoped_and_synchronous() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let requested = Capabilities {
+        query: true,
+        control: false,
+        input: false,
+        session: false,
+        realm: true,
+    };
+    let mut client = Client::connect_scoped(&path, requested, "realm").expect("connect");
+    assert!(client.caps().realm);
+    let original_lease = client.lease().expect("privileged connection has lease");
+    let renewed = client.renew_lease(30_000).expect("renew lease");
+    assert_eq!(renewed.id, original_lease.id);
+    assert_eq!(renewed.ttl_ms, 30_000);
+
+    let snapshot = client.realms().expect("realm snapshot");
+    assert_eq!(snapshot.revision, 4);
+    let result = client
+        .realm_action(RealmAction::Create {
+            label: "test agent".into(),
+            capabilities: ass_core::realm::SeatCapabilities::POINTER_KEYBOARD,
+            output: Some(ass_core::realm::VirtualOutput::DEFAULT_AGENT),
+        })
+        .expect("create realm");
+    assert!(matches!(
+        result,
+        RealmActionResult::Created {
+            bundle: ass_core::realm::RealmBundle {
+                realm: ass_core::realm::RealmId(2),
+                ..
+            },
+            ..
+        }
+    ));
+    let capture = client
+        .capture_realm(ass_core::realm::RealmId(2), None)
+        .expect("realm capture");
+    assert_eq!((capture.width, capture.height, capture.revision), (2, 1, 4));
+    assert_eq!(capture.scale_milli, 1250);
+    assert_eq!(capture.region, ass_core::Rect::new(0, 0, 2, 1));
+    assert_eq!(
+        capture.placements,
+        vec![ass_core::realm::RealmWindowPlacement {
+            window: WindowId(1),
+            output_rect: ass_core::Rect::new(0, 0, 2, 1),
+            surface_size: ass_core::Size { w: 20, h: 10 },
+        }]
+    );
+    assert_eq!(capture.png, vec![9, 8, 7]);
+    assert_eq!(handler.realm_actions.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn expired_privileged_lease_fails_closed_without_losing_query_access() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let requested = Capabilities {
+        query: true,
+        control: true,
+        input: false,
+        session: false,
+        realm: false,
+    };
+    let mut client = Client::connect_scoped(&path, requested, "focus-first").expect("connect");
+    client.renew_lease(1_000).expect("short lease");
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+
+    assert_eq!(
+        client.windows().expect("query survives lease expiry").len(),
+        2
+    );
+    let error = client
+        .command(Command::Focus { id: WindowId(1) })
+        .expect_err("expired lease must reject control");
+    assert!(error.to_string().contains("lease expired"), "{error}");
+    assert!(handler.commands.lock().unwrap().is_empty());
+}
+
+#[test]
+fn lease_must_remain_live_until_capture_delivery() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    handler.capture_delay_ms.store(1_100, Ordering::Relaxed);
+    let _server = Server::start(&path, handler).expect("bind");
+    let requested = Capabilities {
+        query: true,
+        control: true,
+        input: false,
+        session: false,
+        realm: false,
+    };
+    let mut client = Client::connect_scoped(&path, requested, "capture").expect("connect");
+    client.renew_lease(1_000).expect("short lease");
+    let error = client
+        .capture_output()
+        .expect_err("expired in-flight capture must not deliver pixels");
+    assert!(error.to_string().contains("lease expired"), "{error}");
+}
+
+#[test]
+fn realm_operations_fail_closed_without_named_scope() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, handler).expect("bind");
+    let requested = Capabilities {
+        query: true,
+        control: false,
+        input: false,
+        session: false,
+        realm: true,
+    };
+    let mut client = Client::connect_with(&path, requested).expect("connect");
+    let error = client
+        .realm_action(RealmAction::Create {
+            label: "denied".into(),
+            capabilities: ass_core::realm::SeatCapabilities::POINTER_KEYBOARD,
+            output: None,
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("out of scope"), "{error}");
+}
+
+#[test]
 fn unknown_named_scope_is_refused_at_handshake() {
     let path = scratch();
     let handler = Arc::new(TestHandler::permissive(sample_windows()));
@@ -352,6 +600,7 @@ fn scope_revocation_applies_to_existing_connections() {
         control: true,
         input: false,
         session: false,
+        realm: false,
     };
     let mut client = Client::connect_scoped(&path, requested, "focus-first").expect("connect");
     client
@@ -363,6 +612,42 @@ fn scope_revocation_applies_to_existing_connections() {
         .command(Command::Focus { id: WindowId(1) })
         .unwrap_err();
     assert!(err.to_string().contains("out of scope"), "{err}");
+}
+
+#[test]
+fn scope_revocation_stops_existing_realm_and_capture_connections() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let requested = Capabilities {
+        query: true,
+        control: false,
+        input: false,
+        session: false,
+        realm: true,
+    };
+    let mut client = Client::connect_scoped(&path, requested, "realm").expect("connect");
+    handler.scopes.lock().unwrap().clear();
+
+    let action_error = client
+        .realm_action(RealmAction::Create {
+            label: "revoked".into(),
+            capabilities: ass_core::realm::SeatCapabilities::POINTER_KEYBOARD,
+            output: None,
+        })
+        .expect_err("removed scope must revoke Realm mutation");
+    assert!(
+        action_error.to_string().contains("out of scope"),
+        "{action_error}"
+    );
+    let capture_error = client
+        .capture_realm(ass_core::realm::RealmId(2), None)
+        .expect_err("removed scope must revoke Realm capture");
+    assert!(
+        capture_error.to_string().contains("out of scope"),
+        "{capture_error}"
+    );
+    assert!(handler.realm_actions.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -395,6 +680,31 @@ fn repeated_requests_on_one_connection() {
 }
 
 #[test]
+fn capture_writer_rechecks_live_security_before_sending_memfd() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let requested = Capabilities {
+        query: true,
+        control: true,
+        input: false,
+        session: false,
+        realm: false,
+    };
+    let mut client = Client::connect_scoped(&path, requested, "capture").expect("connect");
+    handler
+        .capture_security_active
+        .store(false, Ordering::Release);
+    let error = client
+        .capture_output()
+        .expect_err("writer must refuse pixels after the live gate closes");
+    assert!(
+        error.to_string().contains("authorization changed"),
+        "{error}"
+    );
+}
+
+#[test]
 fn wrong_protocol_version_is_refused_at_handshake() {
     use ass_ipc::Request;
     let path = scratch();
@@ -406,6 +716,7 @@ fn wrong_protocol_version_is_refused_at_handshake() {
         version: PROTOCOL_VERSION + 1,
         caps: Capabilities::QUERY,
         scope: None,
+        lease: None,
     };
     ass_ipc::codec::write_msg(&mut s, &bad).unwrap();
     let resp: ass_ipc::Response = ass_ipc::codec::read_msg(&mut s).unwrap();
@@ -433,6 +744,7 @@ fn control_command_is_queued_and_acked() {
             control: true,
             input: false,
             session: false,
+            realm: false,
         },
     )
     .expect("connect");
@@ -455,6 +767,47 @@ fn control_command_is_queued_and_acked() {
 }
 
 #[test]
+fn ipc_origins_are_unique_and_pre_dispatch_refusals_are_audited() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let requested = Capabilities {
+        query: true,
+        control: true,
+        input: false,
+        session: false,
+        realm: false,
+    };
+    let mut first = Client::connect_with(&path, requested).expect("first connection");
+    let mut second = Client::connect_with(&path, requested).expect("second connection");
+    first
+        .command(Command::Focus { id: WindowId(1) })
+        .expect("first command");
+    second
+        .command(Command::Focus { id: WindowId(2) })
+        .expect("second command");
+    let ids = handler.command_connections.lock().unwrap().clone();
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], 0);
+    assert_ne!(ids[0], ids[1]);
+
+    let mut query_only = Client::connect(&path).expect("query-only connection");
+    query_only
+        .command(Command::Close { id: WindowId(1) })
+        .expect_err("missing control capability must be refused");
+    let refusals = handler.refusals.lock().unwrap();
+    let (conn_id, mutation, reason) = refusals.last().expect("audited refusal");
+    assert_ne!(*conn_id, 0);
+    assert!(reason.contains("capability"));
+    assert!(matches!(
+        mutation,
+        ass_ipc::JournalMutation::Command {
+            cmd: Command::Close { id: WindowId(1) }
+        }
+    ));
+}
+
+#[test]
 fn session_command_quit_is_accepted() {
     let path = scratch();
     let handler = Arc::new(TestHandler::permissive(vec![]));
@@ -467,6 +820,7 @@ fn session_command_quit_is_accepted() {
             control: false,
             input: false,
             session: true,
+            realm: false,
         },
     )
     .expect("connect");
@@ -531,6 +885,7 @@ fn switch_workspace_command_is_queued() {
             control: true,
             input: false,
             session: false,
+            realm: false,
         },
     )
     .expect("connect");
@@ -572,6 +927,7 @@ fn notify_command_is_queued_and_acked() {
             control: true,
             input: false,
             session: false,
+            realm: false,
         },
     )
     .expect("connect");

@@ -256,7 +256,7 @@ interpolate at draw time, with subsurface trees glued to their root. The
 unified overview (window grid + workspace rail, live thumbnails, click to
 focus, `Super+O` or `ass-ctl overview`) is in daily use, and a screenshot
 path (`ass-ctl screenshot`, scoped `CaptureOutput` pixel capture per
-[ADR-0037](../adr/0037-scoped-pixel-capture-over-ipc.md)) covers the
+[ADR-0041](../adr/0041-sealed-file-descriptor-pixel-transport.md)) covers the
 single-frame half of the capture story. Still planned: window open/close
 transitions and the workspace-switch slide, screencast streaming through
 `xdg-desktop-portal`, and screen-reader accessibility hooks.
@@ -274,13 +274,17 @@ model that bounds what the agent may do. The agent is an IPC client with a
 defined scope, never a special client of the compositor.
 
 **Status.** In progress. Durable window ids, the mutation journal, fail-closed
-named scopes, deterministic floating-window geometry, bounded target-local
-input, and scoped pixel capture
-([ADR-0037](../adr/0037-scoped-pixel-capture-over-ipc.md)) are implemented.
+named scopes and leases, deterministic floating-window geometry, bounded
+target-local input, sealed-descriptor pixel capture, independent Realm seats
+and virtual outputs, transferable interaction authority, damage-driven
+observation, and cgroup-owned application sandboxes are implemented
+([ADR-0040](../adr/0040-realms-seats-and-transferable-interaction-authority.md)
+through
+[ADR-0042](../adr/0042-mount-scoped-realm-portals-and-cgroup-sandboxes.md)).
 The blueprint is in
 [The Agent Phase](agent-phase.md); decisions are recorded in
-[ADR-0031](../adr/0031-agent-as-scoped-ipc-client.md) through
-[ADR-0036](../adr/0036-scoped-semantic-automation.md). The remaining
+[ADR-0031](../adr/0031-agent-as-scoped-ipc-client.md) and its follow-ons.
+The remaining
 desktop-dependent semantic surface (window-content capture per window,
 semantic element trees) stays open.
 

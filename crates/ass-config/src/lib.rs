@@ -83,6 +83,11 @@ pub struct Config {
     #[serde(default)]
     pub agent: AgentConfig,
 
+    /// Default-deny process sandbox policy for applications launched inside
+    /// Realms. Per-desktop-entry overrides are applied only to new launches.
+    #[serde(default)]
+    pub realm_sandbox: RealmSandboxConfig,
+
     /// Screenshot tool configuration, written as `[screenshot]`.
     #[serde(default)]
     pub screenshot: ScreenshotConfig,
@@ -96,6 +101,123 @@ pub struct AgentConfig {
     /// One named scope per `[[agent.scope]]` entry.
     #[serde(default, rename = "scope")]
     pub scopes: Vec<AgentScopeEntry>,
+}
+
+/// The `[realm_sandbox]` policy and `[[realm_sandbox.app]]` overrides.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RealmSandboxConfig {
+    #[serde(default)]
+    pub network: bool,
+    #[serde(default)]
+    pub readable_paths: Vec<String>,
+    #[serde(default)]
+    pub writable_paths: Vec<String>,
+    #[serde(default = "default_realm_memory_mib")]
+    pub memory_max_mib: u64,
+    #[serde(default = "default_realm_pids")]
+    pub pids_max: u32,
+    #[serde(default = "default_realm_cpu_weight")]
+    pub cpu_weight: u16,
+    #[serde(default, rename = "app")]
+    pub apps: Vec<RealmSandboxAppConfig>,
+}
+
+impl Default for RealmSandboxConfig {
+    fn default() -> Self {
+        Self {
+            network: false,
+            readable_paths: Vec::new(),
+            writable_paths: Vec::new(),
+            memory_max_mib: default_realm_memory_mib(),
+            pids_max: default_realm_pids(),
+            cpu_weight: default_realm_cpu_weight(),
+            apps: Vec::new(),
+        }
+    }
+}
+
+impl RealmSandboxConfig {
+    pub fn policy_for(&self, desktop_id: &str) -> RealmSandboxPolicy {
+        let mut network = self.network;
+        let mut readable_paths = self.readable_paths.clone();
+        let mut writable_paths = self.writable_paths.clone();
+        let mut memory_max_mib = self.memory_max_mib;
+        let mut pids_max = self.pids_max;
+        let mut cpu_weight = self.cpu_weight;
+
+        for app in self.apps.iter().filter(|app| app.desktop_id == desktop_id) {
+            if let Some(value) = app.network {
+                network = value;
+            }
+            if let Some(value) = &app.readable_paths {
+                readable_paths.clone_from(value);
+            }
+            if let Some(value) = &app.writable_paths {
+                writable_paths.clone_from(value);
+            }
+            if let Some(value) = app.memory_max_mib {
+                memory_max_mib = value;
+            }
+            if let Some(value) = app.pids_max {
+                pids_max = value;
+            }
+            if let Some(value) = app.cpu_weight {
+                cpu_weight = value;
+            }
+        }
+
+        RealmSandboxPolicy {
+            network,
+            readable_paths: readable_paths.into_iter().map(PathBuf::from).collect(),
+            writable_paths: writable_paths.into_iter().map(PathBuf::from).collect(),
+            memory_max_bytes: memory_max_mib * 1024 * 1024,
+            pids_max,
+            cpu_weight,
+        }
+    }
+}
+
+/// One exact desktop-entry override. Omitted fields inherit the enclosing
+/// `[realm_sandbox]` value; explicit empty path arrays remove inherited paths.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RealmSandboxAppConfig {
+    pub desktop_id: String,
+    #[serde(default)]
+    pub network: Option<bool>,
+    #[serde(default)]
+    pub readable_paths: Option<Vec<String>>,
+    #[serde(default)]
+    pub writable_paths: Option<Vec<String>>,
+    #[serde(default)]
+    pub memory_max_mib: Option<u64>,
+    #[serde(default)]
+    pub pids_max: Option<u32>,
+    #[serde(default)]
+    pub cpu_weight: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RealmSandboxPolicy {
+    pub network: bool,
+    pub readable_paths: Vec<PathBuf>,
+    pub writable_paths: Vec<PathBuf>,
+    pub memory_max_bytes: u64,
+    pub pids_max: u32,
+    pub cpu_weight: u16,
+}
+
+fn default_realm_memory_mib() -> u64 {
+    8192
+}
+
+fn default_realm_pids() -> u32 {
+    1024
+}
+
+fn default_realm_cpu_weight() -> u16 {
+    100
 }
 
 /// The `[screenshot]` section. Controls where interactive and IPC screenshots
@@ -132,8 +254,8 @@ impl Default for ScreenshotConfig {
 }
 
 /// One declared agent scope. `ops` lists `OpClass` names (`Focus`,
-/// `Close`, …); `windows` and `workspaces` are id allowlists (empty or
-/// omitted means unrestricted at that axis).
+/// `Close`, …); resource lists are id allowlists (empty or omitted means
+/// unrestricted at that axis).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentScopeEntry {
@@ -148,6 +270,9 @@ pub struct AgentScopeEntry {
     /// Workspace-id allowlist. Empty means unrestricted.
     #[serde(default)]
     pub workspaces: Vec<u64>,
+    /// Realm-id allowlist. Empty means unrestricted.
+    #[serde(default)]
+    pub realms: Vec<u64>,
 }
 
 /// The `[dock]` section. `pinned` lists the apps to keep on the dock in order;
@@ -349,6 +474,44 @@ impl std::fmt::Display for Diagnostic {
     }
 }
 
+fn validate_realm_sandbox_limits(
+    prefix: &str,
+    memory_max_mib: u64,
+    pids_max: u32,
+    cpu_weight: u16,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !(256..=1_048_576).contains(&memory_max_mib) {
+        diagnostics.push(Diagnostic::new(
+            Some(format!("{prefix}.memory_max_mib")),
+            "must be between 256 and 1048576",
+        ));
+    }
+    if !(16..=65_536).contains(&pids_max) {
+        diagnostics.push(Diagnostic::new(
+            Some(format!("{prefix}.pids_max")),
+            "must be between 16 and 65536",
+        ));
+    }
+    if !(1..=10_000).contains(&cpu_weight) {
+        diagnostics.push(Diagnostic::new(
+            Some(format!("{prefix}.cpu_weight")),
+            "must be between 1 and 10000",
+        ));
+    }
+}
+
+fn validate_realm_sandbox_paths(field: &str, paths: &[String], diagnostics: &mut Vec<Diagnostic>) {
+    for (index, path) in paths.iter().enumerate() {
+        if !Path::new(path).is_absolute() {
+            diagnostics.push(Diagnostic::new(
+                Some(format!("{field}.{index}")),
+                "must be an absolute path",
+            ));
+        }
+    }
+}
+
 /// A filesystem-level failure while reading or writing the config file.
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
@@ -488,6 +651,54 @@ impl Config {
                 Some("input.touchpad.pointer_speed".into()),
                 "must be between -1.0 and 1.0",
             ));
+        }
+        validate_realm_sandbox_limits(
+            "realm_sandbox",
+            cfg.realm_sandbox.memory_max_mib,
+            cfg.realm_sandbox.pids_max,
+            cfg.realm_sandbox.cpu_weight,
+            &mut diagnostics,
+        );
+        validate_realm_sandbox_paths(
+            "realm_sandbox.readable_paths",
+            &cfg.realm_sandbox.readable_paths,
+            &mut diagnostics,
+        );
+        validate_realm_sandbox_paths(
+            "realm_sandbox.writable_paths",
+            &cfg.realm_sandbox.writable_paths,
+            &mut diagnostics,
+        );
+        for (index, app) in cfg.realm_sandbox.apps.iter().enumerate() {
+            let prefix = format!("realm_sandbox.app.{index}");
+            if app.desktop_id.trim().is_empty() {
+                diagnostics.push(Diagnostic::new(
+                    Some(format!("{prefix}.desktop_id")),
+                    "must not be empty",
+                ));
+            }
+            validate_realm_sandbox_limits(
+                &prefix,
+                app.memory_max_mib
+                    .unwrap_or(cfg.realm_sandbox.memory_max_mib),
+                app.pids_max.unwrap_or(cfg.realm_sandbox.pids_max),
+                app.cpu_weight.unwrap_or(cfg.realm_sandbox.cpu_weight),
+                &mut diagnostics,
+            );
+            if let Some(paths) = &app.readable_paths {
+                validate_realm_sandbox_paths(
+                    &format!("{prefix}.readable_paths"),
+                    paths,
+                    &mut diagnostics,
+                );
+            }
+            if let Some(paths) = &app.writable_paths {
+                validate_realm_sandbox_paths(
+                    &format!("{prefix}.writable_paths"),
+                    paths,
+                    &mut diagnostics,
+                );
+            }
         }
         if cfg.screenshot.save_dir.trim().is_empty() {
             diagnostics.push(Diagnostic::new(
@@ -1283,6 +1494,66 @@ mod tests {
         assert!(err
             .iter()
             .any(|d| d.field.as_deref() == Some("screenshot.save_dir")));
+    }
+
+    #[test]
+    fn realm_sandbox_policy_is_default_deny_and_app_overrides_are_last_wins() {
+        let cfg = Config::parse(
+            "schema_version = 1\n\
+             [realm_sandbox]\n\
+             readable_paths = [\"/srv/reference\"]\n\
+             memory_max_mib = 4096\n\
+             [[realm_sandbox.app]]\n\
+             desktop_id = \"browser.desktop\"\n\
+             network = true\n\
+             writable_paths = [\"/home/alice/Downloads\"]\n\
+             [[realm_sandbox.app]]\n\
+             desktop_id = \"browser.desktop\"\n\
+             memory_max_mib = 2048\n",
+        )
+        .unwrap();
+        let default = cfg.realm_sandbox.policy_for("editor.desktop");
+        assert!(!default.network);
+        assert_eq!(default.memory_max_bytes, 4096 * 1024 * 1024);
+        assert_eq!(
+            default.readable_paths,
+            vec![PathBuf::from("/srv/reference")]
+        );
+        assert!(default.writable_paths.is_empty());
+
+        let browser = cfg.realm_sandbox.policy_for("browser.desktop");
+        assert!(browser.network);
+        assert_eq!(browser.memory_max_bytes, 2048 * 1024 * 1024);
+        assert_eq!(
+            browser.writable_paths,
+            vec![PathBuf::from("/home/alice/Downloads")]
+        );
+    }
+
+    #[test]
+    fn realm_sandbox_policy_rejects_unbounded_limits_and_relative_paths() {
+        let diagnostics = Config::parse(
+            "schema_version = 1\n\
+             [realm_sandbox]\n\
+             memory_max_mib = 1\n\
+             pids_max = 1\n\
+             cpu_weight = 0\n\
+             readable_paths = [\"relative\"]\n",
+        )
+        .unwrap_err();
+        for field in [
+            "realm_sandbox.memory_max_mib",
+            "realm_sandbox.pids_max",
+            "realm_sandbox.cpu_weight",
+            "realm_sandbox.readable_paths.0",
+        ] {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.field.as_deref() == Some(field)),
+                "missing diagnostic for {field}: {diagnostics:?}"
+            );
+        }
     }
 
     #[test]

@@ -274,6 +274,7 @@ struct ActivationTokenRec {
     state: *mut State,
     client: *mut ffi::wl_client,
     serial: Option<u32>,
+    seat: Option<ass_core::realm::SeatId>,
     surface: *mut ffi::wl_resource,
     committed: bool,
 }
@@ -330,6 +331,7 @@ unsafe extern "C" fn xdg_activation_get_token(
         state,
         client,
         serial: None,
+        seat: None,
         surface: std::ptr::null_mut(),
         committed: false,
     }));
@@ -342,14 +344,23 @@ unsafe extern "C" fn xdg_activation_get_token(
 }
 
 unsafe extern "C" fn activation_token_set_serial(
-    _client: *mut ffi::wl_client,
+    client: *mut ffi::wl_client,
     token: *mut ffi::wl_resource,
     serial: u32,
-    _seat: *mut ffi::wl_resource,
+    seat: *mut ffi::wl_resource,
 ) {
     let rec = ffi::wl_resource_get_user_data(token) as *mut ActivationTokenRec;
-    if !rec.is_null() && !(*rec).committed {
+    if rec.is_null() || (*rec).committed || (*rec).state.is_null() {
+        return;
+    }
+    let state = (*rec).state;
+    let Some(_guard) = crate::ActiveSeatGuard::for_client_seat_resource(state, client, seat, true)
+    else {
+        return;
+    };
+    if ffi::wl_resource_get_client(seat) == (*rec).client && serial == (*state).last_button_serial {
         (*rec).serial = Some(serial);
+        (*rec).seat = Some((*state).active_seat);
     }
 }
 
@@ -406,16 +417,21 @@ unsafe extern "C" fn activation_token_commit(
         ffi::wl_display_next_serial((*state).display)
     };
     let token = format!("ass-activation-{serial:08x}");
-    let valid_focus = !state.is_null()
-        && !(*state).keyboard_focus.is_null()
-        && ffi::wl_resource_get_client((*state).keyboard_focus) == (*rec).client;
-    let valid_surface =
-        (*rec).surface.is_null() || ffi::wl_resource_get_client((*rec).surface) == (*rec).client;
-    let valid_serial = (*rec)
-        .serial
-        .is_none_or(|serial| !state.is_null() && serial == (*state).last_button_serial);
-    if valid_focus && valid_surface && valid_serial {
-        (*state).activation_tokens.insert(token.clone());
+    if !state.is_null() {
+        if let Some(seat) = (*rec).seat {
+            if let Some(_guard) = crate::ActiveSeatGuard::enter(&mut *state, seat) {
+                let valid_focus = !(*state).keyboard_focus.is_null()
+                    && ffi::wl_resource_get_client((*state).keyboard_focus) == (*rec).client;
+                let valid_surface = (*rec).surface.is_null()
+                    || ffi::wl_resource_get_client((*rec).surface) == (*rec).client;
+                let valid_serial = (*rec)
+                    .serial
+                    .is_some_and(|serial| serial == (*state).last_button_serial);
+                if valid_focus && valid_surface && valid_serial {
+                    (*state).activation_tokens.insert(token.clone(), seat);
+                }
+            }
+        }
     }
     if let Ok(token) = CString::new(token) {
         ffi::wl_resource_post_event(
@@ -447,8 +463,19 @@ unsafe extern "C" fn xdg_activation_activate(
         return;
     }
     let token = CStr::from_ptr(token).to_string_lossy();
-    if (*state).activation_tokens.remove(token.as_ref()) {
-        (*state).pending_activation = surface;
+    if let Some(seat) = (*state).activation_tokens.remove(token.as_ref()) {
+        let Some(_guard) = crate::ActiveSeatGuard::enter(&mut *state, seat) else {
+            return;
+        };
+        let rec = ffi::wl_resource_get_user_data(surface) as *mut SurfaceRec;
+        let root = crate::surface_root_toplevel(rec);
+        if !root.is_null()
+            && (*state)
+                .authority
+                .seat_controls_window(seat, (*root).window.id)
+        {
+            (*state).pending_activation = Some((seat, surface));
+        }
     }
 }
 
@@ -833,6 +860,7 @@ unsafe extern "C" fn idle_notifier_get_input(
 
 struct IdleNotificationRec {
     state: *mut State,
+    seat: ass_core::realm::SeatId,
     resource: *mut ffi::wl_resource,
     timeout: std::time::Duration,
     activity_at: std::time::Instant,
@@ -854,12 +882,14 @@ unsafe fn idle_notifier_create(
         return;
     }
     let state = ffi::wl_resource_get_user_data(notifier) as *mut State;
-    if state.is_null() || ffi::wl_resource_get_user_data(seat) as *mut State != state {
+    let Some(_guard) = crate::ActiveSeatGuard::for_client_seat_resource(state, client, seat, true)
+    else {
         ffi::wl_resource_destroy(res);
         return;
-    }
+    };
     let record = Box::new(IdleNotificationRec {
         state,
+        seat: (*state).active_seat,
         resource: res,
         timeout: std::time::Duration::from_millis(timeout as u64),
         activity_at: std::time::Instant::now(),
@@ -907,6 +937,9 @@ unsafe fn idle_inhibitor_is_active(record: *mut IdleInhibitorRec) -> bool {
             .workspaces
             .visible_toplevels()
             .contains(&(*root).window.id)
+        && (*(*record).state)
+            .authority
+            .seat_controls_window(ass_core::realm::HUMAN_SEAT, (*root).window.id)
 }
 
 pub(crate) unsafe fn update_idle_notifications(state: *mut State) {
@@ -951,7 +984,7 @@ pub(crate) unsafe fn idle_user_activity(state: *mut State) {
             continue;
         }
         let record = ffi::wl_resource_get_user_data(*resource) as *mut IdleNotificationRec;
-        if !record.is_null() {
+        if !record.is_null() && (*record).seat == ass_core::realm::HUMAN_SEAT {
             (*record).activity_at = now;
             if (*record).idle {
                 (*record).idle = false;
@@ -1305,6 +1338,11 @@ unsafe extern "C" fn relative_pointer_manager_get(
     pointer: *mut ffi::wl_resource,
 ) {
     let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
+    let origin = (*state).seat_origin_for_resource(pointer);
+    let Some(_guard) = crate::ActiveSeatGuard::for_resource(state, pointer, true) else {
+        return;
+    };
+    let seat = (*state).active_seat;
     let ver = ffi::wl_resource_get_version(mgr);
     let res = ffi::wl_resource_create(client, &ffi::zwp_relative_pointer_v1_interface, ver, id);
     if res.is_null() {
@@ -1317,9 +1355,8 @@ unsafe extern "C" fn relative_pointer_manager_get(
         rec as *mut c_void,
         Some(relative_pointer_resource_destroy),
     );
-    if !state.is_null() {
-        (*state).relative_pointers.push(res);
-    }
+    (*state).track_routed_seat_resource(res, origin.unwrap_or(seat), seat);
+    (*state).relative_pointers.push(res);
 }
 
 unsafe extern "C" fn relative_pointer_destroy(
@@ -1334,8 +1371,9 @@ unsafe extern "C" fn relative_pointer_resource_destroy(resource: *mut ffi::wl_re
     if rec.is_null() {
         return;
     }
-    if !(*rec).state.is_null() {
+    if let Some(_guard) = crate::ActiveSeatGuard::for_resource((*rec).state, resource, false) {
         (*(*rec).state).relative_pointers.retain(|r| *r != resource);
+        (*(*rec).state).untrack_seat_resource(resource);
     }
     let _ = (*rec).pointer;
     drop(Box::from_raw(rec));
@@ -1436,6 +1474,11 @@ unsafe fn create_pointer_gesture(
         return;
     }
     let state = ffi::wl_resource_get_user_data(manager) as *mut State;
+    let origin = (*state).seat_origin_for_resource(pointer);
+    let Some(_guard) = crate::ActiveSeatGuard::for_resource(state, pointer, true) else {
+        return;
+    };
+    let seat = (*state).active_seat;
     let (interface, implementation): (&ffi::wl_interface, *const c_void) = match kind {
         PointerGestureKind::Swipe => (
             &ffi::zwp_pointer_gesture_swipe_v1_interface,
@@ -1461,6 +1504,7 @@ unsafe fn create_pointer_gesture(
         rec as *mut c_void,
         Some(pointer_gesture_resource_destroy),
     );
+    (*state).track_routed_seat_resource(res, origin.unwrap_or(seat), seat);
     match kind {
         PointerGestureKind::Swipe => (*state).pointer_gesture_swipes.push(res),
         PointerGestureKind::Pinch => (*state).pointer_gesture_pinches.push(res),
@@ -1481,7 +1525,7 @@ unsafe extern "C" fn pointer_gesture_resource_destroy(resource: *mut ffi::wl_res
         return;
     }
     let state = (*rec).state;
-    if !state.is_null() {
+    if let Some(_guard) = crate::ActiveSeatGuard::for_resource(state, resource, false) {
         match (*rec).kind {
             PointerGestureKind::Swipe => (*state).pointer_gesture_swipes.retain(|r| *r != resource),
             PointerGestureKind::Pinch => {
@@ -1489,6 +1533,7 @@ unsafe extern "C" fn pointer_gesture_resource_destroy(resource: *mut ffi::wl_res
             }
             PointerGestureKind::Hold => (*state).pointer_gesture_holds.retain(|r| *r != resource),
         }
+        (*state).untrack_seat_resource(resource);
     }
     drop(Box::from_raw(rec));
 }
@@ -1554,6 +1599,14 @@ unsafe extern "C" fn keyboard_shortcuts_inhibit(
         return;
     }
     let state = ffi::wl_resource_get_user_data(manager) as *mut State;
+    let Some(advertised_seat) = (*state).seat_for_resource(seat) else {
+        return;
+    };
+    let Some(_guard) = crate::ActiveSeatGuard::for_client_seat_resource(state, client, seat, true)
+    else {
+        return;
+    };
+    let seat_id = (*state).active_seat;
     let duplicate = (*state)
         .keyboard_shortcut_inhibitors
         .iter()
@@ -1592,6 +1645,7 @@ unsafe extern "C" fn keyboard_shortcuts_inhibit(
         rec as *mut c_void,
         Some(keyboard_shortcuts_inhibitor_resource_destroy),
     );
+    (*state).track_routed_seat_resource(resource, advertised_seat, seat_id);
     (*state).keyboard_shortcut_inhibitors.push(resource);
     if active {
         ffi::wl_resource_post_event(resource, ffi::ZWP_KEYBOARD_SHORTCUTS_INHIBITOR_V1_ACTIVE);
@@ -1612,10 +1666,11 @@ unsafe extern "C" fn keyboard_shortcuts_inhibitor_resource_destroy(
     if rec.is_null() {
         return;
     }
-    if !(*rec).state.is_null() {
+    if let Some(_guard) = crate::ActiveSeatGuard::for_resource((*rec).state, resource, false) {
         (*(*rec).state)
             .keyboard_shortcut_inhibitors
             .retain(|r| *r != resource);
+        (*(*rec).state).untrack_seat_resource(resource);
     }
     drop(Box::from_raw(rec));
 }
@@ -1771,7 +1826,12 @@ unsafe fn create_pointer_constraint(
     locked: bool,
 ) {
     let state = ffi::wl_resource_get_user_data(manager) as *mut State;
-    if state.is_null() || (lifetime != 1 && lifetime != 2) {
+    let origin = (*state).seat_origin_for_resource(pointer);
+    let Some(_guard) = crate::ActiveSeatGuard::for_resource(state, pointer, true) else {
+        return;
+    };
+    let seat = (*state).active_seat;
+    if lifetime != 1 && lifetime != 2 {
         return;
     }
     let duplicate = (*state)
@@ -1827,6 +1887,7 @@ unsafe fn create_pointer_constraint(
         rec as *mut c_void,
         Some(pointer_constraint_resource_destroy),
     );
+    (*state).track_routed_seat_resource(res, origin.unwrap_or(seat), seat);
     (*state).pointer_constraints.push(res);
     if active {
         ffi::wl_resource_post_event(
@@ -1887,10 +1948,11 @@ unsafe extern "C" fn pointer_constraint_resource_destroy(resource: *mut ffi::wl_
     if rec.is_null() {
         return;
     }
-    if !(*rec).state.is_null() {
+    if let Some(_guard) = crate::ActiveSeatGuard::for_resource((*rec).state, resource, false) {
         (*(*rec).state)
             .pointer_constraints
             .retain(|r| *r != resource);
+        (*(*rec).state).untrack_seat_resource(resource);
     }
     drop(Box::from_raw(rec));
 }
@@ -2517,7 +2579,10 @@ pub(crate) unsafe extern "C" fn foreign_toplevel_bind(
     if !state.is_null() {
         for p in (*state).live_surfaces_pub() {
             let s = &*p;
-            if s.xdg_toplevel.is_null() || !s.mapped {
+            if s.xdg_toplevel.is_null()
+                || !s.mapped
+                || !(*state).client_observes_window(client, s.window.id)
+            {
                 continue;
             }
             create_foreign_handle(res, s as *const SurfaceRec as *mut SurfaceRec, state);
@@ -2641,7 +2706,23 @@ pub(crate) unsafe fn foreign_toplevel_added(rec: *mut SurfaceRec, state: *mut St
         .filter(|p| !p.is_null())
         .collect();
     for list in lists {
-        create_foreign_handle(list, rec, state);
+        let client = ffi::wl_resource_get_client(list);
+        if (*state).client_observes_window(client, (*rec).window.id) {
+            create_foreign_handle(list, rec, state);
+        }
+    }
+}
+
+/// Reconcile foreign-toplevel capability objects after Realm presentation
+/// authority changes. Closing and re-advertising keeps already-bound physical
+/// clients from retaining a handle to a window they may no longer observe.
+pub(crate) unsafe fn foreign_toplevel_authority_changed(rec: *mut SurfaceRec, state: *mut State) {
+    if rec.is_null() || state.is_null() {
+        return;
+    }
+    foreign_toplevel_removed((*rec).window.id.0, state);
+    if (*rec).mapped {
+        foreign_toplevel_added(rec, state);
     }
 }
 
@@ -2887,6 +2968,7 @@ unsafe extern "C" fn primary_source_resource_destroy(source: *mut ffi::wl_resour
     }
     let state = (*rec).state;
     if !state.is_null() {
+        let _guard = crate::ActiveSeatGuard::for_resource(state, source, false);
         if (*state)
             .primary_selection
             .as_ref()
@@ -2906,6 +2988,7 @@ unsafe extern "C" fn primary_source_resource_destroy(source: *mut ffi::wl_resour
                 (*offer_rec).source = std::ptr::null_mut();
             }
         }
+        (*state).untrack_seat_resource(source);
     }
     drop(Box::from_raw(rec));
 }
@@ -2914,8 +2997,20 @@ unsafe extern "C" fn psdm_get_data_device(
     client: *mut ffi::wl_client,
     mgr: *mut ffi::wl_resource,
     id: u32,
-    _seat: *mut ffi::wl_resource,
+    seat: *mut ffi::wl_resource,
 ) {
+    let state = ffi::wl_resource_get_user_data(seat) as *mut State;
+    if state.is_null() {
+        return;
+    }
+    let Some(advertised_seat) = (*state).seat_for_resource(seat) else {
+        return;
+    };
+    let Some(_guard) = crate::ActiveSeatGuard::for_client_seat_resource(state, client, seat, true)
+    else {
+        return;
+    };
+    let seat_id = (*state).active_seat;
     let ver = ffi::wl_resource_get_version(mgr);
     let dev = ffi::wl_resource_create(
         client,
@@ -2924,29 +3019,29 @@ unsafe extern "C" fn psdm_get_data_device(
         id,
     );
     if !dev.is_null() {
-        let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
         ffi::wl_resource_set_implementation(
             dev,
             &PRIMARY_SELECTION_DEVICE_IMPL as *const _ as *const c_void,
             state as *mut c_void,
             Some(primary_device_resource_destroy),
         );
-        if !state.is_null() {
-            (*state).primary_devices.push(dev);
-            if !(*state).keyboard_focus.is_null()
-                && ffi::wl_resource_get_client((*state).keyboard_focus) == client
-            {
-                advertise_primary_selection(dev, state);
-            }
+        (*state).track_routed_seat_resource(dev, advertised_seat, seat_id);
+        (*state).primary_devices.push(dev);
+        if !(*state).keyboard_focus.is_null()
+            && ffi::wl_resource_get_client((*state).keyboard_focus) == client
+        {
+            advertise_primary_selection(dev, state);
         }
     }
 }
 
 unsafe extern "C" fn primary_device_resource_destroy(device: *mut ffi::wl_resource) {
     let state = ffi::wl_resource_get_user_data(device) as *mut State;
-    if !state.is_null() {
-        (*state).primary_devices.retain(|r| *r != device);
-    }
+    let Some(_guard) = crate::ActiveSeatGuard::for_resource(state, device, false) else {
+        return;
+    };
+    (*state).primary_devices.retain(|r| *r != device);
+    (*state).untrack_seat_resource(device);
 }
 
 unsafe extern "C" fn primary_selection_set(
@@ -2956,8 +3051,10 @@ unsafe extern "C" fn primary_selection_set(
     _serial: u32,
 ) {
     let state = ffi::wl_resource_get_user_data(device) as *mut State;
-    if state.is_null()
-        || (!source.is_null() && ffi::wl_resource_get_client(source) != client)
+    let Some(_guard) = crate::ActiveSeatGuard::for_resource(state, device, true) else {
+        return;
+    };
+    if (!source.is_null() && ffi::wl_resource_get_client(source) != client)
         || (*state).keyboard_focus.is_null()
         || ffi::wl_resource_get_client((*state).keyboard_focus) != client
     {
@@ -2975,6 +3072,9 @@ unsafe extern "C" fn primary_selection_set(
             mime_types: (*rec).mime_types.clone(),
         })
     };
+    if !source.is_null() {
+        (*state).track_seat_resource(source, (*state).active_seat);
+    }
     if let Some(old) = std::mem::replace(&mut (*state).primary_selection, replacement) {
         if old.source != source {
             ffi::wl_resource_post_event(old.source, ffi::ZWP_PRIMARY_SELECTION_SOURCE_V1_CANCELLED);
@@ -3008,6 +3108,7 @@ unsafe fn create_primary_offer(
         Some(primary_offer_resource_destroy),
     );
     (*state).primary_offers.push(offer);
+    (*state).track_seat_resource(offer, (*state).active_seat);
     ffi::wl_resource_post_event(
         device,
         ffi::ZWP_PRIMARY_SELECTION_DEVICE_V1_DATA_OFFER,
@@ -3102,7 +3203,9 @@ unsafe extern "C" fn primary_offer_resource_destroy(offer: *mut ffi::wl_resource
         return;
     }
     if !(*rec).state.is_null() {
+        let _guard = crate::ActiveSeatGuard::for_resource((*rec).state, offer, false);
         (*(*rec).state).primary_offers.retain(|r| *r != offer);
+        (*(*rec).state).untrack_seat_resource(offer);
     }
     drop(Box::from_raw(rec));
 }
@@ -3173,9 +3276,14 @@ unsafe extern "C" fn cursor_shape_get_pointer(
     client: *mut ffi::wl_client,
     mgr: *mut ffi::wl_resource,
     id: u32,
-    _pointer: *mut ffi::wl_resource,
+    pointer: *mut ffi::wl_resource,
 ) {
     let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
+    let origin = (*state).seat_origin_for_resource(pointer);
+    let Some(_guard) = crate::ActiveSeatGuard::for_resource(state, pointer, true) else {
+        return;
+    };
+    let seat = (*state).active_seat;
     let ver = ffi::wl_resource_get_version(mgr);
     let dev = ffi::wl_resource_create(client, &ffi::wp_cursor_shape_device_v1_interface, ver, id);
     if !dev.is_null() {
@@ -3183,8 +3291,10 @@ unsafe extern "C" fn cursor_shape_get_pointer(
             dev,
             &CURSOR_SHAPE_DEVICE_IMPL as *const _ as *const c_void,
             state as *mut c_void,
-            None,
+            Some(cursor_shape_resource_destroy),
         );
+        (*state).track_routed_seat_resource(dev, origin.unwrap_or(seat), seat);
+        (*state).cursor_shape_devices.push(dev);
     }
 }
 
@@ -3192,9 +3302,14 @@ unsafe extern "C" fn cursor_shape_get_tablet(
     client: *mut ffi::wl_client,
     mgr: *mut ffi::wl_resource,
     id: u32,
-    _tool: *mut ffi::wl_resource,
+    tool: *mut ffi::wl_resource,
 ) {
     let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
+    let origin = (*state).seat_origin_for_resource(tool);
+    let Some(_guard) = crate::ActiveSeatGuard::for_resource(state, tool, true) else {
+        return;
+    };
+    let seat = (*state).active_seat;
     let ver = ffi::wl_resource_get_version(mgr);
     let dev = ffi::wl_resource_create(client, &ffi::wp_cursor_shape_device_v1_interface, ver, id);
     if !dev.is_null() {
@@ -3202,8 +3317,10 @@ unsafe extern "C" fn cursor_shape_get_tablet(
             dev,
             &CURSOR_SHAPE_DEVICE_IMPL as *const _ as *const c_void,
             state as *mut c_void,
-            None,
+            Some(cursor_shape_resource_destroy),
         );
+        (*state).track_routed_seat_resource(dev, origin.unwrap_or(seat), seat);
+        (*state).cursor_shape_devices.push(dev);
     }
 }
 
@@ -3217,8 +3334,10 @@ unsafe extern "C" fn cursor_shape_set_shape(
     shape: u32,
 ) {
     let state = ffi::wl_resource_get_user_data(resource) as *mut State;
-    if !state.is_null()
-        && !(*state).pointer_focus.is_null()
+    let Some(_guard) = crate::ActiveSeatGuard::for_resource(state, resource, true) else {
+        return;
+    };
+    if !(*state).pointer_focus.is_null()
         && ffi::wl_resource_get_client((*state).pointer_focus) == client
         && serial == (*state).last_pointer_enter_serial
     {
@@ -3228,10 +3347,21 @@ unsafe extern "C" fn cursor_shape_set_shape(
     }
 }
 
+unsafe extern "C" fn cursor_shape_resource_destroy(resource: *mut ffi::wl_resource) {
+    let state = ffi::wl_resource_get_user_data(resource) as *mut State;
+    if let Some(_guard) = crate::ActiveSeatGuard::for_resource(state, resource, false) {
+        (*state)
+            .cursor_shape_devices
+            .retain(|item| *item != resource);
+        (*state).untrack_seat_resource(resource);
+    }
+}
+
 // ----- text-input-unstable-v3 ---------------------------------------------
 
 struct TextInputRec {
     state: *mut State,
+    seat: ass_core::realm::SeatId,
     current_surface: *mut ffi::wl_resource,
     pending: ass_core::input::TextInputState,
     current: ass_core::input::TextInputState,
@@ -3286,7 +3416,18 @@ unsafe extern "C" fn text_input_manager_get(
     id: u32,
     seat: *mut ffi::wl_resource,
 ) {
-    let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
+    let state = ffi::wl_resource_get_user_data(seat) as *mut State;
+    if state.is_null() {
+        return;
+    }
+    let Some(advertised_seat) = (*state).seat_for_resource(seat) else {
+        return;
+    };
+    let Some(_guard) = crate::ActiveSeatGuard::for_client_seat_resource(state, client, seat, true)
+    else {
+        return;
+    };
+    let seat_id = (*state).active_seat;
     let ver = ffi::wl_resource_get_version(mgr).min(1);
     let res = ffi::wl_resource_create(client, &ffi::zwp_text_input_v3_interface, ver, id);
     if res.is_null() {
@@ -3302,6 +3443,7 @@ unsafe extern "C" fn text_input_manager_get(
     };
     let rec = Box::into_raw(Box::new(TextInputRec {
         state,
+        seat: seat_id,
         current_surface,
         pending: ass_core::input::TextInputState::default(),
         current: ass_core::input::TextInputState::default(),
@@ -3313,13 +3455,12 @@ unsafe extern "C" fn text_input_manager_get(
         rec as *mut c_void,
         Some(text_input_resource_destroy),
     );
-    if !state.is_null() {
-        (*state).text_inputs.push(res);
-    }
+    (*state).track_routed_seat_resource(res, advertised_seat, seat_id);
+    (*state).text_inputs.push(res);
     if !current_surface.is_null() {
         ffi::wl_resource_post_event(res, ffi::ZWP_TEXT_INPUT_V3_ENTER, current_surface);
     }
-    let _ = seat;
+    let _ = mgr;
 }
 
 unsafe extern "C" fn text_input_destroy(
@@ -3336,12 +3477,14 @@ unsafe extern "C" fn text_input_resource_destroy(resource: *mut ffi::wl_resource
     }
     let state = (*rec).state;
     if !state.is_null() {
+        let _guard = crate::ActiveSeatGuard::enter_existing(&mut *state, (*rec).seat);
         (*state).text_inputs.retain(|r| *r != resource);
         if (*rec).current.enabled {
             (*state)
                 .pending_text_input_states
                 .push(ass_core::input::TextInputState::default());
         }
+        (*state).untrack_seat_resource(resource);
     }
     drop(Box::from_raw(rec));
 }
@@ -3442,7 +3585,13 @@ unsafe extern "C" fn text_input_commit(
 
 unsafe fn queue_text_input_state(rec: *mut TextInputRec) {
     let state = (*rec).state;
-    if state.is_null() || (*rec).current_surface != (*state).keyboard_focus {
+    if state.is_null() {
+        return;
+    }
+    let Some(_guard) = crate::ActiveSeatGuard::enter(&mut *state, (*rec).seat) else {
+        return;
+    };
+    if (*rec).current_surface != (*state).keyboard_focus {
         return;
     }
     let mut value = (*rec).current.clone();
@@ -3628,7 +3777,18 @@ unsafe extern "C" fn tablet_manager_get_tablet_seat(
         ffi::wl_resource_post_error(mgr, 0, c"seat belongs to another client".as_ptr());
         return;
     }
-    let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
+    let state = ffi::wl_resource_get_user_data(seat) as *mut State;
+    if state.is_null() {
+        return;
+    }
+    let Some(advertised_seat) = (*state).seat_for_resource(seat) else {
+        return;
+    };
+    let Some(_guard) = crate::ActiveSeatGuard::for_client_seat_resource(state, client, seat, true)
+    else {
+        return;
+    };
+    let seat_id = (*state).active_seat;
     let ver = ffi::wl_resource_get_version(mgr);
     let res = ffi::wl_resource_create(client, &ffi::zwp_tablet_seat_v2_interface, ver, id);
     if res.is_null() {
@@ -3641,10 +3801,9 @@ unsafe extern "C" fn tablet_manager_get_tablet_seat(
         rec as *mut c_void,
         Some(tablet_seat_resource_destroy),
     );
-    if !state.is_null() {
-        (*state).tablet_seats.push(res);
-        announce_tablets(state, res);
-    }
+    (*state).track_routed_seat_resource(res, advertised_seat, seat_id);
+    (*state).tablet_seats.push(res);
+    announce_tablets(state, res);
 }
 
 unsafe extern "C" fn tablet_seat_resource_destroy(resource: *mut ffi::wl_resource) {
@@ -3653,8 +3812,9 @@ unsafe extern "C" fn tablet_seat_resource_destroy(resource: *mut ffi::wl_resourc
         return;
     }
     let state = (*rec).state;
-    if !state.is_null() {
+    if let Some(_guard) = crate::ActiveSeatGuard::for_resource(state, resource, false) {
         (*state).tablet_seats.retain(|r| *r != resource);
+        (*state).untrack_seat_resource(resource);
     }
     drop(Box::from_raw(rec));
 }
@@ -3665,8 +3825,9 @@ unsafe extern "C" fn tablet_resource_destroy(resource: *mut ffi::wl_resource) {
         return;
     }
     let state = (*rec).state;
-    if !state.is_null() {
+    if let Some(_guard) = crate::ActiveSeatGuard::for_resource(state, resource, false) {
         (*state).tablet_devices.retain(|r| *r != resource);
+        (*state).untrack_seat_resource(resource);
     }
     drop(Box::from_raw(rec));
 }
@@ -3677,8 +3838,9 @@ unsafe extern "C" fn tablet_tool_resource_destroy(resource: *mut ffi::wl_resourc
         return;
     }
     let state = (*rec).state;
-    if !state.is_null() {
+    if let Some(_guard) = crate::ActiveSeatGuard::for_resource(state, resource, false) {
         (*state).tablet_tools.retain(|r| *r != resource);
+        (*state).untrack_seat_resource(resource);
     }
     drop(Box::from_raw(rec));
 }
@@ -3725,6 +3887,7 @@ pub(crate) unsafe fn announce_tablet(state: *mut State, seat: *mut ffi::wl_resou
         rec as *mut c_void,
         Some(tablet_resource_destroy),
     );
+    (*state).track_seat_resource(res, (*state).active_seat);
     (*state).tablet_devices.push(res);
     ffi::wl_resource_post_event(seat, ffi::ZWP_TABLET_SEAT_V2_TABLET_ADDED, res);
     ffi::wl_resource_post_event(res, ffi::ZWP_TABLET_V2_NAME, c"ass tablet".as_ptr());
@@ -3753,6 +3916,7 @@ pub(crate) unsafe fn tablet_tool_resource(
         rec as *mut c_void,
         Some(tablet_tool_resource_destroy),
     );
+    (*state).track_seat_resource(res, (*state).active_seat);
     (*state).tablet_tools.push(res);
     res
 }
