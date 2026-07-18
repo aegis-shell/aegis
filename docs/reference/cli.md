@@ -11,7 +11,7 @@ compositor or an `XDG_RUNTIME_DIR` value.
 | `ass-ctl help`, `--help`, `-h` | Print local help without connecting. |
 | `ass-ctl windows` | List visible toplevels. |
 | `ass-ctl workspaces` | List outputs, workspaces, and window counts. |
-| `ass-ctl outputs` | List output modes, scales, transforms, and logical sizes. |
+| `ass-ctl outputs` | List output modes, scales, transforms, and logical sizes, plus the modes each connector advertises (the live one marked `current`). |
 | `ass-ctl notifications` | List active notifications. |
 | `ass-ctl journal [since]` | List mutation entries with a sequence greater than `since`; the default is `0`. |
 | `ass-ctl focus <id>` | Focus and raise a toplevel. |

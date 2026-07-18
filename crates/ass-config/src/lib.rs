@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 
 use ass_core::input::Mods;
 use ass_core::keybind::{Keybind, Keymap};
+use toml_edit::DocumentMut;
 
 /// The schema `schema_version` this build understands. A file whose
 /// `schema_version` differs is rejected with a precise diagnostic rather
@@ -66,9 +67,9 @@ pub struct Config {
     #[serde(default)]
     pub ui: UiConfig,
 
-    /// Per-output scale policy (ADR-0028), written as `[[output]]`
-    /// array-of-tables. Each entry overrides the backend-reported scale for
-    /// one connector, for mixed-DPI setups.
+    /// Per-output display policy (ADR-0028), written as `[[output]]`
+    /// array-of-tables. Each entry overrides the backend-reported mode,
+    /// scale, position, transform, or primary selection for one connector.
     #[serde(default, rename = "output")]
     pub outputs: Vec<OutputConfig>,
 
@@ -77,6 +78,10 @@ pub struct Config {
     /// when an IPC client presents the name at the Hello handshake.
     #[serde(default)]
     pub agent: AgentConfig,
+
+    /// Screenshot tool configuration, written as `[screenshot]`.
+    #[serde(default)]
+    pub screenshot: ScreenshotConfig,
 }
 
 /// The `[agent]` section (ADR-0034). Named scopes that bound what an agent
@@ -87,6 +92,35 @@ pub struct AgentConfig {
     /// One named scope per `[[agent.scope]]` entry.
     #[serde(default, rename = "scope")]
     pub scopes: Vec<AgentScopeEntry>,
+}
+
+/// The `[screenshot]` section. Controls where interactive and IPC screenshots
+/// are saved when no explicit path is supplied.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenshotConfig {
+    /// Directory to write screenshots into. Defaults to
+    /// `$XDG_PICTURES_DIR/Screenshots`.
+    #[serde(default = "default_screenshot_save_dir")]
+    pub save_dir: String,
+}
+
+fn default_screenshot_save_dir() -> String {
+    dirs::picture_dir()
+        .unwrap_or_else(|| {
+            dirs::home_dir().unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+        })
+        .join("Screenshots")
+        .to_string_lossy()
+        .into_owned()
+}
+
+impl Default for ScreenshotConfig {
+    fn default() -> Self {
+        Self {
+            save_dir: default_screenshot_save_dir(),
+        }
+    }
 }
 
 /// One declared agent scope. `ops` lists `OpClass` names (`Focus`,
@@ -113,11 +147,29 @@ pub struct AgentScopeEntry {
 /// stem, `StartupWMClass`, or icon name (case-insensitive). An empty list (the
 /// default) lets the compositor auto-populate the dock with the first handful
 /// of apps that have a usable icon, so the dock is never empty out of the box.
-#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+/// Once the user pins or unpins an app from the dock's context menu,
+/// `autopopulate` is written as `false` so an empty `pinned` list stays a
+/// deliberate choice instead of falling back to auto-population.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DockConfig {
     #[serde(default)]
     pub pinned: Vec<String>,
+    #[serde(default = "default_autopopulate")]
+    pub autopopulate: bool,
+}
+
+fn default_autopopulate() -> bool {
+    true
+}
+
+impl Default for DockConfig {
+    fn default() -> DockConfig {
+        DockConfig {
+            pinned: Vec::new(),
+            autopopulate: default_autopopulate(),
+        }
+    }
 }
 
 /// The `[ui]` section: shell-wide UI policy (ADR-0029).
@@ -139,7 +191,9 @@ pub struct UiConfig {
     pub cursor_size: Option<u32>,
 }
 
-/// One `[[output]]` entry: a per-connector scale override (ADR-0028).
+/// One `[[output]]` entry: per-connector display policy (ADR-0028). Only
+/// `connector` is required; every other field overrides one aspect of the
+/// backend-reported geometry.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputConfig {
@@ -149,7 +203,34 @@ pub struct OutputConfig {
     pub connector: String,
     /// Output scale factor. Integer scales advertise through `wl_output`;
     /// fractional scales through `wp_fractional_scale_v1`.
-    pub scale: f64,
+    #[serde(default)]
+    pub scale: Option<f64>,
+    /// Requested display mode: `"WxH"` or `"WxH@Hz"` (e.g.
+    /// `"2560x1440@144"`). Applied at modeset time (startup and hotplug).
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// Position of the output's top-left corner in the global logical
+    /// layout, in logical pixels.
+    #[serde(default)]
+    pub position: Option<OutputPosition>,
+    /// Output transform name (`normal`, `90`, `180`, `270`, `flipped`,
+    /// `flipped-90`, `flipped-180`, `flipped-270`; see
+    /// [`ass_core::Transform::from_name`]). Parsed and validated now;
+    /// applied once the renderer supports output transforms.
+    #[serde(default)]
+    pub transform: Option<String>,
+    /// Whether this output is the primary (focused) one.
+    #[serde(default)]
+    pub primary: bool,
+}
+
+/// The `position` table of a `[[output]]` entry: logical-pixel coordinates
+/// in the global layout, written `position = { x = 1920, y = 0 }`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputPosition {
+    pub x: i32,
+    pub y: i32,
 }
 
 /// The `[layout]` section: tiling gaps and master ratio. Defaults match the
@@ -251,7 +332,7 @@ impl std::fmt::Display for Diagnostic {
     }
 }
 
-/// A filesystem-level failure while reading the config file.
+/// A filesystem-level failure while reading or writing the config file.
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
     /// The file exists but could not be read.
@@ -266,6 +347,13 @@ pub enum LoadError {
     Invalid {
         path: PathBuf,
         diagnostics: Vec<Diagnostic>,
+    },
+    /// The file could not be written.
+    #[error("{path}: write failed")]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
     },
 }
 
@@ -315,10 +403,56 @@ impl Config {
                     "must not be empty",
                 ));
             }
-            if !output.scale.is_finite() || !(0.25..=4.0).contains(&output.scale) {
+            if let Some(scale) = output.scale {
+                if !scale.is_finite() || !(0.25..=4.0).contains(&scale) {
+                    diagnostics.push(Diagnostic::new(
+                        Some(format!("output.{index}.scale")),
+                        "must be between 0.25 and 4.0",
+                    ));
+                }
+            }
+            if let Some(mode) = &output.mode {
+                match mode.parse::<ass_core::output::ModeSpec>() {
+                    Ok(spec) => {
+                        // Sanity caps, not hardware limits: they catch typos
+                        // (a stray digit) that would otherwise fall back to
+                        // the preferred mode with a confusing log line.
+                        if spec.width > 16384 || spec.height > 16384 {
+                            diagnostics.push(Diagnostic::new(
+                                Some(format!("output.{index}.mode")),
+                                "resolution must not exceed 16384",
+                            ));
+                        }
+                        if spec.refresh_hz.is_some_and(|hz| hz > 1000) {
+                            diagnostics.push(Diagnostic::new(
+                                Some(format!("output.{index}.mode")),
+                                "refresh rate must not exceed 1000 Hz",
+                            ));
+                        }
+                    }
+                    Err(()) => diagnostics.push(Diagnostic::new(
+                        Some(format!("output.{index}.mode")),
+                        format!("invalid mode '{mode}'; expected \"WxH\" or \"WxH@Hz\""),
+                    )),
+                }
+            }
+            if let Some(transform) = &output.transform {
+                if ass_core::Transform::from_name(transform).is_none() {
+                    diagnostics.push(Diagnostic::new(
+                        Some(format!("output.{index}.transform")),
+                        format!("unknown transform '{transform}'"),
+                    ));
+                }
+            }
+            if output.scale.is_none()
+                && output.mode.is_none()
+                && output.position.is_none()
+                && output.transform.is_none()
+                && !output.primary
+            {
                 diagnostics.push(Diagnostic::new(
-                    Some(format!("output.{index}.scale")),
-                    "must be between 0.25 and 4.0",
+                    Some(format!("output.{index}")),
+                    "has no effect; set at least one of scale, mode, position, transform, primary",
                 ));
             }
         }
@@ -329,6 +463,12 @@ impl Config {
                     "must be between 8 and 128",
                 ));
             }
+        }
+        if cfg.screenshot.save_dir.trim().is_empty() {
+            diagnostics.push(Diagnostic::new(
+                Some("screenshot.save_dir".into()),
+                "must not be empty",
+            ));
         }
         if diagnostics.is_empty() {
             Ok(cfg)
@@ -392,6 +532,33 @@ impl Config {
         let (overrides, errs) = self.resolve_keybinds();
         (Keymap::defaults().with_overrides(overrides), errs)
     }
+
+    /// Resolve the `[[output]]` entries into per-connector
+    /// [`ass_core::output::OutputPolicy`]s (ADR-0028). Mode and transform
+    /// strings were validated at parse time, so unresolvable ones degrade to
+    /// `None` rather than failing here. When several entries name the same
+    /// connector, the later entry wins.
+    pub fn output_policies(
+        &self,
+    ) -> std::collections::HashMap<String, ass_core::output::OutputPolicy> {
+        let mut policies = std::collections::HashMap::new();
+        for output in &self.outputs {
+            policies.insert(
+                output.connector.clone(),
+                ass_core::output::OutputPolicy {
+                    scale: output.scale,
+                    mode: output.mode.as_deref().and_then(|m| m.parse().ok()),
+                    position: output.position.map(|p| ass_core::Point { x: p.x, y: p.y }),
+                    transform: output
+                        .transform
+                        .as_deref()
+                        .and_then(ass_core::Transform::from_name),
+                    primary: output.primary,
+                },
+            );
+        }
+        policies
+    }
 }
 
 impl std::str::FromStr for Config {
@@ -423,6 +590,59 @@ pub fn load(path: &Path) -> Result<Option<Config>, LoadError> {
             diagnostics,
         }),
     }
+}
+
+/// Update the `[dock]` section in the config file at `path` after a manual
+/// pin change: writes `pinned` verbatim and sets `autopopulate = false` so an
+/// empty list stays a deliberate choice. The file (and its parent directory)
+/// is created if missing; an existing file is edited with `toml_edit` so user
+/// comments and formatting outside the touched keys are preserved. A file
+/// that exists but is not valid TOML is reported rather than overwritten.
+pub fn set_dock_pinned(path: &Path, pinned: &[String]) -> Result<(), LoadError> {
+    let mut doc = match std::fs::read_to_string(path) {
+        Ok(text) => text
+            .parse::<DocumentMut>()
+            .map_err(|error| LoadError::Invalid {
+                path: path.into(),
+                diagnostics: vec![Diagnostic::new(None, format!("existing file: {error}"))],
+            })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let mut d = DocumentMut::new();
+            d["schema_version"] = toml_edit::value(i64::from(SUPPORTED_SCHEMA_VERSION));
+            d
+        }
+        Err(e) => {
+            return Err(LoadError::Read {
+                path: path.into(),
+                source: e,
+            })
+        }
+    };
+
+    if !doc.get("dock").map(|i| i.is_table()).unwrap_or(false) {
+        doc["dock"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+
+    let mut arr = toml_edit::Array::new();
+    for id in pinned {
+        arr.push(id.as_str());
+    }
+    doc["dock"]["pinned"] = toml_edit::Item::Value(toml_edit::Value::Array(arr));
+    doc["dock"]["autopopulate"] = toml_edit::value(false);
+
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return Err(LoadError::Write {
+                path: path.into(),
+                source: e,
+            });
+        }
+    }
+
+    std::fs::write(path, doc.to_string()).map_err(|e| LoadError::Write {
+        path: path.into(),
+        source: e,
+    })
 }
 
 /// The default config path: `$XDG_CONFIG_HOME/ass/config.toml`, falling back
@@ -497,6 +717,52 @@ mod tests {
         let cfg = Config::parse("schema_version = 1\n").unwrap();
         assert_eq!(cfg.schema_version, 1);
         assert!(cfg.keybinds.is_empty());
+    }
+
+    fn temp_config_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("ass-config-test-{}-{tag}.toml", std::process::id()))
+    }
+
+    #[test]
+    fn set_dock_pinned_creates_a_loadable_config() {
+        let path = temp_config_path("create");
+        let _ = std::fs::remove_file(&path);
+        set_dock_pinned(&path, &["foot.desktop".to_string(), "firefox".to_string()]).unwrap();
+        let cfg = load(&path).unwrap().expect("file written");
+        assert_eq!(cfg.dock.pinned, vec!["foot.desktop", "firefox"]);
+        assert!(
+            !cfg.dock.autopopulate,
+            "manual control disables the fallback"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn set_dock_pinned_preserves_other_content_and_comments() {
+        let path = temp_config_path("preserve");
+        let original = "schema_version = 1\n\n# my apps\n[dock]\npinned = [\"a.desktop\"]\n\n[ui]\nreduced_motion = true\n";
+        std::fs::write(&path, original).unwrap();
+        set_dock_pinned(&path, &["b.desktop".to_string()]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# my apps"), "comment survives: {text}");
+        let cfg = load(&path).unwrap().expect("file still valid");
+        assert_eq!(cfg.dock.pinned, vec!["b.desktop"]);
+        assert!(cfg.ui.reduced_motion, "untouched section survives");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn set_dock_pinned_reports_an_invalid_existing_file() {
+        let path = temp_config_path("invalid");
+        std::fs::write(&path, "schema_version = [unterminated\n").unwrap();
+        let err = set_dock_pinned(&path, &["a.desktop".to_string()]).unwrap_err();
+        assert!(matches!(err, LoadError::Invalid { .. }), "{err}");
+        // The invalid file must not be overwritten.
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "schema_version = [unterminated\n"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -710,7 +976,7 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.outputs.len(), 2);
         assert_eq!(cfg.outputs[0].connector, "DP-1");
-        assert_eq!(cfg.outputs[0].scale, 1.5);
+        assert_eq!(cfg.outputs[0].scale, Some(1.5));
         assert_eq!(cfg.outputs[1].connector, "HDMI-A-1");
         // Absent section → empty.
         let cfg2 = Config::parse("schema_version = 1\n").unwrap();
@@ -729,6 +995,108 @@ mod tests {
         assert!(err
             .iter()
             .any(|d| d.field.as_deref() == Some("output.0.scale")));
+    }
+
+    #[test]
+    fn output_mode_position_transform_and_primary_parse() {
+        let cfg = Config::parse(
+            "schema_version = 1\n\
+             [[output]]\n\
+             connector = \"DP-1\"\n\
+             mode = \"2560x1440@144\"\n\
+             position = { x = 1920, y = 0 }\n\
+             transform = \"flipped-90\"\n\
+             [[output]]\n\
+             connector = \"HDMI-A-1\"\n\
+             mode = \"1920x1080\"\n\
+             primary = true\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.outputs[0].mode.as_deref(), Some("2560x1440@144"));
+        assert_eq!(
+            cfg.outputs[0].position,
+            Some(OutputPosition { x: 1920, y: 0 })
+        );
+        assert_eq!(cfg.outputs[0].transform.as_deref(), Some("flipped-90"));
+        assert!(!cfg.outputs[0].primary);
+        assert_eq!(cfg.outputs[1].mode.as_deref(), Some("1920x1080"));
+        assert!(cfg.outputs[1].primary);
+    }
+
+    #[test]
+    fn output_mode_and_transform_errors_are_diagnosed() {
+        let err = Config::parse(
+            "schema_version = 1\n\
+             [[output]]\n\
+             connector = \"DP-1\"\n\
+             mode = \"1080p\"\n\
+             transform = \"upside-down\"\n\
+             [[output]]\n\
+             connector = \"HDMI-A-1\"\n\
+             mode = \"99999x99999@2000\"\n",
+        )
+        .unwrap_err();
+        assert_eq!(err.len(), 4, "{err:?}");
+        assert!(err
+            .iter()
+            .any(|d| d.field.as_deref() == Some("output.0.mode") && d.message.contains("1080p")));
+        assert!(err
+            .iter()
+            .any(|d| d.field.as_deref() == Some("output.0.transform")
+                && d.message.contains("upside-down")));
+        assert!(err
+            .iter()
+            .any(|d| d.field.as_deref() == Some("output.1.mode") && d.message.contains("16384")));
+        assert!(err
+            .iter()
+            .any(|d| d.field.as_deref() == Some("output.1.mode") && d.message.contains("1000")));
+    }
+
+    #[test]
+    fn output_entry_with_no_effect_is_diagnosed() {
+        let err =
+            Config::parse("schema_version = 1\n[[output]]\nconnector = \"DP-1\"\n").unwrap_err();
+        assert_eq!(err.len(), 1);
+        assert_eq!(err[0].field.as_deref(), Some("output.0"));
+        assert!(err[0].message.contains("no effect"), "{err:?}");
+        // Any single field is enough to make the entry meaningful.
+        let cfg =
+            Config::parse("schema_version = 1\n[[output]]\nconnector = \"DP-1\"\nprimary = true\n")
+                .unwrap();
+        assert!(cfg.outputs[0].primary);
+    }
+
+    #[test]
+    fn output_policies_resolve_and_later_duplicate_wins() {
+        let cfg = Config::parse(
+            "schema_version = 1\n\
+             [[output]]\n\
+             connector = \"DP-1\"\n\
+             scale = 1.5\n\
+             mode = \"2560x1440@144\"\n\
+             position = { x = 1920, y = 0 }\n\
+             transform = \"180\"\n\
+             primary = true\n\
+             [[output]]\n\
+             connector = \"HDMI-A-1\"\n\
+             scale = 1.0\n\
+             [[output]]\n\
+             connector = \"HDMI-A-1\"\n\
+             scale = 2.0\n",
+        )
+        .unwrap();
+        let policies = cfg.output_policies();
+        assert_eq!(policies.len(), 2, "duplicate connector collapses");
+        let dp = &policies["DP-1"];
+        assert_eq!(dp.scale, Some(1.5));
+        assert_eq!(dp.mode, "2560x1440@144".parse().ok());
+        assert_eq!(dp.position, Some(ass_core::Point { x: 1920, y: 0 }));
+        assert_eq!(dp.transform, Some(ass_core::Transform::Rotate180));
+        assert!(dp.primary);
+        // The later HDMI-A-1 entry replaces the earlier one wholesale.
+        let hdmi = &policies["HDMI-A-1"];
+        assert_eq!(hdmi.scale, Some(2.0));
+        assert!(!hdmi.primary);
     }
 
     #[test]
@@ -757,6 +1125,22 @@ mod tests {
             Some(ass_core::layout::LayoutRole::Floating)
         );
         assert!(cfg.window_rules[1].matches(None, Some("GNOME Calculator")));
+    }
+
+    #[test]
+    fn screenshot_config_defaults_and_parses() {
+        let cfg = Config::parse("schema_version = 1\n").unwrap();
+        assert!(!cfg.screenshot.save_dir.is_empty());
+        assert!(cfg.screenshot.save_dir.ends_with("Screenshots"));
+
+        let cfg2 =
+            Config::parse("schema_version = 1\n[screenshot]\nsave_dir = \"/tmp/shots\"\n").unwrap();
+        assert_eq!(cfg2.screenshot.save_dir, "/tmp/shots");
+
+        let err = Config::parse("schema_version = 1\n[screenshot]\nsave_dir = \"\"\n").unwrap_err();
+        assert!(err
+            .iter()
+            .any(|d| d.field.as_deref() == Some("screenshot.save_dir")));
     }
 
     #[test]

@@ -19,7 +19,7 @@ log diagnostic and never crashes the compositor.
 | `[layout]` | table | gaps `8`, master_ratio `0.5` | Tiling policy parameters. See [Layout](#layout). |
 | `[dock]` | table | automatic pins | Applications pinned to the dock. See [Dock](#dock). |
 | `[ui]` | table | reduced_motion `false` | Shell-wide UI policy. See [UI](#ui). |
-| `[[output]]` | array of tables | none | Per-connector scale overrides. See [Outputs](#outputs). |
+| `[[output]]` | array of tables | none | Per-connector display policy: mode, scale, position, transform, primary. See [Outputs](#outputs). |
 | `[agent]` | table | no scopes | Named automation scopes enforced by the IPC server. See [Agent Scopes](#agent-scopes). |
 
 ## Environment
@@ -87,25 +87,38 @@ override it.
 
 ## Outputs
 
-Each `[[output]]` table overrides the backend-reported scale of one
-connector (ADR-0028), for mixed-DPI setups. Applied live on reload; an
-entry whose connector is not currently plugged in is ignored until the
-connector appears.
+Each `[[output]]` table overrides one aspect of a connector's
+backend-reported geometry (ADR-0028). Only `connector` is required; an
+entry that sets no override is rejected as having no effect. An entry
+whose connector is not currently plugged in is ignored until the
+connector appears. Duplicate entries for one connector resolve
+last-wins.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `connector` | string | required | The backend's connector name, as shown by `ass-ctl outputs` (e.g. `"DP-1"`, `"HDMI-A-1"`, `"nested"`). |
-| `scale` | float | required | Output scale factor, 0.25–4.0. Integer scales advertise through `wl_output`; fractional scales through `wp_fractional_scale_v1`. |
+| `scale` | float | backend-reported | Output scale factor, 0.25–4.0. Integer scales advertise through `wl_output`; fractional scales through `wp_fractional_scale_v1`. Applied live on reload. |
+| `mode` | string | connector's preferred mode | Requested display mode, `"WxH"` or `"WxH@Hz"` (e.g. `"2560x1440@144"`). Without `@Hz` the preferred or highest-refresh mode of that size is used. A mode the connector does not advertise falls back to its preferred mode with a log warning. Applied at modeset time — startup and hotplug; a changed mode for an already-connected monitor applies on its next hotplug or at restart. |
+| `position` | table | backend arrangement | Top-left of the output in the global logical layout, written `position = { x = 1920, y = 0 }`. Applied live on reload. |
+| `transform` | string | `normal` | Output transform: `normal`, `90`, `180`, `270`, `flipped`, `flipped-90`, `flipped-180`, `flipped-270` (the `wl_output` underscore spellings are also accepted). Parsed and validated now, but not yet applied: until renderer output-transform support lands, a configured transform logs a warning and the output renders untransformed. |
+| `primary` | boolean | `false` | Whether this output is the primary (focused) one. When several entries claim primary, the first in the backend's output order wins. Applied live on reload. |
 
 ```toml
 [[output]]
 connector = "DP-1"
+mode = "2560x1440@144"
 scale = 1.5
+primary = true
 
 [[output]]
 connector = "HDMI-A-1"
-scale = 2.0
+mode = "1920x1080"
+position = { x = 1707, y = 0 }
 ```
+
+Run `ass-ctl outputs` to see the modes each connector advertises; the
+`mode` value must match one of them (resolution exactly, refresh to the
+nearest whole hertz).
 
 ## Dock
 
@@ -116,11 +129,18 @@ live reload. Each value matches a desktop-file id, desktop-file stem,
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `pinned` | array of strings | `[]` | Applications shown in the listed order. An empty array automatically selects up to 12 applications with decoded icons. |
+| `autopopulate` | boolean | `true` | Whether an empty `pinned` list auto-selects applications. Written as `false` the first time you pin or unpin an application from the dock's context menu, so a manually emptied list stays empty. |
 
 ```toml
 [dock]
 pinned = ["foot.desktop", "firefox", "org.gnome.Nautilus"]
 ```
+
+Pinned applications stay on the left of the dock; running applications that
+are not pinned appear on the right of a divider and disappear again when their
+last window closes. Right-click a dock tile and select `Keep in Dock` or
+`Remove from Dock` to change this list from the desktop; the compositor writes
+the result back to this file and sets `autopopulate = false`.
 
 The application catalog is rescanned every five seconds. Installed, removed,
 or edited desktop entries, including Flatpak exports, appear without

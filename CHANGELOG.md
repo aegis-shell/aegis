@@ -7,6 +7,23 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### Frame-time fixes (optics + compositor)
+
+- Smoother frames under client updates: flux texture/buffer uploads
+  (image create, `update_region`, mesh/buffer create, batched flush, and
+  the dma-buf acquire-fence transition) no longer block the calling
+  thread on a GPU fence — submissions are deferred and recycled lazily
+  once their fence signals, so a client commit stops collapsing the
+  render pipeline into a wait for all prior GPU work. On the compositor
+  side, shm commits now copy only the damaged rows onto the retained
+  snapshot (reusing its allocation) and same-size frames upload only the
+  damage bounding box instead of the whole texture; the animation loop
+  waits on the event queue with a deadline instead of a blind
+  `thread::sleep` so input is processed as it arrives; a `begin_frame`
+  fence/acquire timeout now skips the frame instead of rebuilding the
+  swapchain; and on the nested backend, retired client buffers are
+  released a few frames late instead of stalling on `device.wait_idle()`.
+
 ### Overview, window transitions, and pixel capture
 
 - Bare-metal polish: the software cursor on DRM now loads real XDG cursor
@@ -58,6 +75,42 @@ project cuts a tagged release.
   stays non-exportable on dma-buf-capable devices, and lens gains
   `lens_set_reduced_motion` so every eased widget value resolves in one
   frame under the policy.
+
+### Dock pinning and frosted glass
+
+- The dock now separates pinned applications from transient running ones
+  with a divider: pinned apps stay on the left, unpinned running apps appear
+  on the right and disappear when their last window closes. Right-click a
+  tile and choose `Keep in Dock` / `Remove from Dock` to manage pins from
+  the desktop; the choice is written back to `[dock] pinned` (with
+  `autopopulate = false` so an emptied list stays empty).
+- The dock bar, its app-name tooltip, the application menus, and the
+  launcher's search panel now share one frosted-glass material — a light
+  translucent tint over the compositor's backdrop blur with a bright edge —
+  replacing the opaque dark bubbles.
+- Dock hover polish: the running-indicator dot is centred in the flat strip
+  between the icon baseline and the panel bottom so it can no longer fall
+  into the rounded corners and outside the bar, and the magnification
+  spring damping was raised to remove the visible jitter at variable frame
+  times while keeping the macOS-style bounce.
+
+### Per-output display policy
+
+- `[[output]]` entries grow from scale-only into a full per-connector
+  display policy (ADR-0028): `mode = "WxH[@Hz]"` requests a display mode,
+  matched against the connector's advertised modes at modeset time
+  (startup and hotplug) with a preferred-mode fallback and a log warning
+  when nothing matches — a changed mode for an already-connected monitor
+  applies on its next hotplug or at restart; `position = { x, y }` places
+  the output in the global logical layout; `primary = true` picks the
+  focused output. Scale, position, and primary apply live on reload, and a
+  policy removed from the file now reverts to the backend-reported value
+  instead of lingering in the live output set. `transform` is parsed and
+  validated (`normal`, `90`, `180`, `270`, `flipped`, …) but logs a
+  deferral warning until renderer output-transform support lands.
+- `ass-ctl outputs` lists the modes each connector advertises with the
+  live one marked, and the IPC `GetOutputs` reply carries them as the
+  additive `available_modes` field (serde-default, no protocol bump).
 
 ### Direct-display backend, session lock, and production hardening
 

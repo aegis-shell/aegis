@@ -679,6 +679,7 @@ impl Chrome for Launcher {
                 Some(entry),
                 self.brain.running_surfaces(app_index),
                 owner,
+                None,
             );
         }
         let action_start = out.window_actions.len();
@@ -904,14 +905,16 @@ fn centered_layer() -> OverlayOpts {
     }
 }
 
+/// Frosted-glass panel material shared with the dock: a light translucent
+/// tint over the compositor's backdrop blur with a bright 1px edge.
 fn glass_panel(progress: f32, radius: f32, focused: bool) -> OverlayOpts {
     OverlayOpts {
-        bg: Color::rgba(248, 248, 255, alpha(32, progress)),
+        bg: Color::rgba(255, 255, 255, alpha(38, progress)),
         border: Color::rgba(
             255,
             255,
             255,
-            alpha(if focused { 148 } else { 64 }, progress),
+            alpha(if focused { 150 } else { 72 }, progress),
         ),
         border_width: if focused { 1.5 } else { 1.0 },
         radius,

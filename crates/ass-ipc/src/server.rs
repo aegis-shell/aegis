@@ -72,8 +72,12 @@ pub trait Handler: Send + Sync {
     /// Capture the focused output as a PNG. Called from a connection thread;
     /// the implementation forwards to the main loop and blocks briefly for
     /// the reply. Returns `(width, height, png_base64)` or an error message
-    /// (unsupported, locked session, capture failure).
-    fn capture_output(&self) -> Result<(u32, u32, String), String> {
+    /// (unsupported, locked session, capture failure). `region` is in
+    /// compositor logical pixels; `None` captures the whole output.
+    fn capture_output(
+        &self,
+        _region: Option<ass_core::Rect>,
+    ) -> Result<(u32, u32, String), String> {
         Err("capture unsupported".into())
     }
 }
@@ -432,7 +436,7 @@ fn drive_read_loop<H: Handler>(
                 }
                 Response::Subscribed
             }
-            Request::CaptureOutput => {
+            Request::CaptureOutput { region } => {
                 // Pixel capture reads the screen back to the client, so it is
                 // fail-closed like InjectInput: `control` plus an explicit
                 // CaptureOutput op in the granted scope — never inherited
@@ -450,7 +454,7 @@ fn drive_read_loop<H: Handler>(
                         message: "out of scope".into(),
                     }
                 } else {
-                    match handler.capture_output() {
+                    match handler.capture_output(region) {
                         Ok((width, height, png_base64)) => Response::CaptureOutput {
                             width,
                             height,

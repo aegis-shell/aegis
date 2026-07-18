@@ -90,6 +90,18 @@ impl Handler for CtlHandler {
                 transform: ass_core::Transform::Normal,
                 logical_origin: ass_core::Point::default(),
             },
+            available_modes: vec![
+                ass_core::output::OutputMode {
+                    width: 1280,
+                    height: 720,
+                    refresh_mhz: 60000,
+                },
+                ass_core::output::OutputMode {
+                    width: 1920,
+                    height: 1080,
+                    refresh_mhz: 60000,
+                },
+            ],
         }]
     }
     fn command(&self, cmd: Command) {
@@ -138,6 +150,16 @@ fn workspaces_command_shows_output_and_workspace() {
     let out = ass_ctl::run(&path, &["workspaces".into()]).unwrap();
     assert!(out.contains("nested"), "{out}");
     assert!(out.contains("1 window"), "{out}");
+}
+
+#[test]
+fn outputs_command_lists_advertised_modes_and_marks_current() {
+    let path = scratch();
+    let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
+    let out = ass_ctl::run(&path, &["outputs".into()]).unwrap();
+    assert!(out.contains("nested 1280x720@60.000Hz"), "{out}");
+    assert!(out.contains("1280x720@60.000Hz (current)"), "{out}");
+    assert!(out.contains("1920x1080@60.000Hz"), "{out}");
 }
 
 #[test]

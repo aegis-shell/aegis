@@ -25,10 +25,14 @@ pub fn run(socket: &Path, args: &[String]) -> Result<String, String> {
     // `--json`/`-j` (anywhere) selects machine-readable output for the query
     // commands; strip it before dispatching.
     let json = args.iter().any(|a| a == "--json" || a == "-j");
+    // `--region x,y,w,h` (anywhere) applies to the screenshot command.
+    let region = parse_region_flag(args);
     let args: Vec<String> = args
         .iter()
         .filter(|a| a != &"--json" && a != &"-j")
-        .cloned()
+        .enumerate()
+        .filter(|(i, a)| !(a == &"--region" || (i > &0 && args[*i - 1] == "--region")))
+        .map(|(_, a)| a.clone())
         .collect();
     // Help needs no connection; answer after stripping global flags so
     // `ass-ctl --json --help` is just as local as `ass-ctl help`.
@@ -46,10 +50,15 @@ pub fn run(socket: &Path, args: &[String]) -> Result<String, String> {
         },
     )
     .map_err(|e| format!("connect: {e}"))?;
-    dispatch(&mut client, &args, json)
+    dispatch(&mut client, &args, json, region)
 }
 
-fn dispatch(client: &mut Client, args: &[String], json: bool) -> Result<String, String> {
+fn dispatch(
+    client: &mut Client,
+    args: &[String],
+    json: bool,
+    region: Option<ass_core::Rect>,
+) -> Result<String, String> {
     let cmd = args.first().map(String::as_str).unwrap_or("help");
     match cmd {
         "windows" => {
@@ -170,7 +179,9 @@ fn dispatch(client: &mut Client, args: &[String], json: bool) -> Result<String, 
                     .unwrap_or(0);
                 format!("ass-screenshot-{ms}.png")
             });
-            client.screenshot(path.clone()).map_err(io_err)?;
+            client
+                .screenshot_region(path.clone(), region)
+                .map_err(io_err)?;
             Ok(format!("screenshot queued → {path}"))
         }
         "overview" => {
@@ -188,6 +199,22 @@ fn dispatch(client: &mut Client, args: &[String], json: bool) -> Result<String, 
 
 fn io_err(e: std::io::Error) -> String {
     e.to_string()
+}
+
+/// Extract `--region x,y,w,h` from `args` if present. The flag and its value
+/// are stripped before command dispatch.
+fn parse_region_flag(args: &[String]) -> Option<ass_core::Rect> {
+    let idx = args.iter().position(|a| a == "--region")?;
+    let value = args.get(idx + 1)?;
+    let parts: Vec<&str> = value.split(',').collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    let nums: Vec<i32> = parts.iter().filter_map(|s| s.parse::<i32>().ok()).collect();
+    if nums.len() != 4 {
+        return None;
+    }
+    Some(ass_core::Rect::new(nums[0], nums[1], nums[2], nums[3]))
 }
 
 fn parse_usize(args: &[String], idx: usize) -> Result<usize, String> {
@@ -301,6 +328,31 @@ fn format_outputs(outs: &[ass_core::output::OutputInfo]) -> String {
             logical.w,
             logical.h,
         ));
+        // Advertised modes are what `mode = "WxH@Hz"` may name in the
+        // config; mark the live one. Backends with a continuous size
+        // (nested) report none, and the line is omitted.
+        if !o.available_modes.is_empty() {
+            let modes = o
+                .available_modes
+                .iter()
+                .map(|m| {
+                    let base = format!(
+                        "{}x{}@{}.{:03}Hz",
+                        m.width,
+                        m.height,
+                        m.refresh_mhz / 1000,
+                        m.refresh_mhz % 1000,
+                    );
+                    if m == &g.mode {
+                        format!("{base} (current)")
+                    } else {
+                        base
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!("  modes: {modes}\n"));
+        }
     }
     out
 }
@@ -420,12 +472,15 @@ commands:
   notify <summary> [body] post a notification
   dismiss <id>            dismiss a notification by id
   screenshot [path.png]   capture the focused output to a PNG file
+  screenshot --region x,y,w,h [path.png]
+                           capture a region of the focused output
   overview                toggle the window/workspace overview
   subscribe               stream server events until disconnected
   subscribe-journal       stream detailed mutation events
   quit                    ask the compositor to quit
 
-  --json / -j             machine-readable JSON for the query commands"
+  --json / -j             machine-readable JSON for the query commands
+  --region x,y,w,h        capture a region instead of the full output"
 }
 
 #[cfg(test)]
@@ -462,5 +517,20 @@ mod tests {
             },
         };
         assert_eq!(format_event(&no_body), "notify #8: beep");
+    }
+
+    #[test]
+    fn parse_region_flag_extracts_rectangle() {
+        let args = vec![
+            "--region".to_string(),
+            "10,20,100,80".to_string(),
+            "screenshot".to_string(),
+        ];
+        let rect = parse_region_flag(&args).unwrap();
+        assert_eq!(rect, ass_core::Rect::new(10, 20, 100, 80));
+
+        assert!(parse_region_flag(&["--region".into(), "1,2,3".into()]).is_none());
+        assert!(parse_region_flag(&["--region".into(), "a,b,c,d".into()]).is_none());
+        assert!(parse_region_flag(&["screenshot".into()]).is_none());
     }
 }

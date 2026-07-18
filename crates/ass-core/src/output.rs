@@ -22,6 +22,89 @@ pub struct OutputMode {
     pub refresh_mhz: u32,
 }
 
+/// A configured display-mode request (ADR-0028): an exact resolution with an
+/// optional whole-Hertz refresh, parsed from the `mode` string of a
+/// `[[output]]` config entry (`"1920x1080"` or `"2560x1440@144"`). The
+/// backend matches it against the modes a connector advertises with
+/// [`ModeSpec::matches`].
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModeSpec {
+    /// Requested physical width in device pixels.
+    pub width: i32,
+    /// Requested physical height in device pixels.
+    pub height: i32,
+    /// Requested refresh in whole Hertz. `None` leaves the rate open: the
+    /// backend picks the preferred / highest-refresh mode of that size.
+    pub refresh_hz: Option<u32>,
+}
+
+impl ModeSpec {
+    /// Whether an advertised mode satisfies this request. Resolution must
+    /// match exactly; a named refresh matches when the mode's millihertz
+    /// rate rounds to it, and `None` matches any rate.
+    pub fn matches(&self, mode: &OutputMode) -> bool {
+        if mode.width != self.width || mode.height != self.height {
+            return false;
+        }
+        match self.refresh_hz {
+            Some(hz) => mode.refresh_mhz.saturating_add(500) / 1_000 == hz,
+            None => true,
+        }
+    }
+}
+
+impl std::str::FromStr for ModeSpec {
+    type Err = ();
+
+    /// Parse `"WxH"` or `"WxH@Hz"`. Only positive decimal integers are
+    /// accepted — no whitespace, signs, or trailing garbage.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        fn positive_i32(s: &str) -> Result<i32, ()> {
+            if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(());
+            }
+            let value = s.parse::<i32>().map_err(|_| ())?;
+            if value > 0 {
+                Ok(value)
+            } else {
+                Err(())
+            }
+        }
+        let (size, refresh) = match s.split_once('@') {
+            Some((size, hz)) => (size, Some(hz)),
+            None => (s, None),
+        };
+        let (w, h) = size.split_once('x').ok_or(())?;
+        Ok(ModeSpec {
+            width: positive_i32(w)?,
+            height: positive_i32(h)?,
+            refresh_hz: refresh.map(positive_i32).transpose()?.map(|hz| hz as u32),
+        })
+    }
+}
+
+/// Per-connector output configuration policy (ADR-0028): the resolved form
+/// of one `[[output]]` config entry. `scale`, `position`, and `primary` are
+/// applied by the server as outputs appear; `mode` is consumed by the
+/// backend at modeset time. `transform` is parsed and validated but its
+/// application is deferred until renderer output-transform support lands.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct OutputPolicy {
+    /// Scale override; `None` keeps the backend-reported scale.
+    pub scale: Option<f64>,
+    /// Requested display mode; `None` keeps the connector's preferred mode.
+    pub mode: Option<ModeSpec>,
+    /// Top-left in the global logical layout; `None` keeps the
+    /// backend-assigned position.
+    pub position: Option<Point>,
+    /// Output transform. Parsed but not yet applied (see the type docs).
+    pub transform: Option<Transform>,
+    /// Whether this output is the primary (focused) one.
+    pub primary: bool,
+}
+
 /// A scale factor. Carries a fractional value so HiDPI hardware that prefers
 /// a non-integer scale (1.5, 1.25) is representable, beyond the integer-only
 /// `wl_surface.set_buffer_scale`. Maps to `wp_fractional_scale_v1`.
@@ -53,6 +136,12 @@ impl Default for Scale {
 pub struct OutputInfo {
     pub connector: String,
     pub geometry: OutputGeometry,
+    /// Modes the connector advertises (deduplicated, highest resolution
+    /// first), so `ass-ctl outputs` and agents can see what `mode` requests
+    /// are valid. Empty where the backend cannot enumerate (nested).
+    /// `serde(default)` keeps pre-field IPC peers compatible.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub available_modes: Vec<OutputMode>,
 }
 
 /// Per-output geometry (ADR-0028): the physical mode, scale, transform, and
@@ -220,5 +309,86 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(g.logical_size(), Size { w: 100, h: 50 });
+    }
+
+    #[test]
+    fn mode_spec_parses_resolution_with_optional_refresh() {
+        assert_eq!(
+            "1920x1080".parse::<ModeSpec>(),
+            Ok(ModeSpec {
+                width: 1920,
+                height: 1080,
+                refresh_hz: None,
+            })
+        );
+        assert_eq!(
+            "2560x1440@144".parse::<ModeSpec>(),
+            Ok(ModeSpec {
+                width: 2560,
+                height: 1440,
+                refresh_hz: Some(144),
+            })
+        );
+    }
+
+    #[test]
+    fn mode_spec_rejects_garbage() {
+        for bad in [
+            "",
+            "1920",
+            "1920x",
+            "x1080",
+            "1920X1080",
+            "1920 x 1080",
+            "1920x1080x2",
+            "1920x1080@",
+            "1920x1080@60@2",
+            "0x1080",
+            "1920x-1080",
+            "+1920x1080",
+            "1920x1080@0",
+            "99999999999x1080",
+        ] {
+            assert!(bad.parse::<ModeSpec>().is_err(), "{bad:?} should fail");
+        }
+    }
+
+    #[test]
+    fn mode_spec_matches_exact_size_and_rounded_refresh() {
+        let spec: ModeSpec = "1920x1080@144".parse().unwrap();
+        assert!(spec.matches(&OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 144_000,
+        }));
+        // 143.856 Hz rounds to 144.
+        assert!(spec.matches(&OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 143_856,
+        }));
+        // Wrong refresh, wrong size, and 144.5+ Hz (rounds to 145) all miss.
+        assert!(!spec.matches(&OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        }));
+        assert!(!spec.matches(&OutputMode {
+            width: 2560,
+            height: 1080,
+            refresh_mhz: 144_000,
+        }));
+        assert!(!spec.matches(&OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 144_501,
+        }));
+        // No refresh in the spec matches any rate of the right size.
+        let any_rate: ModeSpec = "1920x1080".parse().unwrap();
+        assert!(any_rate.matches(&OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        }));
     }
 }

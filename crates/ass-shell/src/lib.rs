@@ -22,7 +22,8 @@ pub mod chrome;
 pub mod i18n;
 pub mod system;
 pub use chrome::{
-    ControlCenter, Decorations, Dock, DockApp, HudBar, Launcher, Overview, Toast, WorkspaceBar,
+    ControlCenter, Decorations, Dock, DockApp, HudBar, Launcher, Overview, ScreenshotSelector,
+    Toast, WorkspaceBar,
 };
 pub use i18n::{Language, Localizer, Message};
 pub use system::{BatteryStatus, NetworkState, SystemAction, SystemStatus};
@@ -63,6 +64,7 @@ pub enum CursorShape {
     #[default]
     Default = 1,
     Pointer = 4,
+    Crosshair = 3,
     Text = 9,
 }
 
@@ -145,8 +147,14 @@ pub struct ChromeEvents {
     /// Workspace id the overview's rail asked to switch to. Drained through
     /// the same command/journal path as `SwitchWorkspaceTo`.
     pub overview_switch: Option<ass_core::workspace::WorkspaceId>,
+    /// Region the screenshot selector asked to capture this frame, if any.
+    pub screenshot_region: Option<ass_core::Rect>,
     /// Ordered host-system mutations requested by compositor-owned UI.
     pub system_actions: Vec<SystemAction>,
+    /// Desktop ids the dock asked to toggle in the pinned list. Drained by the
+    /// main loop, which updates `[dock] pinned` in the config and refreshes the
+    /// dock catalog.
+    pub dock_pin_toggles: Vec<String>,
 }
 
 impl ChromeEvents {
@@ -263,6 +271,12 @@ pub trait Chrome {
     /// loop swaps the desktop scene for the overview thumbnail grid.
     /// Default `false`.
     fn overview_active(&self) -> bool {
+        false
+    }
+
+    /// Whether the screenshot region selector is currently active. Default
+    /// `false`; the screenshot selector overrides this.
+    fn screenshot_active(&self) -> bool {
         false
     }
 
@@ -492,6 +506,11 @@ impl Shell {
         std::mem::take(&mut self.events.system_actions)
     }
 
+    /// Drain desktop ids the dock asked to pin/unpin this frame.
+    pub fn take_dock_pin_toggles(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.events.dock_pin_toggles)
+    }
+
     /// Drain the workspace id the chrome asked to switch to this frame, if
     /// any (the workspace bar's clicked tile). The main loop forwards it to
     /// `Server::switch_workspace_to`.
@@ -534,6 +553,25 @@ impl Shell {
     /// Workspace id the overview's rail asked to switch to, if any.
     pub fn take_overview_switch(&mut self) -> Option<ass_core::workspace::WorkspaceId> {
         self.events.overview_switch.take()
+    }
+
+    /// Open the screenshot region selector. No-op if no selector component is
+    /// registered.
+    pub fn start_screenshot(&mut self) {
+        for component in self.components.iter_mut() {
+            // Only the screenshot selector reacts; other components ignore it.
+            component.open_builtin(ass_core::app::BuiltInApplication::ScreenshotSelector);
+        }
+    }
+
+    /// Region the screenshot selector asked to capture this frame, if any.
+    pub fn take_screenshot_region(&mut self) -> Option<ass_core::Rect> {
+        self.events.screenshot_region.take()
+    }
+
+    /// Whether the screenshot selector is currently active.
+    pub fn screenshot_active(&self) -> bool {
+        self.components.iter().any(|c| c.screenshot_active())
     }
 
     /// Whether any registered component currently captures keyboard input

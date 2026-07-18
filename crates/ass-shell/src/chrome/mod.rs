@@ -21,6 +21,7 @@ mod decorations;
 mod dock;
 mod launcher;
 mod overview;
+mod screenshot;
 mod toast;
 mod workspace_bar;
 
@@ -29,5 +30,6 @@ pub use decorations::Decorations;
 pub use dock::{Dock, DockApp};
 pub use launcher::Launcher;
 pub use overview::Overview;
+pub use screenshot::ScreenshotSelector;
 pub use toast::Toast;
 pub use workspace_bar::{HudBar, WorkspaceBar};

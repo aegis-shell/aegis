@@ -15,6 +15,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use ass_core::input::{ButtonState, InputEvent, PointerGestureEvent, TabletEvent, TabletToolInfo};
+use ass_core::output::{ModeSpec, OutputMode};
 use ass_core::Size;
 use drm::buffer::{DrmFourcc, DrmModifier, Handle as BufferHandle, PlanarBuffer};
 use drm::control::{
@@ -131,6 +132,9 @@ struct Output {
     x: u32,
     y: u32,
     props: AtomicProperties,
+    /// The connector's advertised modes at selection time (deduplicated,
+    /// highest resolution first), surfaced through `output_infos`.
+    available_modes: Vec<OutputMode>,
 }
 
 #[derive(Debug)]
@@ -262,12 +266,18 @@ pub struct DrmBackend {
     /// Set when a hotplug changed that intersection; the surface must be
     /// recreated (resize alone cannot change a surface's modifier).
     surface_stale: bool,
+    /// Per-connector display-mode requests from the config's `[[output]]`
+    /// entries (ADR-0028). Consulted on every output (re)selection: startup,
+    /// hotplug, and session resume.
+    configured_modes: HashMap<String, ModeSpec>,
 }
 
 impl DrmBackend {
     /// Acquire the seat, choose a connected DRM card/output, enable atomic
-    /// modesetting, and attach libinput to the same seat.
-    pub fn open() -> Result<Self, DrmError> {
+    /// modesetting, and attach libinput to the same seat. `configured_modes`
+    /// carries the config's per-connector `mode` requests (ADR-0028) so the
+    /// very first modeset already honors them.
+    pub fn open(configured_modes: HashMap<String, ModeSpec>) -> Result<Self, DrmError> {
         let pending = Rc::new(Cell::new(None));
         let callback_pending = Rc::clone(&pending);
         let seat = libseat::Seat::open(move |_seat, event| {
@@ -288,7 +298,7 @@ impl DrmBackend {
                 .map_err(|error| DrmError::Seat(format!("initial dispatch: {error:?}")))?;
         }
 
-        let (card, displays) = open_card_and_outputs(&seat)?;
+        let (card, displays) = open_card_and_outputs(&seat, &configured_modes)?;
         let size = displays.size;
 
         let input_devices = Rc::new(RefCell::new(HashMap::new()));
@@ -360,6 +370,7 @@ impl DrmBackend {
             pending_resize: None,
             surface_modifiers: Vec::new(),
             surface_stale: false,
+            configured_modes,
         })
     }
 
@@ -793,7 +804,7 @@ impl DrmBackend {
                 self.retiring = None;
                 self.pending_flips.clear();
                 self.hotplug_pending = false;
-                match open_card_and_outputs(&self.seat) {
+                match open_card_and_outputs(&self.seat, &self.configured_modes) {
                     Ok((card, displays)) => {
                         self.card = Some(card);
                         self.surface_stale |= displays.modifiers != self.surface_modifiers;
@@ -1127,7 +1138,7 @@ impl DrmBackend {
 
     fn reconfigure_outputs(&mut self) {
         self.hotplug_pending = false;
-        let selected = match select_outputs(self.card()) {
+        let selected = match select_outputs(self.card(), &self.configured_modes) {
             Ok(displays) => displays,
             Err(DrmError::NoConnector) => {
                 log::info!("drm: all outputs disconnected; suspending rendering");
@@ -1281,9 +1292,38 @@ impl Backend for DrmBackend {
                             y: output.y as i32,
                         },
                     },
+                    available_modes: output.available_modes.clone(),
                 }
             })
             .collect()
+    }
+
+    fn set_configured_modes(&mut self, modes: HashMap<String, ModeSpec>) {
+        // A live re-modeset is intentionally not attempted: the new map takes
+        // effect on the next output (re)selection (hotplug or session
+        // resume), whose select_outputs consults it. Note the deferral for
+        // outputs whose configured mode differs from the live one, so a
+        // config reload is never silently half-applied (ADR-0026's apply
+        // contract).
+        for output in &self.displays.outputs {
+            let Some(spec) = modes.get(&output.name) else {
+                continue;
+            };
+            let (width, height) = output.mode.size();
+            let current = OutputMode {
+                width: width as i32,
+                height: height as i32,
+                refresh_mhz: output.mode.vrefresh().saturating_mul(1_000),
+            };
+            if !spec.matches(&current) {
+                log::info!(
+                    "drm: {}: configured mode {spec:?} differs from the live mode; \
+                     it applies on the next hotplug or restart",
+                    output.name
+                );
+            }
+        }
+        self.configured_modes = modes;
     }
 
     fn dispatch(&mut self) -> bool {
@@ -1406,6 +1446,7 @@ fn deadline_passed(deadline: Option<std::time::Instant>) -> bool {
 
 fn open_card_and_outputs(
     seat: &Rc<RefCell<libseat::Seat>>,
+    configured_modes: &HashMap<String, ModeSpec>,
 ) -> Result<(Card, DisplaySet), DrmError> {
     let candidates = candidate_cards();
     let tried = candidates
@@ -1421,7 +1462,7 @@ fn open_card_and_outputs(
                     .set_client_capability(drm::ClientCapability::UniversalPlanes, true)
                     .and_then(|()| card.set_client_capability(drm::ClientCapability::Atomic, true))
                     .map_err(DrmError::from)
-                    .and_then(|()| select_outputs(&card));
+                    .and_then(|()| select_outputs(&card, configured_modes));
                 match result {
                     Ok(output) => return Ok((card, output)),
                     Err(error) => {
@@ -1454,6 +1495,7 @@ struct OutputCandidate {
     name: String,
     mode: Mode,
     choices: Vec<OutputChoice>,
+    available_modes: Vec<OutputMode>,
 }
 
 #[derive(Debug, Clone)]
@@ -1463,7 +1505,10 @@ struct OutputChoice {
     modifiers: Vec<u64>,
 }
 
-fn select_outputs(card: &Card) -> Result<DisplaySet, DrmError> {
+fn select_outputs(
+    card: &Card,
+    configured_modes: &HashMap<String, ModeSpec>,
+) -> Result<DisplaySet, DrmError> {
     let resources = card.resource_handles()?;
     let mut connectors = resources
         .connectors()
@@ -1487,12 +1532,37 @@ fn select_outputs(card: &Card) -> Result<DisplaySet, DrmError> {
     for format in [DrmFourcc::Xrgb8888, DrmFourcc::Argb8888] {
         let mut candidates = Vec::with_capacity(connectors.len());
         for connector in &connectors {
-            let mode = connector
+            let name = connector.to_string();
+            // (width, height, refresh_mhz, preferred) in connector order, so
+            // an index returned by pick_mode addresses connector.modes()
+            // directly.
+            let tuples = connector
                 .modes()
                 .iter()
-                .copied()
-                .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
-                .unwrap_or(connector.modes()[0]);
+                .map(|mode| {
+                    let (width, height) = mode.size();
+                    (
+                        width as i32,
+                        height as i32,
+                        mode.vrefresh().saturating_mul(1_000),
+                        mode.mode_type().contains(ModeTypeFlags::PREFERRED),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let spec = configured_modes.get(&name);
+            let picked = match pick_mode(&tuples, spec) {
+                Some(index) => index,
+                None => {
+                    // Only reachable with a spec that matched nothing.
+                    if let Some(spec) = spec {
+                        log::warn!(
+                            "drm: {name}: configured mode {spec:?} matches no advertised mode; using the preferred mode"
+                        );
+                    }
+                    pick_mode(&tuples, None).unwrap_or(0)
+                }
+            };
+            let mode = connector.modes()[picked];
             let mut crtcs = Vec::new();
             if let Some(current) = connector
                 .current_encoder()
@@ -1533,9 +1603,10 @@ fn select_outputs(card: &Card) -> Result<DisplaySet, DrmError> {
             }
             candidates.push(OutputCandidate {
                 connector: connector.handle(),
-                name: connector.to_string(),
+                name,
                 mode,
                 choices,
+                available_modes: advertised_modes(connector),
             });
         }
         if candidates
@@ -1690,7 +1761,63 @@ fn build_output(
         x,
         y: 0,
         props,
+        available_modes: candidate.available_modes,
     })
+}
+
+/// The connector's advertised modes, deduplicated by (width, height,
+/// refresh) and sorted by pixel count then refresh rate, highest first — the
+/// order `ass-ctl outputs` presents them in.
+fn advertised_modes(info: &connector::Info) -> Vec<OutputMode> {
+    let mut modes: Vec<OutputMode> = info
+        .modes()
+        .iter()
+        .map(|mode| {
+            let (width, height) = mode.size();
+            OutputMode {
+                width: width as i32,
+                height: height as i32,
+                refresh_mhz: mode.vrefresh().saturating_mul(1_000),
+            }
+        })
+        .collect();
+    modes.sort_by(|a, b| {
+        (i64::from(b.width) * i64::from(b.height), b.refresh_mhz)
+            .cmp(&(i64::from(a.width) * i64::from(a.height), a.refresh_mhz))
+    });
+    modes.dedup();
+    modes
+}
+
+/// Choose a mode index out of `modes` — `(width, height, refresh_mhz,
+/// preferred)` tuples in connector order — honoring an optional configured
+/// spec (ADR-0028). Without a spec the DRM PREFERRED mode wins, falling back
+/// to the first advertised mode. With a spec, matches require exact
+/// width/height (plus a whole-Hz refresh match when the spec names one);
+/// among matches the PREFERRED flag wins, then the highest refresh, then the
+/// lowest index. `None` means nothing matched (or `modes` is empty); the
+/// caller falls back to the no-spec rule.
+fn pick_mode(modes: &[(i32, i32, u32, bool)], spec: Option<&ModeSpec>) -> Option<usize> {
+    match spec {
+        None => modes
+            .iter()
+            .position(|&(.., preferred)| preferred)
+            .or((!modes.is_empty()).then_some(0)),
+        Some(spec) => modes
+            .iter()
+            .enumerate()
+            .filter(|(_, &(width, height, refresh_mhz, _))| {
+                spec.matches(&OutputMode {
+                    width,
+                    height,
+                    refresh_mhz,
+                })
+            })
+            .max_by_key(|&(index, &(.., refresh_mhz, preferred))| {
+                (preferred, refresh_mhz, std::cmp::Reverse(index))
+            })
+            .map(|(index, _)| index),
+    }
 }
 
 fn display_signature(displays: &DisplaySet) -> DisplaySignature {
@@ -1950,6 +2077,7 @@ mod tests {
                         modifiers: vec![0],
                     },
                 ],
+                available_modes: Vec::new(),
             },
             OutputCandidate {
                 connector: connector::Handle::from(raw(2)),
@@ -1960,6 +2088,7 @@ mod tests {
                     plane: plane::Handle::from(raw(20)),
                     modifiers: vec![0, 9],
                 }],
+                available_modes: Vec::new(),
             },
         ];
 
@@ -1967,5 +2096,48 @@ mod tests {
         assert_eq!(selected[0].crtc, crtc::Handle::from(raw(11)));
         assert_eq!(selected[1].crtc, crtc::Handle::from(raw(10)));
         assert_eq!(modifiers, vec![0]);
+    }
+
+    #[test]
+    fn pick_mode_without_spec_prefers_flagged_then_first() {
+        let modes = [
+            (1920, 1080, 60_000, false),
+            (2560, 1440, 60_000, true),
+            (1920, 1080, 144_000, false),
+        ];
+        assert_eq!(pick_mode(&modes, None), Some(1));
+        // No PREFERRED flag anywhere → the first advertised mode.
+        let plain = [(1920, 1080, 60_000, false), (1280, 720, 60_000, false)];
+        assert_eq!(pick_mode(&plain, None), Some(0));
+        assert_eq!(pick_mode(&[], None), None);
+    }
+
+    #[test]
+    fn pick_mode_with_spec_requires_exact_size() {
+        let modes = [(1920, 1080, 60_000, false), (2560, 1440, 60_000, true)];
+        let spec: ModeSpec = "1920x1080".parse().unwrap();
+        assert_eq!(pick_mode(&modes, Some(&spec)), Some(0));
+        // Nothing matches → None so the caller can fall back and warn.
+        let missing: ModeSpec = "1280x720".parse().unwrap();
+        assert_eq!(pick_mode(&modes, Some(&missing)), None);
+    }
+
+    #[test]
+    fn pick_mode_with_spec_prefers_flagged_then_refresh_then_index() {
+        let modes = [
+            (1920, 1080, 60_000, false),
+            (1920, 1080, 144_000, false),
+            (1920, 1080, 75_000, true),
+        ];
+        let spec: ModeSpec = "1920x1080".parse().unwrap();
+        // PREFERRED wins over the higher refresh.
+        assert_eq!(pick_mode(&modes, Some(&spec)), Some(2));
+        // Without a flagged match, the highest refresh wins.
+        assert_eq!(pick_mode(&modes[..2], Some(&spec)), Some(1));
+        // An exact refresh request selects only that rate (rounded).
+        let hz: ModeSpec = "1920x1080@144".parse().unwrap();
+        assert_eq!(pick_mode(&modes, Some(&hz)), Some(1));
+        let odd: ModeSpec = "1920x1080@75".parse().unwrap();
+        assert_eq!(pick_mode(&modes, Some(&odd)), Some(2));
     }
 }

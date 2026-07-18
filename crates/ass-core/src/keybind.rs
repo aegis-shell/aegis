@@ -14,7 +14,8 @@
 //! the `depressed` mask the matcher reads.
 
 use crate::input::{
-    Mods, XKB_KEY_BackSpace, XKB_KEY_Down, XKB_KEY_Escape, XKB_KEY_Return, XKB_KEY_Tab, XKB_KEY_Up,
+    Mods, XKB_KEY_BackSpace, XKB_KEY_Down, XKB_KEY_Escape, XKB_KEY_Print, XKB_KEY_Return,
+    XKB_KEY_Tab, XKB_KEY_Up,
 };
 
 /// A compositor action a key binding can trigger.
@@ -36,6 +37,8 @@ pub enum Action {
     WorkspacePrev,
     /// Toggle the current workspace between tiled and floating (ADR-0024).
     ToggleTiling,
+    /// Open the interactive screenshot region selector.
+    Screenshot,
     /// Quit the compositor.
     Quit,
 }
@@ -73,6 +76,7 @@ impl Keymap {
                 kb(Mods::SUPER, 0xff53, Action::WorkspaceNext), /* Right */
                 kb(Mods::SUPER, 0xff51, Action::WorkspacePrev), /* Left */
                 kb(Mods::SUPER, 0x74, Action::ToggleTiling),   /* 't' */
+                kb(Mods::NONE, XKB_KEY_Print, Action::Screenshot), /* Print Screen */
                 kb(Mods::SUPER | Mods::SHIFT, 0xff0d, Action::Quit),
             ],
         }
@@ -189,6 +193,7 @@ pub fn action_from_name(s: &str) -> Option<Action> {
         "workspace_next" | "next_workspace" | "ws_next" => Action::WorkspaceNext,
         "workspace_prev" | "prev_workspace" | "ws_prev" => Action::WorkspacePrev,
         "tiling" | "toggle_tiling" => Action::ToggleTiling,
+        "screenshot" | "snapshot" | "prtsc" => Action::Screenshot,
         "quit" | "exit" => Action::Quit,
         _ => return None,
     })
@@ -221,6 +226,7 @@ pub fn keysym_from_name(s: &str) -> Option<u32> {
         "pageup" | "pgup" => 0xff55,
         "pagedown" | "pgdn" => 0xff56,
         "delete" | "del" => 0xffff,
+        "print" | "prtsc" | "snapshot" => XKB_KEY_Print,
         "f1" => 0xffbe,
         "f2" => 0xffbf,
         "f3" => 0xffc0,
@@ -262,6 +268,11 @@ mod tests {
         );
         // Super+q → close focused ('q' keysym 0x71).
         assert_eq!(km.match_key(Mods::SUPER, 0x71), Some(Action::CloseFocused));
+        // Bare Print → screenshot.
+        assert_eq!(
+            km.match_key(Mods::NONE, XKB_KEY_Print),
+            Some(Action::Screenshot)
+        );
         // Bare modifier keys never match (no keysym).
         assert_eq!(km.match_key(Mods::SUPER, XKB_KEY_NoSymbol), None);
     }
@@ -317,6 +328,8 @@ mod tests {
         assert_eq!(keysym_from_name("1"), Some(0x31));
         assert_eq!(keysym_from_name("space"), Some(0x20));
         assert_eq!(keysym_from_name("return"), Some(XKB_KEY_Return));
+        assert_eq!(keysym_from_name("print"), Some(XKB_KEY_Print));
+        assert_eq!(keysym_from_name("prtsc"), Some(XKB_KEY_Print));
         assert_eq!(keysym_from_name("f4"), Some(0xffc1));
         assert_eq!(keysym_from_name("nonsense"), None);
     }

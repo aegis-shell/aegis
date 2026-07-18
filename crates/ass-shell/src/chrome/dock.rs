@@ -31,18 +31,16 @@ use ass_core::app::Entry;
 use ass_core::input::{key_action, KeyAction, KeyChar};
 use ass_core::window::Window;
 
-use super::app_menu::AppMenu;
+use super::app_menu::{AppMenu, PinAction};
 
 /// Visual height of the dock bar. Tiles rest inside it; magnified tiles pop
 /// above its top edge (they are drawn as their own layers, unclipped).
 const DOCK_PANEL_HEIGHT: f32 = 74.0;
 /// Gap between the dock bar and the bottom edge of the output.
 const DOCK_BOTTOM_MARGIN: f32 = 12.0;
-/// Height of the strip at the bar's bottom reserved for the running-indicator
-/// dots, below the icon baseline.
-const DOCK_DOT_AREA: f32 = 8.0;
 /// Distance from the bar's bottom edge up to the icon baseline (the bottom of
-/// every tile). Leaves room for [`DOCK_DOT_AREA`] plus a small gap.
+/// every tile). Leaves room for the running-indicator dot strip plus a small
+/// gap, while keeping the dot clear of the panel's rounded bottom corners.
 const DOCK_BASELINE_INSET: f32 = 13.0;
 /// Side length of a square dock tile at rest (the icon area).
 const DOCK_TILE: f32 = 56.0;
@@ -55,9 +53,10 @@ const MAGNIFY_RADIUS_TILES: f32 = 2.0;
 /// snappy enough to track the cursor, slow enough to read as intentional.
 const SPRING_STIFFNESS: f32 = 900.0;
 /// Spring damping ratio. 1.0 is critically damped (no overshoot); values just
-/// under 1 give the slight macOS-style bounce-back. ~0.72 keeps one tiny
-/// overshoot without ringing.
-const SPRING_DAMPING: f32 = 0.72;
+/// under 1 give the slight macOS-style bounce-back. ~0.85 keeps the wave
+/// lively while suppressing the visible jitter the previous lighter damping
+/// produced under variable frame times.
+const SPRING_DAMPING: f32 = 0.85;
 /// Side length a brand-new tile grows in from. Springs up over the first few
 /// frames instead of popping in at full size.
 const DOCK_TILE_BIRTH: f32 = 6.0;
@@ -67,6 +66,10 @@ const DOCK_TILE_BIRTH: f32 = 6.0;
 const MAGNIFY_APPROACH_BAND: f32 = 48.0;
 /// Gap between adjacent rest slots inside the bar.
 const DOCK_TILE_GAP: f32 = 10.0;
+/// Extra breathing room between the pinned strip and the transient (running,
+/// unpinned) section — the macOS-style separator between kept apps and apps
+/// that only live while they run.
+const DOCK_SECTION_GAP: f32 = 22.0;
 /// Padding between the bar's edge and the first/last rest slot.
 const DOCK_PAD: f32 = 10.0;
 /// Diameter of a running-indicator dot.
@@ -118,6 +121,10 @@ struct Tile {
     /// The Launchpad tile (always the first tile): clicking it toggles the
     /// launcher rather than focusing or spawning. Drawn as a 3×3 grid glyph.
     launchpad: bool,
+    /// Whether the tile belongs to the persistent strip (launchpad or a
+    /// pinned app). Transient tiles — unpinned running windows — sit on the
+    /// right of the section separator and disappear when they close.
+    pinned: bool,
 }
 
 impl Tile {
@@ -135,6 +142,7 @@ impl Tile {
             spawn: None,
             label: label.to_string(),
             launchpad: true,
+            pinned: true,
         }
     }
 }
@@ -144,6 +152,10 @@ pub struct Dock {
     /// Pinned launchable apps, in dock order. Built by the binary from the
     /// enumerated `.desktop` entries (and an optional config pin list).
     apps: Vec<DockApp>,
+    /// The complete enumerated application catalog, refreshed with every
+    /// rescan. Kept so the context menu can offer "Keep in Dock" for a
+    /// transient running window whose entry is not currently pinned.
+    all_apps: Vec<Entry>,
     /// `app_id` (lowercased) → borrowed icon texture pointer. Borrowed from
     /// the binary's `IconCache`, which owns the `flux::Image`s and outlives
     /// this component. Shared by pinned tiles and unpinned running windows.
@@ -192,6 +204,7 @@ impl Dock {
     pub fn new() -> Dock {
         Dock {
             apps: Vec::new(),
+            all_apps: Vec::new(),
             icons: HashMap::new(),
             sizes: HashMap::new(),
             anim_active: false,
@@ -212,6 +225,7 @@ impl Dock {
     pub fn with_apps(apps: Vec<DockApp>, icons: HashMap<String, *mut c_void>) -> Dock {
         Dock {
             apps,
+            all_apps: Vec::new(),
             icons,
             sizes: HashMap::new(),
             anim_active: false,
@@ -244,10 +258,24 @@ impl Dock {
     /// magnify factor. The live centre drifts as tiles widen, but macOS drives
     /// the *factor* from the fixed rest position so the wave does not chase its
     /// own tail (a wider tile pulling the cursor closer, magnifying more, …).
-    fn rest_centre_estimate(i: usize, n: usize, disp_w: f32) -> f32 {
-        let bar_w = n as f32 * DOCK_TILE + (n as f32 - 1.0) * DOCK_TILE_GAP + 2.0 * DOCK_PAD;
+    /// `pinned_count` accounts for the extra section gap between the kept strip
+    /// and the transient running section.
+    fn rest_centre_estimate(i: usize, n: usize, pinned_count: usize, disp_w: f32) -> f32 {
+        let unpinned = n.saturating_sub(pinned_count);
+        let section_gap = if pinned_count > 0 && unpinned > 0 {
+            DOCK_SECTION_GAP
+        } else {
+            0.0
+        };
+        let bar_w =
+            n as f32 * DOCK_TILE + (n as f32 - 1.0) * DOCK_TILE_GAP + section_gap + 2.0 * DOCK_PAD;
         let bar_x = (disp_w - bar_w) * 0.5;
-        bar_x + DOCK_PAD + i as f32 * (DOCK_TILE + DOCK_TILE_GAP) + DOCK_TILE * 0.5
+        let extra = if i >= pinned_count && pinned_count > 0 && unpinned > 0 {
+            section_gap
+        } else {
+            0.0
+        };
+        bar_x + DOCK_PAD + i as f32 * (DOCK_TILE + DOCK_TILE_GAP) + extra + DOCK_TILE * 0.5
     }
 
     /// Advance a damped spring one `dt` seconds toward `target`. Semi-implicit
@@ -324,6 +352,7 @@ impl Dock {
                 spawn: if running { None } else { Some(i) },
                 label: app.entry.name.clone(),
                 launchpad: false,
+                pinned: true,
             });
         }
 
@@ -349,6 +378,7 @@ impl Dock {
                     .or_else(|| w.app_id.clone())
                     .unwrap_or_else(|| application_label.to_string()),
                 launchpad: false,
+                pinned: false,
             });
         }
         tiles
@@ -369,7 +399,14 @@ impl Dock {
                     .unwrap_or(DOCK_TILE)
             })
             .collect();
-        let gaps = tiles.len().saturating_sub(1) as f32 * DOCK_TILE_GAP;
+        let pinned_count = tiles.iter().filter(|t| t.pinned).count();
+        let unpinned = tiles.len().saturating_sub(pinned_count);
+        let section_gap = if pinned_count > 0 && unpinned > 0 {
+            DOCK_SECTION_GAP
+        } else {
+            0.0
+        };
+        let gaps = tiles.len().saturating_sub(1) as f32 * DOCK_TILE_GAP + section_gap;
         let bar_w = widths.iter().sum::<f32>() + gaps + 2.0 * DOCK_PAD;
         let panel_y = display.1 - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN;
         let icon_bottom = panel_y + DOCK_PANEL_HEIGHT - DOCK_BASELINE_INSET;
@@ -410,6 +447,13 @@ impl Chrome for Dock {
         tiles.push(Tile::launchpad(application_label));
         tiles.extend(self.localized_tiles(windows, application_label));
         let n = tiles.len();
+        let pinned_count = tiles.iter().filter(|t| t.pinned).count();
+        let unpinned_count = n.saturating_sub(pinned_count);
+        let section_gap = if pinned_count > 0 && unpinned_count > 0 {
+            DOCK_SECTION_GAP
+        } else {
+            0.0
+        };
 
         // Drop eased sizes for tiles no longer present so the map does not
         // grow unbounded across long sessions.
@@ -437,7 +481,9 @@ impl Chrome for Dock {
         let mut unsettled = false;
         for (i, t) in tiles.iter().enumerate() {
             let factor = if in_band {
-                Self::magnify_factor(cursor.x - Self::rest_centre_estimate(i, n, disp.x))
+                Self::magnify_factor(
+                    cursor.x - Self::rest_centre_estimate(i, n, pinned_count, disp.x),
+                )
             } else {
                 0.0
             };
@@ -477,15 +523,22 @@ impl Chrome for Dock {
         // Sum the eased widths (plus the inter-tile gap) to get the live bar
         // width. The gap is constant; only the tiles widen. Centred horizontally.
         let total_tiles: f32 = eased.iter().sum();
-        let bar_w = total_tiles + (n as f32 - 1.0) * DOCK_TILE_GAP + 2.0 * DOCK_PAD;
+        let bar_w = total_tiles + (n as f32 - 1.0) * DOCK_TILE_GAP + section_gap + 2.0 * DOCK_PAD;
         let bar_x = (disp.x - bar_w) * 0.5;
 
-        // The running x-offset of each tile's centre, left to right.
+        // The running x-offset of each tile's centre, left to right. The
+        // pinned strip and the transient running section are separated by the
+        // wider section gap instead of the ordinary tile gap.
         let mut centres = Vec::with_capacity(n);
         let mut x = bar_x + DOCK_PAD;
         for (i, s) in eased.iter().enumerate() {
             if i > 0 {
-                x += DOCK_TILE_GAP;
+                let gap = if !tiles[i].pinned && tiles[i - 1].pinned {
+                    section_gap
+                } else {
+                    DOCK_TILE_GAP
+                };
+                x += gap;
             }
             centres.push(x + s * 0.5);
             x += *s;
@@ -599,7 +652,12 @@ impl Chrome for Dock {
             }
 
             if t.running {
-                let dot_y = panel_y + DOCK_PANEL_HEIGHT - DOCK_DOT_AREA * 0.5;
+                // Centre the dot in the flat strip between the icon baseline
+                // and the panel bottom, so it never falls into the rounded
+                // corner region (and outside the bar) on the leftmost or
+                // rightmost tiles.
+                let strip_h = DOCK_BASELINE_INSET.max(DOCK_DOT);
+                let dot_y = icon_bottom + (strip_h - DOCK_DOT) * 0.5 + DOCK_DOT * 0.5;
                 let dot_rect = Rect {
                     x: cx - DOCK_DOT * 0.5,
                     y: dot_y - DOCK_DOT * 0.5,
@@ -619,6 +677,30 @@ impl Chrome for Dock {
                     );
                 });
             }
+        }
+
+        // A slim divider in the section gap separates the kept strip from the
+        // transient running apps, like macOS's Dock.
+        if section_gap > 0.0 {
+            let divider_x = (centre(pinned_count - 1) + centre(pinned_count)) * 0.5;
+            let divider_h = DOCK_TILE * 0.55;
+            let divider_rect = Rect {
+                x: divider_x - 0.5,
+                y: panel_y + (DOCK_PANEL_HEIGHT - divider_h) * 0.5,
+                w: 1.0,
+                h: divider_h,
+            };
+            f.layer(
+                "ass-dock-section-divider",
+                divider_rect,
+                &OverlayOpts::default(),
+                |f| {
+                    f.column_ex(
+                        &sized_fill(1.0, divider_h, Color::rgba(255, 255, 255, 56), 0.5),
+                        |_| {},
+                    );
+                },
+            );
         }
 
         // Fire a click once on the press edge (the host does not clear the
@@ -646,11 +728,31 @@ impl Chrome for Dock {
             if let Some(i) = hit {
                 let tile = &tiles[i];
                 if !tile.launchpad {
+                    let pin_action = if let Some(ai) = tile.app {
+                        // A pinned tile always offers removal from the strip.
+                        Some(PinAction::Unpin(self.apps[ai].entry.id.clone()))
+                    } else {
+                        // A transient running window offers "Keep in Dock"
+                        // only when its app_id resolves to an enumerated
+                        // desktop entry.
+                        let window_app_id = tile
+                            .windows
+                            .first()
+                            .and_then(|id| windows.iter().find(|w| w.id == *id))
+                            .and_then(|w| w.app_id.as_deref());
+                        window_app_id.and_then(|app_id| {
+                            self.all_apps
+                                .iter()
+                                .find(|entry| entry_matches_app_id(entry, app_id))
+                                .map(|entry| PinAction::Pin(entry.id.clone()))
+                        })
+                    };
                     self.app_menu.open(
                         tile.label.clone(),
                         tile.app.map(|app| self.apps[app].entry.clone()),
                         tile.windows.iter().copied(),
                         icon_rects[i],
+                        pin_action,
                     );
                     self.menu_tile = Some(tile.key.clone());
                 }
@@ -739,8 +841,17 @@ impl Chrome for Dock {
     ) -> Vec<BackdropRegion> {
         let bounds = self.pointer_bounds(windows, display);
         let panel_y = display.1 - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN;
+        let icon_bottom = panel_y + DOCK_PANEL_HEIGHT - DOCK_BASELINE_INSET;
         let radius = 18.0;
         vec![
+            // The tooltip floats above the magnified icon; blur that band too
+            // so the app-name bubble gets the same frosted material as the bar.
+            BackdropRegion {
+                x: bounds.x,
+                y: icon_bottom - DOCK_TILE_MAX - TOOLTIP_GAP - TOOLTIP_HEIGHT,
+                w: bounds.w,
+                h: TOOLTIP_GAP + TOOLTIP_HEIGHT + 2.0,
+            },
             BackdropRegion {
                 x: bounds.x + radius,
                 y: panel_y,
@@ -808,15 +919,38 @@ impl Chrome for Dock {
 
     fn update_app_catalog(
         &mut self,
-        _apps: &[Entry],
+        apps: &[Entry],
         dock_apps: &[DockApp],
         icons: &HashMap<String, *mut c_void>,
     ) {
         self.app_menu.dismiss();
         self.menu_tile = None;
+        self.all_apps = apps.to_vec();
         self.apps = dock_apps.to_vec();
         self.icons.clone_from(icons);
     }
+}
+
+/// Whether `entry` is the desktop entry a running `app_id` belongs to. The
+/// match mirrors the launcher's running-app heuristic: `StartupWMClass`,
+/// the desktop-id stem, or the icon name (case-insensitive).
+fn entry_matches_app_id(entry: &Entry, app_id: &str) -> bool {
+    let want = app_id.to_ascii_lowercase();
+    if want.is_empty() {
+        return false;
+    }
+    entry
+        .startup_wm_class
+        .as_deref()
+        .is_some_and(|wm| wm.to_ascii_lowercase() == want)
+        || entry
+            .id
+            .trim_end_matches(".desktop")
+            .eq_ignore_ascii_case(app_id)
+        || entry
+            .icon
+            .as_deref()
+            .is_some_and(|icon| icon.eq_ignore_ascii_case(app_id))
 }
 
 /// A fixed-size, transparent container used to force a layer (whose `rect` is
@@ -850,11 +984,12 @@ fn grid(gap: f32) -> LayoutOpts {
     }
 }
 
-/// The dock bar background: a rounded translucent panel.
+/// The dock bar background: a frosted-glass panel. The desktop capture behind
+/// it is blurred by the compositor host; the fill only tints the result.
 fn panel_opts() -> OverlayOpts {
     OverlayOpts {
-        bg: Color::rgba(24, 26, 36, 148),
-        border: Color::rgba(255, 255, 255, 46),
+        bg: Color::rgba(255, 255, 255, 34),
+        border: Color::rgba(255, 255, 255, 64),
         border_width: 1.0,
         radius: 18.0,
         pad: 0.0,
@@ -898,10 +1033,13 @@ fn render_tooltip(frame: &mut Frame, label: &str, owner: Rect, display: (f32, f3
         "ass-dock-app-name",
         rect,
         &OverlayOpts {
-            bg: Color::rgba(23, 26, 38, opacity(232)),
-            border: Color::rgba(112, 118, 142, opacity(145)),
+            // Frosted glass over the dock's backdrop-blur band: a light tint
+            // with a bright edge, matching the bar's material instead of the
+            // old opaque dark bubble.
+            bg: Color::rgba(255, 255, 255, opacity(40)),
+            border: Color::rgba(255, 255, 255, opacity(78)),
             border_width: 1.0,
-            radius: 8.0,
+            radius: TOOLTIP_HEIGHT * 0.5,
             pad: 0.0,
             cross: Align::Center,
             ..Default::default()
@@ -1081,6 +1219,38 @@ mod tests {
         );
         let gimp = tiles.iter().find(|t| t.key == "win:3").expect("gimp tile");
         assert!(gimp.running);
+        assert!(!gimp.pinned, "the window tile is transient, not kept");
         assert_eq!(gimp.focus, Some(ass_core::window::WindowId(3)));
+    }
+
+    #[test]
+    fn entry_matches_app_id_like_the_launcher_heuristic() {
+        let mut e = Entry {
+            id: "org.mozilla.firefox.desktop".to_string(),
+            icon: Some("firefox-icon".to_string()),
+            ..Default::default()
+        };
+        e.startup_wm_class = Some("Firefox".to_string());
+        assert!(entry_matches_app_id(&e, "firefox")); // WM class, case-insensitive
+        assert!(entry_matches_app_id(&e, "org.mozilla.firefox")); // desktop-id stem
+        assert!(entry_matches_app_id(&e, "Firefox-Icon")); // icon name
+        assert!(!entry_matches_app_id(&e, "chromium"));
+        assert!(!entry_matches_app_id(&e, ""));
+    }
+
+    #[test]
+    fn rest_centres_include_the_section_gap_for_transient_tiles() {
+        // 2 pinned tiles (incl. launchpad) + 1 transient window tile.
+        let pinned = Dock::rest_centre_estimate(1, 3, 2, 1920.0);
+        let transient = Dock::rest_centre_estimate(2, 3, 2, 1920.0);
+        let pitch = DOCK_TILE + DOCK_TILE_GAP;
+        assert!(
+            (transient - pinned - pitch - DOCK_SECTION_GAP).abs() < 1e-5,
+            "the first transient tile sits one pitch plus the section gap right of the last pinned tile"
+        );
+        // No transient tiles → no extra gap.
+        let a = Dock::rest_centre_estimate(1, 2, 2, 1920.0);
+        let b = Dock::rest_centre_estimate(0, 2, 2, 1920.0);
+        assert!((a - b - pitch).abs() < 1e-5);
     }
 }

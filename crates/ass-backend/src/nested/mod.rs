@@ -1570,6 +1570,9 @@ impl Backend for NestedHost {
                 transform: ass_core::Transform::Normal,
                 logical_origin: ass_core::Point::default(),
             },
+            // The outer compositor owns modesetting; there is nothing to
+            // enumerate here.
+            available_modes: Vec::new(),
         }]
     }
 

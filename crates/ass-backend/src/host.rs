@@ -1,10 +1,12 @@
 //! Runtime backend selection and the common compositor-host facade.
 
+use std::collections::HashMap;
 use std::os::fd::OwnedFd;
 use std::str::FromStr;
 use std::time::Duration;
 
 use ass_core::input::{InputEvent, PointerGestureEvent, TextInputEvent, TextInputState};
+use ass_core::output::ModeSpec;
 use ass_core::Size;
 
 use crate::drm::{DrmBackend, DrmError};
@@ -55,15 +57,19 @@ pub enum Host {
 }
 
 impl Host {
+    /// Open the selected backend. `configured_modes` carries the config's
+    /// per-connector `mode` requests (ADR-0028); only the DRM path consumes
+    /// them, so the very first modeset already honors the configured modes.
     pub fn open(
         kind: BackendKind,
         title: &str,
         width: i32,
         height: i32,
+        configured_modes: HashMap<String, ModeSpec>,
     ) -> Result<Self, HostError> {
         match kind {
             BackendKind::Nested => Ok(Self::Nested(NestedHost::open(title, width, height)?)),
-            BackendKind::Drm => Ok(Self::Drm(DrmBackend::open()?)),
+            BackendKind::Drm => Ok(Self::Drm(DrmBackend::open(configured_modes)?)),
             BackendKind::Auto => {
                 let outer_wayland =
                     std::env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty());
@@ -72,7 +78,7 @@ impl Host {
                     Ok(Self::Nested(NestedHost::open(title, width, height)?))
                 } else {
                     log::info!("backend: auto selected drm (no outer Wayland display)");
-                    Ok(Self::Drm(DrmBackend::open()?))
+                    Ok(Self::Drm(DrmBackend::open(configured_modes)?))
                 }
             }
         }
@@ -218,6 +224,13 @@ impl Backend for Host {
         match self {
             Self::Nested(host) => host.output_infos(),
             Self::Drm(host) => host.output_infos(),
+        }
+    }
+
+    fn set_configured_modes(&mut self, modes: HashMap<String, ModeSpec>) {
+        match self {
+            Self::Nested(host) => host.set_configured_modes(modes),
+            Self::Drm(host) => host.set_configured_modes(modes),
         }
     }
 

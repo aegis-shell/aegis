@@ -175,9 +175,12 @@ fn viewport_uv(
 }
 
 /// Caches per-surface GPU textures so client contents are re-uploaded only when
-/// they change (tracked by the surface's generation counter). Also tracks which
-/// (surface, format, modifier) tuples have already logged an import failure so
-/// the diagnostic is emitted once per surface rather than every frame.
+/// they change. Whole-texture uploads happen on first sight, size changes, and
+/// frames without usable damage; same-size frames with damage refresh only the
+/// damage bounding box (mirroring the server's incremental snapshot copy).
+/// Also tracks which (surface, format, modifier) tuples have already logged an
+/// import failure so the diagnostic is emitted once per surface rather than
+/// every frame.
 pub struct Renderer {
     cache: HashMap<usize, (flux::Image, u64)>,
     failed_imports: HashMap<usize, ()>,
@@ -274,78 +277,126 @@ impl Renderer {
         map: Option<&dyn Fn(Option<ass_core::window::WindowId>, ass_core::Rect) -> ass_core::Rect>,
     ) {
         for f in frames.iter() {
-            let stale = self
+            // Upload gating has two layers:
+            //
+            // * WHEN to upload: only when the surface committed new
+            //   contents — the server bumps the generation on every
+            //   buffer attach — or when the cached texture's dimensions
+            //   no longer match the frame's. Damage rects persist until
+            //   the next commit, so they must never trigger an upload on
+            //   their own (a static surface would otherwise re-upload
+            //   every rendered frame).
+            //
+            // * HOW to upload (mirrors the server's incremental shm
+            //   copy): a same-size commit with usable damage refreshes
+            //   only the damage bounding box; anything else — first
+            //   frame, resize, transform, buffer scale, or empty damage
+            //   ("no information") — replaces the whole texture.
+            let (tex_w, tex_h) = transformed_dims(f.width, f.height, f.geometry.transform);
+            let dims_match = self
+                .cache
+                .get(&f.id)
+                .is_some_and(|(img, _)| img.size() == (tex_w as u32, tex_h as u32));
+            let new_contents = self
                 .cache
                 .get(&f.id)
                 .is_none_or(|(_, g)| *g != f.generation);
-            if stale {
-                // Apply the buffer transform on the CPU at upload time. For
-                // the common case (Normal) this is a borrowed Cow with no
-                // allocation; axis-swapping rotations return an owned
-                // staging buffer. GPU-side transforms in flux's image
-                // shader are the long-term path.
-                let transformed = transform_pixels(
-                    f.pixels,
-                    f.width as usize,
-                    f.height as usize,
-                    f.geometry.transform,
-                );
-                let (tex_w, tex_h) = transformed_dims(f.width, f.height, f.geometry.transform);
-                if let Ok(img) = flux::Image::from_bytes(
-                    device,
-                    tex_w as u32,
-                    tex_h as u32,
-                    flux::Format::FLUX_FORMAT_BGRA8_UNORM,
-                    &transformed,
-                ) {
-                    self.cache_image(f.id, img, f.generation);
-                }
-            } else if !f.damage.is_empty()
-                && f.geometry.transform == Transform::Normal
-                && f.geometry.buffer_scale <= 1
-            {
-                // Incremental update: re-upload only the damaged regions.
-                // Skipped when a transform is active because damage rects
-                // are in surface-local coords and would need transformation
-                // to map to the staging buffer's layout. Also skipped when
-                // buffer_scale > 1: surface-local damage rects would cover
-                // only 1/scale^2 of the buffer, and damage_buffer rects
-                // are interleaved into the same Vec without distinction.
-                // The full-upload path runs on the next generation change.
-                if let Some((img, _)) = self.cache.get(&f.id) {
+            if !dims_match || new_contents {
+                let incremental = dims_match
+                    && f.geometry.transform == Transform::Normal
+                    && f.geometry.buffer_scale <= 1
+                    && !f.damage.is_empty();
+                if incremental {
+                    // Union of the (clamped) damage rects, uploaded in a
+                    // single update_region. Pixels outside every damaged
+                    // rect are identical to the previous frame by the
+                    // damage protocol, so refreshing a bounding superset
+                    // of the damage is always correct.
+                    let mut x0 = i32::MAX;
+                    let mut y0 = i32::MAX;
+                    let mut x1 = i32::MIN;
+                    let mut y1 = i32::MIN;
                     for d in f.damage {
-                        // Clamp to surface bounds; clients can send rects
-                        // that extend past the buffer.
-                        let x = d.origin.x.max(0).min(f.width - 1) as u32;
-                        let y = d.origin.y.max(0).min(f.height - 1) as u32;
-                        let max_w = (f.width as u32).saturating_sub(x);
-                        let max_h = (f.height as u32).saturating_sub(y);
-                        let w = (d.size.w as u32).min(max_w).max(1);
-                        let h = (d.size.h as u32).min(max_h).max(1);
-                        // Extract the sub-rect from the source buffer.
-                        // Tightly packed BGRA8: stride = width * 4.
-                        let bpp = 4usize;
-                        let stride = f.width as usize * bpp;
-                        let mut sub = vec![0u8; (w as usize) * (h as usize) * bpp];
-                        for row in 0..h as usize {
-                            let src_off = ((y as usize + row) * stride) + (x as usize * bpp);
-                            let dst_off = row * (w as usize * bpp);
-                            let len = w as usize * bpp;
-                            // src_off + len must be within f.pixels; clamp to avoid panic.
-                            let avail = f.pixels.len().saturating_sub(src_off);
-                            let take = len.min(avail);
-                            sub[dst_off..dst_off + take]
-                                .copy_from_slice(&f.pixels[src_off..src_off + take]);
+                        let x = d.origin.x.max(0).min(f.width - 1);
+                        let y = d.origin.y.max(0).min(f.height - 1);
+                        let w = (d.size.w.max(0)).min(f.width - x);
+                        let h = (d.size.h.max(0)).min(f.height - y);
+                        if w == 0 || h == 0 {
+                            continue;
                         }
-                        // Update failures are non-fatal: the cached texture
-                        // stays at the previous frame's contents for that
-                        // region until the next full upload.
-                        let _ = img.update_region(x, y, w, h, &sub);
+                        x0 = x0.min(x);
+                        y0 = y0.min(y);
+                        x1 = x1.max(x + w);
+                        y1 = y1.max(y + h);
                     }
-                    // Bump the generation so a subsequent stale check
-                    // doesn't re-upload the whole texture.
-                    if let Some((_, gen)) = self.cache.get_mut(&f.id) {
-                        *gen = f.generation;
+                    if x0 < x1 && y0 < y1 {
+                        if let Some((img, _)) = self.cache.get(&f.id) {
+                            let (bw, bh) = ((x1 - x0) as u32, (y1 - y0) as u32);
+                            let updated = if x0 == 0
+                                && y0 == 0
+                                && bw == f.width as u32
+                                && bh == f.height as u32
+                            {
+                                // Full-surface box: upload straight from the
+                                // snapshot, no extraction copy.
+                                img.update_region(0, 0, bw, bh, f.pixels)
+                            } else {
+                                // Tightly packed BGRA8: stride = width * 4.
+                                let bpp = 4usize;
+                                let stride = f.width as usize * bpp;
+                                let mut sub = vec![0u8; bw as usize * bh as usize * bpp];
+                                for row in 0..bh as usize {
+                                    let src_off =
+                                        (y0 as usize + row) * stride + x0 as usize * bpp;
+                                    let dst_off = row * (bw as usize * bpp);
+                                    let len = bw as usize * bpp;
+                                    // src_off + len must stay within f.pixels.
+                                    let avail = f.pixels.len().saturating_sub(src_off);
+                                    let take = len.min(avail);
+                                    sub[dst_off..dst_off + take]
+                                        .copy_from_slice(&f.pixels[src_off..src_off + take]);
+                                }
+                                img.update_region(x0 as u32, y0 as u32, bw, bh, &sub)
+                            };
+                            match updated {
+                                Ok(()) => {
+                                    if let Some((_, gen)) = self.cache.get_mut(&f.id) {
+                                        *gen = f.generation;
+                                    }
+                                }
+                                Err(_) => {
+                                    // A partial refresh that failed leaves
+                                    // the texture a frame behind the
+                                    // snapshot with no guaranteed full
+                                    // upload coming. Retire the entry so
+                                    // the next frame re-uploads the whole
+                                    // (always accurate) snapshot instead
+                                    // of tearing indefinitely.
+                                    self.retire_cached(f.id);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Apply the buffer transform on the CPU at upload time.
+                    // For the common case (Normal) this is a borrowed Cow
+                    // with no allocation; axis-swapping rotations return an
+                    // owned staging buffer. GPU-side transforms in flux's
+                    // image shader are the long-term path.
+                    let transformed = transform_pixels(
+                        f.pixels,
+                        f.width as usize,
+                        f.height as usize,
+                        f.geometry.transform,
+                    );
+                    if let Ok(img) = flux::Image::from_bytes(
+                        device,
+                        tex_w as u32,
+                        tex_h as u32,
+                        flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+                        &transformed,
+                    ) {
+                        self.cache_image(f.id, img, f.generation);
                     }
                 }
             }

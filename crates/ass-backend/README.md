@@ -37,7 +37,7 @@ set and drives KMS on a TTY), then drives it through the `Backend` trait:
 use ass_backend::host::{BackendKind, Host};
 use ass_backend::Backend;
 
-let mut host = Host::open(BackendKind::Auto, "ass", 1280, 720)?;
+let mut host = Host::open(BackendKind::Auto, "ass", 1280, 720, Default::default())?;
 let device = host.create_device()?;
 let mut surface = host.create_surface(&device)?;
 while host.dispatch_timeout(std::time::Duration::from_secs(1)) {

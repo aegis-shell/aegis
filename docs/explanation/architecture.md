@@ -94,11 +94,19 @@ instance.
 In nested operation, each frame runs the following sequence:
 
 1. The backend pumps host-window events, producing input events and resize
-   or redraw signals, and holds the `VkSurfaceKHR`.
+   or redraw signals, and holds the `VkSurfaceKHR`. The loop blocks on
+   these events when idle and waits with a ~60 fps deadline while
+   animating; the presentation engine (FIFO swapchain acquire nested,
+   the KMS page-flip wait on DRM) sets the real cadence
+   ([ADR-0038](../adr/0038-frame-pacing.md)).
 2. The server dispatches its event loop; clients commit surfaces and attach
    buffers (`wl_shm` or dmabuf), updating the surface tree in `ass-core`.
+   shm contents are snapshotted at commit time, copying only the damaged
+   rows when the frame's size and damage allow
+   ([ADR-0039](../adr/0039-damage-driven-shm-refresh.md)).
 3. The renderer turns each mapped surface into a flux texture — dmabuf by
-   zero-copy import, `wl_shm` by CPU upload — and composites them in
+   zero-copy import, `wl_shm` by CPU upload — refreshing only the damage
+   bounding box for same-size commits, and composites them in
    z-order into the frame, then overlays the lens chrome. When a
    wallpaper is loaded (see [ADR-0018](../adr/0018-wallpaper-crate.md)),
    `ass-wallpaper` draws it as the bottom-most layer before the renderer
@@ -106,7 +114,9 @@ In nested operation, each frame runs the following sequence:
 4. The frame is submitted and presented to the host surface.
 5. Input is routed: the backend's input goes to the focused client through
    `wl_seat`, with a copy to the chrome when the pointer is over it.
-6. Client buffers are released once the GPU no longer needs them.
+6. Client buffers are released once the GPU no longer needs them — against
+   the completion fence on DRM, or a few frames late on nested
+   ([ADR-0038](../adr/0038-frame-pacing.md)).
 
 Client GPU buffers reach flux through a dmabuf import path added to flux
 ([ADR-0004](../adr/0004-client-buffers-via-flux-dmabuf-import.md)).

@@ -41,6 +41,20 @@ separate built-in gesture.
 Use the application menu when an application has several windows and you
 need to choose one explicitly.
 
+## Pin or Unpin a Dock Application
+
+The Dock splits into two sections: pinned applications on the left, and
+applications that are running but not pinned on the right of a divider. A
+transient tile disappears again when its last window closes.
+
+1. Right-click a Dock tile.
+2. Select `Keep in Dock` to pin a transient application, or `Remove from Dock`
+   to unpin a pinned one.
+
+The change is written back to the `[dock] pinned` list in the
+[configuration file](../reference/config.md#dock). To return to automatic
+selection, delete the list and set `autopopulate = true`.
+
 ## Use the Application Menu
 
 1. Right-click an application icon or launcher cell.

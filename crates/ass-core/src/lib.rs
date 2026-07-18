@@ -98,6 +98,40 @@ impl Transform {
                 | Transform::FlipRotate270
         )
     }
+
+    /// The canonical lowercase name (hyphenated) used in configuration and
+    /// documentation. [`Transform::from_name`] accepts these names plus
+    /// underscore aliases.
+    pub fn name(self) -> &'static str {
+        match self {
+            Transform::Normal => "normal",
+            Transform::Rotate90 => "90",
+            Transform::Rotate180 => "180",
+            Transform::Rotate270 => "270",
+            Transform::FlipHorizontal => "flipped",
+            Transform::FlipRotate90 => "flipped-90",
+            Transform::FlipRotate180 => "flipped-180",
+            Transform::FlipRotate270 => "flipped-270",
+        }
+    }
+
+    /// Resolve a transform by its config name: the canonical
+    /// [`Transform::name`] forms plus underscore aliases (`flipped_90` and
+    /// friends). Matching is exact and lowercase; unknown names return
+    /// `None` so the caller can diagnose them.
+    pub fn from_name(s: &str) -> Option<Transform> {
+        Some(match s {
+            "normal" => Transform::Normal,
+            "90" => Transform::Rotate90,
+            "180" => Transform::Rotate180,
+            "270" => Transform::Rotate270,
+            "flipped" => Transform::FlipHorizontal,
+            "flipped-90" | "flipped_90" => Transform::FlipRotate90,
+            "flipped-180" | "flipped_180" => Transform::FlipRotate180,
+            "flipped-270" | "flipped_270" => Transform::FlipRotate270,
+            _ => return None,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -135,6 +169,40 @@ mod tests {
         for t in should_not_swap {
             assert!(!t.swap_axes(), "{t:?} should not swap axes");
         }
+    }
+
+    #[test]
+    fn transform_name_round_trips_through_from_name() {
+        let all = [
+            Transform::Normal,
+            Transform::Rotate90,
+            Transform::Rotate180,
+            Transform::Rotate270,
+            Transform::FlipHorizontal,
+            Transform::FlipRotate90,
+            Transform::FlipRotate180,
+            Transform::FlipRotate270,
+        ];
+        for t in all {
+            assert_eq!(Transform::from_name(t.name()), Some(t), "{t:?}");
+        }
+    }
+
+    #[test]
+    fn transform_from_name_accepts_underscore_aliases_only() {
+        assert_eq!(
+            Transform::from_name("flipped_90"),
+            Some(Transform::FlipRotate90)
+        );
+        assert_eq!(
+            Transform::from_name("flipped_270"),
+            Some(Transform::FlipRotate270)
+        );
+        // Exact lowercase matching: no case folding, no invented synonyms.
+        assert_eq!(Transform::from_name("Normal"), None);
+        assert_eq!(Transform::from_name("rotate90"), None);
+        assert_eq!(Transform::from_name("upside-down"), None);
+        assert_eq!(Transform::from_name(""), None);
     }
 }
 

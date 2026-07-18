@@ -146,6 +146,7 @@ dependencies = [
  "ass-server",
  "ass-shell",
  "ass-wallpaper",
+ "dirs",
  "env_logger",
  "flux",
  "flux-scene-graph-sys",
@@ -197,6 +198,7 @@ dependencies = [
  "serde",
  "thiserror 1.0.69",
  "toml",
+ "toml_edit",
 ]
 
 [[package]]

@@ -89,6 +89,7 @@ pub enum OpClass {
     Notify,
     DismissNotification,
     Screenshot,
+    ScreenshotRegion,
     ToggleOverview,
     CaptureOutput,
 }
@@ -214,7 +215,12 @@ pub enum Command {
     DismissNotification { id: u64 },
     /// Capture the focused output and write it as a PNG file (M9 screenshot
     /// path). The compositor refuses while the session is locked. `control`.
-    Screenshot { path: String },
+    /// When `region` is present, only that logical-pixel rectangle is captured.
+    Screenshot {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region: Option<Rect>,
+    },
     /// Toggle the window/workspace overview (M9). `control`.
     ToggleOverview,
     /// Quit the compositor. `session`.
@@ -255,12 +261,14 @@ impl Command {
         const MAX_SCROLL_DELTA: f32 = 1_000.0;
         match self {
             Command::SetWindowGeometry { rect, .. }
-                if !(1..=MAX_GEOMETRY_EXTENT).contains(&rect.size.w)
-                    || !(1..=MAX_GEOMETRY_EXTENT).contains(&rect.size.h)
-                    || rect.origin.x.checked_add(rect.size.w).is_none()
-                    || rect.origin.y.checked_add(rect.size.h).is_none() =>
+            | Command::Screenshot {
+                region: Some(rect), ..
+            } if !(1..=MAX_GEOMETRY_EXTENT).contains(&rect.size.w)
+                || !(1..=MAX_GEOMETRY_EXTENT).contains(&rect.size.h)
+                || rect.origin.x.checked_add(rect.size.w).is_none()
+                || rect.origin.y.checked_add(rect.size.h).is_none() =>
             {
-                Err("window geometry size is out of range")
+                Err("geometry size is out of range")
             }
             Command::InjectInput { actions, .. }
                 if actions.is_empty() || actions.len() > MAX_INPUT_ACTIONS =>
@@ -312,7 +320,10 @@ impl Command {
             Command::ToggleTiling => OpClass::ToggleTiling,
             Command::Notify { .. } => OpClass::Notify,
             Command::DismissNotification { .. } => OpClass::DismissNotification,
-            Command::Screenshot { .. } => OpClass::Screenshot,
+            Command::Screenshot {
+                region: Some(_), ..
+            } => OpClass::ScreenshotRegion,
+            Command::Screenshot { region: None, .. } => OpClass::Screenshot,
             Command::ToggleOverview => OpClass::ToggleOverview,
             Command::Quit => OpClass::ToggleTiling, // unreachable: scope skips session cmds
         }
@@ -380,7 +391,11 @@ pub enum Request {
     /// capture). Privacy-sensitive: requires `control`, an explicit
     /// [`OpClass::CaptureOutput`] entry in a named scope's `ops` (never
     /// inherited), and is refused while the session is locked.
-    CaptureOutput,
+    /// When `region` is present, only that logical-pixel rectangle is captured.
+    CaptureOutput {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region: Option<Rect>,
+    },
 }
 
 /// A server → client message.
@@ -712,6 +727,47 @@ mod tests {
             window: WindowId(9),
             workspace: WorkspaceId(2)
         }));
+    }
+
+    #[test]
+    fn screenshot_command_op_class_depends_on_region_presence() {
+        let full = Command::Screenshot {
+            path: "a.png".into(),
+            region: None,
+        };
+        let region = Command::Screenshot {
+            path: "b.png".into(),
+            region: Some(Rect::new(10, 20, 100, 80)),
+        };
+        assert_eq!(full.op_class(), OpClass::Screenshot);
+        assert_eq!(region.op_class(), OpClass::ScreenshotRegion);
+
+        let full_scope = Scope {
+            ops: Some(vec![OpClass::Screenshot]),
+            ..Scope::default()
+        };
+        let region_scope = Scope {
+            ops: Some(vec![OpClass::ScreenshotRegion]),
+            ..Scope::default()
+        };
+        assert!(full_scope.permits(&full));
+        assert!(!full_scope.permits(&region));
+        assert!(region_scope.permits(&region));
+        assert!(!region_scope.permits(&full));
+    }
+
+    #[test]
+    fn capture_output_request_round_trips_with_optional_region() {
+        let req = Request::CaptureOutput {
+            region: Some(Rect::new(10, 20, 100, 80)),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"region\""), "{json}");
+        let back: Request = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, req);
+
+        let default: Request = serde_json::from_str(r#"{"type":"CaptureOutput"}"#).unwrap();
+        assert_eq!(default, Request::CaptureOutput { region: None });
     }
 
     #[test]

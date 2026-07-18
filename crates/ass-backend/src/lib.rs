@@ -52,7 +52,18 @@ pub trait Backend {
                 transform: ass_core::Transform::Normal,
                 logical_origin: ass_core::Point::default(),
             },
+            available_modes: Vec::new(),
         }]
+    }
+
+    /// Install the per-connector display-mode requests from the config's
+    /// `[[output]]` entries (ADR-0028), keyed by connector name. Only the
+    /// DRM backend can act on them; the default is a no-op so backends
+    /// without modesetting (nested) ignore the policy.
+    fn set_configured_modes(
+        &mut self,
+        _modes: std::collections::HashMap<String, ass_core::output::ModeSpec>,
+    ) {
     }
 
     /// Pump backend events (input, resize, redraw requests). Returns `false`

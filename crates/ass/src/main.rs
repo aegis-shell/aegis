@@ -520,7 +520,9 @@ impl ShotSurface {
 }
 
 /// Render the current desktop scene (wallpaper, clients, chrome) into the
-/// offscreen shot surface and return `(width, height, png_bytes)`.
+/// offscreen shot surface and return `(width, height, png_bytes)`. If `crop`
+/// is `Some`, only that logical-pixel rectangle is encoded; otherwise the
+/// full output is captured.
 #[allow(clippy::too_many_arguments)]
 fn capture_output_png(
     device: &flux::Device,
@@ -533,6 +535,7 @@ fn capture_output_png(
     render_geometry: RenderGeometry,
     physical_size: (u32, u32),
     overview: bool,
+    crop: Option<ass_core::Rect>,
 ) -> Result<(u32, u32, Vec<u8>), String> {
     let stale = match shot {
         Some(s) => (s.width, s.height) != physical_size,
@@ -578,8 +581,54 @@ fn capture_output_png(
         .read_pixels(&mut pixels)
         .map_err(|e| format!("shot readback: {e}{}", flux_last_error_detail()))?;
     unpremultiply(&mut pixels);
-    let png = encode_png(shot.width, shot.height, &pixels)?;
-    Ok((shot.width, shot.height, png))
+    let (width, height, png) = if let Some(crop) = crop {
+        let crop = clamp_rect_to_size(crop, shot.width, shot.height);
+        let cropped = crop_rgba(&pixels, shot.width, shot.height, crop);
+        (
+            crop.size.w as u32,
+            crop.size.h as u32,
+            encode_png(crop.size.w as u32, crop.size.h as u32, &cropped)?,
+        )
+    } else {
+        (
+            shot.width,
+            shot.height,
+            encode_png(shot.width, shot.height, &pixels)?,
+        )
+    };
+    Ok((width, height, png))
+}
+
+/// Clamp `rect` to `[0, 0, width, height]` so crop indices are always valid.
+fn clamp_rect_to_size(rect: ass_core::Rect, width: u32, height: u32) -> ass_core::Rect {
+    let x = rect.origin.x.max(0).min(width as i32);
+    let y = rect.origin.y.max(0).min(height as i32);
+    let w = rect
+        .size
+        .w
+        .max(0)
+        .min(width.saturating_sub(x as u32) as i32);
+    let h = rect
+        .size
+        .h
+        .max(0)
+        .min(height.saturating_sub(y as u32) as i32);
+    ass_core::Rect::new(x, y, w, h)
+}
+
+/// Extract a sub-rectangle from a full RGBA8 buffer.
+fn crop_rgba(src: &[u8], src_w: u32, _src_h: u32, rect: ass_core::Rect) -> Vec<u8> {
+    let src_w = src_w as usize;
+    let x = rect.origin.x as usize;
+    let y = rect.origin.y as usize;
+    let w = rect.size.w.max(0) as usize;
+    let h = rect.size.h.max(0) as usize;
+    let mut out = Vec::with_capacity(w * h * 4);
+    for row in y..y + h {
+        let start = (row * src_w + x) * 4;
+        out.extend_from_slice(&src[start..start + w * 4]);
+    }
+    out
 }
 
 /// Convert premultiplied RGBA8 (the flux/Wayland contract) to the straight
@@ -620,6 +669,8 @@ fn flux_last_error_detail() -> String {
 /// main loop after it re-renders the scene offscreen (M10 pixel capture).
 struct CaptureRequest {
     reply: std::sync::mpsc::Sender<Result<(u32, u32, String), String>>,
+    /// Logical-pixel region to capture, or `None` for the full output.
+    region: Option<ass_core::Rect>,
 }
 
 /// Direct swapchain composition. A model wallpaper inserts one depth-tested
@@ -860,11 +911,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             ass_core::notify::NotificationQueue::new(5_000),
         ));
 
+    // Declarative configuration (ADR-0026). One TOML file at
+    // `$XDG_CONFIG_HOME/ass/config.toml` is the source of truth; absence is
+    // not an error (built-in defaults apply). A malformed or
+    // schema-incompatible file is logged and skipped, not fatal. Loaded
+    // before the backend so configured display modes are known at the very
+    // first modeset (ADR-0028).
+    let config_path = ass_config::default_path();
+    let mut config = load_config(config_path.as_deref());
+
     // Select the presentation target before Vulkan creation: nested Wayland
     // requires WSI extensions, while DRM requires exportable offscreen images.
     // `auto` uses an outer Wayland display when present and atomic DRM on a TTY.
     let backend_kind = requested_backend()?;
-    let host_bootstrap = Host::open(backend_kind, "ass", 1280, 720)?;
+    let host_bootstrap = Host::open(
+        backend_kind,
+        "ass",
+        1280,
+        720,
+        configured_output_modes(config.as_ref()),
+    )?;
     let device = host_bootstrap.create_device()?;
     // Move the host into a binding declared after the device so Rust drops the
     // host-owned VkSurfaceKHR before Flux destroys its VkInstance.
@@ -901,13 +967,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // commit (the first present below).
     host.set_buffer_scale();
 
-    // Declarative configuration (ADR-0026). One TOML file at
-    // `$XDG_CONFIG_HOME/ass/config.toml` is the source of truth; absence is
-    // not an error (built-in defaults apply). A malformed or
-    // schema-incompatible file is logged and skipped, not fatal. Loaded
-    // before the server so output policy applies before icons decode.
-    let config_path = ass_config::default_path();
-    let mut config = load_config(config_path.as_deref());
+    // `config` was loaded above, before the backend, so output policy also
+    // applies before icons decode.
+    let screenshot_dir = config
+        .as_ref()
+        .map(|c| std::path::PathBuf::from(&c.screenshot.save_dir))
+        .unwrap_or_else(default_screenshot_dir);
 
     // Wayland server: accept client connections on its own socket. Created
     // before the icon pass so the effective output scale (backend-reported
@@ -919,12 +984,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     server.set_outputs(host.output_infos());
     log::info!("server: listening on WAYLAND_DISPLAY={}", server.socket());
     if let Some(c) = config.as_ref() {
-        server.set_output_scale_overrides(
-            c.outputs
-                .iter()
-                .map(|o| (o.connector.clone(), o.scale))
-                .collect(),
-        );
+        server.set_output_policies(c.output_policies());
     }
     // The effective scale the whole frame renders at: the primary output's
     // geometry after overrides, falling back to the host's own scale
@@ -986,6 +1046,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     shell.add(Box::new(ass_shell::ControlCenter::with_icons(
         icon_cache.map.clone(),
     )));
+    // Interactive screenshot region selector, triggered by the Print key.
+    shell.add(Box::new(ass_shell::ScreenshotSelector::new()));
     // The dock is added after the config is loaded below, so it can read the
     // `[dock]` pinned list.
     let mut input_acc = InputAccumulator::default();
@@ -1077,6 +1139,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let clear = flux::rgba(30, 30, 46, 255);
     let mut frame_count: u64 = 0;
+    // Nested-only deferral for retired client buffers: with no exportable
+    // completion fence, the loop releases them a few presented frames late
+    // instead of stalling the whole device on a wait_idle. Holds the frame
+    // count at which the first pending retirement was seen.
+    let mut retired_defer: Option<u64> = None;
 
     // Global launcher hotkey: a bare Super tap (press and release with no
     // other key in between) toggles the launcher. Super still works as a
@@ -1109,12 +1176,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         shell.set_reduced_motion(c.ui.reduced_motion);
         server.set_reduced_motion(c.ui.reduced_motion);
         cursor_cache.set_config(c.ui.cursor_theme.clone(), c.ui.cursor_size);
-        server.set_output_scale_overrides(
-            c.outputs
-                .iter()
-                .map(|o| (o.connector.clone(), o.scale))
-                .collect(),
-        );
+        server.set_output_policies(c.output_policies());
     }
     // The dock: a persistent strip of pinned `.desktop` app icons (ADR-0022),
     // built from the config's `[dock] pinned` list, or auto-populated from the
@@ -1128,6 +1190,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .as_ref()
             .map(|c| c.dock.pinned.as_slice())
             .unwrap_or(&[]),
+        config.as_ref().map(|c| c.dock.autopopulate).unwrap_or(true),
     );
     log::info!("dock: {} app(s) pinned", pinned.len());
     shell.add(Box::new(ass_shell::Dock::with_apps(
@@ -1247,19 +1310,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut previous_frame_at = std::time::Instant::now();
 
     loop {
-        // Choose dispatch mode: non-blocking + throttle while animating so the
-        // spring/wave keeps stepping; otherwise block on the host queue for the
-        // next wakeup (input, client commit, resize).
+        // Choose dispatch mode: while animating, wait on the event queue
+        // with a deadline that caps the animation at ~60fps; input that
+        // arrives mid-budget wakes the loop and is processed immediately
+        // (a blind sleep would leave it queued). Once idle, block on the
+        // host queue for the next wakeup (input, client commit, resize).
+        // Presentation itself is throttled by the backend (FIFO acquire /
+        // the KMS flip wait), so this deadline is only an upper bound.
         let alive = if animating {
-            // Cap animation at 60fps, accounting for work already spent on
-            // the previous frame. The host's own frame callbacks still flow
-            // through dispatch_nonblocking.
             let frame_interval = std::time::Duration::from_micros(16_667);
             let remaining = frame_interval.saturating_sub(previous_frame_at.elapsed());
-            if !remaining.is_zero() {
-                std::thread::sleep(remaining);
+            if remaining.is_zero() {
+                host.dispatch_nonblocking()
+            } else {
+                host.dispatch_timeout(remaining)
             }
-            host.dispatch_nonblocking()
         } else {
             host.dispatch_timeout(std::time::Duration::from_secs(1))
         };
@@ -1301,6 +1366,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     &mut cursor_cache,
                 )
             {
+                // Output follow-through: hand the backend the fresh mode
+                // requests (consumed at the next modeset), then re-feed its
+                // current geometries so a policy *removed* from the file
+                // reverts to the backend-reported value instead of lingering
+                // in the live output set.
+                host.set_configured_modes(configured_output_modes(config.as_ref()));
+                server.set_outputs(host.output_infos());
                 live.set_scopes(build_ipc_scopes(config.as_ref()));
                 let pinned = build_dock_apps(
                     &launcher_apps,
@@ -1309,6 +1381,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .as_ref()
                         .map(|c| c.dock.pinned.as_slice())
                         .unwrap_or(&[]),
+                    config.as_ref().map(|c| c.dock.autopopulate).unwrap_or(true),
                 );
                 shell.update_app_catalog(&launcher_apps, &pinned, &icon_cache.map);
             }
@@ -1342,6 +1415,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .as_ref()
                         .map(|c| c.dock.pinned.as_slice())
                         .unwrap_or(&[]),
+                    config.as_ref().map(|c| c.dock.autopopulate).unwrap_or(true),
                 );
                 shell.update_app_catalog(&refreshed, &pinned, &refreshed_icons.map);
                 // Components now point only at refreshed_icons; dropping the
@@ -1794,6 +1868,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         );
                         journal_and_broadcast(&journal, &ipc, ts, origin, cmd);
                     }
+                    Action::Screenshot => {
+                        // Refuse to open the selector while locked or inactive;
+                        // the selector itself also suppresses confirmation in
+                        // those states, but this avoids the modal entirely.
+                        if session_locked || !host.is_active() {
+                            log::debug!("screenshot: suppressed while locked or inactive");
+                            continue;
+                        }
+                        shell.start_screenshot();
+                    }
                 }
             }
         }
@@ -2118,6 +2202,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // a HiDPI host; layout and input stay in logical pixels.
                 shell.set_scale(scale);
                 unsafe { shell.render(canvas.as_raw() as *mut _, &input)? };
+                // If the screenshot selector confirmed a region this frame,
+                // queue a capture. The path is generated from the configured
+                // save directory so the interactive tool never needs a CLI arg.
+                if let Some(region) = shell.take_screenshot_region() {
+                    let path = screenshot_path(&screenshot_dir);
+                    let ts = start.elapsed().as_millis() as u64;
+                    pending_screenshots.push((
+                        ass_ipc::Command::Screenshot {
+                            path,
+                            region: Some(region),
+                        },
+                        ts,
+                    ));
+                }
                 if session_locked {
                     draw_lock_scene(
                         &canvas,
@@ -2273,6 +2371,46 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if shell.take_toggle_launcher() {
                     shell.toggle();
                 }
+                // Dock context-menu pin/unpin requests: toggle the app in the
+                // persisted `[dock] pinned` list, write the config back, and
+                // refresh the dock immediately rather than waiting for the
+                // live-reload watcher to notice the mtime change.
+                let pin_toggles = shell.take_dock_pin_toggles();
+                if !pin_toggles.is_empty() {
+                    let mut pinned_list = config
+                        .as_ref()
+                        .map(|c| c.dock.pinned.clone())
+                        .unwrap_or_default();
+                    for id in pin_toggles {
+                        let Some(entry) = launcher_apps.iter().find(|e| e.id == id) else {
+                            continue;
+                        };
+                        // Match by application identity, not string equality:
+                        // the config may name the same app by its stem, WM
+                        // class, or icon name.
+                        let keys = app_keys(entry);
+                        let matches = |name: &String| keys.contains(&name.to_ascii_lowercase());
+                        if pinned_list.iter().any(matches) {
+                            pinned_list.retain(|name| !matches(name));
+                        } else {
+                            pinned_list.push(entry.id.clone());
+                        }
+                    }
+                    if let Some(path) = config_path.as_deref() {
+                        if let Err(e) = ass_config::set_dock_pinned(path, &pinned_list) {
+                            log::warn!("dock: failed to persist pins: {e}");
+                        }
+                    } else {
+                        log::warn!("dock: cannot persist pins; no config path");
+                    }
+                    if let Some(c) = config.as_mut() {
+                        c.dock.pinned = pinned_list.clone();
+                        c.dock.autopopulate = false;
+                    }
+                    let pinned =
+                        build_dock_apps(&launcher_apps, &icon_cache.map, &pinned_list, false);
+                    shell.update_app_catalog(&launcher_apps, &pinned, &icon_cache.map);
+                }
                 // Launch the application the launcher's clicked row asked for.
                 // The child is detached (setsid) and inherits the Wayland/XDG
                 // environment, so it connects back to this compositor and
@@ -2344,12 +2482,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if server.retired_buffers_pending() {
                     if completion_fence.is_none() && !host.uses_software_cursor() {
                         // Nested swapchain presentation has no exportable
-                        // completion fence. This path is development-only;
-                        // wait conservatively before immediate release.
-                        device.wait_idle();
+                        // completion fence. Rather than stalling the whole
+                        // device on a wait_idle, release the buffers a few
+                        // frames late: after more presented frames than
+                        // flux's in-flight slots (3), the GPU can no longer
+                        // reference their contents.
+                        let since = retired_defer.get_or_insert(frame_count);
+                        if frame_count.saturating_sub(*since) >= 4 {
+                            server.release_retired_buffers(None);
+                            retired_defer = None;
+                        }
+                    } else {
+                        server.release_retired_buffers(
+                            completion_fence.as_ref().map(AsRawFd::as_raw_fd),
+                        );
                     }
-                    server
-                        .release_retired_buffers(completion_fence.as_ref().map(AsRawFd::as_raw_fd));
                 }
 
                 // Pace clients: fire frame callbacks for this presentation.
@@ -2375,13 +2522,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             render_geometry,
                             physical_size,
                             overview_active,
+                            req.region,
                         )
                         .map(|(w, h, png)| (w, h, ass_ipc::base64::encode(&png)))
                     };
                     let _ = req.reply.send(reply);
                 }
                 for (cmd, ts) in pending_screenshots.drain(..) {
-                    let ass_ipc::Command::Screenshot { path } = &cmd else {
+                    let ass_ipc::Command::Screenshot { path, region } = &cmd else {
                         continue;
                     };
                     let effect = if session_locked || !host.is_active() {
@@ -2400,6 +2548,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             render_geometry,
                             physical_size,
                             overview_active,
+                            *region,
                         ) {
                             Ok((_, _, png)) => match std::fs::write(path, &png) {
                                 Ok(()) => {
@@ -2427,6 +2576,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if frame_count == 1 {
                     log::info!("{}: first frame presented (with shell chrome)", host.name());
                 }
+            }
+            Err(error) if error.0 == flux_sys::flux_result::FLUX_ERROR_TIMEOUT => {
+                // The previous frame's GPU work did not retire inside the
+                // frame timeout (or the presentation engine released no
+                // swapchain image): transient. Skip this iteration and let
+                // the next wakeup retry instead of rebuilding the
+                // swapchain against a busy device.
+                continue;
             }
             Err(_) => {
                 // Out-of-date / lost: rebuild the swapchain at the current
@@ -2484,6 +2641,43 @@ fn requested_backend() -> Result<BackendKind, Box<dyn std::error::Error>> {
     Ok(selected.parse()?)
 }
 
+/// `[[output]]` mode requests as the backend's connector → `ModeSpec` map
+/// (ADR-0028). Entries without a `mode` keep the connector's preferred mode.
+fn configured_output_modes(
+    config: Option<&ass_config::Config>,
+) -> std::collections::HashMap<String, ass_core::output::ModeSpec> {
+    config
+        .map(|c| c.output_policies())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(connector, policy)| policy.mode.map(|mode| (connector, mode)))
+        .collect()
+}
+
+/// Default directory for screenshots when no `[screenshot]` config is loaded:
+/// `$XDG_PICTURES_DIR/Screenshots`, falling back to `~/Pictures/Screenshots`
+/// and then the current working directory.
+fn default_screenshot_dir() -> std::path::PathBuf {
+    dirs::picture_dir()
+        .unwrap_or_else(|| {
+            dirs::home_dir().unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+        })
+        .join("Screenshots")
+}
+
+/// Generate a timestamped screenshot filename inside `dir`, creating the
+/// directory if it does not exist.
+fn screenshot_path(dir: &std::path::Path) -> String {
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let _ = std::fs::create_dir_all(dir);
+    dir.join(format!("ass-{ms}.png"))
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Load the configuration from `path`, logging diagnostics on failure.
 /// `None` (no path, or a file that does not exist) means "use built-in
 /// defaults" and is not an error.
@@ -2536,19 +2730,14 @@ fn reload_config(
             shell.set_reduced_motion(c.ui.reduced_motion);
             server.set_reduced_motion(c.ui.reduced_motion);
             cursor_cache.set_config(c.ui.cursor_theme.clone(), c.ui.cursor_size);
-            server.set_output_scale_overrides(
-                c.outputs
-                    .iter()
-                    .map(|o| (o.connector.clone(), o.scale))
-                    .collect(),
-            );
+            server.set_output_policies(c.output_policies());
         } else {
             server.set_layout_params(ass_core::layout::LayoutParams::default());
             server.set_tiling_default(false);
             shell.set_reduced_motion(false);
             server.set_reduced_motion(false);
             cursor_cache.set_config(None, None);
-            server.set_output_scale_overrides(std::collections::HashMap::new());
+            server.set_output_policies(std::collections::HashMap::new());
         }
     };
     match ass_config::load(path) {
@@ -2839,12 +3028,15 @@ impl ass_ipc::Handler for LiveState {
         self.scopes.read().unwrap().get(name).cloned()
     }
 
-    fn capture_output(&self) -> Result<(u32, u32, String), String> {
+    fn capture_output(&self, region: Option<ass_core::Rect>) -> Result<(u32, u32, String), String> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         self.capture
             .lock()
             .unwrap()
-            .send(CaptureRequest { reply: reply_tx })
+            .send(CaptureRequest {
+                reply: reply_tx,
+                region,
+            })
             .map_err(|_| "compositor is shutting down".to_owned())?;
         // The main loop answers after the next frame; two seconds is far
         // beyond any frame budget and bounds a wedged-GPU stall.
@@ -2995,18 +3187,24 @@ const DEFAULT_PINNED_MAX: usize = 12;
 /// Build the dock's pinned app list. When `pinned` names apps, each name is
 /// resolved against the enumerated entries by id / desktop-stem / WM class /
 /// icon name (case-insensitive), in the order given; unresolved names are
-/// logged and skipped. When `pinned` is empty, the first [`DEFAULT_PINNED_MAX`]
-/// apps that have a decoded icon are pinned automatically.
+/// logged and skipped. When `pinned` is empty and `autopopulate` is set, the
+/// first [`DEFAULT_PINNED_MAX`] apps that have a decoded icon are pinned
+/// automatically; with `autopopulate` off, an empty list stays empty (the
+/// user's manual "no pins" choice).
 fn build_dock_apps(
     apps: &[ass_core::app::Entry],
     icons: &std::collections::HashMap<String, *mut std::ffi::c_void>,
     pinned: &[String],
+    autopopulate: bool,
 ) -> Vec<ass_shell::DockApp> {
     let make = |entry: &ass_core::app::Entry| ass_shell::DockApp {
         entry: entry.clone(),
         keys: app_keys(entry),
     };
     if pinned.is_empty() {
+        if !autopopulate {
+            return Vec::new();
+        }
         return apps
             .iter()
             .filter(|e| app_keys(e).iter().any(|k| icons.contains_key(k)))

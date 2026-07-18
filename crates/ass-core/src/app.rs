@@ -18,6 +18,8 @@ pub enum BuiltInApplication {
     /// System controls for audio, displays, radios, notifications, and the
     /// current desktop session.
     ControlCenter,
+    /// Interactive screenshot region selector.
+    ScreenshotSelector,
 }
 
 /// How activating an application entry is fulfilled.

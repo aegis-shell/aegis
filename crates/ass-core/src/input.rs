@@ -250,6 +250,8 @@ pub const XKB_KEY_Left: u32 = 0xff51;
 pub const XKB_KEY_Right: u32 = 0xff53;
 /// XKB down arrow.
 pub const XKB_KEY_Down: u32 = 0xff54;
+/// XKB `Print` / Print Screen.
+pub const XKB_KEY_Print: u32 = 0xff61;
 /// XKB `NoSymbol` — no keysym resolved for the key.
 pub const XKB_KEY_NoSymbol: u32 = 0;
 

@@ -44,3 +44,5 @@ background and how the decisions fit together, see
 | [0035](0035-fail-closed-named-ipc-scopes.md) | Fail-closed named IPC scope resolution | Accepted |
 | [0036](0036-scoped-semantic-automation.md) | Scoped semantic geometry and target-local input | Accepted |
 | [0037](0037-scoped-pixel-capture-over-ipc.md) | Scoped pixel capture over the IPC | Accepted |
+| [0038](0038-frame-pacing.md) | Frame pacing — event-driven loop with presentation throttling | Accepted |
+| [0039](0039-damage-driven-shm-refresh.md) | Damage-driven shm snapshot and texture refresh (amends [0015](0015-damage-tracking.md)) | Accepted |

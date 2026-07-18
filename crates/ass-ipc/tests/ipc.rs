@@ -100,7 +100,10 @@ impl Handler for TestHandler {
     fn command(&self, cmd: Command) {
         self.commands.lock().unwrap().push(cmd);
     }
-    fn capture_output(&self) -> Result<(u32, u32, String), String> {
+    fn capture_output(
+        &self,
+        _region: Option<ass_core::Rect>,
+    ) -> Result<(u32, u32, String), String> {
         Ok((2, 1, ass_ipc::base64::encode(&[1u8, 2, 3, 4, 5])))
     }
     fn resolve_scope(&self, name: &str) -> Option<Scope> {

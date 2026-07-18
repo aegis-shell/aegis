@@ -750,10 +750,10 @@ pub(crate) struct State {
     /// The first entry is the primary/focused output exposed through the
     /// legacy single wl_output global until per-global resources are split.
     output_infos: Vec<ass_core::output::OutputInfo>,
-    /// Per-connector scale overrides from `[[output]]` config entries
+    /// Per-connector output policies from `[[output]]` config entries
     /// (ADR-0028). Applied to every backend-reported output set in
     /// `set_outputs`.
-    output_scale_overrides: std::collections::HashMap<String, f64>,
+    output_policies: std::collections::HashMap<String, ass_core::output::OutputPolicy>,
     /// Dynamic per-output workspaces (ADR-0025). Toplevels are placed on the
     /// current workspace at first map; rendering and input see only the
     /// visible set (`visible_toplevels`).
@@ -846,8 +846,9 @@ impl State {
             output_infos: vec![ass_core::output::OutputInfo {
                 connector: "nested".to_owned(),
                 geometry: ass_core::output::OutputGeometry::default(),
+                available_modes: Vec::new(),
             }],
-            output_scale_overrides: std::collections::HashMap::new(),
+            output_policies: std::collections::HashMap::new(),
             next_window_id: 1,
         }
     }
@@ -2814,12 +2815,41 @@ impl Server {
         if outputs.is_empty() {
             return;
         }
-        // Configured per-connector scale policy (ADR-0028) wins over the
-        // backend-reported scale, for mixed-DPI setups.
+        // Configured per-connector policy (ADR-0028) wins over the
+        // backend-reported geometry: scale and position apply here. A
+        // configured transform is accepted but not yet applied — the
+        // renderer's output-transform support is still pending.
         for output in &mut outputs {
-            if let Some(scale) = self.state.output_scale_overrides.get(&output.connector) {
-                output.geometry.scale = ass_core::output::Scale(*scale as f32);
+            let Some(policy) = self.state.output_policies.get(&output.connector) else {
+                continue;
+            };
+            if let Some(scale) = policy.scale {
+                output.geometry.scale = ass_core::output::Scale(scale as f32);
             }
+            if let Some(position) = policy.position {
+                output.geometry.logical_origin = position;
+            }
+            if let Some(transform) = policy.transform {
+                if transform != ass_core::Transform::Normal {
+                    log::warn!(
+                        "[server] output '{}': transform configured but not yet applied \
+                         (renderer output-transform support pending)",
+                        output.connector
+                    );
+                }
+            }
+        }
+        // A `primary` policy moves its output to the front: index 0 is the
+        // primary/focused output below. When several entries claim primary,
+        // the one that appears first in the backend's output order wins.
+        if let Some(primary) = outputs.iter().position(|output| {
+            self.state
+                .output_policies
+                .get(&output.connector)
+                .is_some_and(|policy| policy.primary)
+        }) {
+            let output = outputs.remove(primary);
+            outputs.insert(0, output);
         }
 
         let desired = outputs
@@ -2864,27 +2894,25 @@ impl Server {
         self.set_output_geometry(primary.geometry);
     }
 
-    /// Set per-connector output scale overrides from the config's `[[output]]`
+    /// Set per-connector output policies from the config's `[[output]]`
     /// entries (ADR-0028), and re-apply them to the current output set.
-    /// Unmatched connectors are ignored with a warning, so a monitor that is
+    /// Unmatched connectors are ignored with a log line, so a monitor that is
     /// not plugged in yet still applies once it appears.
-    pub fn set_output_scale_overrides(
+    pub fn set_output_policies(
         &mut self,
-        overrides: std::collections::HashMap<String, f64>,
+        policies: std::collections::HashMap<String, ass_core::output::OutputPolicy>,
     ) {
-        for connector in overrides.keys() {
+        for connector in policies.keys() {
             if !self
                 .state
                 .output_infos
                 .iter()
                 .any(|o| &o.connector == connector)
             {
-                log::info!(
-                    "[server] output scale override for '{connector}' matches no current output"
-                );
+                log::info!("[server] output policy for '{connector}' matches no current output");
             }
         }
-        self.state.output_scale_overrides = overrides;
+        self.state.output_policies = policies;
         let outputs = self.state.output_infos.clone();
         if !outputs.is_empty() {
             self.set_outputs(outputs);
@@ -4537,10 +4565,12 @@ mod tests {
             ass_core::output::OutputInfo {
                 connector: "DP-1".into(),
                 geometry: geometry(0, 1920),
+                available_modes: Vec::new(),
             },
             ass_core::output::OutputInfo {
                 connector: "HDMI-A-1".into(),
                 geometry: geometry(1920, 2560),
+                available_modes: Vec::new(),
             },
         ]);
 
@@ -4561,6 +4591,77 @@ mod tests {
                 .map(|output| output.connector.as_str())
                 .collect::<std::collections::HashSet<_>>(),
             std::collections::HashSet::from(["DP-1", "HDMI-A-1"])
+        );
+    }
+
+    /// `[[output]]` policy (ADR-0028) overrides the backend-reported
+    /// geometry: scale and position apply per connector, and a `primary`
+    /// entry moves its output to the front of the list (index 0 is the
+    /// focused output whose geometry `output_logical_rect` reports).
+    #[test]
+    fn output_policies_apply_scale_position_and_primary() {
+        if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+            eprintln!("skipping: XDG_RUNTIME_DIR not set");
+            return;
+        }
+        let mut server = Server::new().expect("Server::new");
+        let geometry = |x, width| ass_core::output::OutputGeometry {
+            mode: ass_core::output::OutputMode {
+                width,
+                height: 1080,
+                refresh_mhz: 60_000,
+            },
+            scale: ass_core::output::Scale::IDENTITY,
+            transform: ass_core::Transform::Normal,
+            logical_origin: ass_core::Point { x, y: 0 },
+        };
+        server.set_outputs(vec![
+            ass_core::output::OutputInfo {
+                connector: "DP-1".into(),
+                geometry: geometry(0, 1920),
+                available_modes: Vec::new(),
+            },
+            ass_core::output::OutputInfo {
+                connector: "HDMI-A-1".into(),
+                geometry: geometry(1920, 2560),
+                available_modes: Vec::new(),
+            },
+        ]);
+
+        server.set_output_policies(std::collections::HashMap::from([(
+            "HDMI-A-1".to_owned(),
+            ass_core::output::OutputPolicy {
+                scale: Some(2.0),
+                position: Some(ass_core::Point { x: 1920, y: 0 }),
+                primary: true,
+                ..Default::default()
+            },
+        )]));
+
+        let infos = server.output_infos();
+        assert_eq!(
+            infos
+                .iter()
+                .map(|output| output.connector.as_str())
+                .collect::<Vec<_>>(),
+            vec!["HDMI-A-1", "DP-1"],
+            "the primary output leads the list"
+        );
+        assert_eq!(infos[0].geometry.scale.as_f32(), 2.0);
+        assert_eq!(
+            infos[0].geometry.logical_origin,
+            ass_core::Point { x: 1920, y: 0 }
+        );
+        assert_eq!(
+            server.output_logical_rect().origin,
+            ass_core::Point { x: 1920, y: 0 },
+            "the focused output geometry follows the primary policy"
+        );
+        // The other output keeps its backend-reported geometry.
+        assert_eq!(infos[1].geometry.scale.as_f32(), 1.0);
+        assert_eq!(
+            infos[1].geometry.logical_origin,
+            ass_core::Point { x: 0, y: 0 }
         );
     }
 }
@@ -4796,6 +4897,11 @@ unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut
                     (*rec).width = owned.width;
                     (*rec).height = owned.height;
                     (*rec).dmabuf = Some(owned);
+                    // Invalidate the shm snapshot: if a later commit returns
+                    // to shm, its incremental-copy size check must fail so
+                    // the new frame is copied in full rather than blended
+                    // into these stale pixels.
+                    (*rec).pixels.clear();
                     (*rec).content_is_dmabuf = true;
                     (*rec).generation = (*rec).generation.wrapping_add(1);
                     (*rec).mapped = true;
@@ -4810,6 +4916,18 @@ unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut
         } else {
             // shm: copy the contents out into our own tightly packed BGRA store
             // and release the buffer immediately so the client can reuse it.
+            //
+            // The copy is damage-driven: for a same-size frame with usable
+            // damage the protocol guarantees the new buffer differs from the
+            // previous frame only inside the damaged region, so copying the
+            // damaged rows onto the retained snapshot yields the new frame
+            // without a full-buffer memcpy (and without the per-commit
+            // allocation — the snapshot Vec is reused while its size holds).
+            // Empty damage carries no information and forces a full copy, as
+            // do a transform or buffer scale (damage is surface-local and
+            // would not map 1:1 onto buffer pixels). The guard mirrors the
+            // renderer's incremental-upload guard exactly; the two paths
+            // must always agree or the texture would tear.
             let shm = ffi::wl_shm_buffer_get(buffer);
             if !shm.is_null() {
                 let w = ffi::wl_shm_buffer_get_width(shm);
@@ -4819,25 +4937,74 @@ unsafe extern "C" fn surface_commit(_client: *mut ffi::wl_client, resource: *mut
                 let src = ffi::wl_shm_buffer_get_data(shm) as *const u8;
                 if !src.is_null() && w > 0 && h > 0 {
                     let tight = (w as usize) * 4;
-                    let mut pixels = vec![0u8; tight * h as usize];
-                    ffi::wl_shm_buffer_begin_access(shm);
-                    for row in 0..h as usize {
-                        std::ptr::copy_nonoverlapping(
-                            src.add(row * stride),
-                            pixels.as_mut_ptr().add(row * tight),
-                            tight,
-                        );
+                    let needed = tight * h as usize;
+                    let incremental = (*rec).width == w
+                        && (*rec).height == h
+                        && (*rec).pixels.len() == needed
+                        && (*rec).buffer_transform == ass_core::Transform::Normal
+                        && (*rec).buffer_scale <= 1
+                        && !(*rec).committed_damage.is_empty();
+                    if (*rec).pixels.len() != needed {
+                        (*rec).pixels = vec![0u8; needed];
                     }
-                    ffi::wl_shm_buffer_end_access(shm);
-                    // XRGB8888 has undefined alpha; force opaque.
-                    if format == 1 {
-                        let mut i = 3;
-                        while i < pixels.len() {
-                            pixels[i] = 0xff;
-                            i += 4;
+                    // Read the damage list locally: the copy mutates
+                    // `pixels` while the rects are consulted.
+                    let damage = if incremental {
+                        std::mem::take(&mut (*rec).committed_damage)
+                    } else {
+                        Vec::new()
+                    };
+                    ffi::wl_shm_buffer_begin_access(shm);
+                    // One explicit mutable borrow for the whole copy: raw
+                    // pointer field indexing would implicitly autoref each
+                    // access.
+                    let pixels = &mut (*rec).pixels;
+                    if incremental {
+                        for d in &damage {
+                            let x = d.origin.x.max(0).min(w - 1) as usize;
+                            let y = d.origin.y.max(0).min(h - 1) as usize;
+                            let cw = (d.size.w.max(0)).min(w - x as i32) as usize;
+                            let ch = (d.size.h.max(0)).min(h - y as i32) as usize;
+                            if cw == 0 || ch == 0 {
+                                continue;
+                            }
+                            for row in 0..ch {
+                                std::ptr::copy_nonoverlapping(
+                                    src.add((y + row) * stride + x * 4),
+                                    pixels.as_mut_ptr().add((y + row) * tight + x * 4),
+                                    cw * 4,
+                                );
+                            }
+                            // XRGB8888 has undefined alpha; force opaque on
+                            // the refreshed rows.
+                            if format == 1 {
+                                for row in 0..ch {
+                                    let base = (y + row) * tight + x * 4;
+                                    for px in 0..cw {
+                                        pixels[base + px * 4 + 3] = 0xff;
+                                    }
+                                }
+                            }
+                        }
+                        (*rec).committed_damage = damage;
+                    } else {
+                        for row in 0..h as usize {
+                            std::ptr::copy_nonoverlapping(
+                                src.add(row * stride),
+                                pixels.as_mut_ptr().add(row * tight),
+                                tight,
+                            );
+                        }
+                        // XRGB8888 has undefined alpha; force opaque.
+                        if format == 1 {
+                            let mut i = 3;
+                            while i < needed {
+                                pixels[i] = 0xff;
+                                i += 4;
+                            }
                         }
                     }
-                    (*rec).pixels = pixels;
+                    ffi::wl_shm_buffer_end_access(shm);
                     retire_surface_buffer(rec);
                     (*rec).dmabuf = None;
                     (*rec).content_is_dmabuf = false;
