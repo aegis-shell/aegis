@@ -55,7 +55,7 @@ pub(super) struct VideoSource {
     /// `Slot::seq` value already copied into `current`.
     last_seen_seq: u64,
     /// Bumped each time `current` is refreshed.
-    gen: u64,
+    r#gen: u64,
 }
 
 impl VideoSource {
@@ -105,7 +105,7 @@ impl VideoSource {
             _reader: reader,
             current: Vec::new(),
             last_seen_seq: 0,
-            gen: 0,
+            r#gen: 0,
         })
     }
 }
@@ -212,9 +212,9 @@ impl Source for VideoSource {
         if let Some(p) = newer {
             self.current.clear();
             self.current.extend_from_slice(&p);
-            self.gen = self.gen.wrapping_add(1);
+            self.r#gen = self.r#gen.wrapping_add(1);
         }
-        (&self.current, self.gen)
+        (&self.current, self.r#gen)
     }
 
     fn frame_count(&self) -> usize {

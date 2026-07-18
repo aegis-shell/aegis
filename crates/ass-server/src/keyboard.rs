@@ -11,7 +11,7 @@
 //! Linux input-event codes (evdev) and xkb keycodes differ by a constant +8
 //! offset; xkbcommon historically used evdev+8 to fit a wider keycode space.
 
-use std::ffi::{c_int, c_void, CString};
+use std::ffi::{CString, c_int, c_void};
 use std::os::unix::io::RawFd;
 
 use xkbcommon::xkb;
@@ -37,7 +37,7 @@ const MAP_FAILED: usize = !0usize;
 
 // Minimal raw libc surface. Pulling the whole `libc` crate for these few
 // symbols is not worth it; they are stable Linux ABI.
-extern "C" {
+unsafe extern "C" {
     fn memfd_create(name: *const std::os::raw::c_char, flags: u32) -> c_int;
     fn ftruncate(fd: c_int, length: i64) -> c_int;
     fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;

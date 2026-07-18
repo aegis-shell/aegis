@@ -28,11 +28,10 @@ mod blob;
 
 pub use client::{CapturedRealm, Client};
 pub use journal::{
-    Effect, Journal, JournalEntry, JournalMutation, JournalSnapshot, Origin, DEFAULT_CAPACITY,
+    DEFAULT_CAPACITY, Effect, Journal, JournalEntry, JournalMutation, JournalSnapshot, Origin,
 };
 pub use schema::{
-    Capabilities, Command, Event, LeaseGrant, LeaseRequest, OpClass, RealmAction,
-    RealmActionResult, RealmCapture, Request, Response, Scope, LOCAL_REALM_ADMIN_SCOPE,
-    PROTOCOL_VERSION,
+    Capabilities, Command, Event, LOCAL_REALM_ADMIN_SCOPE, LeaseGrant, LeaseRequest, OpClass,
+    PROTOCOL_VERSION, RealmAction, RealmActionResult, RealmCapture, Request, Response, Scope,
 };
 pub use server::{CaptureOutputPayload, CaptureRealmPayload, Handler, Server};

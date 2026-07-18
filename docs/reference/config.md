@@ -124,7 +124,10 @@ applied after hotplug when a compatible touchpad appears.
 ## Screenshots
 
 The `[screenshot]` table controls where the interactive screenshot selector
-writes PNG files. Changes apply on live reload.
+writes PNG files. Changes apply on live reload. After a successful interactive
+capture, the compositor also publishes `image/png` and `text/uri-list` to the
+physical human seat's clipboard. IPC and Realm captures do not modify that
+clipboard.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -148,7 +151,7 @@ last-wins.
 |-------|------|---------|-------------|
 | `connector` | string | required | The backend's connector name, as shown by `ass-ctl outputs` (e.g. `"DP-1"`, `"HDMI-A-1"`, `"nested"`). |
 | `scale` | float | backend-reported | Output scale factor, 0.25–4.0. Integer scales advertise through `wl_output`; fractional scales through `wp_fractional_scale_v1`. Applied live on reload. |
-| `mode` | string | connector's preferred mode | Requested display mode, `"WxH"` or `"WxH@Hz"` (e.g. `"2560x1440@144"`). Without `@Hz` the preferred or highest-refresh mode of that size is used. A mode the connector does not advertise falls back to its preferred mode with a log warning. Applied at modeset time — startup and hotplug; a changed mode for an already-connected monitor applies on its next hotplug or at restart. |
+| `mode` | string | connector's preferred mode | Requested display mode, `"WxH"` or `"WxH@Hz"` (e.g. `"2560x1440@144"`). Without `@Hz` the preferred or highest-refresh mode of that size is used. A mode the connector does not advertise falls back to its preferred mode with a log warning. Direct DRM sessions apply changes live after the current page flip retires; nested sessions remain host-managed. |
 | `position` | table | backend arrangement | Top-left of the output in the global logical layout, written `position = { x = 1920, y = 0 }`. Applied live on reload. |
 | `transform` | string | `normal` | Output transform: `normal`, `90`, `180`, `270`, `flipped`, `flipped-90`, `flipped-180`, `flipped-270` (the `wl_output` underscore spellings are also accepted). Parsed and validated now, but not yet applied: until renderer output-transform support lands, a configured transform logs a warning and the output renders untransformed. |
 | `primary` | boolean | `false` | Whether this output is the primary (focused) one. When several entries claim primary, the first in the backend's output order wins. Applied live on reload. |
@@ -169,6 +172,12 @@ position = { x = 1707, y = 0 }
 Run `ass-ctl outputs` to see the modes each connector advertises; the
 `mode` value must match one of them (resolution exactly, refresh to the
 nearest whole hertz).
+
+Control Center edits these same `[[output]]` entries. Its display page can
+select a connected output, choose an advertised resolution and refresh rate,
+set fractional scale, select the primary output, and place an extended output
+to the right, left, above, below, or at custom logical coordinates. Existing
+comments, unrelated settings, and `transform` values are preserved.
 
 ## Dock
 

@@ -9,7 +9,7 @@
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{Chrome, ChromeEvents, CursorShape, Localizer, Message, RealmIntent};
-use ass_core::input::{key_action, KeyAction, KeyChar};
+use ass_core::input::{KeyAction, KeyChar, key_action};
 use ass_core::overview as geom;
 use ass_core::realm::{Realm, RealmId, RealmKind, RealmSnapshot, RealmState};
 use ass_core::window::Window;
@@ -219,15 +219,15 @@ impl Chrome for Overview {
         if released {
             if let Some(window) = self.drag_candidate {
                 if self.dragging {
-                    if let Some(target) = self.realm_hovered {
-                        if self.control_realm_for_window(window) != Some(target) {
-                            out.realm_intents.push(RealmIntent::TransferWindow {
-                                window,
-                                target,
-                                retain_source_as_observer: true,
-                                expected_revision: self.realms.revision,
-                            });
-                        }
+                    if let Some(target) = self.realm_hovered
+                        && self.control_realm_for_window(window) != Some(target)
+                    {
+                        out.realm_intents.push(RealmIntent::TransferWindow {
+                            window,
+                            target,
+                            retain_source_as_observer: true,
+                            expected_revision: self.realms.revision,
+                        });
                     }
                 } else if self
                     .hovered

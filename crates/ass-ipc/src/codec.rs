@@ -5,7 +5,7 @@
 //! payload is a `serde` value, so the wire is self-describing and new
 //! variants add without changing the framing. See ADR-0027.
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::io::{self, Read, Write};
 
 /// Frames larger than this are rejected before allocation, bounding the
@@ -52,7 +52,7 @@ fn json_io_err(e: serde_json::Error) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{Request, PROTOCOL_VERSION};
+    use crate::schema::{PROTOCOL_VERSION, Request};
     use std::io::Cursor;
 
     #[test]

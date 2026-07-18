@@ -5,15 +5,22 @@ use std::os::fd::OwnedFd;
 use std::str::FromStr;
 use std::time::Duration;
 
+use ass_core::Size;
 use ass_core::input::{
     InputEvent, PointerGestureEvent, TextInputEvent, TextInputState, TouchpadConfig, TouchpadStatus,
 };
 use ass_core::output::ModeSpec;
-use ass_core::Size;
 
-use crate::drm::{DrmBackend, DrmError};
-use crate::nested::{NestedError, NestedHost, DEVICE_EXTENSIONS, INSTANCE_EXTENSIONS};
 use crate::Backend;
+use crate::drm::{DrmBackend, DrmError};
+use crate::nested::{DEVICE_EXTENSIONS, INSTANCE_EXTENSIONS, NestedError, NestedHost};
+
+/// Frame slots Flux runs concurrently. ADR-0038's frame pacing assumes three:
+/// on DRM the offscreen ring must hold one image per slot so a frame being
+/// rendered never aliases the image the CRTC is still scanning out (with the
+/// flux default of two, rendering frame k reuses the buffer committed two
+/// frames ago — exactly the one on screen until the pending flip lands).
+const FRAMES_IN_FLIGHT: u32 = 3;
 
 /// User-selected presentation backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,7 +101,7 @@ impl Host {
                 let mut extensions = DEVICE_EXTENSIONS.to_vec();
                 extensions.extend_from_slice(&flux::DMABUF_DEVICE_EXTENSIONS);
                 extensions.extend_from_slice(&flux::DMABUF_SYNC_DEVICE_EXTENSIONS);
-                match flux::Device::new(false, &INSTANCE_EXTENSIONS, &extensions) {
+                match flux::Device::new(false, &INSTANCE_EXTENSIONS, &extensions, FRAMES_IN_FLIGHT) {
                     Ok(device) => Ok(device),
                     Err(error) => {
                         log::warn!(
@@ -102,7 +109,7 @@ impl Host {
                         );
                         let mut implicit_extensions = DEVICE_EXTENSIONS.to_vec();
                         implicit_extensions.extend_from_slice(&flux::DMABUF_DEVICE_EXTENSIONS);
-                        match flux::Device::new(false, &INSTANCE_EXTENSIONS, &implicit_extensions) {
+                        match flux::Device::new(false, &INSTANCE_EXTENSIONS, &implicit_extensions, FRAMES_IN_FLIGHT) {
                             Ok(device) => Ok(device),
                             Err(error) => {
                                 log::warn!(
@@ -112,6 +119,7 @@ impl Host {
                                     false,
                                     &INSTANCE_EXTENSIONS,
                                     &DEVICE_EXTENSIONS,
+                                    FRAMES_IN_FLIGHT,
                                 )?)
                             }
                         }
@@ -121,7 +129,7 @@ impl Host {
             Self::Drm(_) => {
                 let mut extensions = flux::DMABUF_DEVICE_EXTENSIONS.to_vec();
                 extensions.extend_from_slice(&flux::DMABUF_SYNC_DEVICE_EXTENSIONS);
-                match flux::Device::new(true, &[], &extensions) {
+                match flux::Device::new(true, &[], &extensions, FRAMES_IN_FLIGHT) {
                     Ok(device) => Ok(device),
                     Err(error) => {
                         log::warn!(
@@ -131,6 +139,7 @@ impl Host {
                             true,
                             &[],
                             &flux::DMABUF_DEVICE_EXTENSIONS,
+                            FRAMES_IN_FLIGHT,
                         )?)
                     }
                 }

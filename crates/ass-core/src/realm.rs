@@ -748,13 +748,13 @@ impl RealmModel {
         expected_revision: Option<u64>,
         mutations: &[RealmMutation],
     ) -> Result<RealmTransactionReceipt, RealmError> {
-        if let Some(expected) = expected_revision {
-            if expected != self.revision {
-                return Err(RealmError::RevisionConflict {
-                    expected,
-                    actual: self.revision,
-                });
-            }
+        if let Some(expected) = expected_revision
+            && expected != self.revision
+        {
+            return Err(RealmError::RevisionConflict {
+                expected,
+                actual: self.revision,
+            });
         }
         if mutations.is_empty() {
             return Err(RealmError::EmptyTransaction);

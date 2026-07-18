@@ -31,6 +31,24 @@ Use the packaged `ass.service` instead of direct `cargo run` when testing
 Realm application launch. The service delegates the cgroup controllers that
 mandatory memory, process, CPU, freeze, and revoke boundaries require.
 
+## Configure displays
+
+Open **Control Center**, select **Sound & Display**, then use the **Display**
+card to:
+
+1. Select a connected monitor.
+2. Choose one of its advertised resolution and refresh-rate modes.
+3. Set the logical scale.
+4. Select the primary display when needed.
+5. Place an extended display relative to the primary display, or enter custom
+   logical X and Y coordinates.
+6. Select **Apply Display Settings**.
+
+The change is written atomically to `~/.config/ass/config.toml`. Direct DRM
+sessions apply it after the current page flip retires. In a nested session the
+card is read-only because the outer compositor owns the physical monitors.
+Run `ass-ctl outputs` to inspect exact connector names and advertised modes.
+
 ## Smoke checklist
 
 First bare-metal run, in order:

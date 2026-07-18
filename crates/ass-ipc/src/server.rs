@@ -25,8 +25,8 @@ use std::thread;
 use crate::codec::{read_msg, write_msg};
 use crate::journal::{JournalEntry, JournalMutation};
 use crate::schema::{
-    Capabilities, Command, Event, LeaseGrant, RealmAction, RealmActionResult, RealmCapture,
-    Request, Response, Scope, PROTOCOL_VERSION,
+    Capabilities, Command, Event, LeaseGrant, PROTOCOL_VERSION, RealmAction, RealmActionResult,
+    RealmCapture, Request, Response, Scope,
 };
 
 /// Large output-capture payload transferred as a sealed memfd by the IPC

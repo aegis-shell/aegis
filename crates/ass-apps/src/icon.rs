@@ -11,8 +11,8 @@ use std::path::{Component, Path, PathBuf};
 
 use ini::Ini;
 
-use crate::xdg::icon_search_bases;
 use crate::DEFAULT_ICON_THEME;
+use crate::xdg::icon_search_bases;
 
 /// Icon file extensions searched in specification preference order. SVGZ is
 /// accepted after the standard PNG/SVG/XPM formats as a compatible extension
@@ -137,17 +137,17 @@ pub fn resolve_icon_scaled(
     {
         return Some(found);
     }
-    if theme != DEFAULT_ICON_THEME {
-        if let Some(found) = find_in_theme_tree(
+    if theme != DEFAULT_ICON_THEME
+        && let Some(found) = find_in_theme_tree(
             DEFAULT_ICON_THEME,
             icon,
             &bases,
             target_size,
             target_scale,
             &mut visited,
-        ) {
-            return Some(found);
-        }
+        )
+    {
+        return Some(found);
     }
 
     lookup_fallback_icon(icon, &bases)

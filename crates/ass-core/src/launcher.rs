@@ -338,11 +338,11 @@ mod tests {
         }
     }
 
-    fn entry_with(id: &str, name: &str, gen: &str, kws: &[&str]) -> Entry {
+    fn entry_with(id: &str, name: &str, r#gen: &str, kws: &[&str]) -> Entry {
         Entry {
             id: id.into(),
             name: name.into(),
-            generic_name: Some(gen.into()),
+            generic_name: Some(r#gen.into()),
             keywords: kws.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         }

@@ -1,0 +1,289 @@
+use super::*;
+
+/// One pixel-capture request from an IPC connection thread, answered by the
+/// main loop after it copies the exact output frame being submitted.
+pub(super) struct CaptureRequest {
+    pub(super) reply: std::sync::mpsc::Sender<Result<ass_ipc::CaptureOutputPayload, String>>,
+    /// Logical-pixel region to capture, or `None` for the full output.
+    pub(super) region: Option<ass_core::Rect>,
+}
+
+pub(super) struct RealmCaptureRequest {
+    pub(super) realm: ass_core::realm::RealmId,
+    pub(super) reply: std::sync::mpsc::Sender<Result<ass_ipc::CaptureRealmPayload, String>>,
+    pub(super) region: Option<ass_core::Rect>,
+}
+
+pub(super) struct IpcCommandRequest {
+    pub(super) origin: ass_ipc::Origin,
+    pub(super) command: ass_ipc::Command,
+}
+
+pub(super) struct RealmControlRequest {
+    pub(super) origin: ass_ipc::Origin,
+    pub(super) action: ass_ipc::RealmAction,
+    pub(super) reply: std::sync::mpsc::Sender<Result<ass_ipc::RealmActionResult, String>>,
+}
+
+pub(super) struct JournalRefusalRequest {
+    pub(super) origin: ass_ipc::Origin,
+    pub(super) mutation: ass_ipc::JournalMutation,
+    pub(super) reason: String,
+}
+
+#[derive(Default)]
+pub(super) struct RealmProcesses {
+    launches: std::collections::BTreeMap<ass_core::realm::RealmId, Vec<ass_launch::ManagedLaunch>>,
+}
+
+impl RealmProcesses {
+    pub(super) fn insert(
+        &mut self,
+        realm: ass_core::realm::RealmId,
+        launch: ass_launch::ManagedLaunch,
+    ) {
+        self.launches.entry(realm).or_default().push(launch);
+    }
+
+    pub(super) fn pause(&mut self, realm: ass_core::realm::RealmId) {
+        if let Some(launches) = self.launches.get_mut(&realm) {
+            launches.retain_mut(|launch| {
+                if let Err(error) = launch.pause() {
+                    log::error!(
+                        "Realm {} sandbox {} could not be paused; terminating: {error}",
+                        realm.0,
+                        launch.report().pid
+                    );
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+    }
+
+    pub(super) fn resume(&mut self, realm: ass_core::realm::RealmId) {
+        if let Some(launches) = self.launches.get_mut(&realm) {
+            launches.retain_mut(|launch| {
+                if let Err(error) = launch.resume() {
+                    log::error!(
+                        "Realm {} sandbox {} could not be resumed; terminating: {error}",
+                        realm.0,
+                        launch.report().pid
+                    );
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+    }
+
+    pub(super) fn revoke(&mut self, realm: ass_core::realm::RealmId) {
+        // Dropping ManagedLaunch kills the complete sandbox cgroup and reaps
+        // bubblewrap before this method returns.
+        self.launches.remove(&realm);
+    }
+
+    pub(super) fn apply_committed_action(&mut self, action: &ass_ipc::RealmAction) {
+        match action {
+            ass_ipc::RealmAction::Create { .. } => {}
+            ass_ipc::RealmAction::Transact { mutations, .. } => {
+                for mutation in mutations {
+                    if let ass_core::realm::RealmMutation::SetState { realm, state } = mutation {
+                        match state {
+                            ass_core::realm::RealmState::Active => self.resume(*realm),
+                            ass_core::realm::RealmState::Paused => self.pause(*realm),
+                            ass_core::realm::RealmState::Revoked => self.revoke(*realm),
+                        }
+                    }
+                }
+            }
+            ass_ipc::RealmAction::Revoke { realm, .. } => self.revoke(*realm),
+        }
+    }
+}
+
+pub(super) struct RealmRenderTarget {
+    pub(super) output: ass_core::realm::VirtualOutput,
+    pub(super) surface: flux::Surface,
+    pub(super) canvas: flux::Canvas,
+}
+
+pub(super) struct RealmCaptureContext {
+    pub(super) realm: ass_core::realm::RealmId,
+    pub(super) revision: u64,
+    pub(super) scale_milli: u32,
+    pub(super) region: ass_core::Rect,
+    pub(super) placements: Vec<ass_core::realm::RealmWindowPlacement>,
+}
+
+pub(super) struct PendingRealmCapture {
+    pub(super) readback: PendingReadback,
+    pub(super) context: RealmCaptureContext,
+    pub(super) reply: std::sync::mpsc::Sender<Result<ass_ipc::CaptureRealmPayload, String>>,
+}
+
+pub(super) struct PreparedRealmCapture {
+    pub(super) readback: PendingReadback,
+    pub(super) context: RealmCaptureContext,
+}
+
+pub(super) fn virtual_output_physical_size(
+    output: ass_core::realm::VirtualOutput,
+) -> Result<(u32, u32), String> {
+    if !output.validate() {
+        return Err("virtual output parameters are invalid".into());
+    }
+    let scaled = |value: u32| {
+        u64::from(value)
+            .saturating_mul(u64::from(output.scale_milli))
+            .div_ceil(1000)
+    };
+    let width = u32::try_from(scaled(output.width)).map_err(|_| "virtual output is too wide")?;
+    let height = u32::try_from(scaled(output.height)).map_err(|_| "virtual output is too tall")?;
+    Ok((width.max(1), height.max(1)))
+}
+
+pub(super) fn begin_realm_capture(
+    targets: &mut std::collections::BTreeMap<ass_core::realm::RealmId, RealmRenderTarget>,
+    device: &flux::Device,
+    renderer: &mut ass_render::Renderer,
+    server: &ass_server::Server,
+    realm: ass_core::realm::RealmId,
+    region: Option<ass_core::Rect>,
+    security_generation: u64,
+) -> Result<PreparedRealmCapture, String> {
+    let snapshot = server.realm_snapshot();
+    let realm_state = snapshot
+        .realms
+        .iter()
+        .find(|record| record.id == realm)
+        .ok_or_else(|| format!("unknown realm {}", realm.0))?
+        .state;
+    if realm_state != ass_core::realm::RealmState::Active {
+        return Err(format!("realm {} is not active ({realm_state:?})", realm.0));
+    }
+    let output = server
+        .realm_output(realm)
+        .ok_or_else(|| format!("realm {} has no virtual output", realm.0))?;
+    let region = match region {
+        Some(region) => {
+            clamp_logical_region(region, output.width, output.height).ok_or_else(|| {
+                "Realm capture region does not intersect the virtual output".to_owned()
+            })?
+        }
+        None => ass_core::Rect::new(0, 0, output.width as i32, output.height as i32),
+    };
+    let placements = server.realm_window_placements(realm);
+    let physical_size = virtual_output_physical_size(output)?;
+    if targets
+        .get(&realm)
+        .is_none_or(|target| target.output != output)
+    {
+        let surface = flux::Surface::offscreen_readback(device, physical_size.0, physical_size.1)
+            .map_err(|error| {
+            format!(
+                "allocate realm {} render target: {error}{}",
+                realm.0,
+                flux_last_error_detail()
+            )
+        })?;
+        surface.prepare_readback().map_err(|error| {
+            format!(
+                "prepare realm {} readback: {error}{}",
+                realm.0,
+                flux_last_error_detail()
+            )
+        })?;
+        let canvas = flux::Canvas::new(&surface).map_err(|error| {
+            format!(
+                "create realm {} canvas: {error}{}",
+                realm.0,
+                flux_last_error_detail()
+            )
+        })?;
+        targets.insert(
+            realm,
+            RealmRenderTarget {
+                output,
+                surface,
+                canvas,
+            },
+        );
+    }
+    let target = targets
+        .get_mut(&realm)
+        .expect("realm render target was just installed");
+    let mut frame = target.surface.begin_frame().map_err(|error| {
+        format!(
+            "begin realm {} frame: {error}{}",
+            realm.0,
+            flux_last_error_detail()
+        )
+    })?;
+    renderer.begin_frame();
+    target
+        .canvas
+        .begin(&frame, Some(flux::rgba(17, 20, 27, 255)))
+        .map_err(|error| {
+            format!(
+                "begin realm {} canvas: {error}{}",
+                realm.0,
+                flux_last_error_detail()
+            )
+        })?;
+    let scale = output.scale_milli as f32 / 1000.0;
+    target.canvas.save();
+    if scale != 1.0 {
+        target.canvas.scale(scale, scale);
+    }
+    let shm = server.realm_toplevel_frames(realm);
+    let dmabuf = server.realm_toplevel_dmabuf_frames(realm);
+    let sub_shm_below = server.realm_subsurface_frames_below(realm);
+    let sub_shm_above = server.realm_subsurface_frames_above(realm);
+    let sub_dmabuf_below = server.realm_subsurface_dmabuf_frames_below(realm);
+    let sub_dmabuf_above = server.realm_subsurface_dmabuf_frames_above(realm);
+    renderer.draw_subsurfaces(device, &target.canvas, &sub_shm_below);
+    renderer.draw_dmabuf_subsurfaces(device, &target.canvas, &sub_dmabuf_below);
+    renderer.draw_toplevels(device, &target.canvas, &shm, (0.0, 0.0));
+    renderer.draw_dmabuf_toplevels(device, &target.canvas, &dmabuf, (0.0, 0.0));
+    renderer.draw_subsurfaces(device, &target.canvas, &sub_shm_above);
+    renderer.draw_dmabuf_subsurfaces(device, &target.canvas, &sub_dmabuf_above);
+    target.canvas.restore();
+    target.canvas.end();
+    frame.request_readback().map_err(|error| {
+        format!(
+            "request realm {} readback: {error}{}",
+            realm.0,
+            flux_last_error_detail()
+        )
+    })?;
+    frame
+        .submit()
+        .and_then(flux::SubmittedFrame::present)
+        .map_err(|error| {
+            format!(
+                "submit realm {} frame: {error}{}",
+                realm.0,
+                flux_last_error_detail()
+            )
+        })?;
+    let full_region = ass_core::Rect::new(0, 0, output.width as i32, output.height as i32);
+    Ok(PreparedRealmCapture {
+        readback: PendingReadback {
+            width: physical_size.0,
+            height: physical_size.1,
+            crop: (region != full_region)
+                .then(|| logical_rect_to_physical(region, scale, physical_size.0, physical_size.1)),
+            security_generation,
+        },
+        context: RealmCaptureContext {
+            realm,
+            revision: snapshot.revision,
+            scale_milli: output.scale_milli,
+            region,
+            placements,
+        },
+    })
+}

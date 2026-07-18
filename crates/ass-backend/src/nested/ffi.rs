@@ -218,7 +218,7 @@ pub struct wl_keyboard_listener {
     pub repeat_info: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, i32, i32),
 }
 
-extern "C" {
+unsafe extern "C" {
     // Core interfaces, exported by libwayland-client.
     pub static wl_registry_interface: wl_interface;
     pub static wl_compositor_interface: wl_interface;

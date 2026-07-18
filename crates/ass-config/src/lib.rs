@@ -18,6 +18,7 @@
 //! filesystem-watcher thread would add threading complexity for no gain at
 //! the low frequency a config file changes.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use ass_core::input::{Mods, TouchpadConfig, TouchpadScrollMethod};
@@ -73,7 +74,7 @@ pub struct Config {
 
     /// Per-output display policy (ADR-0028), written as `[[output]]`
     /// array-of-tables. Each entry overrides the backend-reported mode,
-    /// scale, position, transform, or primary selection for one connector.
+    /// scale, position, transform, or primary-output selection for one connector.
     #[serde(default, rename = "output")]
     pub outputs: Vec<OutputConfig>,
 
@@ -583,13 +584,13 @@ impl Config {
                     "must not be empty",
                 ));
             }
-            if let Some(scale) = output.scale {
-                if !scale.is_finite() || !(0.25..=4.0).contains(&scale) {
-                    diagnostics.push(Diagnostic::new(
-                        Some(format!("output.{index}.scale")),
-                        "must be between 0.25 and 4.0",
-                    ));
-                }
+            if let Some(scale) = output.scale
+                && (!scale.is_finite() || !(0.25..=4.0).contains(&scale))
+            {
+                diagnostics.push(Diagnostic::new(
+                    Some(format!("output.{index}.scale")),
+                    "must be between 0.25 and 4.0",
+                ));
             }
             if let Some(mode) = &output.mode {
                 match mode.parse::<ass_core::output::ModeSpec>() {
@@ -616,13 +617,13 @@ impl Config {
                     )),
                 }
             }
-            if let Some(transform) = &output.transform {
-                if ass_core::Transform::from_name(transform).is_none() {
-                    diagnostics.push(Diagnostic::new(
-                        Some(format!("output.{index}.transform")),
-                        format!("unknown transform '{transform}'"),
-                    ));
-                }
+            if let Some(transform) = &output.transform
+                && ass_core::Transform::from_name(transform).is_none()
+            {
+                diagnostics.push(Diagnostic::new(
+                    Some(format!("output.{index}.transform")),
+                    format!("unknown transform '{transform}'"),
+                ));
             }
             if output.scale.is_none()
                 && output.mode.is_none()
@@ -636,13 +637,13 @@ impl Config {
                 ));
             }
         }
-        if let Some(size) = cfg.ui.cursor_size {
-            if !(8..=128).contains(&size) {
-                diagnostics.push(Diagnostic::new(
-                    Some("ui.cursor_size".into()),
-                    "must be between 8 and 128",
-                ));
-            }
+        if let Some(size) = cfg.ui.cursor_size
+            && !(8..=128).contains(&size)
+        {
+            diagnostics.push(Diagnostic::new(
+                Some("ui.cursor_size".into()),
+                "must be between 8 and 128",
+            ));
         }
         if !cfg.input.touchpad.pointer_speed.is_finite()
             || !(-1.0..=1.0).contains(&cfg.input.touchpad.pointer_speed)
@@ -816,7 +817,7 @@ pub fn load(path: &Path) -> Result<Option<Config>, LoadError> {
             return Err(LoadError::Read {
                 path: path.into(),
                 source: e,
-            })
+            });
         }
     };
     match Config::parse(&text) {
@@ -851,7 +852,7 @@ pub fn set_dock_pinned(path: &Path, pinned: &[String]) -> Result<(), LoadError> 
             return Err(LoadError::Read {
                 path: path.into(),
                 source: e,
-            })
+            });
         }
     };
 
@@ -866,13 +867,13 @@ pub fn set_dock_pinned(path: &Path, pinned: &[String]) -> Result<(), LoadError> 
     doc["dock"]["pinned"] = toml_edit::Item::Value(toml_edit::Value::Array(arr));
     doc["dock"]["autopopulate"] = toml_edit::value(false);
 
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            return Err(LoadError::Write {
-                path: path.into(),
-                source: e,
-            });
-        }
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        return Err(LoadError::Write {
+            path: path.into(),
+            source: e,
+        });
     }
 
     std::fs::write(path, doc.to_string()).map_err(|e| LoadError::Write {
@@ -901,7 +902,7 @@ pub fn set_touchpad_config(path: &Path, config: &TouchpadConfig) -> Result<(), L
             return Err(LoadError::Read {
                 path: path.into(),
                 source: e,
-            })
+            });
         }
     };
 
@@ -932,18 +933,211 @@ pub fn set_touchpad_config(path: &Path, config: &TouchpadConfig) -> Result<(), L
         TouchpadScrollMethod::Edge => "edge",
     });
 
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            return Err(LoadError::Write {
-                path: path.into(),
-                source: e,
-            });
-        }
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        return Err(LoadError::Write {
+            path: path.into(),
+            source: e,
+        });
     }
     std::fs::write(path, doc.to_string()).map_err(|e| LoadError::Write {
         path: path.into(),
         source: e,
     })
+}
+
+/// Persist the user-editable fields for one `[[output]]` entry while
+/// preserving comments, unrelated settings, and any configured transform.
+///
+/// The write is an atomic same-directory replacement so the compositor's
+/// live-reload watcher can never observe a partially written TOML document.
+/// Selecting a primary output clears that flag from every other entry; an
+/// old primary-only entry is removed instead of leaving an invalid no-op
+/// table behind.
+pub fn set_output_settings(
+    path: &Path,
+    connector: &str,
+    mode: ass_core::output::ModeSpec,
+    scale: f64,
+    position: ass_core::Point,
+    primary: bool,
+) -> Result<(), LoadError> {
+    if connector.trim().is_empty() || !scale.is_finite() || !(0.25..=4.0).contains(&scale) {
+        return Err(LoadError::Invalid {
+            path: path.into(),
+            diagnostics: vec![Diagnostic::new(
+                Some("output".into()),
+                "display settings are outside the supported range",
+            )],
+        });
+    }
+
+    let mut doc = editable_document(path)?;
+    if !doc
+        .get("output")
+        .is_some_and(toml_edit::Item::is_array_of_tables)
+    {
+        doc["output"] = toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
+    }
+    let outputs = doc["output"]
+        .as_array_of_tables_mut()
+        .expect("output was normalized to an array of tables");
+
+    if primary {
+        for table in outputs.iter_mut() {
+            if table.get("connector").and_then(toml_edit::Item::as_str) != Some(connector) {
+                table.remove("primary");
+            }
+        }
+        for index in (0..outputs.len()).rev() {
+            if outputs
+                .get(index)
+                .is_some_and(|table| !output_table_has_override(table))
+            {
+                outputs.remove(index);
+            }
+        }
+    }
+
+    let index = (0..outputs.len())
+        .rev()
+        .find(|index| {
+            outputs.get(*index).is_some_and(|table| {
+                table.get("connector").and_then(toml_edit::Item::as_str) == Some(connector)
+            })
+        })
+        .unwrap_or_else(|| {
+            let mut table = toml_edit::Table::new();
+            table["connector"] = toml_edit::value(connector);
+            outputs.push(table);
+            outputs.len() - 1
+        });
+    let output = outputs
+        .get_mut(index)
+        .expect("selected output table must still exist");
+    output["connector"] = toml_edit::value(connector);
+    output["mode"] = toml_edit::value(format_mode_spec(mode));
+    output["scale"] = toml_edit::value(scale);
+    let mut position_table = toml_edit::InlineTable::new();
+    position_table.insert("x", toml_edit::Value::from(i64::from(position.x)));
+    position_table.insert("y", toml_edit::Value::from(i64::from(position.y)));
+    output["position"] = toml_edit::Item::Value(toml_edit::Value::InlineTable(position_table));
+    if primary {
+        output["primary"] = toml_edit::value(true);
+    } else {
+        output.remove("primary");
+    }
+
+    write_document_atomic(path, &doc.to_string())
+}
+
+fn editable_document(path: &Path) -> Result<DocumentMut, LoadError> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => text
+            .parse::<DocumentMut>()
+            .map_err(|error| LoadError::Invalid {
+                path: path.into(),
+                diagnostics: vec![Diagnostic::new(None, format!("existing file: {error}"))],
+            }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut document = DocumentMut::new();
+            document["schema_version"] = toml_edit::value(i64::from(SUPPORTED_SCHEMA_VERSION));
+            Ok(document)
+        }
+        Err(source) => Err(LoadError::Read {
+            path: path.into(),
+            source,
+        }),
+    }
+}
+
+fn output_table_has_override(table: &toml_edit::Table) -> bool {
+    ["scale", "mode", "position", "transform"]
+        .iter()
+        .any(|key| table.contains_key(key))
+        || table
+            .get("primary")
+            .and_then(toml_edit::Item::as_bool)
+            .unwrap_or(false)
+}
+
+fn format_mode_spec(mode: ass_core::output::ModeSpec) -> String {
+    match mode.refresh_hz {
+        Some(refresh) => format!("{}x{}@{refresh}", mode.width, mode.height),
+        None => format!("{}x{}", mode.width, mode.height),
+    }
+}
+
+fn write_document_atomic(path: &Path, contents: &str) -> Result<(), LoadError> {
+    let Some(parent) = path.parent() else {
+        return Err(LoadError::Write {
+            path: path.into(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "configuration path has no parent directory",
+            ),
+        });
+    };
+    std::fs::create_dir_all(parent).map_err(|source| LoadError::Write {
+        path: path.into(),
+        source,
+    })?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("config.toml");
+    let mut temporary = None;
+    for attempt in 0..32_u32 {
+        let candidate = parent.join(format!(
+            ".{file_name}.ass-{}-{attempt}.tmp",
+            std::process::id()
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                temporary = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(source) => {
+                return Err(LoadError::Write {
+                    path: path.into(),
+                    source,
+                });
+            }
+        }
+    }
+    let Some((temporary_path, mut file)) = temporary else {
+        return Err(LoadError::Write {
+            path: path.into(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "could not allocate a temporary configuration file",
+            ),
+        });
+    };
+    let write_result = (|| -> std::io::Result<()> {
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temporary_path, path)?;
+        if let Ok(directory) = std::fs::File::open(parent) {
+            let _ = directory.sync_all();
+        }
+        Ok(())
+    })();
+    if let Err(source) = write_result {
+        let _ = std::fs::remove_file(&temporary_path);
+        return Err(LoadError::Write {
+            path: path.into(),
+            source,
+        });
+    }
+    Ok(())
 }
 
 /// The default config path: `$XDG_CONFIG_HOME/ass/config.toml`, falling back
@@ -1090,9 +1284,10 @@ mod tests {
 
         let err = Config::parse("schema_version = 1\n[input.touchpad]\npointer_speed = 1.5\n")
             .unwrap_err();
-        assert!(err
-            .iter()
-            .any(|d| d.field.as_deref() == Some("input.touchpad.pointer_speed")));
+        assert!(
+            err.iter()
+                .any(|d| d.field.as_deref() == Some("input.touchpad.pointer_speed"))
+        );
     }
 
     #[test]
@@ -1152,12 +1347,14 @@ mod tests {
         let err = Config::parse("schema_version = 1\n[layout]\ngaps = -1\nmaster_ratio = 1.5\n")
             .unwrap_err();
         assert_eq!(err.len(), 2);
-        assert!(err
-            .iter()
-            .any(|d| d.field.as_deref() == Some("layout.gaps")));
-        assert!(err
-            .iter()
-            .any(|d| d.field.as_deref() == Some("layout.master_ratio")));
+        assert!(
+            err.iter()
+                .any(|d| d.field.as_deref() == Some("layout.gaps"))
+        );
+        assert!(
+            err.iter()
+                .any(|d| d.field.as_deref() == Some("layout.master_ratio"))
+        );
     }
 
     #[test]
@@ -1216,9 +1413,10 @@ mod tests {
         assert!(errs.iter().any(|d| d.message.contains("caps")));
         assert!(errs.iter().any(|d| d.message.contains("nonsense")));
         assert!(errs.iter().any(|d| d.message.contains("fly-away")));
-        assert!(errs
-            .iter()
-            .all(|d| d.field.as_deref().unwrap_or("").starts_with("keybind[")));
+        assert!(
+            errs.iter()
+                .all(|d| d.field.as_deref().unwrap_or("").starts_with("keybind["))
+        );
     }
 
     #[test]
@@ -1342,12 +1540,14 @@ mod tests {
              scale = 9.0\n",
         )
         .unwrap_err();
-        assert!(err
-            .iter()
-            .any(|d| d.field.as_deref() == Some("output.0.connector")));
-        assert!(err
-            .iter()
-            .any(|d| d.field.as_deref() == Some("output.0.scale")));
+        assert!(
+            err.iter()
+                .any(|d| d.field.as_deref() == Some("output.0.connector"))
+        );
+        assert!(
+            err.iter()
+                .any(|d| d.field.as_deref() == Some("output.0.scale"))
+        );
     }
 
     #[test]
@@ -1393,16 +1593,18 @@ mod tests {
         assert!(err
             .iter()
             .any(|d| d.field.as_deref() == Some("output.0.mode") && d.message.contains("1080p")));
-        assert!(err
-            .iter()
-            .any(|d| d.field.as_deref() == Some("output.0.transform")
-                && d.message.contains("upside-down")));
+        assert!(
+            err.iter()
+                .any(|d| d.field.as_deref() == Some("output.0.transform")
+                    && d.message.contains("upside-down"))
+        );
         assert!(err
             .iter()
             .any(|d| d.field.as_deref() == Some("output.1.mode") && d.message.contains("16384")));
-        assert!(err
-            .iter()
-            .any(|d| d.field.as_deref() == Some("output.1.mode") && d.message.contains("1000")));
+        assert!(
+            err.iter()
+                .any(|d| d.field.as_deref() == Some("output.1.mode") && d.message.contains("1000"))
+        );
     }
 
     #[test]
@@ -1491,9 +1693,10 @@ mod tests {
         assert_eq!(cfg2.screenshot.save_dir, "/tmp/shots");
 
         let err = Config::parse("schema_version = 1\n[screenshot]\nsave_dir = \"\"\n").unwrap_err();
-        assert!(err
-            .iter()
-            .any(|d| d.field.as_deref() == Some("screenshot.save_dir")));
+        assert!(
+            err.iter()
+                .any(|d| d.field.as_deref() == Some("screenshot.save_dir"))
+        );
     }
 
     #[test]
@@ -1557,13 +1760,67 @@ mod tests {
     }
 
     #[test]
+    fn output_settings_persist_atomically_and_keep_unrelated_fields() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "ass-config-output-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("config.toml");
+        std::fs::write(
+            &path,
+            "schema_version = 1 # keep this comment\n\
+             [[output]]\nconnector = \"DP-1\"\nprimary = true\n\
+             [[output]]\nconnector = \"HDMI-A-1\"\ntransform = \"180\"\n",
+        )
+        .unwrap();
+
+        set_output_settings(
+            &path,
+            "HDMI-A-1",
+            ass_core::output::ModeSpec {
+                width: 2560,
+                height: 1440,
+                refresh_hz: Some(144),
+            },
+            1.5,
+            ass_core::Point { x: 120, y: -40 },
+            true,
+        )
+        .unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# keep this comment"));
+        assert!(text.contains("transform = \"180\""));
+        assert!(!text.contains("connector = \"DP-1\""));
+        let config = load(&path).unwrap().unwrap();
+        assert_eq!(config.outputs.len(), 1);
+        let policy = config.output_policies()["HDMI-A-1"];
+        assert_eq!(policy.scale, Some(1.5));
+        assert_eq!(policy.mode.unwrap().refresh_hz, Some(144));
+        assert_eq!(policy.position, Some(ass_core::Point { x: 120, y: -40 }));
+        assert!(policy.primary);
+        assert_eq!(policy.transform, Some(ass_core::Transform::Rotate180));
+        assert!(
+            std::fs::read_dir(&directory)
+                .unwrap()
+                .flatten()
+                .all(|entry| !entry.file_name().to_string_lossy().ends_with(".tmp"))
+        );
+        std::fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
     fn byte_to_line_is_one_based_and_clamps() {
         let text = "a\nb\nc\n"; // indices: 0='a' 1='\n' 2='b' 3='\n' 4='c' 5='\n'
         assert_eq!(byte_to_line(text, 0), 1); // first line
         assert_eq!(byte_to_line(text, 2), 2); // after the first newline
         assert_eq!(byte_to_line(text, 4), 3); // after the second newline
-                                              // An offset past the final newline is the line that follows it; a
-                                              // huge offset clamps to the text end rather than indexing past it.
+        // An offset past the final newline is the line that follows it; a
+        // huge offset clamps to the text end rather than indexing past it.
         assert_eq!(byte_to_line(text, usize::MAX), 4);
     }
 }

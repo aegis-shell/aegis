@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 
 use ass_core::window::{Window, WindowId};
 use ass_ipc::{
-    Capabilities, Client, Command, Event, Handler, OpClass, RealmAction, RealmActionResult, Scope,
-    Server, PROTOCOL_VERSION,
+    Capabilities, Client, Command, Event, Handler, OpClass, PROTOCOL_VERSION, RealmAction,
+    RealmActionResult, Scope, Server,
 };
 
 /// A unique throwaway socket path under the temp dir, namespaced by pid +
@@ -399,14 +399,16 @@ fn synthetic_input_requires_a_named_scope_and_separate_capability() {
     scoped
         .inject_input(WindowId(1), vec![action])
         .expect("scoped input accepted");
-    assert!(handler
-        .commands
-        .lock()
-        .unwrap()
-        .contains(&Command::InjectInput {
-            id: WindowId(1),
-            actions: vec![action],
-        }));
+    assert!(
+        handler
+            .commands
+            .lock()
+            .unwrap()
+            .contains(&Command::InjectInput {
+                id: WindowId(1),
+                actions: vec![action],
+            })
+    );
 
     let before = handler.commands.lock().unwrap().len();
     let err = scoped.inject_input(WindowId(1), vec![]).unwrap_err();

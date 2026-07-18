@@ -26,7 +26,9 @@ pub use chrome::{
     Toast, WorkspaceBar,
 };
 pub use i18n::{Language, Localizer, Message};
-pub use system::{BatteryStatus, NetworkState, SystemAction, SystemStatus};
+pub use system::{
+    BatteryStatus, DisplaySettings, DisplayStatus, NetworkState, SystemAction, SystemStatus,
+};
 
 use ass_core::app::{ApplicationTarget, BuiltInApplication, Entry};
 use ass_core::realm::{RealmId, RealmSnapshot, RealmState};
@@ -411,21 +413,23 @@ impl Shell {
     /// outlive the `Shell`. The pointer crosses from the `flux` bindings' type
     /// to lens's distinct-but-ABI-identical `flux_device`.
     pub unsafe fn new(device: *mut c_void) -> Result<Shell, ShellError> {
-        let ui =
-            Ui::with_device(device as *mut lens::sys::flux_device).map_err(ShellError::Create)?;
-        Ok(Shell {
-            ui,
-            windows: Vec::new(),
-            workspaces: WorkspaceSnapshot {
-                outputs: Vec::new(),
-            },
-            i18n: Localizer::from_env(),
-            system_status: SystemStatus::default(),
-            realms: ass_core::realm::RealmModel::new().snapshot(),
-            events: ChromeEvents::default(),
-            components: Vec::new(),
-            reduced_motion: false,
-        })
+        unsafe {
+            let ui = Ui::with_device(device as *mut lens::sys::flux_device)
+                .map_err(ShellError::Create)?;
+            Ok(Shell {
+                ui,
+                windows: Vec::new(),
+                workspaces: WorkspaceSnapshot {
+                    outputs: Vec::new(),
+                },
+                i18n: Localizer::from_env(),
+                system_status: SystemStatus::default(),
+                realms: ass_core::realm::RealmModel::new().snapshot(),
+                events: ChromeEvents::default(),
+                components: Vec::new(),
+                reduced_motion: false,
+            })
+        }
     }
 
     /// Register a chrome component. Components render once per frame, in
@@ -768,36 +772,38 @@ impl Shell {
     /// `canvas` must be a live `flux_canvas` (from `flux::Canvas::as_raw`)
     /// currently inside a `begin`/`end` recording pair on the active frame.
     pub unsafe fn render(&mut self, canvas: *mut c_void, input: &Input) -> Result<(), ShellError> {
-        let windows = &self.windows;
-        let workspaces = &self.workspaces;
-        let i18n = &self.i18n;
-        let events = &mut self.events;
-        let components = &mut self.components;
-        let modal_reserved = components
-            .iter()
-            .filter(|component| component.visible_during_modal())
-            .fold(Reserved::default(), |mut total, component| {
-                let edge = component.reserved();
-                total.top += edge.top;
-                total.bottom += edge.bottom;
-                total.left += edge.left;
-                total.right += edge.right;
-                total
-            });
-        for component in components.iter_mut() {
-            component.set_modal_reserved(modal_reserved);
-        }
-        self.ui.frame(input, |f| {
-            let modal_active = components.iter().any(|component| component.modal_active());
+        unsafe {
+            let windows = &self.windows;
+            let workspaces = &self.workspaces;
+            let i18n = &self.i18n;
+            let events = &mut self.events;
+            let components = &mut self.components;
+            let modal_reserved = components
+                .iter()
+                .filter(|component| component.visible_during_modal())
+                .fold(Reserved::default(), |mut total, component| {
+                    let edge = component.reserved();
+                    total.top += edge.top;
+                    total.bottom += edge.bottom;
+                    total.left += edge.left;
+                    total.right += edge.right;
+                    total
+                });
             for component in components.iter_mut() {
-                if !modal_active || component.visible_during_modal() {
-                    component.render(f, input, windows, workspaces, i18n, events);
-                }
+                component.set_modal_reserved(modal_reserved);
             }
-        });
-        self.ui
-            .render(canvas as *mut lens::sys::flux_canvas)
-            .map_err(ShellError::Render)
+            self.ui.frame(input, |f| {
+                let modal_active = components.iter().any(|component| component.modal_active());
+                for component in components.iter_mut() {
+                    if !modal_active || component.visible_during_modal() {
+                        component.render(f, input, windows, workspaces, i18n, events);
+                    }
+                }
+            });
+            self.ui
+                .render(canvas as *mut lens::sys::flux_canvas)
+                .map_err(ShellError::Render)
+        }
     }
 }
 

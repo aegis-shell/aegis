@@ -65,11 +65,7 @@ impl std::str::FromStr for ModeSpec {
                 return Err(());
             }
             let value = s.parse::<i32>().map_err(|_| ())?;
-            if value > 0 {
-                Ok(value)
-            } else {
-                Err(())
-            }
+            if value > 0 { Ok(value) } else { Err(()) }
         }
         let (size, refresh) = match s.split_once('@') {
             Some((size, hz)) => (size, Some(hz)),

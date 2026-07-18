@@ -32,7 +32,7 @@ pub(super) struct StillSource {
     /// Wall-clock time when `current` was advanced.
     last_advance: Instant,
     /// Bumped each time `current` changes, so the wrapper can re-upload.
-    gen: u64,
+    r#gen: u64,
 }
 
 struct Frame {
@@ -53,7 +53,7 @@ impl StillSource {
             height: 1,
             current: 0,
             last_advance: Instant::now(),
-            gen: 0,
+            r#gen: 0,
         }
     }
 
@@ -91,7 +91,7 @@ impl StillSource {
             height: h,
             current: 0,
             last_advance: Instant::now(),
-            gen: 0,
+            r#gen: 0,
         })
     }
 
@@ -142,7 +142,7 @@ impl StillSource {
             height: canvas_h,
             current: 0,
             last_advance: Instant::now(),
-            gen: 0,
+            r#gen: 0,
         })
     }
 }
@@ -247,10 +247,10 @@ impl Source for StillSource {
             while now.duration_since(self.last_advance) >= self.frames[self.current].duration {
                 self.last_advance += self.frames[self.current].duration;
                 self.current = (self.current + 1) % self.frames.len();
-                self.gen = self.gen.wrapping_add(1);
+                self.r#gen = self.r#gen.wrapping_add(1);
             }
         }
-        (&self.frames[self.current].pixels, self.gen)
+        (&self.frames[self.current].pixels, self.r#gen)
     }
 
     fn frame_count(&self) -> usize {

@@ -224,12 +224,12 @@ impl Wallpaper {
     /// advanced here using wall-clock time.
     pub fn draw(&mut self, device: &flux::Device, canvas: &flux::Canvas, dst_w: f32, dst_h: f32) {
         let now = Instant::now();
-        let (pixels, gen) = match &mut self.source {
+        let (pixels, r#gen) = match &mut self.source {
             SourceKind::Still(s) => s.poll(now),
             SourceKind::Video(v) => v.poll(now),
         };
 
-        if gen != self.last_uploaded_gen {
+        if r#gen != self.last_uploaded_gen {
             let need = (self.width as usize) * (self.height as usize) * 4;
             if pixels.len() == need {
                 match flux::Image::from_bytes(
@@ -241,7 +241,7 @@ impl Wallpaper {
                 ) {
                     Ok(img) => {
                         self.flux_image = Some(img);
-                        self.last_uploaded_gen = gen;
+                        self.last_uploaded_gen = r#gen;
                     }
                     Err(e) => log::warn!("wallpaper: upload failed: {e:?}"),
                 }

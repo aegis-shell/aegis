@@ -30,6 +30,13 @@ configure events. Activated Realm portals have no host pathname; dispatch
 accepts their sandbox-only connections and assigns Realm identity before
 registry enumeration.
 
+Clipboard selections are scoped to one logical seat. Client-owned selections
+forward transfers to the owning `wl_data_source`; compositor-owned selections
+retain immutable MIME payloads and write them through a bounded background
+lane so a paste target cannot block Wayland dispatch. The server intentionally
+does not advertise X11-style Primary Selection; standard explicit copy and
+paste remains available through `wl_data_device_manager`.
+
 ## Use
 
 The executable creates one `Server`, publishes its socket name through
@@ -48,3 +55,4 @@ This crate is an integration mechanism, not a standalone server binary.
 - [Wayland server decision](../../docs/adr/0002-hand-rolled-wayland-server.md)
 - [Workspace layout](../../docs/dev/project-layout.md)
 - [Realm and seat decision](../../docs/adr/0040-realms-seats-and-transferable-interaction-authority.md)
+- [Explicit clipboard decision](../../docs/adr/0043-explicit-clipboard-only.md)

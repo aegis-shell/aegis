@@ -44,10 +44,6 @@ fn main() {
             "unstable/pointer-constraints",
             "pointer-constraints-unstable-v1",
         ),
-        (
-            "unstable/primary-selection",
-            "primary-selection-unstable-v1",
-        ),
         ("unstable/text-input", "text-input-unstable-v3"),
         // staging / ext
         ("staging/fractional-scale", "fractional-scale-v1"),
@@ -57,7 +53,6 @@ fn main() {
             "staging/ext-foreign-toplevel-list",
             "ext-foreign-toplevel-list-v1",
         ),
-        ("staging/ext-data-control", "ext-data-control-v1"),
         ("staging/cursor-shape", "cursor-shape-v1"),
         ("staging/xdg-activation", "xdg-activation-v1"),
     ];
@@ -110,9 +105,5 @@ fn pkg_include_dirs(pkg: &str) -> Option<Vec<String>> {
         .split_whitespace()
         .filter_map(|f| f.strip_prefix("-I").map(|d| d.to_string()))
         .collect();
-    if dirs.is_empty() {
-        None
-    } else {
-        Some(dirs)
-    }
+    if dirs.is_empty() { None } else { Some(dirs) }
 }

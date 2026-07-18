@@ -7,6 +7,32 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### Control Center display settings
+
+- Control Center now exposes connected outputs, advertised resolution and
+  refresh-rate modes, fractional scale, primary-output selection, and
+  right/left/above/below or custom-coordinate extended layouts. The same
+  `[[output]]` configuration remains the source of truth; edits use an atomic
+  comment-preserving replacement and nested sessions present a read-only,
+  host-managed display summary.
+- Direct DRM mode changes now apply live through the hotplug reconciliation
+  path after the in-flight page flip retires. Surface resize or recreation,
+  server output advertisement, input extent, and Control Center status then
+  converge on the selected mode without a restart or cable replug.
+
+### Clipboard and screenshots
+
+- Interactive screenshots now remain available as mode-`0600` PNG files and
+  are also published to the physical human seat's clipboard as `image/png`
+  and `text/uri-list`. IPC and Realm captures remain side-effect-free and do
+  not modify the physical clipboard.
+- Added compositor-owned, per-seat clipboard selections with immutable offer
+  snapshots, bounded retained data, and background fd transfer. Agent Realm
+  selections remain isolated from the physical human seat.
+- Removed the optional X11-style Primary Selection protocol and its unused
+  data-control placeholder. Selecting text no longer mutates a second global
+  channel; standard explicit copy, cut, and paste are unaffected.
+
 ### AI Workspaces and independent input Realms
 
 - Added first-class Realms with durable principals, independent Wayland
@@ -168,10 +194,10 @@ project cuts a tagged release.
 
 - `[[output]]` entries grow from scale-only into a full per-connector
   display policy (ADR-0028): `mode = "WxH[@Hz]"` requests a display mode,
-  matched against the connector's advertised modes at modeset time
-  (startup and hotplug) with a preferred-mode fallback and a log warning
-  when nothing matches — a changed mode for an already-connected monitor
-  applies on its next hotplug or at restart; `position = { x, y }` places
+  matched against the connector's advertised modes at modeset time with a
+  preferred-mode fallback and a log warning when nothing matches — a changed
+  mode for an already-connected monitor queues a safe live re-modeset;
+  `position = { x, y }` places
   the output in the global logical layout; `primary = true` picks the
   focused output. Scale, position, and primary apply live on reload, and a
   policy removed from the file now reverts to the backend-reported value

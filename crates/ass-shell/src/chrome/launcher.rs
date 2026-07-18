@@ -18,7 +18,7 @@ use crate::{
     BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Message, Reserved, WindowAction,
 };
 use ass_core::app::Entry;
-use ass_core::input::{key_action, KeyAction, KeyChar};
+use ass_core::input::{KeyAction, KeyChar, key_action};
 use ass_core::launcher::{Launch, Launcher as Brain};
 use ass_core::window::Window;
 
@@ -195,10 +195,10 @@ impl Launcher {
                 self.icons.get(&key).copied()
             }
         };
-        if let Some(wm_class) = &entry.startup_wm_class {
-            if let Some(icon) = get(wm_class) {
-                return Some(icon);
-            }
+        if let Some(wm_class) = &entry.startup_wm_class
+            && let Some(icon) = get(wm_class)
+        {
+            return Some(icon);
         }
         if let Some(icon) = get(entry.id.strip_suffix(".desktop").unwrap_or(&entry.id)) {
             return Some(icon);

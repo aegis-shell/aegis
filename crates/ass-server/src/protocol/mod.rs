@@ -1,0 +1,19 @@
+mod common;
+mod compositor;
+mod data_device;
+mod dmabuf;
+mod output;
+mod seat;
+mod subcompositor;
+mod viewport;
+mod xdg_shell;
+
+pub(crate) use common::*;
+pub(crate) use compositor::*;
+pub(crate) use data_device::*;
+pub(crate) use dmabuf::*;
+pub(crate) use output::*;
+pub(crate) use seat::*;
+pub(crate) use subcompositor::*;
+pub(crate) use viewport::*;
+pub(crate) use xdg_shell::*;

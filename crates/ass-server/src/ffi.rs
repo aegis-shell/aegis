@@ -33,8 +33,6 @@ pub use ass_protocols::{
 
 // ----- extension protocol interface tables -----
 pub use ass_protocols::{
-    ext_data_control_device_v1_interface, ext_data_control_manager_v1_interface,
-    ext_data_control_offer_v1_interface, ext_data_control_source_v1_interface,
     ext_foreign_toplevel_handle_v1_interface, ext_foreign_toplevel_list_v1_interface,
     ext_idle_notification_v1_interface, ext_idle_notifier_v1_interface,
     ext_session_lock_manager_v1_interface, ext_session_lock_surface_v1_interface,
@@ -47,9 +45,7 @@ pub use ass_protocols::{
     zwp_keyboard_shortcuts_inhibitor_v1_interface, zwp_locked_pointer_v1_interface,
     zwp_pointer_constraints_v1_interface, zwp_pointer_gesture_hold_v1_interface,
     zwp_pointer_gesture_pinch_v1_interface, zwp_pointer_gesture_swipe_v1_interface,
-    zwp_pointer_gestures_v1_interface, zwp_primary_selection_device_manager_v1_interface,
-    zwp_primary_selection_device_v1_interface, zwp_primary_selection_offer_v1_interface,
-    zwp_primary_selection_source_v1_interface, zwp_relative_pointer_manager_v1_interface,
+    zwp_pointer_gestures_v1_interface, zwp_relative_pointer_manager_v1_interface,
     zwp_relative_pointer_v1_interface, zwp_text_input_manager_v3_interface,
     zwp_text_input_v3_interface, zxdg_decoration_manager_v1_interface,
     zxdg_output_manager_v1_interface, zxdg_output_v1_interface,
@@ -276,26 +272,6 @@ pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_TITLE: u32 = 2;
 pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_APP_ID: u32 = 3;
 pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_IDENTIFIER: u32 = 4;
 
-// ext_data_control_device_v1
-pub const EXT_DATA_CONTROL_DEVICE_V1_DATA_OFFER: u32 = 0;
-pub const EXT_DATA_CONTROL_DEVICE_V1_SELECTION: u32 = 1;
-pub const EXT_DATA_CONTROL_DEVICE_V1_FINISHED: u32 = 2;
-pub const EXT_DATA_CONTROL_DEVICE_V1_PRIMARY_SELECTION: u32 = 3;
-// ext_data_control_offer_v1
-pub const EXT_DATA_CONTROL_OFFER_V1_OFFER: u32 = 0;
-// ext_data_control_source_v1
-pub const EXT_DATA_CONTROL_SOURCE_V1_SEND: u32 = 0;
-pub const EXT_DATA_CONTROL_SOURCE_V1_CANCELLED: u32 = 1;
-
-// zwp_primary_selection_device_v1
-pub const ZWP_PRIMARY_SELECTION_DEVICE_V1_DATA_OFFER: u32 = 0;
-pub const ZWP_PRIMARY_SELECTION_DEVICE_V1_SELECTION: u32 = 1;
-// zwp_primary_selection_offer_v1
-pub const ZWP_PRIMARY_SELECTION_OFFER_V1_OFFER: u32 = 0;
-// zwp_primary_selection_source_v1
-pub const ZWP_PRIMARY_SELECTION_SOURCE_V1_SEND: u32 = 0;
-pub const ZWP_PRIMARY_SELECTION_SOURCE_V1_CANCELLED: u32 = 1;
-
 // wp_presentation_feedback (bitfield flags, but event opcode is 0)
 pub const WP_PRESENTATION_FEEDBACK_PRESENTED: u32 = 0;
 pub const WP_PRESENTATION_FEEDBACK_DISCARDED: u32 = 1;
@@ -346,7 +322,7 @@ pub const ZWP_TABLET_TOOL_V2_WHEEL: u32 = 16;
 pub const ZWP_TABLET_TOOL_V2_BUTTON: u32 = 17;
 pub const ZWP_TABLET_TOOL_V2_FRAME: u32 = 18;
 
-extern "C" {
+unsafe extern "C" {
     // Core interface tables (libwayland-server).
     pub static wl_compositor_interface: wl_interface;
     pub static wl_surface_interface: wl_interface;
@@ -700,7 +676,7 @@ pub struct wp_viewport_interface_impl {
 /// expected number of function-pointer entries. `count` is the number of
 /// opcodes the protocol advertises for the version we bind.
 macro_rules! assert_impl_opcode_count {
-    ($ty:ty, $count:expr) => {
+    ($ty:ty, $count:expr_2021) => {
         const _: () = {
             assert!(std::mem::size_of::<$ty>() == $count * std::mem::size_of::<*const ()>(),);
         };
@@ -1021,38 +997,6 @@ pub struct ext_foreign_toplevel_handle_v1_interface_impl {
     pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
 }
 
-/// `ext_data_control_manager_v1`: create_data_source, get_data_device, destroy.
-#[repr(C)]
-pub struct ext_data_control_manager_v1_interface_impl {
-    pub create_data_source: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
-    pub get_data_device:
-        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
-    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
-}
-
-/// `ext_data_control_device_v1`: set_selection, destroy, set_primary_selection.
-#[repr(C)]
-pub struct ext_data_control_device_v1_interface_impl {
-    pub set_selection: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource),
-    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
-    pub set_primary_selection:
-        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource),
-}
-
-/// `ext_data_control_source_v1`: offer, destroy.
-#[repr(C)]
-pub struct ext_data_control_source_v1_interface_impl {
-    pub offer: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char),
-    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
-}
-
-/// `ext_data_control_offer_v1`: receive, destroy.
-#[repr(C)]
-pub struct ext_data_control_offer_v1_interface_impl {
-    pub receive: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char, i32),
-    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
-}
-
 /// `wp_cursor_shape_manager_v1`: destroy, get_pointer, get_tablet_tool_v2.
 #[repr(C)]
 pub struct wp_cursor_shape_manager_v1_interface_impl {
@@ -1067,37 +1011,6 @@ pub struct wp_cursor_shape_manager_v1_interface_impl {
 pub struct wp_cursor_shape_device_v1_interface_impl {
     pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
     pub set_shape: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, u32),
-}
-
-/// `zwp_primary_selection_device_manager_v1`: create_source, get_device, destroy.
-#[repr(C)]
-pub struct zwp_primary_selection_device_manager_v1_interface_impl {
-    pub create_source: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
-    pub get_data_device:
-        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
-    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
-}
-
-/// `zwp_primary_selection_device_v1`: set_selection, destroy.
-#[repr(C)]
-pub struct zwp_primary_selection_device_v1_interface_impl {
-    pub set_selection:
-        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource, u32),
-    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
-}
-
-/// `zwp_primary_selection_source_v1`: offer, destroy.
-#[repr(C)]
-pub struct zwp_primary_selection_source_v1_interface_impl {
-    pub offer: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char),
-    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
-}
-
-/// `zwp_primary_selection_offer_v1`: receive, destroy.
-#[repr(C)]
-pub struct zwp_primary_selection_offer_v1_interface_impl {
-    pub receive: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char, i32),
-    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
 }
 
 /// `zwp_text_input_manager_v3`: destroy, get_text_input.
@@ -1156,15 +1069,7 @@ assert_impl_opcode_count!(ext_session_lock_v1_interface_impl, 3);
 assert_impl_opcode_count!(ext_session_lock_surface_v1_interface_impl, 2);
 assert_impl_opcode_count!(ext_foreign_toplevel_list_v1_interface_impl, 2);
 assert_impl_opcode_count!(ext_foreign_toplevel_handle_v1_interface_impl, 1);
-assert_impl_opcode_count!(ext_data_control_manager_v1_interface_impl, 3);
-assert_impl_opcode_count!(ext_data_control_device_v1_interface_impl, 3);
-assert_impl_opcode_count!(ext_data_control_source_v1_interface_impl, 2);
-assert_impl_opcode_count!(ext_data_control_offer_v1_interface_impl, 2);
 assert_impl_opcode_count!(wp_cursor_shape_manager_v1_interface_impl, 3);
 assert_impl_opcode_count!(wp_cursor_shape_device_v1_interface_impl, 2);
-assert_impl_opcode_count!(zwp_primary_selection_device_manager_v1_interface_impl, 3);
-assert_impl_opcode_count!(zwp_primary_selection_device_v1_interface_impl, 2);
-assert_impl_opcode_count!(zwp_primary_selection_source_v1_interface_impl, 2);
-assert_impl_opcode_count!(zwp_primary_selection_offer_v1_interface_impl, 2);
 assert_impl_opcode_count!(zwp_text_input_manager_v3_interface_impl, 2);
 assert_impl_opcode_count!(zwp_text_input_v3_interface_impl, 8);

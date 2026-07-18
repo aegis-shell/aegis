@@ -28,7 +28,7 @@ use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Message};
 use ass_core::app::Entry;
-use ass_core::input::{key_action, KeyAction, KeyChar};
+use ass_core::input::{KeyAction, KeyChar, key_action};
 use ass_core::window::Window;
 
 use super::app_menu::{AppMenu, PinAction};
@@ -706,16 +706,18 @@ impl Chrome for Dock {
         // Fire a click once on the press edge (the host does not clear the
         // per-frame pressed flag, so track the button-down level transition).
         let down = input.as_raw().mouse_down.first().copied().unwrap_or(false);
-        if down && !self.prev_down && !menu_was_open {
-            if let Some(i) = hit {
-                let t = &tiles[i];
-                if t.launchpad {
-                    out.toggle_launcher = true;
-                } else if let Some(id) = t.focus {
-                    out.clicked = Some(id);
-                } else if let Some(ai) = t.spawn {
-                    out.activate_entry(self.apps[ai].entry.clone());
-                }
+        if down
+            && !self.prev_down
+            && !menu_was_open
+            && let Some(i) = hit
+        {
+            let t = &tiles[i];
+            if t.launchpad {
+                out.toggle_launcher = true;
+            } else if let Some(id) = t.focus {
+                out.clicked = Some(id);
+            } else if let Some(ai) = t.spawn {
+                out.activate_entry(self.apps[ai].entry.clone());
             }
         }
         let right_pressed = input
@@ -724,38 +726,36 @@ impl Chrome for Dock {
             .get(1)
             .copied()
             .unwrap_or(false);
-        if right_pressed {
-            if let Some(i) = hit {
-                let tile = &tiles[i];
-                if !tile.launchpad {
-                    let pin_action = if let Some(ai) = tile.app {
-                        // A pinned tile always offers removal from the strip.
-                        Some(PinAction::Unpin(self.apps[ai].entry.id.clone()))
-                    } else {
-                        // A transient running window offers "Keep in Dock"
-                        // only when its app_id resolves to an enumerated
-                        // desktop entry.
-                        let window_app_id = tile
-                            .windows
-                            .first()
-                            .and_then(|id| windows.iter().find(|w| w.id == *id))
-                            .and_then(|w| w.app_id.as_deref());
-                        window_app_id.and_then(|app_id| {
-                            self.all_apps
-                                .iter()
-                                .find(|entry| entry_matches_app_id(entry, app_id))
-                                .map(|entry| PinAction::Pin(entry.id.clone()))
-                        })
-                    };
-                    self.app_menu.open(
-                        tile.label.clone(),
-                        tile.app.map(|app| self.apps[app].entry.clone()),
-                        tile.windows.iter().copied(),
-                        icon_rects[i],
-                        pin_action,
-                    );
-                    self.menu_tile = Some(tile.key.clone());
-                }
+        if right_pressed && let Some(i) = hit {
+            let tile = &tiles[i];
+            if !tile.launchpad {
+                let pin_action = if let Some(ai) = tile.app {
+                    // A pinned tile always offers removal from the strip.
+                    Some(PinAction::Unpin(self.apps[ai].entry.id.clone()))
+                } else {
+                    // A transient running window offers "Keep in Dock"
+                    // only when its app_id resolves to an enumerated
+                    // desktop entry.
+                    let window_app_id = tile
+                        .windows
+                        .first()
+                        .and_then(|id| windows.iter().find(|w| w.id == *id))
+                        .and_then(|w| w.app_id.as_deref());
+                    window_app_id.and_then(|app_id| {
+                        self.all_apps
+                            .iter()
+                            .find(|entry| entry_matches_app_id(entry, app_id))
+                            .map(|entry| PinAction::Pin(entry.id.clone()))
+                    })
+                };
+                self.app_menu.open(
+                    tile.label.clone(),
+                    tile.app.map(|app| self.apps[app].entry.clone()),
+                    tile.windows.iter().copied(),
+                    icon_rects[i],
+                    pin_action,
+                );
+                self.menu_tile = Some(tile.key.clone());
             }
         }
 

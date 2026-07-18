@@ -8,7 +8,7 @@ use ass_core::app::{ApplicationTarget, Entry};
 use ini::Ini;
 
 use crate::icon::resolve_icon_scaled;
-use crate::locale::{current_locale, Locale};
+use crate::locale::{Locale, current_locale};
 use crate::xdg::icon_search_bases;
 use crate::{AppsError, DEFAULT_ICON_SIZE, DEFAULT_ICON_THEME};
 
@@ -168,10 +168,10 @@ fn parse_text(
         return Ok(None);
     }
     let try_exec = section.get("TryExec").map(str::to_string);
-    if let Some(prog) = &try_exec {
-        if !try_exec_resolves(prog) {
-            return Ok(None);
-        }
+    if let Some(prog) = &try_exec
+        && !try_exec_resolves(prog)
+    {
+        return Ok(None);
     }
 
     let Some(name) =
@@ -325,7 +325,7 @@ fn is_executable_file(path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::fs;
-    use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::os::unix::fs::{PermissionsExt, symlink};
 
     fn parse_with(
         text: &str,
@@ -460,12 +460,16 @@ Exec=alacritty msg new-window
         let not = "[Desktop Entry]\nType=Application\nName=Not\nExec=not\nNotShowIn=niri;\n";
         let desktops = ["niri".to_string(), "GNOME".to_string()];
 
-        assert!(parse_with(only, "only.desktop", &locale, &desktops)
-            .unwrap()
-            .is_some());
-        assert!(parse_with(not, "not.desktop", &locale, &desktops)
-            .unwrap()
-            .is_none());
+        assert!(
+            parse_with(only, "only.desktop", &locale, &desktops)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            parse_with(not, "not.desktop", &locale, &desktops)
+                .unwrap()
+                .is_none()
+        );
         assert!(
             parse_with(only, "only.desktop", &locale, &["niri".to_string()])
                 .unwrap()

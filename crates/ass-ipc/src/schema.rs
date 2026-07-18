@@ -6,6 +6,7 @@
 //! variants add without renaming existing fields. See
 //! [ADR-0027](../../docs/adr/0027-ipc-and-introspection.md).
 
+use ass_core::Rect;
 use ass_core::input::SyntheticInputAction;
 use ass_core::notify::Notification;
 use ass_core::output::OutputInfo;
@@ -15,7 +16,6 @@ use ass_core::realm::{
 };
 use ass_core::window::{Window, WindowId};
 use ass_core::workspace::{OutputId, Switch, WorkspaceId, WorkspaceSnapshot};
-use ass_core::Rect;
 
 use crate::journal::{JournalEntry, JournalSnapshot};
 
@@ -243,10 +243,10 @@ impl Scope {
             {
                 return false;
             }
-        } else if let Some(ops) = &self.ops {
-            if !ops.contains(&cmd.op_class()) {
-                return false;
-            }
+        } else if let Some(ops) = &self.ops
+            && !ops.contains(&cmd.op_class())
+        {
+            return false;
         }
         match cmd {
             Command::Focus { id }
@@ -843,12 +843,14 @@ mod tests {
         assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
         assert!(cmd.required_cap().control);
         assert!(cmd.validate().is_ok());
-        assert!(Command::SetWindowGeometry {
-            id: WindowId(9),
-            rect: Rect::new(0, 0, 0, 600),
-        }
-        .validate()
-        .is_err());
+        assert!(
+            Command::SetWindowGeometry {
+                id: WindowId(9),
+                rect: Rect::new(0, 0, 0, 600),
+            }
+            .validate()
+            .is_err()
+        );
 
         let scope = Scope {
             windows: Some(vec![WindowId(9)]),
@@ -884,12 +886,14 @@ mod tests {
             id: WindowId(10),
             actions: vec![SyntheticInputAction::KeyPress { code: 30 }],
         }));
-        assert!(Command::InjectInput {
-            id: WindowId(9),
-            actions: vec![],
-        }
-        .validate()
-        .is_err());
+        assert!(
+            Command::InjectInput {
+                id: WindowId(9),
+                actions: vec![],
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]

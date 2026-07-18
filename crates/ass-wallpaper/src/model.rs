@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn procedural_model_renders_when_vulkan_is_available() {
-        let Ok(device) = flux::Device::new(true, &[], &[]) else {
+        let Ok(device) = flux::Device::new(true, &[], &[], 0) else {
             return;
         };
         let surface = flux::Surface::offscreen(&device, 160, 96).unwrap();
@@ -353,14 +353,16 @@ mod tests {
 
         let mut pixels = vec![0u8; 160 * 96 * 4];
         surface.read_pixels(&mut pixels).unwrap();
-        assert!(pixels
-            .chunks_exact(4)
-            .any(|pixel| { pixel[0] > 30 || pixel[1] > 30 || pixel[2] > 30 }));
+        assert!(
+            pixels
+                .chunks_exact(4)
+                .any(|pixel| { pixel[0] > 30 || pixel[1] > 30 || pixel[2] > 30 })
+        );
     }
 
     #[test]
     fn procedural_model_participates_in_downsampled_live_blur() {
-        let Ok(device) = flux::Device::new(true, &[], &[]) else {
+        let Ok(device) = flux::Device::new(true, &[], &[], 0) else {
             return;
         };
         let surface = flux::Surface::offscreen(&device, 160, 96).unwrap();
@@ -385,14 +387,16 @@ mod tests {
 
         let mut pixels = vec![0u8; 160 * 96 * 4];
         surface.read_pixels(&mut pixels).unwrap();
-        assert!(pixels
-            .chunks_exact(4)
-            .any(|pixel| pixel[0] > 20 || pixel[1] > 20 || pixel[2] > 20));
+        assert!(
+            pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel[0] > 20 || pixel[1] > 20 || pixel[2] > 20)
+        );
     }
 
     #[test]
     fn procedural_model_keeps_two_same_frame_depth_targets_alive() {
-        let Ok(device) = flux::Device::new(true, &[], &[]) else {
+        let Ok(device) = flux::Device::new(true, &[], &[], 0) else {
             return;
         };
         let surface = flux::Surface::offscreen(&device, 160, 96).unwrap();
@@ -418,8 +422,10 @@ mod tests {
         assert_eq!(model.depth_by_slot[0].len(), 2);
         let mut pixels = vec![0u8; 160 * 96 * 4];
         surface.read_pixels(&mut pixels).unwrap();
-        assert!(pixels
-            .chunks_exact(4)
-            .any(|pixel| pixel[0] > 20 || pixel[1] > 20 || pixel[2] > 20));
+        assert!(
+            pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel[0] > 20 || pixel[1] > 20 || pixel[2] > 20)
+        );
     }
 }

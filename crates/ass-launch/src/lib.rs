@@ -76,6 +76,11 @@ pub struct LaunchOpts {
     /// When true, run the command foreground and reap it. Tests use this;
     /// production launches leave it `false` (detached, stdio → null).
     pub foreground: bool,
+    /// Explicit Wayland socket name for ordinary launches. Compositors should
+    /// set this instead of mutating the process environment after worker
+    /// threads have started. When absent, the current `WAYLAND_DISPLAY` is
+    /// inherited for compatibility with standalone callers.
+    pub wayland_display: Option<String>,
     /// Optional fail-closed Linux namespace sandbox. Realm launches should
     /// always set this; ordinary user launches retain the compatibility
     /// default of no process sandbox.
@@ -474,7 +479,7 @@ pub fn launch(source: &dyn LaunchSource, opts: &LaunchOpts) -> Result<LaunchRepo
     cmd.stdin(Stdio::null());
 
     // Inject the environment a Wayland/XDG client needs to connect back.
-    inherit_display_env(&mut cmd);
+    inherit_display_env(&mut cmd, opts.wayland_display.as_deref());
 
     if let Some(dir) = source.working_dir() {
         cmd.current_dir(dir);
@@ -903,13 +908,16 @@ fn validate_sandbox_grant(path: &Path, writable: bool) -> Result<PathBuf, Launch
 /// Resolve the terminal emulator command string: explicit override >
 /// `$TERMINAL` > `xterm`.
 fn terminal_emulator(opts: &LaunchOpts) -> String {
+    let env_terminal = std::env::var("TERMINAL").ok();
+    terminal_emulator_with_env(opts, env_terminal.as_deref())
+}
+
+fn terminal_emulator_with_env(opts: &LaunchOpts, env_terminal: Option<&str>) -> String {
     if let Some(t) = opts.terminal.as_deref().filter(|s| !s.is_empty()) {
         return t.to_string();
     }
-    if let Ok(t) = std::env::var("TERMINAL") {
-        if !t.is_empty() {
-            return t;
-        }
+    if let Some(t) = env_terminal.filter(|t| !t.is_empty()) {
+        return t.to_string();
     }
     "xterm".to_string()
 }
@@ -917,10 +925,9 @@ fn terminal_emulator(opts: &LaunchOpts) -> String {
 /// Copy the display/session environment a launched client needs. We forward
 /// only what a Wayland/XDG app requires, rather than the whole parent env, so
 /// the child is hermetic and testable.
-fn inherit_display_env(cmd: &mut Command) {
+fn inherit_display_env(cmd: &mut Command, wayland_display: Option<&str>) {
     cmd.env_clear();
     for var in [
-        "WAYLAND_DISPLAY",
         "XDG_RUNTIME_DIR",
         "XDG_SESSION_TYPE",
         "XDG_DATA_DIRS",
@@ -935,6 +942,11 @@ fn inherit_display_env(cmd: &mut Command) {
         if let Ok(val) = std::env::var(var) {
             cmd.env(var, val);
         }
+    }
+    if let Some(display) = wayland_display {
+        cmd.env("WAYLAND_DISPLAY", display);
+    } else if let Ok(display) = std::env::var("WAYLAND_DISPLAY") {
+        cmd.env("WAYLAND_DISPLAY", display);
     }
 }
 
@@ -1100,13 +1112,22 @@ mod tests {
 
     #[test]
     fn terminal_emulator_precedence() {
-        std::env::remove_var("TERMINAL");
-        assert_eq!(terminal_emulator(&LaunchOpts::default()), "xterm");
         assert_eq!(
-            terminal_emulator(&LaunchOpts {
-                terminal: Some("foot --".into()),
-                ..Default::default()
-            }),
+            terminal_emulator_with_env(&LaunchOpts::default(), None),
+            "xterm"
+        );
+        assert_eq!(
+            terminal_emulator_with_env(&LaunchOpts::default(), Some("foot")),
+            "foot"
+        );
+        assert_eq!(
+            terminal_emulator_with_env(
+                &LaunchOpts {
+                    terminal: Some("foot --".into()),
+                    ..Default::default()
+                },
+                Some("ignored"),
+            ),
             "foot --"
         );
     }

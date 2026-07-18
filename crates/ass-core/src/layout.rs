@@ -181,7 +181,7 @@ mod tests {
         assert_eq!(out.len(), 3);
         assert_eq!(out[0], area(10, 10, 485, 780)); // master
         assert_eq!(out[1], area(485 + 10 + 10, 10, 485, 385)); // first stack row
-                                                               // Second row starts at y = 10 + 385 + 10 = 405.
+        // Second row starts at y = 10 + 385 + 10 = 405.
         assert_eq!(out[2], area(505, 405, 485, 385));
     }
 

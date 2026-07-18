@@ -51,7 +51,7 @@ impl wl_array {
     }
 }
 
-extern "C" {
+unsafe extern "C" {
     pub static xdg_wm_base_interface: wl_interface;
     pub static xdg_positioner_interface: wl_interface;
     pub static xdg_surface_interface: wl_interface;
@@ -112,12 +112,6 @@ extern "C" {
     pub static zwp_confined_pointer_v1_interface: wl_interface;
     pub static zwp_locked_pointer_v1_interface: wl_interface;
 
-    // primary-selection-unstable-v1
-    pub static zwp_primary_selection_device_manager_v1_interface: wl_interface;
-    pub static zwp_primary_selection_device_v1_interface: wl_interface;
-    pub static zwp_primary_selection_offer_v1_interface: wl_interface;
-    pub static zwp_primary_selection_source_v1_interface: wl_interface;
-
     // text-input-unstable-v3
     pub static zwp_text_input_manager_v3_interface: wl_interface;
     pub static zwp_text_input_v3_interface: wl_interface;
@@ -138,12 +132,6 @@ extern "C" {
     // ext-foreign-toplevel-list-v1
     pub static ext_foreign_toplevel_list_v1_interface: wl_interface;
     pub static ext_foreign_toplevel_handle_v1_interface: wl_interface;
-
-    // ext-data-control-v1
-    pub static ext_data_control_manager_v1_interface: wl_interface;
-    pub static ext_data_control_device_v1_interface: wl_interface;
-    pub static ext_data_control_offer_v1_interface: wl_interface;
-    pub static ext_data_control_source_v1_interface: wl_interface;
 
     // cursor-shape-v1
     pub static wp_cursor_shape_manager_v1_interface: wl_interface;

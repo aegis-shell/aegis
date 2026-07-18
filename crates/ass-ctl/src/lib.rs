@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use ass_core::realm::{
-    RealmId, RealmMutation, RealmSnapshot, RealmState, SeatCapabilities, VirtualOutput, HUMAN_REALM,
+    HUMAN_REALM, RealmId, RealmMutation, RealmSnapshot, RealmState, SeatCapabilities, VirtualOutput,
 };
 use ass_core::workspace::Switch;
 use ass_ipc::{Capabilities, Client, Command, Event, RealmAction, RealmActionResult};
@@ -872,11 +872,12 @@ mod tests {
         ));
         let path = std::path::PathBuf::from(screenshot_path(&dir).unwrap());
         assert_eq!(path.parent(), Some(dir.as_path()));
-        assert!(path
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .ends_with(".png"));
+        assert!(
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with(".png")
+        );
         assert!(dir.is_dir());
         std::fs::remove_dir_all(dir).unwrap();
     }

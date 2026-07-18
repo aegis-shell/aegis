@@ -7,12 +7,14 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 
+use ass_core::Point;
 use ass_core::app::{BuiltInApplication, Entry};
-use ass_core::input::{key_action, KeyAction, KeyChar, TouchpadScrollMethod};
+use ass_core::input::{KeyAction, KeyChar, TouchpadScrollMethod, key_action};
+use ass_core::output::{ModeSpec, OutputInfo, OutputMode};
 use ass_core::realm::{RealmId, RealmKind, RealmSnapshot, RealmState};
 use ass_core::window::Window;
 use ass_core::workspace::WorkspaceSnapshot;
-use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
+use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, TextBuf, Theme};
 
 use crate::{
     BackdropRegion, Chrome, ChromeEvents, CursorShape, DockApp, Localizer, Message, RealmIntent,
@@ -24,6 +26,11 @@ const APP_MAX_H: f32 = 590.0;
 const APP_MARGIN: f32 = 24.0;
 const APP_RADIUS: f32 = 24.0;
 const BACKDROP_BLUR_SIGMA: f32 = 18.0;
+const DISPLAY_LAYOUT_RIGHT: i32 = 0;
+const DISPLAY_LAYOUT_LEFT: i32 = 1;
+const DISPLAY_LAYOUT_ABOVE: i32 = 2;
+const DISPLAY_LAYOUT_BELOW: i32 = 3;
+const DISPLAY_LAYOUT_CUSTOM: i32 = 4;
 
 /// A trusted built-in application with a stable launcher identity.
 pub struct ControlCenter {
@@ -33,6 +40,15 @@ pub struct ControlCenter {
     modal_reserved: Reserved,
     volume: f32,
     brightness: f32,
+    display_output: i32,
+    display_mode: i32,
+    display_scale: f32,
+    display_primary: bool,
+    display_layout: i32,
+    display_x: TextBuf,
+    display_y: TextBuf,
+    display_editor_connector: Option<String>,
+    display_dirty: bool,
     page: i32,
     realms: RealmSnapshot,
     pending_revoke: Option<RealmId>,
@@ -51,6 +67,15 @@ impl ControlCenter {
             modal_reserved: Reserved::default(),
             volume: 0.0,
             brightness: 0.0,
+            display_output: 0,
+            display_mode: 0,
+            display_scale: 1.0,
+            display_primary: true,
+            display_layout: DISPLAY_LAYOUT_RIGHT,
+            display_x: TextBuf::new(16, "0"),
+            display_y: TextBuf::new(16, "0"),
+            display_editor_connector: None,
+            display_dirty: false,
             page: 0,
             realms: ass_core::realm::RealmModel::new().snapshot(),
             pending_revoke: None,
@@ -237,6 +262,289 @@ impl ControlCenter {
             } else {
                 unavailable_row(frame, i18n.text(Message::Brightness), i18n);
             }
+        });
+    }
+
+    fn sync_display_editor(&mut self, connector: Option<&str>) {
+        let outputs = &self.status.display.outputs;
+        if outputs.is_empty() {
+            self.display_output = 0;
+            self.display_mode = 0;
+            self.display_editor_connector = None;
+            self.display_dirty = false;
+            return;
+        }
+        let preferred = connector
+            .or(self.display_editor_connector.as_deref())
+            .and_then(|connector| {
+                outputs
+                    .iter()
+                    .position(|output| output.connector == connector)
+            })
+            .unwrap_or(0);
+        let output = outputs[preferred].clone();
+        self.display_output = preferred as i32;
+        self.display_editor_connector = Some(output.connector.clone());
+        self.display_mode = output
+            .available_modes
+            .iter()
+            .position(|mode| *mode == output.geometry.mode)
+            .unwrap_or(0) as i32;
+        self.display_scale = output.geometry.scale.as_f32().clamp(0.25, 4.0);
+        self.display_primary = preferred == 0;
+        self.display_x
+            .set(&output.geometry.logical_origin.x.to_string());
+        self.display_y
+            .set(&output.geometry.logical_origin.y.to_string());
+        self.display_layout = outputs
+            .first()
+            .map(|primary| infer_display_layout(&output, primary))
+            .unwrap_or(DISPLAY_LAYOUT_CUSTOM);
+        self.display_dirty = false;
+    }
+
+    fn display_position(&self, output: &OutputInfo, mode: OutputMode) -> Option<Point> {
+        let custom = || {
+            Some(Point {
+                x: self.display_x.as_str().trim().parse().ok()?,
+                y: self.display_y.as_str().trim().parse().ok()?,
+            })
+        };
+        if self.display_layout == DISPLAY_LAYOUT_CUSTOM {
+            return custom();
+        }
+        let primary = self.status.display.outputs.first()?;
+        if primary.connector == output.connector {
+            return custom();
+        }
+        let primary_rect = primary.geometry.logical_rect();
+        let scale = self.display_scale.clamp(0.25, 4.0);
+        let selected_w = ((mode.width as f32) / scale).round().max(1.0) as i32;
+        let selected_h = ((mode.height as f32) / scale).round().max(1.0) as i32;
+        Some(match self.display_layout {
+            DISPLAY_LAYOUT_LEFT => Point {
+                x: primary_rect.origin.x - selected_w,
+                y: primary_rect.origin.y,
+            },
+            DISPLAY_LAYOUT_ABOVE => Point {
+                x: primary_rect.origin.x,
+                y: primary_rect.origin.y - selected_h,
+            },
+            DISPLAY_LAYOUT_BELOW => Point {
+                x: primary_rect.origin.x,
+                y: primary_rect.origin.y + primary_rect.size.h,
+            },
+            _ => Point {
+                x: primary_rect.origin.x + primary_rect.size.w,
+                y: primary_rect.origin.y,
+            },
+        })
+    }
+
+    fn render_display(&mut self, frame: &mut Frame, i18n: &Localizer, out: &mut ChromeEvents) {
+        let outputs = self.status.display.outputs.clone();
+        frame.column_ex(&settings_card_layout(), |frame| {
+            frame.row_ex(&section_heading_layout(), |frame| {
+                frame.icon(Icon::Square, 17.0);
+                frame.heading(i18n.text(Message::Display), 3);
+            });
+            frame.label_wrapped_sized(i18n.text(Message::DisplayDescription), 12.0, 560.0);
+
+            if outputs.is_empty() {
+                unavailable_row(frame, i18n.text(Message::NoDisplays), i18n);
+                return;
+            }
+            let output_labels = outputs
+                .iter()
+                .map(|output| {
+                    format!(
+                        "{} · {} × {}",
+                        output.connector, output.geometry.mode.width, output.geometry.mode.height
+                    )
+                })
+                .collect::<Vec<_>>();
+            let output_items = output_labels.iter().map(String::as_str).collect::<Vec<_>>();
+            let before_output = self.display_output;
+            frame.label_sized(i18n.text(Message::Displays), 12.0);
+            frame.dropdown(
+                "##control-center-display-output",
+                &mut self.display_output,
+                &output_items,
+            );
+            self.display_output = self
+                .display_output
+                .clamp(0, outputs.len().saturating_sub(1) as i32);
+            if self.display_output != before_output
+                || self.display_editor_connector.as_deref()
+                    != Some(outputs[self.display_output as usize].connector.as_str())
+            {
+                let connector = outputs[self.display_output as usize].connector.clone();
+                self.sync_display_editor(Some(&connector));
+            }
+            let output = outputs[self.display_output as usize].clone();
+
+            if !self.status.display.configurable {
+                frame.label_wrapped_sized(i18n.text(Message::DisplayHostManaged), 11.0, 560.0);
+                display_summary(frame, &output);
+                return;
+            }
+
+            let modes = if output.available_modes.is_empty() {
+                vec![output.geometry.mode]
+            } else {
+                output.available_modes.clone()
+            };
+            let mode_labels = modes.iter().map(format_output_mode).collect::<Vec<_>>();
+            let mode_items = mode_labels.iter().map(String::as_str).collect::<Vec<_>>();
+            self.display_mode = self
+                .display_mode
+                .clamp(0, modes.len().saturating_sub(1) as i32);
+            frame.label_sized(i18n.text(Message::ResolutionAndRefresh), 12.0);
+            if frame.dropdown(
+                "##control-center-display-mode",
+                &mut self.display_mode,
+                &mode_items,
+            ) {
+                self.display_dirty = true;
+            }
+
+            frame.row_ex(&section_heading_layout(), |frame| {
+                frame.label_sized(i18n.text(Message::Scale), 12.0);
+                frame.flex(1.0);
+                frame.spacer(0.0);
+                frame.label_sized(&format!("{:.0}%", self.display_scale * 100.0), 12.0);
+            });
+            if frame.slider(
+                "##control-center-display-scale",
+                &mut self.display_scale,
+                0.25,
+                4.0,
+            ) {
+                self.display_scale = (self.display_scale * 4.0).round() / 4.0;
+                self.display_dirty = true;
+            }
+
+            if self.display_primary {
+                frame.label_sized(i18n.text(Message::PrimaryDisplay), 12.0);
+            } else {
+                frame.size_next(160.0, 30.0);
+                if frame.button(i18n.text(Message::MakePrimary)) {
+                    self.display_primary = true;
+                    self.display_dirty = true;
+                }
+            }
+
+            let arrangement_labels = [
+                i18n.text(Message::RightOfPrimary),
+                i18n.text(Message::LeftOfPrimary),
+                i18n.text(Message::AbovePrimary),
+                i18n.text(Message::BelowPrimary),
+                i18n.text(Message::CustomPosition),
+            ];
+            frame.label_sized(i18n.text(Message::Arrangement), 12.0);
+            let current_primary = outputs
+                .first()
+                .is_some_and(|primary| primary.connector == output.connector);
+            if current_primary {
+                self.display_layout = DISPLAY_LAYOUT_CUSTOM;
+                frame.label_sized(i18n.text(Message::CustomPosition), 11.0);
+            } else if frame.dropdown(
+                "##control-center-display-arrangement",
+                &mut self.display_layout,
+                &arrangement_labels,
+            ) {
+                self.display_dirty = true;
+            }
+            if self.display_layout == DISPLAY_LAYOUT_CUSTOM {
+                frame.row_ex(
+                    &LayoutOpts {
+                        gap: 10.0,
+                        cross: Align::Center,
+                        ..Default::default()
+                    },
+                    |frame| {
+                        frame.flex(1.0);
+                        frame.column_ex(
+                            &LayoutOpts {
+                                gap: 4.0,
+                                cross: Align::Stretch,
+                                ..Default::default()
+                            },
+                            |frame| {
+                                frame.label_sized(i18n.text(Message::HorizontalPosition), 11.0);
+                                if frame.textfield(
+                                    "##control-center-display-position-x",
+                                    &mut self.display_x,
+                                ) {
+                                    self.display_dirty = true;
+                                }
+                            },
+                        );
+                        frame.flex(1.0);
+                        frame.column_ex(
+                            &LayoutOpts {
+                                gap: 4.0,
+                                cross: Align::Stretch,
+                                ..Default::default()
+                            },
+                            |frame| {
+                                frame.label_sized(i18n.text(Message::VerticalPosition), 11.0);
+                                if frame.textfield(
+                                    "##control-center-display-position-y",
+                                    &mut self.display_y,
+                                ) {
+                                    self.display_dirty = true;
+                                }
+                            },
+                        );
+                    },
+                );
+            }
+
+            let mode = modes[self.display_mode as usize];
+            let position = self.display_position(&output, mode);
+            if position.is_none() {
+                frame.label_wrapped_sized(i18n.text(Message::InvalidPosition), 11.0, 560.0);
+            }
+            if let Some(error) = self.status.display.error.as_deref() {
+                frame.label_wrapped_sized(error, 11.0, 560.0);
+            }
+            frame.label_wrapped_sized(i18n.text(Message::DisplayApplyHint), 11.0, 560.0);
+            frame.row_ex(
+                &LayoutOpts {
+                    height: 32.0,
+                    gap: 8.0,
+                    cross: Align::Center,
+                    ..Default::default()
+                },
+                |frame| {
+                    frame.size_next(190.0, 30.0);
+                    let apply = frame.button(i18n.text(Message::ApplyDisplaySettings));
+                    if apply
+                        && self.display_dirty
+                        && let Some(position) = position
+                    {
+                        out.system_actions
+                            .push(SystemAction::SetDisplay(crate::DisplaySettings {
+                                connector: output.connector.clone(),
+                                mode: ModeSpec {
+                                    width: mode.width,
+                                    height: mode.height,
+                                    refresh_hz: Some(mode.refresh_mhz.saturating_add(500) / 1_000),
+                                },
+                                scale: f64::from(self.display_scale.clamp(0.25, 4.0)),
+                                position,
+                                primary: self.display_primary,
+                            }));
+                        self.display_dirty = false;
+                    }
+                    frame.size_next(92.0, 30.0);
+                    if frame.button(i18n.text(Message::ResetDisplaySettings)) {
+                        let connector = output.connector.clone();
+                        self.sync_display_editor(Some(&connector));
+                    }
+                },
+            );
         });
     }
 
@@ -535,7 +843,7 @@ impl ControlCenter {
             ],
             [
                 (2, i18n.text(Message::Connectivity)),
-                (3, i18n.text(Message::Sound)),
+                (3, i18n.text(Message::SoundAndDisplay)),
             ],
             [
                 (4, i18n.text(Message::AiWorkspaces)),
@@ -571,6 +879,7 @@ impl ControlCenter {
                 frame.heading(i18n.text(Message::SoundAndDisplay), 2);
                 self.render_sound(frame, i18n, out);
                 self.render_brightness(frame, i18n, out);
+                self.render_display(frame, i18n, out);
             }
             4 => self.render_realms(frame, i18n, out),
             _ => {
@@ -728,9 +1037,20 @@ impl Chrome for ControlCenter {
     }
 
     fn update_system_status(&mut self, status: &SystemStatus) {
+        let selected = self.display_editor_connector.clone();
+        let selected_still_present = selected.as_deref().is_some_and(|connector| {
+            status
+                .display
+                .outputs
+                .iter()
+                .any(|output| output.connector == connector)
+        });
         self.status = status.clone();
         self.volume = status.volume.unwrap_or(0) as f32;
         self.brightness = status.brightness.unwrap_or(0) as f32;
+        if !self.display_dirty || !selected_still_present {
+            self.sync_display_editor(selected.as_deref());
+        }
     }
 
     fn update_realms(&mut self, snapshot: &RealmSnapshot) {
@@ -790,11 +1110,7 @@ impl Chrome for ControlCenter {
     }
 
     fn backdrop_blur_sigma(&self) -> f32 {
-        if self.open {
-            BACKDROP_BLUR_SIGMA
-        } else {
-            0.0
-        }
+        if self.open { BACKDROP_BLUR_SIGMA } else { 0.0 }
     }
 
     fn backdrop_regions(
@@ -865,6 +1181,55 @@ fn unavailable_row(frame: &mut Frame, label: &str, i18n: &Localizer) {
             frame.spacer(0.0);
             frame.label_sized(i18n.text(Message::Unavailable), 11.0);
         },
+    );
+}
+
+fn infer_display_layout(output: &OutputInfo, primary: &OutputInfo) -> i32 {
+    if output.connector == primary.connector {
+        return DISPLAY_LAYOUT_CUSTOM;
+    }
+    let output_rect = output.geometry.logical_rect();
+    let primary_rect = primary.geometry.logical_rect();
+    if output_rect.origin.x == primary_rect.origin.x + primary_rect.size.w
+        && output_rect.origin.y == primary_rect.origin.y
+    {
+        DISPLAY_LAYOUT_RIGHT
+    } else if output_rect.origin.x + output_rect.size.w == primary_rect.origin.x
+        && output_rect.origin.y == primary_rect.origin.y
+    {
+        DISPLAY_LAYOUT_LEFT
+    } else if output_rect.origin.y + output_rect.size.h == primary_rect.origin.y
+        && output_rect.origin.x == primary_rect.origin.x
+    {
+        DISPLAY_LAYOUT_ABOVE
+    } else if output_rect.origin.y == primary_rect.origin.y + primary_rect.size.h
+        && output_rect.origin.x == primary_rect.origin.x
+    {
+        DISPLAY_LAYOUT_BELOW
+    } else {
+        DISPLAY_LAYOUT_CUSTOM
+    }
+}
+
+fn format_output_mode(mode: &OutputMode) -> String {
+    let refresh = if mode.refresh_mhz.is_multiple_of(1_000) {
+        format!("{} Hz", mode.refresh_mhz / 1_000)
+    } else {
+        format!("{:.2} Hz", mode.refresh_mhz as f64 / 1_000.0)
+    };
+    format!("{} × {} · {refresh}", mode.width, mode.height)
+}
+
+fn display_summary(frame: &mut Frame, output: &OutputInfo) {
+    frame.label_sized(&format_output_mode(&output.geometry.mode), 12.0);
+    frame.label_sized(
+        &format!(
+            "{:.0}% · ({}, {})",
+            output.geometry.scale.as_f32() * 100.0,
+            output.geometry.logical_origin.x,
+            output.geometry.logical_origin.y
+        ),
+        11.0,
     );
 }
 
@@ -957,6 +1322,24 @@ fn contains(rect: Rect, x: f32, y: f32) -> bool {
 mod tests {
     use super::*;
 
+    fn output(connector: &str, x: i32, y: i32, width: i32, height: i32) -> OutputInfo {
+        let mode = OutputMode {
+            width,
+            height,
+            refresh_mhz: 60_000,
+        };
+        OutputInfo {
+            connector: connector.into(),
+            geometry: ass_core::output::OutputGeometry {
+                mode,
+                scale: ass_core::output::Scale::IDENTITY,
+                transform: ass_core::Transform::Normal,
+                logical_origin: Point { x, y },
+            },
+            available_modes: vec![mode],
+        }
+    }
+
     #[test]
     fn app_window_stays_inside_small_outputs() {
         let center = ControlCenter::new();
@@ -976,5 +1359,49 @@ mod tests {
         });
         assert_eq!(center.volume, 63.0);
         assert_eq!(center.brightness, 41.0);
+    }
+
+    #[test]
+    fn display_editor_tracks_connector_mode_and_extended_layout() {
+        let mut center = ControlCenter::new();
+        center.update_system_status(&SystemStatus {
+            display: crate::DisplayStatus {
+                configurable: true,
+                outputs: vec![
+                    output("eDP-1", 0, 0, 1920, 1080),
+                    output("DP-1", 1920, 0, 2560, 1440),
+                ],
+                error: None,
+            },
+            ..SystemStatus::default()
+        });
+        center.sync_display_editor(Some("DP-1"));
+        assert_eq!(center.display_output, 1);
+        assert_eq!(center.display_mode, 0);
+        assert_eq!(center.display_layout, DISPLAY_LAYOUT_RIGHT);
+        assert!(!center.display_primary);
+        assert_eq!(center.display_x.as_str(), "1920");
+        assert_eq!(center.display_y.as_str(), "0");
+    }
+
+    #[test]
+    fn relative_layout_uses_edited_mode_and_scale() {
+        let mut center = ControlCenter::new();
+        let primary = output("eDP-1", 0, 0, 1920, 1080);
+        let secondary = output("DP-1", 1920, 0, 2560, 1440);
+        center.status.display.outputs = vec![primary, secondary.clone()];
+        center.display_layout = DISPLAY_LAYOUT_LEFT;
+        center.display_scale = 2.0;
+        assert_eq!(
+            center.display_position(
+                &secondary,
+                OutputMode {
+                    width: 2560,
+                    height: 1440,
+                    refresh_mhz: 144_000,
+                },
+            ),
+            Some(Point { x: -1280, y: 0 })
+        );
     }
 }

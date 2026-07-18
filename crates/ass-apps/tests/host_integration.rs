@@ -2,7 +2,7 @@
 //!
 //! Skips automatically when that directory is absent (CI sandboxes).
 
-use ass_apps::{xdg_data_dirs, Entry};
+use ass_apps::{Entry, xdg_data_dirs};
 use std::collections::HashSet;
 use std::path::PathBuf;
 

@@ -8,11 +8,11 @@
 //! Both implement [`Backend`], so the server, renderer, and shell are written
 //! once against the abstraction.
 
+use ass_core::Size;
 use ass_core::input::{
     InputEvent, PointerGestureEvent, TextInputEvent, TextInputState, TouchpadConfig, TouchpadStatus,
 };
 use ass_core::output::{OutputGeometry, OutputInfo, OutputMode, Scale};
-use ass_core::Size;
 use std::time::Duration;
 
 /// A presentation + input target the compositor drives each frame.

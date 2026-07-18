@@ -11,8 +11,8 @@ use std::path::Path;
 use crate::codec::{read_msg, write_msg};
 use crate::journal::JournalSnapshot;
 use crate::schema::{
-    Capabilities, Command, Event, LeaseGrant, LeaseRequest, RealmAction, RealmActionResult,
-    Request, Response, Scope, PROTOCOL_VERSION,
+    Capabilities, Command, Event, LeaseGrant, LeaseRequest, PROTOCOL_VERSION, RealmAction,
+    RealmActionResult, Request, Response, Scope,
 };
 
 /// Decoded Realm observation returned by [`Client::capture_realm`].

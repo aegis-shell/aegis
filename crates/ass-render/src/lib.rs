@@ -329,50 +329,51 @@ impl Renderer {
                         x1 = x1.max(x + w);
                         y1 = y1.max(y + h);
                     }
-                    if x0 < x1 && y0 < y1 {
-                        if let Some((img, _)) = self.cache.get(&f.id) {
-                            let (bw, bh) = ((x1 - x0) as u32, (y1 - y0) as u32);
-                            let updated = if x0 == 0
-                                && y0 == 0
-                                && bw == f.width as u32
-                                && bh == f.height as u32
-                            {
-                                // Full-surface box: upload straight from the
-                                // snapshot, no extraction copy.
-                                img.update_region(0, 0, bw, bh, f.pixels)
-                            } else {
-                                // Tightly packed BGRA8: stride = width * 4.
-                                let bpp = 4usize;
-                                let stride = f.width as usize * bpp;
-                                let mut sub = vec![0u8; bw as usize * bh as usize * bpp];
-                                for row in 0..bh as usize {
-                                    let src_off = (y0 as usize + row) * stride + x0 as usize * bpp;
-                                    let dst_off = row * (bw as usize * bpp);
-                                    let len = bw as usize * bpp;
-                                    // src_off + len must stay within f.pixels.
-                                    let avail = f.pixels.len().saturating_sub(src_off);
-                                    let take = len.min(avail);
-                                    sub[dst_off..dst_off + take]
-                                        .copy_from_slice(&f.pixels[src_off..src_off + take]);
+                    if x0 < x1
+                        && y0 < y1
+                        && let Some((img, _)) = self.cache.get(&f.id)
+                    {
+                        let (bw, bh) = ((x1 - x0) as u32, (y1 - y0) as u32);
+                        let updated = if x0 == 0
+                            && y0 == 0
+                            && bw == f.width as u32
+                            && bh == f.height as u32
+                        {
+                            // Full-surface box: upload straight from the
+                            // snapshot, no extraction copy.
+                            img.update_region(0, 0, bw, bh, f.pixels)
+                        } else {
+                            // Tightly packed BGRA8: stride = width * 4.
+                            let bpp = 4usize;
+                            let stride = f.width as usize * bpp;
+                            let mut sub = vec![0u8; bw as usize * bh as usize * bpp];
+                            for row in 0..bh as usize {
+                                let src_off = (y0 as usize + row) * stride + x0 as usize * bpp;
+                                let dst_off = row * (bw as usize * bpp);
+                                let len = bw as usize * bpp;
+                                // src_off + len must stay within f.pixels.
+                                let avail = f.pixels.len().saturating_sub(src_off);
+                                let take = len.min(avail);
+                                sub[dst_off..dst_off + take]
+                                    .copy_from_slice(&f.pixels[src_off..src_off + take]);
+                            }
+                            img.update_region(x0 as u32, y0 as u32, bw, bh, &sub)
+                        };
+                        match updated {
+                            Ok(()) => {
+                                if let Some((_, r#gen)) = self.cache.get_mut(&f.id) {
+                                    *r#gen = f.generation;
                                 }
-                                img.update_region(x0 as u32, y0 as u32, bw, bh, &sub)
-                            };
-                            match updated {
-                                Ok(()) => {
-                                    if let Some((_, gen)) = self.cache.get_mut(&f.id) {
-                                        *gen = f.generation;
-                                    }
-                                }
-                                Err(_) => {
-                                    // A partial refresh that failed leaves
-                                    // the texture a frame behind the
-                                    // snapshot with no guaranteed full
-                                    // upload coming. Retire the entry so
-                                    // the next frame re-uploads the whole
-                                    // (always accurate) snapshot instead
-                                    // of tearing indefinitely.
-                                    self.retire_cached(f.id);
-                                }
+                            }
+                            Err(_) => {
+                                // A partial refresh that failed leaves
+                                // the texture a frame behind the
+                                // snapshot with no guaranteed full
+                                // upload coming. Retire the entry so
+                                // the next frame re-uploads the whole
+                                // (always accurate) snapshot instead
+                                // of tearing indefinitely.
+                                self.retire_cached(f.id);
                             }
                         }
                     }
@@ -417,11 +418,11 @@ impl Renderer {
                 // scaled to the interpolated size instead of the
                 // buffer-implied size. Mapped mode (overview) ignores it;
                 // the map owns placement.
-                if map.is_none() {
-                    if let Some(size) = f.geometry.transition_size {
-                        dst_w = size.w as f32;
-                        dst_h = size.h as f32;
-                    }
+                if map.is_none()
+                    && let Some(size) = f.geometry.transition_size
+                {
+                    dst_w = size.w as f32;
+                    dst_h = size.h as f32;
                 }
                 if let Some(map) = map {
                     let natural = ass_core::Rect::new(
@@ -614,11 +615,11 @@ impl Renderer {
                 // scaled to the interpolated size instead of the
                 // buffer-implied size. Mapped mode (overview) ignores it;
                 // the map owns placement.
-                if map.is_none() {
-                    if let Some(size) = f.geometry.transition_size {
-                        dst_w = size.w as f32;
-                        dst_h = size.h as f32;
-                    }
+                if map.is_none()
+                    && let Some(size) = f.geometry.transition_size
+                {
+                    dst_w = size.w as f32;
+                    dst_h = size.h as f32;
                 }
                 if let Some(map) = map {
                     let natural = ass_core::Rect::new(
@@ -713,13 +714,14 @@ impl Renderer {
 ///
 /// `headless` skips swapchain/presentation requirements — used for smoke tests
 /// and any logic that never presents. A windowed backend passes `false` plus
-/// the surface extensions it needs.
+/// the surface extensions it needs. Frame slots stay at the flux default (0);
+/// hosts that present choose their own count (see `Host::create_device`).
 pub fn create_device(
     headless: bool,
     instance_extensions: &[&std::ffi::CStr],
     device_extensions: &[&std::ffi::CStr],
 ) -> Result<flux::Device, flux::Error> {
-    flux::Device::new(headless, instance_extensions, device_extensions)
+    flux::Device::new(headless, instance_extensions, device_extensions, 0)
 }
 
 #[cfg(test)]

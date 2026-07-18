@@ -9,6 +9,9 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use ass_core::Point;
+use ass_core::output::{ModeSpec, OutputInfo};
+
 /// Coarse connectivity state shown in compact status surfaces.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum NetworkState {
@@ -23,6 +26,34 @@ pub enum NetworkState {
 pub struct BatteryStatus {
     pub percent: u8,
     pub charging: bool,
+}
+
+/// Live display state exposed to compositor-owned system UI.
+///
+/// Direct DRM sessions can persist and apply output policy. Nested sessions
+/// deliberately expose the outer compositor's single host surface as
+/// read-only because modesetting remains owned by that compositor.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DisplayStatus {
+    /// Whether this session owns display configuration.
+    pub configurable: bool,
+    /// Connected outputs after the active per-connector policy is applied.
+    pub outputs: Vec<OutputInfo>,
+    /// Last persistence/application failure, cleared by a successful edit.
+    pub error: Option<String>,
+}
+
+/// One complete, validated output edit emitted by Control Center.
+///
+/// The UI only constructs this value from modes advertised by the selected
+/// connector. Persistence and backend application remain main-loop work.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisplaySettings {
+    pub connector: String,
+    pub mode: ModeSpec,
+    pub scale: f64,
+    pub position: Point,
+    pub primary: bool,
 }
 
 /// One coherent snapshot consumed by compositor-owned system UI.
@@ -44,6 +75,8 @@ pub struct SystemStatus {
     pub tiled: bool,
     /// Physical touchpad capabilities and the selected device profile.
     pub touchpad: ass_core::input::TouchpadStatus,
+    /// Connected displays and whether this session may configure them.
+    pub display: DisplayStatus,
 }
 
 impl SystemStatus {
@@ -74,12 +107,13 @@ impl SystemStatus {
             do_not_disturb: false,
             tiled: false,
             touchpad: ass_core::input::TouchpadStatus::default(),
+            display: DisplayStatus::default(),
         }
     }
 }
 
 /// Trusted system mutation requested by the control center or compact HUD.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SystemAction {
     ToggleMute,
     StepVolume(i8),
@@ -90,6 +124,7 @@ pub enum SystemAction {
     SetDoNotDisturb(bool),
     SetTiling(bool),
     SetTouchpad(ass_core::input::TouchpadConfig),
+    SetDisplay(DisplaySettings),
 }
 
 fn detect_network() -> NetworkState {

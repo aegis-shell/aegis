@@ -9,7 +9,7 @@ use lens::{Color, Frame, Input, LayoutOpts, OverlayOpts, Rect as LensRect};
 
 use crate::{Chrome, ChromeEvents, Localizer};
 use ass_core::app::BuiltInApplication;
-use ass_core::input::{key_action, KeyAction, KeyChar};
+use ass_core::input::{KeyAction, KeyChar, key_action};
 use ass_core::window::Window;
 use ass_core::workspace::WorkspaceSnapshot;
 
@@ -262,10 +262,11 @@ impl Chrome for ScreenshotSelector {
         match key_action(key.keysym, key.ch) {
             KeyAction::Escape => self.reset(),
             KeyAction::Enter => {
-                if let Some(rect) = self.selected_rect() {
-                    if rect.size.w > 0 && rect.size.h > 0 {
-                        _out.screenshot_region = Some(rect);
-                    }
+                if let Some(rect) = self.selected_rect()
+                    && rect.size.w > 0
+                    && rect.size.h > 0
+                {
+                    _out.screenshot_region = Some(rect);
                 }
                 self.reset();
             }
@@ -312,12 +313,14 @@ mod tests {
     fn drag_geometry_tracks_each_pointer_update_and_confirms_on_release() {
         let mut s = ScreenshotSelector::new();
         s.start();
-        assert!(s
-            .update_pointer(Point { x: 20.0, y: 30.0 }, true, false)
-            .is_none());
-        assert!(s
-            .update_pointer(Point { x: 80.0, y: 90.0 }, false, false)
-            .is_none());
+        assert!(
+            s.update_pointer(Point { x: 20.0, y: 30.0 }, true, false)
+                .is_none()
+        );
+        assert!(
+            s.update_pointer(Point { x: 80.0, y: 90.0 }, false, false)
+                .is_none()
+        );
         assert_eq!(s.selected_rect(), Some(ass_core::Rect::new(20, 30, 60, 60)));
 
         let confirmed = s.update_pointer(Point { x: 110.0, y: 70.0 }, false, true);

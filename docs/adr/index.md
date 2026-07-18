@@ -49,3 +49,4 @@ background and how the decisions fit together, see
 | [0040](0040-realms-seats-and-transferable-interaction-authority.md) | Realms, seats, and transferable interaction authority | Accepted |
 | [0041](0041-sealed-file-descriptor-pixel-transport.md) | Sealed file-descriptor pixel transport | Accepted |
 | [0042](0042-mount-scoped-realm-portals-and-cgroup-sandboxes.md) | Mount-scoped Realm portals and cgroup sandboxes | Accepted |
+| [0043](0043-explicit-clipboard-only.md) | Explicit clipboard only; reject Primary Selection | Accepted |

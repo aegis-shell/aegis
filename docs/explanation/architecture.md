@@ -122,6 +122,20 @@ In nested operation, each frame runs the following sequence:
 Client GPU buffers reach flux through a dmabuf import path added to flux
 ([ADR-0004](../adr/0004-client-buffers-via-flux-dmabuf-import.md)).
 
+## Clipboard Policy
+
+Each seat has one explicit clipboard. Client selections and
+compositor-owned payloads use the standard Wayland data-device path; an
+interactive screenshot may publish PNG and file-URI representations to the
+physical seat without affecting an agent Realm.
+
+ass deliberately does not advertise the X11-style Primary Selection. In this
+interaction model, publishing text merely because it was highlighted is an
+implicit global side effect and a duplicate clipboard channel. Capability
+absence is reported honestly through the Wayland registry rather than through
+an empty protocol object. See
+[ADR-0043](../adr/0043-explicit-clipboard-only.md).
+
 ## Realm Authority
 
 One compositor owns one surface graph. A **Realm** selects which interaction

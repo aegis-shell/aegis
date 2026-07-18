@@ -217,9 +217,9 @@ land with the libinput backend.
 **Remaining for M7.** Color management (needs color-space support in the
 flux engine first). Multi-monitor rendering correctness and gesture/tablet
 feel need real hardware to verify. The per-output display policy landed as
-`[[output]]` config entries: scale, mode selection (applied at modeset
-time), position, and primary are in effect; the output transform is parsed
-but deferred until the renderer applies it.
+`[[output]]` config entries: scale, live DRM mode selection, position, and
+primary are in effect and editable through Control Center; the output
+transform is parsed but deferred until the renderer applies it.
 
 **Verification.** Two outputs at different scales render correctly and the
 compositor's own chrome stays pixel-perfect. A touchpad three-finger swipe

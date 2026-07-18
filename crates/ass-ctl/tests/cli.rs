@@ -381,11 +381,12 @@ fn minimize_command_sends_minimize() {
     let _s = Server::start(&path, Arc::clone(&h)).unwrap();
     let out = ass_ctl::run(&path, &["minimize".into(), "1".into()]).unwrap();
     assert!(out.contains("minimized 1"), "{out}");
-    assert!(h
-        .commands
-        .lock()
-        .unwrap()
-        .contains(&Command::Minimize { id: WindowId(1) }));
+    assert!(
+        h.commands
+            .lock()
+            .unwrap()
+            .contains(&Command::Minimize { id: WindowId(1) })
+    );
 }
 
 #[test]
@@ -406,14 +407,15 @@ fn set_geometry_command_sends_logical_rectangle() {
     )
     .unwrap();
     assert!(out.contains("-20,30 800x600"), "{out}");
-    assert!(h
-        .commands
-        .lock()
-        .unwrap()
-        .contains(&Command::SetWindowGeometry {
-            id: WindowId(1),
-            rect: ass_core::Rect::new(-20, 30, 800, 600),
-        }));
+    assert!(
+        h.commands
+            .lock()
+            .unwrap()
+            .contains(&Command::SetWindowGeometry {
+                id: WindowId(1),
+                rect: ass_core::Rect::new(-20, 30, 800, 600),
+            })
+    );
 }
 
 #[test]
@@ -422,12 +424,13 @@ fn switch_command_sends_workspace_switch() {
     let h = Arc::new(CtlHandler::new());
     let _s = Server::start(&path, Arc::clone(&h)).unwrap();
     ass_ctl::run(&path, &["switch".into(), "next".into()]).unwrap();
-    assert!(h
-        .commands
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|c| matches!(c, Command::SwitchWorkspace { .. })),);
+    assert!(
+        h.commands
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| matches!(c, Command::SwitchWorkspace { .. })),
+    );
 }
 
 #[test]
@@ -516,12 +519,13 @@ fn tiling_command_sends_toggle() {
     let h = Arc::new(CtlHandler::new());
     let _s = Server::start(&path, Arc::clone(&h)).unwrap();
     ass_ctl::run(&path, &["tiling".into()]).unwrap();
-    assert!(h
-        .commands
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|c| matches!(c, Command::ToggleTiling)),);
+    assert!(
+        h.commands
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| matches!(c, Command::ToggleTiling)),
+    );
 }
 
 #[test]

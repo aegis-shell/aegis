@@ -246,10 +246,10 @@ impl CursorTheme {
                 let Ok(data) = std::fs::read(&path) else {
                     continue;
                 };
-                if let Some(file) = parse_xcursor(&data) {
-                    if let Some(img) = best_image(&file, want) {
-                        return Some(img.clone());
-                    }
+                if let Some(file) = parse_xcursor(&data)
+                    && let Some(img) = best_image(&file, want)
+                {
+                    return Some(img.clone());
                 }
             }
         }
