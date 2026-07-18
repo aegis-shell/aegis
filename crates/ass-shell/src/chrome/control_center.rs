@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 
 use ass_core::app::{BuiltInApplication, Entry};
-use ass_core::input::{key_action, KeyAction, KeyChar};
+use ass_core::input::{key_action, KeyAction, KeyChar, TouchpadScrollMethod};
 use ass_core::window::Window;
 use ass_core::workspace::WorkspaceSnapshot;
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
@@ -32,6 +32,7 @@ pub struct ControlCenter {
     modal_reserved: Reserved,
     volume: f32,
     brightness: f32,
+    page: i32,
 }
 
 impl ControlCenter {
@@ -47,6 +48,7 @@ impl ControlCenter {
             modal_reserved: Reserved::default(),
             volume: 0.0,
             brightness: 0.0,
+            page: 0,
         }
     }
 
@@ -232,6 +234,231 @@ impl ControlCenter {
             }
         });
     }
+
+    fn render_touchpad(&mut self, frame: &mut Frame, i18n: &Localizer, out: &mut ChromeEvents) {
+        let status = self.status.touchpad.clone();
+        let mut config = status.config;
+        let mut changed = false;
+        let has_devices = status.device_count() > 0;
+        let can_edit = |capability: bool| !status.configurable || !has_devices || capability;
+
+        frame.column_ex(
+            &LayoutOpts {
+                gap: 5.0,
+                cross: Align::Stretch,
+                ..Default::default()
+            },
+            |frame| {
+                frame.heading(i18n.text(Message::Touchpad), 2);
+                frame.label_sized(i18n.text(Message::TouchpadDescription), 12.0);
+                if !status.configurable {
+                    frame.label_wrapped_sized(i18n.text(Message::TouchpadHostManaged), 11.0, 560.0);
+                } else if !has_devices {
+                    frame.label_wrapped_sized(i18n.text(Message::NoTouchpadDetected), 11.0, 560.0);
+                } else {
+                    frame.label_sized(&status.device_names.join(" · "), 11.0);
+                }
+            },
+        );
+
+        frame.column_ex(&settings_card_layout(), |frame| {
+            frame.heading(i18n.text(Message::PointingAndClicking), 3);
+            changed |= frame
+                .setting_switch(
+                    "touchpad-tap-to-click",
+                    i18n.text(Message::TapToClick),
+                    i18n.text(Message::TapToClickDescription),
+                    &mut config.tap_to_click,
+                    !can_edit(status.capabilities.tap_to_click),
+                )
+                .changed;
+            changed |= frame
+                .setting_switch(
+                    "touchpad-tap-and-drag",
+                    i18n.text(Message::TapAndDrag),
+                    i18n.text(Message::TapAndDragDescription),
+                    &mut config.tap_and_drag,
+                    !config.tap_to_click || !can_edit(status.capabilities.tap_and_drag),
+                )
+                .changed;
+            changed |= frame
+                .setting_switch(
+                    "touchpad-drag-lock",
+                    i18n.text(Message::DragLock),
+                    i18n.text(Message::DragLockDescription),
+                    &mut config.drag_lock,
+                    !config.tap_to_click
+                        || !config.tap_and_drag
+                        || !can_edit(status.capabilities.drag_lock),
+                )
+                .changed;
+            changed |= frame
+                .setting_switch(
+                    "touchpad-disable-while-typing",
+                    i18n.text(Message::DisableWhileTyping),
+                    i18n.text(Message::DisableWhileTypingDescription),
+                    &mut config.disable_while_typing,
+                    !can_edit(status.capabilities.disable_while_typing),
+                )
+                .changed;
+
+            frame.separator();
+            frame.row_ex(&section_heading_layout(), |frame| {
+                frame.label_sized(i18n.text(Message::PointerSpeed), 12.0);
+                frame.flex(1.0);
+                frame.spacer(0.0);
+                frame.label_sized(&format!("{:+.0}%", config.pointer_speed * 100.0), 11.0);
+            });
+            if can_edit(status.capabilities.pointer_speed) {
+                changed |= frame.slider(
+                    "##touchpad-pointer-speed",
+                    &mut config.pointer_speed,
+                    -1.0,
+                    1.0,
+                );
+                frame.row_ex(
+                    &LayoutOpts {
+                        height: 18.0,
+                        cross: Align::Center,
+                        ..Default::default()
+                    },
+                    |frame| {
+                        frame.label_sized(i18n.text(Message::Slow), 10.0);
+                        frame.flex(1.0);
+                        frame.spacer(0.0);
+                        frame.label_sized(i18n.text(Message::Fast), 10.0);
+                    },
+                );
+            } else {
+                unavailable_row(frame, i18n.text(Message::PointerSpeed), i18n);
+            }
+        });
+
+        frame.column_ex(&settings_card_layout(), |frame| {
+            frame.heading(i18n.text(Message::Scrolling), 3);
+            changed |= frame
+                .setting_switch(
+                    "touchpad-natural-scroll",
+                    i18n.text(Message::NaturalScroll),
+                    i18n.text(Message::NaturalScrollDescription),
+                    &mut config.natural_scroll,
+                    !can_edit(status.capabilities.natural_scroll),
+                )
+                .changed;
+
+            let can_two_finger = can_edit(status.capabilities.two_finger_scroll);
+            let can_edge = can_edit(status.capabilities.edge_scroll);
+            frame.row_ex(
+                &LayoutOpts {
+                    min_height: 34.0,
+                    gap: 12.0,
+                    cross: Align::Center,
+                    ..Default::default()
+                },
+                |frame| {
+                    frame.label_sized(i18n.text(Message::ScrollMethod), 12.0);
+                    frame.flex(1.0);
+                    frame.spacer(0.0);
+                    if can_two_finger && can_edge {
+                        frame.size_next(190.0, 30.0);
+                        let mut selected = match config.scroll_method {
+                            TouchpadScrollMethod::TwoFinger => 0,
+                            TouchpadScrollMethod::Edge => 1,
+                        };
+                        if frame.dropdown(
+                            "##touchpad-scroll-method",
+                            &mut selected,
+                            &[
+                                i18n.text(Message::TwoFingerScroll),
+                                i18n.text(Message::EdgeScroll),
+                            ],
+                        ) {
+                            config.scroll_method = if selected == 0 {
+                                TouchpadScrollMethod::TwoFinger
+                            } else {
+                                TouchpadScrollMethod::Edge
+                            };
+                            changed = true;
+                        }
+                    } else if can_two_finger {
+                        frame.label_sized(i18n.text(Message::TwoFingerScroll), 11.0);
+                    } else if can_edge {
+                        frame.label_sized(i18n.text(Message::EdgeScroll), 11.0);
+                    } else {
+                        frame.label_sized(i18n.text(Message::Unavailable), 11.0);
+                    }
+                },
+            );
+        });
+
+        if changed {
+            config.pointer_speed = config.pointer_speed.clamp(-1.0, 1.0);
+            self.status.touchpad.config = config;
+            out.system_actions.push(SystemAction::SetTouchpad(config));
+        }
+    }
+
+    fn render_navigation(&mut self, frame: &mut Frame, i18n: &Localizer) {
+        for (page, icon, label) in [
+            (0, Icon::Grid, i18n.text(Message::Desktop)),
+            (1, Icon::MousePointer, i18n.text(Message::Touchpad)),
+            (2, Icon::Radio, i18n.text(Message::Connectivity)),
+            (3, Icon::Sliders, i18n.text(Message::SoundAndDisplay)),
+        ] {
+            if frame.selectable_icon(icon, label, self.page == page) {
+                self.page = page;
+            }
+        }
+    }
+
+    fn render_compact_navigation(&mut self, frame: &mut Frame, i18n: &Localizer) {
+        for entries in [
+            [
+                (0, i18n.text(Message::Desktop)),
+                (1, i18n.text(Message::Touchpad)),
+            ],
+            [
+                (2, i18n.text(Message::Connectivity)),
+                (3, i18n.text(Message::Sound)),
+            ],
+        ] {
+            frame.row_ex(
+                &LayoutOpts {
+                    gap: 4.0,
+                    cross: Align::Stretch,
+                    ..Default::default()
+                },
+                |frame| {
+                    for (page, label) in entries {
+                        frame.flex(1.0);
+                        if frame.selectable(label, self.page == page) {
+                            self.page = page;
+                        }
+                    }
+                },
+            );
+        }
+    }
+
+    fn render_page(&mut self, frame: &mut Frame, i18n: &Localizer, out: &mut ChromeEvents) {
+        match self.page {
+            1 => self.render_touchpad(frame, i18n, out),
+            2 => {
+                frame.heading(i18n.text(Message::Connectivity), 2);
+                self.render_connectivity(frame, i18n, out);
+            }
+            3 => {
+                frame.heading(i18n.text(Message::SoundAndDisplay), 2);
+                self.render_sound(frame, i18n, out);
+                self.render_brightness(frame, i18n, out);
+            }
+            _ => {
+                frame.heading(i18n.text(Message::Desktop), 2);
+                self.render_desktop(frame, i18n, out);
+                render_footer(frame, &self.status, i18n);
+            }
+        }
+    }
 }
 
 impl Default for ControlCenter {
@@ -300,33 +527,56 @@ impl Chrome for ControlCenter {
                         close = self.render_header(frame, i18n);
                         frame.separator();
                         frame.flex(1.0);
-                        frame.scroll("ass-control-center-content", |frame| {
-                            frame.column_ex(
+                        if bounds.w >= 640.0 {
+                            frame.row_ex(
                                 &LayoutOpts {
-                                    gap: 12.0,
+                                    flex: 1.0,
+                                    gap: 18.0,
                                     cross: Align::Stretch,
                                     ..Default::default()
                                 },
                                 |frame| {
-                                    frame.row_ex(
+                                    frame.column_ex(
                                         &LayoutOpts {
-                                            gap: 12.0,
+                                            width: 184.0,
+                                            gap: 5.0,
+                                            pad: 8.0,
                                             cross: Align::Stretch,
+                                            bg: Color::rgba(255, 255, 255, 10),
+                                            radius: 14.0,
                                             ..Default::default()
                                         },
                                         |frame| {
-                                            frame.flex(1.0);
-                                            self.render_connectivity(frame, i18n, out);
-                                            frame.flex(1.0);
-                                            self.render_desktop(frame, i18n, out);
+                                            self.render_navigation(frame, i18n);
                                         },
                                     );
-                                    self.render_sound(frame, i18n, out);
-                                    self.render_brightness(frame, i18n, out);
-                                    render_footer(frame, &self.status, i18n);
+                                    frame.flex(1.0);
+                                    frame.scroll("ass-control-center-page", |frame| {
+                                        frame.column_ex(
+                                            &LayoutOpts {
+                                                gap: 12.0,
+                                                cross: Align::Stretch,
+                                                ..Default::default()
+                                            },
+                                            |frame| self.render_page(frame, i18n, out),
+                                        );
+                                    });
                                 },
                             );
-                        });
+                        } else {
+                            self.render_compact_navigation(frame, i18n);
+                            frame.flex(1.0);
+                            frame.scroll("ass-control-center-narrow-page", |frame| {
+                                frame.column_ex(
+                                    &LayoutOpts {
+                                        gap: 12.0,
+                                        cross: Align::Stretch,
+                                        ..Default::default()
+                                    },
+                                    |frame| self.render_page(frame, i18n, out),
+                                );
+                            });
+                        }
                     },
                 );
             },
@@ -389,8 +639,8 @@ impl Chrome for ControlCenter {
         _display: (f32, f32),
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
-    ) -> CursorShape {
-        CursorShape::Pointer
+    ) -> Option<CursorShape> {
+        Some(CursorShape::Pointer)
     }
 
     fn modal_active(&self) -> bool {
@@ -537,6 +787,18 @@ fn wide_card_layout() -> LayoutOpts {
         min_height: 104.0,
         gap: 10.0,
         pad: 16.0,
+        cross: Align::Stretch,
+        bg: Color::rgba(255, 255, 255, 14),
+        radius: 16.0,
+        ..Default::default()
+    }
+}
+
+fn settings_card_layout() -> LayoutOpts {
+    LayoutOpts {
+        min_height: 96.0,
+        gap: 8.0,
+        pad: 15.0,
         cross: Align::Stretch,
         bg: Color::rgba(255, 255, 255, 14),
         radius: 16.0,

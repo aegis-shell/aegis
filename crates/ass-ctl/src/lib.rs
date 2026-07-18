@@ -171,14 +171,12 @@ fn dispatch(
             Ok(format!("dismissed {id}"))
         }
         "screenshot" => {
-            // Default: a timestamped file in the working directory.
-            let path = args.get(1).cloned().unwrap_or_else(|| {
-                let ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis())
-                    .unwrap_or(0);
-                format!("ass-screenshot-{ms}.png")
-            });
+            // Keep the CLI default aligned with the compositor's interactive
+            // screenshot destination.
+            let path = match args.get(1) {
+                Some(path) => path.clone(),
+                None => screenshot_path(&ass_config::default_screenshot_dir())?,
+            };
             client
                 .screenshot_region(path.clone(), region)
                 .map_err(io_err)?;
@@ -199,6 +197,20 @@ fn dispatch(
 
 fn io_err(e: std::io::Error) -> String {
     e.to_string()
+}
+
+/// Generate a timestamped screenshot path and ensure its parent exists.
+fn screenshot_path(dir: &Path) -> Result<String, String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|error| format!("create screenshot directory {}: {error}", dir.display()))?;
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    Ok(dir
+        .join(format!("ass-screenshot-{ms}.png"))
+        .to_string_lossy()
+        .into_owned())
 }
 
 /// Extract `--region x,y,w,h` from `args` if present. The flag and its value
@@ -532,5 +544,26 @@ mod tests {
         assert!(parse_region_flag(&["--region".into(), "1,2,3".into()]).is_none());
         assert!(parse_region_flag(&["--region".into(), "a,b,c,d".into()]).is_none());
         assert!(parse_region_flag(&["screenshot".into()]).is_none());
+    }
+
+    #[test]
+    fn screenshot_path_uses_lowercase_directory_and_creates_it() {
+        let dir = std::env::temp_dir().join(format!(
+            "ass-ctl-screenshots-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = std::path::PathBuf::from(screenshot_path(&dir).unwrap());
+        assert_eq!(path.parent(), Some(dir.as_path()));
+        assert!(path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with(".png"));
+        assert!(dir.is_dir());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

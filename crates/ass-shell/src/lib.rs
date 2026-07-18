@@ -245,7 +245,9 @@ pub trait Chrome {
     }
 
     /// Cursor shape to use while this component owns the pointer at `(x, y)`.
-    /// The shell asks only after [`Chrome::captures_pointer`] returned true.
+    /// Return `None` when the component only captures input and the cursor
+    /// presentation should remain unchanged. The shell asks only after
+    /// [`Chrome::captures_pointer`] returned true.
     fn cursor_shape_at(
         &self,
         _x: f32,
@@ -253,8 +255,8 @@ pub trait Chrome {
         _display: (f32, f32),
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
-    ) -> CursorShape {
-        CursorShape::Default
+    ) -> Option<CursorShape> {
+        None
     }
 
     /// Inform modal chrome about edge space belonging to persistent chrome.
@@ -606,7 +608,7 @@ impl Shell {
             .find(|component| {
                 component.captures_pointer(x, y, display, &self.windows, &self.workspaces)
             })
-            .map(|component| {
+            .and_then(|component| {
                 component.cursor_shape_at(x, y, display, &self.windows, &self.workspaces)
             })
     }

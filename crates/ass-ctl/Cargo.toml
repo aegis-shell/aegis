@@ -18,5 +18,6 @@ path = "src/main.rs"
 [dependencies]
 ass-ipc = { workspace = true }
 ass-core = { workspace = true, features = ["serde"] }
+ass-config = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

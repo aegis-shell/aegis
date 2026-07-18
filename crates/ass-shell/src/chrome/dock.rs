@@ -913,8 +913,8 @@ impl Chrome for Dock {
         _display: (f32, f32),
         _windows: &[Window],
         _workspaces: &crate::WorkspaceSnapshot,
-    ) -> CursorShape {
-        CursorShape::Pointer
+    ) -> Option<CursorShape> {
+        Some(CursorShape::Pointer)
     }
 
     fn update_app_catalog(

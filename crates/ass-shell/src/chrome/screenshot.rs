@@ -7,7 +7,7 @@
 
 use lens::{Color, Frame, Input, LayoutOpts, OverlayOpts, Rect as LensRect};
 
-use crate::{Chrome, ChromeEvents, CursorShape, Localizer};
+use crate::{Chrome, ChromeEvents, Localizer};
 use ass_core::app::BuiltInApplication;
 use ass_core::input::{key_action, KeyAction, KeyChar};
 use ass_core::window::Window;
@@ -30,10 +30,6 @@ pub struct ScreenshotSelector {
     anchor: Option<Point>,
     /// Current cursor position in logical pixels.
     current: Point,
-    /// Region confirmed this frame, ready for the main loop to capture.
-    confirmed: Option<ass_core::Rect>,
-    /// Left-button state last frame for edge detection.
-    prev_down: bool,
 }
 
 impl Default for ScreenshotSelector {
@@ -48,8 +44,6 @@ impl ScreenshotSelector {
             active: false,
             anchor: None,
             current: Point::default(),
-            confirmed: None,
-            prev_down: false,
         }
     }
 
@@ -62,8 +56,6 @@ impl ScreenshotSelector {
         } else {
             self.active = true;
             self.anchor = None;
-            self.confirmed = None;
-            self.prev_down = false;
         }
     }
 
@@ -83,11 +75,42 @@ impl ScreenshotSelector {
         Some(ass_core::Rect::new(x, y, w.max(0), h.max(0)))
     }
 
+    /// Advance the drag state from explicit input edges. Keeping this
+    /// transition separate from painting makes the selection deterministic
+    /// and lets the host rebuild edge flags every frame without maintaining a
+    /// second, potentially stale button-level mirror in this component.
+    fn update_pointer(
+        &mut self,
+        cursor: Point,
+        pressed: bool,
+        released: bool,
+    ) -> Option<ass_core::Rect> {
+        self.current = cursor;
+
+        if self.anchor.is_none() {
+            if pressed {
+                self.anchor = Some(cursor);
+            }
+            return None;
+        }
+        if !released {
+            return None;
+        }
+
+        let anchor = self.anchor.expect("checked above");
+        let dx = (cursor.x - anchor.x).abs();
+        let dy = (cursor.y - anchor.y).abs();
+        let confirmed = (dx >= MIN_DRAG || dy >= MIN_DRAG)
+            .then(|| self.selected_rect())
+            .flatten()
+            .filter(|rect| rect.size.w > 0 && rect.size.h > 0);
+        self.reset();
+        confirmed
+    }
+
     fn reset(&mut self) {
         self.active = false;
         self.anchor = None;
-        self.confirmed = None;
-        self.prev_down = false;
     }
 }
 
@@ -101,7 +124,6 @@ impl Chrome for ScreenshotSelector {
         _i18n: &Localizer,
         out: &mut ChromeEvents,
     ) {
-        self.confirmed = None;
         if !self.active {
             return;
         }
@@ -112,11 +134,15 @@ impl Chrome for ScreenshotSelector {
             x: raw.cursor.x,
             y: raw.cursor.y,
         };
-        let down = raw.mouse_down.first().copied().unwrap_or(false);
-        let pressed = down && !self.prev_down;
-        let released = !down && self.prev_down;
-        self.prev_down = down;
-        self.current = cursor;
+        let pressed = raw.mouse_pressed.first().copied().unwrap_or(false);
+        let released = raw.mouse_released.first().copied().unwrap_or(false);
+        if let Some(rect) = self.update_pointer(cursor, pressed, released) {
+            out.screenshot_region = Some(rect);
+            return;
+        }
+        if !self.active {
+            return;
+        }
 
         // Full-screen dimmed scrim.
         frame.layer(
@@ -134,7 +160,7 @@ impl Chrome for ScreenshotSelector {
             |_| {},
         );
 
-        if let Some(anchor) = self.anchor {
+        if self.anchor.is_some() {
             let rect = self
                 .selected_rect()
                 .unwrap_or(ass_core::Rect::new(0, 0, 0, 0));
@@ -193,22 +219,6 @@ impl Chrome for ScreenshotSelector {
                     },
                 );
             }
-
-            if released {
-                let dx = (cursor.x - anchor.x).abs();
-                let dy = (cursor.y - anchor.y).abs();
-                if dx >= MIN_DRAG || dy >= MIN_DRAG {
-                    if let Some(rect) = self.selected_rect() {
-                        if rect.size.w > 0 && rect.size.h > 0 {
-                            out.screenshot_region = Some(rect);
-                            self.confirmed = Some(rect);
-                        }
-                    }
-                }
-                self.reset();
-            }
-        } else if pressed {
-            self.anchor = Some(cursor);
         }
     }
 
@@ -239,17 +249,6 @@ impl Chrome for ScreenshotSelector {
         self.active
     }
 
-    fn cursor_shape_at(
-        &self,
-        _x: f32,
-        _y: f32,
-        _display: (f32, f32),
-        _windows: &[Window],
-        _workspaces: &WorkspaceSnapshot,
-    ) -> CursorShape {
-        CursorShape::Crosshair
-    }
-
     fn open_builtin(&mut self, app: BuiltInApplication) {
         if app == BuiltInApplication::ScreenshotSelector {
             self.start();
@@ -266,7 +265,6 @@ impl Chrome for ScreenshotSelector {
                 if let Some(rect) = self.selected_rect() {
                     if rect.size.w > 0 && rect.size.h > 0 {
                         _out.screenshot_region = Some(rect);
-                        self.confirmed = Some(rect);
                     }
                 }
                 self.reset();
@@ -308,6 +306,36 @@ mod tests {
         s.start();
         assert!(!s.active());
         assert!(s.anchor.is_none());
-        assert!(s.confirmed.is_none());
+    }
+
+    #[test]
+    fn drag_geometry_tracks_each_pointer_update_and_confirms_on_release() {
+        let mut s = ScreenshotSelector::new();
+        s.start();
+        assert!(s
+            .update_pointer(Point { x: 20.0, y: 30.0 }, true, false)
+            .is_none());
+        assert!(s
+            .update_pointer(Point { x: 80.0, y: 90.0 }, false, false)
+            .is_none());
+        assert_eq!(s.selected_rect(), Some(ass_core::Rect::new(20, 30, 60, 60)));
+
+        let confirmed = s.update_pointer(Point { x: 110.0, y: 70.0 }, false, true);
+        assert_eq!(confirmed, Some(ass_core::Rect::new(20, 30, 90, 40)));
+        assert!(!s.active());
+    }
+
+    #[test]
+    fn selector_captures_input_without_overriding_cursor_shape() {
+        let mut s = ScreenshotSelector::new();
+        s.start();
+        let workspaces = WorkspaceSnapshot {
+            outputs: Vec::new(),
+        };
+        assert!(s.captures_pointer(0.0, 0.0, (100.0, 100.0), &[], &workspaces));
+        assert_eq!(
+            s.cursor_shape_at(0.0, 0.0, (100.0, 100.0), &[], &workspaces),
+            None
+        );
     }
 }

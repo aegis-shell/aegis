@@ -190,8 +190,7 @@ pub struct wl_seat_listener {
     pub name: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, *const c_char),
 }
 
-/// `wl_pointer` listener vtable. `frame` and later events are v5+; ass binds
-/// at v4 so those slots exist for ABI layout but are never invoked by the host.
+/// `wl_pointer` listener vtable through version 9.
 #[repr(C)]
 pub struct wl_pointer_listener {
     pub enter: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32, *mut wl_proxy, i32, i32),
@@ -199,6 +198,12 @@ pub struct wl_pointer_listener {
     pub motion: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32, i32, i32),
     pub button: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32, u32, u32, u32),
     pub axis: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32, u32, i32),
+    pub frame: unsafe extern "C" fn(*mut c_void, *mut wl_proxy),
+    pub axis_source: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32),
+    pub axis_stop: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32, u32),
+    pub axis_discrete: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32, i32),
+    pub axis_value120: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32, i32),
+    pub axis_relative_direction: unsafe extern "C" fn(*mut c_void, *mut wl_proxy, u32, u32),
 }
 
 /// `wl_keyboard` listener vtable. The host sends the keymap once and then

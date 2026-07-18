@@ -14,7 +14,11 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
-use ass_core::input::{ButtonState, InputEvent, PointerGestureEvent, TabletEvent, TabletToolInfo};
+use ass_core::input::{
+    ButtonState, InputEvent, PointerAxis, PointerAxisFrame, PointerAxisRelativeDirection,
+    PointerAxisSource, PointerGestureEvent, TabletEvent, TabletToolInfo, TouchpadCapabilities,
+    TouchpadConfig, TouchpadScrollMethod, TouchpadStatus,
+};
 use ass_core::output::{ModeSpec, OutputMode};
 use ass_core::Size;
 use drm::buffer::{DrmFourcc, DrmModifier, Handle as BufferHandle, PlanarBuffer};
@@ -23,18 +27,27 @@ use drm::control::{
     FbCmd2Flags, Mode, ModeTypeFlags, ResourceHandle,
 };
 use drm::Device as BasicDevice;
+use input::event::device::DeviceEvent;
 use input::event::gesture::{
     GestureEndEvent, GestureEvent, GestureEventCoordinates, GestureEventTrait, GestureHoldEvent,
     GesturePinchEvent, GesturePinchEventTrait, GestureSwipeEvent,
 };
 use input::event::keyboard::{KeyboardEvent, KeyboardEventTrait};
-use input::event::pointer::{Axis, PointerEvent, PointerScrollEvent, PointerScrollWheelEvent};
+#[allow(deprecated)]
+use input::event::pointer::{
+    Axis, AxisSource, PointerAxisEvent, PointerEvent, PointerEventTrait, PointerScrollEvent,
+    PointerScrollWheelEvent,
+};
 use input::event::tablet_tool::{
     ProximityState, TabletToolButtonEvent, TabletToolEvent, TabletToolEventTrait, TabletToolType,
     TipState,
 };
 use input::event::touch::{TouchEvent, TouchEventPosition, TouchEventSlot};
-use input::{Event, Libinput, LibinputInterface};
+use input::event::EventTrait;
+use input::{
+    Device, DeviceCapability, DeviceConfigResult, DragLockState, Event, Libinput,
+    LibinputInterface, ScrollMethod,
+};
 
 use crate::Backend;
 
@@ -270,6 +283,80 @@ pub struct DrmBackend {
     /// entries (ADR-0028). Consulted on every output (re)selection: startup,
     /// hotplug, and session resume.
     configured_modes: HashMap<String, ModeSpec>,
+    /// Retained libinput handles for touchpads currently on the seat.
+    touchpads: HashMap<String, Device>,
+    touchpad_config: TouchpadConfig,
+}
+
+fn wheel_axis(event: &PointerScrollWheelEvent, axis: Axis) -> PointerAxis {
+    if !event.has_axis(axis) {
+        return PointerAxis::default();
+    }
+    let value120 = event.scroll_value_v120(axis).round() as i32;
+    if value120 == 0 {
+        return PointerAxis::default();
+    }
+    PointerAxis {
+        value: Some(value120 as f32 / 12.0),
+        discrete: (value120 % 120 == 0).then_some(value120 / 120),
+        value120: Some(value120),
+        ..PointerAxis::default()
+    }
+}
+
+fn sequence_axis<T: PointerScrollEvent>(event: &T, axis: Axis, inverted: bool) -> PointerAxis {
+    if !event.has_axis(axis) {
+        return PointerAxis::default();
+    }
+    let value = event.scroll_value(axis) as f32;
+    PointerAxis {
+        value: (value != 0.0).then_some(value),
+        stop: value == 0.0,
+        relative_direction: (value != 0.0).then_some(if inverted {
+            PointerAxisRelativeDirection::Inverted
+        } else {
+            PointerAxisRelativeDirection::Identical
+        }),
+        ..PointerAxis::default()
+    }
+}
+
+#[allow(deprecated)]
+fn legacy_axis(
+    event: &PointerAxisEvent,
+    axis: Axis,
+    source: PointerAxisSource,
+    inverted: bool,
+) -> PointerAxis {
+    if !event.has_axis(axis) {
+        return PointerAxis::default();
+    }
+    let raw = event.axis_value(axis) as f32;
+    let discrete = event
+        .axis_value_discrete(axis)
+        .map(|value| value.round() as i32)
+        .filter(|value| *value != 0);
+    let value = match (source, discrete) {
+        (PointerAxisSource::Wheel | PointerAxisSource::WheelTilt, Some(steps)) => {
+            steps as f32 * 10.0
+        }
+        _ => raw,
+    };
+    PointerAxis {
+        value: (value != 0.0).then_some(value),
+        discrete,
+        stop: value == 0.0
+            && matches!(
+                source,
+                PointerAxisSource::Finger | PointerAxisSource::Continuous
+            ),
+        relative_direction: (value != 0.0).then_some(if inverted {
+            PointerAxisRelativeDirection::Inverted
+        } else {
+            PointerAxisRelativeDirection::Identical
+        }),
+        ..PointerAxis::default()
+    }
 }
 
 impl DrmBackend {
@@ -346,7 +433,7 @@ impl DrmBackend {
             );
         }
 
-        Ok(Self {
+        let mut backend = Self {
             seat,
             seat_event: pending,
             input_devices,
@@ -371,7 +458,14 @@ impl DrmBackend {
             surface_modifiers: Vec::new(),
             surface_stale: false,
             configured_modes,
-        })
+            touchpads: HashMap::new(),
+            touchpad_config: TouchpadConfig::default(),
+        };
+        // udev_assign_seat + dispatch queues the initial DeviceAdded events
+        // even before the fd becomes pollable. Drain them now so Settings can
+        // report devices without waiting for the user's first touch.
+        backend.drain_input_queue();
+        Ok(backend)
     }
 
     /// Create Flux's exportable offscreen target at the selected display mode.
@@ -785,6 +879,7 @@ impl DrmBackend {
                     self.failed = true;
                     return;
                 }
+                self.drain_input_queue();
                 // libseat revoked the card fd while another VT owned the
                 // seat: every KMS ioctl on it now fails with EACCES, and its
                 // GEM handles, framebuffers, and property blobs died with the
@@ -829,6 +924,12 @@ impl DrmBackend {
 
     fn push_input_event(&mut self, event: Event) {
         match event {
+            Event::Device(DeviceEvent::Added(event)) => {
+                self.add_input_device(event.device());
+            }
+            Event::Device(DeviceEvent::Removed(event)) => {
+                self.remove_input_device(&event.device());
+            }
             Event::Keyboard(KeyboardEvent::Key(event)) => {
                 self.input_events.push(InputEvent::Key {
                     code: event.key(),
@@ -843,6 +944,138 @@ impl DrmBackend {
             Event::Gesture(event) => self.push_gesture_event(event),
             Event::Tablet(event) => self.push_tablet_event(event),
             _ => {}
+        }
+    }
+
+    fn drain_input_queue(&mut self) {
+        if let Some(mut input) = self.input.take() {
+            for event in &mut input {
+                self.push_input_event(event);
+            }
+            self.input = Some(input);
+        }
+    }
+
+    fn is_touchpad(device: &Device) -> bool {
+        if !device.has_capability(DeviceCapability::Pointer) {
+            return false;
+        }
+        let methods = device.config_scroll_methods();
+        device.config_tap_finger_count() > 0
+            || device.config_dwt_is_available()
+            || methods.contains(&ScrollMethod::TwoFinger)
+            || methods.contains(&ScrollMethod::Edge)
+    }
+
+    fn add_input_device(&mut self, mut device: Device) {
+        if !Self::is_touchpad(&device) {
+            return;
+        }
+        let sysname = device.sysname().to_owned();
+        let name = device.name().into_owned();
+        Self::apply_touchpad_profile(&mut device, self.touchpad_config);
+        log::info!("libinput: touchpad added: {name} ({sysname})");
+        self.touchpads.insert(sysname, device);
+    }
+
+    fn remove_input_device(&mut self, device: &Device) {
+        let sysname = device.sysname();
+        if self.touchpads.remove(sysname).is_some() {
+            log::info!("libinput: touchpad removed: {} ({sysname})", device.name());
+        }
+    }
+
+    fn apply_touchpad_profile(device: &mut Device, config: TouchpadConfig) {
+        let name = device.name().into_owned();
+        let apply = |setting: &str, result: DeviceConfigResult| {
+            if let Err(error) = result {
+                log::warn!("libinput: {name}: could not apply {setting}: {error:?}");
+            }
+        };
+
+        if device.config_scroll_has_natural_scroll() {
+            apply(
+                "natural scroll",
+                device.config_scroll_set_natural_scroll_enabled(config.natural_scroll),
+            );
+        }
+        if device.config_tap_finger_count() > 0 {
+            apply(
+                "tap-to-click",
+                device.config_tap_set_enabled(config.tap_to_click),
+            );
+            apply(
+                "tap-and-drag",
+                device.config_tap_set_drag_enabled(config.tap_and_drag),
+            );
+            apply(
+                "drag lock",
+                device.config_tap_set_drag_lock_enabled(if config.drag_lock {
+                    DragLockState::EnabledTimeout
+                } else {
+                    DragLockState::Disabled
+                }),
+            );
+        }
+        if device.config_dwt_is_available() {
+            apply(
+                "disable-while-typing",
+                device.config_dwt_set_enabled(config.disable_while_typing),
+            );
+        }
+        if device.config_accel_is_available() {
+            apply(
+                "pointer speed",
+                device.config_accel_set_speed(f64::from(config.pointer_speed.clamp(-1.0, 1.0))),
+            );
+        }
+
+        let methods = device.config_scroll_methods();
+        let requested = match config.scroll_method {
+            TouchpadScrollMethod::TwoFinger => ScrollMethod::TwoFinger,
+            TouchpadScrollMethod::Edge => ScrollMethod::Edge,
+        };
+        let selected = methods
+            .contains(&requested)
+            .then_some(requested)
+            .or_else(|| {
+                [ScrollMethod::TwoFinger, ScrollMethod::Edge]
+                    .into_iter()
+                    .find(|method| methods.contains(method))
+            });
+        if let Some(method) = selected {
+            if method != requested {
+                log::info!(
+                    "libinput: {name}: requested {requested:?} scrolling unsupported; using {method:?}"
+                );
+            }
+            apply("scroll method", device.config_scroll_set_method(method));
+        }
+    }
+
+    fn current_touchpad_status(&self) -> TouchpadStatus {
+        let mut capabilities = TouchpadCapabilities::default();
+        let mut device_names = Vec::with_capacity(self.touchpads.len());
+        for device in self.touchpads.values() {
+            let tap = device.config_tap_finger_count() > 0;
+            let methods = device.config_scroll_methods();
+            capabilities.natural_scroll |= device.config_scroll_has_natural_scroll();
+            capabilities.tap_to_click |= tap;
+            capabilities.tap_and_drag |= tap;
+            capabilities.drag_lock |= tap;
+            capabilities.disable_while_typing |= device.config_dwt_is_available();
+            capabilities.pointer_speed |= device.config_accel_is_available();
+            capabilities.two_finger_scroll |= methods.contains(&ScrollMethod::TwoFinger);
+            capabilities.edge_scroll |= methods.contains(&ScrollMethod::Edge);
+            device_names.push(device.name().into_owned());
+        }
+        device_names.sort();
+        device_names.dedup();
+        TouchpadStatus {
+            configurable: true,
+            device_names,
+            capabilities,
+            config: self.touchpad_config,
         }
     }
 
@@ -1015,23 +1248,14 @@ impl DrmBackend {
                 self.push_scroll_wheel(&event);
             }
             PointerEvent::ScrollFinger(event) => {
-                self.push_scroll(
-                    event.scroll_value(Axis::Horizontal),
-                    event.scroll_value(Axis::Vertical),
-                );
+                self.push_scroll_sequence(&event, PointerAxisSource::Finger);
             }
             PointerEvent::ScrollContinuous(event) => {
-                self.push_scroll(
-                    event.scroll_value(Axis::Horizontal),
-                    event.scroll_value(Axis::Vertical),
-                );
+                self.push_scroll_sequence(&event, PointerAxisSource::Continuous);
             }
             #[allow(deprecated)]
             PointerEvent::Axis(event) => {
-                self.push_scroll(
-                    event.axis_value(Axis::Horizontal),
-                    event.axis_value(Axis::Vertical),
-                );
+                self.push_legacy_scroll(&event);
             }
             _ => {}
         }
@@ -1040,17 +1264,54 @@ impl DrmBackend {
     fn push_scroll_wheel(&mut self, event: &PointerScrollWheelEvent) {
         // wl_pointer's conventional wheel step is 10 surface units. v120
         // preserves high-resolution wheel fractions without device-angle bias.
-        self.push_scroll(
-            event.scroll_value_v120(Axis::Horizontal) / 12.0,
-            event.scroll_value_v120(Axis::Vertical) / 12.0,
-        );
+        let mut frame = PointerAxisFrame {
+            time: event.time(),
+            source: Some(PointerAxisSource::Wheel),
+            ..PointerAxisFrame::default()
+        };
+        frame.horizontal = wheel_axis(event, Axis::Horizontal);
+        frame.vertical = wheel_axis(event, Axis::Vertical);
+        if frame.has_data() {
+            self.input_events.push(InputEvent::PointerAxis(frame));
+        }
     }
 
-    fn push_scroll(&mut self, dx: f64, dy: f64) {
-        self.input_events.push(InputEvent::PointerAxis {
-            dx: dx as f32,
-            dy: dy as f32,
-        });
+    fn push_scroll_sequence<T>(&mut self, event: &T, source: PointerAxisSource)
+    where
+        T: PointerScrollEvent + PointerEventTrait + EventTrait,
+    {
+        let mut frame = PointerAxisFrame {
+            time: event.time(),
+            source: Some(source),
+            ..PointerAxisFrame::default()
+        };
+        let inverted = event.device().config_scroll_natural_scroll_enabled();
+        frame.horizontal = sequence_axis(event, Axis::Horizontal, inverted);
+        frame.vertical = sequence_axis(event, Axis::Vertical, inverted);
+        if frame.has_data() {
+            self.input_events.push(InputEvent::PointerAxis(frame));
+        }
+    }
+
+    #[allow(deprecated)]
+    fn push_legacy_scroll(&mut self, event: &PointerAxisEvent) {
+        let source = match event.axis_source() {
+            AxisSource::Wheel => PointerAxisSource::Wheel,
+            AxisSource::Finger => PointerAxisSource::Finger,
+            AxisSource::Continuous => PointerAxisSource::Continuous,
+            AxisSource::WheelTilt => PointerAxisSource::WheelTilt,
+        };
+        let mut frame = PointerAxisFrame {
+            time: event.time(),
+            source: Some(source),
+            ..PointerAxisFrame::default()
+        };
+        let inverted = event.device().config_scroll_natural_scroll_enabled();
+        frame.horizontal = legacy_axis(event, Axis::Horizontal, source, inverted);
+        frame.vertical = legacy_axis(event, Axis::Vertical, source, inverted);
+        if frame.has_data() {
+            self.input_events.push(InputEvent::PointerAxis(frame));
+        }
     }
 
     fn push_touch_event(&mut self, event: TouchEvent) {
@@ -1296,6 +1557,18 @@ impl Backend for DrmBackend {
                 }
             })
             .collect()
+    }
+
+    fn set_touchpad_config(&mut self, config: TouchpadConfig) -> TouchpadStatus {
+        self.touchpad_config = config;
+        for device in self.touchpads.values_mut() {
+            Self::apply_touchpad_profile(device, config);
+        }
+        self.current_touchpad_status()
+    }
+
+    fn touchpad_status(&self) -> TouchpadStatus {
+        self.current_touchpad_status()
     }
 
     fn set_configured_modes(&mut self, modes: HashMap<String, ModeSpec>) {

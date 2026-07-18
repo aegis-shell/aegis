@@ -11,7 +11,10 @@ use std::ffi::{c_void, CStr, CString};
 use std::ptr;
 
 use ash::vk::Handle;
-use ass_core::input::{InputEvent, PointerGestureEvent, TextInputEvent, TextInputState};
+use ass_core::input::{
+    InputEvent, PointerAxis, PointerAxisFrame, PointerAxisRelativeDirection, PointerAxisSource,
+    PointerGestureEvent, TextInputEvent, TextInputState,
+};
 use ass_core::Size;
 
 use crate::Backend;
@@ -87,6 +90,8 @@ struct State {
     /// changes accumulate here each dispatch; the main loop drains once per
     /// frame.
     input_events: Vec<InputEvent>,
+    /// Axis callbacks accumulated until the host's `wl_pointer.frame`.
+    pending_pointer_axis: PointerAxisFrame,
     pointer_gesture_events: Vec<PointerGestureEvent>,
     text_input_events: Vec<TextInputEvent>,
     text_input_entered: bool,
@@ -109,6 +114,9 @@ pub struct NestedHost {
     // destroy flux's instance.
     ash: Option<(ash::Entry, ash::Instance)>,
     vk_surface: u64,
+    /// Persisted profile for direct-display sessions. The outer compositor
+    /// owns the physical device while this backend is nested.
+    touchpad_config: ass_core::input::TouchpadConfig,
 }
 
 // ----- request marshalling helpers ---------------------------------------
@@ -137,7 +145,7 @@ unsafe fn seat_get_pointer(seat: *mut ffi::wl_proxy) -> *mut ffi::wl_proxy {
         seat,
         ffi::WL_SEAT_GET_POINTER,
         &ffi::wl_pointer_interface,
-        ffi::wl_proxy_get_version(seat).min(4),
+        ffi::wl_proxy_get_version(seat).min(9),
         0,
         ptr::null::<c_void>(),
     )
@@ -554,9 +562,9 @@ unsafe extern "C" fn on_global(
     } else if iface == b"xdg_wm_base" {
         st.wm_base = registry_bind(registry, name, &ffi::xdg_wm_base_interface, 1);
     } else if iface == b"wl_seat" {
-        // Bind at v4: pointer v4 covers enter/leave/motion/button/axis without
-        // the v5+ frame/axis_value120 group — sufficient for M1 forwarding.
-        st.seat = registry_bind(registry, name, &ffi::wl_seat_interface, version.min(4));
+        // Pointer v9 preserves axis framing, source, true sequence stops,
+        // high-resolution wheel values, and natural-scroll direction.
+        st.seat = registry_bind(registry, name, &ffi::wl_seat_interface, version.min(9));
     } else if iface == b"wl_output" {
         // Bind at v2 for the `scale` event (added in v2); v4's name/description
         // are not requested, so the 4-slot vtable is never over-run. Track each
@@ -672,6 +680,7 @@ unsafe extern "C" fn on_seat_capabilities(data: *mut c_void, seat: *mut ffi::wl_
         }
         pointer_release(st.pointer);
         st.pointer = std::ptr::null_mut();
+        st.pending_pointer_axis = PointerAxisFrame::default();
         st.input_events.push(InputEvent::PointerLeave);
     }
     if want_keyboard && st.keyboard.is_null() {
@@ -844,21 +853,110 @@ unsafe extern "C" fn on_pointer_button(
 
 unsafe extern "C" fn on_pointer_axis(
     data: *mut c_void,
-    _pointer: *mut ffi::wl_proxy,
-    _time: u32,
+    pointer: *mut ffi::wl_proxy,
+    time: u32,
     axis: u32,
     value: i32,
 ) {
-    // axis: 0 = vertical, 1 = horizontal. value is a wl_fixed scroll delta.
     let st = &mut *(data as *mut State);
     let v = ffi::wl_fixed_to_f32(value);
-    let (dx, dy) = match axis {
-        0 => (0.0, v),
-        1 => (v, 0.0),
-        _ => (0.0, 0.0),
+    st.pending_pointer_axis.time = time;
+    if v != 0.0 {
+        let slot = pointer_axis_slot(&mut st.pending_pointer_axis, axis);
+        if let Some(slot) = slot {
+            slot.value = Some(slot.value.unwrap_or(0.0) + v);
+        }
+    }
+    // Pointer v4 has no `frame`; preserve compatibility with an old host by
+    // emitting each axis callback as its own source-unknown frame.
+    if ffi::wl_proxy_get_version(pointer) < 5 {
+        flush_pointer_axis(st);
+    }
+}
+
+fn pointer_axis_slot(frame: &mut PointerAxisFrame, axis: u32) -> Option<&mut PointerAxis> {
+    match axis {
+        0 => Some(&mut frame.vertical),
+        1 => Some(&mut frame.horizontal),
+        _ => None,
+    }
+}
+
+fn flush_pointer_axis(st: &mut State) {
+    let frame = std::mem::take(&mut st.pending_pointer_axis);
+    if frame.has_data() {
+        st.input_events.push(InputEvent::PointerAxis(frame));
+    }
+}
+
+unsafe extern "C" fn on_pointer_frame(data: *mut c_void, _pointer: *mut ffi::wl_proxy) {
+    flush_pointer_axis(&mut *(data as *mut State));
+}
+
+unsafe extern "C" fn on_pointer_axis_source(
+    data: *mut c_void,
+    _pointer: *mut ffi::wl_proxy,
+    source: u32,
+) {
+    (*(data as *mut State)).pending_pointer_axis.source = match source {
+        0 => Some(PointerAxisSource::Wheel),
+        1 => Some(PointerAxisSource::Finger),
+        2 => Some(PointerAxisSource::Continuous),
+        3 => Some(PointerAxisSource::WheelTilt),
+        _ => None,
     };
-    if dx != 0.0 || dy != 0.0 {
-        st.input_events.push(InputEvent::PointerAxis { dx, dy });
+}
+
+unsafe extern "C" fn on_pointer_axis_stop(
+    data: *mut c_void,
+    _pointer: *mut ffi::wl_proxy,
+    time: u32,
+    axis: u32,
+) {
+    let st = &mut *(data as *mut State);
+    st.pending_pointer_axis.time = time;
+    if let Some(slot) = pointer_axis_slot(&mut st.pending_pointer_axis, axis) {
+        slot.stop = true;
+    }
+}
+
+unsafe extern "C" fn on_pointer_axis_discrete(
+    data: *mut c_void,
+    _pointer: *mut ffi::wl_proxy,
+    axis: u32,
+    discrete: i32,
+) {
+    let st = &mut *(data as *mut State);
+    if let Some(slot) = pointer_axis_slot(&mut st.pending_pointer_axis, axis) {
+        slot.discrete = Some(slot.discrete.unwrap_or(0) + discrete);
+    }
+}
+
+unsafe extern "C" fn on_pointer_axis_value120(
+    data: *mut c_void,
+    _pointer: *mut ffi::wl_proxy,
+    axis: u32,
+    value120: i32,
+) {
+    let st = &mut *(data as *mut State);
+    if let Some(slot) = pointer_axis_slot(&mut st.pending_pointer_axis, axis) {
+        slot.value120 = Some(slot.value120.unwrap_or(0) + value120);
+    }
+}
+
+unsafe extern "C" fn on_pointer_axis_relative_direction(
+    data: *mut c_void,
+    _pointer: *mut ffi::wl_proxy,
+    axis: u32,
+    direction: u32,
+) {
+    let st = &mut *(data as *mut State);
+    if let Some(slot) = pointer_axis_slot(&mut st.pending_pointer_axis, axis) {
+        slot.relative_direction = match direction {
+            0 => Some(PointerAxisRelativeDirection::Identical),
+            1 => Some(PointerAxisRelativeDirection::Inverted),
+            _ => None,
+        };
     }
 }
 
@@ -1193,6 +1291,12 @@ static POINTER_LISTENER: ffi::wl_pointer_listener = ffi::wl_pointer_listener {
     motion: on_pointer_motion,
     button: on_pointer_button,
     axis: on_pointer_axis,
+    frame: on_pointer_frame,
+    axis_source: on_pointer_axis_source,
+    axis_stop: on_pointer_axis_stop,
+    axis_discrete: on_pointer_axis_discrete,
+    axis_value120: on_pointer_axis_value120,
+    axis_relative_direction: on_pointer_axis_relative_direction,
 };
 static SWIPE_GESTURE_LISTENER: ffi::zwp_pointer_gesture_swipe_v1_listener =
     ffi::zwp_pointer_gesture_swipe_v1_listener {
@@ -1268,6 +1372,7 @@ impl NestedHost {
                 fractional_active: false,
                 scale_changed: false,
                 input_events: Vec::new(),
+                pending_pointer_axis: PointerAxisFrame::default(),
                 pointer_gesture_events: Vec::new(),
                 text_input_events: Vec::new(),
                 text_input_entered: false,
@@ -1412,6 +1517,7 @@ impl NestedHost {
                 state,
                 ash: None,
                 vk_surface: 0,
+                touchpad_config: ass_core::input::TouchpadConfig::default(),
             })
         }
     }
@@ -1574,6 +1680,22 @@ impl Backend for NestedHost {
             // enumerate here.
             available_modes: Vec::new(),
         }]
+    }
+
+    fn set_touchpad_config(
+        &mut self,
+        config: ass_core::input::TouchpadConfig,
+    ) -> ass_core::input::TouchpadStatus {
+        self.touchpad_config = config;
+        self.touchpad_status()
+    }
+
+    fn touchpad_status(&self) -> ass_core::input::TouchpadStatus {
+        ass_core::input::TouchpadStatus {
+            configurable: false,
+            config: self.touchpad_config,
+            ..ass_core::input::TouchpadStatus::default()
+        }
     }
 
     fn dispatch(&mut self) -> bool {

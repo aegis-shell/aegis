@@ -161,6 +161,10 @@ pub const WL_POINTER_AXIS_SOURCE: u32 = 6;
 pub const WL_POINTER_AXIS_STOP: u32 = 7;
 /// `wl_pointer.axis_discrete` (v5+).
 pub const WL_POINTER_AXIS_DISCRETE: u32 = 8;
+/// `wl_pointer.axis_value120` (v8+).
+pub const WL_POINTER_AXIS_VALUE120: u32 = 9;
+/// `wl_pointer.axis_relative_direction` (v9+).
+pub const WL_POINTER_AXIS_RELATIVE_DIRECTION: u32 = 10;
 
 /// `wl_pointer.axis` axis enum values.
 pub const WL_POINTER_AXIS_VERTICAL_SCROLL: u32 = 0;
@@ -169,7 +173,10 @@ pub const WL_POINTER_AXIS_HORIZONTAL_SCROLL: u32 = 1;
 pub const WL_POINTER_AXIS_SOURCE_WHEEL: u32 = 0;
 pub const WL_POINTER_AXIS_SOURCE_FINGER: u32 = 1;
 pub const WL_POINTER_AXIS_SOURCE_CONTINUOUS: u32 = 2;
-pub const WL_POINTER_AXIS_SOURCE_TABLET_PAD: u32 = 3;
+pub const WL_POINTER_AXIS_SOURCE_WHEEL_TILT: u32 = 3;
+/// `wl_pointer.axis_relative_direction` enum values.
+pub const WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL: u32 = 0;
+pub const WL_POINTER_AXIS_RELATIVE_DIRECTION_INVERTED: u32 = 1;
 
 /// `wl_keyboard` event opcodes.
 pub const WL_KEYBOARD_KEYMAP: u32 = 0;

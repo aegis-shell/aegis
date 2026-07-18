@@ -566,8 +566,9 @@ impl Chrome for HudBar {
         if pressed && contains(audio, cursor.0, cursor.1) {
             out.system_actions.push(SystemAction::ToggleMute);
         }
-        if contains(audio, cursor.0, cursor.1) && raw.scroll_y.abs() > 0.01 {
-            let amount = if raw.scroll_y < 0.0 { 2 } else { -2 };
+        let scroll_y = raw.scroll_y * 40.0 + raw.scroll_pixels_y;
+        if contains(audio, cursor.0, cursor.1) && scroll_y.abs() > 0.01 {
+            let amount = if scroll_y < 0.0 { 2 } else { -2 };
             out.system_actions.push(SystemAction::StepVolume(amount));
         }
         if pressed && control_hover {
@@ -642,8 +643,8 @@ impl Chrome for HudBar {
         _display: (f32, f32),
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
-    ) -> CursorShape {
-        CursorShape::Pointer
+    ) -> Option<CursorShape> {
+        Some(CursorShape::Pointer)
     }
 
     fn update_app_catalog(

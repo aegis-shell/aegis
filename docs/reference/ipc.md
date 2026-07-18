@@ -131,9 +131,11 @@ after queuing appears as `Effect::Refused` in the mutation journal.
 ## Capture
 
 ass exposes pixel capture through two fail-closed operations that share one
-offscreen re-render path (ADR-0037). Both are refused while the session is
-locked or the seat is inactive, and both capture exactly what the user sees,
-including the overview grid while overview mode is active.
+same-frame presentation readback path (ADR-0037). Both are refused while the
+session is locked or the seat is inactive. The request copies the exact frame
+being submitted; later client commits, animations, or wallpaper frames cannot
+change the detached snapshot. Captures include the overview grid while
+overview mode is active.
 
 `Command::Screenshot { path }` is a journaled `control` command that writes
 the focused output as a PNG file; `ass-ctl screenshot` is its reference
@@ -144,8 +146,12 @@ explicit `CaptureOutput` entry in the connection's scope `ops`; like
 `InjectInput`, the operation is never inherited through the `None`-means-all
 default. PNG payloads are bounded by the codec's 16 MiB frame limit.
 
+Capture regions use compositor logical pixels. The returned PNG and
+`width`/`height` use physical output pixels, so a region captured at 200%
+scale has twice the logical width and height.
+
 Continuous frame streaming (screencast, `xdg-desktop-portal`) is future
-work and will reuse the same readback path.
+work and can reuse the same scale-aware frame-copy path.
 
 ## Named Scopes
 

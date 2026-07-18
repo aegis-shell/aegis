@@ -328,8 +328,26 @@ fn lookup_fallback_icon(icon: &str, bases: &[PathBuf]) -> Option<PathBuf> {
 }
 
 fn lookup_file(icon: &str, directory: &Path) -> Option<PathBuf> {
+    // `Path::with_extension` cannot be used here: icon names commonly follow
+    // reverse-DNS application ids (for example `org.mozilla.firefox`), and it
+    // would replace `.firefox` instead of appending the image extension.
+    // Explicit extensions are uncommon but valid in real desktop files, so
+    // try an already-complete filename before adding the standard suffixes.
+    let direct = directory.join(icon);
+    if direct
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            ICON_EXTS
+                .iter()
+                .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+        })
+        && direct.is_file()
+    {
+        return Some(direct);
+    }
     for extension in ICON_EXTS {
-        let candidate = directory.join(icon).with_extension(extension);
+        let candidate = directory.join(format!("{icon}.{extension}"));
         if candidate.is_file() {
             return Some(candidate);
         }
@@ -476,6 +494,37 @@ mod tests {
 
         let found = resolve_icon("exported", None, std::slice::from_ref(&pixmaps), 48);
         assert_eq!(found, Some(pixmaps.join("exported.png")));
+    }
+
+    #[test]
+    fn reverse_dns_icon_name_keeps_every_name_component() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path();
+        index(
+            base,
+            "hicolor",
+            "[Icon Theme]\nName=Hicolor\nComment=Hicolor\nDirectories=128x128/apps\n\n[128x128/apps]\nSize=128\nType=Fixed\n",
+        );
+        write(
+            &base.join("hicolor/128x128/apps/org.mozilla.firefox.png"),
+            "icon",
+        );
+
+        let found = resolve_icon("org.mozilla.firefox", None, &[base.to_path_buf()], 128);
+        assert_eq!(
+            found,
+            Some(base.join("hicolor/128x128/apps/org.mozilla.firefox.png"))
+        );
+    }
+
+    #[test]
+    fn icon_name_with_explicit_extension_is_used_verbatim() {
+        let temp = tempfile::tempdir().unwrap();
+        let pixmaps = temp.path().join("pixmaps");
+        write(&pixmaps.join("explicit.svg"), "svg");
+
+        let found = resolve_icon("explicit.svg", None, std::slice::from_ref(&pixmaps), 48);
+        assert_eq!(found, Some(pixmaps.join("explicit.svg")));
     }
 
     #[test]

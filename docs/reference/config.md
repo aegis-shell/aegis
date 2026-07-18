@@ -19,7 +19,9 @@ log diagnostic and never crashes the compositor.
 | `[layout]` | table | gaps `8`, master_ratio `0.5` | Tiling policy parameters. See [Layout](#layout). |
 | `[dock]` | table | automatic pins | Applications pinned to the dock. See [Dock](#dock). |
 | `[ui]` | table | reduced_motion `false` | Shell-wide UI policy. See [UI](#ui). |
+| `[input.touchpad]` | table | touchpad defaults | Touchpad pointing, tapping, and scrolling profile. See [Touchpad](#touchpad). |
 | `[[output]]` | array of tables | none | Per-connector display policy: mode, scale, position, transform, primary. See [Outputs](#outputs). |
+| `[screenshot]` | table | XDG Pictures directory | Screenshot save location. See [Screenshots](#screenshots). |
 | `[agent]` | table | no scopes | Named automation scopes enforced by the IPC server. See [Agent Scopes](#agent-scopes). |
 
 ## Environment
@@ -84,6 +86,53 @@ cursor_size = 24
 
 This is the single switch for animation policy; individual effects do not
 override it.
+
+## Touchpad
+
+The `[input.touchpad]` table is applied live to every libinput touchpad in a
+direct DRM session. Settings writes this same profile back to the TOML file
+without replacing comments or unrelated sections. In a nested session the
+outer compositor owns the physical device, so changes are saved for the next
+direct session.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `natural_scroll` | boolean | `false` | Move content in the same direction as the fingers. |
+| `tap_to_click` | boolean | `true` | Map a light tap to a primary-button click. |
+| `tap_and_drag` | boolean | `true` | Start dragging when a finger stays down after a tap. |
+| `drag_lock` | boolean | `false` | Keep a tap-drag active briefly after the finger lifts. |
+| `disable_while_typing` | boolean | `true` | Suppress accidental touchpad input while typing. |
+| `pointer_speed` | float | `0.0` | libinput acceleration speed from `-1.0` (slowest) to `1.0` (fastest). |
+| `scroll_method` | string | `"two-finger"` | `"two-finger"` or `"edge"`. Unsupported methods fall back to one supported by the device. |
+
+```toml
+[input.touchpad]
+natural_scroll = true
+tap_to_click = true
+tap_and_drag = true
+drag_lock = false
+disable_while_typing = true
+pointer_speed = 0.2
+scroll_method = "two-finger"
+```
+
+Unsupported controls are disabled when a physical device reports its
+capabilities. The selected values remain the device profile and will be
+applied after hotplug when a compatible touchpad appears.
+
+## Screenshots
+
+The `[screenshot]` table controls where the interactive screenshot selector
+writes PNG files. Changes apply on live reload.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `save_dir` | string | `$XDG_PICTURES_DIR/screenshots` | Directory for timestamped screenshots. Falls back to `~/Pictures/screenshots` when the XDG user Pictures directory is unavailable. |
+
+```toml
+[screenshot]
+save_dir = "/home/alice/Pictures/screenshots"
+```
 
 ## Outputs
 

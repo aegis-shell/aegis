@@ -63,16 +63,26 @@ project cuts a tagged release.
   [path.png]` writes the focused output as a PNG, and the new IPC
   `Request::CaptureOutput` returns the frame as base64 PNG to scoped
   agents (explicit `CaptureOutput` op, never inherited; refused while the
-  session is locked or the seat is inactive). Captures re-render the scene
-  into a new CPU-readable flux offscreen surface, so they work identically
-  on the nested and DRM/KMS backends — and show the overview grid when it
-  is open.
+  session is locked or the seat is inactive). Captures now copy the exact
+  output frame being submitted, including its current client buffers,
+  wallpaper frame, chrome, and software cursor; later scene changes cannot
+  alter the immutable snapshot. This works on both nested and DRM/KMS
+  backends and shows the overview grid when it is open. Default captures
+  now use the XDG user Pictures directory's
+  lowercase `screenshots` subdirectory, and logical capture regions are
+  converted to physical pixels so HiDPI captures match the displayed region.
+  Readback staging is preallocated, GPU completion is polled across frames
+  instead of waited synchronously, and PNG compression, base64 conversion,
+  and file writes run on a bounded capture worker instead of pausing the
+  compositor frame thread. Overlapping capture requests are refused rather
+  than stacking full-frame jobs.
 - Per-output scale policy (ADR-0028): `[[output]]` config entries override
   the backend-reported scale per connector for mixed-DPI setups, applied
   live on reload.
-- flux gains `flux_surface_readback_desc` (and `Surface::offscreen_readback`
-  in the Rust bindings): an offscreen surface pinned to CPU readback that
-  stays non-exportable on dma-buf-capable devices, and lens gains
+- flux gains on-demand exact-frame readback
+  (`Frame::request_readback`, `Surface::prepare_readback`, and
+  `Surface::read_pixels_ready`) plus `flux_surface_readback_desc` for
+  always-readable offscreen surfaces, and lens gains
   `lens_set_reduced_motion` so every eased widget value resolves in one
   frame under the policy.
 

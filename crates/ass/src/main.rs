@@ -492,128 +492,97 @@ fn draw_glyph_cursor(canvas: &flux::Canvas, position: (f32, f32), shape: u32, sc
     canvas.restore();
 }
 
-/// Backend-independent screenshot target: an offscreen RGBA8 flux surface
-/// whose pixels the CPU can read back. A windowed (WSI) surface cannot be
-/// read back, so captures re-render the scene here once at request time —
-/// the same draw calls the per-frame path uses, on both the nested and the
-/// direct KMS backend. Recreated whenever the output extent changes.
-struct ShotSurface {
-    surface: flux::Surface,
-    canvas: flux::Canvas,
+/// Immutable GPU readback staging detached from the presentation surface and
+/// handed to the capture worker. `crop` is already converted to physical
+/// pixels; the full CPU copy and every later operation stay off the
+/// compositor's presentation-critical thread.
+struct CapturedPixels {
     width: u32,
     height: u32,
-}
-
-impl ShotSurface {
-    fn for_output(device: &flux::Device, size: (u32, u32)) -> Result<ShotSurface, flux::Error> {
-        // Pinned to CPU readback: on dma-buf-capable devices a plain
-        // offscreen surface exports its images and read_pixels refuses them.
-        let surface = flux::Surface::offscreen_readback(device, size.0.max(1), size.1.max(1))?;
-        let canvas = flux::Canvas::new(&surface)?;
-        Ok(ShotSurface {
-            surface,
-            canvas,
-            width: size.0.max(1),
-            height: size.1.max(1),
-        })
-    }
-}
-
-/// Render the current desktop scene (wallpaper, clients, chrome) into the
-/// offscreen shot surface and return `(width, height, png_bytes)`. If `crop`
-/// is `Some`, only that logical-pixel rectangle is encoded; otherwise the
-/// full output is captured.
-#[allow(clippy::too_many_arguments)]
-fn capture_output_png(
-    device: &flux::Device,
-    shot: &mut Option<ShotSurface>,
-    renderer: &mut ass_render::Renderer,
-    server: &ass_server::Server,
-    shell: &mut ass_shell::Shell,
-    wallpaper: &mut Option<ass_wallpaper::Wallpaper>,
-    input: &ass_shell::Input,
-    render_geometry: RenderGeometry,
-    physical_size: (u32, u32),
-    overview: bool,
+    readback: flux::Readback,
     crop: Option<ass_core::Rect>,
-) -> Result<(u32, u32, Vec<u8>), String> {
-    let stale = match shot {
-        Some(s) => (s.width, s.height) != physical_size,
-        None => true,
-    };
-    if stale {
-        *shot = Some(
-            ShotSurface::for_output(device, physical_size)
-                .map_err(|e| format!("shot surface: {e}"))?,
-        );
-    }
-    let shot = shot.as_mut().expect("shot surface just created");
-    let mut frame = shot
-        .surface
-        .begin_frame()
-        .map_err(|e| format!("shot frame: {e}"))?;
-    shot.canvas
-        .begin(&frame, Some(0xFF00_0000))
-        .map_err(|e| format!("shot canvas: {e}"))?;
-    draw_direct_desktop_scene(
-        &shot.canvas,
-        device,
-        &mut frame,
-        wallpaper,
-        renderer,
-        server,
-        render_geometry,
-        overview,
-    )
-    .map_err(|e| format!("shot scene: {e}"))?;
-    // SAFETY: the raw canvas is live for the call, exactly like the per-frame
-    // shell render above.
-    unsafe { shell.render(shot.canvas.as_raw() as *mut _, input) }
-        .map_err(|e| format!("shot chrome: {e}"))?;
-    shot.canvas.end();
-    let submitted = frame.submit().map_err(|e| format!("shot submit: {e}"))?;
-    submitted
-        .present()
-        .map_err(|e| format!("shot present: {e}"))?;
-
-    let mut pixels = vec![0u8; shot.width as usize * shot.height as usize * 4];
-    shot.surface
-        .read_pixels(&mut pixels)
-        .map_err(|e| format!("shot readback: {e}{}", flux_last_error_detail()))?;
-    unpremultiply(&mut pixels);
-    let (width, height, png) = if let Some(crop) = crop {
-        let crop = clamp_rect_to_size(crop, shot.width, shot.height);
-        let cropped = crop_rgba(&pixels, shot.width, shot.height, crop);
-        (
-            crop.size.w as u32,
-            crop.size.h as u32,
-            encode_png(crop.size.w as u32, crop.size.h as u32, &cropped)?,
-        )
-    } else {
-        (
-            shot.width,
-            shot.height,
-            encode_png(shot.width, shot.height, &pixels)?,
-        )
-    };
-    Ok((width, height, png))
 }
 
-/// Clamp `rect` to `[0, 0, width, height]` so crop indices are always valid.
-fn clamp_rect_to_size(rect: ass_core::Rect, width: u32, height: u32) -> ass_core::Rect {
-    let x = rect.origin.x.max(0).min(width as i32);
-    let y = rect.origin.y.max(0).min(height as i32);
-    let w = rect
-        .size
-        .w
-        .max(0)
-        .min(width.saturating_sub(x as u32) as i32);
-    let h = rect
-        .size
-        .h
-        .max(0)
-        .min(height.saturating_sub(y as u32) as i32);
-    ass_core::Rect::new(x, y, w, h)
+struct PendingReadback {
+    width: u32,
+    height: u32,
+    crop: Option<ass_core::Rect>,
+}
+
+enum CaptureTarget {
+    Screenshot {
+        path: String,
+        command: ass_ipc::Command,
+        ts_mono_ms: u64,
+    },
+    Reply {
+        reply: std::sync::mpsc::Sender<Result<(u32, u32, String), String>>,
+    },
+}
+
+struct PendingCapture {
+    readback: PendingReadback,
+    target: CaptureTarget,
+}
+
+enum CaptureJob {
+    Screenshot {
+        capture: CapturedPixels,
+        path: String,
+        command: ass_ipc::Command,
+        ts_mono_ms: u64,
+    },
+    Reply {
+        capture: CapturedPixels,
+        reply: std::sync::mpsc::Sender<Result<(u32, u32, String), String>>,
+    },
+}
+
+struct ScreenshotCompletion {
+    command: ass_ipc::Command,
+    ts_mono_ms: u64,
+    effect: ass_ipc::Effect,
+}
+
+fn read_captured_pixels(
+    surface: &flux::Surface,
+    pending: PendingReadback,
+) -> Result<CapturedPixels, String> {
+    let readback = surface
+        .take_readback()
+        .map_err(|error| format!("detach shot readback: {error}{}", flux_last_error_detail()))?;
+    Ok(CapturedPixels {
+        width: pending.width,
+        height: pending.height,
+        readback,
+        crop: pending.crop,
+    })
+}
+
+/// Convert a compositor-logical crop rectangle to physical output pixels.
+///
+/// Scaling both endpoints avoids accumulating a rounding error in the width
+/// or height at fractional scales. The result is clamped to the readback
+/// surface so regions partially outside the focused output remain safe.
+fn logical_rect_to_physical(
+    rect: ass_core::Rect,
+    scale: f32,
+    width: u32,
+    height: u32,
+) -> ass_core::Rect {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        f64::from(scale)
+    } else {
+        1.0
+    };
+    let right = i64::from(rect.origin.x) + i64::from(rect.size.w.max(0));
+    let bottom = i64::from(rect.origin.y) + i64::from(rect.size.h.max(0));
+    let scaled = |value: i64| (value as f64 * scale).round() as i64;
+    let x0 = scaled(i64::from(rect.origin.x)).clamp(0, i64::from(width));
+    let y0 = scaled(i64::from(rect.origin.y)).clamp(0, i64::from(height));
+    let x1 = scaled(right).clamp(x0, i64::from(width));
+    let y1 = scaled(bottom).clamp(y0, i64::from(height));
+    ass_core::Rect::new(x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32)
 }
 
 /// Extract a sub-rectangle from a full RGBA8 buffer.
@@ -629,6 +598,199 @@ fn crop_rgba(src: &[u8], src_w: u32, _src_h: u32, rect: ass_core::Rect) -> Vec<u
         out.extend_from_slice(&src[start..start + w * 4]);
     }
     out
+}
+
+/// Finish a capture away from the frame thread. Cropping first bounds the
+/// unpremultiply and PNG work for region captures.
+fn encode_capture(capture: CapturedPixels) -> Result<(u32, u32, Vec<u8>), String> {
+    let mut full_rgba = vec![0u8; capture.width as usize * capture.height as usize * 4];
+    capture
+        .readback
+        .read_pixels(&mut full_rgba)
+        .map_err(|error| format!("shot pixel copy: {error}"))?;
+    encode_rgba_capture(capture.width, capture.height, full_rgba, capture.crop)
+}
+
+fn encode_rgba_capture(
+    full_width: u32,
+    full_height: u32,
+    full_rgba: Vec<u8>,
+    crop: Option<ass_core::Rect>,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    let (width, height, mut rgba) = match crop {
+        Some(crop) => (
+            crop.size.w as u32,
+            crop.size.h as u32,
+            crop_rgba(&full_rgba, full_width, full_height, crop),
+        ),
+        None => (full_width, full_height, full_rgba),
+    };
+    unpremultiply(&mut rgba);
+    let png = encode_png(width, height, &rgba)?;
+    Ok((width, height, png))
+}
+
+/// Single bounded post-processing lane for screenshots and IPC pixel
+/// captures. Only one full-frame payload may be in flight, which keeps
+/// repeated requests from consuming unbounded memory or compounding stalls.
+struct CaptureWorker {
+    jobs: std::sync::mpsc::Sender<CaptureJob>,
+    completions: std::sync::mpsc::Receiver<ScreenshotCompletion>,
+    busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl CaptureWorker {
+    fn spawn() -> std::io::Result<Self> {
+        let (job_tx, job_rx) = std::sync::mpsc::channel::<CaptureJob>();
+        let (completion_tx, completion_rx) = std::sync::mpsc::channel::<ScreenshotCompletion>();
+        let busy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_busy = std::sync::Arc::clone(&busy);
+        std::thread::Builder::new()
+            .name("ass-capture".into())
+            .spawn(move || {
+                while let Ok(job) = job_rx.recv() {
+                    match job {
+                        CaptureJob::Screenshot {
+                            capture,
+                            path,
+                            command,
+                            ts_mono_ms,
+                        } => {
+                            let effect = match encode_capture(capture).and_then(|(_, _, png)| {
+                                std::fs::write(&path, png)
+                                    .map_err(|error| format!("write {path}: {error}"))
+                            }) {
+                                Ok(()) => {
+                                    log::info!("screenshot: wrote {path}");
+                                    ass_ipc::Effect::Applied
+                                }
+                                Err(reason) => ass_ipc::Effect::Refused { reason },
+                            };
+                            if completion_tx
+                                .send(ScreenshotCompletion {
+                                    command,
+                                    ts_mono_ms,
+                                    effect,
+                                })
+                                .is_err()
+                            {
+                                worker_busy.store(false, std::sync::atomic::Ordering::Release);
+                                break;
+                            }
+                            // The main loop clears `busy` after it records the
+                            // completion, keeping the loop awake until then.
+                        }
+                        CaptureJob::Reply { capture, reply } => {
+                            let result = encode_capture(capture).map(|(width, height, png)| {
+                                (width, height, ass_ipc::base64::encode(&png))
+                            });
+                            let _ = reply.send(result);
+                            worker_busy.store(false, std::sync::atomic::Ordering::Release);
+                        }
+                    }
+                }
+                worker_busy.store(false, std::sync::atomic::Ordering::Release);
+            })?;
+        Ok(Self {
+            jobs: job_tx,
+            completions: completion_rx,
+            busy,
+        })
+    }
+
+    fn reserve(&self) -> bool {
+        self.busy
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn release(&self) {
+        self.busy.store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    fn is_busy(&self) -> bool {
+        self.busy.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn submit(&self, job: CaptureJob) -> Result<(), Box<CaptureJob>> {
+        self.jobs.send(job).map_err(|error| Box::new(error.0))
+    }
+}
+
+fn refuse_capture_target(
+    worker: &CaptureWorker,
+    target: CaptureTarget,
+    reason: String,
+    journal: &std::sync::Arc<std::sync::Mutex<ass_ipc::Journal>>,
+    ipc: &Option<ass_ipc::Server>,
+) {
+    worker.release();
+    match target {
+        CaptureTarget::Screenshot {
+            command,
+            ts_mono_ms,
+            ..
+        } => journal_effect_and_broadcast(
+            journal,
+            ipc,
+            ts_mono_ms,
+            ass_ipc::Origin::Ipc { conn_id: 0 },
+            command,
+            ass_ipc::Effect::Refused { reason },
+        ),
+        CaptureTarget::Reply { reply } => {
+            let _ = reply.send(Err(reason));
+        }
+    }
+}
+
+fn queue_captured_pixels(
+    worker: &CaptureWorker,
+    capture: CapturedPixels,
+    target: CaptureTarget,
+    journal: &std::sync::Arc<std::sync::Mutex<ass_ipc::Journal>>,
+    ipc: &Option<ass_ipc::Server>,
+) {
+    let job = match target {
+        CaptureTarget::Screenshot {
+            path,
+            command,
+            ts_mono_ms,
+        } => CaptureJob::Screenshot {
+            capture,
+            path,
+            command,
+            ts_mono_ms,
+        },
+        CaptureTarget::Reply { reply } => CaptureJob::Reply { capture, reply },
+    };
+    if let Err(job) = worker.submit(job) {
+        let target = match *job {
+            CaptureJob::Screenshot {
+                path,
+                command,
+                ts_mono_ms,
+                ..
+            } => CaptureTarget::Screenshot {
+                path,
+                command,
+                ts_mono_ms,
+            },
+            CaptureJob::Reply { reply, .. } => CaptureTarget::Reply { reply },
+        };
+        refuse_capture_target(
+            worker,
+            target,
+            "capture worker stopped".to_owned(),
+            journal,
+            ipc,
+        );
+    }
 }
 
 /// Convert premultiplied RGBA8 (the flux/Wayland contract) to the straight
@@ -666,7 +828,7 @@ fn flux_last_error_detail() -> String {
 }
 
 /// One pixel-capture request from an IPC connection thread, answered by the
-/// main loop after it re-renders the scene offscreen (M10 pixel capture).
+/// main loop after it copies the exact output frame being submitted.
 struct CaptureRequest {
     reply: std::sync::mpsc::Sender<Result<(u32, u32, String), String>>,
     /// Logical-pixel region to capture, or `None` for the full output.
@@ -880,6 +1042,9 @@ fn apply_system_action(
                 return Some(ass_ipc::Command::ToggleTiling);
             }
         }
+        // Touchpad profiles are persisted and applied by the main loop, which
+        // owns both the config file and the selected input backend.
+        SystemAction::SetTouchpad(_) => {}
     }
     None
 }
@@ -935,6 +1100,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Move the host into a binding declared after the device so Rust drops the
     // host-owned VkSurfaceKHR before Flux destroys its VkInstance.
     let mut host = host_bootstrap;
+    host.set_touchpad_config(
+        config
+            .as_ref()
+            .map(|c| c.input.touchpad)
+            .unwrap_or_default(),
+    );
     log::info!(
         "flux: device created for {} backend; dma-buf {}",
         host.name(),
@@ -956,11 +1127,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Flux presentation surface + canvas.
     let mut surface = host.create_surface(&device)?;
+    if let Err(error) = surface.prepare_readback() {
+        log::warn!(
+            "capture: could not preallocate readback staging: {error}{}",
+            flux_last_error_detail()
+        );
+    }
     let mut canvas = flux::Canvas::new(&surface)?;
     let mut launcher_backdrop = LauncherBackdrop::new(&device)?;
-    // Screenshot/pixel-capture target, created lazily on the first request
-    // (M9/M10). Offscreen so its pixels are CPU-readable on both backends.
-    let mut shot: Option<ShotSurface> = None;
+    // A requested presentation frame remains in mapped readback staging until
+    // the main loop copies it into an owned CPU buffer.
+    let mut pending_capture: Option<PendingCapture> = None;
+    // PNG compression, base64 conversion, and file writes run here instead
+    // of pausing the compositor frame thread after GPU readback.
+    let capture_worker = CaptureWorker::spawn()?;
     // XDG cursor theme cache for the software cursor on direct KMS.
     let mut cursor_cache = cursor::CursorCache::default();
     // Advertise the pre-scaled buffer to the host; takes effect on the next
@@ -969,10 +1149,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // `config` was loaded above, before the backend, so output policy also
     // applies before icons decode.
-    let screenshot_dir = config
+    let mut screenshot_dir = config
         .as_ref()
         .map(|c| std::path::PathBuf::from(&c.screenshot.save_dir))
-        .unwrap_or_else(default_screenshot_dir);
+        .unwrap_or_else(ass_config::default_screenshot_dir);
 
     // Wayland server: accept client connections on its own socket. Created
     // before the icon pass so the effective output scale (backend-reported
@@ -1206,6 +1386,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut system_status = ass_shell::SystemStatus::detect();
     system_status.do_not_disturb = notif_queue.lock().unwrap().do_not_disturb();
     system_status.tiled = server.tiling();
+    system_status.touchpad = host.touchpad_status();
     shell.set_system_status(system_status.clone());
     let (status_tx, status_rx) = std::sync::mpsc::channel::<ass_shell::SystemStatus>();
     std::thread::Builder::new()
@@ -1331,6 +1512,51 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if !alive || shell.should_quit() || quit_requested {
             break;
         }
+        while let Ok(completion) = capture_worker.completions.try_recv() {
+            journal_effect_and_broadcast(
+                &journal,
+                &ipc,
+                completion.ts_mono_ms,
+                ass_ipc::Origin::Ipc { conn_id: 0 },
+                completion.command,
+                completion.effect,
+            );
+            capture_worker.release();
+        }
+        if pending_capture.is_some() {
+            let readiness = surface.read_pixels_ready().map_err(|error| {
+                format!(
+                    "shot readback readiness: {error}{}",
+                    flux_last_error_detail()
+                )
+            });
+            match readiness {
+                Ok(false) => {}
+                Ok(true) => {
+                    let pending = pending_capture.take().expect("checked above");
+                    match read_captured_pixels(&surface, pending.readback) {
+                        Ok(capture) => queue_captured_pixels(
+                            &capture_worker,
+                            capture,
+                            pending.target,
+                            &journal,
+                            &ipc,
+                        ),
+                        Err(reason) => refuse_capture_target(
+                            &capture_worker,
+                            pending.target,
+                            reason,
+                            &journal,
+                            &ipc,
+                        ),
+                    }
+                }
+                Err(reason) => {
+                    let pending = pending_capture.take().expect("checked above");
+                    refuse_capture_target(&capture_worker, pending.target, reason, &journal, &ipc);
+                }
+            }
+        }
         // libseat revokes DRM/input devices while another VT owns the seat.
         // The backend continues dispatching seat events but no rendering or
         // client input may occur until the enable event restores ownership.
@@ -1346,10 +1572,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         while let Ok(mut detected) = status_rx.try_recv() {
             detected.do_not_disturb = notif_queue.lock().unwrap().do_not_disturb();
             detected.tiled = server.tiling();
+            detected.touchpad = host.touchpad_status();
             if detected != system_status {
                 system_status = detected;
                 shell.set_system_status(system_status.clone());
             }
+        }
+        let touchpad_status = host.touchpad_status();
+        if touchpad_status != system_status.touchpad {
+            system_status.touchpad = touchpad_status;
+            shell.set_system_status(system_status.clone());
         }
         // Hot-reload the configuration when its mtime moves (ADR-0026). One
         // `stat` per frame is cheap and keeps the reload on this loop, where
@@ -1366,12 +1598,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     &mut cursor_cache,
                 )
             {
+                screenshot_dir = config
+                    .as_ref()
+                    .map(|c| std::path::PathBuf::from(&c.screenshot.save_dir))
+                    .unwrap_or_else(ass_config::default_screenshot_dir);
                 // Output follow-through: hand the backend the fresh mode
                 // requests (consumed at the next modeset), then re-feed its
                 // current geometries so a policy *removed* from the file
                 // reverts to the backend-reported value instead of lingering
                 // in the live output set.
                 host.set_configured_modes(configured_output_modes(config.as_ref()));
+                system_status.touchpad = host.set_touchpad_config(
+                    config
+                        .as_ref()
+                        .map(|c| c.input.touchpad)
+                        .unwrap_or_default(),
+                );
+                shell.set_system_status(system_status.clone());
                 server.set_outputs(host.output_infos());
                 live.set_scopes(build_ipc_scopes(config.as_ref()));
                 let pinned = build_dock_apps(
@@ -1522,6 +1765,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         input.set_mouse_down(lens::MouseButton::Middle, input_acc.mouse_down[2]);
         input.set_dt(frame_dt);
         let mut shell_scroll = (0.0_f32, 0.0_f32);
+        let mut shell_scroll_pixels = (0.0_f32, 0.0_f32);
         let pointer_before = input_acc.cursor;
         let mut events = host.take_input();
         if !events.is_empty() {
@@ -1632,9 +1876,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             shell.toggle();
                         }
                     }
-                    PointerAxis { dx, dy } => {
-                        shell_scroll.0 += dx;
-                        shell_scroll.1 += dy;
+                    PointerAxis(frame) => {
+                        use ass_core::input::PointerAxisSource;
+                        if matches!(
+                            frame.source,
+                            Some(PointerAxisSource::Wheel | PointerAxisSource::WheelTilt)
+                        ) {
+                            shell_scroll.0 += frame.horizontal.wheel_steps();
+                            shell_scroll.1 += frame.vertical.wheel_steps();
+                        } else {
+                            shell_scroll_pixels.0 += frame.dx();
+                            shell_scroll_pixels.1 += frame.dy();
+                        }
                     }
                     // Touch events are not handled by the shell chrome yet;
                     // they route to clients via forward_input below.
@@ -1717,7 +1970,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         chrome_pointer_captured = captured;
                     }
-                    PointerAxis { .. } => {
+                    PointerAxis(_) => {
                         let captured = !session_locked
                             && shell.captures_pointer_at(route_cursor.0, route_cursor.1, display);
                         if synthetic_pointer_active {
@@ -1944,6 +2197,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             input.set_dt(frame_dt);
         } else {
             input.set_scroll(shell_scroll.0, shell_scroll.1);
+            input.set_scroll_pixels(shell_scroll_pixels.0, shell_scroll_pixels.1);
         }
 
         // A host resize or an output-scale change (window moved to a monitor
@@ -1952,6 +2206,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // geometry stay logical. Re-advertise the buffer scale so the host
         // keeps mapping our pre-scaled buffer 1:1.
         if let Some(sz) = host.take_resize() {
+            if let Some(capture) = pending_capture.take() {
+                refuse_capture_target(
+                    &capture_worker,
+                    capture.target,
+                    "output changed before the captured frame became readable".to_owned(),
+                    &journal,
+                    &ipc,
+                );
+            }
             if host.surface_needs_recreate() {
                 // Direct KMS: a hotplug changed the plane-modifier
                 // intersection the surface was created with. Resize cannot
@@ -1962,6 +2225,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 let (pw, ph) = host.physical_size();
                 surface.resize(pw, ph)?;
+            }
+            if let Err(error) = surface.prepare_readback() {
+                log::warn!(
+                    "capture: could not preallocate resized readback staging: {error}{}",
+                    flux_last_error_detail()
+                );
             }
             host.set_buffer_scale();
             server.set_outputs(host.output_infos());
@@ -2045,6 +2314,62 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     scale,
                 };
                 let physical_size = surface.size();
+                // Bind at most one pending request to this presentation
+                // frame. The readback copy is recorded after every scene and
+                // cursor draw, so it captures exactly the pixels submitted
+                // below rather than a later re-render of mutable state.
+                let mut frame_capture: Option<(Option<ass_core::Rect>, CaptureTarget)> = None;
+                for req in capture_rx.try_iter() {
+                    if session_locked || !host.is_active() {
+                        let _ = req
+                            .reply
+                            .send(Err("session is locked or inactive".to_owned()));
+                    } else if !capture_worker.reserve() {
+                        let _ = req
+                            .reply
+                            .send(Err("another capture is still being processed".to_owned()));
+                    } else {
+                        frame_capture =
+                            Some((req.region, CaptureTarget::Reply { reply: req.reply }));
+                    }
+                }
+                for (cmd, ts) in pending_screenshots.drain(..) {
+                    let ass_ipc::Command::Screenshot { path, region } = &cmd else {
+                        continue;
+                    };
+                    if session_locked || !host.is_active() {
+                        journal_effect_and_broadcast(
+                            &journal,
+                            &ipc,
+                            ts,
+                            ass_ipc::Origin::Ipc { conn_id: 0 },
+                            cmd,
+                            ass_ipc::Effect::Refused {
+                                reason: "session is locked or inactive".into(),
+                            },
+                        );
+                    } else if !capture_worker.reserve() {
+                        journal_effect_and_broadcast(
+                            &journal,
+                            &ipc,
+                            ts,
+                            ass_ipc::Origin::Ipc { conn_id: 0 },
+                            cmd,
+                            ass_ipc::Effect::Refused {
+                                reason: "another capture is still being processed".into(),
+                            },
+                        );
+                    } else {
+                        frame_capture = Some((
+                            *region,
+                            CaptureTarget::Screenshot {
+                                path: path.clone(),
+                                command: cmd,
+                                ts_mono_ms: ts,
+                            },
+                        ));
+                    }
+                }
                 let blur_sigma = shell.backdrop_blur_sigma();
                 let backdrop_regions = shell.backdrop_regions(input_acc.display_size);
                 let model_active = wallpaper
@@ -2202,19 +2527,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // a HiDPI host; layout and input stay in logical pixels.
                 shell.set_scale(scale);
                 unsafe { shell.render(canvas.as_raw() as *mut _, &input)? };
-                // If the screenshot selector confirmed a region this frame,
-                // queue a capture. The path is generated from the configured
-                // save directory so the interactive tool never needs a CLI arg.
+                // Confirmation resets the selector before it draws, so this
+                // same presentation frame contains the desktop without the
+                // selection overlay. Bind that exact frame to the request.
                 if let Some(region) = shell.take_screenshot_region() {
                     let path = screenshot_path(&screenshot_dir);
                     let ts = start.elapsed().as_millis() as u64;
-                    pending_screenshots.push((
-                        ass_ipc::Command::Screenshot {
-                            path,
-                            region: Some(region),
-                        },
-                        ts,
-                    ));
+                    let command = ass_ipc::Command::Screenshot {
+                        path: path.clone(),
+                        region: Some(region),
+                    };
+                    if capture_worker.reserve() {
+                        frame_capture = Some((
+                            Some(region),
+                            CaptureTarget::Screenshot {
+                                path,
+                                command,
+                                ts_mono_ms: ts,
+                            },
+                        ));
+                    } else {
+                        journal_effect_and_broadcast(
+                            &journal,
+                            &ipc,
+                            ts,
+                            ass_ipc::Origin::Ipc { conn_id: 0 },
+                            command,
+                            ass_ipc::Effect::Refused {
+                                reason: "another capture is still being processed".into(),
+                            },
+                        );
+                    }
                 }
                 if session_locked {
                     draw_lock_scene(
@@ -2338,6 +2681,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let system_actions = shell.take_system_actions();
                 if !system_actions.is_empty() {
                     for action in system_actions {
+                        if let ass_shell::SystemAction::SetTouchpad(profile) = action {
+                            if let Some(path) = config_path.as_deref() {
+                                if let Err(error) = ass_config::set_touchpad_config(path, &profile)
+                                {
+                                    log::warn!(
+                                        "touchpad: failed to persist settings to {}: {error}",
+                                        path.display()
+                                    );
+                                }
+                            } else {
+                                log::warn!("touchpad: cannot persist settings; no config path");
+                            }
+                            if let Some(current) = config.as_mut() {
+                                current.input.touchpad = profile;
+                            }
+                            system_status.touchpad = host.set_touchpad_config(profile);
+                            continue;
+                        }
                         if let Some(cmd) = apply_system_action(
                             &mut server,
                             &notif_queue,
@@ -2363,6 +2724,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let mut detected = ass_shell::SystemStatus::detect();
                     detected.do_not_disturb = system_status.do_not_disturb;
                     detected.tiled = system_status.tiled;
+                    detected.touchpad = host.touchpad_status();
                     system_status = detected;
                     shell.set_system_status(system_status.clone());
                 }
@@ -2449,10 +2811,63 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
                 canvas.end();
-                let submitted = frame.submit()?;
+                let mut capture_for_present = frame_capture.take().and_then(|(crop, target)| {
+                    let readback = PendingReadback {
+                        width: physical_size.0,
+                        height: physical_size.1,
+                        crop: crop.map(|rect| {
+                            logical_rect_to_physical(
+                                rect,
+                                render_geometry.scale,
+                                physical_size.0,
+                                physical_size.1,
+                            )
+                        }),
+                    };
+                    match frame.request_readback() {
+                        Ok(()) => Some(PendingCapture { readback, target }),
+                        Err(error) => {
+                            refuse_capture_target(
+                                &capture_worker,
+                                target,
+                                format!(
+                                    "frame readback request: {error}{}",
+                                    flux_last_error_detail()
+                                ),
+                                &journal,
+                                &ipc,
+                            );
+                            None
+                        }
+                    }
+                });
+                let submitted = match frame.submit() {
+                    Ok(submitted) => submitted,
+                    Err(error) => {
+                        if let Some(capture) = capture_for_present.take() {
+                            refuse_capture_target(
+                                &capture_worker,
+                                capture.target,
+                                format!("captured frame submission failed: {error}"),
+                                &journal,
+                                &ipc,
+                            );
+                        }
+                        return Err(error.into());
+                    }
+                };
                 let completion_fence = match host.present(&surface, submitted) {
                     Ok(fence) => fence,
                     Err(error) => {
+                        if let Some(capture) = capture_for_present.take() {
+                            refuse_capture_target(
+                                &capture_worker,
+                                capture.target,
+                                format!("captured frame was not presented: {error}"),
+                                &journal,
+                                &ipc,
+                            );
+                        }
                         // Transient direct-display conditions (VT switch,
                         // hotplug reconfigure, flip timeout): drop this frame
                         // and keep the session alive instead of exiting.
@@ -2471,6 +2886,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         return Err(error.into());
                     }
                 };
+                if let Some(capture) = capture_for_present {
+                    debug_assert!(pending_capture.is_none());
+                    pending_capture = Some(capture);
+                }
                 if server.lock_confirmation_pending() {
                     match host.wait_presented(&device) {
                         Ok(()) => server.presentation_complete(),
@@ -2502,82 +2921,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // Pace clients: fire frame callbacks for this presentation.
                 server.send_frame_callbacks(start.elapsed().as_millis() as u32);
 
-                // Answer pixel-capture requests and screenshot commands now
-                // that the scene state for this frame is current. Both paths
-                // re-render the scene into the offscreen shot surface, so a
-                // capture reflects exactly what was just presented. Refused
-                // while locked (privacy) or while the seat is inactive.
-                for req in capture_rx.try_iter() {
-                    let reply = if session_locked || !host.is_active() {
-                        Err("session is locked or inactive".to_owned())
-                    } else {
-                        capture_output_png(
-                            &device,
-                            &mut shot,
-                            &mut renderer,
-                            &server,
-                            &mut shell,
-                            &mut wallpaper,
-                            &input,
-                            render_geometry,
-                            physical_size,
-                            overview_active,
-                            req.region,
-                        )
-                        .map(|(w, h, png)| (w, h, ass_ipc::base64::encode(&png)))
-                    };
-                    let _ = req.reply.send(reply);
-                }
-                for (cmd, ts) in pending_screenshots.drain(..) {
-                    let ass_ipc::Command::Screenshot { path, region } = &cmd else {
-                        continue;
-                    };
-                    let effect = if session_locked || !host.is_active() {
-                        ass_ipc::Effect::Refused {
-                            reason: "session is locked or inactive".into(),
-                        }
-                    } else {
-                        match capture_output_png(
-                            &device,
-                            &mut shot,
-                            &mut renderer,
-                            &server,
-                            &mut shell,
-                            &mut wallpaper,
-                            &input,
-                            render_geometry,
-                            physical_size,
-                            overview_active,
-                            *region,
-                        ) {
-                            Ok((_, _, png)) => match std::fs::write(path, &png) {
-                                Ok(()) => {
-                                    log::info!("screenshot: wrote {path}");
-                                    ass_ipc::Effect::Applied
-                                }
-                                Err(e) => ass_ipc::Effect::Refused {
-                                    reason: format!("write {path}: {e}"),
-                                },
-                            },
-                            Err(e) => ass_ipc::Effect::Refused { reason: e },
-                        }
-                    };
-                    journal_effect_and_broadcast(
-                        &journal,
-                        &ipc,
-                        ts,
-                        ass_ipc::Origin::Ipc { conn_id: 0 },
-                        cmd,
-                        effect,
-                    );
-                }
-
                 frame_count += 1;
                 if frame_count == 1 {
                     log::info!("{}: first frame presented (with shell chrome)", host.name());
                 }
             }
             Err(error) if error.0 == flux_sys::flux_result::FLUX_ERROR_TIMEOUT => {
+                for (command, ts_mono_ms) in pending_screenshots.drain(..) {
+                    journal_effect_and_broadcast(
+                        &journal,
+                        &ipc,
+                        ts_mono_ms,
+                        ass_ipc::Origin::Ipc { conn_id: 0 },
+                        command,
+                        ass_ipc::Effect::Refused {
+                            reason: "output frame timed out before capture".to_owned(),
+                        },
+                    );
+                }
                 // The previous frame's GPU work did not retire inside the
                 // frame timeout (or the presentation engine released no
                 // swapchain image): transient. Skip this iteration and let
@@ -2586,10 +2947,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
             Err(_) => {
+                for (command, ts_mono_ms) in pending_screenshots.drain(..) {
+                    journal_effect_and_broadcast(
+                        &journal,
+                        &ipc,
+                        ts_mono_ms,
+                        ass_ipc::Origin::Ipc { conn_id: 0 },
+                        command,
+                        ass_ipc::Effect::Refused {
+                            reason: "output changed before capture".to_owned(),
+                        },
+                    );
+                }
                 // Out-of-date / lost: rebuild the swapchain at the current
                 // physical size.
+                if let Some(capture) = pending_capture.take() {
+                    refuse_capture_target(
+                        &capture_worker,
+                        capture.target,
+                        "output changed before the captured frame became readable".to_owned(),
+                        &journal,
+                        &ipc,
+                    );
+                }
                 let (nw, nh) = host.physical_size();
                 surface.resize(nw, nh)?;
+                if let Err(error) = surface.prepare_readback() {
+                    log::warn!(
+                        "capture: could not preallocate resized readback staging: {error}{}",
+                        flux_last_error_detail()
+                    );
+                }
             }
         }
 
@@ -2599,6 +2987,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // the same frame it begins.
         animating = shell.anim_pending()
             || server.transitions_pending()
+            || capture_worker.is_busy()
             || wallpaper
                 .as_ref()
                 .is_some_and(ass_wallpaper::Wallpaper::has_model);
@@ -2652,17 +3041,6 @@ fn configured_output_modes(
         .into_iter()
         .filter_map(|(connector, policy)| policy.mode.map(|mode| (connector, mode)))
         .collect()
-}
-
-/// Default directory for screenshots when no `[screenshot]` config is loaded:
-/// `$XDG_PICTURES_DIR/Screenshots`, falling back to `~/Pictures/Screenshots`
-/// and then the current working directory.
-fn default_screenshot_dir() -> std::path::PathBuf {
-    dirs::picture_dir()
-        .unwrap_or_else(|| {
-            dirs::home_dir().unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
-        })
-        .join("Screenshots")
 }
 
 /// Generate a timestamped screenshot filename inside `dir`, creating the
@@ -3393,6 +3771,40 @@ mod tests {
         assert_eq!(geometry.mode.height, 1386);
         assert_eq!(geometry.scale, ass_core::output::Scale(1.5));
         assert_eq!(geometry.logical_size(), ass_core::Size { w: 945, h: 924 });
+    }
+
+    #[test]
+    fn logical_capture_region_scales_to_physical_pixels() {
+        assert_eq!(
+            logical_rect_to_physical(ass_core::Rect::new(10, 20, 100, 80), 2.0, 3840, 2160),
+            ass_core::Rect::new(20, 40, 200, 160)
+        );
+    }
+
+    #[test]
+    fn logical_capture_region_scales_endpoints_and_clamps() {
+        assert_eq!(
+            logical_rect_to_physical(ass_core::Rect::new(-10, 10, 30, 20), 1.5, 30, 40),
+            ass_core::Rect::new(0, 15, 30, 25)
+        );
+        assert_eq!(
+            logical_rect_to_physical(ass_core::Rect::new(10, 20, 100, 80), 0.0, 200, 200),
+            ass_core::Rect::new(10, 20, 100, 80)
+        );
+    }
+
+    #[test]
+    fn capture_encoding_crops_and_unpremultiplies_worker_payload() {
+        let (width, height, png) = encode_rgba_capture(
+            2,
+            1,
+            vec![10, 20, 30, 255, 50, 25, 0, 128],
+            Some(ass_core::Rect::new(1, 0, 1, 1)),
+        )
+        .unwrap();
+        assert_eq!((width, height), (1, 1));
+        let decoded = image::load_from_memory(&png).unwrap().into_rgba8();
+        assert_eq!(decoded.into_raw(), vec![100, 50, 0, 128]);
     }
 
     #[test]

@@ -48,9 +48,10 @@ pub enum InputEvent {
     PointerMotion { x: f32, y: f32 },
     /// Pointer button state changed. `button` is a Linux `BTN_*` code.
     PointerButton { button: u32, state: ButtonState },
-    /// Smooth scroll. Discrete wheel clicks arrive as multiples of 10.0
-    /// (matching libinput's default), per the wl_pointer axis convention.
-    PointerAxis { dx: f32, dy: f32 },
+    /// One logically atomic pointer-axis frame. Source, high-resolution wheel
+    /// steps, and real sequence termination stay attached to the continuous
+    /// values so Wayland clients can distinguish wheels from touchpads.
+    PointerAxis(PointerAxisFrame),
     /// Pointer left the surface area.
     PointerLeave,
     /// Touch contact `id` (0..max-1) went down at `(x, y)` in logical pixels.
@@ -70,6 +71,178 @@ pub enum InputEvent {
     /// Graphics-tablet tool event. Kept distinct from the mouse pointer so
     /// tablet-aware clients receive pressure/tilt and independent proximity.
     Tablet { event: TabletEvent },
+}
+
+/// Physical source of a pointer-axis frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerAxisSource {
+    Wheel,
+    Finger,
+    Continuous,
+    WheelTilt,
+}
+
+/// Physical direction relative to the reported axis direction.
+///
+/// `Inverted` is used by natural scrolling: the finger or wheel moved in the
+/// opposite direction from the resulting `wl_pointer.axis` value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerAxisRelativeDirection {
+    Identical,
+    Inverted,
+}
+
+/// Data for one axis within a [`PointerAxisFrame`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PointerAxis {
+    /// Continuous distance in surface-local logical units. `None` means this
+    /// frame has no motion value for the axis.
+    pub value: Option<f32>,
+    /// Legacy whole wheel steps for Wayland pointer versions 5–7.
+    pub discrete: Option<i32>,
+    /// High-resolution wheel distance in 120ths of a logical detent.
+    pub value120: Option<i32>,
+    /// The continuous finger/device sequence ended on this axis.
+    pub stop: bool,
+    /// Physical motion direction relative to `value`, when known.
+    pub relative_direction: Option<PointerAxisRelativeDirection>,
+}
+
+impl PointerAxis {
+    pub fn has_data(self) -> bool {
+        self.value.is_some() || self.discrete.is_some() || self.value120.is_some() || self.stop
+    }
+
+    /// Normalize wheel metadata to logical detents for UI toolkits whose
+    /// wheel API is step-based.
+    pub fn wheel_steps(self) -> f32 {
+        self.value120
+            .map(|value| value as f32 / 120.0)
+            .or_else(|| self.discrete.map(|value| value as f32))
+            .or_else(|| self.value.map(|value| value / 10.0))
+            .unwrap_or(0.0)
+    }
+}
+
+/// A group of horizontal and vertical scroll events that belong together.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PointerAxisFrame {
+    /// Backend event time in milliseconds.
+    pub time: u32,
+    /// Physical source, or `None` when an older nested host cannot report it.
+    pub source: Option<PointerAxisSource>,
+    pub horizontal: PointerAxis,
+    pub vertical: PointerAxis,
+}
+
+impl PointerAxisFrame {
+    /// Build a continuous-value frame without inventing wheel-step metadata.
+    pub fn from_values(time: u32, source: Option<PointerAxisSource>, dx: f32, dy: f32) -> Self {
+        Self {
+            time,
+            source,
+            horizontal: PointerAxis {
+                value: (dx != 0.0).then_some(dx),
+                ..PointerAxis::default()
+            },
+            vertical: PointerAxis {
+                value: (dy != 0.0).then_some(dy),
+                ..PointerAxis::default()
+            },
+        }
+    }
+
+    pub fn dx(self) -> f32 {
+        self.horizontal.value.unwrap_or(0.0)
+    }
+
+    pub fn dy(self) -> f32 {
+        self.vertical.value.unwrap_or(0.0)
+    }
+
+    pub fn has_data(self) -> bool {
+        self.horizontal.has_data() || self.vertical.has_data()
+    }
+}
+
+/// Scroll gesture selected for a touchpad.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TouchpadScrollMethod {
+    /// Scroll by moving two fingers over the pad.
+    #[default]
+    TwoFinger,
+    /// Scroll by moving one finger along a pad edge.
+    Edge,
+}
+
+/// User-selected touchpad policy.
+///
+/// The compositor keeps this backend-agnostic so configuration, settings UI,
+/// and libinput all exchange the same value. Unsupported fields are retained
+/// as a device profile and applied when a capable touchpad becomes available.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TouchpadConfig {
+    /// Make content follow the fingers instead of the scrollbar thumb.
+    pub natural_scroll: bool,
+    /// A light finger tap produces a primary-button click.
+    pub tap_to_click: bool,
+    /// Holding after a tap starts a drag.
+    pub tap_and_drag: bool,
+    /// Keep a tap-drag active briefly after the finger lifts.
+    pub drag_lock: bool,
+    /// Suppress accidental pointer input while typing.
+    pub disable_while_typing: bool,
+    /// libinput pointer acceleration in the inclusive range `-1.0..=1.0`.
+    pub pointer_speed: f32,
+    /// Gesture used to produce scroll events.
+    pub scroll_method: TouchpadScrollMethod,
+}
+
+impl Default for TouchpadConfig {
+    fn default() -> Self {
+        Self {
+            natural_scroll: false,
+            tap_to_click: true,
+            tap_and_drag: true,
+            drag_lock: false,
+            disable_while_typing: true,
+            pointer_speed: 0.0,
+            scroll_method: TouchpadScrollMethod::TwoFinger,
+        }
+    }
+}
+
+/// Features supported by the currently attached touchpad set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TouchpadCapabilities {
+    pub natural_scroll: bool,
+    pub tap_to_click: bool,
+    pub tap_and_drag: bool,
+    pub drag_lock: bool,
+    pub disable_while_typing: bool,
+    pub pointer_speed: bool,
+    pub two_finger_scroll: bool,
+    pub edge_scroll: bool,
+}
+
+/// Live touchpad state exposed to shell settings.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TouchpadStatus {
+    /// Whether this compositor directly owns the physical input devices.
+    pub configurable: bool,
+    pub device_names: Vec<String>,
+    pub capabilities: TouchpadCapabilities,
+    pub config: TouchpadConfig,
+}
+
+impl TouchpadStatus {
+    pub fn device_count(&self) -> usize {
+        self.device_names.len()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

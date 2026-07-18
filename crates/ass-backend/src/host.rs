@@ -5,7 +5,9 @@ use std::os::fd::OwnedFd;
 use std::str::FromStr;
 use std::time::Duration;
 
-use ass_core::input::{InputEvent, PointerGestureEvent, TextInputEvent, TextInputState};
+use ass_core::input::{
+    InputEvent, PointerGestureEvent, TextInputEvent, TextInputState, TouchpadConfig, TouchpadStatus,
+};
 use ass_core::output::ModeSpec;
 use ass_core::Size;
 
@@ -231,6 +233,20 @@ impl Backend for Host {
         match self {
             Self::Nested(host) => host.set_configured_modes(modes),
             Self::Drm(host) => host.set_configured_modes(modes),
+        }
+    }
+
+    fn set_touchpad_config(&mut self, config: TouchpadConfig) -> TouchpadStatus {
+        match self {
+            Self::Nested(host) => host.set_touchpad_config(config),
+            Self::Drm(host) => host.set_touchpad_config(config),
+        }
+    }
+
+    fn touchpad_status(&self) -> TouchpadStatus {
+        match self {
+            Self::Nested(host) => host.touchpad_status(),
+            Self::Drm(host) => host.touchpad_status(),
         }
     }
 

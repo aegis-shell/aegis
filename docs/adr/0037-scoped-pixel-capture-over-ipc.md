@@ -9,10 +9,11 @@
 the structured agent path (ids, journal, scopes) was the default, and raw
 pixels needed a privacy model before an API. The desktop phase has since
 closed two prerequisites. First, the capture mechanism exists: flux owns
-offscreen RGBA8 surfaces with CPU readback (`flux_surface_read_pixels`), and
-the compositor re-renders the scene into one on demand, so a capture works
-identically on the nested and the DRM/KMS backend. Second, the capability
-model exists: named scopes with explicit operation allowlists
+on-demand frame readback: the compositor can copy the exact output image
+inside its presentation submission, poll completion without waiting, and
+detach the immutable staging buffer to a worker. This works identically on
+the nested and the DRM/KMS backend. Second, the capability model exists:
+named scopes with explicit operation allowlists
 ([ADR-0034](0034-scoped-capabilities.md),
 [ADR-0035](0035-fail-closed-named-ipc-scopes.md)) already gate the
 comparably sensitive `InjectInput` operation.
@@ -24,7 +25,7 @@ access, under a revocable scope.
 ## Decision
 
 ass exposes pixel capture through two fail-closed IPC operations, sharing
-one offscreen re-render path in the compositor:
+one same-frame presentation readback path in the compositor:
 
 1. **`Command::Screenshot { path }`** — a journaled `control` command that
    writes the focused output as a PNG file. It follows ordinary control
@@ -38,8 +39,11 @@ one offscreen re-render path in the compositor:
 Both are refused while the session is locked or the seat is inactive: a
 locked or VT-switched-away desktop yields no pixels. The PNG payload is
 bounded by the codec's 16 MiB frame limit. The capture reflects exactly the
-scene the user sees, including the overview grid when overview mode is
-active.
+submitted frame triggered by the request, including the overview grid when
+overview mode is active. Later client commits, wallpaper frames, and
+animations cannot change the detached snapshot. GPU completion is polled,
+and pixel copying, alpha conversion, PNG compression, and output delivery
+run on a bounded worker instead of the presentation thread.
 
 ## Alternatives
 
@@ -60,6 +64,8 @@ active.
 - The agent phase's perception loop is unblocked: a scoped client can
   observe the desktop on demand and correlate pixels with the structured
   window model in the same protocol.
+- Capturing adds a GPU image-to-buffer copy to the requested presentation
+  but does not re-render the scene or synchronously wait for the GPU.
 - `docs/reference/ipc.md` documents both operations; the "Capture" section
   supersedes its earlier "no pixel capture" statement.
 - Screen streaming (screencast, `xdg-desktop-portal`) remains future work

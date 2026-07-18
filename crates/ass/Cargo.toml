@@ -32,8 +32,6 @@ lens = { workspace = true }
 image = { workspace = true }
 log.workspace = true
 env_logger.workspace = true
-# XDG base-directory resolution for the default screenshot save path.
-dirs = { workspace = true }
 # Direct deps purely so this binary's build script receives DEP_FLUX_RPATHS /
 # DEP_LENS_RPATHS (published via the -sys crates' `links` metadata) and can
 # re-emit the rpaths — `rustc-link-arg` does not propagate across crates.

@@ -343,10 +343,12 @@ impl Chrome for Launcher {
         // spatial model better than one enormous vertically scrolling list.
         let mut page_changed = false;
         if self.brain.is_open() && page_total > 1 {
-            let page_axis = if raw.scroll_x.abs() > raw.scroll_y.abs() {
-                raw.scroll_x
+            let scroll_x = raw.scroll_x * 40.0 + raw.scroll_pixels_x;
+            let scroll_y = raw.scroll_y * 40.0 + raw.scroll_pixels_y;
+            let page_axis = if scroll_x.abs() > scroll_y.abs() {
+                scroll_x
             } else {
-                raw.scroll_y
+                scroll_y
             };
             if page_axis > 0.05 && self.page + 1 < page_total {
                 self.change_page(self.page + 1);
@@ -726,14 +728,14 @@ impl Chrome for Launcher {
         display: (f32, f32),
         _windows: &[Window],
         _workspaces: &crate::WorkspaceSnapshot,
-    ) -> CursorShape {
-        if self.app_menu.contains(x, y, display) {
+    ) -> Option<CursorShape> {
+        Some(if self.app_menu.contains(x, y, display) {
             CursorShape::Pointer
         } else if contains(self.search_rect(display), x, y) {
             CursorShape::Text
         } else {
             CursorShape::Default
-        }
+        })
     }
 
     fn set_modal_reserved(&mut self, reserved: Reserved) {

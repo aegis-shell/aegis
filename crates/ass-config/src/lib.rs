@@ -20,7 +20,7 @@
 
 use std::path::{Path, PathBuf};
 
-use ass_core::input::Mods;
+use ass_core::input::{Mods, TouchpadConfig, TouchpadScrollMethod};
 use ass_core::keybind::{Keybind, Keymap};
 use toml_edit::DocumentMut;
 
@@ -67,6 +67,10 @@ pub struct Config {
     #[serde(default)]
     pub ui: UiConfig,
 
+    /// Physical input-device policy, written as an `[input]` table.
+    #[serde(default)]
+    pub input: InputConfig,
+
     /// Per-output display policy (ADR-0028), written as `[[output]]`
     /// array-of-tables. Each entry overrides the backend-reported mode,
     /// scale, position, transform, or primary selection for one connector.
@@ -100,19 +104,23 @@ pub struct AgentConfig {
 #[serde(deny_unknown_fields)]
 pub struct ScreenshotConfig {
     /// Directory to write screenshots into. Defaults to
-    /// `$XDG_PICTURES_DIR/Screenshots`.
+    /// `$XDG_PICTURES_DIR/screenshots`.
     #[serde(default = "default_screenshot_save_dir")]
     pub save_dir: String,
 }
 
-fn default_screenshot_save_dir() -> String {
+/// Default screenshot directory from the XDG user Pictures directory,
+/// falling back to `~/Pictures/screenshots` and then
+/// `<current-directory>/screenshots`.
+pub fn default_screenshot_dir() -> PathBuf {
     dirs::picture_dir()
-        .unwrap_or_else(|| {
-            dirs::home_dir().unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
-        })
-        .join("Screenshots")
-        .to_string_lossy()
-        .into_owned()
+        .or_else(|| dirs::home_dir().map(|home| home.join("Pictures")))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+        .join("screenshots")
+}
+
+fn default_screenshot_save_dir() -> String {
+    default_screenshot_dir().to_string_lossy().into_owned()
 }
 
 impl Default for ScreenshotConfig {
@@ -189,6 +197,15 @@ pub struct UiConfig {
     /// Cursor size in logical pixels. `$XCURSOR_SIZE` wins when set.
     #[serde(default)]
     pub cursor_size: Option<u32>,
+}
+
+/// The `[input]` section.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InputConfig {
+    /// Touchpad policy, written as `[input.touchpad]`.
+    #[serde(default)]
+    pub touchpad: TouchpadConfig,
 }
 
 /// One `[[output]]` entry: per-connector display policy (ADR-0028). Only
@@ -464,6 +481,14 @@ impl Config {
                 ));
             }
         }
+        if !cfg.input.touchpad.pointer_speed.is_finite()
+            || !(-1.0..=1.0).contains(&cfg.input.touchpad.pointer_speed)
+        {
+            diagnostics.push(Diagnostic::new(
+                Some("input.touchpad.pointer_speed".into()),
+                "must be between -1.0 and 1.0",
+            ));
+        }
         if cfg.screenshot.save_dir.trim().is_empty() {
             diagnostics.push(Diagnostic::new(
                 Some("screenshot.save_dir".into()),
@@ -645,6 +670,71 @@ pub fn set_dock_pinned(path: &Path, pinned: &[String]) -> Result<(), LoadError> 
     })
 }
 
+/// Persist the complete `[input.touchpad]` profile while preserving comments
+/// and unrelated configuration. The file and parent directory are created
+/// when absent; malformed existing TOML is never overwritten.
+pub fn set_touchpad_config(path: &Path, config: &TouchpadConfig) -> Result<(), LoadError> {
+    let mut doc = match std::fs::read_to_string(path) {
+        Ok(text) => text
+            .parse::<DocumentMut>()
+            .map_err(|error| LoadError::Invalid {
+                path: path.into(),
+                diagnostics: vec![Diagnostic::new(None, format!("existing file: {error}"))],
+            })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let mut d = DocumentMut::new();
+            d["schema_version"] = toml_edit::value(i64::from(SUPPORTED_SCHEMA_VERSION));
+            d
+        }
+        Err(e) => {
+            return Err(LoadError::Read {
+                path: path.into(),
+                source: e,
+            })
+        }
+    };
+
+    if !doc
+        .get("input")
+        .map(|item| item.is_table())
+        .unwrap_or(false)
+    {
+        doc["input"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    if !doc["input"]
+        .get("touchpad")
+        .map(|item| item.is_table())
+        .unwrap_or(false)
+    {
+        doc["input"]["touchpad"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+
+    let touchpad = &mut doc["input"]["touchpad"];
+    touchpad["natural_scroll"] = toml_edit::value(config.natural_scroll);
+    touchpad["tap_to_click"] = toml_edit::value(config.tap_to_click);
+    touchpad["tap_and_drag"] = toml_edit::value(config.tap_and_drag);
+    touchpad["drag_lock"] = toml_edit::value(config.drag_lock);
+    touchpad["disable_while_typing"] = toml_edit::value(config.disable_while_typing);
+    touchpad["pointer_speed"] = toml_edit::value(f64::from(config.pointer_speed));
+    touchpad["scroll_method"] = toml_edit::value(match config.scroll_method {
+        TouchpadScrollMethod::TwoFinger => "two-finger",
+        TouchpadScrollMethod::Edge => "edge",
+    });
+
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return Err(LoadError::Write {
+                path: path.into(),
+                source: e,
+            });
+        }
+    }
+    std::fs::write(path, doc.to_string()).map_err(|e| LoadError::Write {
+        path: path.into(),
+        source: e,
+    })
+}
+
 /// The default config path: `$XDG_CONFIG_HOME/ass/config.toml`, falling back
 /// to `~/.config/ass/config.toml` per the `dirs` crate. `None` when the home
 /// directory cannot be determined.
@@ -762,6 +852,58 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "schema_version = [unterminated\n"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn touchpad_config_parses_defaults_and_rejects_bad_speed() {
+        let defaults = Config::parse("schema_version = 1\n").unwrap();
+        assert_eq!(defaults.input.touchpad, TouchpadConfig::default());
+
+        let cfg = Config::parse(
+            "schema_version = 1\n\
+             [input.touchpad]\n\
+             natural_scroll = true\n\
+             tap_to_click = false\n\
+             tap_and_drag = false\n\
+             drag_lock = true\n\
+             disable_while_typing = false\n\
+             pointer_speed = 0.35\n\
+             scroll_method = \"edge\"\n",
+        )
+        .unwrap();
+        assert!(cfg.input.touchpad.natural_scroll);
+        assert!(!cfg.input.touchpad.tap_to_click);
+        assert_eq!(cfg.input.touchpad.pointer_speed, 0.35);
+        assert_eq!(cfg.input.touchpad.scroll_method, TouchpadScrollMethod::Edge);
+
+        let err = Config::parse("schema_version = 1\n[input.touchpad]\npointer_speed = 1.5\n")
+            .unwrap_err();
+        assert!(err
+            .iter()
+            .any(|d| d.field.as_deref() == Some("input.touchpad.pointer_speed")));
+    }
+
+    #[test]
+    fn set_touchpad_config_creates_profile_and_preserves_other_content() {
+        let path = temp_config_path("touchpad");
+        let original = "schema_version = 1\n\n# keep this\n[ui]\nreduced_motion = true\n";
+        std::fs::write(&path, original).unwrap();
+        let profile = TouchpadConfig {
+            natural_scroll: true,
+            tap_to_click: false,
+            tap_and_drag: false,
+            drag_lock: true,
+            disable_while_typing: false,
+            pointer_speed: -0.4,
+            scroll_method: TouchpadScrollMethod::Edge,
+        };
+        set_touchpad_config(&path, &profile).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# keep this"), "comment survives: {text}");
+        let cfg = load(&path).unwrap().expect("file remains loadable");
+        assert_eq!(cfg.input.touchpad, profile);
+        assert!(cfg.ui.reduced_motion);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1131,7 +1273,7 @@ mod tests {
     fn screenshot_config_defaults_and_parses() {
         let cfg = Config::parse("schema_version = 1\n").unwrap();
         assert!(!cfg.screenshot.save_dir.is_empty());
-        assert!(cfg.screenshot.save_dir.ends_with("Screenshots"));
+        assert!(cfg.screenshot.save_dir.ends_with("screenshots"));
 
         let cfg2 =
             Config::parse("schema_version = 1\n[screenshot]\nsave_dir = \"/tmp/shots\"\n").unwrap();

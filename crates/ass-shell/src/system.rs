@@ -26,7 +26,7 @@ pub struct BatteryStatus {
 }
 
 /// One coherent snapshot consumed by compositor-owned system UI.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SystemStatus {
     pub volume: Option<u8>,
     pub muted: bool,
@@ -42,6 +42,8 @@ pub struct SystemStatus {
     pub do_not_disturb: bool,
     /// Current workspace layout state filled by the executable.
     pub tiled: bool,
+    /// Physical touchpad capabilities and the selected device profile.
+    pub touchpad: ass_core::input::TouchpadStatus,
 }
 
 impl SystemStatus {
@@ -71,12 +73,13 @@ impl SystemStatus {
             brightness: detect_brightness(),
             do_not_disturb: false,
             tiled: false,
+            touchpad: ass_core::input::TouchpadStatus::default(),
         }
     }
 }
 
 /// Trusted system mutation requested by the control center or compact HUD.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SystemAction {
     ToggleMute,
     StepVolume(i8),
@@ -86,6 +89,7 @@ pub enum SystemAction {
     SetBluetooth(bool),
     SetDoNotDisturb(bool),
     SetTiling(bool),
+    SetTouchpad(ass_core::input::TouchpadConfig),
 }
 
 fn detect_network() -> NetworkState {
@@ -213,5 +217,9 @@ mod tests {
         assert_eq!(status.brightness, None);
         assert_eq!(status.wifi_enabled, None);
         assert_eq!(status.bluetooth_enabled, None);
+        assert_eq!(
+            status.touchpad.config,
+            ass_core::input::TouchpadConfig::default()
+        );
     }
 }

@@ -269,12 +269,12 @@ impl Chrome for Overview {
         _display: (f32, f32),
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
-    ) -> CursorShape {
-        if self.hovered.is_some() || self.rail_hovered.is_some() {
+    ) -> Option<CursorShape> {
+        Some(if self.hovered.is_some() || self.rail_hovered.is_some() {
             CursorShape::Pointer
         } else {
             CursorShape::Default
-        }
+        })
     }
 
     fn key_char(&mut self, key: &KeyChar, _out: &mut ChromeEvents) {

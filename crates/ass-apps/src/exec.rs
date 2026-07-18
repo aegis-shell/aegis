@@ -176,6 +176,32 @@ pub fn expand_exec_tokens(
             out.push(extra);
         }
     }
+    strip_empty_flatpak_forwarding_groups(out)
+}
+
+/// Flatpak exports surround `%f`/`%F`/`%u`/`%U` with `@@ … @@` markers when
+/// `--file-forwarding` is enabled. A launcher activation normally supplies no
+/// file, so expanding the field code leaves an adjacent `@@u @@` or `@@ @@`
+/// pair. Flatpak treats that as a malformed forwarding request rather than an
+/// empty argument list. Remove only those empty pairs, and only from commands
+/// that declare Flatpak's forwarding mode; populated groups remain untouched.
+fn strip_empty_flatpak_forwarding_groups(argv: Vec<String>) -> Vec<String> {
+    if !argv.iter().any(|argument| argument == "--file-forwarding") {
+        return argv;
+    }
+
+    let mut out: Vec<String> = Vec::with_capacity(argv.len());
+    for argument in argv {
+        if argument == "@@"
+            && out
+                .last()
+                .is_some_and(|previous| previous == "@@" || previous == "@@u")
+        {
+            out.pop();
+        } else {
+            out.push(argument);
+        }
+    }
     out
 }
 
@@ -265,6 +291,78 @@ mod tests {
         assert_eq!(
             expand_exec_tokens("xdg-open %u", &["https://x".into()], None, None, None),
             vec!["xdg-open", "https://x"]
+        );
+    }
+
+    #[test]
+    fn empty_flatpak_uri_forwarding_group_is_removed() {
+        assert_eq!(
+            expand_exec_tokens(
+                "/usr/bin/flatpak run --file-forwarding org.mozilla.firefox @@u %U @@",
+                &[],
+                None,
+                None,
+                None,
+            ),
+            vec![
+                "/usr/bin/flatpak",
+                "run",
+                "--file-forwarding",
+                "org.mozilla.firefox",
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_flatpak_file_forwarding_group_is_removed() {
+        assert_eq!(
+            expand_exec_tokens(
+                "/usr/bin/flatpak run --file-forwarding org.blender.Blender @@ %F @@",
+                &[],
+                None,
+                None,
+                None,
+            ),
+            vec![
+                "/usr/bin/flatpak",
+                "run",
+                "--file-forwarding",
+                "org.blender.Blender",
+            ]
+        );
+    }
+
+    #[test]
+    fn populated_flatpak_forwarding_group_is_preserved() {
+        assert_eq!(
+            expand_exec_tokens(
+                "/usr/bin/flatpak run --file-forwarding org.mozilla.firefox @@u %U @@",
+                &[
+                    "https://example.test/one".into(),
+                    "https://example.test/two".into(),
+                ],
+                None,
+                None,
+                None,
+            ),
+            vec![
+                "/usr/bin/flatpak",
+                "run",
+                "--file-forwarding",
+                "org.mozilla.firefox",
+                "@@u",
+                "https://example.test/one",
+                "https://example.test/two",
+                "@@",
+            ]
+        );
+    }
+
+    #[test]
+    fn marker_like_arguments_are_untouched_without_file_forwarding() {
+        assert_eq!(
+            expand_exec_tokens("printf @@u %U @@", &[], None, None, None),
+            vec!["printf", "@@u", "@@"]
         );
     }
 

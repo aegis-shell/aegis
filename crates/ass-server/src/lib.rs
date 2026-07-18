@@ -874,14 +874,168 @@ impl State {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PointerAxisWireEvent {
+    Source(u32),
+    Discrete { axis: u32, value: i32 },
+    Value120 { axis: u32, value: i32 },
+    RelativeDirection { axis: u32, direction: u32 },
+    Axis { time: u32, axis: u32, value: f32 },
+    Stop { time: u32, axis: u32 },
+    Frame,
+}
+
+fn pointer_axis_wire_events(
+    version: i32,
+    frame: ass_core::input::PointerAxisFrame,
+) -> Vec<PointerAxisWireEvent> {
+    use ass_core::input::{PointerAxisRelativeDirection as Direction, PointerAxisSource as Source};
+
+    let mut events = Vec::with_capacity(10);
+    if version >= 5 {
+        let source = frame.source.map(|source| match source {
+            Source::Wheel => ffi::WL_POINTER_AXIS_SOURCE_WHEEL,
+            Source::Finger => ffi::WL_POINTER_AXIS_SOURCE_FINGER,
+            Source::Continuous => ffi::WL_POINTER_AXIS_SOURCE_CONTINUOUS,
+            Source::WheelTilt => ffi::WL_POINTER_AXIS_SOURCE_WHEEL_TILT,
+        });
+        if let Some(source) = source {
+            events.push(PointerAxisWireEvent::Source(source));
+        }
+    }
+
+    for (axis_id, axis) in [
+        (ffi::WL_POINTER_AXIS_HORIZONTAL_SCROLL, frame.horizontal),
+        (ffi::WL_POINTER_AXIS_VERTICAL_SCROLL, frame.vertical),
+    ] {
+        let value = axis
+            .value
+            .filter(|value| *value != 0.0)
+            .or_else(|| {
+                axis.value120
+                    .filter(|value| *value != 0)
+                    .map(|value| value as f32 / 12.0)
+            })
+            .or_else(|| {
+                axis.discrete
+                    .filter(|value| *value != 0)
+                    .map(|value| value as f32 * 10.0)
+            });
+
+        if value.is_some() {
+            if version >= 8 {
+                let value120 = axis
+                    .value120
+                    .or_else(|| axis.discrete.map(|value| value.saturating_mul(120)))
+                    .filter(|value| *value != 0);
+                if let Some(value120) = value120 {
+                    events.push(PointerAxisWireEvent::Value120 {
+                        axis: axis_id,
+                        value: value120,
+                    });
+                }
+            } else if version >= 5 {
+                let discrete = axis
+                    .discrete
+                    .or_else(|| {
+                        axis.value120
+                            .filter(|value| *value % 120 == 0)
+                            .map(|value| value / 120)
+                    })
+                    .filter(|value| *value != 0);
+                if let Some(discrete) = discrete {
+                    // The protocol requires discrete/value120 metadata before
+                    // its corresponding continuous axis event.
+                    events.push(PointerAxisWireEvent::Discrete {
+                        axis: axis_id,
+                        value: discrete,
+                    });
+                }
+            }
+            if version >= 9 {
+                let direction = axis.relative_direction.map(|direction| match direction {
+                    Direction::Identical => ffi::WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL,
+                    Direction::Inverted => ffi::WL_POINTER_AXIS_RELATIVE_DIRECTION_INVERTED,
+                });
+                if let Some(direction) = direction {
+                    events.push(PointerAxisWireEvent::RelativeDirection {
+                        axis: axis_id,
+                        direction,
+                    });
+                }
+            }
+            events.push(PointerAxisWireEvent::Axis {
+                time: frame.time,
+                axis: axis_id,
+                value: value.unwrap(),
+            });
+        }
+
+        if version >= 5 && axis.stop {
+            events.push(PointerAxisWireEvent::Stop {
+                time: frame.time,
+                axis: axis_id,
+            });
+        }
+    }
+
+    if version >= 5
+        && events
+            .iter()
+            .any(|event| !matches!(event, PointerAxisWireEvent::Source(_)))
+    {
+        events.push(PointerAxisWireEvent::Frame);
+    }
+    events
+}
+
+unsafe fn post_pointer_axis_wire_event(
+    pointer: *mut ffi::wl_resource,
+    event: PointerAxisWireEvent,
+) {
+    match event {
+        PointerAxisWireEvent::Source(source) => {
+            ffi::wl_resource_post_event(pointer, ffi::WL_POINTER_AXIS_SOURCE, source);
+        }
+        PointerAxisWireEvent::Discrete { axis, value } => {
+            ffi::wl_resource_post_event(pointer, ffi::WL_POINTER_AXIS_DISCRETE, axis, value);
+        }
+        PointerAxisWireEvent::Value120 { axis, value } => {
+            ffi::wl_resource_post_event(pointer, ffi::WL_POINTER_AXIS_VALUE120, axis, value);
+        }
+        PointerAxisWireEvent::RelativeDirection { axis, direction } => {
+            ffi::wl_resource_post_event(
+                pointer,
+                ffi::WL_POINTER_AXIS_RELATIVE_DIRECTION,
+                axis,
+                direction,
+            );
+        }
+        PointerAxisWireEvent::Axis { time, axis, value } => {
+            ffi::wl_resource_post_event(
+                pointer,
+                ffi::WL_POINTER_AXIS,
+                time,
+                axis,
+                ffi::wl_fixed_from_f32(value),
+            );
+        }
+        PointerAxisWireEvent::Stop { time, axis } => {
+            ffi::wl_resource_post_event(pointer, ffi::WL_POINTER_AXIS_STOP, time, axis);
+        }
+        PointerAxisWireEvent::Frame => {
+            ffi::wl_resource_post_event(pointer, ffi::WL_POINTER_FRAME);
+        }
+    }
+}
+
 /// The Wayland server: socket, globals, and object lifecycle.
 pub struct Server {
     state: Box<State>,
     socket: String,
-    /// Monotonic epoch for `wl_pointer.axis` / `wl_pointer.button` time
-    /// stamps. The nested backend's input events carry no time, so the server
-    /// derives one from elapsed time since creation (millisecond granularity,
-    /// matching `wl_pointer`'s `uint32 time` semantics).
+    /// Monotonic epoch for pointer buttons, touch, relative motion, and
+    /// synthetic events that do not carry a backend timestamp. Axis frames
+    /// retain their DRM/libinput or nested-host timestamps end to end.
     epoch: std::time::Instant,
 }
 
@@ -953,7 +1107,7 @@ impl Server {
                 data,
                 subcompositor_bind,
             );
-            ffi::wl_global_create(display, &ffi::wl_seat_interface, 5, data, seat_bind);
+            ffi::wl_global_create(display, &ffi::wl_seat_interface, 9, data, seat_bind);
             ffi::wl_global_create(
                 display,
                 &ffi::wl_data_device_manager_interface,
@@ -1839,10 +1993,8 @@ impl Server {
     /// pointer buttons go to the current focus and also drive click-to-focus
     /// for the keyboard. Key events update xkbcommon state and post
     /// `wl_keyboard.key` plus any resulting `wl_keyboard.modifiers` change.
-    /// Pointer axis (scroll wheel) is posted as `wl_pointer.axis` followed by
-    /// `wl_pointer.axis_source` / `wl_pointer.axis_stop`, and discrete clicks
-    /// are posted as `wl_pointer.axis_discrete` for clients that prefer the
-    /// coarse signal.
+    /// Pointer-axis frames preserve source, high-resolution wheel data, and
+    /// real sequence termination when translated to `wl_pointer`.
     pub fn forward_input(
         &mut self,
         events: &[ass_core::input::InputEvent],
@@ -1856,7 +2008,7 @@ impl Server {
                 PointerMotion { x, y } => self.pointer_motion(x, y),
                 PointerButton { button, state } => self.pointer_button(button, state),
                 PointerLeave => self.pointer_leave_all(),
-                PointerAxis { dx, dy } => self.pointer_axis(time, dx, dy),
+                PointerAxis(frame) => self.pointer_axis(frame),
                 TouchDown { id, x, y } => self.touch_down(time, id, x, y),
                 TouchMotion { id, x, y } => self.touch_motion(time, id, x, y),
                 TouchUp { id } => self.touch_up(time, id),
@@ -2076,7 +2228,14 @@ impl Server {
                 SyntheticInputAction::Scroll { position, dx, dy } => {
                     let (x, y) = to_global(position)?;
                     events.push(InputEvent::PointerMotion { x, y });
-                    events.push(InputEvent::PointerAxis { dx, dy });
+                    events.push(InputEvent::PointerAxis(
+                        ass_core::input::PointerAxisFrame::from_values(
+                            self.epoch.elapsed().as_millis() as u32,
+                            Some(ass_core::input::PointerAxisSource::Continuous),
+                            dx,
+                            dy,
+                        ),
+                    ));
                 }
                 SyntheticInputAction::KeyPress { code } => {
                     events.push(InputEvent::Key {
@@ -3637,87 +3796,17 @@ impl Server {
         }
     }
 
-    /// Post `wl_pointer.axis` (scroll) to the focused client. `dx`/`dy` are
-    /// horizontal/vertical scroll deltas in logical-pixel units (libinput's
-    /// convention: discrete wheel clicks are ~10.0). Each axis with a non-zero
-    /// delta is posted with `wl_pointer.axis`; for discrete deltas we also
-    /// post `wl_pointer.axis_discrete` so scroll-stepping clients (browsers,
-    /// terminals) step the right number of lines. A `frame` event (v5+) bundles
-    /// the axis events for clients that consume them together.
-    fn pointer_axis(&mut self, time: u32, dx: f32, dy: f32) {
-        if self.state.pointer_focus.is_null() || (dx == 0.0 && dy == 0.0) {
+    /// Post one backend-preserved scroll frame to the focused client.
+    fn pointer_axis(&mut self, frame: ass_core::input::PointerAxisFrame) {
+        if self.state.pointer_focus.is_null() || !frame.has_data() {
             return;
         }
         let focus = self.state.pointer_focus;
         let focus_client = unsafe { ffi::wl_resource_get_client(focus) };
-        // Discrete scroll: a delta of ~10.0 is one wheel click (libinput's
-        // default DEG_PER_UNIT-derived value). Round to the nearest integer
-        // click count per axis.
-        let discrete_x = (dx.abs() / 10.0).round() as i32;
-        let discrete_y = (dy.abs() / 10.0).round() as i32;
         for p in self.iter_focus_pointers(focus_client) {
             let ver = unsafe { ffi::wl_resource_get_version(p) };
-            unsafe {
-                if dx != 0.0 {
-                    ffi::wl_resource_post_event(
-                        p,
-                        ffi::WL_POINTER_AXIS,
-                        time,
-                        ffi::WL_POINTER_AXIS_HORIZONTAL_SCROLL,
-                        ffi::wl_fixed_from_f32(dx),
-                    );
-                    if ver >= 5 && discrete_x != 0 {
-                        ffi::wl_resource_post_event(
-                            p,
-                            ffi::WL_POINTER_AXIS_DISCRETE,
-                            ffi::WL_POINTER_AXIS_HORIZONTAL_SCROLL,
-                            discrete_x,
-                        );
-                    }
-                }
-                if dy != 0.0 {
-                    ffi::wl_resource_post_event(
-                        p,
-                        ffi::WL_POINTER_AXIS,
-                        time,
-                        ffi::WL_POINTER_AXIS_VERTICAL_SCROLL,
-                        ffi::wl_fixed_from_f32(dy),
-                    );
-                    if ver >= 5 && discrete_y != 0 {
-                        ffi::wl_resource_post_event(
-                            p,
-                            ffi::WL_POINTER_AXIS_DISCRETE,
-                            ffi::WL_POINTER_AXIS_VERTICAL_SCROLL,
-                            discrete_y,
-                        );
-                    }
-                }
-                // Source + stop + frame (v5+) let clients distinguish wheel
-                // from touch/finger scroll and coalesce events.
-                if ver >= 5 {
-                    ffi::wl_resource_post_event(
-                        p,
-                        ffi::WL_POINTER_AXIS_SOURCE,
-                        ffi::WL_POINTER_AXIS_SOURCE_WHEEL,
-                    );
-                    if dx != 0.0 {
-                        ffi::wl_resource_post_event(
-                            p,
-                            ffi::WL_POINTER_AXIS_STOP,
-                            time,
-                            ffi::WL_POINTER_AXIS_HORIZONTAL_SCROLL,
-                        );
-                    }
-                    if dy != 0.0 {
-                        ffi::wl_resource_post_event(
-                            p,
-                            ffi::WL_POINTER_AXIS_STOP,
-                            time,
-                            ffi::WL_POINTER_AXIS_VERTICAL_SCROLL,
-                        );
-                    }
-                    ffi::wl_resource_post_event(p, ffi::WL_POINTER_FRAME);
-                }
+            for event in pointer_axis_wire_events(ver, frame) {
+                unsafe { post_pointer_axis_wire_event(p, event) };
             }
         }
     }
@@ -4313,6 +4402,99 @@ impl Drop for Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finger_scroll_updates_do_not_emit_stop_or_discrete_steps() {
+        let frame = ass_core::input::PointerAxisFrame::from_values(
+            42,
+            Some(ass_core::input::PointerAxisSource::Finger),
+            0.0,
+            1.25,
+        );
+        assert_eq!(
+            pointer_axis_wire_events(9, frame),
+            vec![
+                PointerAxisWireEvent::Source(ffi::WL_POINTER_AXIS_SOURCE_FINGER),
+                PointerAxisWireEvent::Axis {
+                    time: 42,
+                    axis: ffi::WL_POINTER_AXIS_VERTICAL_SCROLL,
+                    value: 1.25,
+                },
+                PointerAxisWireEvent::Frame,
+            ]
+        );
+    }
+
+    #[test]
+    fn finger_scroll_stop_is_emitted_only_for_the_terminal_frame() {
+        let frame = ass_core::input::PointerAxisFrame {
+            time: 55,
+            source: Some(ass_core::input::PointerAxisSource::Finger),
+            vertical: ass_core::input::PointerAxis {
+                stop: true,
+                ..ass_core::input::PointerAxis::default()
+            },
+            ..ass_core::input::PointerAxisFrame::default()
+        };
+        assert_eq!(
+            pointer_axis_wire_events(9, frame),
+            vec![
+                PointerAxisWireEvent::Source(ffi::WL_POINTER_AXIS_SOURCE_FINGER),
+                PointerAxisWireEvent::Stop {
+                    time: 55,
+                    axis: ffi::WL_POINTER_AXIS_VERTICAL_SCROLL,
+                },
+                PointerAxisWireEvent::Frame,
+            ]
+        );
+    }
+
+    #[test]
+    fn wheel_metadata_precedes_axis_and_preserves_direction() {
+        let frame = ass_core::input::PointerAxisFrame {
+            time: 77,
+            source: Some(ass_core::input::PointerAxisSource::Wheel),
+            vertical: ass_core::input::PointerAxis {
+                value: Some(-10.0),
+                discrete: Some(-1),
+                value120: Some(-120),
+                ..ass_core::input::PointerAxis::default()
+            },
+            ..ass_core::input::PointerAxisFrame::default()
+        };
+        assert_eq!(
+            pointer_axis_wire_events(9, frame),
+            vec![
+                PointerAxisWireEvent::Source(ffi::WL_POINTER_AXIS_SOURCE_WHEEL),
+                PointerAxisWireEvent::Value120 {
+                    axis: ffi::WL_POINTER_AXIS_VERTICAL_SCROLL,
+                    value: -120,
+                },
+                PointerAxisWireEvent::Axis {
+                    time: 77,
+                    axis: ffi::WL_POINTER_AXIS_VERTICAL_SCROLL,
+                    value: -10.0,
+                },
+                PointerAxisWireEvent::Frame,
+            ]
+        );
+        assert_eq!(
+            pointer_axis_wire_events(7, frame),
+            vec![
+                PointerAxisWireEvent::Source(ffi::WL_POINTER_AXIS_SOURCE_WHEEL),
+                PointerAxisWireEvent::Discrete {
+                    axis: ffi::WL_POINTER_AXIS_VERTICAL_SCROLL,
+                    value: -1,
+                },
+                PointerAxisWireEvent::Axis {
+                    time: 77,
+                    axis: ffi::WL_POINTER_AXIS_VERTICAL_SCROLL,
+                    value: -10.0,
+                },
+                PointerAxisWireEvent::Frame,
+            ]
+        );
+    }
 
     #[test]
     fn legacy_output_scale_rounds_fractional_values_up() {
@@ -6922,7 +7104,7 @@ unsafe extern "C" fn seat_get_pointer(
     id: u32,
 ) {
     let state = ffi::wl_resource_get_user_data(seat) as *mut State;
-    let ver = ffi::wl_resource_get_version(seat).min(7);
+    let ver = ffi::wl_resource_get_version(seat).min(9);
     let p = ffi::wl_resource_create(client, &ffi::wl_pointer_interface, ver, id);
     if p.is_null() {
         return;

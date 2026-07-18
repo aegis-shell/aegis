@@ -146,7 +146,6 @@ dependencies = [
  "ass-server",
  "ass-shell",
  "ass-wallpaper",
- "dirs",
  "env_logger",
  "flux",
  "flux-scene-graph-sys",
@@ -213,6 +212,7 @@ dependencies = [
 name = "ass-ctl"
 version = "0.0.1"
 dependencies = [
+ "ass-config",
  "ass-core",
  "ass-ipc",
  "serde",

@@ -346,8 +346,7 @@ impl Renderer {
                                 let stride = f.width as usize * bpp;
                                 let mut sub = vec![0u8; bw as usize * bh as usize * bpp];
                                 for row in 0..bh as usize {
-                                    let src_off =
-                                        (y0 as usize + row) * stride + x0 as usize * bpp;
+                                    let src_off = (y0 as usize + row) * stride + x0 as usize * bpp;
                                     let dst_off = row * (bw as usize * bpp);
                                     let len = bw as usize * bpp;
                                     // src_off + len must stay within f.pixels.
