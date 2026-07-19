@@ -27,19 +27,18 @@ existing Wayland session:
 ```bash
 meson setup ../optics/build ../optics -Dtests=false -Dbuildtype=debugoptimized
 meson compile -C ../optics/build
-source scripts/env.sh
-cargo run
+cargo run -p ass
 ```
 
 Skip `meson setup` when `../optics/build` already exists.
 
-`scripts/env.sh` points the flux, scene-graph, and lens bindings at the unified
-build tree and exposes their shared libraries to test harnesses. `cargo run`
-opens a nested window on `$WAYLAND_DISPLAY` and presents the shell. On a bare
-TTY (no host session) the same binary drives the display directly through the
-DRM/KMS backend; force a target with `--backend auto|drm|nested` or
-`ASS_BACKEND`. See
-[Setup](docs/dev/setup.md) for prerequisites and details.
+The Rust bindings automatically discover the sibling build tree and publish
+its runtime library paths, so no shell environment setup is required.
+`cargo run -p ass` opens a nested window on `$WAYLAND_DISPLAY` and presents
+the shell. On a bare TTY (no host session) the same binary drives the display
+directly through the DRM/KMS backend; force a target with
+`--backend auto|drm|nested` or `ASS_BACKEND`. See [Setup](docs/dev/setup.md)
+for prerequisites and details.
 
 Realm application sandboxes require ASS to run in its own systemd user
 service with delegated `cpu`, `memory`, and `pids` cgroup v2 controllers. The

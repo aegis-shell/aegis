@@ -18,6 +18,10 @@ ass-server = { workspace = true }
 ass-backend = { workspace = true }
 ass-render = { workspace = true }
 ass-shell = { workspace = true }
+# Chrome components split out of ass-shell (ADR-0044); only the binary
+# composes them into the shell.
+ass-dock = { workspace = true }
+ass-control-center = { workspace = true }
 ass-wallpaper = { workspace = true }
 # Declarative configuration: TOML schema + live reload (ADR-0026).
 ass-config = { workspace = true }

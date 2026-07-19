@@ -181,7 +181,6 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // bindings rather than per-window title bars.
     shell.add(Box::new(ass_shell::HudBar::with_notifications(
         std::sync::Arc::clone(&notif_queue),
-        icon_cache.map.clone(),
     )));
     shell.add(Box::new(ass_shell::Toast::new(std::sync::Arc::clone(
         &notif_queue,
@@ -189,24 +188,21 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Only the binary wires discovery to chrome (ADR-0022); the shell stays
     // free of `ass-apps`. Register the launcher after ordinary overlays so its
     // full-screen surface covers workspace/toast chrome, while the dock (added
-    // last below) remains available like macOS Launchpad.
-    shell.add(Box::new(ass_shell::Launcher::with_icons(
-        launcher_apps.clone(),
-        icon_cache.map.clone(),
-    )));
+    // last below) remains available like macOS Launchpad. Components start
+    // empty; the application catalog is pushed below and fanned out to every
+    // registered component.
+    shell.add(Box::new(ass_shell::Launcher::new()));
     // The overview (M9): a modal window/workspace picker over the same live
     // scene; registered with the modal chrome so it covers ordinary overlays.
     shell.add(Box::new(ass_shell::Overview::new()));
     // Built-in applications share the launcher catalog with XDG entries but
     // render in-process through optics/lens. Register the backing component
     // above the launcher and ordinary chrome, while leaving the dock last.
-    shell.add(Box::new(ass_shell::ControlCenter::with_icons(
-        icon_cache.map.clone(),
-    )));
+    shell.add(Box::new(ass_control_center::ControlCenter::new()));
     // Interactive screenshot region selector, triggered by the Print key.
     shell.add(Box::new(ass_shell::ScreenshotSelector::new()));
-    // The dock is added after the config is loaded below, so it can read the
-    // `[dock]` pinned list.
+    // The dock is registered after the config is loaded below, so the pushed
+    // catalog already carries the resolved `[dock]` pinned list.
     let mut input_acc = InputAccumulator::default();
     // Seed the chrome's logical extent so widgets can lay out before the first
     // resize arrives. The server's output geometry (backend + overrides) is
@@ -334,12 +330,14 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         cursor_cache.set_config(c.ui.cursor_theme.clone(), c.ui.cursor_size);
         server.set_output_policies(c.output_policies());
     }
-    // The dock: a persistent strip of pinned `.desktop` app icons (ADR-0022),
-    // built from the config's `[dock] pinned` list, or auto-populated from the
-    // enumerated apps that have a usable icon when no pins are configured. It
-    // borrows the icon cache (which outlives the shell). Added last so it
-    // stacks above the other chrome.
-    let pinned = build_dock_apps(
+    // The dock: a persistent strip of pinned `.desktop` app icons (ADR-0022).
+    // Resolve the pinned entries from the config's `[dock] pinned` list, or
+    // auto-populate from the enumerated apps that have a usable icon when no
+    // pins are configured, then push the catalog (entries + pins + the
+    // borrowed icon cache, which outlives the shell) before registering the
+    // dock: `Shell::add` seeds new components with the current catalog. The
+    // dock stays last so it stacks above the other chrome.
+    let pinned = resolve_pinned(
         &launcher_apps,
         &icon_cache.map,
         config
@@ -349,10 +347,12 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         config.as_ref().map(|c| c.dock.autopopulate).unwrap_or(true),
     );
     log::info!("dock: {} app(s) pinned", pinned.len());
-    shell.add(Box::new(ass_shell::Dock::with_apps(
+    shell.set_app_catalog(ass_shell::AppCatalog {
+        apps: launcher_apps.clone(),
         pinned,
-        icon_cache.map.clone(),
-    )));
+        icons: ass_shell::IconSet::from_raw(icon_cache.map.clone()),
+    });
+    shell.add(Box::new(ass_dock::Dock::new()));
 
     // One normalized status snapshot feeds both the compact HUD and the
     // built-in Control Center. Host probes (wpctl fork+exec) run on a helper

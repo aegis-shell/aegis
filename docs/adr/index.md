@@ -50,3 +50,4 @@ background and how the decisions fit together, see
 | [0041](0041-sealed-file-descriptor-pixel-transport.md) | Sealed file-descriptor pixel transport | Accepted |
 | [0042](0042-mount-scoped-realm-portals-and-cgroup-sandboxes.md) | Mount-scoped Realm portals and cgroup sandboxes | Accepted |
 | [0043](0043-explicit-clipboard-only.md) | Explicit clipboard only; reject Primary Selection | Accepted |
+| [0044](0044-dock-and-control-center-crates.md) | Dock and Control Center as component crates (amends [0021](0021-chrome-component-trait.md)) | Accepted |

@@ -4,11 +4,10 @@
 //! but remains a trusted in-process surface rendered with optics/lens. The UI
 //! emits typed intents; it never invokes host commands itself.
 
-use std::collections::HashMap;
 use std::ffi::c_void;
 
 use ass_core::Point;
-use ass_core::app::{BuiltInApplication, Entry};
+use ass_core::app::BuiltInApplication;
 use ass_core::input::{KeyAction, KeyChar, TouchpadScrollMethod, key_action};
 use ass_core::output::{ModeSpec, OutputInfo, OutputMode};
 use ass_core::realm::{RealmId, RealmKind, RealmSnapshot, RealmState};
@@ -16,9 +15,9 @@ use ass_core::window::Window;
 use ass_core::workspace::WorkspaceSnapshot;
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, TextBuf, Theme};
 
-use crate::{
-    BackdropRegion, Chrome, ChromeEvents, CursorShape, DockApp, Localizer, Message, RealmIntent,
-    Reserved, SystemAction, SystemStatus,
+use ass_shell::{
+    AppCatalog, BackdropRegion, Chrome, ChromeEvents, CursorShape, DisplaySettings, IconSet,
+    Localizer, Message, NetworkState, RealmIntent, Reserved, SystemAction, SystemStatus,
 };
 
 const APP_MAX_W: f32 = 860.0;
@@ -36,7 +35,7 @@ const DISPLAY_LAYOUT_CUSTOM: i32 = 4;
 pub struct ControlCenter {
     open: bool,
     status: SystemStatus,
-    icons: HashMap<String, *mut c_void>,
+    icons: IconSet,
     modal_reserved: Reserved,
     volume: f32,
     brightness: f32,
@@ -55,15 +54,14 @@ pub struct ControlCenter {
 }
 
 impl ControlCenter {
+    /// Construct a closed Control Center. Decoded icons arrive through
+    /// [`Chrome::update_app_catalog`], seeded on registration by
+    /// [`ass_shell::Shell::add`].
     pub fn new() -> ControlCenter {
-        ControlCenter::with_icons(HashMap::new())
-    }
-
-    pub fn with_icons(icons: HashMap<String, *mut c_void>) -> ControlCenter {
         ControlCenter {
             open: false,
             status: SystemStatus::default(),
-            icons,
+            icons: IconSet::default(),
             modal_reserved: Reserved::default(),
             volume: 0.0,
             brightness: 0.0,
@@ -103,7 +101,6 @@ impl ControlCenter {
         self.icons
             .get("ass-control-center")
             .or_else(|| self.icons.get("ass-hud:preferences-system-symbolic"))
-            .copied()
     }
 
     fn render_header(&mut self, frame: &mut Frame, i18n: &Localizer) -> bool {
@@ -525,7 +522,7 @@ impl ControlCenter {
                         && let Some(position) = position
                     {
                         out.system_actions
-                            .push(SystemAction::SetDisplay(crate::DisplaySettings {
+                            .push(SystemAction::SetDisplay(DisplaySettings {
                                 connector: output.connector.clone(),
                                 mode: ModeSpec {
                                     width: mode.width,
@@ -1066,13 +1063,8 @@ impl Chrome for ControlCenter {
         }
     }
 
-    fn update_app_catalog(
-        &mut self,
-        _apps: &[Entry],
-        _dock_apps: &[DockApp],
-        icons: &HashMap<String, *mut c_void>,
-    ) {
-        self.icons.clone_from(icons);
+    fn update_app_catalog(&mut self, catalog: &AppCatalog) {
+        self.icons = catalog.icons.clone();
     }
 
     fn captures_pointer(
@@ -1235,9 +1227,9 @@ fn display_summary(frame: &mut Frame, output: &OutputInfo) {
 
 fn network_label<'a>(status: &SystemStatus, i18n: &'a Localizer) -> &'a str {
     match status.network {
-        crate::NetworkState::Wifi => i18n.text(Message::WifiConnected),
-        crate::NetworkState::Wired => i18n.text(Message::WiredConnected),
-        crate::NetworkState::Offline => i18n.text(Message::Disconnected),
+        NetworkState::Wifi => i18n.text(Message::WifiConnected),
+        NetworkState::Wired => i18n.text(Message::WiredConnected),
+        NetworkState::Offline => i18n.text(Message::Disconnected),
     }
 }
 
@@ -1365,7 +1357,7 @@ mod tests {
     fn display_editor_tracks_connector_mode_and_extended_layout() {
         let mut center = ControlCenter::new();
         center.update_system_status(&SystemStatus {
-            display: crate::DisplayStatus {
+            display: ass_shell::DisplayStatus {
                 configurable: true,
                 outputs: vec![
                     output("eDP-1", 0, 0, 1920, 1080),

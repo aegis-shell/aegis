@@ -9,13 +9,13 @@
 //! [`Chrome::backdrop_blur_sigma`] is non-zero, so the overlay remains legible
 //! without replacing the user's spatial context with an opaque panel.
 
-use std::collections::HashMap;
 use std::ffi::c_void;
 
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
 
 use crate::{
-    BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Message, Reserved, WindowAction,
+    AppCatalog, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet, Localizer, Message,
+    Reserved, WindowAction,
 };
 use ass_core::app::Entry;
 use ass_core::input::{KeyAction, KeyChar, key_action};
@@ -49,8 +49,9 @@ const OPEN_DAMPING: f32 = 0.86;
 pub struct Launcher {
     brain: Brain,
     /// `app_id`/icon-name (lowercased) → borrowed icon texture pointer. Shared
-    /// with the dock; the binary's `IconCache` owns the textures.
-    icons: HashMap<String, *mut c_void>,
+    /// with the other catalog components; the composition root's icon cache
+    /// owns the textures (see [`IconSet`]).
+    icons: IconSet,
     page: usize,
     columns: usize,
     page_capacity: usize,
@@ -159,17 +160,13 @@ impl GridLayout {
 }
 
 impl Launcher {
-    /// Construct with the launchable entries the binary enumerated, no icons.
-    pub fn new(apps: Vec<Entry>) -> Launcher {
-        Launcher::with_icons(apps, HashMap::new())
-    }
-
-    /// Construct with entries and a borrowed icon map. The caller retains
-    /// ownership of the textures, which must outlive the launcher.
-    pub fn with_icons(apps: Vec<Entry>, icons: HashMap<String, *mut c_void>) -> Launcher {
+    /// Construct an empty launcher. The launchable entries and icons arrive
+    /// through [`Chrome::update_app_catalog`], seeded on registration by
+    /// [`crate::Shell::add`].
+    pub fn new() -> Launcher {
         Launcher {
-            brain: Brain::new(apps),
-            icons,
+            brain: Brain::new(Vec::new()),
+            icons: IconSet::default(),
             page: 0,
             columns: 1,
             page_capacity: 1,
@@ -192,7 +189,7 @@ impl Launcher {
             if key.is_empty() {
                 None
             } else {
-                self.icons.get(&key).copied()
+                self.icons.get(&key)
             }
         };
         if let Some(wm_class) = &entry.startup_wm_class
@@ -270,6 +267,12 @@ impl Launcher {
 
     fn search_rect(&self, display: (f32, f32)) -> Rect {
         Self::search_rect_for_display(display, self.visibility.value.clamp(0.0, 1.0))
+    }
+}
+
+impl Default for Launcher {
+    fn default() -> Self {
+        Launcher::new()
     }
 }
 
@@ -742,15 +745,10 @@ impl Chrome for Launcher {
         self.modal_reserved = reserved;
     }
 
-    fn update_app_catalog(
-        &mut self,
-        apps: &[Entry],
-        _dock_apps: &[crate::DockApp],
-        icons: &HashMap<String, *mut c_void>,
-    ) {
+    fn update_app_catalog(&mut self, catalog: &AppCatalog) {
         self.app_menu.dismiss();
-        self.brain.replace_apps(apps.to_vec());
-        self.icons.clone_from(icons);
+        self.brain.replace_apps(catalog.apps.clone());
+        self.icons = catalog.icons.clone();
         self.sync_page_to_selection();
     }
 
@@ -1041,7 +1039,7 @@ mod tests {
 
     #[test]
     fn opening_launcher_keeps_search_caret_hidden() {
-        let mut launcher = Launcher::new(Vec::new());
+        let mut launcher = Launcher::new();
         launcher.toggle(&mut ChromeEvents::default());
         assert!(launcher.brain.is_open());
         assert!(!launcher.search_focused);
@@ -1049,14 +1047,14 @@ mod tests {
 
     #[test]
     fn reduced_motion_snaps_visibility_in_one_frame() {
-        let mut launcher = Launcher::new(Vec::new());
+        let mut launcher = Launcher::new();
         // Without the policy the reveal spring eases over many frames.
         let eased = launcher.advance_visibility(1.0, 0.016);
         assert!(eased < 1.0, "spring eases: {eased}");
         assert!(launcher.anim_active);
 
         // With the policy the first frame lands on the target, settled.
-        let mut reduced = Launcher::new(Vec::new());
+        let mut reduced = Launcher::new();
         reduced.set_reduced_motion(true);
         let snapped = reduced.advance_visibility(1.0, 0.016);
         assert_eq!(snapped, 1.0, "one frame to the end state");

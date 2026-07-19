@@ -616,7 +616,7 @@ impl CompositorRuntime {
                         // Match by application identity, not string equality:
                         // the config may name the same app by its stem, WM
                         // class, or icon name.
-                        let keys = app_keys(entry);
+                        let keys = entry.match_keys();
                         let matches = |name: &String| keys.contains(&name.to_ascii_lowercase());
                         if pinned_list.iter().any(matches) {
                             pinned_list.retain(|name| !matches(name));
@@ -635,17 +635,17 @@ impl CompositorRuntime {
                         c.dock.pinned = pinned_list.clone();
                         c.dock.autopopulate = false;
                     }
-                    let pinned = build_dock_apps(
+                    let pinned = resolve_pinned(
                         &self.launcher_apps,
                         &self.icon_cache.map,
                         &pinned_list,
                         false,
                     );
-                    self.shell.update_app_catalog(
-                        &self.launcher_apps,
-                        &pinned,
-                        &self.icon_cache.map,
-                    );
+                    self.shell.set_app_catalog(ass_shell::AppCatalog {
+                        apps: self.launcher_apps.clone(),
+                        pinned,
+                        icons: ass_shell::IconSet::from_raw(self.icon_cache.map.clone()),
+                    });
                 }
                 // Launch the application the launcher's clicked row asked for.
                 // The child is detached (setsid) and inherits the Wayland/XDG

@@ -9,25 +9,23 @@
 //!
 //! - [`Decorations`] — per-window server-side title bars drawn as `lens`
 //!   overlays, with click-to-move and a close gadget.
-//! - [`Dock`] — a macOS-style bottom-center dock showing a persistent strip of
-//!   pinned `.desktop` app icons (plus running windows folded in); click a tile
-//!   to focus its window or launch the app, running apps marked with a dot.
 //! - [`Launcher`] — a top-center toggle that expands into a centered list of
 //!   every enumerated `.desktop` entry; click a row to launch it (ADR-0022).
+//!
+//! Larger components have graduated to their own crates on top of the same
+//! contract (ADR-0021): the dock lives in `ass-dock` and the Control Center
+//! in `ass-control-center`.
 
 mod app_menu;
-mod control_center;
 mod decorations;
-mod dock;
 mod launcher;
 mod overview;
 mod screenshot;
 mod toast;
 mod workspace_bar;
 
-pub use control_center::ControlCenter;
+pub use app_menu::{AppMenu, PinAction};
 pub use decorations::Decorations;
-pub use dock::{Dock, DockApp};
 pub use launcher::Launcher;
 pub use overview::Overview;
 pub use screenshot::ScreenshotSelector;

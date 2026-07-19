@@ -10,24 +10,33 @@ is the bare-metal bring-up and smoke checklist.
   `seat` group. Verify with `seatd-launch true` or `loginctl seat-status`.
 - KMS permissions: your user can open `/dev/dri/cardN` through the seat
   manager (no root needed when the seat manager works).
-- The libraries built the usual way (`meson compile -C ../optics/build`)
-  and `scripts/env.sh` sourced.
+- The sibling `../optics` source and Meson build trees.
+
+## Build
+
+Build the release binary before leaving the graphical session:
+
+```bash
+meson compile -C ../optics/build
+cargo build --release -p ass
+```
 
 ## Start
 
-Switch to a free TTY (`Ctrl+Alt+F3`), then:
+Switch to a free TTY (`Ctrl+Alt+F3`), log in, change to the repository root,
+and run the prebuilt binary:
 
 ```bash
-source scripts/env.sh
-cargo run --release -- --backend drm
+unset WAYLAND_DISPLAY
+RUST_LOG=info ./target/release/ass --backend drm
 ```
 
-`--backend auto` (the default) picks DRM when `$WAYLAND_DISPLAY` is unset,
-so plain `cargo run` from a TTY also works. `ASS_DRM_DEVICE=/dev/dri/card1`
-overrides the GPU when there is more than one. `RUST_LOG=info` shows the
-device, seat, connector, and modifier choices as they happen.
+`--backend auto` also picks DRM when `$WAYLAND_DISPLAY` is unset.
+`ASS_DRM_DEVICE=/dev/dri/card1` overrides the GPU when there is more than one.
+The log shows the device, seat, connector, and modifier choices as they happen.
+Prebuilding keeps compiler latency and failures outside the hardware session.
 
-Use the packaged `ass.service` instead of direct `cargo run` when testing
+Use the packaged `ass.service` instead of the direct binary when testing
 Realm application launch. The service delegates the cgroup controllers that
 mandatory memory, process, CPU, freeze, and revoke boundaries require.
 
@@ -72,6 +81,17 @@ First bare-metal run, in order:
    and unlock. While locked, `ass-ctl` commands are refused.
 7. **Screenshot.** `ass-ctl screenshot /tmp/tty.png` produces a PNG of the
    desktop (also exercises the CPU readback path).
+
+## Stop
+
+Request a graceful compositor shutdown with one of these methods:
+
+- Run `ass-ctl quit` from a terminal inside ass.
+- Select **Quit Session** in Control Center.
+- Press the default `Super+Shift+Return` binding.
+
+The compositor disables its outputs, releases the seat and DRM device, and
+returns to the TTY. Switch back to the original graphical VT afterward.
 
 ## If it fails
 

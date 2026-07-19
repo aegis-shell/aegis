@@ -44,7 +44,9 @@ backend, renderer, and shell behind clear seams so the
 | **Server / window management** | `ass-server` | Hand-rolled Wayland server: globals, protocol object lifecycle, per-Realm seats and outputs, focus, authority transfer, tiling, and workspaces |
 | | `ass-backend` | Presentation and input targets: nested (development) and DRM/KMS + libinput + libseat (bare TTY) |
 | | `ass-render` | Compositing: client buffers to flux textures, scene to the output via flux |
-| **Shell / interaction** | `ass-shell` | Compositor chrome host + components on lens: dock, launcher, workspace bar, decorations, toast |
+| **Shell / interaction** | `ass-shell` | Compositor chrome host and `Chrome` contract on lens, plus shared components: launcher, workspace bar, overview, decorations, toast |
+| | `ass-dock` | Bottom-center dock chrome component: pinned and running apps, magnification, pin actions |
+| | `ass-control-center` | Compositor-owned Control Center chrome component: system status pages and typed system/Realm intents |
 | | `ass-wallpaper` | Background layer: multi-format image and short-video wallpaper |
 | | `ass-config` | Declarative configuration: versioned TOML schema, loader, live reload |
 | **Convenience channels** | `ass-apps` | freedesktop.org desktop-entry enumeration and icon-theme lookup |
@@ -65,7 +67,9 @@ hard to read at a glance. For the most common "I want to change what the
 user sees or can do" tasks:
 
 - **"Manage windows"** (focus, close, move, tile, workspace) → `ass-server`.
-- **"Change the chrome / interactions"** (dock, launcher, bars) → `ass-shell`.
+- **"Change the chrome / interactions"** (dock, launcher, bars) → `ass-shell`
+  for the host and contract; the dock and the Control Center live in the
+  `ass-dock` and `ass-control-center` component crates ([ADR-0044](../adr/0044-dock-and-control-center-crates.md)).
 - **"Add an external control path"** (CLI, scripts, the agent) →
   `ass-ipc` + `ass-ctl`.
 - **"Start or discover apps"** → `ass-apps` (discovery) + `ass-launch`

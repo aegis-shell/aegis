@@ -14,7 +14,9 @@ ass/
     ass-server/        Wayland server: socket, globals, object lifecycle
     ass-backend/       presentation + input targets (nested, DRM/KMS + libinput + libseat)
     ass-render/        compositing through flux
-    ass-shell/         compositor chrome through lens
+    ass-shell/         compositor chrome host and contract through lens
+    ass-dock/          bottom-center dock chrome component
+    ass-control-center/  compositor-owned Control Center chrome component
     ass-wallpaper/     image and short-video background layer
     ass-config/        declarative configuration: TOML schema, loader, live reload
     ass-ipc/           versioned IPC and introspection over a unix socket
@@ -38,7 +40,9 @@ flux and lens live in the sibling `../optics` Meson project under
 | [`ass-server`](../../crates/ass-server/README.md) | Wayland server socket, globals, and object lifecycle | [ADR-0002](../adr/0002-hand-rolled-wayland-server.md) |
 | [`ass-backend`](../../crates/ass-backend/README.md) | The `Backend` trait and its implementations | [ADR-0002](../adr/0002-hand-rolled-wayland-server.md), [ADR-0003](../adr/0003-nested-first-bring-up.md) |
 | [`ass-render`](../../crates/ass-render/README.md) | Client buffers to flux textures, scene to output | [ADR-0004](../adr/0004-client-buffers-via-flux-dmabuf-import.md) |
-| [`ass-shell`](../../crates/ass-shell/README.md) | lens chrome bound to the compositor device | [ADR-0001](../adr/0001-scope-and-responsibility-boundary.md) |
+| [`ass-shell`](../../crates/ass-shell/README.md) | Chrome host, `Chrome` contract, and shared components on lens | [ADR-0021](../adr/0021-chrome-component-trait.md) |
+| [`ass-dock`](../../crates/ass-dock/README.md) | Bottom-center dock chrome component | [ADR-0019](../adr/0019-dock-as-bottom-center-overlay.md), [ADR-0044](../adr/0044-dock-and-control-center-crates.md) |
+| [`ass-control-center`](../../crates/ass-control-center/README.md) | Compositor-owned Control Center chrome component | [ADR-0044](../adr/0044-dock-and-control-center-crates.md) |
 | [`ass-wallpaper`](../../crates/ass-wallpaper/README.md) | Image and short-video background layer | [ADR-0018](../adr/0018-wallpaper-crate.md) |
 | [`ass-config`](../../crates/ass-config/README.md) | Versioned TOML schema, loader, and mtime-based live reload | [ADR-0026](../adr/0026-configuration-system.md) |
 | [`ass-ipc`](../../crates/ass-ipc/README.md) | Versioned schema and codec over a unix socket; the extension/automation surface | [ADR-0027](../adr/0027-ipc-and-introspection.md) |
@@ -52,8 +56,12 @@ flux and lens live in the sibling `../optics` Meson project under
 - Code with no flux, lens, or Wayland dependency belongs in `ass-core`.
 - A new presentation or input target is a `Backend` implementation in
   `ass-backend`, not a special case in the binary.
-- Compositing and texture handling belong in `ass-render`; chrome belongs
-  in `ass-shell`.
+- Compositing and texture handling belong in `ass-render`; the chrome
+  contract and shared components belong in `ass-shell`. A chrome component
+  with its own state or dependency profile gets its own crate on the
+  `ass-shell` contract, registered by the binary
+  ([ADR-0021](../adr/0021-chrome-component-trait.md),
+  [ADR-0044](../adr/0044-dock-and-control-center-crates.md)).
 - A rendering or texture capability missing from flux is added to flux, not
   worked around in ass; see
   [ADR-0001](../adr/0001-scope-and-responsibility-boundary.md).

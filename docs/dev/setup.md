@@ -6,7 +6,7 @@ How to build and run ass for development.
 
 | Requirement | Notes |
 |-------------|-------|
-| Rust toolchain | `rustc` and `cargo`, edition 2021 (1.88+) |
+| Rust toolchain | `rustc` and `cargo`, edition 2024 (1.88+) |
 | flux + lens source tree | Sibling `../optics` Meson project, containing `libs/flux`, `libs/lens`, and `bindings/` |
 | meson and a C23 compiler | To build the flux and lens libraries |
 | Vulkan 1.3 runtime and loader | flux is Vulkan-first |
@@ -38,37 +38,33 @@ tree can be switched in place with `meson configure ../optics/build
 The `-sys` build scripts locate the tree through
 `meson-uninstalled/flux-uninstalled.pc` and
 `meson-uninstalled/flux-scene-graph-uninstalled.pc`, plus
-`meson-uninstalled/lens-uninstalled.pc`. Set `OPTICS_BUILD_DIR` before
-sourcing `scripts/env.sh` to override `../optics/build`.
+`meson-uninstalled/lens-uninstalled.pc`.
 
 ## Build and run
 
-Source `scripts/env.sh` to export the dev-mode variables, then build and run
-from the repository root:
+Build and run directly from the repository root:
 
 ```bash
-source scripts/env.sh
-cargo build
-cargo run
+cargo build -p ass
+cargo run -p ass
 ```
 
-`cargo run` opens a nested window on `$WAYLAND_DISPLAY`, creates a
+`cargo run -p ass` opens a nested window on `$WAYLAND_DISPLAY`, creates a
 `VkSurfaceKHR` on flux's Vulkan instance, and presents the shell. The binary
-re-emits the rpaths the binding crates publish. The environment script also
-adds all three library directories to `LD_LIBRARY_PATH` because Cargo library-test
-harnesses do not consistently inherit dependency rpaths.
+and the relevant test harnesses re-emit the build-tree rpaths published by
+the binding crates. No environment setup or `LD_LIBRARY_PATH` change is
+required for the default sibling layout.
 
-If you have run `meson install` for both flux and lens into a prefix on
-`PKG_CONFIG_PATH`, source the env script with
-`ASS_DEV_ENV_USE_INSTALLED=1` to skip the build-tree probe and link the
-installed libraries.
+Use the [Nested Backend Development](nested-backend.md) workflow for daily
+iteration, Cargo command selection, automatic rebuild-and-restart, inner
+client launch, and the boundary between nested and DRM/KMS validation.
 
 The compositor logs through the `log` facade; `RUST_LOG` controls verbosity
 (default `info`):
 
 ```bash
-RUST_LOG=debug cargo run      # verbose, including per-surface diagnostics
-RUST_LOG=warn cargo run       # quiet: only warnings and errors
+RUST_LOG=debug cargo run -p ass      # verbose, including per-surface diagnostics
+RUST_LOG=warn cargo run -p ass       # quiet: only warnings and errors
 ```
 
 ## Tests
@@ -79,8 +75,7 @@ cargo test --workspace
 
 `ass-core` and `ass-server` unit tests run without the flux dependency;
 the rest need the sibling flux and lens meson trees to be built first, same
-as `cargo build`. Source `scripts/env.sh` first so the `-sys` crates locate
-the build trees.
+as `cargo build`.
 
 The ordinary workspace run skips kernel-level Realm launcher tests when the
 test process is not alone in a controller-delegated cgroup. Run those tests
@@ -109,5 +104,6 @@ its process group.
 ## See Also
 
 - [Project Layout](project-layout.md)
+- [VT/DRM Manual Testing](vt-drm-testing.md)
 - [Architecture](../explanation/architecture.md)
 - [README quick start](../../README.md)

@@ -7,6 +7,23 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### Shell component crates
+
+- The dock and the Control Center moved from `ass-shell` modules into
+  their own crates, `ass-dock` and `ass-control-center`, fulfilling the
+  promotion path deferred in ADR-0021. `ass-shell` keeps the `Chrome`
+  host, the shared contract, and the remaining components; the `ass`
+  binary remains the composition root that registers every component.
+  See ADR-0044.
+- The shared chrome contract no longer names component-specific types:
+  `Chrome::update_app_catalog` now receives one `AppCatalog` snapshot
+  (applications, resolved pins, and an `IconSet` of borrowed icon
+  textures) that `Shell` owns, seeds into every registered component,
+  and replaces through `set_app_catalog`.
+- Application match keys (`StartupWMClass`, desktop-id stem, icon name)
+  are unified on `Entry::match_keys` in `ass-core`, replacing a
+  binary-local helper. No user-visible behavior change.
+
 ### Control Center display settings
 
 - Control Center now exposes connected outputs, advertised resolution and

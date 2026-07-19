@@ -32,4 +32,6 @@ the [README](../README.md) for the project pitch and the shortest run path.
 - Booting from a TTY and smoke-testing real hardware: read
   [How to Run ass on Bare Metal (DRM/KMS)](how-to/bare-metal-drm.md).
 - Setting up a build: read [Setup](dev/setup.md).
+- Iterating on compositor code inside an existing Wayland session: read
+  [Nested Backend Development](dev/nested-backend.md).
 - Looking for why a choice was made: scan the [ADR index](adr/index.md).

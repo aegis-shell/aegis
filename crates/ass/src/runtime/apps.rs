@@ -1,7 +1,9 @@
-/// Decoded application-icon textures for the dock. `_images` owns the GPU
-/// textures; `map` keys raw pointers (borrowed from `_images`) by every
-/// `app_id` the entry might run as. The cache must outlive the shell, which
-/// holds clones of the pointers in its dock component.
+/// Decoded application-icon textures shared with chrome. `_images` owns the
+/// GPU textures; `map` keys raw pointers (borrowed from `_images`) by every
+/// `app_id` the entry might run as. The cache must outlive the shell:
+/// components hold borrowed handles from the most recently pushed
+/// `ass_shell::AppCatalog` (see `ass_shell::IconSet`), so a refreshed cache is
+/// swapped in only after the new catalog has been fanned out.
 pub(super) struct IconCache {
     pub(super) _images: Vec<flux::Image>,
     pub(super) map: std::collections::HashMap<String, *mut std::ffi::c_void>,
@@ -111,65 +113,39 @@ pub(super) fn snapshot_icons(
     snapshot
 }
 
-/// The lowercased ids an entry might be matched by: its `StartupWMClass`, the
-/// desktop-file stem, and the declared icon name. These are the same keys
-/// [`build_icon_cache`] files icons under, so a dock tile can both find its
-/// icon and fold a running toplevel (matched by `app_id`) into itself.
-pub(super) fn app_keys(entry: &ass_core::app::Entry) -> Vec<String> {
-    let mut keys = Vec::new();
-    let mut push = |s: &str| {
-        let s = s.to_ascii_lowercase();
-        if !s.is_empty() && !keys.contains(&s) {
-            keys.push(s);
-        }
-    };
-    if let Some(wm) = &entry.startup_wm_class {
-        push(wm);
-    }
-    push(entry.id.strip_suffix(".desktop").unwrap_or(&entry.id));
-    if let Some(ic) = &entry.icon {
-        push(ic);
-    }
-    keys
-}
-
 /// How many apps to auto-pin to the dock when the config pins none, so the bar
 /// is populated with real XDG icons out of the box rather than empty.
 pub(super) const DEFAULT_PINNED_MAX: usize = 12;
 
-/// Build the dock's pinned app list. When `pinned` names apps, each name is
+/// Resolve the dock's pinned entries. When `pinned` names apps, each name is
 /// resolved against the enumerated entries by id / desktop-stem / WM class /
 /// icon name (case-insensitive), in the order given; unresolved names are
 /// logged and skipped. When `pinned` is empty and `autopopulate` is set, the
 /// first [`DEFAULT_PINNED_MAX`] apps that have a decoded icon are pinned
 /// automatically; with `autopopulate` off, an empty list stays empty (the
 /// user's manual "no pins" choice).
-pub(super) fn build_dock_apps(
+pub(super) fn resolve_pinned(
     apps: &[ass_core::app::Entry],
     icons: &std::collections::HashMap<String, *mut std::ffi::c_void>,
     pinned: &[String],
     autopopulate: bool,
-) -> Vec<ass_shell::DockApp> {
-    let make = |entry: &ass_core::app::Entry| ass_shell::DockApp {
-        entry: entry.clone(),
-        keys: app_keys(entry),
-    };
+) -> Vec<ass_core::app::Entry> {
     if pinned.is_empty() {
         if !autopopulate {
             return Vec::new();
         }
         return apps
             .iter()
-            .filter(|e| app_keys(e).iter().any(|k| icons.contains_key(k)))
+            .filter(|e| e.match_keys().iter().any(|k| icons.contains_key(k)))
             .take(DEFAULT_PINNED_MAX)
-            .map(make)
+            .cloned()
             .collect();
     }
     let mut out = Vec::with_capacity(pinned.len());
     for name in pinned {
         let want = name.to_ascii_lowercase();
-        match apps.iter().find(|e| app_keys(e).contains(&want)) {
-            Some(e) => out.push(make(e)),
+        match apps.iter().find(|e| e.match_keys().contains(&want)) {
+            Some(e) => out.push(e.clone()),
             None => log::warn!("dock: pinned app '{name}' not found among enumerated entries"),
         }
     }
@@ -214,7 +190,7 @@ pub(super) fn build_icon_cache(
                 // Key the texture under every id a window might report as its
                 // `app_id`; the dock resolves both icons and running-window
                 // matches through these same keys.
-                for key in app_keys(entry) {
+                for key in entry.match_keys() {
                     map.entry(key).or_insert(ptr);
                 }
                 images.push(img);

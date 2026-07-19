@@ -34,8 +34,8 @@ functions remain available when that preflight fails.
 Build the sibling optics libraries first, then run from the repository root:
 
 ```bash
-source scripts/env.sh
-cargo run -p ass
+meson compile -C ../optics/build
+cargo run -p ass -- --backend nested
 ```
 
 The repository [Quick Start](../../README.md#quick-start) contains the full

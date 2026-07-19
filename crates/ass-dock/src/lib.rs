@@ -26,12 +26,14 @@ use std::ffi::c_void;
 
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect};
 
-use crate::{BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Message};
 use ass_core::app::Entry;
 use ass_core::input::{KeyAction, KeyChar, key_action};
 use ass_core::window::Window;
-
-use super::app_menu::{AppMenu, PinAction};
+use ass_core::workspace::WorkspaceSnapshot;
+use ass_shell::{
+    AppCatalog, AppMenu, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet, Localizer,
+    Message, PinAction, Reserved,
+};
 
 /// Visual height of the dock bar. Tiles rest inside it; magnified tiles pop
 /// above its top edge (they are drawn as their own layers, unclipped).
@@ -149,17 +151,19 @@ impl Tile {
 
 /// The macOS-style dock.
 pub struct Dock {
-    /// Pinned launchable apps, in dock order. Built by the binary from the
-    /// enumerated `.desktop` entries (and an optional config pin list).
+    /// Pinned launchable apps, in dock order. Rebuilt from the pushed
+    /// catalog's `pinned` entries, with match keys derived via
+    /// [`Entry::match_keys`].
     apps: Vec<DockApp>,
     /// The complete enumerated application catalog, refreshed with every
     /// rescan. Kept so the context menu can offer "Keep in Dock" for a
     /// transient running window whose entry is not currently pinned.
     all_apps: Vec<Entry>,
     /// `app_id` (lowercased) → borrowed icon texture pointer. Borrowed from
-    /// the binary's `IconCache`, which owns the `flux::Image`s and outlives
-    /// this component. Shared by pinned tiles and unpinned running windows.
-    icons: HashMap<String, *mut c_void>,
+    /// the composition root's icon cache, which owns the `flux::Image`s and
+    /// outlives this component (see [`IconSet`]). Shared by pinned tiles and
+    /// unpinned running windows.
+    icons: IconSet,
     /// Per-tile spring state (size + velocity) keyed by [`Tile::key`]. Entries
     /// for tiles that disappear are dropped each frame. A first-seen key starts
     /// at [`DOCK_TILE_BIRTH`] so new tiles grow in instead of popping.
@@ -200,33 +204,14 @@ struct SpringState {
 }
 
 impl Dock {
-    /// An empty dock (no pinned apps, no icons) — used by tests and as a base.
+    /// An empty dock. The pinned apps and decoded icons arrive through
+    /// [`Chrome::update_app_catalog`], seeded on registration by
+    /// [`ass_shell::Shell::add`].
     pub fn new() -> Dock {
         Dock {
             apps: Vec::new(),
             all_apps: Vec::new(),
-            icons: HashMap::new(),
-            sizes: HashMap::new(),
-            anim_active: false,
-            prev_down: false,
-            app_menu: AppMenu::new("ass-dock-context-menu"),
-            menu_tile: None,
-            hovered_tile: None,
-            hover_elapsed: 0.0,
-            tooltip_tile: None,
-            tooltip_alpha: 0.0,
-            reduced_motion: false,
-        }
-    }
-
-    /// Construct with the pinned apps and a pre-decoded icon map (`app_id` →
-    /// `flux_image` pointer erased to `c_void`). The caller retains ownership
-    /// of the textures.
-    pub fn with_apps(apps: Vec<DockApp>, icons: HashMap<String, *mut c_void>) -> Dock {
-        Dock {
-            apps,
-            all_apps: Vec::new(),
-            icons,
+            icons: IconSet::default(),
             sizes: HashMap::new(),
             anim_active: false,
             prev_down: false,
@@ -340,7 +325,7 @@ impl Dock {
                     }
                 }
             }
-            let icon = app.keys.iter().find_map(|k| self.icons.get(k).copied());
+            let icon = app.keys.iter().find_map(|k| self.icons.get(k));
             tiles.push(Tile {
                 key: format!("app:{}", app.entry.id),
                 icon,
@@ -360,9 +345,7 @@ impl Dock {
             if claimed[wi] {
                 continue;
             }
-            let icon = win_appid[wi]
-                .as_ref()
-                .and_then(|a| self.icons.get(a).copied());
+            let icon = win_appid[wi].as_ref().and_then(|a| self.icons.get(a));
             tiles.push(Tile {
                 key: format!("win:{}", w.id.0),
                 icon,
@@ -431,7 +414,7 @@ impl Chrome for Dock {
         f: &mut Frame,
         input: &Input,
         windows: &[Window],
-        _workspaces: &crate::WorkspaceSnapshot,
+        _workspaces: &WorkspaceSnapshot,
         i18n: &Localizer,
         out: &mut ChromeEvents,
     ) {
@@ -820,8 +803,8 @@ impl Chrome for Dock {
     /// The dock reserves the bottom edge so tiled windows do not render under
     /// the bar (ADR-0024 chrome-aware work-area). The magnified-icon overshoot
     /// above the bar is intentionally not reserved — chrome draws over windows.
-    fn reserved(&self) -> crate::Reserved {
-        crate::Reserved {
+    fn reserved(&self) -> Reserved {
+        Reserved {
             top: 0,
             bottom: (DOCK_PANEL_HEIGHT + DOCK_BOTTOM_MARGIN) as i32,
             left: 0,
@@ -837,7 +820,7 @@ impl Chrome for Dock {
         &self,
         display: (f32, f32),
         windows: &[Window],
-        _workspaces: &crate::WorkspaceSnapshot,
+        _workspaces: &WorkspaceSnapshot,
     ) -> Vec<BackdropRegion> {
         let bounds = self.pointer_bounds(windows, display);
         let panel_y = display.1 - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN;
@@ -895,7 +878,7 @@ impl Chrome for Dock {
         y: f32,
         display: (f32, f32),
         windows: &[Window],
-        _workspaces: &crate::WorkspaceSnapshot,
+        _workspaces: &WorkspaceSnapshot,
     ) -> bool {
         let r = self.pointer_bounds(windows, display);
         self.app_menu.contains(x, y, display)
@@ -912,22 +895,24 @@ impl Chrome for Dock {
         _y: f32,
         _display: (f32, f32),
         _windows: &[Window],
-        _workspaces: &crate::WorkspaceSnapshot,
+        _workspaces: &WorkspaceSnapshot,
     ) -> Option<CursorShape> {
         Some(CursorShape::Pointer)
     }
 
-    fn update_app_catalog(
-        &mut self,
-        apps: &[Entry],
-        dock_apps: &[DockApp],
-        icons: &HashMap<String, *mut c_void>,
-    ) {
+    fn update_app_catalog(&mut self, catalog: &AppCatalog) {
         self.app_menu.dismiss();
         self.menu_tile = None;
-        self.all_apps = apps.to_vec();
-        self.apps = dock_apps.to_vec();
-        self.icons.clone_from(icons);
+        self.all_apps = catalog.apps.clone();
+        self.apps = catalog
+            .pinned
+            .iter()
+            .map(|e| DockApp {
+                entry: e.clone(),
+                keys: e.match_keys(),
+            })
+            .collect();
+        self.icons = catalog.icons.clone();
     }
 }
 
@@ -1072,14 +1057,23 @@ fn truncate_tooltip(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
 
-    fn app(id: &str, keys: &[&str]) -> DockApp {
-        DockApp {
-            entry: Entry {
-                id: id.to_string(),
-                ..Default::default()
-            },
-            keys: keys.iter().map(|k| k.to_string()).collect(),
+    fn app(id: &str) -> Entry {
+        Entry {
+            id: id.to_string(),
+            ..Default::default()
         }
+    }
+
+    /// Register `pinned` entries the way the composition root does: one
+    /// catalog push that rebuilds the pinned list from [`Entry::match_keys`].
+    fn dock_with(pinned: Vec<Entry>) -> Dock {
+        let mut dock = Dock::new();
+        dock.update_app_catalog(&AppCatalog {
+            apps: pinned.clone(),
+            pinned,
+            icons: IconSet::default(),
+        });
+        dock
     }
 
     fn window(id: u64, app_id: &str, activated: bool) -> Window {
@@ -1171,13 +1165,7 @@ mod tests {
 
     #[test]
     fn pinned_apps_show_without_any_running_window() {
-        let dock = Dock::with_apps(
-            vec![
-                app("firefox.desktop", &["firefox"]),
-                app("term.desktop", &["term"]),
-            ],
-            HashMap::new(),
-        );
+        let dock = dock_with(vec![app("firefox.desktop"), app("term.desktop")]);
         let tiles = dock.tiles(&[]);
         assert_eq!(
             tiles.len(),
@@ -1191,7 +1179,7 @@ mod tests {
 
     #[test]
     fn running_window_folds_into_its_pinned_tile() {
-        let dock = Dock::with_apps(vec![app("firefox.desktop", &["firefox"])], HashMap::new());
+        let dock = dock_with(vec![app("firefox.desktop")]);
         let tiles = dock.tiles(&[window(7, "firefox", true)]);
         assert_eq!(
             tiles.len(),
@@ -1210,7 +1198,7 @@ mod tests {
 
     #[test]
     fn unpinned_running_window_is_appended() {
-        let dock = Dock::with_apps(vec![app("firefox.desktop", &["firefox"])], HashMap::new());
+        let dock = dock_with(vec![app("firefox.desktop")]);
         let tiles = dock.tiles(&[window(3, "gimp", false)]);
         assert_eq!(
             tiles.len(),

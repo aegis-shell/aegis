@@ -92,6 +92,29 @@ impl Entry {
             .unwrap_or("")
     }
 
+    /// The lowercased ids an entry might be matched by: its `StartupWMClass`,
+    /// the desktop-file stem, and the declared icon name. These are the same
+    /// keys the composition root's icon cache files icons under, so a dock
+    /// tile can both find its icon and fold a running toplevel (matched by
+    /// `app_id`) into itself.
+    pub fn match_keys(&self) -> Vec<String> {
+        let mut keys = Vec::new();
+        let mut push = |s: &str| {
+            let s = s.to_ascii_lowercase();
+            if !s.is_empty() && !keys.contains(&s) {
+                keys.push(s);
+            }
+        };
+        if let Some(wm) = &self.startup_wm_class {
+            push(wm);
+        }
+        push(self.id.strip_suffix(".desktop").unwrap_or(&self.id));
+        if let Some(ic) = &self.icon {
+            push(ic);
+        }
+        keys
+    }
+
     /// Construct the stable catalog entry for the compositor's control
     /// center. The caller supplies localized presentation strings while the
     /// application identity and activation target remain locale-independent.
@@ -130,5 +153,36 @@ mod tests {
             ApplicationTarget::BuiltIn(BuiltInApplication::ControlCenter)
         );
         assert!(entry.exec.is_none());
+    }
+
+    #[test]
+    fn match_keys_cover_wm_class_stem_and_icon_lowercased() {
+        let entry = Entry {
+            id: "org.example.App.desktop".to_string(),
+            icon: Some("App-Icon".to_string()),
+            startup_wm_class: Some("APP".to_string()),
+            ..Entry::default()
+        };
+        assert_eq!(
+            entry.match_keys(),
+            vec!["app", "org.example.app", "app-icon"]
+        );
+    }
+
+    #[test]
+    fn match_keys_dedup_repeated_ids_and_skip_empty() {
+        let entry = Entry {
+            id: "firefox.desktop".to_string(),
+            icon: Some("Firefox".to_string()),
+            startup_wm_class: Some("FIREFOX".to_string()),
+            ..Entry::default()
+        };
+        assert_eq!(entry.match_keys(), vec!["firefox"]);
+        let entry = Entry {
+            id: "term.desktop".to_string(),
+            startup_wm_class: Some(String::new()),
+            ..Entry::default()
+        };
+        assert_eq!(entry.match_keys(), vec!["term"]);
     }
 }

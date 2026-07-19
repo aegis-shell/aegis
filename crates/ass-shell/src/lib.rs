@@ -3,11 +3,13 @@
 //! The shell is split into a **core host** and pluggable **chrome components**.
 //! The core ([`Shell`]) owns the lens context, the per-frame snapshot of
 //! live toplevels, and the interaction sink ([`ChromeEvents`]); it knows
-//! nothing about what the chrome looks like. Each piece of chrome — the window
-//! list, server-side decorations, the dock, a future HUD bar — is a [`Chrome`]
-//! implementation registered with [`Shell::add`], and renders itself each frame
-//! from the shared snapshot and input. Adding or removing a chrome surface is
-//! a component change, not a core change.
+//! nothing about what the chrome looks like. Each piece of chrome — the
+//! launcher, the HUD bar, the overview — is a [`Chrome`] implementation
+//! registered with [`Shell::add`], and renders itself each frame from the
+//! shared snapshot and input. Larger components live in their own crates on
+//! top of the same contract (the dock in `ass-dock`, the Control Center in
+//! `ass-control-center`). Adding or removing a chrome surface is a component
+//! change, not a core change.
 //!
 //! Input the compositor captures is fed here as a snapshot before being routed
 //! to clients; component-emitted intents are drained by the main loop into
@@ -22,8 +24,8 @@ pub mod chrome;
 pub mod i18n;
 pub mod system;
 pub use chrome::{
-    ControlCenter, Decorations, Dock, DockApp, HudBar, Launcher, Overview, ScreenshotSelector,
-    Toast, WorkspaceBar,
+    AppMenu, Decorations, HudBar, Launcher, Overview, PinAction, ScreenshotSelector, Toast,
+    WorkspaceBar,
 };
 pub use i18n::{Language, Localizer, Message};
 pub use system::{
@@ -56,6 +58,45 @@ pub struct BackdropRegion {
     pub y: f32,
     pub w: f32,
     pub h: f32,
+}
+
+/// Decoded icon texture handles shared with chrome components.
+///
+/// The textures are owned by the composition root's icon cache; an `IconSet`
+/// is a map of borrowed raw `flux_image` pointers keyed by every lowercase id
+/// an application may run as (StartupWMClass, desktop-id stem, icon name).
+/// The owner must keep the textures alive until it has pushed a replacement
+/// catalog via [`Shell::set_app_catalog`]; components only dereference handles
+/// from the most recently pushed set.
+#[derive(Clone, Default)]
+pub struct IconSet {
+    map: HashMap<String, *mut c_void>,
+}
+
+impl IconSet {
+    /// Wrap a raw handle map (`app_id` → borrowed `flux_image` pointer).
+    pub fn from_raw(map: HashMap<String, *mut c_void>) -> IconSet {
+        IconSet { map }
+    }
+
+    /// The borrowed texture handle filed under `key`, if any.
+    pub fn get(&self, key: &str) -> Option<*mut c_void> {
+        self.map.get(key).copied()
+    }
+}
+
+/// One immutable snapshot of the host application catalog pushed to chrome.
+#[derive(Clone, Default)]
+pub struct AppCatalog {
+    /// Every launchable entry: enumerated XDG applications plus
+    /// compositor-owned built-ins.
+    pub apps: Vec<Entry>,
+    /// The user's pinned favorites, resolved against `apps` by the
+    /// composition root from the `[dock] pinned` configuration (or
+    /// auto-populated when unconfigured).
+    pub pinned: Vec<Entry>,
+    /// Decoded icons keyed by every id an entry might run as.
+    pub icons: IconSet,
 }
 
 /// Cursor shapes chrome can request from the nested host. Values deliberately
@@ -325,16 +366,12 @@ pub trait Chrome {
     /// and to lens itself; default no-op for static components.
     fn set_reduced_motion(&mut self, _reduced: bool) {}
 
-    /// Refresh the host application catalog and decoded icon map. Components
-    /// that do not display applications ignore it; the launcher and dock
-    /// replace their snapshots in place.
-    fn update_app_catalog(
-        &mut self,
-        _apps: &[Entry],
-        _dock_apps: &[DockApp],
-        _icons: &HashMap<String, *mut c_void>,
-    ) {
-    }
+    /// Receive the host application catalog: every launchable entry, the
+    /// resolved pinned favorites, and the decoded icon set. Components that
+    /// display applications replace their snapshots in place; others ignore
+    /// it. Fanned out by [`Shell::set_app_catalog`] and seeded by
+    /// [`Shell::add`].
+    fn update_app_catalog(&mut self, _catalog: &AppCatalog) {}
 
     /// Edge space this component reserves; tiled windows avoid it (ADR-0024).
     /// Default none; overridden by chrome that should not be covered (the
@@ -397,6 +434,9 @@ pub struct Shell {
     i18n: Localizer,
     system_status: SystemStatus,
     realms: RealmSnapshot,
+    /// The most recently pushed host application catalog, seeded into every
+    /// registered component (including ones added later) by [`Shell::add`].
+    catalog: AppCatalog,
     events: ChromeEvents,
     components: Vec<Box<dyn Chrome>>,
     /// Accessibility reduced-motion policy (ADR-0029), fanned out to every
@@ -425,6 +465,7 @@ impl Shell {
                 i18n: Localizer::from_env(),
                 system_status: SystemStatus::default(),
                 realms: ass_core::realm::RealmModel::new().snapshot(),
+                catalog: AppCatalog::default(),
                 events: ChromeEvents::default(),
                 components: Vec::new(),
                 reduced_motion: false,
@@ -438,6 +479,7 @@ impl Shell {
         component.update_system_status(&self.system_status);
         component.update_realms(&self.realms);
         component.set_reduced_motion(self.reduced_motion);
+        component.update_app_catalog(&self.catalog);
         self.components.push(component);
     }
 
@@ -669,15 +711,12 @@ impl Shell {
             })
     }
 
-    /// Push a newly scanned application catalog to interested components.
-    pub fn update_app_catalog(
-        &mut self,
-        apps: &[Entry],
-        dock_apps: &[DockApp],
-        icons: &HashMap<String, *mut c_void>,
-    ) {
+    /// Replace the host application catalog and push it to every registered
+    /// component. The shell keeps a copy to seed components added later.
+    pub fn set_app_catalog(&mut self, catalog: AppCatalog) {
+        self.catalog = catalog;
         for component in self.components.iter_mut() {
-            component.update_app_catalog(apps, dock_apps, icons);
+            component.update_app_catalog(&self.catalog);
         }
     }
 

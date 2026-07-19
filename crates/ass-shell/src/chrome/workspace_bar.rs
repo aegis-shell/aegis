@@ -3,21 +3,21 @@
 //! centre. Its information architecture follows the user's Quickshell HUD,
 //! while the rendering and interaction remain compositor-owned lens chrome.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::ffi::c_void;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use ass_core::app::{BuiltInApplication, Entry};
+use ass_core::app::BuiltInApplication;
 use ass_core::notify::{Notification, NotificationQueue};
 use ass_core::window::Window;
 use ass_core::workspace::WorkspaceSnapshot;
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{
-    BackdropRegion, BatteryStatus, Chrome, ChromeEvents, CursorShape, DockApp, Localizer, Message,
-    NetworkState, Reserved, SystemAction, SystemStatus,
+    AppCatalog, BackdropRegion, BatteryStatus, Chrome, ChromeEvents, CursorShape, IconSet,
+    Localizer, Message, NetworkState, Reserved, SystemAction, SystemStatus,
 };
 
 pub(crate) const HUD_HEIGHT: f32 = 32.0;
@@ -39,7 +39,7 @@ const BACKDROP_BLUR_SIGMA: f32 = 12.0;
 pub struct HudBar {
     prev_down: bool,
     panel_open: bool,
-    icons: HashMap<String, *mut c_void>,
+    icons: IconSet,
     notifications: Option<Arc<Mutex<NotificationQueue>>>,
     status: SystemStatus,
     clock: String,
@@ -57,27 +57,22 @@ struct TrayCell {
 impl HudBar {
     /// Construct a standalone HUD without notification data or raster icons.
     pub fn new() -> HudBar {
-        HudBar::with_optional_sources(None, HashMap::new())
+        HudBar::with_optional_sources(None)
     }
 
     /// Construct the session HUD with the compositor's shared notification
-    /// queue and application icon cache.
-    pub fn with_notifications(
-        notifications: Arc<Mutex<NotificationQueue>>,
-        icons: HashMap<String, *mut c_void>,
-    ) -> HudBar {
-        HudBar::with_optional_sources(Some(notifications), icons)
+    /// queue. Application icons arrive through [`Chrome::update_app_catalog`],
+    /// seeded on registration by [`crate::Shell::add`].
+    pub fn with_notifications(notifications: Arc<Mutex<NotificationQueue>>) -> HudBar {
+        HudBar::with_optional_sources(Some(notifications))
     }
 
-    fn with_optional_sources(
-        notifications: Option<Arc<Mutex<NotificationQueue>>>,
-        icons: HashMap<String, *mut c_void>,
-    ) -> HudBar {
+    fn with_optional_sources(notifications: Option<Arc<Mutex<NotificationQueue>>>) -> HudBar {
         let now = Instant::now();
         HudBar {
             prev_down: false,
             panel_open: false,
-            icons,
+            icons: IconSet::default(),
             notifications,
             status: SystemStatus::default(),
             clock: "--:--".to_string(),
@@ -123,7 +118,7 @@ impl HudBar {
     }
 
     fn themed_icon(&self, name: &str) -> Option<*mut c_void> {
-        self.icons.get(&format!("ass-hud:{name}")).copied()
+        self.icons.get(&format!("ass-hud:{name}"))
     }
 
     fn tray_cells(&self, windows: &[Window]) -> Vec<TrayCell> {
@@ -138,7 +133,7 @@ impl HudBar {
                 }
                 Some(TrayCell {
                     window: window.id,
-                    icon: self.icons.get(&app_id).copied(),
+                    icon: self.icons.get(&app_id),
                     key: app_id,
                 })
             })
@@ -426,7 +421,7 @@ impl Chrome for HudBar {
             if max_title_w > 42.0 {
                 if let Some(app_id) = active.app_id.as_deref() {
                     let key = app_id.to_ascii_lowercase();
-                    if let Some(icon) = self.icons.get(&key).copied() {
+                    if let Some(icon) = self.icons.get(&key) {
                         let icon_rect = Rect {
                             x: left_x,
                             y: 7.0,
@@ -648,13 +643,8 @@ impl Chrome for HudBar {
         Some(CursorShape::Pointer)
     }
 
-    fn update_app_catalog(
-        &mut self,
-        _apps: &[Entry],
-        _dock_apps: &[DockApp],
-        icons: &HashMap<String, *mut c_void>,
-    ) {
-        self.icons.clone_from(icons);
+    fn update_app_catalog(&mut self, catalog: &AppCatalog) {
+        self.icons = catalog.icons.clone();
     }
 
     fn update_system_status(&mut self, status: &SystemStatus) {

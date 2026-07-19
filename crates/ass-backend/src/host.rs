@@ -101,7 +101,8 @@ impl Host {
                 let mut extensions = DEVICE_EXTENSIONS.to_vec();
                 extensions.extend_from_slice(&flux::DMABUF_DEVICE_EXTENSIONS);
                 extensions.extend_from_slice(&flux::DMABUF_SYNC_DEVICE_EXTENSIONS);
-                match flux::Device::new(false, &INSTANCE_EXTENSIONS, &extensions, FRAMES_IN_FLIGHT) {
+                match flux::Device::new(false, &INSTANCE_EXTENSIONS, &extensions, FRAMES_IN_FLIGHT)
+                {
                     Ok(device) => Ok(device),
                     Err(error) => {
                         log::warn!(
@@ -109,7 +110,12 @@ impl Host {
                         );
                         let mut implicit_extensions = DEVICE_EXTENSIONS.to_vec();
                         implicit_extensions.extend_from_slice(&flux::DMABUF_DEVICE_EXTENSIONS);
-                        match flux::Device::new(false, &INSTANCE_EXTENSIONS, &implicit_extensions, FRAMES_IN_FLIGHT) {
+                        match flux::Device::new(
+                            false,
+                            &INSTANCE_EXTENSIONS,
+                            &implicit_extensions,
+                            FRAMES_IN_FLIGHT,
+                        ) {
                             Ok(device) => Ok(device),
                             Err(error) => {
                                 log::warn!(

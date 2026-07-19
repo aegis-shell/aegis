@@ -25,7 +25,7 @@ struct Target {
 
 /// Dock-specific pin/unpin action carried by the shared application menu.
 #[derive(Clone)]
-pub(super) enum PinAction {
+pub enum PinAction {
     Pin(String),
     Unpin(String),
 }
@@ -50,7 +50,7 @@ struct Row {
 /// App-anchored popup state. The target stores durable window ids rather than
 /// borrowed frame data; every render resolves them against the current
 /// snapshot so a window disappearing while the menu is open is harmless.
-pub(super) struct AppMenu {
+pub struct AppMenu {
     layer_id: &'static str,
     target: Option<Target>,
     owner: Rect,
@@ -59,7 +59,7 @@ pub(super) struct AppMenu {
 }
 
 impl AppMenu {
-    pub(super) fn new(layer_id: &'static str) -> Self {
+    pub fn new(layer_id: &'static str) -> Self {
         AppMenu {
             layer_id,
             target: None,
@@ -74,11 +74,11 @@ impl AppMenu {
         }
     }
 
-    pub(super) fn is_open(&self) -> bool {
+    pub fn is_open(&self) -> bool {
         self.target.is_some()
     }
 
-    pub(super) fn open(
+    pub fn open(
         &mut self,
         label: impl Into<String>,
         entry: Option<Entry>,
@@ -105,11 +105,11 @@ impl AppMenu {
 
     /// Keep the popup attached to an animated launcher/dock tile while it is
     /// open. The menu position is recomputed from this rect on every frame.
-    pub(super) fn set_owner(&mut self, owner: Rect) {
+    pub fn set_owner(&mut self, owner: Rect) {
         self.owner = owner;
     }
 
-    pub(super) fn dismiss(&mut self) {
+    pub fn dismiss(&mut self) {
         self.target = None;
         self.just_opened = false;
         self.window_offset = 0;
@@ -117,7 +117,7 @@ impl AppMenu {
 
     /// Conservative popup bounds for pointer routing. The rendered menu may
     /// be shorter after stale window ids are removed, but it is never taller.
-    pub(super) fn bounds(&self, display: (f32, f32)) -> Option<Rect> {
+    pub fn bounds(&self, display: (f32, f32)) -> Option<Rect> {
         let target = self.target.as_ref()?;
         let window_rows = target.windows.len().min(MAX_WINDOW_ROWS);
         // Reserve both paging controls when needed. A first/last page renders
@@ -140,12 +140,12 @@ impl AppMenu {
         Some(place_popup(self.owner, (MENU_WIDTH, height), display))
     }
 
-    pub(super) fn contains(&self, x: f32, y: f32, display: (f32, f32)) -> bool {
+    pub fn contains(&self, x: f32, y: f32, display: (f32, f32)) -> bool {
         self.bounds(display)
             .is_some_and(|rect| contains(rect, x, y))
     }
 
-    pub(super) fn render(
+    pub fn render(
         &mut self,
         frame: &mut Frame,
         input: &Input,

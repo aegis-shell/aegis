@@ -139,7 +139,9 @@ dependencies = [
  "ass-apps",
  "ass-backend",
  "ass-config",
+ "ass-control-center",
  "ass-core",
+ "ass-dock",
  "ass-ipc",
  "ass-launch",
  "ass-render",
@@ -201,6 +203,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ass-control-center"
+version = "0.0.1"
+dependencies = [
+ "ass-core",
+ "ass-shell",
+ "lens",
+ "lens-sys",
+]
+
+[[package]]
 name = "ass-core"
 version = "0.0.1"
 dependencies = [
@@ -219,6 +231,16 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "ass-dock"
+version = "0.0.1"
+dependencies = [
+ "ass-core",
+ "ass-shell",
+ "lens",
+ "lens-sys",
 ]
 
 [[package]]

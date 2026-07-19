@@ -14,7 +14,7 @@ repository = "."
 # flux-rs wraps libflux; lens-rs wraps liblens (the successor to the old
 # flux-ui). The C libraries and their bindings live under ../optics (bindings
 # in ../optics/bindings); built with meson. The sys crates auto-discover the
-# optics checkout, or point FLUX_BUILD_DIR / LENS_BUILD_DIR at the build tree.
+# sibling optics checkout and its build tree.
 flux = { path = "../optics/bindings/flux-rs/crates/flux" }
 flux-sys = { path = "../optics/bindings/flux-rs/crates/flux-sys" }
 flux-scene-graph = { path = "../optics/bindings/flux-rs/crates/flux-scene-graph" }
@@ -57,6 +57,9 @@ ass-server = { path = "crates/ass-server" }
 ass-backend = { path = "crates/ass-backend" }
 ass-render = { path = "crates/ass-render" }
 ass-shell = { path = "crates/ass-shell" }
+# Chrome components promoted out of ass-shell (ADR-0044).
+ass-dock = { path = "crates/ass-dock" }
+ass-control-center = { path = "crates/ass-control-center" }
 ass-wallpaper = { path = "crates/ass-wallpaper" }
 # Configuration: versioned TOML schema, loader, and live reload (ADR-0026).
 ass-config = { path = "crates/ass-config" }
@@ -93,4 +96,13 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 
 [profile.dev]
-opt-level = 0
+opt-level = 1
+debug = 1
+incremental = true
+codegen-units = 256
+
+# Keep the compositor responsive without applying full release optimization to
+# workspace crates on every edit. Dependencies change less often, so their
+# one-time optimization cost is amortized by Cargo's build cache.
+[profile.dev.package."*"]
+opt-level = 2

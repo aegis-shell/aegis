@@ -335,7 +335,7 @@ impl CompositorRuntime {
                 error: None,
             };
             self.live.set_scopes(build_ipc_scopes(self.config.as_ref()));
-            let pinned = build_dock_apps(
+            let pinned = resolve_pinned(
                 &self.launcher_apps,
                 &self.icon_cache.map,
                 self.config
@@ -347,8 +347,11 @@ impl CompositorRuntime {
                     .map(|c| c.dock.autopopulate)
                     .unwrap_or(true),
             );
-            self.shell
-                .update_app_catalog(&self.launcher_apps, &pinned, &self.icon_cache.map);
+            self.shell.set_app_catalog(ass_shell::AppCatalog {
+                apps: self.launcher_apps.clone(),
+                pinned,
+                icons: ass_shell::IconSet::from_raw(self.icon_cache.map.clone()),
+            });
         }
 
         if std::time::Instant::now() >= self.next_app_scan {
@@ -374,7 +377,7 @@ impl CompositorRuntime {
                 );
                 let refreshed_icons =
                     build_icon_cache(&self.device, &refreshed, &refreshed_theme, refreshed_scale);
-                let pinned = build_dock_apps(
+                let pinned = resolve_pinned(
                     &refreshed,
                     &refreshed_icons.map,
                     self.config
@@ -386,8 +389,11 @@ impl CompositorRuntime {
                         .map(|c| c.dock.autopopulate)
                         .unwrap_or(true),
                 );
-                self.shell
-                    .update_app_catalog(&refreshed, &pinned, &refreshed_icons.map);
+                self.shell.set_app_catalog(ass_shell::AppCatalog {
+                    apps: refreshed.clone(),
+                    pinned,
+                    icons: ass_shell::IconSet::from_raw(refreshed_icons.map.clone()),
+                });
                 // Components now point only at refreshed_icons; dropping the
                 // old cache after the update cannot leave dangling textures.
                 self.icon_cache = refreshed_icons;
