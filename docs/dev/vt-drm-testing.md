@@ -10,7 +10,7 @@ repository root:
 
 ```bash
 meson compile -C ../optics/build
-cargo build --release -p ass -p ass-ctl
+cargo build --release -p ass -p ass-control
 ```
 
 Do not compile on the test VT. Building first keeps compiler latency and build
@@ -61,9 +61,9 @@ From a terminal running inside ass, inspect the live state and take a
 screenshot:
 
 ```bash
-./target/release/ass-ctl outputs
-./target/release/ass-ctl windows
-./target/release/ass-ctl screenshot /tmp/ass-vt.png
+./target/release/ass-control outputs
+./target/release/ass-control windows
+./target/release/ass-control screenshot /tmp/ass-vt.png
 ```
 
 Open `/tmp/ass-vt.png` after leaving the session and confirm that it matches
@@ -74,7 +74,7 @@ the visible output.
 Request a normal shutdown from a terminal inside ass:
 
 ```bash
-./target/release/ass-ctl quit
+./target/release/ass-control quit
 ```
 
 You can also select **Quit Session** in Control Center or press the default

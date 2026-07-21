@@ -80,8 +80,8 @@ Run the in-tree IPC client against the nested session when no other ass
 process owns `$XDG_RUNTIME_DIR/ass.sock`:
 
 ```bash
-cargo run -p ass-ctl -- windows
-cargo run -p ass-ctl -- outputs
+cargo run -p ass-control -- windows
+cargo run -p ass-control -- outputs
 ```
 
 Only one ass IPC server can own that path. If the outer compositor is also
@@ -105,7 +105,7 @@ cargo run -p ass -- --backend nested
 The absolute outer display path lets ass reach the host while the temporary
 `$XDG_RUNTIME_DIR` keeps the inner Wayland and IPC sockets separate. In a
 second terminal, set `XDG_RUNTIME_DIR` to the printed directory before running
-`ass-ctl`. After a graceful compositor exit, remove the empty directory with
+`ass-control`. After a graceful compositor exit, remove the empty directory with
 `rmdir`.
 
 ## Iterate on Changes

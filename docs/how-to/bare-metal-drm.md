@@ -56,7 +56,7 @@ card to:
 The change is written atomically to `~/.config/ass/config.toml`. Direct DRM
 sessions apply it after the current page flip retires. In a nested session the
 card is read-only because the outer compositor owns the physical monitors.
-Run `ass-ctl outputs` to inspect exact connector names and advertised modes.
+Run `ass-control outputs` to inspect exact connector names and advertised modes.
 
 ## Smoke checklist
 
@@ -78,15 +78,15 @@ First bare-metal run, in order:
    is reprobed, the surface recreated if the modifier set changed, and
    workspaces return to their home connector (ADR-0025).
 6. **Session lock.** Lock, confirm the screen shows only the lock client,
-   and unlock. While locked, `ass-ctl` commands are refused.
-7. **Screenshot.** `ass-ctl screenshot /tmp/tty.png` produces a PNG of the
+   and unlock. While locked, `ass-control` commands are refused.
+7. **Screenshot.** `ass-control screenshot /tmp/tty.png` produces a PNG of the
    desktop (also exercises the CPU readback path).
 
 ## Stop
 
 Request a graceful compositor shutdown with one of these methods:
 
-- Run `ass-ctl quit` from a terminal inside ass.
+- Run `ass-control quit` from a terminal inside ass.
 - Select **Quit Session** in Control Center.
 - Press the default `Super+Shift+Return` binding.
 

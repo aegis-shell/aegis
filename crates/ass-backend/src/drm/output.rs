@@ -485,7 +485,7 @@ pub(super) fn build_output(
 
 /// The connector's advertised modes, deduplicated by (width, height,
 /// refresh) and sorted by pixel count then refresh rate, highest first — the
-/// order `ass-ctl outputs` presents them in.
+/// order `ass-control outputs` presents them in.
 pub(super) fn advertised_modes(info: &connector::Info) -> Vec<OutputMode> {
     let mut modes: Vec<OutputMode> = info
         .modes()

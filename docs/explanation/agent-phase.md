@@ -25,7 +25,7 @@ The stack, from the rendering layer up:
 | The model | `ass-core` | Windows, workspaces, outputs, Realms, seats, authority, layout — the one truth |
 | The compositor | `ass-server`, `ass-backend`, `ass-render`, `ass-shell` | Wayland, per-Realm input and output, the chrome host |
 | The seam | `ass-ipc` | Versioned JSON and sealed descriptors over a Unix socket; leases, scope, capture, and the journal |
-| IPC clients | any number, all equal | Status bars, `ass-ctl`, the agent, future bridges |
+| IPC clients | any number, all equal | Status bars, `ass-control`, the agent, future bridges |
 | Skill and tool layer | out of tree, many projects | Model-specific adapters, prompts, schemas |
 
 The line that matters is between the seam and the clients. Above that line,

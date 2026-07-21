@@ -240,7 +240,7 @@ change the detached snapshot. Captures include the overview grid while
 overview mode is active.
 
 `Command::Screenshot { path, region }` is a journaled `control` command that writes
-the focused output as a PNG file; `ass-ctl screenshot` is its reference
+the focused output as a PNG file; `ass-control screenshot` is its reference
 frontend. `Request::CaptureOutput` is a synchronous query returning
 `Response::CaptureOutput { width, height, png_bytes }` followed by one sealed
 PNG `memfd` transferred with `SCM_RIGHTS`. The request requires the `control`
@@ -287,7 +287,7 @@ capture resolves the named scope again, including final pixel delivery, so a
 configuration reload can narrow or revoke authority without reconnecting. An
 explicit unknown or removed scope fails closed.
 
-`ass-ctl` uses the built-in owner-only `ass-ctl-realm-admin` scope for Realm
+`ass-control` uses the built-in owner-only `ass-control-realm-admin` scope for Realm
 recovery commands. It grants the local user all Realm ids and the explicit
 Realm operation set; it does not weaken the socket's mode `0600` boundary.
 

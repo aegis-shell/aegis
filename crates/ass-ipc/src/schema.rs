@@ -28,7 +28,7 @@ pub const PROTOCOL_VERSION: u32 = 3;
 /// Realm recovery and administration. The Unix socket remains user-private;
 /// naming this scope opts the connection into the high-risk Realm operation
 /// allowlist and its time-bounded lease.
-pub const LOCAL_REALM_ADMIN_SCOPE: &str = "ass-ctl-realm-admin";
+pub const LOCAL_REALM_ADMIN_SCOPE: &str = "ass-control-realm-admin";
 
 /// The capability classes a client may hold (ADR-0027).
 ///
