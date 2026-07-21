@@ -15,7 +15,7 @@ use ass_core::workspace::WorkspaceSnapshot;
 const TOAST_W: f32 = 300.0;
 const TOAST_H: f32 = 56.0;
 const TOAST_GAP: f32 = 8.0;
-const TOAST_TOP_MARGIN: f32 = super::workspace_bar::HUD_HEIGHT + 10.0;
+const TOAST_TOP_MARGIN: f32 = crate::HUD_HEIGHT + 10.0;
 const TOAST_RIGHT_MARGIN: f32 = 10.0;
 /// Cap the visible stack so a flood does not fill the screen.
 const MAX_VISIBLE: usize = 5;

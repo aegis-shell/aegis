@@ -179,9 +179,12 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Window decorations are intentionally not registered: windows are
     // borderless (macOS-style), managed through the dock, tiling, and key
     // bindings rather than per-window title bars.
-    shell.add(Box::new(ass_shell::HudBar::with_notifications(
-        std::sync::Arc::clone(&notif_queue),
-    )));
+    if config.as_ref().map(|c| c.statusbar.enabled).unwrap_or(true) {
+        shell.add(Box::new(ass_statusbar::StatusBar::with_notifications(
+            &device,
+            std::sync::Arc::clone(&notif_queue),
+        )));
+    }
     shell.add(Box::new(ass_shell::Toast::new(std::sync::Arc::clone(
         &notif_queue,
     ))));

@@ -28,6 +28,15 @@ lens-sys = { path = "../optics/bindings/lens-rs/crates/lens-sys" }
 log = "0.4"
 env_logger = "0.11"
 
+# Session D-Bus for the StatusNotifierItem system tray (ass-statusbar).
+# Pure-Rust zbus (no libdbus system dep) with the blocking API so the tray
+# worker stays a plain `std::thread`; `async-io` is zbus's smol-based
+# internal executor — tokio stays out of the dependency graph.
+zbus = { version = "5", default-features = false, features = [
+    "async-io",
+    "blocking-api",
+] }
+
 # Typed errors without handwritten Display/From impls.
 thiserror = "1"
 
@@ -60,6 +69,7 @@ ass-shell = { path = "crates/ass-shell" }
 # Chrome components promoted out of ass-shell (ADR-0044).
 ass-dock = { path = "crates/ass-dock" }
 ass-control-center = { path = "crates/ass-control-center" }
+ass-statusbar = { path = "crates/ass-statusbar" }
 ass-wallpaper = { path = "crates/ass-wallpaper" }
 # Configuration: versioned TOML schema, loader, and live reload (ADR-0026).
 ass-config = { path = "crates/ass-config" }

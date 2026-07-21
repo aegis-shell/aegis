@@ -4,12 +4,12 @@
 //! The core ([`Shell`]) owns the lens context, the per-frame snapshot of
 //! live toplevels, and the interaction sink ([`ChromeEvents`]); it knows
 //! nothing about what the chrome looks like. Each piece of chrome — the
-//! launcher, the HUD bar, the overview — is a [`Chrome`] implementation
-//! registered with [`Shell::add`], and renders itself each frame from the
-//! shared snapshot and input. Larger components live in their own crates on
-//! top of the same contract (the dock in `ass-dock`, the Control Center in
-//! `ass-control-center`). Adding or removing a chrome surface is a component
-//! change, not a core change.
+//! launcher, the overview — is a [`Chrome`] implementation registered with
+//! [`Shell::add`], and renders itself each frame from the shared snapshot
+//! and input. Larger components live in their own crates on top of the same
+//! contract (the dock in `ass-dock`, the Control Center in
+//! `ass-control-center`, the status bar in `ass-statusbar`). Adding or
+//! removing a chrome surface is a component change, not a core change.
 //!
 //! Input the compositor captures is fed here as a snapshot before being routed
 //! to clients; component-emitted intents are drained by the main loop into
@@ -23,14 +23,17 @@ use lens::{Frame, Ui};
 pub mod chrome;
 pub mod i18n;
 pub mod system;
-pub use chrome::{
-    AppMenu, Decorations, HudBar, Launcher, Overview, PinAction, ScreenshotSelector, Toast,
-    WorkspaceBar,
-};
+pub use chrome::{AppMenu, Decorations, Launcher, Overview, PinAction, ScreenshotSelector, Toast};
 pub use i18n::{Language, Localizer, Message};
 pub use system::{
     BatteryStatus, DisplaySettings, DisplayStatus, NetworkState, SystemAction, SystemStatus,
 };
+
+/// Logical height of the top status bar (the `ass-statusbar` component).
+/// Defined here, at the shell seam, so shell-resident chrome that must align
+/// with the bar (the notification toast stack) can share the value without
+/// depending on the component crate.
+pub const HUD_HEIGHT: f32 = 32.0;
 
 use ass_core::app::{ApplicationTarget, BuiltInApplication, Entry};
 use ass_core::realm::{RealmId, RealmSnapshot, RealmState};

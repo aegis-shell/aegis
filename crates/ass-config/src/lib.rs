@@ -64,6 +64,11 @@ pub struct Config {
     #[serde(default)]
     pub dock: DockConfig,
 
+    /// Status bar configuration, written as a `[statusbar]` table. Controls
+    /// whether the top status bar is registered.
+    #[serde(default)]
+    pub statusbar: StatusBarConfig,
+
     /// Shell-wide UI policy, written as a `[ui]` table.
     #[serde(default)]
     pub ui: UiConfig,
@@ -302,6 +307,28 @@ impl Default for DockConfig {
         DockConfig {
             pinned: Vec::new(),
             autopopulate: default_autopopulate(),
+        }
+    }
+}
+
+/// The `[statusbar]` section. `enabled` controls whether the top status bar
+/// chrome component is registered at startup; it defaults to `true` so an
+/// unconfigured session keeps the bar.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatusBarConfig {
+    #[serde(default = "default_statusbar_enabled")]
+    pub enabled: bool,
+}
+
+fn default_statusbar_enabled() -> bool {
+    true
+}
+
+impl Default for StatusBarConfig {
+    fn default() -> StatusBarConfig {
+        StatusBarConfig {
+            enabled: default_statusbar_enabled(),
         }
     }
 }
@@ -1212,6 +1239,18 @@ mod tests {
         let cfg = Config::parse("schema_version = 1\n").unwrap();
         assert_eq!(cfg.schema_version, 1);
         assert!(cfg.keybinds.is_empty());
+    }
+
+    #[test]
+    fn statusbar_defaults_to_enabled() {
+        let cfg = Config::parse("schema_version = 1\n").unwrap();
+        assert!(cfg.statusbar.enabled);
+    }
+
+    #[test]
+    fn statusbar_can_be_disabled() {
+        let cfg = Config::parse("schema_version = 1\n[statusbar]\nenabled = false\n").unwrap();
+        assert!(!cfg.statusbar.enabled);
     }
 
     fn temp_config_path(tag: &str) -> PathBuf {

@@ -18,6 +18,7 @@ log diagnostic and never crashes the compositor.
 | `[[window_rule]]` | array of tables | none | Placement rules applied to newly-mapped toplevels. See [Window Rules](#window-rules). |
 | `[layout]` | table | gaps `8`, master_ratio `0.5` | Tiling policy parameters. See [Layout](#layout). |
 | `[dock]` | table | automatic pins | Applications pinned to the dock. See [Dock](#dock). |
+| `[statusbar]` | table | `enabled = true` | Whether the top status bar is registered at startup. See [Status Bar](#status-bar). |
 | `[ui]` | table | reduced_motion `false` | Shell-wide UI policy. See [UI](#ui). |
 | `[input.touchpad]` | table | touchpad defaults | Touchpad pointing, tapping, and scrolling profile. See [Touchpad](#touchpad). |
 | `[[output]]` | array of tables | none | Per-connector display policy: mode, scale, position, transform, primary. See [Outputs](#outputs). |
@@ -149,7 +150,7 @@ last-wins.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `connector` | string | required | The backend's connector name, as shown by `ass-ctl outputs` (e.g. `"DP-1"`, `"HDMI-A-1"`, `"nested"`). |
+| `connector` | string | required | The backend's connector name, as shown by `ass-control outputs` (e.g. `"DP-1"`, `"HDMI-A-1"`, `"nested"`). |
 | `scale` | float | backend-reported | Output scale factor, 0.25–4.0. Integer scales advertise through `wl_output`; fractional scales through `wp_fractional_scale_v1`. Applied live on reload. |
 | `mode` | string | connector's preferred mode | Requested display mode, `"WxH"` or `"WxH@Hz"` (e.g. `"2560x1440@144"`). Without `@Hz` the preferred or highest-refresh mode of that size is used. A mode the connector does not advertise falls back to its preferred mode with a log warning. Direct DRM sessions apply changes live after the current page flip retires; nested sessions remain host-managed. |
 | `position` | table | backend arrangement | Top-left of the output in the global logical layout, written `position = { x = 1920, y = 0 }`. Applied live on reload. |
@@ -169,7 +170,7 @@ mode = "1920x1080"
 position = { x = 1707, y = 0 }
 ```
 
-Run `ass-ctl outputs` to see the modes each connector advertises; the
+Run `ass-control outputs` to see the modes each connector advertises; the
 `mode` value must match one of them (resolution exactly, refresh to the
 nearest whole hertz).
 
@@ -207,6 +208,33 @@ restarting ass. The same refresh detects icon-theme, output-scale, and icon
 file changes. Raster icons decode in process; SVG icons use `rsvg-convert`
 when it is installed and otherwise fall back to the generic application
 glyph.
+
+## Status Bar
+
+The `[statusbar]` table controls whether the top status bar (workspace
+state, active-window title, clock, system status, and the tray row) is
+registered at startup (ADR-0045). Changes apply on the next launch; the
+flag is read once during compositor startup.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | boolean | `true` | Whether the top status bar is registered. When `false`, the bar's reserved edge is released and the rest of the chrome (dock, launcher, Control Center) is unaffected. |
+
+```toml
+[statusbar]
+enabled = false
+```
+
+The bar's tray row hosts both per-application icons for open windows and
+real StatusNotifierItem (SNI) tray icons published on the session D-Bus.
+SNI support runs silently: without a session bus, or when another watcher
+already owns the `org.kde.StatusNotifierWatcher` name, no SNI icons
+appear and startup is unaffected. SNI items that ship a dbusmenu `Menu`
+object path get a compositor-rendered right-click popover; items without
+one fall back to `SecondaryActivate` per the spec. The combined tray row
+fits a five-slot budget: open-window cells keep priority, SNI cells fill
+the remaining slots, and any excess collapses into a `+N` overflow
+indicator.
 
 ## Window Rules
 

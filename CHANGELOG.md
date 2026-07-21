@@ -62,6 +62,32 @@ project cuts a tagged release.
   are unified on `Entry::match_keys` in `ass-core`, replacing a
   binary-local helper. No user-visible behavior change.
 
+### Status bar crate and StatusNotifierItem tray
+
+- The top status bar (`HudBar`) moved from `ass-shell` into its own
+  crate `ass-statusbar`, with the component type renamed
+  `HudBar` → `StatusBar`. `ass-shell` exposes `HUD_HEIGHT` as a `pub
+  const` (consumed by `Toast` for its top margin) and no longer carries
+  any status-bar code. The bar's `[statusbar] enabled` configuration
+  flag is the first per-component enable switch; it defaults to `true`
+  so an unconfigured session keeps the bar. See ADR-0045.
+- ass now ships a real StatusNotifierItem (SNI) system tray: the
+  compositor runs as the session's `StatusNotifierWatcher` + Host on
+  the session D-Bus and renders registered items' icons in the bar's
+  tray row. Items that expose a dbusmenu `Menu` object path get a
+  compositor-rendered right-click popover (label rows, separators,
+  checkmark/radio toggles, submenu navigation, `Event("clicked")`
+  activation); items without one fall back to `SecondaryActivate`. The
+  tray row folds open-window cells and SNI cells into a five-slot
+  budget with a `+N` overflow indicator.
+- The implementation adds the workspace's first `zbus` dependency
+  (`zbus` v5 with `default-features = false` + `async-io` +
+  `blocking-api`), running on two dedicated `std::thread`s behind
+  `Arc<Mutex<_>>` and `mpsc`. No async runtime enters the dependency
+  graph; `cargo tree -p ass-statusbar` shows no `tokio`, `async-std`,
+  or `smol`. Without a session bus, the SNI tray silently stays empty
+  and startup is unaffected.
+
 ### Control Center display settings
 
 - Control Center now exposes connected outputs, advertised resolution and

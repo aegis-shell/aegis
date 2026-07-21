@@ -44,15 +44,16 @@ backend, renderer, and shell behind clear seams so the
 | **Server / window management** | `ass-server` | Hand-rolled Wayland server: globals, protocol object lifecycle, per-Realm seats and outputs, focus, authority transfer, tiling, and workspaces |
 | | `ass-backend` | Presentation and input targets: nested (development) and DRM/KMS + libinput + libseat (bare TTY) |
 | | `ass-render` | Compositing: client buffers to flux textures, scene to the output via flux |
-| **Shell / interaction** | `ass-shell` | Compositor chrome host and `Chrome` contract on lens, plus shared components: launcher, workspace bar, overview, decorations, toast |
+| **Shell / interaction** | `ass-shell` | Compositor chrome host and `Chrome` contract on lens, plus shared components: launcher, overview, decorations, toast |
 | | `ass-dock` | Bottom-center dock chrome component: pinned and running apps, magnification, pin actions |
 | | `ass-control-center` | Compositor-owned Control Center chrome component: system status pages and typed system/Realm intents |
+| | `ass-statusbar` | Top status bar chrome component: workspace state, clock, system status, and the host-rendered StatusNotifierItem tray |
 | | `ass-wallpaper` | Background layer: multi-format image and short-video wallpaper |
 | | `ass-config` | Declarative configuration: versioned TOML schema, loader, live reload |
 | **Convenience channels** | `ass-apps` | freedesktop.org desktop-entry enumeration and icon-theme lookup |
 | | `ass-launch` | Ordinary app detachment and fail-closed Realm namespace/cgroup launch |
 | | `ass-ipc` | Versioned scoped IPC, sealed capture transport, and introspection over a Unix socket |
-| | `ass-ctl` | Command-line driver for the ass IPC (the reference external tool) |
+| | `ass-control` | Command-line driver for the ass IPC (the reference external tool) |
 | **Binary** | `ass` | The binary: wires the parts together and runs the event loop |
 
 flux and lens are consumed through Rust bindings kept in separate
@@ -68,10 +69,12 @@ user sees or can do" tasks:
 
 - **"Manage windows"** (focus, close, move, tile, workspace) → `ass-server`.
 - **"Change the chrome / interactions"** (dock, launcher, bars) → `ass-shell`
-  for the host and contract; the dock and the Control Center live in the
-  `ass-dock` and `ass-control-center` component crates ([ADR-0044](../adr/0044-dock-and-control-center-crates.md)).
+  for the host and contract; the dock, the Control Center, and the status
+  bar live in the `ass-dock`, `ass-control-center`, and `ass-statusbar`
+  component crates ([ADR-0044](../adr/0044-dock-and-control-center-crates.md),
+  [ADR-0045](../adr/0045-statusbar-crate-and-sni-tray.md)).
 - **"Add an external control path"** (CLI, scripts, the agent) →
-  `ass-ipc` + `ass-ctl`.
+  `ass-ipc` + `ass-control`.
 - **"Start or discover apps"** → `ass-apps` (discovery) + `ass-launch`
   (spawn). `ass-launch` is intentionally narrow: process detachment and
   environment, not window management.

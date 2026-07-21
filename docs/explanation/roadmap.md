@@ -169,7 +169,8 @@ switching (`Super+Left`/`Super+Right`) drops keyboard focus from a now-hidden
 window, and removal reaps the emptied workspace. The IPC exposes
 `GetWorkspaces`, `SwitchWorkspace`/`SwitchWorkspaceTo`, and a
 `WorkspaceChanged` event (ADR-0027). A top-center workspace indicator
-(`WorkspaceBar` chrome component) shows one numbered tile per workspace,
+(`StatusBar` chrome component, hosted by the `ass-statusbar` crate)
+shows one numbered tile per workspace,
 highlights the current, and switches on click. The tiling policy is
 implemented end to end: a pure `ass-core::layout` module (`LayoutRole`,
 `LayoutParams`, the `Layout` trait, a `MasterStack` policy), a `layout_role`
@@ -254,8 +255,8 @@ itself: non-interactive window geometry changes (tiling, IPC geometry)
 record previous and target rectangles, publish them in the snapshot, and
 interpolate at draw time, with subsurface trees glued to their root. The
 unified overview (window grid + workspace rail, live thumbnails, click to
-focus, `Super+O` or `ass-ctl overview`) is in daily use, and a screenshot
-path (`ass-ctl screenshot`, scoped `CaptureOutput` pixel capture per
+focus, `Super+O` or `ass-control overview`) is in daily use, and a screenshot
+path (`ass-control screenshot`, scoped `CaptureOutput` pixel capture per
 [ADR-0041](../adr/0041-sealed-file-descriptor-pixel-transport.md)) covers the
 single-frame half of the capture story. Still planned: window open/close
 transitions and the workspace-switch slide, screencast streaming through

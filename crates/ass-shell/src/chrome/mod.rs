@@ -13,8 +13,8 @@
 //!   every enumerated `.desktop` entry; click a row to launch it (ADR-0022).
 //!
 //! Larger components have graduated to their own crates on top of the same
-//! contract (ADR-0021): the dock lives in `ass-dock` and the Control Center
-//! in `ass-control-center`.
+//! contract (ADR-0021): the dock lives in `ass-dock`, the Control Center in
+//! `ass-control-center`, and the status bar in `ass-statusbar`.
 
 mod app_menu;
 mod decorations;
@@ -22,7 +22,6 @@ mod launcher;
 mod overview;
 mod screenshot;
 mod toast;
-mod workspace_bar;
 
 pub use app_menu::{AppMenu, PinAction};
 pub use decorations::Decorations;
@@ -30,4 +29,3 @@ pub use launcher::Launcher;
 pub use overview::Overview;
 pub use screenshot::ScreenshotSelector;
 pub use toast::Toast;
-pub use workspace_bar::{HudBar, WorkspaceBar};

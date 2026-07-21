@@ -17,10 +17,11 @@ ass/
     ass-shell/         compositor chrome host and contract through lens
     ass-dock/          bottom-center dock chrome component
     ass-control-center/  compositor-owned Control Center chrome component
+    ass-statusbar/     top status bar chrome component (workspaces, tray, clock, system status, SNI tray)
     ass-wallpaper/     image and short-video background layer
     ass-config/        declarative configuration: TOML schema, loader, live reload
     ass-ipc/           versioned IPC and introspection over a unix socket
-    ass-ctl/           command-line driver for the IPC (reference external tool)
+    ass-control/       command-line driver for the IPC (reference external tool)
     ass-apps/          freedesktop.org desktop-entry enumeration + icon lookup
     ass-launch/        detached, XDG-environment-aware app launching
     ass/               the binary: wiring and event loop
@@ -43,10 +44,11 @@ flux and lens live in the sibling `../optics` Meson project under
 | [`ass-shell`](../../crates/ass-shell/README.md) | Chrome host, `Chrome` contract, and shared components on lens | [ADR-0021](../adr/0021-chrome-component-trait.md) |
 | [`ass-dock`](../../crates/ass-dock/README.md) | Bottom-center dock chrome component | [ADR-0019](../adr/0019-dock-as-bottom-center-overlay.md), [ADR-0044](../adr/0044-dock-and-control-center-crates.md) |
 | [`ass-control-center`](../../crates/ass-control-center/README.md) | Compositor-owned Control Center chrome component | [ADR-0044](../adr/0044-dock-and-control-center-crates.md) |
+| [`ass-statusbar`](../../crates/ass-statusbar/README.md) | Top status bar chrome component with the StatusNotifierItem tray | [ADR-0045](../adr/0045-statusbar-crate-and-sni-tray.md) |
 | [`ass-wallpaper`](../../crates/ass-wallpaper/README.md) | Image and short-video background layer | [ADR-0018](../adr/0018-wallpaper-crate.md) |
 | [`ass-config`](../../crates/ass-config/README.md) | Versioned TOML schema, loader, and mtime-based live reload | [ADR-0026](../adr/0026-configuration-system.md) |
 | [`ass-ipc`](../../crates/ass-ipc/README.md) | Versioned schema and codec over a unix socket; the extension/automation surface | [ADR-0027](../adr/0027-ipc-and-introspection.md) |
-| [`ass-ctl`](../../crates/ass-ctl/README.md) | Command-line driver for the IPC; the reference external tool | [ADR-0027](../adr/0027-ipc-and-introspection.md) |
+| [`ass-control`](../../crates/ass-control/README.md) | Command-line driver for the IPC; the reference external tool | [ADR-0027](../adr/0027-ipc-and-introspection.md) |
 | [`ass-apps`](../../crates/ass-apps/README.md) | freedesktop.org desktop-entry enumeration and icon-theme lookup | [ADR-0022](../adr/0022-application-launcher.md) |
 | [`ass-launch`](../../crates/ass-launch/README.md) | Detached, XDG-environment-aware launching of desktop applications | [ADR-0022](../adr/0022-application-launcher.md) |
 | [`ass`](../../crates/ass/README.md) | Process entry point and frame loop | [Architecture](../explanation/architecture.md) |

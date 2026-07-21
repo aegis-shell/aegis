@@ -22,6 +22,7 @@ ass-shell = { workspace = true }
 # composes them into the shell.
 ass-dock = { workspace = true }
 ass-control-center = { workspace = true }
+ass-statusbar = { workspace = true }
 ass-wallpaper = { workspace = true }
 # Declarative configuration: TOML schema + live reload (ADR-0026).
 ass-config = { workspace = true }
