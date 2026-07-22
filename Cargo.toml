@@ -21,12 +21,18 @@ flux-scene-graph = { path = "../optics/bindings/flux-rs/crates/flux-scene-graph"
 flux-scene-graph-sys = { path = "../optics/bindings/flux-rs/crates/flux-scene-graph-sys" }
 lens = { path = "../optics/bindings/lens-rs/crates/lens" }
 lens-sys = { path = "../optics/bindings/lens-rs/crates/lens-sys" }
+iris = { path = "../optics/bindings/iris-rs/crates/iris" }
 
 # Observability: the facade in every crate, the impl only in the binary.
 # Long-term this seam is also how the AI-adaptation phase subscribes to
 # compositor events.
 log = "0.4"
 env_logger = "0.11"
+
+# Neenee owns the Praxion-powered agent runtime. ass exposes a narrow MCP
+# platform bridge so the product can discover scoped desktop and Realm tools
+# without linking the agent stack into the compositor (ADR-0047).
+base64 = "0.22"
 
 # Session D-Bus for the StatusNotifierItem system tray (ass-statusbar).
 # Pure-Rust zbus (no libdbus system dep) with the blocking API so the tray
@@ -66,6 +72,8 @@ ass-server = { path = "crates/ass-server" }
 ass-backend = { path = "crates/ass-backend" }
 ass-render = { path = "crates/ass-render" }
 ass-shell = { path = "crates/ass-shell" }
+# Product-specific design tokens, themes, and materials shared by chrome.
+ass-design = { path = "crates/ass-design" }
 # Chrome components promoted out of ass-shell (ADR-0044).
 ass-dock = { path = "crates/ass-dock" }
 ass-control-center = { path = "crates/ass-control-center" }
@@ -78,6 +86,8 @@ ass-ipc = { path = "crates/ass-ipc" }
 # Launcher: XDG application discovery + detached launch. See ADR-0022.
 ass-apps = { path = "crates/ass-apps" }
 ass-launch = { path = "crates/ass-launch" }
+# Scoped ASS platform bridge for the Praxion-powered Neenee product (ADR-0047).
+ass-neenee = { path = "crates/ass-neenee" }
 
 # Declarative configuration (ADR-0026). `serde` drives the schema; `toml` is
 # the chosen file format over KDL/YAML/INI for tooling maturity and an

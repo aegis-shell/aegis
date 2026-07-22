@@ -1,7 +1,8 @@
 # ass-statusbar
 
 `ass-statusbar` is the top status bar chrome component for the ass
-compositor, built on the `Chrome` contract from `ass-shell`. It hosts
+compositor, built on the `Chrome` contract from `ass-shell` and shared
+materials from `ass-design`. It hosts
 the session HUD (workspace state, active-window title, clock, system
 status, notification panel) and the compositor's StatusNotifierItem
 (SNI) system tray.
@@ -14,6 +15,8 @@ status, notification panel) and the compositor's StatusNotifierItem
   running app icons.
 - Present compact system status (volume, network, battery, notifications)
   as icon buttons, with volume mute/step actions on click and scroll.
+- Show a persistent, state-colored Agent Realm indicator whenever AI
+  authority is live; clicking it opens Control Center on AI Workspaces.
 - Open a small notification panel from the bell button.
 - Run the session's StatusNotifierWatcher + Host on the session D-Bus,
   render registered SNI items' icons in the tray row, and forward
@@ -28,7 +31,7 @@ status, notification panel) and the compositor's StatusNotifierItem
 ## Boundaries
 
 The status bar owns presentation and interaction state only. Window,
-workspace, notification, and system snapshots arrive through the shell
+workspace, notification, Realm, and system snapshots arrive through the shell
 each frame; the decoded application icon textures are borrowed from the
 composition root's icon cache and pushed through
 `Chrome::update_app_catalog`. It never mutates Wayland state or writes
@@ -77,4 +80,5 @@ application catalog and system status.
 - [Status bar crate and SNI tray decision](../../docs/adr/0045-statusbar-crate-and-sni-tray.md)
 - [Component crate split (dock + Control Center precedent)](../../docs/adr/0044-dock-and-control-center-crates.md)
 - [Chrome component decision](../../docs/adr/0021-chrome-component-trait.md)
+- [Design system decision](../../docs/adr/0046-design-system-crate.md)
 - [Configuration reference: `[statusbar]`](../../docs/reference/config.md#status-bar)

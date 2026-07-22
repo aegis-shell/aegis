@@ -35,7 +35,7 @@ input.
 ass is a Cargo workspace under `crates/`. The split keeps the server,
 backend, renderer, and shell behind clear seams so the
 [AI-adaptation phase](#roadmap) can grow a semantic model from
-`ass-core`. The crates group into four roles:
+`ass-core`. The crates group by responsibility:
 
 | Role | Crate | Responsibility |
 |------|-------|----------------|
@@ -45,8 +45,9 @@ backend, renderer, and shell behind clear seams so the
 | | `ass-backend` | Presentation and input targets: nested (development) and DRM/KMS + libinput + libseat (bare TTY) |
 | | `ass-render` | Compositing: client buffers to flux textures, scene to the output via flux |
 | **Shell / interaction** | `ass-shell` | Compositor chrome host and `Chrome` contract on lens, plus shared components: launcher, overview, decorations, toast |
+| | `ass-design` | Product design tokens, themes, and data-only surface materials shared by chrome components |
 | | `ass-dock` | Bottom-center dock chrome component: pinned and running apps, magnification, pin actions |
-| | `ass-control-center` | Compositor-owned Control Center chrome component: system status pages and typed system/Realm intents |
+| | `ass-control-center` | Standalone modular settings application, plus the temporary Quick Settings and Realm compatibility host |
 | | `ass-statusbar` | Top status bar chrome component: workspace state, clock, system status, and the host-rendered StatusNotifierItem tray |
 | | `ass-wallpaper` | Background layer: multi-format image and short-video wallpaper |
 | | `ass-config` | Declarative configuration: versioned TOML schema, loader, live reload |
@@ -54,6 +55,7 @@ backend, renderer, and shell behind clear seams so the
 | | `ass-launch` | Ordinary app detachment and fail-closed Realm namespace/cgroup launch |
 | | `ass-ipc` | Versioned scoped IPC, sealed capture transport, and introspection over a Unix socket |
 | | `ass-control` | Command-line driver for the ass IPC (the reference external tool) |
+| **AI integration** | `ass-neenee` | Out-of-process MCP adapter: scoped desktop tools and one bridge-managed Agent Realm for Neenee |
 | **Binary** | `ass` | The binary: wires the parts together and runs the event loop |
 
 flux and lens are consumed through Rust bindings kept in separate
@@ -69,15 +71,43 @@ user sees or can do" tasks:
 
 - **"Manage windows"** (focus, close, move, tile, workspace) → `ass-server`.
 - **"Change the chrome / interactions"** (dock, launcher, bars) → `ass-shell`
-  for the host and contract; the dock, the Control Center, and the status
-  bar live in the `ass-dock`, `ass-control-center`, and `ass-statusbar`
-  component crates ([ADR-0044](../adr/0044-dock-and-control-center-crates.md),
+  for the host and contract; the dock and status bar live in the `ass-dock`
+  and `ass-statusbar` component crates. Persistent settings run as the
+  standalone `ass-control-center` application
+  ([ADR-0044](../adr/0044-dock-and-control-center-crates.md),
+  [ADR-0049](../adr/0049-standalone-modular-control-center.md),
   [ADR-0045](../adr/0045-statusbar-crate-and-sni-tray.md)).
-- **"Add an external control path"** (CLI, scripts, the agent) →
-  `ass-ipc` + `ass-control`.
+- **"Add an external control path"** (CLI or scripts) → `ass-ipc` +
+  `ass-control`; the Neenee product consumes that same IPC through
+  `ass-neenee-mcp` without entering the compositor process
+  ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md)).
 - **"Start or discover apps"** → `ass-apps` (discovery) + `ass-launch`
   (spawn). `ass-launch` is intentionally narrow: process detachment and
   environment, not window management.
+
+## Settings Boundary
+
+Persistent settings use the same state-in, intent-out direction as the rest
+of the compositor without placing their presentation inside its process. The
+Control Center reads a coherent settings snapshot over the scoped IPC and
+returns typed edits with the revision it observed. The compositor remains the
+authority that validates, persists, applies, journals, and publishes the next
+revision.
+
+A module owns one visible settings domain and its draft editor state. It does
+not own the configuration file or the host service. This distinction keeps
+the module catalog broad without pretending all settings belong to the
+compositor: account modules use system account and authorization services,
+power modules use power services, and compositor-owned display/input policy
+uses the ass settings IPC.
+
+Quick Settings stays separate. Volume, brightness, radios, and session
+actions are immediate service controls rather than persistent settings. Realm
+lifecycle is authority management rather than configuration. The temporary
+in-process host still presents those two surfaces while the standalone app is
+the canonical persistent-settings UI. See
+[ADR-0049](../adr/0049-standalone-modular-control-center.md) and the
+[Control Center Reference](../reference/control-center.md).
 
 ## Backend Abstraction
 

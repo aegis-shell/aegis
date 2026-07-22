@@ -16,10 +16,17 @@ The near-term goal is a good experience for human users. A later phase
 adapts the compositor so an AI agent can understand and operate the
 machine through it.
 
+The `ass-neenee-mcp` process connects the Neenee agent product to that phase.
+It exposes scoped desktop and Agent Realm tools through Neenee's MCP runtime
+without loading inference into the compositor. See
+[Connect Neenee to ASS](docs/how-to/neenee.md).
+
 ## Quick Start
 
-ass builds against **flux** and **lens** in the sibling `../optics` Meson
-project. Rust bindings live under `../optics/bindings/`.
+ass builds against **flux**, **lens**, and **iris** in the sibling `../optics`
+Meson project. Rust bindings live under `../optics/bindings/`. Neenee and its
+Praxion runtime remain separate products; the ASS workspace builds only the
+platform-side MCP bridge.
 
 Build the C libraries with meson first, then run the nested backend inside an
 existing Wayland session:
@@ -32,10 +39,18 @@ cargo run -p ass
 
 Skip `meson setup` when `../optics/build` already exists.
 
+Open the standalone settings application from a second terminal:
+
+```bash
+cargo run -p ass-control-center
+```
+
 The Rust bindings automatically discover the sibling build tree and publish
 its runtime library paths, so no shell environment setup is required.
 `cargo run -p ass` opens a nested window on `$WAYLAND_DISPLAY` and presents
-the shell. On a bare TTY (no host session) the same binary drives the display
+the shell. `cargo run -p ass-control-center` opens the standalone settings
+application and connects it to the running compositor over its owner-only IPC.
+On a bare TTY (no host session) the compositor binary drives the display
 directly through the DRM/KMS backend; force a target with
 `--backend auto|drm|nested` or `ASS_BACKEND`. See [Setup](docs/dev/setup.md)
 for prerequisites and details.

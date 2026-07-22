@@ -14,9 +14,9 @@
 //!
 //! # Status
 //!
-//! Protocol version 3 supports Realm authority, connection-bound capability
-//! leases, optimistic transactions, directed virtual-output capture, state
-//! queries, typed commands, and event/journal subscriptions.
+//! Protocol version 4 supports revisioned desktop-settings transactions in
+//! addition to Realm authority, connection-bound capability leases, directed
+//! virtual-output capture, state queries, typed commands, and subscriptions.
 
 pub mod client;
 pub mod codec;
@@ -33,5 +33,6 @@ pub use journal::{
 pub use schema::{
     Capabilities, Command, Event, LOCAL_REALM_ADMIN_SCOPE, LeaseGrant, LeaseRequest, OpClass,
     PROTOCOL_VERSION, RealmAction, RealmActionResult, RealmCapture, Request, Response, Scope,
+    SettingsAction, SettingsReceipt, SettingsSnapshot,
 };
 pub use server::{CaptureOutputPayload, CaptureRealmPayload, Handler, Server};

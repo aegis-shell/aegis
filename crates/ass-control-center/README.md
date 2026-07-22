@@ -1,46 +1,71 @@
 # ass-control-center
 
-`ass-control-center` is the compositor-owned Control Center chrome component
-for the ass compositor, built on the `Chrome` contract from `ass-shell`.
+`ass-control-center` is the standalone modular settings application for ass.
+The crate also retains the temporary in-process host for Quick Settings and
+AI Workspace management during migration.
 
 ## Responsibilities
 
-- Present system controls — audio, brightness, displays, touchpad, radios,
-  and notifications — as a paged modal surface.
-- Consume the normalized `SystemStatus` and Realm authority snapshots pushed
-  by the shell.
-- Emit typed `SystemAction` mutations and `RealmIntent` lifecycle requests
-  through `ChromeEvents`.
-- Resolve its header icon from the pushed application catalog's `IconSet`.
+- Host settings modules in a normal Wayland window through Iris, Lens, and
+  Flux.
+- Provide stable module metadata, navigation ids, categories, keywords,
+  backend availability, and instant or explicit apply policy.
+- Read revisioned settings snapshots and submit typed settings actions over
+  `ass-ipc` without blocking the UI thread.
+- Share display and touchpad module implementations with the compositor
+  compatibility host.
+- Expose honest unavailable pages for domains whose authoritative backend is
+  not implemented yet.
 
 ## Boundaries
 
-The Control Center is a trusted in-process surface: it renders through
-optics/lens and emits typed intents, but never invokes host commands or
-probes the system itself. The composition root (the `ass` binary) owns the
-system probing, the icon textures, and the catalog pushed through
-`Chrome::update_app_catalog`.
+A settings module owns presentation and local draft state. It does not read
+or write `config.toml`, probe hardware, call system services, or choose its
+transport. The standalone host routes compositor-owned settings through
+confirmed IPC transactions. Future system-owned modules use their authorized
+service adapters instead.
+
+Quick Settings is not persistent configuration. Volume, brightness, radios,
+notifications, and session actions remain compositor chrome. Realm lifecycle
+is authority management and remains in the compatibility host.
+
+Built-in modules are registered statically because Rust has no stable dynamic
+library ABI. A future third-party module boundary must be a versioned process
+protocol rather than an in-process Rust `.so`.
 
 ## Runtime Effect
 
-While open, the Control Center is modal chrome: it captures pointer and
-keyboard input, requests a backdrop blur behind its panel, and suppresses
-covered components. Applying display settings emits one
-`SystemAction::SetDisplay`; the main loop owns the actual modeset.
+The binary opens an `xdg_toplevel` with app id
+`io.github.ming.ass.ControlCenter`. A worker thread connects to
+`$XDG_RUNTIME_DIR/ass.sock`; the UI receives authoritative snapshots and
+coalesces unsent instant edits while a confirmed transaction is in flight.
+
+The `display` and `touchpad` modules are editable. `mouse`, `keyboard`,
+`appearance`, `power`, `users`, and `window-rules` keep stable routes but
+remain unavailable until their backends exist.
 
 ## Use
 
-Register one Control Center with the shell:
+Run the app from the workspace:
+
+```bash
+cargo run -p ass-control-center
+cargo run -p ass-control-center -- --module display
+cargo run -p ass-control-center -- touchpad
+```
+
+Package `contrib/io.github.ming.ass.ControlCenter.desktop` beside the binary
+to expose it through application launchers.
+
+The compatibility host remains available to the composition root:
 
 ```rust
 shell.add(Box::new(ass_control_center::ControlCenter::new()));
 ```
 
-`Shell::add` seeds newly registered components with the current catalog, and
-`Shell::set_app_catalog` fans replacements out to every component.
-
 ## Related Documentation
 
+- [Control Center reference](../../docs/reference/control-center.md)
+- [Standalone modular Control Center decision](../../docs/adr/0049-standalone-modular-control-center.md)
 - [Component crate split](../../docs/adr/0044-dock-and-control-center-crates.md)
-- [Chrome component decision](../../docs/adr/0021-chrome-component-trait.md)
-- [AI Workspace operations](../../docs/how-to/ai-workspaces.md)
+- [Design system decision](../../docs/adr/0046-design-system-crate.md)

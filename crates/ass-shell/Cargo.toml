@@ -10,6 +10,7 @@ build = "build.rs"
 
 [dependencies]
 ass-core = { workspace = true }
+ass-design = { workspace = true }
 lens = { workspace = true }
 lens-sys = { workspace = true }
 log.workspace = true

@@ -284,7 +284,7 @@ impl CompositorRuntime {
         let touchpad_status = self.host.touchpad_status();
         if touchpad_status != self.system_status.touchpad {
             self.system_status.touchpad = touchpad_status;
-            self.shell.set_system_status(self.system_status.clone());
+            self.publish_settings();
         }
         // Hot-reload the configuration when its mtime moves (ADR-0026). One
         // `stat` per frame is cheap and keeps the reload on this loop, where
@@ -334,6 +334,8 @@ impl CompositorRuntime {
                 outputs: self.server.output_infos(),
                 error: None,
             };
+            self.settings_revision = self.settings_revision.saturating_add(1);
+            self.publish_settings();
             self.live.set_scopes(build_ipc_scopes(self.config.as_ref()));
             let pinned = resolve_pinned(
                 &self.launcher_apps,
@@ -345,7 +347,7 @@ impl CompositorRuntime {
                 self.config
                     .as_ref()
                     .map(|c| c.dock.autopopulate)
-                    .unwrap_or(true),
+                    .unwrap_or(false),
             );
             self.shell.set_app_catalog(ass_shell::AppCatalog {
                 apps: self.launcher_apps.clone(),
@@ -387,7 +389,7 @@ impl CompositorRuntime {
                     self.config
                         .as_ref()
                         .map(|c| c.dock.autopopulate)
-                        .unwrap_or(true),
+                        .unwrap_or(false),
                 );
                 self.shell.set_app_catalog(ass_shell::AppCatalog {
                     apps: refreshed.clone(),
@@ -507,6 +509,35 @@ impl CompositorRuntime {
                 request.origin,
                 ass_ipc::JournalMutation::Realm {
                     action: committed_action,
+                    before_revision,
+                    after_revision,
+                },
+                effect,
+            );
+            let _ = request.reply.send(result);
+        }
+        while let Ok(request) = self.settings_control_rx.try_recv() {
+            let action = request.action.clone();
+            let before_revision = self.settings_revision;
+            let result = if self.server.session_locked() {
+                Err("session is locked".into())
+            } else {
+                self.commit_settings(request.expected_revision, request.action)
+            };
+            let after_revision = self.settings_revision;
+            let effect = match &result {
+                Ok(_) => ass_ipc::Effect::Applied,
+                Err(reason) => ass_ipc::Effect::Refused {
+                    reason: reason.clone(),
+                },
+            };
+            journal_mutation_effect_and_broadcast(
+                &self.journal,
+                &self.ipc,
+                self.start.elapsed().as_millis() as u64,
+                request.origin,
+                ass_ipc::JournalMutation::Settings {
+                    action,
                     before_revision,
                     after_revision,
                 },

@@ -10,6 +10,7 @@ build = "build.rs"
 
 [dependencies]
 ass-core = { workspace = true }
+ass-design = { workspace = true }
 ass-shell = { workspace = true }
 lens = { workspace = true }
 # Direct dep purely so this crate's build script receives DEP_LENS_RPATHS

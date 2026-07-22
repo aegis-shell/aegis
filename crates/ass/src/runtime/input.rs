@@ -8,6 +8,62 @@ pub(super) struct FrameState {
     pub(super) pending_screenshots: Vec<(ass_ipc::Command, u64, ass_ipc::Origin)>,
 }
 
+fn agent_activities_from_applied_input(
+    realm: ass_core::realm::RealmId,
+    realm_label: &str,
+    window: ass_core::window::WindowId,
+    actions: &[ass_core::input::SyntheticInputAction],
+    events: &[ass_core::input::InputEvent],
+    sequence: &mut u64,
+) -> Vec<ass_shell::AgentActivity> {
+    use ass_core::input::{InputEvent, SyntheticInputAction};
+
+    // Every prepared pointer action contributes exactly one global motion
+    // event before its button/axis events. Reading those positions preserves
+    // the exact coordinates the server applied rather than remapping target-
+    // local coordinates a second time in the presentation layer.
+    let mut pointer_positions = events.iter().filter_map(|event| match *event {
+        InputEvent::PointerMotion { x, y } => Some(ass_core::Point {
+            x: x.round() as i32,
+            y: y.round() as i32,
+        }),
+        _ => None,
+    });
+    actions
+        .iter()
+        .filter_map(|action| {
+            let (position, kind) = match *action {
+                SyntheticInputAction::PointerMove { .. } => (
+                    Some(pointer_positions.next()?),
+                    ass_shell::AgentInputKind::PointerMove,
+                ),
+                SyntheticInputAction::Click { button, .. } => (
+                    Some(pointer_positions.next()?),
+                    ass_shell::AgentInputKind::Click { button },
+                ),
+                SyntheticInputAction::Scroll { dx, dy, .. } => (
+                    Some(pointer_positions.next()?),
+                    ass_shell::AgentInputKind::Scroll { dx, dy },
+                ),
+                // Do not copy the key code into presentation state: the
+                // feedback says only that keyboard input occurred.
+                SyntheticInputAction::KeyPress { .. } => {
+                    (None, ass_shell::AgentInputKind::Keyboard)
+                }
+            };
+            *sequence = sequence.saturating_add(1);
+            Some(ass_shell::AgentActivity {
+                sequence: *sequence,
+                realm,
+                realm_label: realm_label.to_owned(),
+                window,
+                position,
+                kind,
+            })
+        })
+        .collect()
+}
+
 impl CompositorRuntime {
     pub(super) fn process_input(
         &mut self,
@@ -499,11 +555,16 @@ impl CompositorRuntime {
                     }
                 }
                 ass_ipc::Command::InjectRealmInput { realm, id, actions } => {
-                    let seat = self
-                        .server
-                        .realm_snapshot()
+                    let realm_snapshot = self.server.realm_snapshot();
+                    let realm_label = realm_snapshot
+                        .realms
+                        .iter()
+                        .find(|candidate| candidate.id == *realm)
+                        .map(|candidate| candidate.label.clone())
+                        .unwrap_or_else(|| format!("Realm {}", realm.0));
+                    let seat = realm_snapshot
                         .seats
-                        .into_iter()
+                        .iter()
                         .find(|seat| seat.realm == *realm && seat.enabled)
                         .map(|seat| seat.id);
                     let Some(seat) = seat else {
@@ -536,7 +597,19 @@ impl CompositorRuntime {
                         continue;
                     };
                     match self.server.forward_agent_input_to(seat, *id, &events) {
-                        Ok(()) => ass_ipc::Effect::Applied,
+                        Ok(()) => {
+                            for activity in agent_activities_from_applied_input(
+                                *realm,
+                                &realm_label,
+                                *id,
+                                actions,
+                                &events,
+                                &mut self.agent_activity_sequence,
+                            ) {
+                                self.shell.report_agent_activity(activity);
+                            }
+                            ass_ipc::Effect::Applied
+                        }
                         Err(error) => ass_ipc::Effect::Refused {
                             reason: error.to_string(),
                         },
@@ -696,5 +769,89 @@ impl CompositorRuntime {
             cursor_shape,
             pending_screenshots,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ass_core::Point;
+    use ass_core::input::{ButtonState, InputEvent, SyntheticInputAction};
+    use ass_core::realm::RealmId;
+    use ass_core::window::WindowId;
+
+    #[test]
+    fn applied_agent_actions_become_ordered_privacy_preserving_feedback() {
+        let actions = [
+            SyntheticInputAction::PointerMove {
+                position: Point { x: 4, y: 5 },
+            },
+            SyntheticInputAction::Click {
+                position: Point { x: 8, y: 9 },
+                button: 0x110,
+            },
+            SyntheticInputAction::KeyPress { code: 30 },
+        ];
+        let events = [
+            InputEvent::PointerMotion { x: 104.0, y: 205.0 },
+            InputEvent::PointerMotion { x: 108.0, y: 209.0 },
+            InputEvent::PointerButton {
+                button: 0x110,
+                state: ButtonState::Pressed,
+            },
+            InputEvent::PointerButton {
+                button: 0x110,
+                state: ButtonState::Released,
+            },
+            InputEvent::Key {
+                code: 30,
+                state: ButtonState::Pressed,
+            },
+            InputEvent::Key {
+                code: 30,
+                state: ButtonState::Released,
+            },
+        ];
+        let mut sequence = 40;
+        let feedback = agent_activities_from_applied_input(
+            RealmId(7),
+            "Neenee",
+            WindowId(42),
+            &actions,
+            &events,
+            &mut sequence,
+        );
+
+        assert_eq!(feedback.len(), 3);
+        assert_eq!(feedback[0].sequence, 41);
+        assert_eq!(feedback[0].position, Some(Point { x: 104, y: 205 }));
+        assert_eq!(feedback[1].position, Some(Point { x: 108, y: 209 }));
+        assert_eq!(
+            feedback[1].kind,
+            ass_shell::AgentInputKind::Click { button: 0x110 }
+        );
+        assert_eq!(feedback[2].sequence, 43);
+        assert_eq!(feedback[2].position, None);
+        assert_eq!(feedback[2].kind, ass_shell::AgentInputKind::Keyboard);
+        assert_eq!(sequence, 43);
+    }
+
+    #[test]
+    fn malformed_prepared_event_stream_does_not_invent_pointer_feedback() {
+        let actions = [SyntheticInputAction::Click {
+            position: Point { x: 8, y: 9 },
+            button: 0x110,
+        }];
+        let mut sequence = 3;
+        let feedback = agent_activities_from_applied_input(
+            RealmId(7),
+            "Neenee",
+            WindowId(42),
+            &actions,
+            &[],
+            &mut sequence,
+        );
+        assert!(feedback.is_empty());
+        assert_eq!(sequence, 3);
     }
 }

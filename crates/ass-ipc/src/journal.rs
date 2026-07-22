@@ -12,7 +12,7 @@
 //!
 //! See [ADR-0033](../../docs/adr/0033-mutation-journal.md).
 
-use crate::schema::{Command, RealmAction};
+use crate::schema::{Command, RealmAction, SettingsAction};
 
 /// Who caused a mutation. The agent filters its own echoes and models user
 /// intent from the origin.
@@ -55,6 +55,11 @@ pub enum JournalMutation {
     },
     Realm {
         action: RealmAction,
+        before_revision: u64,
+        after_revision: u64,
+    },
+    Settings {
+        action: SettingsAction,
         before_revision: u64,
         after_revision: u64,
     },

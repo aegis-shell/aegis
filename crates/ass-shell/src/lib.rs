@@ -23,7 +23,9 @@ use lens::{Frame, Ui};
 pub mod chrome;
 pub mod i18n;
 pub mod system;
-pub use chrome::{AppMenu, Decorations, Launcher, Overview, PinAction, ScreenshotSelector, Toast};
+pub use chrome::{
+    AgentFeedback, AppMenu, Decorations, Launcher, Overview, PinAction, ScreenshotSelector, Toast,
+};
 pub use i18n::{Language, Localizer, Message};
 pub use system::{
     BatteryStatus, DisplaySettings, DisplayStatus, NetworkState, SystemAction, SystemStatus,
@@ -39,6 +41,39 @@ use ass_core::app::{ApplicationTarget, BuiltInApplication, Entry};
 use ass_core::realm::{RealmId, RealmSnapshot, RealmState};
 use ass_core::window::Window;
 use ass_core::workspace::WorkspaceSnapshot;
+
+/// One successfully applied Agent input operation, projected onto trusted
+/// compositor chrome for the physical user.
+///
+/// This is deliberately presentation-only: it grants no authority, carries
+/// no key contents, and is never part of an Agent Realm capture.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentActivity {
+    /// Monotonic compositor-local ordering token.
+    pub sequence: u64,
+    /// Realm whose independent logical seat applied the operation.
+    pub realm: RealmId,
+    /// Human-readable Realm label captured with the operation.
+    pub realm_label: String,
+    /// Toplevel that received the operation.
+    pub window: ass_core::window::WindowId,
+    /// Applied compositor-global pointer position, when applicable.
+    pub position: Option<ass_core::Point>,
+    /// Privacy-preserving operation class.
+    pub kind: AgentInputKind,
+}
+
+/// Visual class of a successfully applied Agent input operation.
+///
+/// Keyboard feedback intentionally omits the key code so passwords and typed
+/// content cannot leak through trusted chrome or screenshots of the desktop.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AgentInputKind {
+    PointerMove,
+    Click { button: u32 },
+    Scroll { dx: f32, dy: f32 },
+    Keyboard,
+}
 
 /// Edge space a chrome component reserves; tiled windows avoid it. Summed
 /// across components by [`Shell::reserved`] and subtracted from the tiling
@@ -225,10 +260,10 @@ pub struct ChromeEvents {
     pub screenshot_region: Option<ass_core::Rect>,
     /// Ordered host-system mutations requested by compositor-owned UI.
     pub system_actions: Vec<SystemAction>,
-    /// Desktop ids the dock asked to toggle in the pinned list. Drained by the
-    /// main loop, which updates `[dock] pinned` in the config and refreshes the
-    /// dock catalog.
-    pub dock_pin_toggles: Vec<String>,
+    /// Ordered, idempotent pin mutations requested by application menus.
+    /// Drained by the main loop, which updates `[dock] pinned` in the config
+    /// and refreshes the dock catalog.
+    pub dock_pin_actions: Vec<PinAction>,
     /// Ordered Realm lifecycle and authority mutations requested by trusted
     /// shell surfaces.
     pub realm_intents: Vec<RealmIntent>,
@@ -296,6 +331,11 @@ pub trait Chrome {
     /// Receive the complete Realm authority snapshot. Only trusted
     /// compositor-owned components consume this high-level state.
     fn update_realms(&mut self, _snapshot: &RealmSnapshot) {}
+
+    /// Receive one Agent input operation after the compositor successfully
+    /// applied it. Components must treat this as ephemeral presentation data,
+    /// not as authorization or an input source.
+    fn update_agent_activity(&mut self, _activity: &AgentActivity) {}
 
     /// Whether this component owns pointer input at the given output-space
     /// position. The main loop uses this before client routing so clicks on
@@ -599,14 +639,22 @@ impl Shell {
         }
     }
 
+    /// Publish one successfully applied Agent input operation to interested
+    /// trusted chrome components.
+    pub fn report_agent_activity(&mut self, activity: AgentActivity) {
+        for component in self.components.iter_mut() {
+            component.update_agent_activity(&activity);
+        }
+    }
+
     /// Drain ordered system mutations requested by trusted shell UI.
     pub fn take_system_actions(&mut self) -> Vec<SystemAction> {
         std::mem::take(&mut self.events.system_actions)
     }
 
-    /// Drain desktop ids the dock asked to pin/unpin this frame.
-    pub fn take_dock_pin_toggles(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.events.dock_pin_toggles)
+    /// Drain ordered pin/unpin mutations requested this frame.
+    pub fn take_dock_pin_actions(&mut self) -> Vec<PinAction> {
+        std::mem::take(&mut self.events.dock_pin_actions)
     }
 
     /// Drain trusted Realm-management intents in UI order.

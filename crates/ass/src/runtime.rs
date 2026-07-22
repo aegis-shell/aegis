@@ -11,6 +11,7 @@ mod iteration;
 mod presentation;
 mod realm;
 mod rendering;
+mod settings;
 mod state;
 
 use apps::*;
@@ -23,6 +24,7 @@ use iteration::*;
 use presentation::*;
 use realm::*;
 use rendering::*;
+use settings::*;
 use state::*;
 
 #[cfg(test)]
@@ -179,6 +181,11 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Window decorations are intentionally not registered: windows are
     // borderless (macOS-style), managed through the dock, tiling, and key
     // bindings rather than per-window title bars.
+    // Agent input feedback is compositor-owned and non-interactive. Register
+    // it first so it appears above client content but below the status bar,
+    // notifications, and modal trusted chrome. Directed Realm capture renders
+    // client surfaces directly and therefore never includes this layer.
+    shell.add(Box::new(ass_shell::AgentFeedback::new()));
     if config.as_ref().map(|c| c.statusbar.enabled).unwrap_or(true) {
         shell.add(Box::new(ass_statusbar::StatusBar::with_notifications(
             &device,
@@ -334,12 +341,12 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         server.set_output_policies(c.output_policies());
     }
     // The dock: a persistent strip of pinned `.desktop` app icons (ADR-0022).
-    // Resolve the pinned entries from the config's `[dock] pinned` list, or
-    // auto-populate from the enumerated apps that have a usable icon when no
-    // pins are configured, then push the catalog (entries + pins + the
-    // borrowed icon cache, which outlives the shell) before registering the
-    // dock: `Shell::add` seeds new components with the current catalog. The
-    // dock stays last so it stacks above the other chrome.
+    // Resolve the pinned entries from the config's `[dock] pinned` list.
+    // Automatic selection remains an explicit opt-in; an unconfigured session
+    // starts with only the Applications tile. Push the catalog (entries + pins
+    // + the borrowed icon cache, which outlives the shell) before registering
+    // the dock: `Shell::add` seeds new components with the current catalog.
+    // The dock stays last so it stacks above the other chrome.
     let pinned = resolve_pinned(
         &launcher_apps,
         &icon_cache.map,
@@ -347,7 +354,10 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .as_ref()
             .map(|c| c.dock.pinned.as_slice())
             .unwrap_or(&[]),
-        config.as_ref().map(|c| c.dock.autopopulate).unwrap_or(true),
+        config
+            .as_ref()
+            .map(|c| c.dock.autopopulate)
+            .unwrap_or(false),
     );
     log::info!("dock: {} app(s) pinned", pinned.len());
     shell.set_app_catalog(ass_shell::AppCatalog {
@@ -398,6 +408,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (ipc_cmd_tx, ipc_cmd_rx) = std::sync::mpsc::channel::<IpcCommandRequest>();
     let (capture_tx, capture_rx) = std::sync::mpsc::channel::<CaptureRequest>();
     let (realm_control_tx, realm_control_rx) = std::sync::mpsc::channel::<RealmControlRequest>();
+    let (settings_control_tx, settings_control_rx) =
+        std::sync::mpsc::channel::<SettingsControlRequest>();
     let (realm_capture_tx, realm_capture_rx) = std::sync::mpsc::channel::<RealmCaptureRequest>();
     let (journal_refusal_tx, journal_refusal_rx) =
         std::sync::mpsc::channel::<JournalRefusalRequest>();
@@ -407,6 +419,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands: ipc_cmd_tx,
             capture: capture_tx,
             realm_controls: realm_control_tx,
+            settings_controls: settings_control_tx,
             realm_capture: realm_capture_tx,
             journal_refusals: journal_refusal_tx,
         },
@@ -415,6 +428,12 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::sync::Arc::clone(&journal),
         build_ipc_scopes(config.as_ref()),
     ));
+    let settings_revision = 0;
+    live.set_settings(ass_ipc::SettingsSnapshot {
+        revision: settings_revision,
+        touchpad: system_status.touchpad.clone(),
+        display: system_status.display.clone(),
+    });
     let ipc: Option<ass_ipc::Server> = match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(d) => {
             let path = std::path::PathBuf::from(d).join("ass.sock");
@@ -486,6 +505,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .expect("spawn app scanner");
     let pending_scan_scale = icon_scale;
     let previous_frame_at = std::time::Instant::now();
+    let agent_activity_sequence = 0;
 
     CompositorRuntime {
         notif_queue,
@@ -513,6 +533,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         realm_render_targets,
         pending_realm_capture,
         realm_damage_sequence,
+        agent_activity_sequence,
         start,
         wallpaper,
         clear,
@@ -528,6 +549,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         ipc_cmd_rx,
         capture_rx,
         realm_control_rx,
+        settings_control_rx,
         realm_capture_rx,
         journal_refusal_rx,
         journal,
@@ -536,6 +558,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         last_win_sig,
         last_ws_snap,
         last_realm_revision,
+        settings_revision,
         previous_agent_suspended,
         automatically_paused_realms,
         animating,

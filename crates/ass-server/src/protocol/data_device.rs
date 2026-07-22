@@ -18,6 +18,11 @@ static DDM_IMPL: ffi::wl_data_device_manager_interface_impl =
 static DATA_DEVICE_IMPL: ffi::wl_data_device_interface_impl = ffi::wl_data_device_interface_impl {
     start_drag: ddev_start_drag,
     set_selection: ddev_set_selection,
+    // wl_data_device gained release in v2. The global is advertised at v3,
+    // so the implementation table must include opcode 2; otherwise
+    // libwayland dispatches through memory past the Rust table when clients
+    // release a dynamically removed Realm seat's data device.
+    release: res_destroy,
 };
 
 static DATA_SOURCE_IMPL: ffi::wl_data_source_interface_impl = ffi::wl_data_source_interface_impl {

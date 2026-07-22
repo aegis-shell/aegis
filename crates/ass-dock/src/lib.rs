@@ -24,6 +24,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 
+use ass_design::{Design, materials};
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect};
 
 use ass_core::app::Entry;
@@ -567,9 +568,14 @@ impl Chrome for Dock {
         };
         // A layer with an empty body collapses to ~0 (the rect is only an
         // anchor, not a size); a fixed-size child forces it to the bar size.
-        f.layer("ass-dock", panel_rect, &panel_opts(), |f| {
-            f.column_ex(&sized(bar_w, DOCK_PANEL_HEIGHT), |_| {});
-        });
+        f.layer(
+            "ass-dock",
+            panel_rect,
+            &materials::dock(&Design::dark()),
+            |f| {
+                f.column_ex(&sized(bar_w, DOCK_PANEL_HEIGHT), |_| {});
+            },
+        );
 
         // Hit-test the cursor against tile slots. A slot spans each tile's live
         // width (so magnified tiles are fully clickable) and the whole bar
@@ -964,20 +970,6 @@ fn sized_fill(w: f32, h: f32, bg: Color, radius: f32) -> LayoutOpts {
 fn grid(gap: f32) -> LayoutOpts {
     LayoutOpts {
         gap,
-        cross: Align::Center,
-        ..Default::default()
-    }
-}
-
-/// The dock bar background: a frosted-glass panel. The desktop capture behind
-/// it is blurred by the compositor host; the fill only tints the result.
-fn panel_opts() -> OverlayOpts {
-    OverlayOpts {
-        bg: Color::rgba(255, 255, 255, 34),
-        border: Color::rgba(255, 255, 255, 64),
-        border_width: 1.0,
-        radius: 18.0,
-        pad: 0.0,
         cross: Align::Center,
         ..Default::default()
     }

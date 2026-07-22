@@ -7,6 +7,72 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### User-owned Dock defaults
+
+- An unconfigured Dock now starts with only the `Applications` tile; running
+  applications remain transient until the user selects `Keep in Dock`.
+  Automatic population remains available as an explicit configuration opt-in.
+- Dock menu requests now preserve explicit pin and unpin intent. Unpinning an
+  automatically selected application no longer pins it by mistake, and the
+  first manual edit preserves the other visible automatic selections.
+
+### Standalone modular Control Center
+
+- `ass-control-center` is now a standalone Iris/Lens Wayland application with
+  a stable desktop entry and deep links for `display`, `mouse`, `touchpad`,
+  `keyboard`, `appearance`, `power`, `users`, and `window-rules`. Launcher and
+  status-bar activation use the ordinary external application path. The old
+  in-process surface remains temporarily for Quick Settings and AI Workspace
+  management.
+- Settings pages use a KCM-inspired contract: stable metadata, categories,
+  search keywords, apply policy, authoritative snapshot updates, and typed
+  intents. Display and touchpad are editable. The other domains expose honest
+  unavailable pages until their authoritative services exist.
+- IPC protocol version 4 adds revisioned settings snapshots,
+  `GetSettings`, `SettingsChanged`, confirmed `Settings` transactions, and
+  settings mutation-journal entries. Display and touchpad edits are validated,
+  persisted, applied on the compositor main loop, and acknowledged only after
+  completion; stale editor revisions fail without overwriting newer state.
+
+### Neenee Agent Realm integration
+
+- Added `ass-neenee` and its `ass-neenee-mcp` stdio server, which connect the
+  existing Praxion-powered Neenee product to ASS without duplicating provider,
+  credential, session, or agent-runtime policy in the compositor workspace.
+- Added scope-aware desktop tools plus a bridge-managed Agent Realm lifecycle:
+  XDG app discovery and sandboxed launch, optimistic authority transfer,
+  pause/resume, directed PNG capture with MCP image content, bounded Realm-seat
+  input, crash recovery, and fail-closed revocation to the human Realm.
+- Added the `ass-desktop-realm` Neenee skill and configuration/reference
+  guidance for an observe-operate-verify workflow. Realm ids are never model
+  arguments, and one per-scope process lock prevents concurrent bridge owners.
+- The synchronous ass IPC client now supports applying read/write timeouts
+  before a scoped handshake, allowing async adapters to bound stalled local
+  IPC without hanging the connector.
+- Added `ass-neenee-mcp smoke`, a live reversible acceptance check that reads
+  start and completion notifications back from compositor state, verifies a
+  temporary Agent Realm through active/paused/active transitions, leaves time
+  for visual inspection, and confirms revocation. Existing managed Realms are
+  preserved.
+- The status bar now shows a persistent, state-colored Agent Realm indicator;
+  clicking it opens Control Center directly on AI Workspaces, where Realm id,
+  state, controlled-window count, pointer/keyboard/touch seat capabilities,
+  and lifecycle controls are visible.
+- Successfully applied Agent Realm input now has compositor-owned visual
+  feedback distinct from the user's XDG cursor: a labeled circular crosshair,
+  movement trail, click pulse, scroll/keyboard state, and a background-
+  operation fallback. It omits key contents, hides on lock, clears on
+  revocation, and is excluded from directed Realm capture. The optional
+  `smoke --input-window <id>` probe verifies a real non-clicking pointer move
+  through the journal and restores the selected window to the human Realm.
+- Notification toasts now use a bounded two-line layout, so long agent titles
+  and bodies stay inside the visible card instead of overflowing its bounds.
+- Fixed two Wayland lifecycle faults exposed by live Realm smoke testing:
+  `wl_data_device.release` now has its required v2+ dispatch slot, and cursor-
+  shape constructors remain protocol-valid when seat capabilities are withdrawn
+  in the same dispatch cycle. Realm revoke no longer crashes the compositor,
+  and immediate create/pause no longer disconnects ordinary desktop clients.
+
 ### Command-line tool renamed to `ass-control`
 
 - The reference IPC client has been renamed from `ass-ctl` to `ass-control`

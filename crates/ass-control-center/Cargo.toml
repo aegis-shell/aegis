@@ -1,6 +1,6 @@
 [package]
 name = "ass-control-center"
-description = "Control Center chrome component for the ass compositor"
+description = "Modular Control Center application and compatibility chrome for ass"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
@@ -10,7 +10,10 @@ build = "build.rs"
 
 [dependencies]
 ass-core = { workspace = true }
+ass-design = { workspace = true }
+ass-ipc = { workspace = true }
 ass-shell = { workspace = true }
+iris = { workspace = true }
 lens = { workspace = true }
 # Direct dep purely so this crate's build script receives DEP_LENS_RPATHS
 # (published via the -sys crate's `links` metadata) and can re-emit the rpaths

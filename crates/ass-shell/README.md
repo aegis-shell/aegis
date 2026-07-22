@@ -9,9 +9,10 @@ as typed intents to the compositor loop.
 - Host pluggable `Chrome` components in a defined render order.
 - Own the shared chrome contract — `Chrome`, `ChromeEvents`, and the
   `AppCatalog` snapshot — consumed by in-crate components and by the
-  separate `ass-dock` and `ass-control-center` component crates.
+  separate `ass-dock`, `ass-control-center`, and `ass-statusbar` component
+  crates.
 - Draw decorations, the launcher, workspace bar, notification toasts,
-  Overview, and the Realm transfer shelf.
+  Overview, the Realm transfer shelf, and trusted Agent operation feedback.
 - Consume window, workspace, Realm, application, notification, and input
   snapshots.
 - Report focus, minimize, close, move, launch, workspace, and notification
@@ -22,6 +23,8 @@ as typed intents to the compositor loop.
 Chrome components do not mutate Wayland state, discover or spawn applications,
 or issue presentation commands. The executable drains their intents into
 `ass-server` and `ass-launch`, while `ass-backend` and flux own presentation.
+Product-specific tokens and materials come from `ass-design`; generic UI
+behavior remains in lens.
 
 ## Runtime Effect
 
@@ -37,6 +40,11 @@ presentation.
 Overview supports click-to-focus and drag-to-transfer. A window dropped on a
 Realm emits one interaction-group transfer intent; the shell never mutates
 Wayland or authority state directly.
+Successfully applied Realm input is projected through a separate,
+non-interactive Agent crosshair and operation label over read-only human
+mirrors. Positionless or hidden-target activity uses a background pill. The
+layer never changes the physical XDG cursor, never exposes key contents, and is
+outside directed Realm capture.
 
 ## Use
 
@@ -54,3 +62,5 @@ shell.
 - [AI Workspace operations](../../docs/how-to/ai-workspaces.md)
 - [Chrome component decision](../../docs/adr/0021-chrome-component-trait.md)
 - [Component crate split](../../docs/adr/0044-dock-and-control-center-crates.md)
+- [Design system decision](../../docs/adr/0046-design-system-crate.md)
+- [Agent operation feedback decision](../../docs/adr/0048-compositor-owned-agent-operation-feedback.md)

@@ -217,6 +217,7 @@ impl Default for TouchpadConfig {
 }
 
 /// Features supported by the currently attached touchpad set.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TouchpadCapabilities {
     pub natural_scroll: bool,
@@ -230,6 +231,7 @@ pub struct TouchpadCapabilities {
 }
 
 /// Live touchpad state exposed to shell settings.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TouchpadStatus {
     /// Whether this compositor directly owns the physical input devices.

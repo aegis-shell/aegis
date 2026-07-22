@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use lens::{Align, Color, Frame, Input, OverlayOpts, Rect};
+use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{Chrome, ChromeEvents, Localizer};
 use ass_core::notify::NotificationQueue;
@@ -13,7 +13,7 @@ use ass_core::window::Window;
 use ass_core::workspace::WorkspaceSnapshot;
 
 const TOAST_W: f32 = 300.0;
-const TOAST_H: f32 = 56.0;
+const TOAST_H: f32 = 64.0;
 const TOAST_GAP: f32 = 8.0;
 const TOAST_TOP_MARGIN: f32 = crate::HUD_HEIGHT + 10.0;
 const TOAST_RIGHT_MARGIN: f32 = 10.0;
@@ -78,8 +78,6 @@ impl Chrome for Toast {
                 border: Color::rgba(60, 64, 84, 255),
                 border_width: 1.0,
                 radius: 10.0,
-                pad: 8.0,
-                cross: Align::Start,
                 ..Default::default()
             };
             let id: usize = n.id as usize;
@@ -89,8 +87,22 @@ impl Chrome for Toast {
                     Some(app) => format!("{} · {app}", n.summary),
                     None => n.summary.clone(),
                 };
-                f.label(&title);
-                f.label_sized(&n.body, 12.0);
+                f.column_ex(
+                    &LayoutOpts {
+                        width: rect.w,
+                        height: rect.h,
+                        gap: 3.0,
+                        pad: 9.0,
+                        cross: Align::Start,
+                        ..Default::default()
+                    },
+                    |f| {
+                        f.label_compact_sized(&truncate(&title, 42), 12.0);
+                        if !n.body.is_empty() {
+                            f.label_compact_sized(&truncate(&n.body, 52), 10.5);
+                        }
+                    },
+                );
             });
             if pressed
                 && cursor.x >= rect.x
@@ -121,5 +133,28 @@ impl Chrome for Toast {
             let top = TOAST_TOP_MARGIN + i as f32 * (TOAST_H + TOAST_GAP);
             x >= left && x < left + TOAST_W && y >= top && y < top + TOAST_H
         })
+    }
+}
+
+fn truncate(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut out = value
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    out.push('…');
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toast_copy_is_unicode_safe_and_bounded() {
+        assert_eq!(truncate("Neenee connected", 20), "Neenee connected");
+        assert_eq!(truncate("真实通知已经联通", 6), "真实通知已…");
     }
 }

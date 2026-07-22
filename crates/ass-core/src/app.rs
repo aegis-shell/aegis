@@ -11,13 +11,20 @@
 
 use std::path::PathBuf;
 
+/// Desktop-file id and Wayland app id of the standalone Control Center.
+pub const CONTROL_CENTER_DESKTOP_ID: &str = "io.github.ming.ass.ControlCenter.desktop";
+pub const CONTROL_CENTER_APP_ID: &str = "io.github.ming.ass.ControlCenter";
+
 /// A compositor-owned application that is part of the desktop itself rather
 /// than an external process described by a desktop entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltInApplication {
-    /// System controls for audio, displays, radios, notifications, and the
-    /// current desktop session.
+    /// Compatibility route for the former in-process Control Center. New
+    /// launcher and status-bar activations spawn the standalone application.
     ControlCenter,
+    /// Control Center opened directly on the AI-workspace authority page.
+    /// This is a presentation route, not a second application identity.
+    AiWorkspaces,
     /// Interactive screenshot region selector.
     ScreenshotSelector,
 }
@@ -115,26 +122,28 @@ impl Entry {
         keys
     }
 
-    /// Construct the stable catalog entry for the compositor's control
-    /// center. The caller supplies localized presentation strings while the
-    /// application identity and activation target remain locale-independent.
+    /// Construct the stable fallback catalog entry for the standalone Control
+    /// Center. An installed desktop file with the same id takes precedence;
+    /// this entry keeps development checkouts launchable without installation.
     pub fn control_center(name: impl Into<String>, summary: impl Into<String>) -> Entry {
         Entry {
-            target: ApplicationTarget::BuiltIn(BuiltInApplication::ControlCenter),
-            id: "ass-control-center.desktop".into(),
+            target: ApplicationTarget::External,
+            id: CONTROL_CENTER_DESKTOP_ID.into(),
             name: name.into(),
             generic_name: Some(summary.into()),
-            comment: Some("Audio, display, connectivity, and session controls".into()),
-            icon: Some("preferences-system-symbolic".into()),
+            comment: Some("Display, input, appearance, power, account, and window settings".into()),
+            exec: Some("ass-control-center".into()),
+            icon: Some("preferences-system".into()),
             categories: vec!["Settings".into(), "System".into()],
             keywords: vec![
                 "settings".into(),
                 "system".into(),
-                "audio".into(),
-                "brightness".into(),
-                "wifi".into(),
-                "bluetooth".into(),
+                "display".into(),
+                "input".into(),
+                "appearance".into(),
+                "power".into(),
             ],
+            startup_wm_class: Some(CONTROL_CENTER_APP_ID.into()),
             ..Entry::default()
         }
     }
@@ -145,14 +154,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn control_center_has_a_stable_builtin_identity() {
+    fn control_center_has_a_stable_external_identity() {
         let entry = Entry::control_center("Control Center", "System controls");
-        assert_eq!(entry.id, "ass-control-center.desktop");
+        assert_eq!(entry.id, CONTROL_CENTER_DESKTOP_ID);
+        assert_eq!(entry.target, ApplicationTarget::External);
+        assert_eq!(entry.exec.as_deref(), Some("ass-control-center"));
         assert_eq!(
-            entry.target,
-            ApplicationTarget::BuiltIn(BuiltInApplication::ControlCenter)
+            entry.startup_wm_class.as_deref(),
+            Some(CONTROL_CENTER_APP_ID)
         );
-        assert!(entry.exec.is_none());
     }
 
     #[test]

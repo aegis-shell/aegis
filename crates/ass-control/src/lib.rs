@@ -716,6 +716,7 @@ pub fn format_event(ev: &Event) -> String {
             )
         }
         Event::RealmsChanged { revision } => format!("realms changed r{revision}"),
+        Event::SettingsChanged { revision } => format!("settings changed r{revision}"),
         Event::RealmDamaged {
             realm,
             sequence,
@@ -738,6 +739,10 @@ mod tests {
     fn format_event_windows_and_workspace() {
         assert_eq!(format_event(&Event::WindowsChanged), "windows changed");
         assert_eq!(format_event(&Event::WorkspaceChanged), "workspace changed");
+        assert_eq!(
+            format_event(&Event::SettingsChanged { revision: 9 }),
+            "settings changed r9"
+        );
     }
 
     #[test]

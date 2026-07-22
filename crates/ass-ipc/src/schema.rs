@@ -14,16 +14,17 @@ use ass_core::realm::{
     RealmBundle, RealmId, RealmMutation, RealmRevocation, RealmSnapshot, RealmTransactionReceipt,
     RealmWindowPlacement, SeatCapabilities, VirtualOutput,
 };
+pub use ass_core::settings::{SettingsAction, SettingsReceipt, SettingsSnapshot};
 use ass_core::window::{Window, WindowId};
 use ass_core::workspace::{OutputId, Switch, WorkspaceId, WorkspaceSnapshot};
 
 use crate::journal::{JournalEntry, JournalSnapshot};
 
 /// The protocol major version this build speaks. A client must offer the
-/// same major version at the [`Request::Hello`] handshake. Version 3 adds
-/// Realm authority, explicit time-bounded leases, optimistic transactions,
-/// and directed virtual-output capture.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// same major version at the [`Request::Hello`] handshake. Version 4 adds
+/// revisioned desktop-settings snapshots, subscriptions, and confirmed
+/// settings transactions.
+pub const PROTOCOL_VERSION: u32 = 4;
 /// Built-in owner-only scope used by the compositor's reference CLI for
 /// Realm recovery and administration. The Unix socket remains user-private;
 /// naming this scope opts the connection into the high-risk Realm operation
@@ -566,6 +567,9 @@ pub enum Event {
     /// Realm authority, lifecycle, or presentation changed. Consumers re-query
     /// the snapshot and can use `revision` to discard stale state.
     RealmsChanged { revision: u64 },
+    /// Persistent compositor settings changed. Consumers re-query with
+    /// [`Request::GetSettings`] and discard snapshots older than `revision`.
+    SettingsChanged { revision: u64 },
     /// A Realm-directed scene changed. Damage is expressed in that Realm's
     /// virtual-output logical coordinates and is conservative: every changed
     /// pixel is included, but topology changes may invalidate the full output.
@@ -632,6 +636,15 @@ pub enum Request {
     GetJournal { since: u64 },
     /// Fetch the complete authority snapshot.
     GetRealms,
+    /// Fetch the compositor-owned persistent settings snapshot.
+    GetSettings,
+    /// Persist and apply one settings edit on the compositor main loop. The
+    /// response confirms completion and carries the new revision.
+    Settings {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_revision: Option<u64>,
+        action: SettingsAction,
+    },
     /// Commit a Realm lifecycle operation and return its receipt.
     Realm { action: RealmAction },
     /// Submit a [`Command`]. Fire-and-forget: the server acknowledges queuing
@@ -703,6 +716,12 @@ pub enum Response {
     },
     Realms {
         snapshot: RealmSnapshot,
+    },
+    Settings {
+        snapshot: SettingsSnapshot,
+    },
+    SettingsApplied {
+        receipt: SettingsReceipt,
     },
     Realm {
         result: RealmActionResult,

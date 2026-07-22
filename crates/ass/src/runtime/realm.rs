@@ -25,6 +25,13 @@ pub(super) struct RealmControlRequest {
     pub(super) reply: std::sync::mpsc::Sender<Result<ass_ipc::RealmActionResult, String>>,
 }
 
+pub(super) struct SettingsControlRequest {
+    pub(super) origin: ass_ipc::Origin,
+    pub(super) expected_revision: Option<u64>,
+    pub(super) action: ass_ipc::SettingsAction,
+    pub(super) reply: std::sync::mpsc::Sender<Result<ass_ipc::SettingsReceipt, String>>,
+}
+
 pub(super) struct JournalRefusalRequest {
     pub(super) origin: ass_ipc::Origin,
     pub(super) mutation: ass_ipc::JournalMutation,

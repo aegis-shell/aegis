@@ -283,32 +283,19 @@ pub struct AgentScopeEntry {
 
 /// The `[dock]` section. `pinned` lists the apps to keep on the dock in order;
 /// each value matches an enumerated `.desktop` entry by its id, desktop-file
-/// stem, `StartupWMClass`, or icon name (case-insensitive). An empty list (the
-/// default) lets the compositor auto-populate the dock with the first handful
-/// of apps that have a usable icon, so the dock is never empty out of the box.
-/// Once the user pins or unpins an app from the dock's context menu,
-/// `autopopulate` is written as `false` so an empty `pinned` list stays a
-/// deliberate choice instead of falling back to auto-population.
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+/// stem, `StartupWMClass`, or icon name (case-insensitive). An empty list keeps
+/// the dock free of persistent application tiles by default. `autopopulate`
+/// remains available as an explicit opt-in for selecting the first handful of
+/// apps that have usable icons. Once the user pins or unpins an app from the
+/// dock's context menu, `autopopulate` is written as `false` so the persisted
+/// list is the sole source of truth.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DockConfig {
     #[serde(default)]
     pub pinned: Vec<String>,
-    #[serde(default = "default_autopopulate")]
+    #[serde(default)]
     pub autopopulate: bool,
-}
-
-fn default_autopopulate() -> bool {
-    true
-}
-
-impl Default for DockConfig {
-    fn default() -> DockConfig {
-        DockConfig {
-            pinned: Vec::new(),
-            autopopulate: default_autopopulate(),
-        }
-    }
 }
 
 /// The `[statusbar]` section. `enabled` controls whether the top status bar
@@ -1245,6 +1232,24 @@ mod tests {
     fn statusbar_defaults_to_enabled() {
         let cfg = Config::parse("schema_version = 1\n").unwrap();
         assert!(cfg.statusbar.enabled);
+    }
+
+    #[test]
+    fn dock_defaults_to_an_empty_user_owned_strip() {
+        let cfg = Config::parse("schema_version = 1\n").unwrap();
+        assert!(cfg.dock.pinned.is_empty());
+        assert!(!cfg.dock.autopopulate);
+    }
+
+    #[test]
+    fn dock_autopopulation_remains_an_explicit_opt_in() {
+        let cfg = Config::parse(
+            "schema_version = 1\n\
+             [dock]\n\
+             autopopulate = true\n",
+        )
+        .unwrap();
+        assert!(cfg.dock.autopopulate);
     }
 
     #[test]

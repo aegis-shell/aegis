@@ -7,12 +7,13 @@
 use std::io;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::time::Duration;
 
 use crate::codec::{read_msg, write_msg};
 use crate::journal::JournalSnapshot;
 use crate::schema::{
     Capabilities, Command, Event, LeaseGrant, LeaseRequest, PROTOCOL_VERSION, RealmAction,
-    RealmActionResult, Request, Response, Scope,
+    RealmActionResult, Request, Response, Scope, SettingsAction, SettingsReceipt, SettingsSnapshot,
 };
 
 /// Decoded Realm observation returned by [`Client::capture_realm`].
@@ -49,6 +50,17 @@ impl Client {
         Self::connect_inner(path, requested, None)
     }
 
+    /// Connect with explicit capabilities and bound the handshake itself.
+    /// Use this from GUI/background workers so an accepted but unresponsive
+    /// local peer cannot retain the worker indefinitely.
+    pub fn connect_with_timeout(
+        path: &Path,
+        requested: Capabilities,
+        timeout: Duration,
+    ) -> io::Result<Client> {
+        Self::connect_inner_with_timeout(path, requested, None, Some(timeout))
+    }
+
     /// Connect requesting capabilities under a named, compositor-configured
     /// scope. An unknown scope is refused during the handshake instead of
     /// silently granting an unrestricted connection.
@@ -60,12 +72,35 @@ impl Client {
         Self::connect_inner(path, requested, Some(scope.into()))
     }
 
+    /// Connect under a named scope and apply a timeout before the handshake.
+    /// This is the safe entry point for async adapters that execute the
+    /// blocking client on a worker thread.
+    pub fn connect_scoped_with_timeout(
+        path: &Path,
+        requested: Capabilities,
+        scope: impl Into<String>,
+        timeout: Duration,
+    ) -> io::Result<Client> {
+        Self::connect_inner_with_timeout(path, requested, Some(scope.into()), Some(timeout))
+    }
+
     fn connect_inner(
         path: &Path,
         requested: Capabilities,
         scope_name: Option<String>,
     ) -> io::Result<Client> {
+        Self::connect_inner_with_timeout(path, requested, scope_name, None)
+    }
+
+    fn connect_inner_with_timeout(
+        path: &Path,
+        requested: Capabilities,
+        scope_name: Option<String>,
+        timeout: Option<Duration>,
+    ) -> io::Result<Client> {
         let mut stream = UnixStream::connect(path)?;
+        stream.set_read_timeout(timeout)?;
+        stream.set_write_timeout(timeout)?;
         write_msg(
             &mut stream,
             &Request::Hello {
@@ -113,6 +148,16 @@ impl Client {
 
     pub fn lease(&self) -> Option<LeaseGrant> {
         self.lease
+    }
+
+    /// Bound blocking reads and writes on this connection.
+    ///
+    /// The reference client is intentionally synchronous. Async adapters
+    /// should execute it on a blocking worker and set an I/O timeout so a
+    /// stalled peer cannot retain that worker indefinitely.
+    pub fn set_io_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.stream.set_read_timeout(timeout)?;
+        self.stream.set_write_timeout(timeout)
     }
 
     pub fn renew_lease(&mut self, ttl_ms: u64) -> io::Result<LeaseGrant> {
@@ -328,6 +373,43 @@ impl Client {
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("expected Realms, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Fetch the revisioned compositor-settings snapshot.
+    pub fn settings(&mut self) -> io::Result<SettingsSnapshot> {
+        write_msg(&mut self.stream, &Request::GetSettings)?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::Settings { snapshot } => Ok(snapshot),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected Settings, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Persist and apply a compositor setting, returning only after the main
+    /// loop confirms the new revision.
+    pub fn apply_settings(
+        &mut self,
+        expected_revision: Option<u64>,
+        action: SettingsAction,
+    ) -> io::Result<SettingsReceipt> {
+        write_msg(
+            &mut self.stream,
+            &Request::Settings {
+                expected_revision,
+                action,
+            },
+        )?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::SettingsApplied { receipt } => Ok(receipt),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected SettingsApplied, got {other:?}"),
             )),
         }
     }

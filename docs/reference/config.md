@@ -188,8 +188,8 @@ live reload. Each value matches a desktop-file id, desktop-file stem,
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `pinned` | array of strings | `[]` | Applications shown in the listed order. An empty array automatically selects up to 12 applications with decoded icons. |
-| `autopopulate` | boolean | `true` | Whether an empty `pinned` list auto-selects applications. Written as `false` the first time you pin or unpin an application from the dock's context menu, so a manually emptied list stays empty. |
+| `pinned` | array of strings | `[]` | Persistent applications shown in the listed order. An empty array leaves only the `Applications` tile plus transient running applications. |
+| `autopopulate` | boolean | `false` | Whether an empty `pinned` list auto-selects up to 12 applications with decoded icons. Manual pin or unpin actions write this as `false`. |
 
 ```toml
 [dock]
@@ -201,6 +201,10 @@ are not pinned appear on the right of a divider and disappear again when their
 last window closes. Right-click a dock tile and select `Keep in Dock` or
 `Remove from Dock` to change this list from the desktop; the compositor writes
 the result back to this file and sets `autopopulate = false`.
+
+Set `autopopulate = true` to opt into automatic selection when `pinned` is
+empty. The first manual pin or unpin materializes the visible selection,
+applies the requested change, and returns to explicit user-owned pins.
 
 The application catalog is rescanned every five seconds. Installed, removed,
 or edited desktop entries, including Flatpak exports, appear without

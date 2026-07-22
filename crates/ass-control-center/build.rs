@@ -1,8 +1,9 @@
-//! Make the crate's test harness resolve the sibling Lens/Flux build trees.
+//! Make the crate's binaries and test harnesses resolve the sibling
+//! Iris/Lens/Flux build trees.
 
 fn main() {
     let mut emitted_dtags = false;
-    for var in ["DEP_LENS_RPATHS", "DEP_FLUX_RPATHS"] {
+    for var in ["DEP_IRIS_RS_RPATHS", "DEP_LENS_RPATHS", "DEP_FLUX_RPATHS"] {
         if let Ok(rpaths) = std::env::var(var) {
             if !emitted_dtags {
                 println!("cargo:rustc-link-arg=-Wl,--disable-new-dtags");

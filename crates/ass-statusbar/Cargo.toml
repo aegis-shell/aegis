@@ -10,6 +10,7 @@ build = "build.rs"
 
 [dependencies]
 ass-core = { workspace = true }
+ass-design = { workspace = true }
 ass-shell = { workspace = true }
 # SNI IconName resolution through the freedesktop icon theme: the same
 # lookup (ass-apps) and decode (image + rsvg-convert) path as the

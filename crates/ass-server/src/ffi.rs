@@ -544,6 +544,8 @@ pub struct wl_data_device_interface_impl {
     ),
     pub set_selection:
         unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource, u32),
+    /// `wl_data_device.release` (opcode 2, since v2).
+    pub release: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
 }
 
 /// `wl_data_source` v3 requests: offer, destroy, set_actions.
@@ -696,7 +698,7 @@ assert_impl_opcode_count!(xdg_surface_interface_impl, 5);
 assert_impl_opcode_count!(wl_subcompositor_interface_impl, 2);
 assert_impl_opcode_count!(wl_subsurface_interface_impl, 6);
 assert_impl_opcode_count!(wl_data_device_manager_interface_impl, 2);
-assert_impl_opcode_count!(wl_data_device_interface_impl, 2);
+assert_impl_opcode_count!(wl_data_device_interface_impl, 3);
 assert_impl_opcode_count!(wl_data_source_interface_impl, 3);
 assert_impl_opcode_count!(wl_data_offer_interface_impl, 5);
 assert_impl_opcode_count!(wl_seat_interface_impl, 4);

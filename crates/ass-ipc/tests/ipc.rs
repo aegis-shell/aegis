@@ -7,11 +7,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use ass_core::window::{Window, WindowId};
 use ass_ipc::{
     Capabilities, Client, Command, Event, Handler, OpClass, PROTOCOL_VERSION, RealmAction,
-    RealmActionResult, Scope, Server,
+    RealmActionResult, Scope, Server, SettingsAction, SettingsReceipt, SettingsSnapshot,
 };
 
 /// A unique throwaway socket path under the temp dir, namespaced by pid +
@@ -34,6 +35,9 @@ struct TestHandler {
     command_connections: Mutex<Vec<u64>>,
     realm_actions: Mutex<Vec<RealmAction>>,
     realm_connections: Mutex<Vec<u64>>,
+    settings: Mutex<SettingsSnapshot>,
+    settings_actions: Mutex<Vec<SettingsAction>>,
+    settings_connections: Mutex<Vec<u64>>,
     refusals: Mutex<Vec<(u64, ass_ipc::JournalMutation, String)>>,
     scopes: Mutex<HashMap<String, Scope>>,
     capture_delay_ms: AtomicU64,
@@ -50,6 +54,12 @@ impl TestHandler {
             command_connections: Mutex::new(Vec::new()),
             realm_actions: Mutex::new(Vec::new()),
             realm_connections: Mutex::new(Vec::new()),
+            settings: Mutex::new(SettingsSnapshot {
+                revision: 7,
+                ..SettingsSnapshot::default()
+            }),
+            settings_actions: Mutex::new(Vec::new()),
+            settings_connections: Mutex::new(Vec::new()),
             refusals: Mutex::new(Vec::new()),
             scopes: Mutex::new(test_scopes()),
             capture_delay_ms: AtomicU64::new(0),
@@ -71,6 +81,12 @@ impl TestHandler {
             command_connections: Mutex::new(Vec::new()),
             realm_actions: Mutex::new(Vec::new()),
             realm_connections: Mutex::new(Vec::new()),
+            settings: Mutex::new(SettingsSnapshot {
+                revision: 7,
+                ..SettingsSnapshot::default()
+            }),
+            settings_actions: Mutex::new(Vec::new()),
+            settings_connections: Mutex::new(Vec::new()),
             refusals: Mutex::new(Vec::new()),
             scopes: Mutex::new(test_scopes()),
             capture_delay_ms: AtomicU64::new(0),
@@ -127,6 +143,34 @@ impl Handler for TestHandler {
         let mut snapshot = model.snapshot();
         snapshot.revision = 4;
         snapshot
+    }
+    fn settings(&self) -> SettingsSnapshot {
+        self.settings.lock().unwrap().clone()
+    }
+    fn settings_action(
+        &self,
+        conn_id: u64,
+        expected_revision: Option<u64>,
+        action: SettingsAction,
+    ) -> Result<SettingsReceipt, String> {
+        let mut snapshot = self.settings.lock().unwrap();
+        if expected_revision.is_some_and(|expected| expected != snapshot.revision) {
+            return Err(format!(
+                "settings revision conflict: expected {}, actual {}",
+                expected_revision.unwrap(),
+                snapshot.revision
+            ));
+        }
+        self.settings_connections.lock().unwrap().push(conn_id);
+        self.settings_actions.lock().unwrap().push(action.clone());
+        match action {
+            SettingsAction::SetTouchpad { config } => snapshot.touchpad.config = config,
+            SettingsAction::SetDisplay { .. } => {}
+        }
+        snapshot.revision += 1;
+        Ok(SettingsReceipt {
+            revision: snapshot.revision,
+        })
     }
     fn realm_action(&self, conn_id: u64, action: RealmAction) -> Result<RealmActionResult, String> {
         self.realm_connections.lock().unwrap().push(conn_id);
@@ -337,6 +381,93 @@ fn second_server_cannot_steal_an_active_socket() {
 
     let mut client = Client::connect(&path).expect("first server remains reachable");
     assert_eq!(client.windows().expect("query first server").len(), 2);
+}
+
+#[test]
+fn settings_query_and_confirmed_transaction_round_trip() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let mut client = Client::connect_with(
+        &path,
+        Capabilities {
+            query: true,
+            session: true,
+            ..Capabilities::default()
+        },
+    )
+    .expect("connect");
+
+    let before = client.settings().expect("settings snapshot");
+    assert_eq!(before.revision, 7);
+    let mut config = before.touchpad.config;
+    config.natural_scroll = !config.natural_scroll;
+    let action = SettingsAction::SetTouchpad { config };
+    let receipt = client
+        .apply_settings(Some(before.revision), action.clone())
+        .expect("confirmed apply");
+    assert_eq!(receipt.revision, 8);
+    assert_eq!(
+        handler.settings_actions.lock().unwrap().as_slice(),
+        &[action]
+    );
+    assert_eq!(client.settings().unwrap().touchpad.config, config);
+}
+
+#[test]
+fn settings_transaction_rejects_stale_revision() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(vec![]));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let mut client = Client::connect_with(
+        &path,
+        Capabilities {
+            query: true,
+            session: true,
+            ..Capabilities::default()
+        },
+    )
+    .expect("connect");
+    let error = client
+        .apply_settings(
+            Some(6),
+            SettingsAction::SetTouchpad {
+                config: ass_core::input::TouchpadConfig::default(),
+            },
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("revision conflict"), "{error}");
+    assert!(handler.settings_actions.lock().unwrap().is_empty());
+}
+
+#[test]
+fn settings_mutation_requires_session_capability_and_is_audited() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::query(vec![]));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let mut client = Client::connect(&path).expect("connect");
+    let error = client
+        .apply_settings(
+            None,
+            SettingsAction::SetTouchpad {
+                config: ass_core::input::TouchpadConfig::default(),
+            },
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("session capability"), "{error}");
+    let refusals = handler.refusals.lock().unwrap();
+    assert!(matches!(
+        refusals.as_slice(),
+        [(
+            _,
+            ass_ipc::JournalMutation::Settings {
+                before_revision: 7,
+                after_revision: 7,
+                ..
+            },
+            _
+        )]
+    ));
 }
 
 #[test]
@@ -590,6 +721,37 @@ fn unknown_named_scope_is_refused_at_handshake() {
         .err()
         .expect("unknown scope must fail");
     assert!(err.to_string().contains("unknown scope 'missing'"), "{err}");
+}
+
+#[test]
+fn scoped_timeout_connection_completes_handshake() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, handler).expect("bind");
+
+    let client = Client::connect_scoped_with_timeout(
+        &path,
+        Capabilities::QUERY,
+        "focus-first",
+        Duration::from_secs(1),
+    )
+    .expect("connect with timeout");
+
+    assert!(client.caps().query);
+    assert_eq!(client.scope().windows, Some(vec![WindowId(1)]));
+}
+
+#[test]
+fn unscoped_timeout_connection_completes_handshake() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, handler).expect("bind");
+
+    let client = Client::connect_with_timeout(&path, Capabilities::QUERY, Duration::from_secs(1))
+        .expect("connect with timeout");
+
+    assert!(client.caps().query);
+    assert_eq!(client.scope(), &Scope::unscoped());
 }
 
 #[test]

@@ -2,7 +2,8 @@
 
 use ass_core::app::Entry;
 use ass_core::window::{Window, WindowId};
-use lens::{Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
+use ass_design::{Design, materials, themes};
+use lens::{Frame, Input, LayoutOpts, Rect};
 
 use crate::{ChromeEvents, Localizer, Message, WindowAction};
 
@@ -24,7 +25,7 @@ struct Target {
 }
 
 /// Dock-specific pin/unpin action carried by the shared application menu.
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PinAction {
     Pin(String),
     Unpin(String),
@@ -295,48 +296,47 @@ impl AppMenu {
         let bounds = place_popup(self.owner, (MENU_WIDTH, height), display);
         let mut selected = None;
         let original_theme = frame.theme();
-        let menu_theme = original_theme
-            .with_fg(Color::rgba(238, 240, 248, 255))
-            .with_border(Color::rgba(255, 255, 255, 78))
-            .with_hover(Color::rgba(255, 255, 255, 22))
-            .with_active(Color::rgba(255, 255, 255, 36))
-            .with_corner_radius(7.0)
-            .with_border_width(0.0)
-            .with_active_indicator_width(0.0);
+        let design = Design::dark();
+        let menu_theme = themes::menu(original_theme, &design);
         frame.set_theme(menu_theme);
-        frame.layer(self.layer_id, bounds, &glass_panel_opts(12.0), |frame| {
-            frame.column_ex(
-                &LayoutOpts {
-                    width: bounds.w,
-                    height: bounds.h,
-                    gap: 0.0,
-                    pad: MENU_PAD,
-                    ..Default::default()
-                },
-                |frame| {
-                    frame.size_next(bounds.w - MENU_PAD * 2.0, HEADER_HEIGHT);
-                    frame.set_theme(menu_theme.with_fg(Color::rgba(183, 188, 207, 255)));
-                    frame.label_compact_sized(&truncate(&target.label, 29), 11.5);
-                    frame.set_theme(menu_theme);
-                    let mut row_index = 0;
-                    for (group_index, group) in groups.into_iter().enumerate() {
-                        if group_index > 0 {
-                            frame.size_next(bounds.w - MENU_PAD * 2.0, SECTION_HEIGHT);
-                            frame.separator();
-                        }
-                        for row in group {
-                            frame.size_next(bounds.w - MENU_PAD * 2.0, ROW_HEIGHT);
-                            frame.push_id(&format!("menu-row-{row_index}"));
-                            if frame.selectable(&row.label, false) {
-                                selected = Some(row.action);
+        frame.layer(
+            self.layer_id,
+            bounds,
+            &materials::popover(&design),
+            |frame| {
+                frame.column_ex(
+                    &LayoutOpts {
+                        width: bounds.w,
+                        height: bounds.h,
+                        gap: 0.0,
+                        pad: MENU_PAD,
+                        ..Default::default()
+                    },
+                    |frame| {
+                        frame.size_next(bounds.w - MENU_PAD * 2.0, HEADER_HEIGHT);
+                        frame.set_theme(themes::menu_heading(menu_theme, &design));
+                        frame.label_compact_sized(&truncate(&target.label, 29), 11.5);
+                        frame.set_theme(menu_theme);
+                        let mut row_index = 0;
+                        for (group_index, group) in groups.into_iter().enumerate() {
+                            if group_index > 0 {
+                                frame.size_next(bounds.w - MENU_PAD * 2.0, SECTION_HEIGHT);
+                                frame.separator();
                             }
-                            frame.pop_id();
-                            row_index += 1;
+                            for row in group {
+                                frame.size_next(bounds.w - MENU_PAD * 2.0, ROW_HEIGHT);
+                                frame.push_id(&format!("menu-row-{row_index}"));
+                                if frame.selectable(&row.label, false) {
+                                    selected = Some(row.action);
+                                }
+                                frame.pop_id();
+                                row_index += 1;
+                            }
                         }
-                    }
-                },
-            );
-        });
+                    },
+                );
+            },
+        );
         frame.set_theme(original_theme);
 
         if let Some(action) = selected {
@@ -354,26 +354,11 @@ impl AppMenu {
                 MenuAction::Close(ids) => out
                     .window_actions
                     .extend(ids.into_iter().map(WindowAction::Close)),
-                MenuAction::Pin(id) | MenuAction::Unpin(id) => {
-                    out.dock_pin_toggles.push(id);
-                }
+                MenuAction::Pin(id) => out.dock_pin_actions.push(PinAction::Pin(id)),
+                MenuAction::Unpin(id) => out.dock_pin_actions.push(PinAction::Unpin(id)),
             }
             self.dismiss();
         }
-    }
-}
-
-/// Frosted-glass material shared by the dock, its tooltips, and context
-/// menus: a light translucent fill over the compositor's backdrop blur with a
-/// bright 1px edge.
-fn glass_panel_opts(radius: f32) -> OverlayOpts {
-    OverlayOpts {
-        bg: Color::rgba(255, 255, 255, 38),
-        border: Color::rgba(255, 255, 255, 72),
-        border_width: 1.0,
-        radius,
-        pad: 0.0,
-        ..Default::default()
     }
 }
 

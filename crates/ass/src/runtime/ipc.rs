@@ -11,6 +11,7 @@ pub(super) struct LiveChannels {
     pub(super) commands: std::sync::mpsc::Sender<IpcCommandRequest>,
     pub(super) capture: std::sync::mpsc::Sender<CaptureRequest>,
     pub(super) realm_controls: std::sync::mpsc::Sender<RealmControlRequest>,
+    pub(super) settings_controls: std::sync::mpsc::Sender<SettingsControlRequest>,
     pub(super) realm_capture: std::sync::mpsc::Sender<RealmCaptureRequest>,
     pub(super) journal_refusals: std::sync::mpsc::Sender<JournalRefusalRequest>,
 }
@@ -20,11 +21,13 @@ pub(super) struct LiveState {
     workspaces: std::sync::RwLock<ass_core::workspace::WorkspaceSnapshot>,
     outputs: std::sync::RwLock<Vec<ass_core::output::OutputInfo>>,
     realms: std::sync::RwLock<ass_core::realm::RealmSnapshot>,
+    settings: std::sync::RwLock<ass_ipc::SettingsSnapshot>,
     notifications: std::sync::Arc<std::sync::Mutex<ass_core::notify::NotificationQueue>>,
     journal: std::sync::Arc<std::sync::Mutex<ass_ipc::Journal>>,
     commands: std::sync::Mutex<std::sync::mpsc::Sender<IpcCommandRequest>>,
     capture: std::sync::Mutex<std::sync::mpsc::Sender<CaptureRequest>>,
     realm_controls: std::sync::Mutex<std::sync::mpsc::Sender<RealmControlRequest>>,
+    settings_controls: std::sync::Mutex<std::sync::mpsc::Sender<SettingsControlRequest>>,
     realm_capture: std::sync::Mutex<std::sync::mpsc::Sender<RealmCaptureRequest>>,
     journal_refusals: std::sync::mpsc::Sender<JournalRefusalRequest>,
     capture_delivery_gate: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -46,11 +49,13 @@ impl LiveState {
             ),
             outputs: std::sync::RwLock::new(Vec::new()),
             realms: std::sync::RwLock::new(ass_core::realm::RealmModel::new().snapshot()),
+            settings: std::sync::RwLock::new(ass_ipc::SettingsSnapshot::default()),
             notifications,
             journal,
             commands: std::sync::Mutex::new(channels.commands),
             capture: std::sync::Mutex::new(channels.capture),
             realm_controls: std::sync::Mutex::new(channels.realm_controls),
+            settings_controls: std::sync::Mutex::new(channels.settings_controls),
             realm_capture: std::sync::Mutex::new(channels.realm_capture),
             journal_refusals: channels.journal_refusals,
             capture_delivery_gate,
@@ -72,6 +77,10 @@ impl LiveState {
 
     pub(super) fn set_realms(&self, snapshot: ass_core::realm::RealmSnapshot) {
         *self.realms.write().unwrap() = snapshot;
+    }
+
+    pub(super) fn set_settings(&self, snapshot: ass_ipc::SettingsSnapshot) {
+        *self.settings.write().unwrap() = snapshot;
     }
 
     pub(super) fn set_scopes(&self, scopes: std::collections::HashMap<String, ass_ipc::Scope>) {
@@ -115,6 +124,10 @@ impl ass_ipc::Handler for LiveState {
 
     fn realms(&self) -> ass_core::realm::RealmSnapshot {
         self.realms.read().unwrap().clone()
+    }
+
+    fn settings(&self) -> ass_ipc::SettingsSnapshot {
+        self.settings.read().unwrap().clone()
     }
 
     fn authorize_realm_action(
@@ -191,6 +204,28 @@ impl ass_ipc::Handler for LiveState {
         reply_rx
             .recv_timeout(std::time::Duration::from_secs(2))
             .map_err(|_| "realm operation timed out".to_owned())?
+    }
+
+    fn settings_action(
+        &self,
+        conn_id: u64,
+        expected_revision: Option<u64>,
+        action: ass_ipc::SettingsAction,
+    ) -> Result<ass_ipc::SettingsReceipt, String> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.settings_controls
+            .lock()
+            .unwrap()
+            .send(SettingsControlRequest {
+                origin: ass_ipc::Origin::Ipc { conn_id },
+                expected_revision,
+                action,
+                reply: reply_tx,
+            })
+            .map_err(|_| "compositor is shutting down".to_owned())?;
+        reply_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|_| "settings operation timed out".to_owned())?
     }
 
     fn capture_realm(

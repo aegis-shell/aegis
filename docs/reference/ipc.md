@@ -1,6 +1,6 @@
 # IPC Reference
 
-The ass IPC is protocol version 3, carried as length-framed JSON over the
+The ass IPC is protocol version 4, carried as length-framed JSON over the
 owner-only Unix socket at `$XDG_RUNTIME_DIR/ass.sock`. Every connection starts
 with `Hello`; commands are accepted only after capability and scope checks.
 JSON messages are limited to 16 MiB. Large immutable capture payloads use a
@@ -13,7 +13,7 @@ separate sealed-file-descriptor transfer described under [Capture](#capture).
 | `query` | Read snapshots and subscribe to events or the journal. | Always granted. |
 | `control` | Mutate windows, workspaces, layout, and notifications. | Server policy. |
 | `input` | Inject bounded actions into a target window. | Named scope required. |
-| `session` | Quit or perform other session-level operations. | Server policy. |
+| `session` | Quit, persist compositor settings, or perform other session-level operations. | Server policy. |
 | `realm` | Create, configure, capture, pause, transfer, launch into, and revoke Realms. | Named scope and explicit operation required. |
 
 Absent `input` and `realm` fields are `false`. An unscoped connection never
@@ -36,13 +36,16 @@ The reference client requests 900,000 milliseconds by default.
 | `GetOutputs` | `Outputs` | `query` |
 | `GetJournal { since }` | `Journal` | `query` |
 | `GetRealms` | `Realms` | `query` |
+| `GetSettings` | `Settings` with a revisioned snapshot | `query` |
 | `Realm { action }` | `Realm` with a commit receipt | `realm` + explicit scope op |
+| `Settings { expected_revision, action }` | `SettingsApplied` with a commit receipt | `session` |
 | `CaptureOutput` | `CaptureOutput` | `control` + explicit scope op |
 | `CaptureRealm { realm, region }` | `CaptureRealm` | `realm` + `CaptureRealm` scope op |
 
 `Subscribe` enables coarse events:
 
-- `WindowsChanged`, `WorkspaceChanged`, and `RealmsChanged { revision }`
+- `WindowsChanged`, `WorkspaceChanged`, `RealmsChanged { revision }`, and
+  `SettingsChanged { revision }`
   invalidate the corresponding snapshots.
 - `RealmDamaged { realm, sequence, revision, damage }` reports that an active
   Realm's directed scene changed. `damage` contains at most 64 rectangles in
@@ -56,7 +59,8 @@ mutation decision. Each `JournalEntry` contains a real per-connection
 `Origin::Ipc { conn_id }`, an `effect`, and one tagged `mutation`:
 
 - `Command { cmd }`; or
-- `Realm { action, before_revision, after_revision }`.
+- `Realm { action, before_revision, after_revision }`; or
+- `Settings { action, before_revision, after_revision }`.
 
 Capability, lease, validation, and scope refusals are journaled even when the
 mutation never reaches the compositor main loop. Realm actions rejected by
@@ -92,6 +96,39 @@ If the human Realm is only an observer, focus, minimize, close, move,
 geometry, and workspace mutations produce `Effect::Refused` and do not reach
 the client. Its mirror also blocks physical hit-testing, so a refused click
 cannot fall through to an unrelated window underneath.
+
+## Persistent Settings
+
+`GetSettings` returns one coherent snapshot:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `revision` | unsigned integer | Monotonic settings revision. |
+| `touchpad` | `TouchpadStatus` | Effective profile, detected devices, capabilities, and configurability. |
+| `display` | `DisplayStatus` | Connected outputs, advertised modes, configurability, and the last apply error. |
+
+`Settings` submits one tagged action with an optional `expected_revision`:
+
+| Action | Payload | Effect |
+|--------|---------|--------|
+| `SetTouchpad` | complete `TouchpadConfig` | Validate, persist `[input.touchpad]`, and apply the profile to live libinput devices. |
+| `SetDisplay` | connector, mode, scale, position, and primary flag | Validate, atomically persist the output entry, and reconcile the live direct-DRM output. |
+
+The operation requires `session` plus a live privileged lease. It is refused
+while the session is locked. When `expected_revision` does not match the
+current revision, the complete action is refused without changing state.
+
+`SettingsApplied { receipt: { revision } }` is a confirmation, not a queue
+acknowledgement. The server sends it only after the compositor main loop has
+validated, persisted, and applied the action. A successful mutation increments
+the revision, publishes the replacement snapshot, broadcasts
+`SettingsChanged`, and records the action and before/after revisions in the
+mutation journal.
+
+Display and touchpad are the only settings domains in the version 4 snapshot.
+Mouse, keyboard, appearance, power, accounts, and window-rule modules remain
+unavailable until their authoritative services expose typed state and actions.
+See the [Control Center Reference](control-center.md#modules).
 
 ## Realm Authority
 

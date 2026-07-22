@@ -26,7 +26,7 @@ use crate::codec::{read_msg, write_msg};
 use crate::journal::{JournalEntry, JournalMutation};
 use crate::schema::{
     Capabilities, Command, Event, LeaseGrant, PROTOCOL_VERSION, RealmAction, RealmActionResult,
-    RealmCapture, Request, Response, Scope,
+    RealmCapture, Request, Response, Scope, SettingsAction, SettingsReceipt, SettingsSnapshot,
 };
 
 /// Large output-capture payload transferred as a sealed memfd by the IPC
@@ -93,6 +93,10 @@ pub trait Handler: Send + Sync {
     fn realms(&self) -> ass_core::realm::RealmSnapshot {
         ass_core::realm::RealmModel::new().snapshot()
     }
+    /// Compositor-owned persistent settings snapshot.
+    fn settings(&self) -> SettingsSnapshot {
+        SettingsSnapshot::default()
+    }
     /// Resolve a named scope from configuration (ADR-0034). Returns `None`
     /// if the name is unknown; an explicitly named connection is refused.
     fn resolve_scope(&self, _name: &str) -> Option<Scope> {
@@ -134,6 +138,16 @@ pub trait Handler: Send + Sync {
         _action: RealmAction,
     ) -> Result<RealmActionResult, String> {
         Err("realm control unsupported".into())
+    }
+    /// Persist and apply one settings transaction on the compositor main
+    /// thread, returning only after the authoritative state is updated.
+    fn settings_action(
+        &self,
+        _conn_id: u64,
+        _expected_revision: Option<u64>,
+        _action: SettingsAction,
+    ) -> Result<SettingsReceipt, String> {
+        Err("settings control unsupported".into())
     }
     /// Capture the focused output as a PNG. Called from a connection thread;
     /// the implementation forwards to the main loop and blocks briefly for
@@ -548,6 +562,47 @@ fn drive_read_loop<H: Handler>(
                 } else {
                     Response::Error {
                         message: "GetRealms requires the query capability".into(),
+                    }
+                }
+            }
+            Request::GetSettings => {
+                if granted.query {
+                    Response::Settings {
+                        snapshot: handler.settings(),
+                    }
+                } else {
+                    Response::Error {
+                        message: "GetSettings requires the query capability".into(),
+                    }
+                }
+            }
+            Request::Settings {
+                expected_revision,
+                action,
+            } => {
+                let before_revision = handler.settings().revision;
+                let rejection = if !granted.session {
+                    Some("Settings requires the session capability".to_owned())
+                } else if !lease_alive {
+                    Some("privileged capability lease expired".to_owned())
+                } else {
+                    action.validate().err().map(str::to_owned)
+                };
+                if let Some(message) = rejection {
+                    handler.audit_refusal(
+                        conn_id,
+                        JournalMutation::Settings {
+                            action,
+                            before_revision,
+                            after_revision: before_revision,
+                        },
+                        message.clone(),
+                    );
+                    Response::Error { message }
+                } else {
+                    match handler.settings_action(conn_id, expected_revision, action) {
+                        Ok(receipt) => Response::SettingsApplied { receipt },
+                        Err(message) => Response::Error { message },
                     }
                 }
             }

@@ -49,7 +49,14 @@ unsafe extern "C" fn cursor_shape_get_pointer(
     unsafe {
         let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
         let origin = (*state).seat_origin_for_resource(pointer);
-        let Some(_guard) = crate::ActiveSeatGuard::for_resource(state, pointer, true) else {
+        // A constructor request must either create the advertised object or
+        // raise a protocol/allocation error. The Realm can be paused after the
+        // client receives wl_seat.capabilities(pointer) but before this request
+        // is dispatched; silently returning in that race leaves the client
+        // holding an id the server never created, so its eventual `destroy`
+        // becomes a fatal "invalid object" display error. Keep the protocol
+        // object alive while paused and let `set_shape` below fail closed.
+        let Some(_guard) = crate::ActiveSeatGuard::for_resource(state, pointer, false) else {
             return;
         };
         let seat = (*state).active_seat;
@@ -78,7 +85,9 @@ unsafe extern "C" fn cursor_shape_get_tablet(
     unsafe {
         let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
         let origin = (*state).seat_origin_for_resource(tool);
-        let Some(_guard) = crate::ActiveSeatGuard::for_resource(state, tool, true) else {
+        // See `cursor_shape_get_pointer`: capability withdrawal may race this
+        // already-issued constructor, but must not make its new id disappear.
+        let Some(_guard) = crate::ActiveSeatGuard::for_resource(state, tool, false) else {
             return;
         };
         let seat = (*state).active_seat;

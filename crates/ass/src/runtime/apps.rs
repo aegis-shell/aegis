@@ -53,16 +53,21 @@ pub(super) fn selected_icon_theme() -> String {
         .unwrap_or_else(|| ass_apps::DEFAULT_ICON_THEME.to_string())
 }
 
-/// Merge XDG applications with compositor-owned system applications. Built-in
-/// entries deliberately use the same `Entry` model so launcher search,
-/// context menus, pinning, and icon lookup have one catalog contract.
+/// Merge XDG applications with the development fallback for Control Center.
+/// A packaged desktop file wins by id; source-tree runs still receive a
+/// launchable entry when the file has not been installed.
 pub(super) fn application_catalog(icon_theme: &str, icon_scale: u32) -> Vec<ass_core::app::Entry> {
     let mut applications = ass_apps::enumerate_with_theme_and_scale(icon_theme, icon_scale.max(1));
     let i18n = ass_shell::Localizer::from_env();
-    applications.push(ass_core::app::Entry::control_center(
-        i18n.text(ass_shell::Message::ControlCenter),
-        i18n.text(ass_shell::Message::BuiltInSystemApp),
-    ));
+    if !applications
+        .iter()
+        .any(|entry| entry.id == ass_core::app::CONTROL_CENTER_DESKTOP_ID)
+    {
+        applications.push(ass_core::app::Entry::control_center(
+            i18n.text(ass_shell::Message::ControlCenter),
+            i18n.text(ass_shell::Message::StandaloneSettingsApp),
+        ));
+    }
     applications
 }
 
@@ -113,15 +118,15 @@ pub(super) fn snapshot_icons(
     snapshot
 }
 
-/// How many apps to auto-pin to the dock when the config pins none, so the bar
-/// is populated with real XDG icons out of the box rather than empty.
-pub(super) const DEFAULT_PINNED_MAX: usize = 12;
+/// Maximum number of apps selected when automatic population is explicitly
+/// enabled for an empty pin list.
+pub(super) const AUTOPOPULATE_MAX: usize = 12;
 
 /// Resolve the dock's pinned entries. When `pinned` names apps, each name is
 /// resolved against the enumerated entries by id / desktop-stem / WM class /
 /// icon name (case-insensitive), in the order given; unresolved names are
 /// logged and skipped. When `pinned` is empty and `autopopulate` is set, the
-/// first [`DEFAULT_PINNED_MAX`] apps that have a decoded icon are pinned
+/// first [`AUTOPOPULATE_MAX`] apps that have a decoded icon are pinned
 /// automatically; with `autopopulate` off, an empty list stays empty (the
 /// user's manual "no pins" choice).
 pub(super) fn resolve_pinned(
@@ -137,19 +142,74 @@ pub(super) fn resolve_pinned(
         return apps
             .iter()
             .filter(|e| e.match_keys().iter().any(|k| icons.contains_key(k)))
-            .take(DEFAULT_PINNED_MAX)
+            .take(AUTOPOPULATE_MAX)
             .cloned()
             .collect();
     }
     let mut out = Vec::with_capacity(pinned.len());
     for name in pinned {
-        let want = name.to_ascii_lowercase();
-        match apps.iter().find(|e| e.match_keys().contains(&want)) {
+        match apps
+            .iter()
+            .find(|entry| entry_matches_pin_name(entry, name))
+        {
             Some(e) => out.push(e.clone()),
             None => log::warn!("dock: pinned app '{name}' not found among enumerated entries"),
         }
     }
     out
+}
+
+/// Match every configuration spelling accepted for a persistent pin. The full
+/// desktop-file id is a configuration identity, while [`Entry::match_keys`]
+/// covers the extensionless id and runtime aliases used by windows and icons.
+fn entry_matches_pin_name(entry: &ass_core::app::Entry, name: &str) -> bool {
+    entry.id.eq_ignore_ascii_case(name) || entry.match_keys().contains(&name.to_ascii_lowercase())
+}
+
+/// Apply explicit pin mutations to a configured list. Actions are idempotent:
+/// pinning an existing application or unpinning an absent one is a no-op.
+/// Application identity uses the same aliases as [`resolve_pinned`].
+pub(super) fn apply_pin_actions(
+    apps: &[ass_core::app::Entry],
+    pinned: &[String],
+    actions: &[ass_shell::PinAction],
+) -> Vec<String> {
+    let mut out = pinned.to_vec();
+    for action in actions {
+        let id = match action {
+            ass_shell::PinAction::Pin(id) | ass_shell::PinAction::Unpin(id) => id,
+        };
+        let Some(entry) = apps.iter().find(|entry| entry.id == *id) else {
+            continue;
+        };
+        let matches = |name: &String| entry_matches_pin_name(entry, name);
+        match action {
+            ass_shell::PinAction::Pin(_) if !out.iter().any(matches) => {
+                out.push(entry.id.clone());
+            }
+            ass_shell::PinAction::Unpin(_) => out.retain(|name| !matches(name)),
+            ass_shell::PinAction::Pin(_) => {}
+        }
+    }
+    out
+}
+
+/// Convert an opt-in automatic selection into a concrete list before its first
+/// manual edit. This preserves every other visible tile when one automatic
+/// tile is removed and permanently hands control to the user.
+pub(super) fn materialize_pins_for_manual_edit(
+    apps: &[ass_core::app::Entry],
+    icons: &std::collections::HashMap<String, *mut std::ffi::c_void>,
+    pinned: &[String],
+    autopopulate: bool,
+) -> Vec<String> {
+    if pinned.is_empty() && autopopulate {
+        return resolve_pinned(apps, icons, pinned, true)
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect();
+    }
+    pinned.to_vec()
 }
 
 /// Decode each app entry's icon into a flux texture, keyed by every id the
@@ -304,4 +364,87 @@ pub(super) fn decode_icon(
         return None;
     }
     image::load_from_memory(&output.stdout).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app(id: &str) -> ass_core::app::Entry {
+        ass_core::app::Entry {
+            id: id.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn unpinning_an_absent_app_does_not_pin_it() {
+        let apps = vec![app("org.example.Editor.desktop")];
+        let pinned = apply_pin_actions(
+            &apps,
+            &[],
+            &[ass_shell::PinAction::Unpin(
+                "org.example.Editor.desktop".into(),
+            )],
+        );
+        assert!(pinned.is_empty());
+    }
+
+    #[test]
+    fn configured_full_desktop_id_resolves() {
+        let apps = vec![app("org.example.Editor.desktop")];
+        let resolved = resolve_pinned(
+            &apps,
+            &std::collections::HashMap::new(),
+            &["org.example.Editor.desktop".into()],
+            false,
+        );
+        assert_eq!(resolved, apps);
+    }
+
+    #[test]
+    fn pin_actions_are_idempotent_and_match_application_aliases() {
+        let mut editor = app("org.example.Editor.desktop");
+        editor.startup_wm_class = Some("ExampleEditor".into());
+        let apps = vec![editor];
+
+        let pinned = apply_pin_actions(
+            &apps,
+            &["exampleeditor".into()],
+            &[ass_shell::PinAction::Pin(
+                "org.example.Editor.desktop".into(),
+            )],
+        );
+        assert_eq!(pinned, vec!["exampleeditor"]);
+
+        let pinned = apply_pin_actions(
+            &apps,
+            &pinned,
+            &[ass_shell::PinAction::Unpin(
+                "org.example.Editor.desktop".into(),
+            )],
+        );
+        assert!(pinned.is_empty());
+    }
+
+    #[test]
+    fn first_manual_edit_preserves_other_opt_in_automatic_pins() {
+        let apps = vec![
+            app("org.example.Editor.desktop"),
+            app("org.example.Terminal.desktop"),
+        ];
+        let mut icons = std::collections::HashMap::new();
+        icons.insert("org.example.editor".into(), std::ptr::dangling_mut());
+        icons.insert("org.example.terminal".into(), std::ptr::dangling_mut());
+
+        let materialized = materialize_pins_for_manual_edit(&apps, &icons, &[], true);
+        let pinned = apply_pin_actions(
+            &apps,
+            &materialized,
+            &[ass_shell::PinAction::Unpin(
+                "org.example.Editor.desktop".into(),
+            )],
+        );
+        assert_eq!(pinned, vec!["org.example.Terminal.desktop"]);
+    }
 }

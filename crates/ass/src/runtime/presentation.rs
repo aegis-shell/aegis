@@ -520,64 +520,73 @@ impl CompositorRuntime {
                 let system_actions = self.shell.take_system_actions();
                 if !system_actions.is_empty() {
                     for action in system_actions {
-                        match action {
-                            ass_shell::SystemAction::SetTouchpad(profile) => {
-                                if let Some(path) = self.config_path.as_deref() {
-                                    if let Err(error) =
-                                        ass_config::set_touchpad_config(path, &profile)
-                                    {
-                                        log::warn!(
-                                            "touchpad: failed to persist settings to {}: {error}",
-                                            path.display()
-                                        );
-                                    }
-                                } else {
-                                    log::warn!("touchpad: cannot persist settings; no config path");
-                                }
-                                if let Some(current) = self.config.as_mut() {
-                                    current.input.touchpad = profile;
-                                }
-                                self.system_status.touchpad =
-                                    self.host.set_touchpad_config(profile);
+                        let settings_action = match &action {
+                            ass_shell::SystemAction::SetTouchpad(config) => {
+                                Some(ass_ipc::SettingsAction::SetTouchpad { config: *config })
                             }
                             ass_shell::SystemAction::SetDisplay(settings) => {
-                                if let Err(error) = apply_display_settings(
-                                    settings,
-                                    self.config_path.as_deref(),
-                                    &mut self.config,
-                                    &mut self.keymap,
-                                    &mut self.server,
-                                    &mut self.shell,
-                                    &mut self.cursor_cache,
-                                    &mut self.host,
-                                    &mut self.reload,
-                                    &self.live,
-                                    &mut self.system_status,
-                                    &mut self.input_acc,
-                                ) {
-                                    log::warn!("display settings: {error}");
-                                    self.system_status.display.error = Some(error);
-                                }
+                                Some(ass_ipc::SettingsAction::SetDisplay {
+                                    settings: settings.clone(),
+                                })
                             }
-                            action => {
-                                if let Some(cmd) = apply_system_action(
-                                    &mut self.server,
-                                    &self.notif_queue,
-                                    &mut self.system_status,
-                                    action,
-                                ) {
-                                    apply_command_and_journal(
-                                        &mut self.server,
-                                        &self.notif_queue,
-                                        &mut self.quit_requested,
-                                        cmd,
-                                        &self.ipc,
-                                        &self.journal,
-                                        ts,
-                                        origin,
-                                    );
+                            _ => None,
+                        };
+                        if let Some(settings_action) = settings_action {
+                            let before_revision = self.settings_revision;
+                            let result = commit_settings_parts(
+                                None,
+                                settings_action.clone(),
+                                &mut self.settings_revision,
+                                self.config_path.as_deref(),
+                                &mut self.config,
+                                &mut self.keymap,
+                                &mut self.server,
+                                &mut self.shell,
+                                &mut self.cursor_cache,
+                                &mut self.host,
+                                &mut self.reload,
+                                &self.live,
+                                &mut self.system_status,
+                                &mut self.input_acc,
+                                &self.ipc,
+                            );
+                            let effect = match result {
+                                Ok(_) => ass_ipc::Effect::Applied,
+                                Err(reason) => {
+                                    log::warn!("settings: {reason}");
+                                    ass_ipc::Effect::Refused { reason }
                                 }
-                            }
+                            };
+                            journal_mutation_effect_and_broadcast(
+                                &self.journal,
+                                &self.ipc,
+                                ts,
+                                origin,
+                                ass_ipc::JournalMutation::Settings {
+                                    action: settings_action,
+                                    before_revision,
+                                    after_revision: self.settings_revision,
+                                },
+                                effect,
+                            );
+                            continue;
+                        }
+                        if let Some(cmd) = apply_system_action(
+                            &mut self.server,
+                            &self.notif_queue,
+                            &mut self.system_status,
+                            action,
+                        ) {
+                            apply_command_and_journal(
+                                &mut self.server,
+                                &self.notif_queue,
+                                &mut self.quit_requested,
+                                cmd,
+                                &self.ipc,
+                                &self.journal,
+                                ts,
+                                origin,
+                            );
                         }
                     }
                     self.shell.set_system_status(self.system_status.clone());
@@ -598,32 +607,24 @@ impl CompositorRuntime {
                 if self.shell.take_toggle_launcher() {
                     self.shell.toggle();
                 }
-                // Dock context-menu pin/unpin requests: toggle the app in the
-                // persisted `[dock] pinned` list, write the config back, and
-                // refresh the dock immediately rather than waiting for the
-                // live-reload watcher to notice the mtime change.
-                let pin_toggles = self.shell.take_dock_pin_toggles();
-                if !pin_toggles.is_empty() {
+                // Dock context-menu pin/unpin requests: apply the explicit,
+                // idempotent action to `[dock] pinned`, write the config back,
+                // and refresh immediately rather than waiting for live reload.
+                let pin_actions = self.shell.take_dock_pin_actions();
+                if !pin_actions.is_empty() {
                     let mut pinned_list = self
                         .config
                         .as_ref()
                         .map(|c| c.dock.pinned.clone())
                         .unwrap_or_default();
-                    for id in pin_toggles {
-                        let Some(entry) = self.launcher_apps.iter().find(|e| e.id == id) else {
-                            continue;
-                        };
-                        // Match by application identity, not string equality:
-                        // the config may name the same app by its stem, WM
-                        // class, or icon name.
-                        let keys = entry.match_keys();
-                        let matches = |name: &String| keys.contains(&name.to_ascii_lowercase());
-                        if pinned_list.iter().any(matches) {
-                            pinned_list.retain(|name| !matches(name));
-                        } else {
-                            pinned_list.push(entry.id.clone());
-                        }
-                    }
+                    pinned_list = materialize_pins_for_manual_edit(
+                        &self.launcher_apps,
+                        &self.icon_cache.map,
+                        &pinned_list,
+                        self.config.as_ref().is_some_and(|c| c.dock.autopopulate),
+                    );
+                    pinned_list =
+                        apply_pin_actions(&self.launcher_apps, &pinned_list, &pin_actions);
                     if let Some(path) = self.config_path.as_deref() {
                         if let Err(e) = ass_config::set_dock_pinned(path, &pinned_list) {
                             log::warn!("dock: failed to persist pins: {e}");

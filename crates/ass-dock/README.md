@@ -1,7 +1,8 @@
 # ass-dock
 
 `ass-dock` is the macOS-style dock chrome component for the ass compositor,
-built on the `Chrome` contract from `ass-shell`.
+built on the `Chrome` contract from `ass-shell` and the shared materials from
+`ass-design`.
 
 ## Responsibilities
 
@@ -45,3 +46,4 @@ shell.add(Box::new(ass_dock::Dock::new()));
 - [Dock and launcher operations](../../docs/how-to/dock-and-launcher.md)
 - [Component crate split](../../docs/adr/0044-dock-and-control-center-crates.md)
 - [Chrome component decision](../../docs/adr/0021-chrome-component-trait.md)
+- [Design system decision](../../docs/adr/0046-design-system-crate.md)

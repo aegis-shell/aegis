@@ -138,6 +138,9 @@ seed surface (ADR-0027): versioned length-framed JSON over
 `control`/`session` commands (`Focus`/`Close`/`Move`/`Cycle`/
 `SwitchWorkspace[To]`/`MoveToWorkspace`/`ToggleTiling`/`Quit`) applied on the
 main loop, and `WindowsChanged`/`WorkspaceChanged`/`Notified` event streams.
+Protocol version 4 extends the same boundary with revisioned persistent
+settings snapshots, confirmed display/touchpad transactions, and settings
+journal entries for the standalone modular Control Center.
 Layout, dock, UI policy, window rules, and agent scopes all load from the
 same file and apply live. See
 [ADR-0026](../adr/0026-configuration-system.md) and
@@ -221,6 +224,9 @@ feel need real hardware to verify. The per-output display policy landed as
 `[[output]]` config entries: scale, live DRM mode selection, position, and
 primary are in effect and editable through Control Center; the output
 transform is parsed but deferred until the renderer applies it.
+Control Center now runs as an ordinary Wayland application; display and
+touchpad pages share a module contract, while unfinished settings domains
+remain visible but explicitly unavailable.
 
 **Verification.** Two outputs at different scales render correctly and the
 compositor's own chrome stays pixel-perfect. A touchpad three-finger swipe
@@ -288,6 +294,14 @@ The blueprint is in
 The remaining
 desktop-dependent semantic surface (window-content capture per window,
 semantic element trees) stays open.
+
+The `ass-neenee-mcp` integration now closes the client-side Realm loop:
+Neenee discovers scoped tools through MCP, while the bridge manages one
+recoverable Agent Realm across application launch, authority transfer,
+directed capture, bounded input, and revocation. Praxion remains under the
+Neenee product rather than entering the compositor workspace. Voice
+activation and shell-native conversation chrome remain follow-up product
+surfaces ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md)).
 
 ## Sequencing Rationale
 

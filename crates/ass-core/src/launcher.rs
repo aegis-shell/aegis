@@ -357,16 +357,16 @@ mod tests {
     }
 
     #[test]
-    fn builtin_entry_opens_without_spawning() {
+    fn control_center_entry_spawns_the_standalone_app() {
         let mut launcher = Launcher::new(vec![Entry::control_center(
             "Control Center",
             "System controls",
         )]);
         launcher.open();
-        assert!(matches!(
-            launcher.handle(KeyAction::Enter),
-            Some(Launch::BuiltIn(BuiltInApplication::ControlCenter))
-        ));
+        let Some(Launch::Spawn(entry)) = launcher.handle(KeyAction::Enter) else {
+            panic!("Control Center must launch out of process");
+        };
+        assert_eq!(entry.exec.as_deref(), Some("ass-control-center"));
         assert!(!launcher.is_open());
     }
 

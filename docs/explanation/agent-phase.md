@@ -13,9 +13,12 @@ follow-ons; the milestone sequence is in
 ## Where the Compositor Stops
 
 The compositor's job in the agent phase is the same as in the desktop
-phase: own the model, own the IPC, present frames. It does not gain a
-model, a prompt, a tool runtime, or a skill layer. Everything AI-specific
-lives out of process, on the other side of the introspection IPC.
+phase: own the desktop model, own the IPC, present frames. It does not gain
+an inference model, a prompt, a tool runtime, or a skill layer. Everything
+AI-specific lives out of process, on the other side of the introspection
+IPC. The `ass-neenee-mcp` integration follows this boundary while shipping
+the platform adapter in the same distribution
+([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md)).
 
 The stack, from the rendering layer up:
 
@@ -26,7 +29,9 @@ The stack, from the rendering layer up:
 | The compositor | `ass-server`, `ass-backend`, `ass-render`, `ass-shell` | Wayland, per-Realm input and output, the chrome host |
 | The seam | `ass-ipc` | Versioned JSON and sealed descriptors over a Unix socket; leases, scope, capture, and the journal |
 | IPC clients | any number, all equal | Status bars, `ass-control`, the agent, future bridges |
-| Skill and tool layer | out of tree, many projects | Model-specific adapters, prompts, schemas |
+| Platform adapter | `ass-neenee-mcp` (separate process) | Named-scope ASS tools and one bridge-managed Agent Realm over MCP |
+| Agent product | Neenee (sibling project) | Praxion composition, providers, credentials, sessions, skills, permissions, and TUI |
+| Other skill and tool layers | external projects | Other model-specific adapters, prompts, and schemas |
 
 The line that matters is between the seam and the clients. Above that line,
 every consumer is equal: a status bar holding `query`, a CLI tool holding
@@ -90,7 +95,7 @@ pattern, not a reimplementation per pattern. The compositor stays put.
 | Current pattern | Representatives | Bridge shape |
 |-----------------|-----------------|--------------|
 | Function calling / tool use | Claude, GPT, Gemini, Qwen, Mistral | Each IPC request becomes a tool; the adapter translates between the model's tool-call schema and ass's JSON. |
-| Model Context Protocol | Claude Desktop, Cline, Cursor | One adapter exposes IPC operations as MCP tools, the model snapshot as MCP resources, and the journal as MCP subscriptions. |
+| Model Context Protocol | Neenee, Claude Desktop, Cline, Cursor | `ass-neenee-mcp` exposes snapshots, journals, and operations as scoped tools, with Realm pixels as MCP image content. |
 | Vision-based computer use | Claude Computer Use, OpenAI Operator | Damage-driven Realm capture supplies correlated pixels and window-to-input mappings; bounded target-local actions enter the Realm's independent seat. |
 | Agent SDKs | Claude Agent SDK, LangGraph, custom | The agent process uses an SDK; tools call through the IPC. The SDK is indifferent to the transport. |
 | Local models | Ollama, llama.cpp, MLX | Same tool-calling interface, routed to a local endpoint. Smaller models benefit most from the structured path. |
@@ -99,8 +104,9 @@ pattern, not a reimplementation per pattern. The compositor stays put.
 The fit with the Model Context Protocol is unusually clean. ass's
 introspection surface and MCP converged independently on the same shape:
 the versioned schema against tool schemas; capabilities and scope against
-authorization; the journal against resource subscriptions; the typed model
-against resources. An adapter between them is a thin translation, not a
+authorization; and the typed model and journal against structured tool
+results. The current Neenee adapter uses tools and image content rather than
+MCP resources or subscriptions. It is still a thin translation, not a
 re-architecture. This is not coincidence: both are answers to the same
 question — how does an out-of-process agent address a system it did not
 build? — and the answer is the same shape both times.
@@ -113,6 +119,16 @@ pixels, layout placements, surface sizes, scale, and authority revision agree.
 This remains a measured fallback: the structured model is cheaper and more
 stable, while pixels require an explicit capability, live lease, and
 fail-closed lock and lifecycle checks.
+
+The physical user observes those actions through a separate trusted feedback
+layer ([ADR-0048](../adr/0048-compositor-owned-agent-operation-feedback.md)).
+An applied Agent pointer appears as a labeled circular crosshair, movement
+trail, and click pulse over the human's read-only mirror; keyboard or hidden-
+target activity becomes a background-operation pill. This is not the user's
+XDG cursor and never changes it. The compositor emits the feedback only after
+the Realm seat accepts the input, omits key contents, hides it on lock, and
+keeps it out of directed Realm capture so the Agent cannot observe its own
+feedback loop.
 
 ## The Strategic Bet
 
@@ -139,8 +155,9 @@ The shape is defined as much by what it refuses as by what it adds.
 
 - **No model inside the compositor.** The compositor never calls a model.
   Inference, prompt assembly, and tool selection live out of process.
-- **No prompt storage in tree.** Prompts live in the skill layer,
-  version-controlled and model-specific.
+- **No prompt storage in the compositor.** Product prompts live in Neenee or
+  another out-of-process skill layer. ASS ships only the platform tool
+  contract and an optional Neenee skill.
 - **No retrieval index inside the compositor.** If the agent needs semantic
   search over its history, the agent indexes the journal; the compositor
   provides the data, not the index.
@@ -165,6 +182,10 @@ without committing to.
   delivers it.
 - [ADR-0031](../adr/0031-agent-as-scoped-ipc-client.md) — the framing
   decision.
+- [ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md) — the Neenee
+  MCP platform bridge that remains outside the compositor.
+- [ADR-0048](../adr/0048-compositor-owned-agent-operation-feedback.md) — the
+  trusted visual distinction between human and Agent input.
 - [ADR-0032](../adr/0032-durable-window-identifiers.md),
   [ADR-0033](../adr/0033-mutation-journal.md),
   [ADR-0040](../adr/0040-realms-seats-and-transferable-interaction-authority.md),

@@ -223,7 +223,10 @@ name = "ass-control-center"
 version = "0.0.1"
 dependencies = [
  "ass-core",
+ "ass-design",
+ "ass-ipc",
  "ass-shell",
+ "iris",
  "lens",
  "lens-sys",
 ]
@@ -238,10 +241,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ass-design"
+version = "0.0.1"
+dependencies = [
+ "lens",
+ "lens-sys",
+]
+
+[[package]]
 name = "ass-dock"
 version = "0.0.1"
 dependencies = [
  "ass-core",
+ "ass-design",
  "ass-shell",
  "lens",
  "lens-sys",
@@ -267,6 +279,21 @@ dependencies = [
  "libc",
  "log",
  "tempfile",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "ass-neenee"
+version = "0.0.1"
+dependencies = [
+ "ass-apps",
+ "ass-core",
+ "ass-ipc",
+ "base64",
+ "clap",
+ "libc",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
 ]
 
@@ -304,6 +331,7 @@ name = "ass-shell"
 version = "0.0.1"
 dependencies = [
  "ass-core",
+ "ass-design",
  "lens",
  "lens-sys",
  "log",
@@ -318,6 +346,7 @@ version = "0.0.1"
 dependencies = [
  "ass-apps",
  "ass-core",
+ "ass-design",
  "ass-shell",
  "flux",
  "image",
@@ -525,6 +554,12 @@ checksum = "e7178fe5f7d460b13895ebb9dcb28a3a6216d2df2574a0806cb51b555d297f38"
 dependencies = [
  "arrayvec",
 ]
+
+[[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bindgen"
@@ -1271,6 +1306,23 @@ dependencies = [
  "hermit-abi 0.3.9",
  "libc",
  "windows-sys 0.48.0",
+]
+
+[[package]]
+name = "iris"
+version = "0.1.0"
+dependencies = [
+ "iris-sys",
+ "lens",
+ "lens-sys",
+]
+
+[[package]]
+name = "iris-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+ "pkg-config",
 ]
 
 [[package]]

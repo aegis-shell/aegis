@@ -47,13 +47,17 @@ The Dock splits into two sections: pinned applications on the left, and
 applications that are running but not pinned on the right of a divider. A
 transient tile disappears again when its last window closes.
 
+An unconfigured Dock contains only the leading `Applications` tile. Start an
+application from the launcher to make its transient tile available for
+pinning.
+
 1. Right-click a Dock tile.
 2. Select `Keep in Dock` to pin a transient application, or `Remove from Dock`
    to unpin a pinned one.
 
 The change is written back to the `[dock] pinned` list in the
-[configuration file](../reference/config.md#dock). To return to automatic
-selection, delete the list and set `autopopulate = true`.
+[Configuration Reference](../reference/config.md#dock). To opt into automatic
+selection, empty the list and set `autopopulate = true`.
 
 ## Use the Application Menu
 

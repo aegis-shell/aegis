@@ -7,6 +7,8 @@
 //!
 //! Current components:
 //!
+//! - [`AgentFeedback`] — trusted, non-interactive visual feedback for input
+//!   applied by an Agent Realm's independent seat.
 //! - [`Decorations`] — per-window server-side title bars drawn as `lens`
 //!   overlays, with click-to-move and a close gadget.
 //! - [`Launcher`] — a top-center toggle that expands into a centered list of
@@ -16,6 +18,7 @@
 //! contract (ADR-0021): the dock lives in `ass-dock`, the Control Center in
 //! `ass-control-center`, and the status bar in `ass-statusbar`.
 
+mod agent_feedback;
 mod app_menu;
 mod decorations;
 mod launcher;
@@ -23,6 +26,7 @@ mod overview;
 mod screenshot;
 mod toast;
 
+pub use agent_feedback::AgentFeedback;
 pub use app_menu::{AppMenu, PinAction};
 pub use decorations::Decorations;
 pub use launcher::Launcher;

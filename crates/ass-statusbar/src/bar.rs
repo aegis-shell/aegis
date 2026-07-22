@@ -13,8 +13,10 @@ use std::time::{Duration, Instant};
 
 use ass_core::app::BuiltInApplication;
 use ass_core::notify::{Notification, NotificationQueue};
+use ass_core::realm::{RealmKind, RealmSnapshot, RealmState};
 use ass_core::window::Window;
 use ass_core::workspace::WorkspaceSnapshot;
+use ass_design::{Design, materials, themes};
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect};
 
 use ass_shell::{
@@ -39,6 +41,7 @@ const PANEL_W: f32 = 420.0;
 const PANEL_H: f32 = 326.0;
 const CLOCK_POLL_INTERVAL: Duration = Duration::from_secs(15);
 const BACKDROP_BLUR_SIGMA: f32 = 12.0;
+const AGENT_INDICATOR_MAX_W: f32 = 154.0;
 
 // dbusmenu popover geometry (mirrors ass-shell's app_menu.rs — kept private
 // here so ass-statusbar does not reach into ass-shell's chrome internals).
@@ -59,6 +62,7 @@ pub struct StatusBar {
     icons: IconSet,
     notifications: Option<Arc<Mutex<NotificationQueue>>>,
     status: SystemStatus,
+    realms: RealmSnapshot,
     clock: String,
     last_clock_poll: Instant,
     tray: Option<SniTray>,
@@ -163,6 +167,7 @@ impl StatusBar {
             icons: IconSet::default(),
             notifications,
             status: SystemStatus::default(),
+            realms: ass_core::realm::RealmModel::new().snapshot(),
             clock: "--:--".to_string(),
             last_clock_poll: now.checked_sub(CLOCK_POLL_INTERVAL).unwrap_or(now),
             tray,
@@ -564,15 +569,9 @@ impl StatusBar {
         self.menu_just_opened = false;
 
         let original_theme = f.theme();
-        let menu_theme = original_theme
-            .with_fg(Color::rgba(238, 240, 248, 255))
-            .with_border(Color::rgba(255, 255, 255, 78))
-            .with_hover(Color::rgba(255, 255, 255, 22))
-            .with_active(Color::rgba(255, 255, 255, 36))
-            .with_corner_radius(7.0)
-            .with_border_width(0.0)
-            .with_active_indicator_width(0.0);
-        let dim_theme = menu_theme.with_fg(Color::rgba(160, 168, 188, 255));
+        let design = Design::dark();
+        let menu_theme = themes::menu(original_theme, &design);
+        let dim_theme = themes::menu_disabled(menu_theme, &design);
 
         let header_visible = self.menu_path.len() > 1;
         let mut row_index = 0usize;
@@ -581,7 +580,7 @@ impl StatusBar {
         f.layer(
             "ass-hud-sni-menu",
             popover_bounds,
-            &glass_panel_opts(12.0),
+            &materials::popover(&design),
             |f| {
                 f.column_ex(
                     &LayoutOpts {
@@ -668,6 +667,87 @@ enum MenuRowAction {
     Back,
     Descend(i32),
     Click(i32),
+}
+
+/// Compact, always-visible authority summary. The detailed controls live in
+/// Control Center; the bar deliberately answers only "is an agent active?"
+/// and provides a direct route to that state.
+struct AgentIndicator {
+    label: String,
+    active: bool,
+}
+
+fn agent_indicator(snapshot: &RealmSnapshot, i18n: &Localizer) -> Option<AgentIndicator> {
+    let live = snapshot
+        .realms
+        .iter()
+        .filter(|realm| realm.kind == RealmKind::Agent && realm.state != RealmState::Revoked)
+        .collect::<Vec<_>>();
+    let active = live.iter().any(|realm| realm.state == RealmState::Active);
+    let state = if active {
+        i18n.text(Message::RealmActive)
+    } else {
+        i18n.text(Message::RealmPaused)
+    };
+    let label = match live.as_slice() {
+        [] => return None,
+        [realm] => format!("{} · {state}", realm.label),
+        realms => format!("AI {} · {state}", realms.len()),
+    };
+    Some(AgentIndicator { label, active })
+}
+
+fn render_agent_indicator(
+    frame: &mut Frame,
+    rect: Rect,
+    indicator: &AgentIndicator,
+    hovered: bool,
+) {
+    let accent = if indicator.active {
+        Color::rgba(92, 168, 255, 255)
+    } else {
+        Color::rgba(240, 184, 84, 255)
+    };
+    frame.layer(
+        "ass-hud-agent-indicator",
+        rect,
+        &OverlayOpts {
+            bg: if hovered {
+                Color::rgba(72, 100, 146, 112)
+            } else {
+                Color::rgba(42, 55, 80, 92)
+            },
+            border: Color::rgba(116, 151, 206, if hovered { 150 } else { 92 }),
+            border_width: 1.0,
+            radius: 9.0,
+            ..Default::default()
+        },
+        |_| {},
+    );
+    let dot = Rect {
+        x: rect.x + 9.0,
+        y: rect.y + (rect.h - 7.0) * 0.5,
+        w: 7.0,
+        h: 7.0,
+    };
+    frame.layer(
+        "ass-hud-agent-state-dot",
+        dot,
+        &OverlayOpts::default(),
+        |frame| frame.column_ex(&sized_fill(dot.w, dot.h, accent, dot.w * 0.5), |_| {}),
+    );
+    render_text_left(
+        frame,
+        "ass-hud-agent-state-label",
+        Rect {
+            x: rect.x + 22.0,
+            y: rect.y,
+            w: (rect.w - 28.0).max(1.0),
+            h: rect.h,
+        },
+        &truncate(&indicator.label, ((rect.w - 28.0) / 6.8).max(4.0) as usize),
+        10.5,
+    );
 }
 
 impl Default for StatusBar {
@@ -852,6 +932,14 @@ impl Chrome for StatusBar {
             &notification_count,
             contains(bell, cursor.0, cursor.1),
         );
+        let agent_indicator = agent_indicator(&self.realms, i18n);
+        let agent = agent_indicator.as_ref().map(|indicator| {
+            let label_w = indicator.label.chars().count() as f32 * 6.8 + 30.0;
+            take_right(&mut right_x, label_w.clamp(72.0, AGENT_INDICATOR_MAX_W))
+        });
+        if let (Some(indicator), Some(rect)) = (&agent_indicator, agent) {
+            render_agent_indicator(f, rect, indicator, contains(rect, cursor.0, cursor.1));
+        }
         if let Some(battery) = self.status.battery {
             let rect = take_right(&mut right_x, 62.0);
             render_icon_button(
@@ -991,9 +1079,15 @@ impl Chrome for StatusBar {
         }
         if pressed && control_hover {
             self.panel_open = false;
-            out.open_builtin = Some(BuiltInApplication::ControlCenter);
+            out.spawn = Some(ass_core::app::Entry::control_center(
+                i18n.text(Message::ControlCenter),
+                i18n.text(Message::StandaloneSettingsApp),
+            ));
         } else if pressed && contains(bell, cursor.0, cursor.1) {
             self.panel_open = !self.panel_open;
+        } else if pressed && agent.is_some_and(|rect| contains(rect, cursor.0, cursor.1)) {
+            self.panel_open = false;
+            out.open_builtin = Some(BuiltInApplication::AiWorkspaces);
         }
 
         if self.panel_open {
@@ -1108,6 +1202,10 @@ impl Chrome for StatusBar {
 
     fn update_system_status(&mut self, status: &SystemStatus) {
         self.status = status.clone();
+    }
+
+    fn update_realms(&mut self, snapshot: &RealmSnapshot) {
+        self.realms = snapshot.clone();
     }
 
     fn reserved(&self) -> Reserved {
@@ -1233,22 +1331,6 @@ fn menu_bounds(owner: Rect, visible: &[MenuNode], display: (f32, f32)) -> Rect {
         + row_count as f32 * MENU_ROW_HEIGHT
         + separator_count as f32 * MENU_SECTION_HEIGHT;
     place_popup(owner, (MENU_WIDTH, height), display)
-}
-
-/// Frosted-glass material for the popover: a light translucent fill over the
-/// compositor's backdrop blur with a bright 1px edge. Mirrors
-/// `ass_shell::chrome::app_menu::glass_panel_opts` verbatim — kept private so
-/// the status bar does not depend on ass-shell's chrome internals.
-// TODO: share with ass-shell::chrome::app_menu
-fn glass_panel_opts(radius: f32) -> OverlayOpts {
-    OverlayOpts {
-        bg: Color::rgba(255, 255, 255, 38),
-        border: Color::rgba(255, 255, 255, 72),
-        border_width: 1.0,
-        radius,
-        pad: 0.0,
-        ..Default::default()
-    }
 }
 
 /// Anchor a popover of `size` against `owner`, preferring above for bottom
@@ -1681,6 +1763,35 @@ mod tests {
     #[test]
     fn status_bar_reserves_exactly_its_visual_height() {
         assert_eq!(StatusBar::new().reserved().top, HUD_HEIGHT as i32);
+    }
+
+    #[test]
+    fn agent_indicator_tracks_live_realm_state_and_hides_revoked_realms() {
+        let i18n = Localizer::new("en-US");
+        let mut model = ass_core::realm::RealmModel::new();
+        let bundle = model.create_agent_realm("Neenee", Default::default());
+        let mut snapshot = model.snapshot();
+        let indicator = agent_indicator(&snapshot, &i18n).expect("live indicator");
+        assert!(indicator.active);
+        assert_eq!(indicator.label, "Neenee · Active");
+
+        snapshot
+            .realms
+            .iter_mut()
+            .find(|realm| realm.id == bundle.realm)
+            .expect("agent Realm")
+            .state = RealmState::Paused;
+        let indicator = agent_indicator(&snapshot, &i18n).expect("paused indicator");
+        assert!(!indicator.active);
+        assert_eq!(indicator.label, "Neenee · Paused");
+
+        snapshot
+            .realms
+            .iter_mut()
+            .find(|realm| realm.id == bundle.realm)
+            .expect("agent Realm")
+            .state = RealmState::Revoked;
+        assert!(agent_indicator(&snapshot, &i18n).is_none());
     }
 
     #[test]
