@@ -1,16 +1,17 @@
-# Neenee Integration Reference
+# fuji Bridge Reference
 
-`ass-neenee-mcp` is the scoped ASS platform connector for the Neenee product.
-It is an MCP stdio server, not a model runtime: Neenee owns Praxion,
-providers, credentials, sessions, and user interaction.
+`ass-fuji-mcp` is the scoped ASS platform connector for the fuji agent.
+It is an MCP stdio server, not a model runtime: the agent half of the same
+`ass-fuji` crate owns providers, credentials, sessions, and user
+interaction.
 
 ## Commands
 
 ```text
-ass-neenee-mcp [serve]
-ass-neenee-mcp check
-ass-neenee-mcp smoke [--observe-seconds <1..=30>] [--input-window <id>]
-ass-neenee-mcp print-config
+ass-fuji-mcp [serve]
+ass-fuji-mcp check
+ass-fuji-mcp smoke [--observe-seconds <1..=30>] [--input-window <id>]
+ass-fuji-mcp print-config
 ```
 
 With no subcommand, `serve` reads one JSON-RPC object per stdin line and
@@ -24,7 +25,7 @@ diagnostics go to stderr.
 | `2` | Required environment configuration is invalid. |
 
 `check` probes the compositor, prints the effective scope and advertised tool
-names as JSON, and does not create a Realm. `print-config` prints a Neenee
+names as JSON, and does not create a Realm. `print-config` prints a fuji
 `[mcp.ass]` entry using the current executable path.
 
 `smoke` performs a live start-notification mutation and reads the notification
@@ -49,7 +50,7 @@ journal sequence, and restoration result.
 
 | Surface | Behavior |
 |---------|----------|
-| Notification toast and history | Shows Neenee-originated notifications. Do Not Disturb suppresses only the toast. |
+| Notification toast and history | Shows fuji-originated notifications. Do Not Disturb suppresses only the toast. |
 | Status bar Agent indicator | Appears while at least one Agent Realm is live. The label includes the Realm name and `Active` or `Paused`; blue means active and amber means paused. |
 | Agent operation feedback | After Realm input is applied, shows a labeled circular Agent crosshair, movement trail, click pulse, or scroll/keyboard label over a visible read-only mirror. Hidden targets and positionless input use a background-operation pill. This never moves the user's XDG cursor and is excluded from Realm capture. |
 | Control Center → AI Workspaces | Opens when the Agent indicator is clicked. Shows each Realm id, state, controlled-window count, pointer/keyboard/touch seat capabilities, and lifecycle controls. |
@@ -62,15 +63,15 @@ toast or a queued response alone is not proof that an operation was applied.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ASS_NEENEE_SOCKET` | `$XDG_RUNTIME_DIR/ass.sock` | ASS IPC socket. |
-| `ASS_NEENEE_SCOPE` | `neenee` | Named `[[agent.scope]]` presented during the IPC handshake. |
-| `ASS_NEENEE_REALM_LABEL` | `Neenee` | Unique label used to create and recover this bridge's Agent Realm; 1–128 bytes. |
-| `ASS_NEENEE_IPC_TIMEOUT_SECS` | `5` | Per-connection handshake and I/O timeout; valid range `1..=60`. |
-| `ASS_NEENEE_REVOKE_ON_EXIT` | `true` | Revoke the managed Realm after a graceful MCP EOF or shutdown request. |
+| `ASS_FUJI_SOCKET` | `$XDG_RUNTIME_DIR/ass.sock` | ASS IPC socket. |
+| `ASS_FUJI_SCOPE` | `fuji` | Named `[[agent.scope]]` presented during the IPC handshake. |
+| `ASS_FUJI_REALM_LABEL` | `Fuji` | Unique label used to create and recover this bridge's Agent Realm; 1–128 bytes. |
+| `ASS_FUJI_IPC_TIMEOUT_SECS` | `5` | Per-connection handshake and I/O timeout; valid range `1..=60`. |
+| `ASS_FUJI_REVOKE_ON_EXIT` | `true` | Revoke the managed Realm after a graceful MCP EOF or shutdown request. |
 
 The connector has no provider or credential variables. Realm recovery files
 and the per-scope process lock live in the owner-only
-`$XDG_RUNTIME_DIR/ass-neenee/` directory.
+`$XDG_RUNTIME_DIR/ass-fuji/` directory.
 
 ## Named Scope
 
@@ -79,7 +80,7 @@ scope is:
 
 ```toml
 [[agent.scope]]
-name = "neenee"
+name = "fuji"
 ops = [
   "Focus",
   "Minimize",
@@ -101,7 +102,7 @@ ops = [
 ```
 
 Remove operations the product should not have. In particular, omit `Close`
-unless Neenee may close windows, and omit `InjectRealmInput` for an
+unless fuji may close windows, and omit `InjectRealmInput` for an
 observation-only deployment. `CreateRealm`, `TransactRealm`, `RevokeRealm`,
 `CaptureRealm`, `LaunchInRealm`, and `InjectRealmInput` are fail-closed and
 must be named explicitly.
@@ -115,23 +116,23 @@ The bridge probes the grant for `tools/list`. Scope narrowing applies on the
 next tool call because each call reconnects. Restart the MCP connector after
 broadening a scope so the new tools are advertised.
 
-## Neenee MCP Configuration
+## fuji MCP Configuration
 
-Neenee loads the connector as a write-capable server because one catalog
+fuji loads the connector as a write-capable server because one catalog
 contains both observation and mutation tools:
 
 ```toml
 [mcp.ass]
-command = ["/absolute/path/to/ass-neenee-mcp"]
+command = ["/absolute/path/to/ass-fuji-mcp"]
 enabled = true
 read_only = false
-environment = { ASS_NEENEE_SCOPE = "neenee" }
+environment = { ASS_FUJI_SCOPE = "fuji" }
 
 [skills]
-paths = ["/absolute/path/to/ass/integrations/neenee/skills"]
+paths = ["/absolute/path/to/ass/integrations/fuji/skills"]
 ```
 
-The MCP public names are prefixed by Neenee as `mcp__ass__<tool>`.
+The MCP public names are prefixed by fuji as `mcp__ass__<tool>`.
 
 ## Tools
 
@@ -149,16 +150,17 @@ The MCP public names are prefixed by Neenee as `mcp__ass__<tool>`.
 | `set_window_geometry` | `control` / `SetWindowGeometry` | Queue a floating logical rectangle. |
 | `toggle_tiling` | `control` / `ToggleTiling` | Queue a layout toggle. |
 | `toggle_overview` | `control` / `ToggleOverview` | Queue the overview. |
-| `post_notification` | `control` / `Notify` | Queue a Neenee notification. |
+| `post_notification` | `control` / `Notify` | Queue a fuji notification. |
 | `realm_status` | `query` | Inspect the bridge-managed Realm without creating it. |
 | `realm_ensure` | `realm` / `CreateRealm` | Create or recover the private Agent Realm. |
 | `realm_launch_app` | `realm` / `LaunchInRealm` | Launch a catalogued application in its sandbox. |
-| `realm_transfer_window` | `realm` / `TransactRealm` | Transfer authority only to Neenee or the human Realm. |
+| `realm_transfer_window` | `realm` / `TransactRealm` | Transfer authority only to fuji or the human Realm. |
 | `realm_set_state` | `realm` / `TransactRealm` | Pause or resume with an optimistic receipt. |
 | `realm_capture` | `realm` / `CaptureRealm` | Return directed PNG image content, an owner-only compatibility path, placements, and revision. |
 | `realm_input` | `input` / `InjectRealmInput` | Queue at most 64 target-local actions through the Realm seat. |
 | `realm_reset` | `realm` / `RevokeRealm` | Revoke and atomically return controlled groups to the human Realm. |
 
+`realm_transfer_window` accepts `fuji` or `human` as its `target`.
 `realm_input` accepts `pointer_move`, `click`, `scroll`, and `key_press`.
 Pointer positions are target-window-local logical coordinates. Click buttons
 are `left`, `right`, `middle`, `side`, or `extra`; key codes are Linux evdev
@@ -171,12 +173,13 @@ Realm lifecycle and authority transactions return committed receipts.
 
 ## Capture Compatibility
 
-The connector emits standard MCP `image` content and JSON metadata. It also
-atomically stores the same directed PNG in the owner-only runtime directory
-and returns `image_path`. Neenee versions whose MCP adapter renders only text
-can pass that path to their built-in `read_image` tool. If neither route makes
-pixels model-visible, the agent must not guess coordinates or use visual
-input. Inline MCP images are capped at 32 MiB; larger captures set
+The connector emits standard MCP `image` content and JSON metadata, which
+fuji forwards to the model as image input. It also atomically stores the
+same directed PNG in the owner-only runtime directory and returns
+`image_path`. Clients whose MCP adapter renders only text can pass that path
+to fuji's built-in `read_image` tool. If neither route makes pixels
+model-visible, the agent must not guess coordinates or use visual input.
+Inline MCP images are capped at 32 MiB; larger captures set
 `image_attached = false` and remain available through `image_path`. The
 compatibility file is replaced by each capture and removed when the managed
 Realm is reset or cleanly revoked.

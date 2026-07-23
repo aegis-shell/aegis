@@ -1,14 +1,14 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use ass_neenee::{AssPlatform, BridgeConfig};
+use ass_fuji::bridge::{AssPlatform, BridgeConfig};
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "ass-neenee-mcp",
+    name = "ass-fuji-mcp",
     version,
-    about = "Scoped ASS desktop and Agent Realm MCP bridge for Neenee"
+    about = "Scoped ASS desktop and Agent Realm MCP bridge for fuji"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -31,7 +31,7 @@ enum Command {
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         input_window: Option<u64>,
     },
-    /// Print a Neenee config.toml MCP entry for this executable.
+    /// Print a fuji config.toml MCP entry for this executable.
     PrintConfig,
 }
 
@@ -61,9 +61,9 @@ fn main() -> ExitCode {
                 "{}",
                 serde_json::to_string_pretty(&report).expect("serializable smoke report")
             );
-            Ok::<(), ass_neenee::PlatformError>(())
+            Ok::<(), ass_fuji::bridge::PlatformError>(())
         }),
-        Command::Serve => with_platform(ass_neenee::serve),
+        Command::Serve => with_platform(ass_fuji::bridge::serve),
     }
 }
 
@@ -73,21 +73,21 @@ fn with_platform<E: std::fmt::Display>(
     let config = match BridgeConfig::from_env() {
         Ok(config) => config,
         Err(error) => {
-            eprintln!("ass-neenee-mcp: {error}");
+            eprintln!("ass-fuji-mcp: {error}");
             return ExitCode::from(2);
         }
     };
     let mut platform = match AssPlatform::connect(config) {
         Ok(platform) => platform,
         Err(error) => {
-            eprintln!("ass-neenee-mcp: {error}");
+            eprintln!("ass-fuji-mcp: {error}");
             return ExitCode::FAILURE;
         }
     };
     match run(&mut platform) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("ass-neenee-mcp: {error}");
+            eprintln!("ass-fuji-mcp: {error}");
             ExitCode::FAILURE
         }
     }
@@ -97,7 +97,7 @@ fn print_config() -> ExitCode {
     let executable = match std::env::current_exe() {
         Ok(path) => path,
         Err(error) => {
-            eprintln!("ass-neenee-mcp: cannot resolve executable path: {error}");
+            eprintln!("ass-fuji-mcp: cannot resolve executable path: {error}");
             return ExitCode::FAILURE;
         }
     };

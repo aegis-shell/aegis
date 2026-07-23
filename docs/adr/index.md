@@ -56,3 +56,4 @@ background and how the decisions fit together, see
 | [0047](0047-neenee-agent-realm-platform-bridge.md) | Neenee Agent Realm platform bridge (amends [0031](0031-agent-as-scoped-ipc-client.md)) | Accepted |
 | [0048](0048-compositor-owned-agent-operation-feedback.md) | Compositor-owned Agent operation feedback (amends [0040](0040-realms-seats-and-transferable-interaction-authority.md)) | Accepted |
 | [0049](0049-standalone-modular-control-center.md) | Standalone modular Control Center with revisioned settings IPC (amends [0044](0044-dock-and-control-center-crates.md)) | Accepted |
+| [0050](0050-fuji-agent-product-and-bridge-rename.md) | fuji agent product and the ass-fuji bridge rename (amends [0047](0047-neenee-agent-realm-platform-bridge.md)) | Accepted |

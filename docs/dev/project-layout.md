@@ -22,7 +22,7 @@ ass/
     ass-config/        declarative configuration: TOML schema, loader, live reload
     ass-ipc/           versioned IPC and introspection over a unix socket
     ass-control/       command-line driver for the IPC (reference external tool)
-    ass-neenee/        scoped MCP platform bridge for the Neenee agent product
+    ass-fuji/          fuji in one crate: scoped MCP platform bridge + its own agent runtime
     ass-apps/          freedesktop.org desktop-entry enumeration + icon lookup
     ass-launch/        detached, XDG-environment-aware app launching
     ass/               the binary: wiring and event loop
@@ -50,7 +50,7 @@ flux and lens live in the sibling `../optics` Meson project under
 | [`ass-config`](../../crates/ass-config/README.md) | Versioned TOML schema, loader, and mtime-based live reload | [ADR-0026](../adr/0026-configuration-system.md) |
 | [`ass-ipc`](../../crates/ass-ipc/README.md) | Versioned schema and codec over a unix socket; the extension/automation surface | [ADR-0027](../adr/0027-ipc-and-introspection.md) |
 | [`ass-control`](../../crates/ass-control/README.md) | Command-line driver for the IPC; the reference external tool | [ADR-0027](../adr/0027-ipc-and-introspection.md) |
-| [`ass-neenee`](../../crates/ass-neenee/README.md) | Scoped MCP desktop and Agent Realm tools for Neenee | [ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md) |
+| [`ass-fuji`](../../crates/ass-fuji/README.md) | fuji in one crate: scoped MCP bridge plus its self-contained agent runtime (`ass-fuji-mcp`, `fuji`) | [ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md), [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md) |
 | [`ass-apps`](../../crates/ass-apps/README.md) | freedesktop.org desktop-entry enumeration and icon-theme lookup | [ADR-0022](../adr/0022-application-launcher.md) |
 | [`ass-launch`](../../crates/ass-launch/README.md) | Detached, XDG-environment-aware launching of desktop applications | [ADR-0022](../adr/0022-application-launcher.md) |
 | [`ass`](../../crates/ass/README.md) | Process entry point and frame loop | [Architecture](../explanation/architecture.md) |
@@ -74,10 +74,10 @@ flux and lens live in the sibling `../optics` Meson project under
 - A rendering or texture capability missing from flux is added to flux, not
   worked around in ass; see
   [ADR-0001](../adr/0001-scope-and-responsibility-boundary.md).
-- Generic agent execution belongs in Praxion and product policy belongs in
-  Neenee. ASS-specific named-scope and Realm adaptation belongs in the
-  separately launched `ass-neenee-mcp` process, never in the compositor
-  binary or Praxion.
+- Generic agent execution and product policy belong in the agent half of
+  `ass-fuji`, fuji's self-contained runtime. ASS-specific named-scope and
+  Realm adaptation belongs in the separately launched `ass-fuji-mcp`
+  process, never in the compositor binary or the `fuji` binary.
 - Cross-binding pointer casts (between the `flux` and `lens` `flux_*`
   types) stay localized at the call seam, not spread through the code.
 

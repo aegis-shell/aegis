@@ -1769,11 +1769,11 @@ mod tests {
     fn agent_indicator_tracks_live_realm_state_and_hides_revoked_realms() {
         let i18n = Localizer::new("en-US");
         let mut model = ass_core::realm::RealmModel::new();
-        let bundle = model.create_agent_realm("Neenee", Default::default());
+        let bundle = model.create_agent_realm("Fuji", Default::default());
         let mut snapshot = model.snapshot();
         let indicator = agent_indicator(&snapshot, &i18n).expect("live indicator");
         assert!(indicator.active);
-        assert_eq!(indicator.label, "Neenee · Active");
+        assert_eq!(indicator.label, "Fuji · Active");
 
         snapshot
             .realms
@@ -1783,7 +1783,7 @@ mod tests {
             .state = RealmState::Paused;
         let indicator = agent_indicator(&snapshot, &i18n).expect("paused indicator");
         assert!(!indicator.active);
-        assert_eq!(indicator.label, "Neenee · Paused");
+        assert_eq!(indicator.label, "Fuji · Paused");
 
         snapshot
             .realms

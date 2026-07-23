@@ -10,7 +10,7 @@ use ass_core::realm::{
 use ass_ipc::{Client, RealmAction, RealmActionResult};
 use serde::{Deserialize, Serialize};
 
-use crate::BridgeConfig;
+use crate::bridge::BridgeConfig;
 
 const STATE_SCHEMA: u32 = 1;
 
@@ -147,7 +147,7 @@ impl RealmSession {
         Ok(true)
     }
 
-    /// Atomically persist the latest directed capture for Neenee clients that
+    /// Atomically persist the latest directed capture for fuji clients that
     /// do not yet forward MCP image content into the model conversation.
     pub fn store_capture(&self, png: &[u8]) -> Result<PathBuf, RealmSessionError> {
         self.store.write_capture(png)
@@ -173,7 +173,7 @@ struct RecoveryRecord {
 
 struct StateStore {
     /// Holding this descriptor holds the non-blocking advisory lock for the
-    /// bridge lifetime. It also prevents two Neenee sessions sharing a scope
+    /// bridge lifetime. It also prevents two fuji sessions sharing a scope
     /// and injecting input through the same Realm concurrently.
     _lock: File,
     state_path: PathBuf,
@@ -311,10 +311,10 @@ fn scope_key(scope: &str) -> String {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum RealmSessionError {
-    #[error("another ass-neenee bridge already owns scope {0:?}")]
+    #[error("another ass-fuji bridge already owns scope {0:?}")]
     AlreadyRunning(String),
     #[error(
-        "multiple live Agent Realms use label {label:?}: {realms:?}; choose a unique ASS_NEENEE_REALM_LABEL or revoke the stale Realms"
+        "multiple live Agent Realms use label {label:?}: {realms:?}; choose a unique ASS_FUJI_REALM_LABEL or revoke the stale Realms"
     )]
     Ambiguous { label: String, realms: Vec<u64> },
     #[error("Realm recovery record is invalid or from an unsupported schema")]
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn scope_key_is_readable_but_collision_resistant() {
         assert_ne!(scope_key("a/b"), scope_key("a_b"));
-        assert!(scope_key("neenee").starts_with("neenee-"));
+        assert!(scope_key("fuji").starts_with("fuji-"));
     }
 
     #[test]
@@ -345,7 +345,7 @@ mod tests {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let serial = COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir =
-            std::env::temp_dir().join(format!("ass-neenee-state-{}-{serial}", std::process::id()));
+            std::env::temp_dir().join(format!("ass-fuji-state-{}-{serial}", std::process::id()));
         let store = StateStore::acquire(&dir, "capture-test").expect("store");
         let path = store.write_capture(b"png").expect("capture");
         assert_eq!(fs::read(&path).expect("read"), b"png");

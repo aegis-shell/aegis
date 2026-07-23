@@ -101,8 +101,10 @@ mod tests {
 
     #[test]
     fn action_validation_rejects_unbounded_values() {
-        let mut config = TouchpadConfig::default();
-        config.pointer_speed = 1.5;
+        let config = TouchpadConfig {
+            pointer_speed: 1.5,
+            ..Default::default()
+        };
         assert!(SettingsAction::SetTouchpad { config }.validate().is_err());
 
         let display = DisplaySettings {

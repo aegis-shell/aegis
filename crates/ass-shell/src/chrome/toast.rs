@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn toast_copy_is_unicode_safe_and_bounded() {
-        assert_eq!(truncate("Neenee connected", 20), "Neenee connected");
+        assert_eq!(truncate("Fuji connected", 20), "Fuji connected");
         assert_eq!(truncate("真实通知已经联通", 6), "真实通知已…");
     }
 }

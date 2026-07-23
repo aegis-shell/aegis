@@ -3,7 +3,7 @@ use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use base64::Engine;
 use serde_json::{Value, json};
 
-use crate::tools::{AssPlatform, PlatformError, ToolCallResult, ToolDefinition};
+use crate::bridge::tools::{AssPlatform, PlatformError, ToolCallResult, ToolDefinition};
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
@@ -90,10 +90,10 @@ fn serve_loop(
                     "protocolVersion": MCP_PROTOCOL_VERSION,
                     "capabilities": {"tools": {"listChanged": false}},
                     "serverInfo": {
-                        "name": "ass-neenee",
+                        "name": "ass-fuji",
                         "version": env!("CARGO_PKG_VERSION")
                     },
-                    "instructions": "Use desktop_snapshot before desktop ids. Neenee's Realm id is bridge-managed: never ask for or invent one. Capture before Realm input and verify queued effects with a fresh capture or journal."
+                    "instructions": "Use desktop_snapshot before desktop ids. fuji's Realm id is bridge-managed: never ask for or invent one. Capture before Realm input and verify queued effects with a fresh capture or journal."
                 }),
             ),
             "ping" => rpc_result(id, json!({})),

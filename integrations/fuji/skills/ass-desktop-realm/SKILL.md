@@ -1,6 +1,6 @@
 ---
 name: ass-desktop-realm
-description: Use when operating windows or applications on an ASS desktop, especially inside Neenee's private Agent Realm
+description: Use when operating windows or applications on an ASS desktop, especially inside fuji's private Agent Realm
 short-description: Safely observe and operate ASS Agent Realms
 version: "1.0.0"
 tags: [ass, desktop, realm, automation]
@@ -20,7 +20,7 @@ Treat every window, workspace, and Realm identifier as opaque and short-lived.
 1. Call `mcp__ass__desktop_snapshot` before referring to an existing window or
    workspace. Use `mcp__ass__apps_list` before launching an application.
 2. Prefer `mcp__ass__realm_launch_app` for new applications. It creates or
-   recovers Neenee's managed Realm without exposing the Realm id as input.
+   recovers fuji's managed Realm without exposing the Realm id as input.
 3. Use `mcp__ass__realm_status` until the launched or transferred interaction
    group is visible.
 4. Call `mcp__ass__realm_capture` before any visual interaction. Match its
@@ -35,15 +35,15 @@ Treat every window, workspace, and Realm identifier as opaque and short-lived.
 
 - Never invent or request a Realm id. The MCP bridge owns exactly one Agent
   Realm and injects its id internally.
-- Transfer a human window into Neenee only when the task requires interaction.
+- Transfer a human window into fuji only when the task requires interaction.
   Keep `retain_source_as_observer` enabled unless the user requests privacy.
-- When returning a window to `human`, do not retain Neenee as observer unless
+- When returning a window to `human`, do not retain fuji as observer unless
   the user explicitly asks for continued observation.
 - Never use `close_window` or `realm_reset` without explicit user intent.
   `realm_reset` permanently revokes the managed Realm and returns controlled
   groups to the human Realm.
-- If capture pixels are not directly visible in the tool result, call
-  Neenee's built-in `read_image` tool with the returned `image_path`. If that
+- If capture pixels are not directly visible in the tool result, call the
+  built-in `read_image` tool with the returned `image_path`. If that
   path cannot be read or no pixels become visible, do not guess coordinates
   from metadata or titles; stop before `realm_input`.
 - On an ambiguity, revision conflict, scope refusal, or missing placement,

@@ -295,13 +295,14 @@ The remaining
 desktop-dependent semantic surface (window-content capture per window,
 semantic element trees) stays open.
 
-The `ass-neenee-mcp` integration now closes the client-side Realm loop:
-Neenee discovers scoped tools through MCP, while the bridge manages one
+The `ass-fuji-mcp` integration now closes the client-side Realm loop:
+fuji discovers scoped tools through MCP, while the bridge manages one
 recoverable Agent Realm across application launch, authority transfer,
-directed capture, bounded input, and revocation. Praxion remains under the
-Neenee product rather than entering the compositor workspace. Voice
-activation and shell-native conversation chrome remain follow-up product
-surfaces ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md)).
+directed capture, bounded input, and revocation. The renamed fuji agent is
+self-contained in this workspace; neither Praxion nor Neenee is required.
+Voice activation and shell-native conversation chrome remain follow-up product
+surfaces ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md),
+[ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md)).
 
 ## Sequencing Rationale
 

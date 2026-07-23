@@ -1,18 +1,18 @@
-# How to Connect Neenee to ASS
+# How to Connect fuji to ASS
 
-Use the ASS MCP bridge to give the existing Neenee product scoped desktop and
-Agent Realm tools. Neenee continues to own its provider and session
+Use the fuji agent and its MCP bridge to operate the ASS desktop with scoped
+desktop and Agent Realm tools. fuji owns its provider and session
 configuration; ASS remains the authority for every desktop action.
 
-## Build the Bridge
+## Build the Bridge and the Agent
 
 From the ASS repository:
 
 ```bash
-cargo build --release -p ass-neenee
+cargo build --release -p ass-fuji
 ```
 
-The binary is `target/release/ass-neenee-mcp`.
+The binaries are `target/release/ass-fuji-mcp` and `target/release/fuji`.
 
 ## Configure the ASS Scope
 
@@ -20,7 +20,7 @@ Add a named scope to the ASS configuration:
 
 ```toml
 [[agent.scope]]
-name = "neenee"
+name = "fuji"
 ops = [
   "Focus",
   "Minimize",
@@ -38,36 +38,36 @@ ops = [
 ]
 ```
 
-Add `Close` only if Neenee should be allowed to close windows. Omit
+Add `Close` only if fuji should be allowed to close windows. Omit
 `InjectRealmInput` for observation-only use. Leave `realms` unset because the
 managed Realm id is allocated at runtime.
 
 Restart ASS after introducing the scope. Later scope edits reload live;
 narrowing applies immediately, while broader grants require reconnecting the
-MCP server so Neenee discovers the additional tools.
+MCP server so fuji discovers the additional tools.
 
 ## Check the Grant
 
 With ASS running:
 
 ```bash
-target/release/ass-neenee-mcp check
+target/release/ass-fuji-mcp check
 ```
 
 The JSON output shows the compositor-granted capabilities, allowlists, and
 exact connector-local tool names. Fix an unknown scope or missing operation
-before configuring Neenee.
+before configuring fuji.
 
 ## Run the Visual Smoke Test
 
-Run a live, reversible smoke test before connecting Neenee:
+Run a live, reversible smoke test before connecting fuji:
 
 ```bash
-target/release/ass-neenee-mcp smoke
+target/release/ass-fuji-mcp smoke
 ```
 
-Watch for a Neenee notification and a temporary `Neenee · Active` or
-`Neenee · Paused` indicator in the status bar. Click the indicator while it
+Watch for a fuji notification and a temporary `Fuji · Active` or
+`Fuji · Paused` indicator in the status bar. Click the indicator while it
 is present. Control Center opens directly on **AI Workspaces**, where the
 temporary Realm id, state, and controlled-window count are visible.
 
@@ -89,45 +89,61 @@ To verify the real Agent operation feedback path, first open a disposable
 window and find its id with `ass-control windows`, then run:
 
 ```bash
-target/release/ass-neenee-mcp smoke --input-window <window-id> --observe-seconds 10
+target/release/ass-fuji-mcp smoke --input-window <window-id> --observe-seconds 10
 ```
 
 This opt-in probe temporarily transfers only that window, retains it as a
 read-only mirror on the physical desktop, and applies one pointer move at its
 center. The user's XDG cursor does not move. Look for a colored circular
-crosshair, a short movement trail, and an `AGENT · Neenee · Pointer move`
+crosshair, a short movement trail, and an `AGENT · Fuji · Pointer move`
 label. The command waits for an `Applied` journal entry and returns the window
 to the human Realm even if the probe fails. It does not click, type, close, or
 launch anything. Use a disposable window because authority changes briefly
 even though cleanup is automatic.
 
-## Configure Neenee
+## Configure fuji
 
-Print a starting MCP entry:
+Print a starting configuration:
 
 ```bash
-target/release/ass-neenee-mcp print-config
+target/release/fuji print-config
 ```
 
-Add it to Neenee's `config.toml`, then add the shipped skill path:
+Write it to `$XDG_CONFIG_HOME/fuji/config.toml`, set your provider
+credential in the environment, and point the MCP entry at the bridge and the
+shipped skills:
 
 ```toml
+[provider]
+kind = "anthropic"
+model = "claude-sonnet-4-5"
+
 [mcp.ass]
-command = ["/absolute/path/to/ass/target/release/ass-neenee-mcp"]
+command = ["/absolute/path/to/ass/target/release/ass-fuji-mcp"]
 enabled = true
 read_only = false
 
 [skills]
-paths = ["/absolute/path/to/ass/integrations/neenee/skills"]
+paths = ["/absolute/path/to/ass/integrations/fuji/skills"]
 ```
 
-Start Neenee from its own repository or installed binary. Open `/mcp` and
-confirm `ass` is connected, then run `/skills reload` and load
-`ass-desktop-realm` when the task concerns desktop interaction.
+Validate the setup:
+
+```bash
+target/release/fuji check
+```
+
+The command reports the resolved provider, the credential variable, the
+discovered skills, and every enabled MCP server with its tool count. Then
+run a prompt:
+
+```bash
+target/release/fuji run "list the visible windows"
+```
 
 ## Exercise the Realm Loop
 
-Ask Neenee to list applications and launch one in its private Realm. A safe
+Ask fuji to list applications and launch one in its private Realm. A safe
 interaction loop is:
 
 1. `apps_list` resolves a real desktop id.
@@ -138,22 +154,23 @@ interaction loop is:
 5. `realm_input` uses the captured placement and target-local coordinates.
 6. another capture verifies the effect.
 
-If the Neenee version exposes only capture metadata, pass the returned
-`image_path` to Neenee's built-in `read_image` tool. Stop before coordinate
-input rather than guessing if neither that compatibility path nor the MCP
-image block becomes visible. See [Capture
-Compatibility](../reference/neenee.md#capture-compatibility).
+The capture arrives as MCP image content, which fuji forwards to the model
+directly. When a client exposes only capture metadata, pass the returned
+`image_path` to fuji's built-in `read_image` tool. Stop before coordinate
+input rather than guessing if neither route makes pixels model-visible. See
+[Capture Compatibility](../reference/fuji.md#capture-compatibility).
 
 ## Recover or Reset
 
-The connector stores the managed Realm id under
-`$XDG_RUNTIME_DIR/ass-neenee/`. If an MCP refresh kills the child before a
-graceful shutdown, the next connector for the same scope recovers that Realm.
+The bridge stores the managed Realm id under `$XDG_RUNTIME_DIR/ass-fuji/`.
+If a refresh kills the bridge before a graceful shutdown, the next bridge
+for the same scope recovers that Realm.
 
-Ask Neenee to call `realm_reset` only when you want to end the Realm and return
+Ask fuji to call `realm_reset` only when you want to end the Realm and return
 its controlled windows to the human Realm. Normal graceful EOF also revokes by
-default. Use `ASS_NEENEE_REVOKE_ON_EXIT=false` only when Realm continuity
-across graceful connector restarts is intentional.
+default. Use `ASS_FUJI_REVOKE_ON_EXIT=false` only when Realm continuity
+across graceful bridge restarts is intentional.
 
 For the complete scope, environment, tool, and exit-status contract, see the
-[Neenee Integration Reference](../reference/neenee.md).
+[fuji Bridge Reference](../reference/fuji.md). For the agent CLI and
+configuration, see the [fuji Agent Reference](../reference/fuji-agent.md).

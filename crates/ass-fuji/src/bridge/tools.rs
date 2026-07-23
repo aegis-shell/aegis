@@ -14,8 +14,8 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use crate::BridgeConfig;
-use crate::realm::{ManagedRealm, RealmSession, RealmSessionError};
+use crate::bridge::BridgeConfig;
+use crate::bridge::realm::{ManagedRealm, RealmSession, RealmSessionError};
 
 const MAX_JOURNAL_ENTRIES: usize = 200;
 const MAX_APP_RESULTS: usize = 200;
@@ -197,11 +197,11 @@ impl AssPlatform {
             .unwrap_or_default()
             .as_nanos();
         let tag = format!("{:06x}", marker & 0xff_ffff);
-        let started_summary = format!("Neenee ↔ ASS · {tag}");
+        let started_summary = format!("Fuji ↔ ASS · {tag}");
         client.command(Command::Notify {
             summary: started_summary.clone(),
             body: "Live notification verified. Agent Realm smoke is running.".into(),
-            app_id: Some("neenee".into()),
+            app_id: Some("fuji".into()),
         })?;
         let started_notification = self.wait_for_notification(&mut client, &started_summary)?;
 
@@ -316,11 +316,11 @@ impl AssPlatform {
             "preserved_existing_realm"
         };
 
-        let summary = format!("Neenee ↔ ASS · passed · {tag}");
+        let summary = format!("Fuji ↔ ASS · passed · {tag}");
         client.command(Command::Notify {
             summary: summary.clone(),
             body: "Notification and Agent Realm controls were applied and verified.".into(),
-            app_id: Some("neenee".into()),
+            app_id: Some("fuji".into()),
         })?;
         let notification = self.wait_for_notification(&mut client, &summary)?;
 
@@ -621,7 +621,7 @@ impl AssPlatform {
                     Command::Notify {
                         summary: args.summary,
                         body: args.body.unwrap_or_default(),
-                        app_id: Some("neenee".into()),
+                        app_id: Some("fuji".into()),
                     },
                     "post_notification",
                 )
@@ -649,7 +649,7 @@ impl AssPlatform {
         let deadline = Instant::now() + self.config.io_timeout;
         loop {
             if let Some(notification) = client.notifications()?.into_iter().find(|notification| {
-                notification.summary == summary && notification.app_id.as_deref() == Some("neenee")
+                notification.summary == summary && notification.app_id.as_deref() == Some("fuji")
             }) {
                 return Ok(notification);
             }
@@ -828,7 +828,7 @@ impl AssPlatform {
         let window = window_id(args.window_id)?;
         let mut client = self.connect_ipc()?;
         let (target, retain_source_as_observer) = match args.target.as_str() {
-            "neenee" => {
+            "fuji" => {
                 let managed = self.ensure_realm(&mut client)?;
                 (managed.id, args.retain_source_as_observer.unwrap_or(true))
             }
@@ -839,7 +839,7 @@ impl AssPlatform {
                 }
                 (HUMAN_REALM, args.retain_source_as_observer.unwrap_or(false))
             }
-            _ => return Err(invalid("target must be `neenee` or `human`")),
+            _ => return Err(invalid("target must be `fuji` or `human`")),
         };
         let snapshot = client.realms()?;
         let result = client.realm_action(RealmAction::Transact {
@@ -1198,14 +1198,14 @@ impl ToolKind {
             ),
             Self::PostNotification => definition(
                 "post_notification",
-                "Post a user-visible notification from Neenee.",
+                "Post a user-visible notification from fuji.",
                 json!({"type":"object","properties":{"summary":{"type":"string","minLength":1},"body":{"type":"string"}},"required":["summary"],"additionalProperties":false}),
                 false,
                 false,
             ),
             Self::RealmStatus => definition(
                 "realm_status",
-                "Inspect only the Agent Realm managed by this Neenee connector and its controlled or observed interaction groups. Does not create a Realm.",
+                "Inspect only the Agent Realm managed by this fuji connector and its controlled or observed interaction groups. Does not create a Realm.",
                 empty(),
                 true,
                 false,
@@ -1219,42 +1219,42 @@ impl ToolKind {
             ),
             Self::RealmLaunchApp => definition(
                 "realm_launch_app",
-                "Launch one catalogued desktop application inside Neenee's private Agent Realm and sandbox. Call apps_list first.",
+                "Launch one catalogued desktop application inside fuji's private Agent Realm and sandbox. Call apps_list first.",
                 json!({"type":"object","properties":{"desktop_id":{"type":"string","minLength":1,"maxLength":512}},"required":["desktop_id"],"additionalProperties":false}),
                 false,
                 false,
             ),
             Self::RealmTransferWindow => definition(
                 "realm_transfer_window",
-                "Atomically transfer interaction authority for a window into Neenee's Realm or back to the human Realm. Human observation is retained by default when transferring to Neenee.",
-                json!({"type":"object","properties":{"window_id":{"type":"integer","minimum":1},"target":{"type":"string","enum":["neenee","human"]},"retain_source_as_observer":{"type":"boolean"}},"required":["window_id","target"],"additionalProperties":false}),
+                "Atomically transfer interaction authority for a window into fuji's Realm or back to the human Realm. Human observation is retained by default when transferring to fuji.",
+                json!({"type":"object","properties":{"window_id":{"type":"integer","minimum":1},"target":{"type":"string","enum":["fuji","human"]},"retain_source_as_observer":{"type":"boolean"}},"required":["window_id","target"],"additionalProperties":false}),
                 false,
                 false,
             ),
             Self::RealmSetState => definition(
                 "realm_set_state",
-                "Pause or resume Neenee's managed Realm using an optimistic Realm transaction.",
+                "Pause or resume fuji's managed Realm using an optimistic Realm transaction.",
                 json!({"type":"object","properties":{"state":{"type":"string","enum":["active","paused"]}},"required":["state"],"additionalProperties":false}),
                 false,
                 false,
             ),
             Self::RealmCapture => definition(
                 "realm_capture",
-                "Capture only Neenee's directed virtual output. Returns layout metadata, an owner-only PNG path, and an attached image when it is within the inline limit; never captures compositor chrome or another Realm.",
+                "Capture only fuji's directed virtual output. Returns layout metadata, an owner-only PNG path, and an attached image when it is within the inline limit; never captures compositor chrome or another Realm.",
                 json!({"type":"object","properties":{"region":{"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"width":{"type":"integer","minimum":1},"height":{"type":"integer","minimum":1}},"required":["x","y","width","height"],"additionalProperties":false}},"additionalProperties":false}),
                 false,
                 false,
             ),
             Self::RealmInput => definition(
                 "realm_input",
-                "Inject a bounded batch of target-local pointer, click, scroll, or evdev key-press actions through Neenee's independent Realm seat. Call realm_capture first and use its placement metadata.",
+                "Inject a bounded batch of target-local pointer, click, scroll, or evdev key-press actions through fuji's independent Realm seat. Call realm_capture first and use its placement metadata.",
                 input_schema(),
                 false,
                 false,
             ),
             Self::RealmReset => definition(
                 "realm_reset",
-                "Permanently revoke Neenee's managed Realm and atomically return its controlled windows to the human Realm. Use only when the user explicitly requests reset or shutdown.",
+                "Permanently revoke fuji's managed Realm and atomically return its controlled windows to the human Realm. Use only when the user explicitly requests reset or shutdown.",
                 empty(),
                 false,
                 true,
@@ -1548,9 +1548,9 @@ pub enum PlatformError {
     UnknownTool(String),
     #[error("tool {0:?} is not present in the compositor's granted named scope")]
     NotGranted(String),
-    #[error("the managed Neenee Realm does not exist")]
+    #[error("the managed fuji Realm does not exist")]
     NoManagedRealm,
-    #[error("creating the managed Neenee Realm requires CreateRealm in the named scope")]
+    #[error("creating the managed fuji Realm requires CreateRealm in the named scope")]
     RealmCreationNotGranted,
     #[error("graceful Realm cleanup requires RevokeRealm in the named scope")]
     RealmCleanupNotGranted,
@@ -1559,7 +1559,7 @@ pub enum PlatformError {
     #[error("live smoke verification failed: {0}")]
     SmokeVerification(String),
     #[error(transparent)]
-    Config(#[from] crate::ConfigError),
+    Config(#[from] crate::bridge::ConfigError),
     #[error("managed Realm lifecycle failed: {0}")]
     Realm(String),
 }

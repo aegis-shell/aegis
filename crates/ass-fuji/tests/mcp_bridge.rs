@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 fn scratch() -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("ass-neenee-bridge-{}-{n}", std::process::id()))
+    std::env::temp_dir().join(format!("ass-fuji-bridge-{}-{n}", std::process::id()))
 }
 
 struct TestHandler {
@@ -144,7 +144,7 @@ impl Handler for TestHandler {
     }
 
     fn resolve_scope(&self, name: &str) -> Option<Scope> {
-        (name == "neenee-test").then(|| self.scope.clone())
+        (name == "fuji-test").then(|| self.scope.clone())
     }
 
     fn capture_security_active(&self) -> bool {
@@ -175,7 +175,7 @@ impl Handler for TestHandler {
 }
 
 #[test]
-fn neenee_stdio_discovers_manages_captures_and_revokes_realm() {
+fn fuji_stdio_discovers_manages_captures_and_revokes_realm() {
     let runtime_dir = scratch();
     std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
     let socket = runtime_dir.join("ass.sock");
@@ -204,11 +204,11 @@ fn neenee_stdio_discovers_manages_captures_and_revokes_realm() {
     });
     let server = Server::start(&socket, Arc::clone(&handler)).expect("server");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ass-neenee-mcp"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ass-fuji-mcp"))
         .arg("serve")
         .env("XDG_RUNTIME_DIR", &runtime_dir)
-        .env("ASS_NEENEE_SCOPE", "neenee-test")
-        .env("ASS_NEENEE_REALM_LABEL", "Neenee integration test")
+        .env("ASS_FUJI_SCOPE", "fuji-test")
+        .env("ASS_FUJI_REALM_LABEL", "Fuji integration test")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -266,9 +266,9 @@ fn neenee_stdio_discovers_manages_captures_and_revokes_realm() {
     );
 
     let config =
-        ass_neenee::BridgeConfig::new(&socket, &runtime_dir, "neenee-test", "Neenee smoke test")
+        ass_fuji::bridge::BridgeConfig::new(&socket, &runtime_dir, "fuji-test", "Fuji smoke test")
             .expect("smoke config");
-    let mut platform = ass_neenee::AssPlatform::connect(config).expect("smoke platform");
+    let mut platform = ass_fuji::bridge::AssPlatform::connect(config).expect("smoke platform");
     let report = platform
         .smoke_with_input(Duration::ZERO, Some(WindowId(7)))
         .expect("live input smoke");

@@ -29,9 +29,9 @@ iris = { path = "../optics/bindings/iris-rs/crates/iris" }
 log = "0.4"
 env_logger = "0.11"
 
-# Neenee owns the Praxion-powered agent runtime. ass exposes a narrow MCP
-# platform bridge so the product can discover scoped desktop and Realm tools
-# without linking the agent stack into the compositor (ADR-0047).
+# fuji (宓姬) is the in-tree agent product. ass exposes a narrow MCP platform
+# bridge so the agent can discover scoped desktop and Realm tools without
+# linking the agent stack into the compositor (ADR-0047, ADR-0050).
 base64 = "0.22"
 
 # Session D-Bus for the StatusNotifierItem system tray (ass-statusbar).
@@ -86,8 +86,10 @@ ass-ipc = { path = "crates/ass-ipc" }
 # Launcher: XDG application discovery + detached launch. See ADR-0022.
 ass-apps = { path = "crates/ass-apps" }
 ass-launch = { path = "crates/ass-launch" }
-# Scoped ASS platform bridge for the Praxion-powered Neenee product (ADR-0047).
-ass-neenee = { path = "crates/ass-neenee" }
+# fuji (宓姬): the scoped ASS platform bridge and fuji's self-contained agent
+# runtime in one crate (ADR-0047, ADR-0050). The `fuji` binary reaches the
+# desktop only as an MCP client of `ass-fuji-mcp` — no Praxion, no Neenee.
+ass-fuji = { path = "crates/ass-fuji" }
 
 # Declarative configuration (ADR-0026). `serde` drives the schema; `toml` is
 # the chosen file format over KDL/YAML/INI for tooling maturity and an

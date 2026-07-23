@@ -55,7 +55,7 @@ backend, renderer, and shell behind clear seams so the
 | | `ass-launch` | Ordinary app detachment and fail-closed Realm namespace/cgroup launch |
 | | `ass-ipc` | Versioned scoped IPC, sealed capture transport, and introspection over a Unix socket |
 | | `ass-control` | Command-line driver for the ass IPC (the reference external tool) |
-| **AI integration** | `ass-neenee` | Out-of-process MCP adapter: scoped desktop tools and one bridge-managed Agent Realm for Neenee |
+| **AI integration** | `ass-fuji` | fuji in one crate: the out-of-process MCP adapter plus its own agent runtime, scoped desktop tools and one bridge-managed Agent Realm |
 | **Binary** | `ass` | The binary: wires the parts together and runs the event loop |
 
 flux and lens are consumed through Rust bindings kept in separate
@@ -78,9 +78,10 @@ user sees or can do" tasks:
   [ADR-0049](../adr/0049-standalone-modular-control-center.md),
   [ADR-0045](../adr/0045-statusbar-crate-and-sni-tray.md)).
 - **"Add an external control path"** (CLI or scripts) → `ass-ipc` +
-  `ass-control`; the Neenee product consumes that same IPC through
-  `ass-neenee-mcp` without entering the compositor process
-  ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md)).
+  `ass-control`; the fuji agent consumes that same IPC through
+  `ass-fuji-mcp` without entering the compositor process
+  ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md),
+  [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md)).
 - **"Start or discover apps"** → `ass-apps` (discovery) + `ass-launch`
   (spawn). `ass-launch` is intentionally narrow: process detachment and
   environment, not window management.

@@ -604,7 +604,7 @@ mod tests {
         AgentActivity {
             sequence,
             realm: RealmId(7),
-            realm_label: "Neenee".into(),
+            realm_label: "Fuji".into(),
             window: WindowId(42),
             position,
             kind,

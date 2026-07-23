@@ -7,6 +7,26 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### fuji (宓姬): rename and self-contained agent runtime
+
+- Renamed `ass-neenee` to `ass-fuji` and its `ass-neenee-mcp` binary to
+  `ass-fuji-mcp`. The environment variables are now `ASS_FUJI_*`, the default
+  scope is `fuji`, the default Realm label is `Fuji`, and bridge state moved
+  to `$XDG_RUNTIME_DIR/ass-fuji/`. The `realm_transfer_window` tool's
+  `target` value `neenee` is now `fuji`; all other MCP tool names and schemas
+  are unchanged. Realm recovery records under the old directory do not
+  migrate. fuji is named after Lady Fu (宓妃) of the *Luoshen Fu*.
+- Added fuji's own agent runtime in the same `ass-fuji` crate, with the
+  `fuji` CLI:
+  streaming Anthropic and OpenAI-compatible providers, the agent loop,
+  built-in file/shell/image tools, an stdio MCP client, JSONL sessions,
+  `SKILL.md` discovery, and a per-tool allow/ask/deny permission policy. The
+  agent is self-contained in this workspace: it no longer depends on
+  `../praxion` or any external agent product, and reaches the desktop only
+  through `ass-fuji-mcp` (ADR-0050).
+- Renamed the shipped skill path to `integrations/fuji/skills`; the
+  `ass-desktop-realm` skill itself is unchanged for fuji wording.
+
 ### User-owned Dock defaults
 
 - An unconfigured Dock now starts with only the `Applications` tile; running
@@ -34,22 +54,22 @@ project cuts a tagged release.
   persisted, applied on the compositor main loop, and acknowledged only after
   completion; stale editor revisions fail without overwriting newer state.
 
-### Neenee Agent Realm integration
+### fuji Agent Realm integration
 
-- Added `ass-neenee` and its `ass-neenee-mcp` stdio server, which connect the
-  existing Praxion-powered Neenee product to ASS without duplicating provider,
-  credential, session, or agent-runtime policy in the compositor workspace.
+- Added `ass-fuji` and its `ass-fuji-mcp` stdio server, which connect the
+  fuji agent to ASS without duplicating provider, credential, session, or
+  agent-runtime policy in the compositor.
 - Added scope-aware desktop tools plus a bridge-managed Agent Realm lifecycle:
   XDG app discovery and sandboxed launch, optimistic authority transfer,
   pause/resume, directed PNG capture with MCP image content, bounded Realm-seat
   input, crash recovery, and fail-closed revocation to the human Realm.
-- Added the `ass-desktop-realm` Neenee skill and configuration/reference
+- Added the `ass-desktop-realm` fuji skill and configuration/reference
   guidance for an observe-operate-verify workflow. Realm ids are never model
   arguments, and one per-scope process lock prevents concurrent bridge owners.
 - The synchronous ass IPC client now supports applying read/write timeouts
   before a scoped handshake, allowing async adapters to bound stalled local
   IPC without hanging the connector.
-- Added `ass-neenee-mcp smoke`, a live reversible acceptance check that reads
+- Added `ass-fuji-mcp smoke`, a live reversible acceptance check that reads
   start and completion notifications back from compositor state, verifies a
   temporary Agent Realm through active/paused/active transitions, leaves time
   for visual inspection, and confirms revocation. Existing managed Realms are

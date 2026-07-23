@@ -16,17 +16,18 @@ The near-term goal is a good experience for human users. A later phase
 adapts the compositor so an AI agent can understand and operate the
 machine through it.
 
-The `ass-neenee-mcp` process connects the Neenee agent product to that phase.
-It exposes scoped desktop and Agent Realm tools through Neenee's MCP runtime
+The `ass-fuji-mcp` process connects the fuji (宓姬) agent to that phase.
+It exposes scoped desktop and Agent Realm tools through fuji's MCP runtime
 without loading inference into the compositor. See
-[Connect Neenee to ASS](docs/how-to/neenee.md).
+[Connect fuji to ASS](docs/how-to/fuji.md).
 
 ## Quick Start
 
 ass builds against **flux**, **lens**, and **iris** in the sibling `../optics`
-Meson project. Rust bindings live under `../optics/bindings/`. Neenee and its
-Praxion runtime remain separate products; the ASS workspace builds only the
-platform-side MCP bridge.
+Meson project. Rust bindings live under `../optics/bindings/`. The fuji agent
+is self-contained in this workspace: the `ass-fuji` crate holds both the
+platform bridge and fuji's own agent runtime, with no Praxion or Neenee
+dependency.
 
 Build the C libraries with meson first, then run the nested backend inside an
 existing Wayland session:

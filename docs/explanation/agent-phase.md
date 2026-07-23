@@ -16,9 +16,10 @@ The compositor's job in the agent phase is the same as in the desktop
 phase: own the desktop model, own the IPC, present frames. It does not gain
 an inference model, a prompt, a tool runtime, or a skill layer. Everything
 AI-specific lives out of process, on the other side of the introspection
-IPC. The `ass-neenee-mcp` integration follows this boundary while shipping
+IPC. The `ass-fuji-mcp` integration follows this boundary while shipping
 the platform adapter in the same distribution
-([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md)).
+([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md),
+[ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md)).
 
 The stack, from the rendering layer up:
 
@@ -29,8 +30,8 @@ The stack, from the rendering layer up:
 | The compositor | `ass-server`, `ass-backend`, `ass-render`, `ass-shell` | Wayland, per-Realm input and output, the chrome host |
 | The seam | `ass-ipc` | Versioned JSON and sealed descriptors over a Unix socket; leases, scope, capture, and the journal |
 | IPC clients | any number, all equal | Status bars, `ass-control`, the agent, future bridges |
-| Platform adapter | `ass-neenee-mcp` (separate process) | Named-scope ASS tools and one bridge-managed Agent Realm over MCP |
-| Agent product | Neenee (sibling project) | Praxion composition, providers, credentials, sessions, skills, permissions, and TUI |
+| Platform adapter | `ass-fuji-mcp` (separate process) | Named-scope ASS tools and one bridge-managed Agent Realm over MCP |
+| Agent product | fuji (in-tree `ass-fuji`) | Providers, credentials, sessions, skills, permissions, and the CLI |
 | Other skill and tool layers | external projects | Other model-specific adapters, prompts, and schemas |
 
 The line that matters is between the seam and the clients. Above that line,
@@ -95,7 +96,7 @@ pattern, not a reimplementation per pattern. The compositor stays put.
 | Current pattern | Representatives | Bridge shape |
 |-----------------|-----------------|--------------|
 | Function calling / tool use | Claude, GPT, Gemini, Qwen, Mistral | Each IPC request becomes a tool; the adapter translates between the model's tool-call schema and ass's JSON. |
-| Model Context Protocol | Neenee, Claude Desktop, Cline, Cursor | `ass-neenee-mcp` exposes snapshots, journals, and operations as scoped tools, with Realm pixels as MCP image content. |
+| Model Context Protocol | fuji, Claude Desktop, Cline, Cursor | `ass-fuji-mcp` exposes snapshots, journals, and operations as scoped tools, with Realm pixels as MCP image content. |
 | Vision-based computer use | Claude Computer Use, OpenAI Operator | Damage-driven Realm capture supplies correlated pixels and window-to-input mappings; bounded target-local actions enter the Realm's independent seat. |
 | Agent SDKs | Claude Agent SDK, LangGraph, custom | The agent process uses an SDK; tools call through the IPC. The SDK is indifferent to the transport. |
 | Local models | Ollama, llama.cpp, MLX | Same tool-calling interface, routed to a local endpoint. Smaller models benefit most from the structured path. |
@@ -105,7 +106,7 @@ The fit with the Model Context Protocol is unusually clean. ass's
 introspection surface and MCP converged independently on the same shape:
 the versioned schema against tool schemas; capabilities and scope against
 authorization; and the typed model and journal against structured tool
-results. The current Neenee adapter uses tools and image content rather than
+results. The current fuji adapter uses tools and image content rather than
 MCP resources or subscriptions. It is still a thin translation, not a
 re-architecture. This is not coincidence: both are answers to the same
 question — how does an out-of-process agent address a system it did not
@@ -155,9 +156,9 @@ The shape is defined as much by what it refuses as by what it adds.
 
 - **No model inside the compositor.** The compositor never calls a model.
   Inference, prompt assembly, and tool selection live out of process.
-- **No prompt storage in the compositor.** Product prompts live in Neenee or
+- **No prompt storage in the compositor.** Product prompts live in fuji or
   another out-of-process skill layer. ASS ships only the platform tool
-  contract and an optional Neenee skill.
+  contract and an optional fuji skill.
 - **No retrieval index inside the compositor.** If the agent needs semantic
   search over its history, the agent indexes the journal; the compositor
   provides the data, not the index.
@@ -182,8 +183,10 @@ without committing to.
   delivers it.
 - [ADR-0031](../adr/0031-agent-as-scoped-ipc-client.md) — the framing
   decision.
-- [ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md) — the Neenee
-  MCP platform bridge that remains outside the compositor.
+- [ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md) — the MCP
+  platform bridge that remains outside the compositor.
+- [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md) — the fuji
+  rename and the in-tree, self-contained agent runtime.
 - [ADR-0048](../adr/0048-compositor-owned-agent-operation-feedback.md) — the
   trusted visual distinction between human and Agent input.
 - [ADR-0032](../adr/0032-durable-window-identifiers.md),

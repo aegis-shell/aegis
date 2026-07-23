@@ -13,4 +13,5 @@ see [Explanation](../explanation/index.md).
 | [Command-Line Reference](cli.md) | `ass-control` query, control, event-stream, JSON, and exit-status reference |
 | [IPC Reference](ipc.md) | Protocol capabilities, queries, commands, geometry, synthetic input, and scope behavior |
 | [Control Center](control-center.md) | Standalone app invocation, module routes, backend availability, and apply behavior |
-| [Neenee Integration](neenee.md) | MCP command, environment, named scope, Realm lifecycle, tools, and compatibility |
+| [fuji Bridge](fuji.md) | MCP command, environment, named scope, Realm lifecycle, tools, and compatibility |
+| [fuji Agent](fuji-agent.md) | fuji CLI, configuration, permissions, built-in tools, and sessions |

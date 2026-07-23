@@ -815,7 +815,7 @@ mod tests {
         let mut sequence = 40;
         let feedback = agent_activities_from_applied_input(
             RealmId(7),
-            "Neenee",
+            "Fuji",
             WindowId(42),
             &actions,
             &events,
@@ -845,7 +845,7 @@ mod tests {
         let mut sequence = 3;
         let feedback = agent_activities_from_applied_input(
             RealmId(7),
-            "Neenee",
+            "Fuji",
             WindowId(42),
             &actions,
             &[],

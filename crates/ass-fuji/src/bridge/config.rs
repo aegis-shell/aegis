@@ -3,11 +3,11 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const DEFAULT_SCOPE: &str = "neenee";
-const DEFAULT_REALM_LABEL: &str = "Neenee";
+const DEFAULT_SCOPE: &str = "fuji";
+const DEFAULT_REALM_LABEL: &str = "Fuji";
 const DEFAULT_IPC_TIMEOUT_SECS: u64 = 5;
 
-/// Runtime policy for one Neenee MCP bridge process.
+/// Runtime policy for one fuji MCP bridge process.
 #[derive(Clone, PartialEq, Eq)]
 pub struct BridgeConfig {
     pub socket_path: PathBuf,
@@ -53,28 +53,28 @@ impl BridgeConfig {
         Ok(config)
     }
 
-    /// Load the bridge configuration from `ASS_NEENEE_*` variables.
+    /// Load the bridge configuration from `ASS_FUJI_*` variables.
     pub fn from_env() -> Result<Self, ConfigError> {
         Self::from_lookup(|name| std::env::var_os(name))
     }
 
     fn from_lookup(mut get: impl FnMut(&str) -> Option<OsString>) -> Result<Self, ConfigError> {
         let runtime_dir = PathBuf::from(required_os(&mut get, "XDG_RUNTIME_DIR")?);
-        let socket_path = get("ASS_NEENEE_SOCKET")
+        let socket_path = get("ASS_FUJI_SOCKET")
             .map(PathBuf::from)
             .unwrap_or_else(|| runtime_dir.join("ass.sock"));
-        let scope = optional_string(&mut get, "ASS_NEENEE_SCOPE")?
+        let scope = optional_string(&mut get, "ASS_FUJI_SCOPE")?
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
-        let realm_label = optional_string(&mut get, "ASS_NEENEE_REALM_LABEL")?
+        let realm_label = optional_string(&mut get, "ASS_FUJI_REALM_LABEL")?
             .unwrap_or_else(|| DEFAULT_REALM_LABEL.to_string());
         let io_timeout = Duration::from_secs(parse_number(
             &mut get,
-            "ASS_NEENEE_IPC_TIMEOUT_SECS",
+            "ASS_FUJI_IPC_TIMEOUT_SECS",
             DEFAULT_IPC_TIMEOUT_SECS,
             1,
             60,
         )?);
-        let revoke_on_exit = parse_bool(&mut get, "ASS_NEENEE_REVOKE_ON_EXIT", true)?;
+        let revoke_on_exit = parse_bool(&mut get, "ASS_FUJI_REVOKE_ON_EXIT", true)?;
         let config = Self {
             socket_path,
             runtime_dir,
@@ -89,7 +89,7 @@ impl BridgeConfig {
 
     pub(crate) fn validate(&self) -> Result<(), ConfigError> {
         if self.socket_path.as_os_str().is_empty() {
-            return Err(invalid("ASS_NEENEE_SOCKET", "path must not be empty"));
+            return Err(invalid("ASS_FUJI_SOCKET", "path must not be empty"));
         }
         if !self.runtime_dir.is_absolute() {
             return Err(invalid(
@@ -99,20 +99,20 @@ impl BridgeConfig {
         }
         if self.scope.trim().is_empty() || self.scope.len() > 128 {
             return Err(invalid(
-                "ASS_NEENEE_SCOPE",
+                "ASS_FUJI_SCOPE",
                 "length must be from 1 through 128 bytes",
             ));
         }
         let label = self.realm_label.trim();
         if label.is_empty() || label.len() > 128 {
             return Err(invalid(
-                "ASS_NEENEE_REALM_LABEL",
+                "ASS_FUJI_REALM_LABEL",
                 "length must be from 1 through 128 bytes",
             ));
         }
         if !(Duration::from_secs(1)..=Duration::from_secs(60)).contains(&self.io_timeout) {
             return Err(invalid(
-                "ASS_NEENEE_IPC_TIMEOUT_SECS",
+                "ASS_FUJI_IPC_TIMEOUT_SECS",
                 "expected a duration from 1 through 60 seconds",
             ));
         }
@@ -120,7 +120,7 @@ impl BridgeConfig {
     }
 
     pub(crate) fn state_dir(&self) -> PathBuf {
-        self.runtime_dir.join("ass-neenee")
+        self.runtime_dir.join("ass-fuji")
     }
 }
 
@@ -217,8 +217,8 @@ mod tests {
     #[test]
     fn defaults_are_product_scoped_and_have_no_provider_credentials() {
         let config = load(&[("XDG_RUNTIME_DIR", "/run/user/1000")]).expect("config");
-        assert_eq!(config.scope, "neenee");
-        assert_eq!(config.realm_label, "Neenee");
+        assert_eq!(config.scope, "fuji");
+        assert_eq!(config.realm_label, "Fuji");
         assert_eq!(config.socket_path, PathBuf::from("/run/user/1000/ass.sock"));
         assert!(config.revoke_on_exit);
     }
@@ -239,7 +239,7 @@ mod tests {
     fn parses_explicit_shutdown_policy() {
         let config = load(&[
             ("XDG_RUNTIME_DIR", "/tmp/runtime"),
-            ("ASS_NEENEE_REVOKE_ON_EXIT", "off"),
+            ("ASS_FUJI_REVOKE_ON_EXIT", "off"),
         ])
         .expect("config");
         assert!(!config.revoke_on_exit);
@@ -253,14 +253,14 @@ mod tests {
                 "XDG_RUNTIME_DIR".to_string(),
                 OsString::from("/tmp/runtime"),
             ),
-            ("ASS_NEENEE_SCOPE".to_string(), OsString::from(long)),
+            ("ASS_FUJI_SCOPE".to_string(), OsString::from(long)),
         ]);
         let error =
             BridgeConfig::from_lookup(|name| values.get(name).cloned()).expect_err("long scope");
         assert!(matches!(
             error,
             ConfigError::Invalid {
-                name: "ASS_NEENEE_SCOPE",
+                name: "ASS_FUJI_SCOPE",
                 ..
             }
         ));
