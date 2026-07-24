@@ -17,6 +17,7 @@ pub(super) struct CompositorRuntime {
     pub(super) surface: flux::Surface,
     pub(super) canvas: flux::Canvas,
     pub(super) launcher_backdrop: LauncherBackdrop,
+    pub(super) screenshot_freeze: ScreenshotFreeze,
     pub(super) pending_capture: Option<PendingCapture>,
     pub(super) capture_worker: CaptureWorker,
     pub(super) cursor_cache: cursor::CursorCache,

@@ -7,6 +7,18 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### Screenshot selector: frozen frame and explicit confirmation
+
+- The interactive screenshot selector (Print key) now freezes the screen at
+  the trigger frame: the whole frame — desktop scene and chrome (dock,
+  status bar, toasts) — is snapshotted into an offscreen image when the
+  selector opens, and only the selector itself renders on top of that
+  snapshot until it closes, so background window updates and live chrome
+  no longer leak into the shot.
+- Releasing the pointer after a drag no longer saves immediately. The
+  selection stays on screen with a confirm hint; Enter/Space saves, Escape
+  cancels, and a new drag replaces the staged selection (niri-style flow).
+
 ### fuji (宓姬): rename and self-contained agent runtime
 
 - Renamed `ass-neenee` to `ass-fuji` and its `ass-neenee-mcp` binary to

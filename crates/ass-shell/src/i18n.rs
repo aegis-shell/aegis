@@ -202,6 +202,7 @@ pub enum Message {
     AgentScrollLeft,
     AgentScrollRight,
     AgentKeyboard,
+    ScreenshotConfirmHint,
 }
 
 /// Lightweight locale handle passed to chrome components for each frame.
@@ -374,6 +375,7 @@ impl Localizer {
             Message::AgentScrollLeft => &catalog.agent_scroll_left,
             Message::AgentScrollRight => &catalog.agent_scroll_right,
             Message::AgentKeyboard => &catalog.agent_keyboard,
+            Message::ScreenshotConfirmHint => &catalog.screenshot_confirm_hint,
         }
     }
 
@@ -559,6 +561,7 @@ struct Catalog {
     agent_scroll_left: String,
     agent_scroll_right: String,
     agent_keyboard: String,
+    screenshot_confirm_hint: String,
 }
 
 static ENGLISH: OnceLock<Catalog> = OnceLock::new();

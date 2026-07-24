@@ -1,13 +1,16 @@
 //! Interactive screenshot region selector.
 //!
 //! A modal, full-screen overlay activated by the Print key. The user drags a
-//! rectangle; releasing the pointer confirms the selection, while Escape
-//! cancels. The selected region is emitted through [`ChromeEvents::screenshot_region`]
-//! so the main loop can capture and save it.
+//! rectangle; releasing the pointer only *stages* the selection — the frozen
+//! screen keeps showing it until the user explicitly confirms (Enter/Space)
+//! or cancels (Escape). A new press starts a fresh drag, replacing the staged
+//! selection. The confirmed region is emitted through
+//! [`ChromeEvents::screenshot_region`] so the main loop can capture and save
+//! it.
 
 use lens::{Color, Frame, Input, LayoutOpts, OverlayOpts, Rect as LensRect};
 
-use crate::{Chrome, ChromeEvents, Localizer};
+use crate::{Chrome, ChromeEvents, Localizer, Message};
 use ass_core::app::BuiltInApplication;
 use ass_core::input::{KeyAction, KeyChar, key_action};
 use ass_core::window::Window;
@@ -26,10 +29,13 @@ struct Point {
 /// The screenshot region selector chrome component.
 pub struct ScreenshotSelector {
     active: bool,
-    /// Press origin in logical pixels.
+    /// Press origin in logical pixels while a drag is in progress.
     anchor: Option<Point>,
     /// Current cursor position in logical pixels.
     current: Point,
+    /// Selection staged by a completed drag, waiting for explicit
+    /// confirmation. Drawn like the live drag rect but persistent.
+    confirmed: Option<ass_core::Rect>,
 }
 
 impl Default for ScreenshotSelector {
@@ -44,6 +50,7 @@ impl ScreenshotSelector {
             active: false,
             anchor: None,
             current: Point::default(),
+            confirmed: None,
         }
     }
 
@@ -56,6 +63,7 @@ impl ScreenshotSelector {
         } else {
             self.active = true;
             self.anchor = None;
+            self.confirmed = None;
         }
     }
 
@@ -64,9 +72,9 @@ impl ScreenshotSelector {
         self.active
     }
 
-    /// Compute the selected rectangle from anchor and current cursor, clamped
+    /// Compute the dragged rectangle from anchor and current cursor, clamped
     /// to non-negative size.
-    fn selected_rect(&self) -> Option<ass_core::Rect> {
+    fn drag_rect(&self) -> Option<ass_core::Rect> {
         let anchor = self.anchor?;
         let x = anchor.x.min(self.current.x).round() as i32;
         let y = anchor.y.min(self.current.y).round() as i32;
@@ -75,42 +83,67 @@ impl ScreenshotSelector {
         Some(ass_core::Rect::new(x, y, w.max(0), h.max(0)))
     }
 
-    /// Advance the drag state from explicit input edges. Keeping this
-    /// transition separate from painting makes the selection deterministic
-    /// and lets the host rebuild edge flags every frame without maintaining a
-    /// second, potentially stale button-level mirror in this component.
-    fn update_pointer(
-        &mut self,
-        cursor: Point,
-        pressed: bool,
-        released: bool,
-    ) -> Option<ass_core::Rect> {
+    /// The rectangle currently shown: the staged selection once a drag has
+    /// completed, otherwise the in-progress drag.
+    fn shown_rect(&self) -> Option<ass_core::Rect> {
+        self.confirmed.or_else(|| self.drag_rect())
+    }
+
+    /// Advance the drag state from explicit input edges. Releasing the
+    /// pointer never confirms: it stages the rect into `confirmed` and the
+    /// overlay stays up. A new press starts a fresh drag, discarding the
+    /// staged selection.
+    fn update_pointer(&mut self, cursor: Point, pressed: bool, released: bool) {
         self.current = cursor;
 
-        if self.anchor.is_none() {
-            if pressed {
-                self.anchor = Some(cursor);
-            }
-            return None;
+        if pressed {
+            self.anchor = Some(cursor);
+            self.confirmed = None;
+            return;
         }
+        let Some(anchor) = self.anchor else {
+            return;
+        };
         if !released {
-            return None;
+            return;
         }
 
-        let anchor = self.anchor.expect("checked above");
+        self.anchor = None;
         let dx = (cursor.x - anchor.x).abs();
         let dy = (cursor.y - anchor.y).abs();
-        let confirmed = (dx >= MIN_DRAG || dy >= MIN_DRAG)
-            .then(|| self.selected_rect())
-            .flatten()
-            .filter(|rect| rect.size.w > 0 && rect.size.h > 0);
+        if dx >= MIN_DRAG || dy >= MIN_DRAG {
+            self.confirmed = self
+                .drag_rect_at(anchor, cursor)
+                .filter(|rect| rect.size.w > 0 && rect.size.h > 0);
+        }
+    }
+
+    /// Rectangle of a drag from `anchor` to `cursor`, independent of the
+    /// component's live drag state.
+    fn drag_rect_at(&self, anchor: Point, cursor: Point) -> Option<ass_core::Rect> {
+        let x = anchor.x.min(cursor.x).round() as i32;
+        let y = anchor.y.min(cursor.y).round() as i32;
+        let w = (anchor.x.max(cursor.x) - x as f32).round() as i32;
+        let h = (anchor.y.max(cursor.y) - y as f32).round() as i32;
+        Some(ass_core::Rect::new(x, y, w.max(0), h.max(0)))
+    }
+
+    /// Emit the staged selection through the chrome events and close. Used by
+    /// the confirm keys; pointer confirmation goes through the same path.
+    fn confirm(&mut self, out: &mut ChromeEvents) {
+        if let Some(rect) = self.confirmed.or_else(|| self.drag_rect())
+            && rect.size.w > 0
+            && rect.size.h > 0
+        {
+            out.screenshot_region = Some(rect);
+        }
         self.reset();
-        confirmed
     }
 
     fn reset(&mut self) {
         self.active = false;
         self.anchor = None;
+        self.confirmed = None;
     }
 }
 
@@ -121,8 +154,8 @@ impl Chrome for ScreenshotSelector {
         input: &Input,
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
-        _i18n: &Localizer,
-        out: &mut ChromeEvents,
+        i18n: &Localizer,
+        _out: &mut ChromeEvents,
     ) {
         if !self.active {
             return;
@@ -136,10 +169,7 @@ impl Chrome for ScreenshotSelector {
         };
         let pressed = raw.mouse_pressed.first().copied().unwrap_or(false);
         let released = raw.mouse_released.first().copied().unwrap_or(false);
-        if let Some(rect) = self.update_pointer(cursor, pressed, released) {
-            out.screenshot_region = Some(rect);
-            return;
-        }
+        self.update_pointer(cursor, pressed, released);
         if !self.active {
             return;
         }
@@ -160,10 +190,7 @@ impl Chrome for ScreenshotSelector {
             |_| {},
         );
 
-        if self.anchor.is_some() {
-            let rect = self
-                .selected_rect()
-                .unwrap_or(ass_core::Rect::new(0, 0, 0, 0));
+        if let Some(rect) = self.shown_rect() {
             let lens_rect = LensRect {
                 x: rect.origin.x as f32,
                 y: rect.origin.y as f32,
@@ -219,6 +246,47 @@ impl Chrome for ScreenshotSelector {
                     },
                 );
             }
+
+            // Confirm/cancel hint once a selection is staged.
+            if self.confirmed.is_some() {
+                let hint = i18n.text(Message::ScreenshotConfirmHint);
+                let hint_w = (hint.chars().count() as f32 * 6.5 + 16.0).min(display.0);
+                let hint_h = 26.0;
+                let hint_x = lens_rect.x.clamp(0.0, display.0 - hint_w);
+                let below = lens_rect.y + lens_rect.h + 6.0;
+                let hint_y = if below + hint_h <= display.1 {
+                    below
+                } else {
+                    (lens_rect.y - hint_h - 6.0).max(0.0)
+                };
+                frame.layer(
+                    "ass-screenshot-hint",
+                    LensRect {
+                        x: hint_x,
+                        y: hint_y,
+                        w: hint_w,
+                        h: hint_h,
+                    },
+                    &OverlayOpts {
+                        bg: Color::rgba(12, 14, 22, 210),
+                        radius: 4.0,
+                        ..Default::default()
+                    },
+                    |frame| {
+                        frame.column_ex(
+                            &LayoutOpts {
+                                width: hint_w,
+                                height: hint_h,
+                                cross: lens::Align::Center,
+                                ..Default::default()
+                            },
+                            |frame| {
+                                frame.label_sized(hint, 11.0);
+                            },
+                        );
+                    },
+                );
+            }
         }
     }
 
@@ -255,21 +323,13 @@ impl Chrome for ScreenshotSelector {
         }
     }
 
-    fn key_char(&mut self, key: &KeyChar, _out: &mut ChromeEvents) {
+    fn key_char(&mut self, key: &KeyChar, out: &mut ChromeEvents) {
         if !self.active {
             return;
         }
         match key_action(key.keysym, key.ch) {
             KeyAction::Escape => self.reset(),
-            KeyAction::Enter => {
-                if let Some(rect) = self.selected_rect()
-                    && rect.size.w > 0
-                    && rect.size.h > 0
-                {
-                    _out.screenshot_region = Some(rect);
-                }
-                self.reset();
-            }
+            KeyAction::Enter | KeyAction::Char(' ') => self.confirm(out),
             _ => {}
         }
     }
@@ -280,12 +340,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn selected_rect_normalizes_negative_sizes() {
+    fn drag_rect_normalizes_negative_sizes() {
         let mut s = ScreenshotSelector::new();
         s.start();
         s.anchor = Some(Point { x: 100.0, y: 100.0 });
         s.current = Point { x: 50.0, y: 60.0 };
-        let rect = s.selected_rect().unwrap();
+        let rect = s.drag_rect().unwrap();
         assert_eq!(rect.origin.x, 50);
         assert_eq!(rect.origin.y, 60);
         assert_eq!(rect.size.w, 50);
@@ -293,9 +353,9 @@ mod tests {
     }
 
     #[test]
-    fn selected_rect_is_none_without_anchor() {
+    fn shown_rect_is_none_without_anchor_or_selection() {
         let s = ScreenshotSelector::new();
-        assert!(s.selected_rect().is_none());
+        assert!(s.shown_rect().is_none());
     }
 
     #[test]
@@ -310,22 +370,78 @@ mod tests {
     }
 
     #[test]
-    fn drag_geometry_tracks_each_pointer_update_and_confirms_on_release() {
+    fn release_stages_selection_without_closing() {
         let mut s = ScreenshotSelector::new();
         s.start();
-        assert!(
-            s.update_pointer(Point { x: 20.0, y: 30.0 }, true, false)
-                .is_none()
-        );
-        assert!(
-            s.update_pointer(Point { x: 80.0, y: 90.0 }, false, false)
-                .is_none()
-        );
-        assert_eq!(s.selected_rect(), Some(ass_core::Rect::new(20, 30, 60, 60)));
+        s.update_pointer(Point { x: 20.0, y: 30.0 }, true, false);
+        s.update_pointer(Point { x: 80.0, y: 90.0 }, false, false);
+        s.update_pointer(Point { x: 110.0, y: 70.0 }, false, true);
+        assert_eq!(s.confirmed, Some(ass_core::Rect::new(20, 30, 90, 40)));
+        assert!(s.active(), "release must keep the selector open");
+        assert!(s.anchor.is_none());
+    }
 
-        let confirmed = s.update_pointer(Point { x: 110.0, y: 70.0 }, false, true);
-        assert_eq!(confirmed, Some(ass_core::Rect::new(20, 30, 90, 40)));
+    #[test]
+    fn confirm_key_emits_staged_region_and_closes() {
+        let mut s = ScreenshotSelector::new();
+        s.start();
+        s.update_pointer(Point { x: 20.0, y: 30.0 }, true, false);
+        s.update_pointer(Point { x: 110.0, y: 70.0 }, false, true);
+
+        let mut out = ChromeEvents::default();
+        s.key_char(
+            &KeyChar {
+                keysym: ass_core::input::XKB_KEY_Return,
+                ch: None,
+                mods: ass_core::input::Mods::NONE,
+            },
+            &mut out,
+        );
+        assert_eq!(out.screenshot_region, Some(ass_core::Rect::new(20, 30, 90, 40)));
         assert!(!s.active());
+    }
+
+    #[test]
+    fn new_press_replaces_staged_selection() {
+        let mut s = ScreenshotSelector::new();
+        s.start();
+        s.update_pointer(Point { x: 20.0, y: 30.0 }, true, false);
+        s.update_pointer(Point { x: 110.0, y: 70.0 }, false, true);
+        assert!(s.confirmed.is_some());
+
+        s.update_pointer(Point { x: 200.0, y: 200.0 }, true, false);
+        assert!(s.confirmed.is_none());
+        assert_eq!(s.drag_rect(), Some(ass_core::Rect::new(200, 200, 0, 0)));
+    }
+
+    #[test]
+    fn escape_cancels_staged_selection_without_emitting() {
+        let mut s = ScreenshotSelector::new();
+        s.start();
+        s.update_pointer(Point { x: 20.0, y: 30.0 }, true, false);
+        s.update_pointer(Point { x: 110.0, y: 70.0 }, false, true);
+
+        let mut out = ChromeEvents::default();
+        s.key_char(
+            &KeyChar {
+                keysym: ass_core::input::XKB_KEY_Escape,
+                ch: None,
+                mods: ass_core::input::Mods::NONE,
+            },
+            &mut out,
+        );
+        assert!(out.screenshot_region.is_none());
+        assert!(!s.active());
+    }
+
+    #[test]
+    fn tiny_release_keeps_selector_waiting() {
+        let mut s = ScreenshotSelector::new();
+        s.start();
+        s.update_pointer(Point { x: 50.0, y: 50.0 }, true, false);
+        s.update_pointer(Point { x: 52.0, y: 53.0 }, false, true);
+        assert!(s.confirmed.is_none());
+        assert!(s.active());
     }
 
     #[test]

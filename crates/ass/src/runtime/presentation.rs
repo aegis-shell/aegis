@@ -108,7 +108,14 @@ impl CompositorRuntime {
                 // Overview mode (M9) swaps the whole client scene for the
                 // thumbnail grid and skips the launcher-blur capture path.
                 let overview_active = self.shell.overview_active();
-                let backdrop_plan = if overview_active {
+                // A screenshot freeze session replaces the whole frame with
+                // the trigger-frame snapshot: the capture frame renders the
+                // desktop scene *and* the chrome into an offscreen target
+                // below; later frames blit that snapshot and draw only the
+                // selector on top. The launcher-blur path stays off for the
+                // whole session.
+                let freeze_capturing = self.screenshot_freeze.needs_capture();
+                let backdrop_plan = if overview_active || self.screenshot_freeze.armed {
                     BackdropPlan::Direct
                 } else {
                     self.launcher_backdrop.prepare(
@@ -212,17 +219,111 @@ impl CompositorRuntime {
                         }
                     }
                     BackdropPlan::Capture | BackdropPlan::Direct => {
-                        self.canvas.begin(&frame, Some(self.clear))?;
-                        draw_direct_desktop_scene(
-                            &self.canvas,
-                            &self.device,
-                            &mut frame,
-                            &mut self.wallpaper,
-                            &mut self.renderer,
-                            &self.server,
-                            render_geometry,
-                            overview_active,
-                        )?;
+                        if self.screenshot_freeze.active() {
+                            // Frozen: present only the trigger-frame
+                            // snapshot; the selector draws on top below.
+                            self.canvas.begin(&frame, Some(self.clear))?;
+                            if let Some(image) = self.screenshot_freeze.image() {
+                                self.canvas.draw_image(
+                                    image,
+                                    0.0,
+                                    0.0,
+                                    physical_size.0 as f32,
+                                    physical_size.1 as f32,
+                                );
+                            }
+                        } else if freeze_capturing {
+                            // Capture frame: the desktop scene starts the
+                            // snapshot pass; the chrome render below joins
+                            // the same pass, which then resolves into the
+                            // blit of the frozen frame.
+                            if !self.screenshot_freeze.ensure_target(
+                                &self.device,
+                                &self.surface,
+                                &frame,
+                                physical_size,
+                            ) {
+                                self.screenshot_freeze.failed = true;
+                            }
+                            let mut in_target = false;
+                            if !self.screenshot_freeze.failed {
+                                let target = self
+                                    .screenshot_freeze
+                                    .target(&frame)
+                                    .expect("ensure_target succeeded");
+                                match self.canvas.begin_target(&frame, target, Some(self.clear)) {
+                                    Ok(()) => {
+                                        in_target = true;
+                                        draw_wallpaper_background(
+                                            &self.canvas,
+                                            &self.device,
+                                            &mut self.wallpaper,
+                                            logical_size,
+                                            scale,
+                                        );
+                                        if model_active {
+                                            self.canvas.end_target();
+                                            if let Some(wallpaper) = self.wallpaper.as_mut() {
+                                                wallpaper.draw_model_to(
+                                                    &self.device,
+                                                    &mut frame,
+                                                    target,
+                                                );
+                                            }
+                                            if let Err(error) =
+                                                self.canvas.begin_target(&frame, target, None)
+                                            {
+                                                log::warn!(
+                                                    "screenshot: freeze capture interrupted ({error}); falling back to live scene"
+                                                );
+                                                self.screenshot_freeze.failed = true;
+                                                in_target = false;
+                                            }
+                                        }
+                                        if in_target {
+                                            draw_client_scene(
+                                                &self.canvas,
+                                                &self.device,
+                                                &mut self.renderer,
+                                                &self.server,
+                                                scale,
+                                            );
+                                        }
+                                    }
+                                    Err(error) => {
+                                        log::warn!(
+                                            "screenshot: failed to begin freeze capture ({error}); falling back to live scene"
+                                        );
+                                        self.screenshot_freeze.failed = true;
+                                    }
+                                }
+                            }
+                            if !in_target {
+                                self.canvas.begin(&frame, Some(self.clear))?;
+                                draw_direct_desktop_scene(
+                                    &self.canvas,
+                                    &self.device,
+                                    &mut frame,
+                                    &mut self.wallpaper,
+                                    &mut self.renderer,
+                                    &self.server,
+                                    render_geometry,
+                                    overview_active,
+                                )?;
+                            }
+                        } else {
+                            self.canvas.begin(&frame, Some(self.clear))?;
+                            draw_direct_desktop_scene(
+                                &self.canvas,
+                                &self.device,
+                                &mut frame,
+                                &mut self.wallpaper,
+                                &mut self.renderer,
+                                &self.server,
+                                render_geometry,
+                                overview_active,
+                            )?;
+                        }
                     }
                 }
                 // Hand the shell a snapshot of live toplevels so the chrome's
@@ -290,9 +391,37 @@ impl CompositorRuntime {
                 // a HiDPI host; layout and input stay in logical pixels.
                 self.shell.set_scale(scale);
                 unsafe { self.shell.render(self.canvas.as_raw() as *mut _, &input)? };
+                // Finish the freeze snapshot pass: the chrome above rendered
+                // into the target as well, so the snapshot is the whole
+                // trigger frame. Resolve it into the on-screen blit, then
+                // open the selector over the frozen screen. On failure the
+                // selector opens right away over the live scene instead.
+                if freeze_capturing && !self.screenshot_freeze.failed {
+                    self.canvas.end_target();
+                    self.screenshot_freeze.mark_captured(&frame);
+                    self.canvas.begin(&frame, Some(self.clear))?;
+                    if let Some(image) = self.screenshot_freeze.image() {
+                        self.canvas.draw_image(
+                            image,
+                            0.0,
+                            0.0,
+                            physical_size.0 as f32,
+                            physical_size.1 as f32,
+                        );
+                    }
+                }
+                if self.screenshot_freeze.pending_open
+                    && (self.screenshot_freeze.captured || self.screenshot_freeze.failed)
+                {
+                    self.shell.start_screenshot();
+                    self.shell
+                        .set_screenshot_freeze(self.screenshot_freeze.captured);
+                    self.screenshot_freeze.mark_opened();
+                }
                 // Confirmation resets the selector before it draws, so this
-                // same presentation frame contains the desktop without the
-                // selection overlay. Bind that exact frame to the request.
+                // same presentation frame contains the frozen desktop
+                // without the selection overlay. Bind that exact frame to
+                // the request: the saved pixels are the trigger frame's.
                 if let Some(region) = self.shell.take_screenshot_region() {
                     let path = screenshot_path(&self.screenshot_dir);
                     let ts = self.start.elapsed().as_millis() as u64;
@@ -322,6 +451,17 @@ impl CompositorRuntime {
                             },
                         );
                     }
+                }
+                // The selector closed this frame (confirmed above or
+                // cancelled). This frame still presented the frozen
+                // snapshot — exactly what the bound readback captures — so
+                // live rendering resumes from the next frame.
+                if self
+                    .screenshot_freeze
+                    .should_disarm(self.shell.screenshot_active())
+                {
+                    self.screenshot_freeze.disarm();
+                    self.shell.set_screenshot_freeze(false);
                 }
                 if session_locked {
                     draw_lock_scene(
@@ -439,7 +579,13 @@ impl CompositorRuntime {
                     );
                 }
                 if let Some(app) = self.shell.take_open_builtin() {
-                    self.shell.open_builtin(app);
+                    // The selector opens through the freeze session so the
+                    // trigger frame (chrome included) is snapshotted first.
+                    if app == ass_core::app::BuiltInApplication::ScreenshotSelector {
+                        self.screenshot_freeze.request_open();
+                    } else {
+                        self.shell.open_builtin(app);
+                    }
                 }
                 for intent in self.shell.take_realm_intents() {
                     let action = realm_intent_to_action(intent);
@@ -853,6 +999,16 @@ impl CompositorRuntime {
                         &self.journal,
                         &self.ipc,
                     );
+                }
+                // The frozen snapshot no longer matches the output geometry;
+                // end the session and close the selector rather than
+                // presenting a stretched frame or cropping stale pixels.
+                if self.screenshot_freeze.armed {
+                    self.screenshot_freeze.disarm();
+                    self.shell.set_screenshot_freeze(false);
+                    if self.shell.screenshot_active() {
+                        self.shell.start_screenshot();
+                    }
                 }
                 let (nw, nh) = self.host.physical_size();
                 self.surface.resize(nw, nh)?;

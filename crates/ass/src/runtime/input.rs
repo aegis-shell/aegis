@@ -501,7 +501,15 @@ impl CompositorRuntime {
                             log::debug!("screenshot: suppressed while locked or inactive");
                             continue;
                         }
-                        self.shell.start_screenshot();
+                        if self.shell.screenshot_active() {
+                            // Print toggles the selector closed again.
+                            self.shell.start_screenshot();
+                        } else {
+                            // Open through the freeze session: the next frame
+                            // snapshots the whole trigger frame (chrome
+                            // included) and the selector opens on top of it.
+                            self.screenshot_freeze.request_open();
+                        }
                     }
                 }
             }

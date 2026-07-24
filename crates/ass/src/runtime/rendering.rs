@@ -163,6 +163,169 @@ impl LauncherBackdrop {
     }
 }
 
+/// Frozen desktop snapshot shown while the screenshot selector is open.
+///
+/// On the trigger frame the whole frame — desktop scene *and* chrome — is
+/// rendered into a full-resolution offscreen image; every later frame
+/// samples that image and renders only the selector on top, so the screen
+/// keeps showing exactly the trigger frame until the user confirms or
+/// cancels. Images are indexed by frame slot for the same in-flight reason
+/// as [`LauncherBackdrop`]: a slot is rewritten only after `begin_frame`
+/// has waited its fence.
+///
+/// Session flow: [`request_open`](Self::request_open) arms a session and
+/// defers the selector opening; the capture frame renders the normal frame
+/// into the target (the selector is not open yet, so its scrim stays out
+/// of the snapshot), then the compositor opens the selector over the
+/// frozen image. [`should_disarm`](Self::should_disarm) ends the session
+/// once the selector closes.
+pub(super) struct ScreenshotFreeze {
+    captures: Vec<Option<BackdropCapture>>,
+    active_slot: Option<usize>,
+    /// A freeze session is in progress (requested, capturing, or frozen).
+    pub(super) armed: bool,
+    /// The snapshot holds the trigger frame.
+    pub(super) captured: bool,
+    /// Capture failed; the session degrades to the live scene.
+    pub(super) failed: bool,
+    /// The selector opens once the capture frame has been rendered.
+    pub(super) pending_open: bool,
+    /// The selector was opened under this session.
+    opened: bool,
+}
+
+impl ScreenshotFreeze {
+    pub(super) fn new() -> Self {
+        Self {
+            captures: Vec::new(),
+            active_slot: None,
+            armed: false,
+            captured: false,
+            failed: false,
+            pending_open: false,
+            opened: false,
+        }
+    }
+
+    /// Arm a freeze session; the selector opens after the capture frame.
+    pub(super) fn request_open(&mut self) {
+        if self.armed {
+            return;
+        }
+        self.armed = true;
+        self.captured = false;
+        self.failed = false;
+        self.pending_open = true;
+        self.opened = false;
+        self.active_slot = None;
+    }
+
+    /// Whether this frame must render the scene into the snapshot target.
+    pub(super) fn needs_capture(&self) -> bool {
+        self.armed && !self.captured && !self.failed
+    }
+
+    /// Whether the frozen snapshot replaces the live scene this frame.
+    pub(super) fn active(&self) -> bool {
+        self.armed && self.captured && !self.failed
+    }
+
+    pub(super) fn mark_captured(&mut self, frame: &flux::Frame<'_>) {
+        self.active_slot = Some(frame.index() as usize);
+        self.captured = true;
+    }
+
+    pub(super) fn mark_opened(&mut self) {
+        self.pending_open = false;
+        self.opened = true;
+    }
+
+    /// The selector closed (confirmed or cancelled); the frame that closed
+    /// it still presents the snapshot, so live rendering resumes next frame.
+    pub(super) fn should_disarm(&self, selector_active: bool) -> bool {
+        self.armed && self.opened && !selector_active
+    }
+
+    pub(super) fn disarm(&mut self) {
+        self.armed = false;
+        self.captured = false;
+        self.failed = false;
+        self.pending_open = false;
+        self.opened = false;
+        self.active_slot = None;
+    }
+
+    /// The snapshot image, once the trigger frame has been captured.
+    pub(super) fn image(&self) -> Option<&flux::Image> {
+        if !self.captured {
+            return None;
+        }
+        self.captures
+            .get(self.active_slot?)?
+            .as_ref()
+            .map(|capture| &capture.image)
+    }
+
+    /// This frame's snapshot target, after [`ensure_target`](Self::ensure_target)
+    /// succeeded.
+    pub(super) fn target(&self, frame: &flux::Frame<'_>) -> Option<&flux::Image> {
+        self.captures
+            .get(frame.index() as usize)?
+            .as_ref()
+            .map(|capture| &capture.image)
+    }
+
+    /// Allocate (or reuse) this frame slot's full-resolution snapshot target.
+    pub(super) fn ensure_target(
+        &mut self,
+        device: &flux::Device,
+        surface: &flux::Surface,
+        frame: &flux::Frame<'_>,
+        surface_size: (u32, u32),
+    ) -> bool {
+        let format = match surface.format() {
+            flux::Format::FLUX_FORMAT_RGBA8_UNORM | flux::Format::FLUX_FORMAT_BGRA8_UNORM => {
+                flux::Format::FLUX_FORMAT_RGBA8_UNORM
+            }
+            other => {
+                log::warn!(
+                    "screenshot: frame freeze unavailable for surface format {other:?}; falling back to live scene"
+                );
+                return false;
+            }
+        };
+        if surface_size.0 == 0 || surface_size.1 == 0 {
+            return false;
+        }
+
+        let slot = frame.index() as usize;
+        if self.captures.len() <= slot {
+            self.captures.resize_with(slot + 1, || None);
+        }
+        let stale = self.captures[slot]
+            .as_ref()
+            .is_none_or(|capture| capture.size != surface_size || capture.format != format);
+        if stale {
+            match flux::Image::render_target(device, surface_size.0, surface_size.1, format) {
+                Ok(image) => {
+                    self.captures[slot] = Some(BackdropCapture {
+                        image,
+                        size: surface_size,
+                        format,
+                    });
+                }
+                Err(error) => {
+                    log::warn!(
+                        "screenshot: failed to allocate freeze target ({error}); falling back to live scene"
+                    );
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
+
 pub(super) fn draw_wallpaper_background(
     canvas: &flux::Canvas,
     device: &flux::Device,

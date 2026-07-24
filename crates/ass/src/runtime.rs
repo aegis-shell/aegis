@@ -114,6 +114,9 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let canvas = flux::Canvas::new(&surface)?;
     let launcher_backdrop = LauncherBackdrop::new(&device)?;
+    // Frozen-frame snapshot behind the screenshot selector: allocated lazily
+    // on the first trigger, reused across later sessions.
+    let screenshot_freeze = ScreenshotFreeze::new();
     // A requested presentation frame remains in mapped readback staging until
     // the main loop copies it into an owned CPU buffer.
     let pending_capture: Option<PendingCapture> = None;
@@ -516,6 +519,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         surface,
         canvas,
         launcher_backdrop,
+        screenshot_freeze,
         pending_capture,
         capture_worker,
         cursor_cache,

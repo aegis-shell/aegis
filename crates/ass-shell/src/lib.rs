@@ -485,6 +485,10 @@ pub struct Shell {
     /// Accessibility reduced-motion policy (ADR-0029), fanned out to every
     /// registered component (including ones added later) and to lens.
     reduced_motion: bool,
+    /// While the screenshot freeze holds the screen, only the selector
+    /// itself renders; every other component is part of the frozen snapshot
+    /// and must not draw (or advance its animations) on top of it.
+    screenshot_freeze: bool,
 }
 
 impl Shell {
@@ -512,6 +516,7 @@ impl Shell {
                 events: ChromeEvents::default(),
                 components: Vec::new(),
                 reduced_motion: false,
+                screenshot_freeze: false,
             })
         }
     }
@@ -725,6 +730,13 @@ impl Shell {
         self.components.iter().any(|c| c.screenshot_active())
     }
 
+    /// Hold or release the screenshot freeze. While held, [`Shell::render`]
+    /// draws only the screenshot selector; every other component is part of
+    /// the frozen snapshot the compositor presents underneath.
+    pub fn set_screenshot_freeze(&mut self, frozen: bool) {
+        self.screenshot_freeze = frozen;
+    }
+
     /// Whether any registered component currently captures keyboard input
     /// (e.g. an open launcher). The main loop checks this to decide whether to
     /// route key events to [`Shell::key_char`] or forward them to the focused
@@ -753,6 +765,10 @@ impl Shell {
         self.components
             .iter()
             .rev()
+            // Same filter as `render`: while the screenshot freeze holds the
+            // screen, frozen components are inert — the dock under the
+            // snapshot must not turn the cursor clickable.
+            .filter(|component| !self.screenshot_freeze || component.screenshot_active())
             .filter(|component| !modal_active || component.visible_during_modal())
             .find(|component| {
                 component.captures_pointer(x, y, display, &self.windows, &self.workspaces)
@@ -810,7 +826,15 @@ impl Shell {
     /// wakeup. Also folds in lens's own eased-value state so hover/active
     /// fades on lens widgets (buttons, etc.) settle correctly.
     pub fn anim_pending(&self) -> bool {
-        if self.components.iter().any(|c| c.anim_pending()) {
+        if self
+            .components
+            .iter()
+            // Frozen components do not render, so their animations never
+            // advance; excluding them keeps the loop from spinning on an
+            // animation that cannot settle until the freeze lifts.
+            .filter(|c| !self.screenshot_freeze || c.screenshot_active())
+            .any(|c| c.anim_pending())
+        {
             return true;
         }
         self.ui.anim_pending()
@@ -868,6 +892,7 @@ impl Shell {
             let i18n = &self.i18n;
             let events = &mut self.events;
             let components = &mut self.components;
+            let freeze = self.screenshot_freeze;
             let modal_reserved = components
                 .iter()
                 .filter(|component| component.visible_during_modal())
@@ -885,6 +910,12 @@ impl Shell {
             self.ui.frame(input, |f| {
                 let modal_active = components.iter().any(|component| component.modal_active());
                 for component in components.iter_mut() {
+                    // While the screenshot freeze holds the screen, only the
+                    // selector draws; everything else is baked into the
+                    // frozen snapshot underneath.
+                    if freeze && !component.screenshot_active() {
+                        continue;
+                    }
                     if !modal_active || component.visible_during_modal() {
                         component.render(f, input, windows, workspaces, i18n, events);
                     }
