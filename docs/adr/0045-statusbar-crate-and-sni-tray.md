@@ -5,12 +5,12 @@
 
 ## Context
 
-[ADR-0021](0021-chrome-component-trait.md) split `ass-shell` into a core
+[ADR-0021](0021-chrome-component-trait.md) split `aegis-shell` into a core
 host and pluggable `Chrome` components and deferred one crate per
 component until a component gained "a dependency or lifecycle the core
 should not own". [ADR-0044](0044-dock-and-control-center-crates.md) later
 promoted the dock and the Control Center on that trigger. The session
-HUD (`HudBar`, in `ass-shell/src/chrome/workspace_bar.rs`) was the last
+HUD (`HudBar`, in `aegis-shell/src/chrome/workspace_bar.rs`) was the last
 remaining top-level chrome surface still living in the core: a ~1060
 line component that combined workspace state, the active-window title,
 the clock, an application tray of open windows, system status, and a
@@ -23,7 +23,7 @@ Two forces now meet the ADR-0021 promotion trigger for this component:
   protocol on the session D-Bus, with context menus through
   [`com.canonical.dbusmenu`][dbusmenu]. ass had no D-Bus dependency
   anywhere in the workspace and no async runtime; pulling session-bus
-  I/O and a `zbus` dependency into `ass-shell` would force every
+  I/O and a `zbus` dependency into `aegis-shell` would force every
   transitive consumer of the contract crate to inherit it.
 - The bar is optional. ass runs without it (a tiling WM with only the
   dock and the launcher), and which chrome a session wants is a
@@ -38,29 +38,29 @@ organization only; the bar keeps rendering in the compositor process.
 
 ## Decision
 
-### 1. Promote the status bar to its own crate, `ass-statusbar`
+### 1. Promote the status bar to its own crate, `aegis-statusbar`
 
-New crate `ass-statusbar`, depending on the `ass-shell` contract
+New crate `aegis-statusbar`, depending on the `aegis-shell` contract
 (`Chrome`, `ChromeEvents`, `Reserved`, `BackdropRegion`, `IconSet`,
 `AppCatalog`, `SystemStatus`, `Localizer`) and registered by the `ass`
-binary, exactly mirroring `ass-dock` and `ass-control-center`. The
+binary, exactly mirroring `aegis-dock` and `aegis-ctl-center`. The
 component type is renamed `HudBar` → `StatusBar`; the deprecated
 `WorkspaceBar` alias is dropped (it had two stale doc references, both
 updated). The dependency direction remains
-`ass-core` ← `ass-shell` ← {component crates} ← `ass`; `ass-shell`
+`aegis-core` ← `aegis-shell` ← {component crates} ← `ass`; `aegis-shell`
 depends on no component crate, and `ass` remains the composition root.
 
 The hidden coupling that forced a contract change before the split:
-`ass-shell::chrome::toast::Toast` read the bar's `pub(crate)
+`aegis-shell::chrome::toast::Toast` read the bar's `pub(crate)
 HUD_HEIGHT` constant for its top margin. `HUD_HEIGHT` is promoted to a
-`pub const` at the `ass-shell` crate root; `Toast` and `StatusBar`
+`pub const` at the `aegis-shell` crate root; `Toast` and `StatusBar`
 both consume `ass_shell::HUD_HEIGHT`. The constant stays in the
 contract crate because it is a layout invariant the whole chrome
 surface agrees on, not a private detail of the bar.
 
 ### 2. Introduce the first per-component configuration flag
 
-`ass-config` gains a `[statusbar]` table with one field:
+`aegis-config` gains a `[statusbar]` table with one field:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -73,10 +73,10 @@ component-level enable flag in the configuration; ADR-0044 anticipated
 exactly this pattern ("if configurability is needed later, a static
 registry or a config flag in `ass` covers it without an ABI").
 
-### 3. Implement the StatusNotifierItem tray in `ass-statusbar`
+### 3. Implement the StatusNotifierItem tray in `aegis-statusbar`
 
 The compositor becomes the session's StatusNotifierWatcher and Host.
-The D-Bus work lives in `ass-statusbar::tray` on two dedicated
+The D-Bus work lives in `aegis-statusbar::tray` on two dedicated
 `std::thread`s using `zbus` v5 with `default-features = false` and the
 `async-io` + `blocking-api` features — pure Rust, no libdbus system
 dependency, no tokio/async-std in the dependency graph (verified with
@@ -166,8 +166,8 @@ preserves the project's existing discipline:
 
 ## Alternatives
 
-- **Keep the bar in `ass-shell` and add SNI as a module there.**
-  Rejected: the moment SNI lands, `ass-shell` carries `zbus` and two
+- **Keep the bar in `aegis-shell` and add SNI as a module there.**
+  Rejected: the moment SNI lands, `aegis-shell` carries `zbus` and two
   background threads. Every transitive consumer of the contract crate
   (the binary, the dock, the Control Center, the wallpaper) would
   inherit the dependency, and the "contract is dependency-free except
@@ -183,11 +183,11 @@ preserves the project's existing discipline:
   target; `zbus` is pure Rust and adds no system-package requirement.
 - **Route SNI icons through the composition root's icon cache like
   application icons.** Considered and rejected: it would have spread
-  SNI state across `ass-statusbar` (D-Bus + item tracking) and the
+  SNI state across `aegis-statusbar` (D-Bus + item tracking) and the
   `ass` binary (texture upload + catalog merge), violating the
   component-owns-its-presentation rule. Borrowing the flux device
   non-owning on the render thread (the same thread that created it)
-  keeps the entire feature inside `ass-statusbar` without breaking the
+  keeps the entire feature inside `aegis-statusbar` without breaking the
   GPU-resource ownership invariant.
 - **Layer-shell / `StatusNotifierItem` as an external process.**
   Rejected for the same reasons ADR-0044 rejected running the dock as
@@ -202,8 +202,8 @@ preserves the project's existing discipline:
 
 ## Consequences
 
-- `ass-shell`'s public API names no component-specific type beyond the
-  `HUD_HEIGHT` layout constant, and `ass-shell` carries no D-Bus
+- `aegis-shell`'s public API names no component-specific type beyond the
+  `HUD_HEIGHT` layout constant, and `aegis-shell` carries no D-Bus
   dependency. The "contract is dependency-free except for lens"
   property is preserved.
 - `[statusbar] enabled` becomes the first per-component enable flag,
@@ -212,17 +212,17 @@ preserves the project's existing discipline:
   pattern is a flat `enabled: bool` on a per-component config struct
   consumed by the composition root — no dynamic plugin registry.
 - The workspace gains its first `zbus` dependency. `cargo tree` for
-  `ass-statusbar` shows `zbus` and `async-io` (zbus's internal
+  `aegis-statusbar` shows `zbus` and `async-io` (zbus's internal
   executor); no other crate is affected because no other crate depends
-  on `ass-statusbar`.
+  on `aegis-statusbar`.
 - The bar owns SNI textures and a borrowed flux device reference; the
   GPU-resource ownership invariant documented in ADR-0044
   (`IconSet`/`AppCatalog`) is preserved unchanged for application
-  icons, with the new SNI path documented separately in `ass-statusbar`'s
+  icons, with the new SNI path documented separately in `aegis-statusbar`'s
   rustdoc and crate README.
 - Follow-up work this decision creates: extract the shared popover
-  helpers (`glass_panel_opts`, `place_popup`) from `ass-shell::app_menu`
-  and `ass-statusbar::bar` into a shared module; wire the selected icon
+  helpers (`glass_panel_opts`, `place_popup`) from `aegis-shell::app_menu`
+  and `aegis-statusbar::bar` into a shared module; wire the selected icon
   theme (`ASS_ICON_THEME` / GSettings) into SNI `IconName` resolution;
   per-row `AboutToShow` and `ItemsPropertiesUpdated` incremental
   refreshes; menu-row icons (`icon-name`/`icon-data`); mnemonic

@@ -114,10 +114,10 @@ compositor-internal model runtime.
   [ADR-0010](0010-keyboard-pipeline-and-xkbcommon-ownership.md) remain the
   history of the first physical seat but their single-focus state model is
   superseded by this decision.
-- `ass-core` gains durable identifiers and pure models for realms,
+- `aegis-core` gains durable identifiers and pure models for realms,
   principals, seats, clients, interaction groups, observation, lifecycle,
   and atomic authority transfer.
-- `ass-server` replaces global input and data-device fields with per-seat
+- `aegis-compositor` replaces global input and data-device fields with per-seat
   state and advertises multiple `wl_seat` globals. The existing physical
   input path becomes the human seat rather than a special global path.
 - Rendering becomes realm-selective. Physical and virtual outputs consume

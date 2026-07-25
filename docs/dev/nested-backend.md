@@ -24,7 +24,10 @@ outer Wayland compositor
 At startup, ass connects to the inherited `$WAYLAND_DISPLAY`, creates an
 `xdg_toplevel`, and presents Flux frames through a Wayland Vulkan surface. It
 also creates a separate, auto-named Wayland server socket for applications
-managed inside ass.
+managed inside ass, then points its own process environment at that socket.
+The D-Bus and systemd activation environments are left to the host session:
+exporting the inner socket there would send the host's activated services to
+the nested compositor.
 
 The host compositor supplies window size, scale, pointer, keyboard, gestures,
 and text input. The nested backend converts those events into the same backend
@@ -63,7 +66,8 @@ session.
 ## Run Applications Inside ass
 
 Prefer the built-in launcher. It passes the inner socket to the child process
-without changing the compositor process's outer `$WAYLAND_DISPLAY`.
+explicitly, so launched applications reach the nested compositor regardless of
+the environment they inherited.
 
 To start a test client from another terminal, copy the inner socket name from
 the `server: listening` log line and override it for that command. For example:
@@ -77,11 +81,11 @@ Replace `wayland-1` with the logged value. Keep the existing
 this override connects to the outer desktop instead.
 
 Run the in-tree IPC client against the nested session when no other ass
-process owns `$XDG_RUNTIME_DIR/ass.sock`:
+process owns `$XDG_RUNTIME_DIR/aegis.sock`:
 
 ```bash
-cargo run -p ass-control -- windows
-cargo run -p ass-control -- outputs
+cargo run -p aegis-ctl -- windows
+cargo run -p aegis-ctl -- outputs
 ```
 
 Only one ass IPC server can own that path. If the outer compositor is also
@@ -105,7 +109,7 @@ cargo run -p ass -- --backend nested
 The absolute outer display path lets ass reach the host while the temporary
 `$XDG_RUNTIME_DIR` keeps the inner Wayland and IPC sockets separate. In a
 second terminal, set `XDG_RUNTIME_DIR` to the printed directory before running
-`ass-control`. After a graceful compositor exit, remove the empty directory with
+`aegis-ctl`. After a graceful compositor exit, remove the empty directory with
 `rmdir`.
 
 ## Iterate on Changes
@@ -124,15 +128,15 @@ Choose the narrowest command that answers the current question:
 
 | Goal | Command |
 |------|---------|
-| Check the crate being edited | `cargo check -p ass-shell` |
+| Check the crate being edited | `cargo check -p aegis-shell` |
 | Check executable integration | `cargo check -p ass` |
 | Run the nested compositor | `cargo run -p ass -- --backend nested` |
-| Test one crate | `cargo test -p ass-shell` |
+| Test one crate | `cargo test -p aegis-shell` |
 | Validate the workspace | `cargo test --workspace` |
 | Build a production artifact | `cargo build --release -p ass` |
 | Profile a release build | `cargo build --release -p ass --timings` |
 
-Replace `ass-shell` with the package being edited. Run the release commands
+Replace `aegis-shell` with the package being edited. Run the release commands
 only before delivery, when validating production performance, or when a bug
 depends on release optimization. The first build after changing the compiler,
 profile, or features is a cold build and can still take several minutes;
@@ -146,7 +150,7 @@ critical path.
 ### Configuration Changes
 
 Edit `$XDG_CONFIG_HOME/ass/config.toml`, defaulting to
-`~/.config/ass/config.toml`, while the nested session runs. The compositor
+`~/.config/aegis/config.toml`, while the nested session runs. The compositor
 checks the file each frame and applies a valid change without restarting.
 Invalid configuration leaves the previous configuration active and writes a
 diagnostic to the log.

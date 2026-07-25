@@ -1,17 +1,17 @@
 # fuji Bridge Reference
 
-`ass-fuji-mcp` is the scoped ASS platform connector for the fuji agent.
+`aegis-fuji-mcp` is the scoped ASS platform connector for the fuji agent.
 It is an MCP stdio server, not a model runtime: the agent half of the same
-`ass-fuji` crate owns providers, credentials, sessions, and user
+`aegis-fuji` crate owns providers, credentials, sessions, and user
 interaction.
 
 ## Commands
 
 ```text
-ass-fuji-mcp [serve]
-ass-fuji-mcp check
-ass-fuji-mcp smoke [--observe-seconds <1..=30>] [--input-window <id>]
-ass-fuji-mcp print-config
+aegis-fuji-mcp [serve]
+aegis-fuji-mcp check
+aegis-fuji-mcp smoke [--observe-seconds <1..=30>] [--input-window <id>]
+aegis-fuji-mcp print-config
 ```
 
 With no subcommand, `serve` reads one JSON-RPC object per stdin line and
@@ -63,7 +63,7 @@ toast or a queued response alone is not proof that an operation was applied.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ASS_FUJI_SOCKET` | `$XDG_RUNTIME_DIR/ass.sock` | ASS IPC socket. |
+| `ASS_FUJI_SOCKET` | `$XDG_RUNTIME_DIR/aegis.sock` | ASS IPC socket. |
 | `ASS_FUJI_SCOPE` | `fuji` | Named `[[agent.scope]]` presented during the IPC handshake. |
 | `ASS_FUJI_REALM_LABEL` | `Fuji` | Unique label used to create and recover this bridge's Agent Realm; 1–128 bytes. |
 | `ASS_FUJI_IPC_TIMEOUT_SECS` | `5` | Per-connection handshake and I/O timeout; valid range `1..=60`. |
@@ -71,7 +71,7 @@ toast or a queued response alone is not proof that an operation was applied.
 
 The connector has no provider or credential variables. Realm recovery files
 and the per-scope process lock live in the owner-only
-`$XDG_RUNTIME_DIR/ass-fuji/` directory.
+`$XDG_RUNTIME_DIR/aegis-fuji/` directory.
 
 ## Named Scope
 
@@ -123,7 +123,7 @@ contains both observation and mutation tools:
 
 ```toml
 [mcp.ass]
-command = ["/absolute/path/to/ass-fuji-mcp"]
+command = ["/absolute/path/to/aegis-fuji-mcp"]
 enabled = true
 read_only = false
 environment = { ASS_FUJI_SCOPE = "fuji" }

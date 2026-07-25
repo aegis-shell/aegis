@@ -9,3 +9,4 @@ Task-oriented instructions for operating an ass session.
 - [How to Use AI Workspaces](ai-workspaces.md)
 - [Connect fuji to ASS](fuji.md)
 - [How to Run ass on Bare Metal (DRM/KMS)](bare-metal-drm.md)
+- [How to Install and Verify the Portal Backend](portals.md)

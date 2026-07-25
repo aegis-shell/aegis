@@ -35,7 +35,7 @@ on top in priority order:
 
 1. **Window snapping.** Edge and corner drag, half and quarter regions, and
    maximize, applied as state transitions on the existing `Window` and
-   `WindowState` model ([`ass-core::window`](../../crates/ass-core/src/window.rs)).
+   `WindowState` model ([`aegis-core::window`](../../crates/aegis-core/src/window.rs)).
    Snapping does not change the data model; it changes the size and position
    a floating window resolves to.
 2. **An optional tiling policy.** A toplevel or a workspace may declare a
@@ -92,7 +92,7 @@ same focus model. There is no separate tiling-container type.
   a privileged path, so the renderer and chrome are unchanged.
 - Window snapping is implementable on the current model with no schema
   change, and lands first.
-- The tiling policy interface lives in `ass-core` (pure, no flux or Wayland
+- The tiling policy interface lives in `aegis-core` (pure, no flux or Wayland
   dependency), with the default policy implemented there. A layout-policy
   trait keeps the door open to a river-style external generator over IPC in
   a later milestone without redesign.

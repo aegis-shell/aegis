@@ -41,7 +41,7 @@ Apply `buffer_scale` at composite time, in three small changes:
    rather than dividing by zero.
 
 2. **Plumb `pending_scale` through all four geometry construction sites**
-   in `ass-server` (shm toplevels, dmabuf toplevels, shm subsurfaces,
+   in `aegis-compositor` (shm toplevels, dmabuf toplevels, shm subsurfaces,
    dmabuf subsurfaces). The dead `applied_scale` local at commit is
    removed; the comment that explained the deferral is gone with it.
 
@@ -52,7 +52,7 @@ Apply `buffer_scale` at composite time, in three small changes:
    - both unset: post-transform buffer dims / scale.
 
    The computation is factored into a pure `destination_size` helper in
-   `ass-render` so the shm and dm-buf paths share one tested code path,
+   `aegis-render` so the shm and dm-buf paths share one tested code path,
    and so the scale/viewport matrix is exercisable without a flux device.
 
 The source UV rect computation is unchanged because `viewport_src` is

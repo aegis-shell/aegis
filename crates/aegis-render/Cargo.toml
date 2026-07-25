@@ -1,0 +1,16 @@
+[package]
+name = "aegis-render"
+description = "Compositing: client buffers to flux textures, scene to the output via flux"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[dependencies]
+aegis-core = { workspace = true }
+flux = { workspace = true }
+flux-sys = { workspace = true }
+libc.workspace = true
+log.workspace = true

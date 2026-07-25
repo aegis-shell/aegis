@@ -5,7 +5,7 @@
 
 ## Context
 
-The shell chrome drawn by `ass-shell` (window list, Quit button, SSD
+The shell chrome drawn by `aegis-shell` (window list, Quit button, SSD
 title bars from [ADR-0017](0017-server-side-decorations-via-overlays.md))
 sits on top of the per-frame clear colour. There was no background
 layer beneath client surfaces, and no path to display user-chosen
@@ -19,23 +19,23 @@ characteristics from the chrome:
   format crates), which the rest of the compositor does not need.
 - Short-video wallpaper implies either an `ffmpeg` child process or a
   `gstreamer`/`ffmpeg-next` dependency, neither of which belongs in
-  `ass-render` or `ass-server`.
+  `aegis-render` or `aegis-compositor`.
 - The wallpaper is a leaf feature: it consumes
   `flux::Image::from_bytes` and `Canvas::draw_image`, the same public
-  seam `ass-render` already uses, and produces no data the rest of the
+  seam `aegis-render` already uses, and produces no data the rest of the
   compositor reads back.
 
 [ADR-0001](0001-scope-and-responsibility-boundary.md) places compositor
-chrome in `ass-shell` and compositing in `ass-render`, but is silent on
+chrome in `aegis-shell` and compositing in `aegis-render`, but is silent on
 "the layer beneath everything." Putting wallpaper in either crate would
 either pull image-decode deps into the renderer or pull render concerns
 into the shell.
 
 ## Decision
 
-### 1. New crate `ass-wallpaper`
+### 1. New crate `aegis-wallpaper`
 
-A leaf workspace crate at `crates/ass-wallpaper`, depending on `flux`
+A leaf workspace crate at `crates/aegis-wallpaper`, depending on `flux`
 (for `Image::from_bytes` and `Canvas::draw_image`) and `image` (for
 decode). It owns no flux device or canvas; the main loop passes them
 per frame, mirroring the `ass_render::Renderer` seam.
@@ -93,14 +93,14 @@ no in-process configuration file or live reload path yet.
 
 ## Alternatives
 
-- **Wallpaper inside `ass-shell`.** Rejected: would pull `image` and
+- **Wallpaper inside `aegis-shell`.** Rejected: would pull `image` and
    the ffmpeg child management into the chrome crate, blurring the
    chrome-vs-content seam. The shell consumes input and draws widgets;
    it should not own decode pipelines.
-- **Wallpaper inside `ass-render`.** Rejected: `ass-render` composites
+- **Wallpaper inside `aegis-render`.** Rejected: `aegis-render` composites
    client buffers into the scene; it should not own a user-content
    loader. Mixing the two would also force every consumer of
-   `ass-render` to link the image-decode dependency graph.
+   `aegis-render` to link the image-decode dependency graph.
 - **Live video decode in-process via `ffmpeg-next` or `gstreamer`.**
    Deferred: both add heavy native dependencies (`libavcodec-dev` or
    `libgstreamer-1.0-dev` plus plugins) and complicate cross-distro
@@ -121,14 +121,14 @@ no in-process configuration file or live reload path yet.
 
 ## Consequences
 
-- A new leaf crate `ass-wallpaper` joins the workspace. The `ass`
+- A new leaf crate `aegis-wallpaper` joins the workspace. The `ass`
   binary depends on it; no other crate does.
 - The main loop learns one new optional step: load the wallpaper from
   `$ASS_WALLPAPER` at startup (if set), draw it before client
   surfaces. When unset, behaviour is unchanged.
 - Adding `image` to the workspace dependency graph increases cold
-  build time of `ass-wallpaper` and its dependents, but the seam
-  keeps that cost off `ass-server`, `ass-render`, and `ass-shell`.
+  build time of `aegis-wallpaper` and its dependents, but the seam
+  keeps that cost off `aegis-compositor`, `aegis-render`, and `aegis-shell`.
 - The video path requires `ffmpeg` installed on the host. If absent,
   `Wallpaper::from_path` returns an error for video files; image
   wallpapers still work. The main loop logs and continues without a

@@ -9,10 +9,10 @@ configuration; ASS remains the authority for every desktop action.
 From the ASS repository:
 
 ```bash
-cargo build --release -p ass-fuji
+cargo build --release -p aegis-fuji
 ```
 
-The binaries are `target/release/ass-fuji-mcp` and `target/release/fuji`.
+The binaries are `target/release/aegis-fuji-mcp` and `target/release/fuji`.
 
 ## Configure the ASS Scope
 
@@ -51,7 +51,7 @@ MCP server so fuji discovers the additional tools.
 With ASS running:
 
 ```bash
-target/release/ass-fuji-mcp check
+target/release/aegis-fuji-mcp check
 ```
 
 The JSON output shows the compositor-granted capabilities, allowlists, and
@@ -63,7 +63,7 @@ before configuring fuji.
 Run a live, reversible smoke test before connecting fuji:
 
 ```bash
-target/release/ass-fuji-mcp smoke
+target/release/aegis-fuji-mcp smoke
 ```
 
 Watch for a fuji notification and a temporary `Fuji · Active` or
@@ -86,10 +86,10 @@ presence in compositor state. A successful command prints a JSON report with
 `"mode": "live"` and `"status": "passed"`.
 
 To verify the real Agent operation feedback path, first open a disposable
-window and find its id with `ass-control windows`, then run:
+window and find its id with `aegis-ctl windows`, then run:
 
 ```bash
-target/release/ass-fuji-mcp smoke --input-window <window-id> --observe-seconds 10
+target/release/aegis-fuji-mcp smoke --input-window <window-id> --observe-seconds 10
 ```
 
 This opt-in probe temporarily transfers only that window, retains it as a
@@ -119,7 +119,7 @@ kind = "anthropic"
 model = "claude-sonnet-4-5"
 
 [mcp.ass]
-command = ["/absolute/path/to/ass/target/release/ass-fuji-mcp"]
+command = ["/absolute/path/to/ass/target/release/aegis-fuji-mcp"]
 enabled = true
 read_only = false
 
@@ -162,7 +162,7 @@ input rather than guessing if neither route makes pixels model-visible. See
 
 ## Recover or Reset
 
-The bridge stores the managed Realm id under `$XDG_RUNTIME_DIR/ass-fuji/`.
+The bridge stores the managed Realm id under `$XDG_RUNTIME_DIR/aegis-fuji/`.
 If a refresh kills the bridge before a graceful shutdown, the next bridge
 for the same scope recovers that Realm.
 

@@ -35,7 +35,7 @@ The responsibility split is:
 | Neenee | Product identity, conversation/session UX, credentials, provider policy, skills, permissions, and MCP client lifecycle |
 | Praxion | Reusable model, tool, run, protocol, and orchestration mechanisms used by Neenee |
 | `ass-neenee` | MCP transport, ASS tool schemas, named-scope probing, and one bridge-managed Agent Realm |
-| `ass-ipc` and compositor | Authoritative desktop state, scopes, leases, Realm lifecycle, capture, input, sandboxed launch, and mutation execution |
+| `aegis-ipc` and compositor | Authoritative desktop state, scopes, leases, Realm lifecycle, capture, input, sandboxed launch, and mutation execution |
 
 `ass-neenee` depends only on the public ASS model, application catalog, and
 IPC crates. It does not depend on Praxion because Neenee already owns that

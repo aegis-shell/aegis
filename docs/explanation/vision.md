@@ -45,7 +45,7 @@ The principles are durable. Specific mechanisms may change, but every
 addition is checked against them.
 
 **One model, many readers.** The window, workspace, output, and input state
-lives once, in `ass-core`. The renderer, the chrome, the IPC, and the later
+lives once, in `aegis-core`. The renderer, the chrome, the IPC, and the later
 agent layer all read the same snapshot. State is never reconstructed for a
 second consumer, because two copies of the truth always diverge. This is
 already the basis of the `Chrome` trait

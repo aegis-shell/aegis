@@ -35,27 +35,27 @@ input.
 ass is a Cargo workspace under `crates/`. The split keeps the server,
 backend, renderer, and shell behind clear seams so the
 [AI-adaptation phase](#roadmap) can grow a semantic model from
-`ass-core`. The crates group by responsibility:
+`aegis-core`. The crates group by responsibility:
 
 | Role | Crate | Responsibility |
 |------|-------|----------------|
-| **Model** | `ass-core` | Backend- and renderer-agnostic model: geometry, surface graph, outputs, Realms, seats, and interaction authority |
-| | `ass-protocols` | Wayland extension interface tables, generated once and shared |
-| **Server / window management** | `ass-server` | Hand-rolled Wayland server: globals, protocol object lifecycle, per-Realm seats and outputs, focus, authority transfer, tiling, and workspaces |
-| | `ass-backend` | Presentation and input targets: nested (development) and DRM/KMS + libinput + libseat (bare TTY) |
-| | `ass-render` | Compositing: client buffers to flux textures, scene to the output via flux |
-| **Shell / interaction** | `ass-shell` | Compositor chrome host and `Chrome` contract on lens, plus shared components: launcher, overview, decorations, toast |
-| | `ass-design` | Product design tokens, themes, and data-only surface materials shared by chrome components |
-| | `ass-dock` | Bottom-center dock chrome component: pinned and running apps, magnification, pin actions |
-| | `ass-control-center` | Standalone modular settings application, plus the temporary Quick Settings and Realm compatibility host |
-| | `ass-statusbar` | Top status bar chrome component: workspace state, clock, system status, and the host-rendered StatusNotifierItem tray |
-| | `ass-wallpaper` | Background layer: multi-format image and short-video wallpaper |
-| | `ass-config` | Declarative configuration: versioned TOML schema, loader, live reload |
-| **Convenience channels** | `ass-apps` | freedesktop.org desktop-entry enumeration and icon-theme lookup |
-| | `ass-launch` | Ordinary app detachment and fail-closed Realm namespace/cgroup launch |
-| | `ass-ipc` | Versioned scoped IPC, sealed capture transport, and introspection over a Unix socket |
-| | `ass-control` | Command-line driver for the ass IPC (the reference external tool) |
-| **AI integration** | `ass-fuji` | fuji in one crate: the out-of-process MCP adapter plus its own agent runtime, scoped desktop tools and one bridge-managed Agent Realm |
+| **Model** | `aegis-core` | Backend- and renderer-agnostic model: geometry, surface graph, outputs, Realms, seats, and interaction authority |
+| | `aegis-protocols` | Wayland extension interface tables, generated once and shared |
+| **Server / window management** | `aegis-compositor` | Hand-rolled Wayland server: globals, protocol object lifecycle, per-Realm seats and outputs, focus, authority transfer, tiling, and workspaces |
+| | `aegis-backend` | Presentation and input targets: nested (development) and DRM/KMS + libinput + libseat (bare TTY) |
+| | `aegis-render` | Compositing: client buffers to flux textures, scene to the output via flux |
+| **Shell / interaction** | `aegis-shell` | Compositor chrome host and `Chrome` contract on lens, plus shared components: launcher, overview, decorations, toast |
+| | `aegis-design` | Product design tokens, themes, and data-only surface materials shared by chrome components |
+| | `aegis-dock` | Bottom-center dock chrome component: pinned and running apps, magnification, pin actions |
+| | `aegis-ctl-center` | Standalone modular settings application, plus the temporary Quick Settings and Realm compatibility host |
+| | `aegis-statusbar` | Top status bar chrome component: workspace state, clock, system status, and the host-rendered StatusNotifierItem tray |
+| | `aegis-wallpaper` | Background layer: multi-format image and short-video wallpaper |
+| | `aegis-config` | Declarative configuration: versioned TOML schema, loader, live reload |
+| **Convenience channels** | `aegis-desktop-entries` | freedesktop.org desktop-entry enumeration and icon-theme lookup |
+| | `aegis-launcher` | Ordinary app detachment and fail-closed Realm namespace/cgroup launch |
+| | `aegis-ipc` | Versioned scoped IPC, sealed capture transport, and introspection over a Unix socket |
+| | `aegis-ctl` | Command-line driver for the ass IPC (the reference external tool) |
+| **AI integration** | `aegis-fuji` | fuji in one crate: the out-of-process MCP adapter plus its own agent runtime, scoped desktop tools and one bridge-managed Agent Realm |
 | **Binary** | `ass` | The binary: wires the parts together and runs the event loop |
 
 flux and lens are consumed through Rust bindings kept in separate
@@ -69,21 +69,21 @@ The crate names are *mechanism-oriented*, which can make the product roles
 hard to read at a glance. For the most common "I want to change what the
 user sees or can do" tasks:
 
-- **"Manage windows"** (focus, close, move, tile, workspace) → `ass-server`.
-- **"Change the chrome / interactions"** (dock, launcher, bars) → `ass-shell`
-  for the host and contract; the dock and status bar live in the `ass-dock`
-  and `ass-statusbar` component crates. Persistent settings run as the
-  standalone `ass-control-center` application
+- **"Manage windows"** (focus, close, move, tile, workspace) → `aegis-compositor`.
+- **"Change the chrome / interactions"** (dock, launcher, bars) → `aegis-shell`
+  for the host and contract; the dock and status bar live in the `aegis-dock`
+  and `aegis-statusbar` component crates. Persistent settings run as the
+  standalone `aegis-ctl-center` application
   ([ADR-0044](../adr/0044-dock-and-control-center-crates.md),
   [ADR-0049](../adr/0049-standalone-modular-control-center.md),
   [ADR-0045](../adr/0045-statusbar-crate-and-sni-tray.md)).
-- **"Add an external control path"** (CLI or scripts) → `ass-ipc` +
-  `ass-control`; the fuji agent consumes that same IPC through
-  `ass-fuji-mcp` without entering the compositor process
+- **"Add an external control path"** (CLI or scripts) → `aegis-ipc` +
+  `aegis-ctl`; the fuji agent consumes that same IPC through
+  `aegis-fuji-mcp` without entering the compositor process
   ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md),
   [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md)).
-- **"Start or discover apps"** → `ass-apps` (discovery) + `ass-launch`
-  (spawn). `ass-launch` is intentionally narrow: process detachment and
+- **"Start or discover apps"** → `aegis-desktop-entries` (discovery) + `aegis-launcher`
+  (spawn). `aegis-launcher` is intentionally narrow: process detachment and
   environment, not window management.
 
 ## Settings Boundary
@@ -138,7 +138,7 @@ In nested operation, each frame runs the following sequence:
    the KMS page-flip wait on DRM) sets the real cadence
    ([ADR-0038](../adr/0038-frame-pacing.md)).
 2. The server dispatches its event loop; clients commit surfaces and attach
-   buffers (`wl_shm` or dmabuf), updating the surface tree in `ass-core`.
+   buffers (`wl_shm` or dmabuf), updating the surface tree in `aegis-core`.
    shm contents are snapshotted at commit time, copying only the damaged
    rows when the frame's size and damage allow
    ([ADR-0039](../adr/0039-damage-driven-shm-refresh.md)).
@@ -147,7 +147,7 @@ In nested operation, each frame runs the following sequence:
    bounding box for same-size commits, and composites them in
    z-order into the frame, then overlays the lens chrome. When a
    wallpaper is loaded (see [ADR-0018](../adr/0018-wallpaper-crate.md)),
-   `ass-wallpaper` draws it as the bottom-most layer before the renderer
+   `aegis-wallpaper` draws it as the bottom-most layer before the renderer
    runs.
 4. The frame is submitted and presented to the host surface.
 5. Input is routed through the physical Realm's seat. Agent input uses an

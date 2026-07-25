@@ -13,7 +13,7 @@ and scoped capabilities
 id. A journal entry that says "focused window 0x4002" is meaningless if
 `0x4002` can refer to two different windows depending on when it is read.
 
-Today `Window.id` (`crates/ass-core/src/window.rs`) is the wl_surface
+Today `Window.id` (`crates/aegis-core/src/window.rs`) is the wl_surface
 resource's address as `usize`, set by the server at `Window::new`. The
 resource address is stable for the life of the surface, but libwayland
 recycles addresses after `wl_resource_destroy`, so a window mapped later can
@@ -28,14 +28,14 @@ them within the process lifetime. Windows are the remaining first-class
 model entity without that property.
 
 The agent is not the only consumer. `Workspace.toplevels: Vec<usize>`
-(`crates/ass-core/src/workspace.rs`) and every IPC `Command` variant that
+(`crates/aegis-core/src/workspace.rs`) and every IPC `Command` variant that
 targets a window (`Focus { id }`, `Close { id }`, `Move { id }`,
 `MoveToWorkspace { window, .. }`) currently use the fragile `usize` and
 would silently misaddress a window after an id is recycled.
 
 ## Decision
 
-Introduce `WindowId(pub u64)` in `ass-core::window`, allocated monotonically
+Introduce `WindowId(pub u64)` in `aegis-core::window`, allocated monotonically
 by the compositor, never reused within the process lifetime. The wl_surface
 resource address stays internal to the server and is no longer the window's
 identity.
@@ -66,7 +66,7 @@ vN continues to work against vN.x — but the guarantee an agent now relies
 on (non-reuse) did not exist in v1, so the compositor bumps
 `PROTOCOL_VERSION` to `2` and refuses v1 at the `Hello` handshake. The
 v1→v2 migration note names this ADR: existing in-tree clients (`ass-ctl`)
-recompile against the new `ass-core`; the wire is byte-compatible, the
+recompile against the new `aegis-core`; the wire is byte-compatible, the
 contract is strengthened.
 
 **Cross-process durability is not a goal.** A `WindowId` is stable within
@@ -93,7 +93,7 @@ act on a window that no longer exists.
   recycling.** Rejected: it reaches into a dependency's allocator to change
   a property the dependency does not promise, and couples ass's identity
   model to libwayland's implementation detail. Allocating the id in
-  `ass-core` is cheaper and owned.
+  `aegis-core` is cheaper and owned.
 
 - **Encode creation metadata (timestamp, app_id) into the id.** Rejected:
   ids stay opaque, matching `WorkspaceId` / `OutputId`. Metadata lives on
@@ -101,7 +101,7 @@ act on a window that no longer exists.
 
 ## Consequences
 
-- `ass-core::window` gains `WindowId(pub u64)`; `Window.id`,
+- `aegis-core::window` gains `WindowId(pub u64)`; `Window.id`,
   `Workspace.toplevels`, `WorkspaceEntry.toplevels`, and the IPC `Command`
   variants change type. `ass-ctl` and any out-of-tree consumer recompile.
 - `PROTOCOL_VERSION` becomes `2`. The v1→v2 migration note names this ADR.

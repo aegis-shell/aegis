@@ -17,7 +17,7 @@ river are largely static, and users perceive the difference.
 
 The [vision](../explanation/vision.md#design-principles) commits ass to
 keeping rendering and UI in flux and lens. An animation layer that lives in
-`ass-core` (which has no rendering dependency) or in the binary cannot draw;
+`aegis-core` (which has no rendering dependency) or in the binary cannot draw;
 one that lives in flux duplicates lens's role. The seam must be in lens,
 with ass owning only the policy and the triggers.
 
@@ -67,7 +67,7 @@ through the same name-and-parameter mechanism, not a separate path.
   target in [Vision and Scope](../explanation/vision.md#product-target) for
   everyone else, and reduces-motion users are better served by a switch that
   works than by an absence.
-- **An animation framework in `ass-core`.** Rejected: `ass-core` has no
+- **An animation framework in `aegis-core`.** Rejected: `aegis-core` has no
   rendering dependency by design
   ([ADR-0001](0001-scope-and-responsibility-boundary.md)), and an animation
   framework that cannot draw is in the wrong crate.

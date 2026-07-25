@@ -36,7 +36,7 @@ Add the Rust binding `flux::Canvas::draw_image_sub` mirroring the existing
 `draw_image` signature with four extra `src_u, src_v, src_du, src_dv`
 parameters in normalised texture coordinates.
 
-In ass-server, `wp_viewport.set_source` / `set_destination` now store their
+In aegis-compositor, `wp_viewport.set_source` / `set_destination` now store their
 values on `SurfaceRec` as `viewport_src: Option<Rect>` (pixel coords) and
 `viewport_dst: Option<Size>` (logical pixels). These thread through
 `SurfaceGeometry` to the renderer.
@@ -51,7 +51,7 @@ The renderer computes the destination size and the source UV rect:
 When a source rect is present, the renderer calls `draw_image_sub`; otherwise
 it falls through to `draw_image`.
 
-### 2. Buffer transforms: CPU staging in ass-render
+### 2. Buffer transforms: CPU staging in aegis-render
 
 The shader-side transform path in flux is more invasive (per-vertex UVs or
 matrix push-constant), so M2 takes the CPU fallback: at upload time, if the

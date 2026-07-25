@@ -141,8 +141,8 @@ first.
 
 ## Consequences
 
-- `ass-ipc`'s `Hello` gains `scope: Option<String>` (the name); the schema
-  gains `Scope` and `OpClass`. `ass-config`
+- `aegis-ipc`'s `Hello` gains `scope: Option<String>` (the name); the schema
+  gains `Scope` and `OpClass`. `aegis-config`
   ([ADR-0026](0026-configuration-system.md)) gains an `[agent.scopes]`
   section.
 - The default (no scope name presented) is unscoped, preserving

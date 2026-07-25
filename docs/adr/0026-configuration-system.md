@@ -6,7 +6,7 @@
 ## Context
 
 Configuration today is a single environment variable, `$ASS_KEYBINDS`,
-parsed by [`ass-core::keybind`](../../crates/ass-core/src/keybind.rs) into a
+parsed by [`aegis-core::keybind`](../../crates/aegis-core/src/keybind.rs) into a
 `Keymap`. It is enough for key bindings and nothing else. The
 [comparative survey](../explanation/comparative-survey.md#configuration)
 records how the field configures a compositor: sway uses a plain-text file
@@ -27,7 +27,7 @@ field.
 ## Decision
 
 ass standardizes on **one declarative TOML file** at
-`$XDG_CONFIG_HOME/ass/config.toml` (defaulting to `~/.config/ass/config.toml`),
+`$XDG_CONFIG_HOME/ass/config.toml` (defaulting to `~/.config/aegis/config.toml`),
 with a versioned schema and full live reload. The file is the single source
 of truth; environment variables are reserved for build-time and
 runtime-path concerns only (the existing `FLUX_BUILD_DIR` / `LENS_BUILD_DIR`
@@ -83,10 +83,10 @@ during M5 and removed before the desktop phase closes; the
 
 ## Consequences
 
-- A new `ass-config` crate owns the schema, the loader, the watcher, and the
-  migration logic. It depends only on `serde`, `toml`, and `ass-core`, so it
+- A new `aegis-config` crate owns the schema, the loader, the watcher, and the
+  migration logic. It depends only on `serde`, `toml`, and `aegis-core`, so it
   is unit-testable in isolation, mirroring the discipline already applied to
-  `ass-core::keybind`.
+  `aegis-core::keybind`.
 - The main loop gains a reload path that re-derives the runtime
   configuration and dispatches section-by-section `apply` calls to the
   window manager, the chrome, and the IPC.

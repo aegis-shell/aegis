@@ -60,36 +60,38 @@ input = { version = "0.10", default-features = false, features = [
 udev = "0.9"
 libc = "0.2"
 
-# Launcher (ass-apps): XDG base-directory resolution and .desktop / index.theme
+# Launcher (aegis-desktop-entries): XDG base-directory resolution and .desktop / index.theme
 # INI parsing. Kept off every other crate.
 dirs = "5"
 rust-ini = "0.20"
 
 # Internal crates.
-ass-core = { path = "crates/ass-core" }
-ass-protocols = { path = "crates/ass-protocols" }
-ass-server = { path = "crates/ass-server" }
-ass-backend = { path = "crates/ass-backend" }
-ass-render = { path = "crates/ass-render" }
-ass-shell = { path = "crates/ass-shell" }
+aegis-core = { path = "crates/aegis-core" }
+aegis-protocols = { path = "crates/aegis-protocols" }
+aegis-compositor = { path = "crates/aegis-compositor" }
+aegis-backend = { path = "crates/aegis-backend" }
+aegis-render = { path = "crates/aegis-render" }
+aegis-shell = { path = "crates/aegis-shell" }
 # Product-specific design tokens, themes, and materials shared by chrome.
-ass-design = { path = "crates/ass-design" }
-# Chrome components promoted out of ass-shell (ADR-0044).
-ass-dock = { path = "crates/ass-dock" }
-ass-control-center = { path = "crates/ass-control-center" }
-ass-statusbar = { path = "crates/ass-statusbar" }
-ass-wallpaper = { path = "crates/ass-wallpaper" }
+aegis-design = { path = "crates/aegis-design" }
+# Chrome components promoted out of aegis-shell (ADR-0044).
+aegis-dock = { path = "crates/aegis-dock" }
+aegis-control-center = { path = "crates/aegis-control-center" }
+aegis-statusbar = { path = "crates/aegis-statusbar" }
+aegis-wallpaper = { path = "crates/aegis-wallpaper" }
 # Configuration: versioned TOML schema, loader, and live reload (ADR-0026).
-ass-config = { path = "crates/ass-config" }
+aegis-config = { path = "crates/aegis-config" }
 # IPC: versioned schema over a unix socket (ADR-0027).
-ass-ipc = { path = "crates/ass-ipc" }
+aegis-ipc = { path = "crates/aegis-ipc" }
+# xdg-desktop-portal backend: D-Bus bridge over the scoped IPC (ADR-0051).
+aegis-portal = { path = "crates/aegis-portal" }
 # Launcher: XDG application discovery + detached launch. See ADR-0022.
-ass-apps = { path = "crates/ass-apps" }
-ass-launch = { path = "crates/ass-launch" }
-# fuji (宓姬): the scoped ASS platform bridge and fuji's self-contained agent
+aegis-desktop-entries = { path = "crates/aegis-desktop-entries" }
+aegis-launcher = { path = "crates/aegis-launcher" }
+# fuji (宓姬): the scoped Aegis platform bridge and fuji's self-contained agent
 # runtime in one crate (ADR-0047, ADR-0050). The `fuji` binary reaches the
-# desktop only as an MCP client of `ass-fuji-mcp` — no Praxion, no Neenee.
-ass-fuji = { path = "crates/ass-fuji" }
+# desktop only as an MCP client of `aegis-fuji-mcp` — no Praxion, no Neenee.
+aegis-fuji = { path = "crates/aegis-fuji" }
 
 # Declarative configuration (ADR-0026). `serde` drives the schema; `toml` is
 # the chosen file format over KDL/YAML/INI for tooling maturity and an

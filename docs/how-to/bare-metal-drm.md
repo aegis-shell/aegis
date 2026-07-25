@@ -38,7 +38,21 @@ Prebuilding keeps compiler latency and failures outside the hardware session.
 
 Use the packaged `ass.service` instead of the direct binary when testing
 Realm application launch. The service delegates the cgroup controllers that
-mandatory memory, process, CPU, freeze, and revoke boundaries require.
+mandatory memory, process, CPU, freeze, and revoke boundaries require. It
+also binds to `graphical-session.target`, so session services such as
+xdg-desktop-portal start and stop with the compositor.
+
+## Session environment
+
+At startup the compositor sets `WAYLAND_DISPLAY`, `XDG_SESSION_TYPE=wayland`,
+and `XDG_CURRENT_DESKTOP=ass`, then exports them to the D-Bus activation
+environment and the systemd --user manager with
+`dbus-update-activation-environment --systemd`. Services activated later —
+xdg-desktop-portal, `flatpak-spawn` helpers — inherit this environment, so
+portal requests and Flatpak applications work no matter how the application
+was launched. A missing or failing `dbus-update-activation-environment` only
+logs a warning; directly launched clients still inherit the environment from
+the compositor process.
 
 ## Configure displays
 
@@ -53,10 +67,10 @@ card to:
    logical X and Y coordinates.
 6. Select **Apply Display Settings**.
 
-The change is written atomically to `~/.config/ass/config.toml`. Direct DRM
+The change is written atomically to `~/.config/aegis/config.toml`. Direct DRM
 sessions apply it after the current page flip retires. In a nested session the
 card is read-only because the outer compositor owns the physical monitors.
-Run `ass-control outputs` to inspect exact connector names and advertised modes.
+Run `aegis-ctl outputs` to inspect exact connector names and advertised modes.
 
 ## Smoke checklist
 
@@ -78,15 +92,15 @@ First bare-metal run, in order:
    is reprobed, the surface recreated if the modifier set changed, and
    workspaces return to their home connector (ADR-0025).
 6. **Session lock.** Lock, confirm the screen shows only the lock client,
-   and unlock. While locked, `ass-control` commands are refused.
-7. **Screenshot.** `ass-control screenshot /tmp/tty.png` produces a PNG of the
+   and unlock. While locked, `aegis-ctl` commands are refused.
+7. **Screenshot.** `aegis-ctl screenshot /tmp/tty.png` produces a PNG of the
    desktop (also exercises the CPU readback path).
 
 ## Stop
 
 Request a graceful compositor shutdown with one of these methods:
 
-- Run `ass-control quit` from a terminal inside ass.
+- Run `aegis-ctl quit` from a terminal inside ass.
 - Select **Quit Session** in Control Center.
 - Press the default `Super+Shift+Return` binding.
 

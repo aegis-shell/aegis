@@ -60,7 +60,7 @@ restore behavior.
 
 ## Pick a Window in the Overview
 
-Press `Super+O` (or run `ass-control overview`) to open the overview: every
+Press `Super+O` (or run `aegis-ctl overview`) to open the overview: every
 window on the current workspace appears as a live thumbnail, with a
 workspace rail on the left. Click a thumbnail to focus that window and
 close the overview; click a rail tile to switch workspaces while the
@@ -72,10 +72,10 @@ dismisses it.
 Query the current ids, then issue a control command:
 
 ```bash
-ass-control windows
-ass-control focus 42
-ass-control minimize 42
-ass-control close 42
+aegis-ctl windows
+aegis-ctl focus 42
+aegis-ctl minimize 42
+aegis-ctl close 42
 ```
 
 See the [Command-Line Reference](../reference/cli.md) for the complete command

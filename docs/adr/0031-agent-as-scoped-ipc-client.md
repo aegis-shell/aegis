@@ -14,19 +14,19 @@ model so the agent can act only where permitted. The agent is never a special
 client of the compositor; it is an IPC client with a defined scope."
 
 [ADR-0027](0027-ipc-and-introspection.md) already fixes the seam the agent
-will use: a versioned, schema-driven IPC over `$XDG_RUNTIME_DIR/ass.sock`,
+will use: a versioned, schema-driven IPC over `$XDG_RUNTIME_DIR/aegis.sock`,
 with three capability classes (`query`, `control`, `session`). It states
 explicitly that "the agent in M10 connects as a `control`-class client under
 a user-approved scope", and that accessibility is handled as a separate M9
 output path, not as the extension surface. [ADR-0001](0001-scope-and-responsibility-boundary.md)
-closes with the same intent: the shared model in `ass-core` "can later grow
+closes with the same intent: the shared model in `aegis-core` "can later grow
 the semantic surface the AI-adaptation phase needs."
 
 Today's state, measured against that intent:
 
 | Intent (vision.md) | Today |
 |--------------------|-------|
-| Stable identifiers for windows, workspaces, outputs | `WorkspaceId` and `OutputId` are stable for the life of their object ([ADR-0025](0025-workspace-model.md), [ADR-0028](0028-output-and-monitor-model.md)). `Window.id` is the surface resource's address as `usize` (`crates/ass-core/src/window.rs`): stable for a window's life, but reused after the surface is destroyed. |
+| Stable identifiers for windows, workspaces, outputs | `WorkspaceId` and `OutputId` are stable for the life of their object ([ADR-0025](0025-workspace-model.md), [ADR-0028](0028-output-and-monitor-model.md)). `Window.id` is the surface resource's address as `usize` (`crates/aegis-core/src/window.rs`): stable for a window's life, but reused after the surface is destroyed. |
 | A journaled mutation log the agent can replay | Absent. Mutations arrive from chrome, keybindings, and the IPC; the only trace is the coarse `WindowsChanged` / `WorkspaceChanged` event stream, which names that *something* changed but not *what*. |
 | A capability model that bounds what the agent may do | Three flat classes ([ADR-0027](0027-ipc-and-introspection.md)). A `control` client can focus, close, move, or quit any window. There is no per-resource, per-operation, or per-session scope. |
 | The agent is an IPC client, not a special client | The seam is in place; no special-client code path exists. |
@@ -39,7 +39,7 @@ will deliver it.
 
 ## Decision
 
-M10 is delivered as **extensions to `ass-core` and `ass-ipc`**, not as an
+M10 is delivered as **extensions to `aegis-core` and `aegis-ipc`**, not as an
 agent runtime inside the compositor. The agent is, and remains, an
 out-of-process IPC client. The compositor gains four things and refuses a
 fifth.
@@ -131,8 +131,8 @@ the compositor ships. The compositor's contract with the agent is the IPC.
   ids, 0033 mutation journal, 0034 scoped capabilities) plus the
   perceptual-path ADR when it opens. This ADR is the entry point; the
   follow-ons are the work.
-- `ass-core` gains durable window id support and the journal's append-only
-  record type. `ass-ipc` gains the journal subscription, the scoped
+- `aegis-core` gains durable window id support and the journal's append-only
+  record type. `aegis-ipc` gains the journal subscription, the scoped
   capability handshake, and (only if the perceptual ADR grants it) a
   capture request. The binary gains the server-side handlers. No new
   long-lived agent process is added in tree.

@@ -30,7 +30,7 @@ erase these boundaries.
 
 ### Standalone application boundary
 
-`ass-control-center` is an ordinary Wayland `xdg_toplevel` application hosted
+`aegis-ctl-center` is an ordinary Wayland `xdg_toplevel` application hosted
 by Iris, Lens, and Flux. It has the stable application id
 `io.github.ming.ass.ControlCenter` and a matching desktop entry. Launcher and
 status-bar activation spawn this process through the ordinary application

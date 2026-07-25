@@ -23,7 +23,7 @@ contents.
 ### 1. Render the dock as a flux-ui overlay anchored to a bottom-center rect
 
 Each frame, the shell computes the dock's absolute `Rect` from the
-input's `display_size` and opens an `ass-dock` overlay there:
+input's `display_size` and opens an `aegis-dock` overlay there:
 
 ```text
 n        = max(1, windows.len())
@@ -66,7 +66,7 @@ stable) but shows a muted `label_sized("no apps", 12.0)` and no tiles.
    dock. The overlay gives precise bottom-center placement.
 - **Draw the dock with raw `flux::Canvas` primitives.** Rejected for the
    same reason as ADR-0017: it bypasses flux-ui's input handling, forcing
-   ass-shell to re-implement hit-testing and hover.
+   aegis-shell to re-implement hit-testing and hover.
 - **A separate "indicator dot" widget under each tile.** Deferred:
    `icon_button_active` already conveys activation, and ass has no app
    registry of pinned-but-not-running entries that a dot would

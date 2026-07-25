@@ -16,8 +16,8 @@ private, mount-scoped Wayland portal.
 The command-line equivalent is:
 
 ```bash
-ass-control realm create "Research"
-ass-control realm list
+aegis-ctl realm create "Research"
+aegis-ctl realm list
 ```
 
 ## Transfer a Running Window
@@ -37,8 +37,8 @@ Drag the mirror to **Physical desktop** in Overview to return control.
 Use the CLI when the graphical shell is unavailable:
 
 ```bash
-ass-control realm transfer 42 2
-ass-control realm transfer 42 1
+aegis-ctl realm transfer 42 2
+aegis-ctl realm transfer 42 1
 ```
 
 Add `--no-mirror` to remove the source presentation after transfer.
@@ -59,7 +59,7 @@ Launch a desktop entry directly inside a Realm when the application process
 also needs isolation:
 
 ```bash
-ass-control realm launch 2 org.mozilla.firefox.desktop
+aegis-ctl realm launch 2 org.mozilla.firefox.desktop
 ```
 
 Realm launches deny network and host-file access by default. They expose only
@@ -68,7 +68,7 @@ without Linux capabilities in isolated user, mount, PID, IPC, UTS, cgroup,
 and network namespaces. The host must provide `/usr/bin/bwrap`.
 
 Grant only the capabilities one desktop entry needs in
-`~/.config/ass/config.toml`:
+`~/.config/aegis/config.toml`:
 
 ```toml
 [realm_sandbox]
@@ -97,15 +97,15 @@ Capture the directed virtual output without exposing physical-desktop chrome
 or another Realm:
 
 ```bash
-ass-control realm capture 2
-ass-control realm capture 2 /tmp/research.png
+aegis-ctl realm capture 2
+aegis-ctl realm capture 2 /tmp/research.png
 ```
 
 Realm captures are refused while the session is locked, the seat is inactive,
 or the Realm is paused or revoked. In-flight captures are invalidated when
 the security state changes.
 
-Long-running observers can use `ass-control subscribe`. A `RealmDamaged` event
+Long-running observers can use `aegis-ctl subscribe`. A `RealmDamaged` event
 identifies the changed Realm and virtual-output damage; request
 `realm capture` only after that event instead of polling continuously.
 
@@ -114,8 +114,8 @@ identifies the changed Realm and virtual-output damage; request
 Use **Pause** in Control Center, or run:
 
 ```bash
-ass-control realm pause 2
-ass-control realm resume 2
+aegis-ctl realm pause 2
+aegis-ctl realm resume 2
 ```
 
 Pausing disables the Realm seat and freezes every compositor-managed sandbox
@@ -125,7 +125,7 @@ suspension automatically.
 Use **Revoke**, confirm the destructive action, or run:
 
 ```bash
-ass-control realm revoke 2
+aegis-ctl realm revoke 2
 ```
 
 Revocation is permanent. It transfers controlled interaction groups back to

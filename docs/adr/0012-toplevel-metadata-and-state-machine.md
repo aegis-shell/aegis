@@ -20,7 +20,7 @@ window lifecycle.
 
 ## Decision
 
-### 1. Window model in `ass-core`
+### 1. Window model in `aegis-core`
 
 A new `ass_core::window` module owns the protocol-agnostic view of a toplevel:
 
@@ -33,7 +33,7 @@ A new `ass_core::window` module owns the protocol-agnostic view of a toplevel:
 - `SizeHints { min_w, min_h, max_w, max_h }` — `0` means unconstrained, per
   the protocol.
 
-The model lives in `ass-core` so the shell can read it without a server
+The model lives in `aegis-core` so the shell can read it without a server
 dependency, matching the architecture's existing split between server-owned
 surface state and renderer-owned compositing.
 
@@ -81,7 +81,7 @@ buffer, so the caller-owned storage is short-lived.
 
 ## Alternatives
 
-- **A separate `ass-core::WindowManager` owning placement policy.** Deferred:
+- **A separate `aegis-core::WindowManager` owning placement policy.** Deferred:
    M3 partial is about state correctness, not policy. The placeholder
    cascade placement from M2 remains until a real window manager lands.
 - **Server-side decorations in this phase.** Deferred: SSD needs

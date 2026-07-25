@@ -8,6 +8,7 @@ the [README](../README.md) for the project pitch and the shortest run path.
 
 | Section | Purpose |
 |---------|---------|
+| [Tutorials](tutorials/01-getting-started.md) | Learning-oriented step-by-step walkthroughs |
 | [How-to guides](how-to/index.md) | Task-oriented instructions for daily use |
 | [Explanation](explanation/index.md) | Architecture and conceptual background |
 | [Reference](reference/index.md) | Configuration keys, schemas, and option tables |
@@ -16,6 +17,7 @@ the [README](../README.md) for the project pitch and the shortest run path.
 
 ## Orientation
 
+- First-time walkthrough: read [Getting Started Tutorial](tutorials/01-getting-started.md).
 - New to the project: read [Architecture](explanation/architecture.md), then
   [Vision and Scope](explanation/vision.md).
 - Looking for where ass is headed: read [Roadmap](explanation/roadmap.md).
@@ -35,6 +37,8 @@ the [README](../README.md) for the project pitch and the shortest run path.
   [Connect fuji to ASS](how-to/fuji.md).
 - Booting from a TTY and smoke-testing real hardware: read
   [How to Run ass on Bare Metal (DRM/KMS)](how-to/bare-metal-drm.md).
+- Enabling portal-aware and Flatpak apps (settings, screenshots): read
+  [How to Install and Verify the Portal Backend](how-to/portals.md).
 - Setting up a build: read [Setup](dev/setup.md).
 - Iterating on compositor code inside an existing Wayland session: read
   [Nested Backend Development](dev/nested-backend.md).

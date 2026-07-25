@@ -40,9 +40,9 @@ demonstrates nothing.
    (M1 wires the host seat); its `take_resize` is the existing logic moved
    onto the trait.
 
-3. **Input types live in `ass-core::input`, not in `ass-backend`.** Backends
+3. **Input types live in `aegis-core::input`, not in `aegis-backend`.** Backends
    emit `InputEvent`; the server and shell consume it. Putting the types in
-   `ass-core` means the consumers never need a backend dep. Coordinates are
+   `aegis-core` means the consumers never need a backend dep. Coordinates are
    compositor logical space; button and key codes are Linux input-event
    codes so the server can hand them to `wl_pointer.button` and
    `wl_keyboard.key` without translation.
@@ -53,7 +53,7 @@ demonstrates nothing.
    adds span discipline the codebase does not yet exercise. The `log` API is
    a strict subset conceptually; migrating later is mechanical if structured
    spans become worth it.
-- **A backend-owned `Input` type (in `ass-backend`).** Rejected: it forces
+- **A backend-owned `Input` type (in `aegis-backend`).** Rejected: it forces
    every consumer of input (the server, the shell, the eventual
    introspection API) to depend on the backend crate, inverting the
    dependency direction the architecture wants.

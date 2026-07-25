@@ -37,7 +37,7 @@ Wayland-only desktop, while keeping X11 applications transparent to the
 user.
 
 The XWayland integration is owned by a new `ass-xwayland` crate that depends
-on `ass-core` and `ass-server` and translates between the X11 window tree
+on `aegis-core` and `aegis-compositor` and translates between the X11 window tree
 and the existing surface/toplevel model. It is the only crate with an X11
 dependency; the rest of the workspace stays X11-free, so the build and the
 binary remain clean for users who do not need X11.

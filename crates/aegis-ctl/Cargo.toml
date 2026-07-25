@@ -1,0 +1,29 @@
+[package]
+name = "aegis-ctl"
+description = "Command-line driver for the ass IPC (the reference external tool)"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "aegis_ctl"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aegis-ctl"
+path = "src/main.rs"
+
+[dependencies]
+aegis-ipc = { workspace = true }
+aegis-core = { workspace = true, features = ["serde"] }
+aegis-config = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { version = "4", features = ["derive", "wrap_help", "string"] }
+clap_complete = "4"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

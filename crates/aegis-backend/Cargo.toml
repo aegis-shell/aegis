@@ -1,0 +1,26 @@
+[package]
+name = "aegis-backend"
+description = "Compositor presentation and input backends: nested Wayland now, DRM/KMS later"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[dependencies]
+aegis-core = { workspace = true }
+aegis-protocols = { workspace = true }
+flux = { workspace = true }
+flux-sys = { workspace = true }
+ash = "0.38"
+drm.workspace = true
+libseat.workspace = true
+input.workspace = true
+udev.workspace = true
+libc.workspace = true
+log.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+pkg-config = "0.3"

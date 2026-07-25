@@ -5,7 +5,7 @@
 
 ## Context
 
-The nested backend presents a single host window, so `ass-core` and the
+The nested backend presents a single host window, so `aegis-core` and the
 window manager are written against a single output. The DRM/KMS milestone
 ([M4](../explanation/roadmap.md#m4-drmkms-backend)) and the workspace model
 ([ADR-0025](0025-workspace-model.md)) both need a real output abstraction.
@@ -51,7 +51,7 @@ from physical size) and are then editable.
 model ([ADR-0025](0025-workspace-model.md)); the output model provides the
 stable output id and the presence/absence events that drive it.
 
-The backend trait ([`ass-backend`](../../crates/ass-backend)) gains a
+The backend trait ([`aegis-backend`](../../crates/aegis-backend)) gains a
 multi-output surface: the nested backend exposes one output (the host
 window) and the DRM/KMS backend exposes one per connected connector. Both
 satisfy the same `Output` contract, so the server, renderer, and shell are
@@ -75,7 +75,7 @@ written once.
 
 ## Consequences
 
-- `ass-core` gains an `Output` type and the window manager, renderer, and
+- `aegis-core` gains an `Output` type and the window manager, renderer, and
   chrome are parameterized by the output they operate on. The single-output
   nested backend becomes one `Output` rather than a special case.
 - The renderer runs once per output per frame and composites the chrome

@@ -7,7 +7,7 @@
 
 Through [ADR-0016](0016-shell-server-window-management-bridge.md),
 [ADR-0017](0017-server-side-decorations-via-overlays.md), and
-[ADR-0019](0019-dock-as-bottom-center-overlay.md), `ass-shell::Shell::render`
+[ADR-0019](0019-dock-as-bottom-center-overlay.md), `aegis-shell::Shell::render`
 had grown to hard-code three unrelated chrome surfaces — the window-list side
 panel, the per-window server-side decorations, and the dock — inline in one
 `Ui::frame` closure. Adding a new surface (a HUD bar, an overview, a launcher)
@@ -23,7 +23,7 @@ independent of *what* the chrome draws.
 
 ## Decision
 
-### 1. Split `ass-shell` into a core host and pluggable components
+### 1. Split `aegis-shell` into a core host and pluggable components
 
 The `Shell` core keeps only the capability surface:
 
@@ -85,16 +85,16 @@ rects do not overlap — which holds for the current set.
    (HUD bar, overview, launcher) re-couples the core to a specific appearance,
    and the method keeps growing. The dock ([ADR-0019](0019-dock-as-bottom-center-overlay.md))
    was the point where the pattern clearly repeated three times.
-- **One crate per chrome component (`ass-dock`, `ass-hudbar`, ...).** Deferred
+- **One crate per chrome component (`aegis-dock`, `ass-hudbar`, ...).** Deferred
    for now: the current components share the `flux-ui` dependency and have no
    independent lifecycle or state, so the cross-crate friction (each component
    would need to re-enter the core's `Ui::frame`, or the core would expose its
    `Frame`/`Input`/snapshot over a crate boundary) is not yet earned. The
    `Chrome` trait makes that promotion a near-zero-cost move later: when a
    component grows its own dependencies or state (per-app `.desktop` icon
-   loading, a magnification animation loop), it can leave `ass-shell` for its
+   loading, a magnification animation loop), it can leave `aegis-shell` for its
    own crate without touching the core or its siblings. This mirrors how
-   [ADR-0018](0018-wallpaper-crate.md) split `ass-wallpaper` once it had a
+   [ADR-0018](0018-wallpaper-crate.md) split `aegis-wallpaper` once it had a
    distinct dependency profile.
 - **An enum of components instead of a trait.** Rejected: a closed enum forces
    every new surface to edit the core's type, re-coupling it. The open trait

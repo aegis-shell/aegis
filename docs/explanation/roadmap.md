@@ -103,7 +103,7 @@ ownership. The nested backend remains for development. Both implement the
 
 **Status.** In progress — code complete, pending hardware verification. The
 backend abstraction ships in
-([`ass-backend`](../../crates/ass-backend)) with two implementations behind
+([`aegis-backend`](../../crates/aegis-backend)) with two implementations behind
 the `Backend` trait: nested (development) and DRM/KMS. The DRM backend does
 atomic modesetting with a TEST_ONLY preflight, scans out Flux offscreen
 dma-bufs (GBM-less) through a two-slot page-flip ring with explicit-sync
@@ -133,7 +133,7 @@ outputs, and inputs.
 version 1, mtime live reload, structured diagnostics, with `$ASS_KEYBINDS`
 retained as a deprecated transitional override. The IPC shipped its full
 seed surface (ADR-0027): versioned length-framed JSON over
-`$XDG_RUNTIME_DIR/ass.sock`, capability-gated handshake, `query`
+`$XDG_RUNTIME_DIR/aegis.sock`, capability-gated handshake, `query`
 (`GetWindows`, `GetWorkspaces`, `GetOutputs`, `GetNotifications`),
 `control`/`session` commands (`Focus`/`Close`/`Move`/`Cycle`/
 `SwitchWorkspace[To]`/`MoveToWorkspace`/`ToggleTiling`/`Quit`) applied on the
@@ -162,7 +162,7 @@ base and an optional, policy-driven tiling layer applied on top. Window
 rules from the configuration file drive placement and layout policy.
 
 **Status.** In progress. The pure workspace/output model landed in
-`ass-core::workspace` (`WorkspaceModel`, `Workspace`, `Output`,
+`aegis-core::workspace` (`WorkspaceModel`, `Workspace`, `Output`,
 `WorkspaceId`/`OutputId`): dynamic per-output workspaces, the trailing-empty
 invariant, empty-workspace reaping, toplevel place/remove/move, switch and
 switch-to, and output-removal relocation — fully unit-tested in isolation.
@@ -172,10 +172,10 @@ switching (`Super+Left`/`Super+Right`) drops keyboard focus from a now-hidden
 window, and removal reaps the emptied workspace. The IPC exposes
 `GetWorkspaces`, `SwitchWorkspace`/`SwitchWorkspaceTo`, and a
 `WorkspaceChanged` event (ADR-0027). A top-center workspace indicator
-(`StatusBar` chrome component, hosted by the `ass-statusbar` crate)
+(`StatusBar` chrome component, hosted by the `aegis-statusbar` crate)
 shows one numbered tile per workspace,
 highlights the current, and switches on click. The tiling policy is
-implemented end to end: a pure `ass-core::layout` module (`LayoutRole`,
+implemented end to end: a pure `aegis-core::layout` module (`LayoutRole`,
 `LayoutParams`, the `Layout` trait, a `MasterStack` policy), a `layout_role`
 field on `Window`, and server application — `Super+T` or the IPC
 `ToggleTiling` command flips the current workspace to tiled, the master-stack
@@ -208,7 +208,7 @@ with per-output mapping, and basic color management land with the libinput
 backend.
 
 **Status.** In progress. The per-output geometry model landed in
-`ass-core::output` (`OutputMode`, `Scale`, `OutputGeometry`) — see
+`aegis-core::output` (`OutputMode`, `Scale`, `OutputGeometry`) — see
 [ADR-0028](../adr/0028-output-and-monitor-model.md) — and is now wired end to
 end: backends report real connectors and geometry, the server advertises
 per-connector `wl_output` (v4, with name/description) and `zxdg_output_v1`,
@@ -261,12 +261,29 @@ itself: non-interactive window geometry changes (tiling, IPC geometry)
 record previous and target rectangles, publish them in the snapshot, and
 interpolate at draw time, with subsurface trees glued to their root. The
 unified overview (window grid + workspace rail, live thumbnails, click to
-focus, `Super+O` or `ass-control overview`) is in daily use, and a screenshot
-path (`ass-control screenshot`, scoped `CaptureOutput` pixel capture per
+focus, `Super+O` or `aegis-ctl overview`) is in daily use, and a screenshot
+path (`aegis-ctl screenshot`, scoped `CaptureOutput` pixel capture per
 [ADR-0041](../adr/0041-sealed-file-descriptor-pixel-transport.md)) covers the
-single-frame half of the capture story. Still planned: window open/close
-transitions and the workspace-switch slide, screencast streaming through
-`xdg-desktop-portal`, and screen-reader accessibility hooks.
+single-frame half of the capture story. The portal backend has landed its
+first phase: `aegis-portal` serves `org.freedesktop.impl.portal.Settings`
+(appearance color-scheme) and non-interactive
+`org.freedesktop.impl.portal.Screenshot` over the scoped IPC
+([ADR-0051](../adr/0051-portal-backend-dbus-bridge.md)). Its second phase
+has landed too: `org.freedesktop.impl.portal.ScreenCast` (monitor sources)
+republishes the compositor's scoped output-frame stream
+([ADR-0052](../adr/0052-scoped-output-frame-streaming.md)) as a PipeWire
+producer, so browser `getDisplayMedia` and recorder clients work through
+the standard portal path. The non-interactive half of Phase 3 has landed
+as well ([ADR-0053](../adr/0053-portal-session-services-and-grants.md)):
+`Background` v1 with persisted grant-and-record decisions and standard
+`$XDG_CONFIG_HOME/autostart` materialization, `Inhibit` v1 (idle only,
+through a new connection-scoped `SetIdleInhibit` IPC op), ScreenCast v2
+persist modes with portal-owned restore tokens, and `SettingChanged`
+emission from a config-file watcher. Still planned: window
+open/close transitions and the workspace-switch slide, interactive
+screencast source selection and the interactive screenshot dialog (the
+rest of Phase 3 of the portal roadmap), and
+screen-reader accessibility hooks.
 
 **Verification.** Reduced-motion is respected end to end. The overview
 lists every window across workspaces and switches to a chosen one.
@@ -295,7 +312,7 @@ The remaining
 desktop-dependent semantic surface (window-content capture per window,
 semantic element trees) stays open.
 
-The `ass-fuji-mcp` integration now closes the client-side Realm loop:
+The `aegis-fuji-mcp` integration now closes the client-side Realm loop:
 fuji discovers scoped tools through MCP, while the bridge manages one
 recoverable Agent Realm across application launch, authority transfer,
 directed capture, bounded input, and revocation. The renamed fuji agent is

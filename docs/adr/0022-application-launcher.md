@@ -11,7 +11,7 @@
 user to discover and start application-level programs from the compositor
 chrome. Until now ass had no application menu, no `.desktop` parsing, and no
 path to spawn an external process in response to a chrome interaction (the only
-`Command::spawn` in the tree is `ass-wallpaper`'s `ffmpeg` decoder).
+`Command::spawn` in the tree is `aegis-wallpaper`'s `ffmpeg` decoder).
 
 Three constraints shape the design:
 
@@ -26,9 +26,9 @@ Three constraints shape the design:
    fallback).
 2. **Modularity.** Per [ADR-0001](0001-scope-and-responsibility-boundary.md)
    and `docs/dev/project-layout.md`, code with no flux / flux-ui / Wayland
-   dependency does not belong in `ass-shell`; and
+   dependency does not belong in `aegis-shell`; and
    [ADR-0021](0021-chrome-component-trait.md) says a chrome component that
-   grows a `.desktop`-parsing dependency should leave `ass-shell` for its own
+   grows a `.desktop`-parsing dependency should leave `aegis-shell` for its own
    crate. So the parsing cannot live in the shell.
 3. **The spawn path must detach.** A launched app must outlive the compositor,
    inherit the Wayland / XDG environment it needs to connect back, and never
@@ -36,42 +36,42 @@ Three constraints shape the design:
 
 ## Decision
 
-### 1. Two new leaf crates: `ass-apps` and `ass-launch`
+### 1. Two new leaf crates: `aegis-desktop-entries` and `aegis-launcher`
 
-`ass-apps` (depends on `dirs`, `rust-ini`, `ass-core`) owns desktop-entry
+`aegis-desktop-entries` (depends on `dirs`, `rust-ini`, `aegis-core`) owns desktop-entry
 enumeration, locale resolution, `Exec` field-code expansion, and icon-theme
 lookup. It has no flux / flux-ui / Wayland dependency.
 
-`ass-launch` (depends on `ass-apps`, `ass-core`) owns the spawn path. It is a
+`aegis-launcher` (depends on `aegis-desktop-entries`, `aegis-core`) owns the spawn path. It is a
 leaf: only the binary depends on it.
 
-### 2. The shared model lives in `ass-core::app`
+### 2. The shared model lives in `aegis-core::app`
 
 `Entry` — a parsed, launchable desktop entry — is a plain-`std` struct in
-`ass-core::app`. `ass-apps` builds it; `ass-shell`'s launcher and `ass-launch`
-both read it. Because the model is in `ass-core`, the shell chrome renders a
-launcher **without depending on `ass-apps`**, preserving the seam
+`aegis-core::app`. `aegis-desktop-entries` builds it; `aegis-shell`'s launcher and `aegis-launcher`
+both read it. Because the model is in `aegis-core`, the shell chrome renders a
+launcher **without depending on `aegis-desktop-entries`**, preserving the seam
 [ADR-0021](0021-chrome-component-trait.md) established.
 
 ### 3. Detached spawning via the external `setsid` binary
 
-`ass-launch::launch` expands the entry's `Exec` (stripping `%`-field codes and
-POSIX single-quoting every token via `ass-apps`), optionally wraps it in a
+`aegis-launcher::launch` expands the entry's `Exec` (stripping `%`-field codes and
+POSIX single-quoting every token via `aegis-desktop-entries`), optionally wraps it in a
 terminal emulator when `Terminal=true`, and runs it under
 `setsid --fork sh -c '<expanded>'`. The child lands in a new session, detached
 from the compositor's process group and controlling terminal, and inherits the
 display environment a Wayland / XDG client needs (`WAYLAND_DISPLAY`,
 `XDG_RUNTIME_DIR`, `DISPLAY`, `HOME`, `PATH`, locale). No `unsafe` or `libc`
 is used: process detachment is delegated to `setsid`, the same pattern
-`ass-wallpaper` uses for `ffmpeg`.
+`aegis-wallpaper` uses for `ffmpeg`.
 
-### 4. A `Launcher` chrome component in `ass-shell`
+### 4. A `Launcher` chrome component in `aegis-shell`
 
 A new `chrome::Launcher` implementing `Chrome` renders a small top-center
 toggle that expands into a centered overlay listing every enumerated entry.
 A row click sets a new `ChromeEvents::spawn: Option<Entry>` intent, which the
-main loop drains into `ass-launch`. The component holds only a single
-`ass_core::launcher::Launcher` brain and a bool, so it stays in `ass-shell`
+main loop drains into `aegis-launcher`. The component holds only a single
+`ass_core::launcher::Launcher` brain and a bool, so it stays in `aegis-shell`
 and adds no dependency to it.
 
 ### 5. Keyboard capture while the launcher is open
@@ -97,8 +97,8 @@ component reports capture, the main loop:
   launcher "focus running app" action, a pointer click, …), so an explicit
   focus change is never overridden.
 
-The brain's query/filter/selection logic lives in `ass-core::launcher` (pure,
-unit-tested, no flux-ui); the `ass-shell` component is a thin flux-ui adapter
+The brain's query/filter/selection logic lives in `aegis-core::launcher` (pure,
+unit-tested, no flux-ui); the `aegis-shell` component is a thin flux-ui adapter
 over it. The `KeyChar` → `KeyAction` classification (`ass_core::input::key_action`)
 is likewise pure and tested.
 
@@ -132,12 +132,12 @@ instead of a spawn; the render marks running rows with a leading `●`.
 
 The binary calls `ass_apps::enumerate()` once at startup, hands the snapshot to
 `Launcher::new`, and in the frame loop drains `Shell::take_spawn()` into
-`ass-launch::launch`. Neither `ass-shell` nor `ass-render` gains a dependency
-on `ass-apps` or `ass-launch`.
+`aegis-launcher::launch`. Neither `aegis-shell` nor `aegis-render` gains a dependency
+on `aegis-desktop-entries` or `aegis-launcher`.
 
 ## Alternatives
 
-- **Parse `.desktop` files inside `ass-shell`.** Rejected: would pull `dirs`
+- **Parse `.desktop` files inside `aegis-shell`.** Rejected: would pull `dirs`
    and `rust-ini` into the chrome crate, violating the placement rule in
    [ADR-0001](0001-scope-and-responsibility-boundary.md) and the explicit
    deferral in [ADR-0021](0021-chrome-component-trait.md).
@@ -157,7 +157,7 @@ on `ass-apps` or `ass-launch`.
 - **Keyboard text-search and the global Super-tap hotkey.** Implemented in
    this revision (Decisions 5 and 6). A *configurable* keybind (e.g.
    `Super+Space`) is deferred; the tap detector covers the discoverable case.
-- **Promote `Launcher` to its own `ass-launcher` crate.** Deferred: the
+- **Promote `Launcher` to its own `aegis-launcherer` crate.** Deferred: the
    component currently reads only `ass_core::app::Entry`, so it has no
    dependency [ADR-0021](0021-chrome-component-trait.md) says to split on.
    The `Chrome` trait makes that promotion near-zero-cost when it earns it
@@ -165,8 +165,8 @@ on `ass-apps` or `ass-launch`.
 
 ## Consequences
 
-- Two new leaf crates (`ass-apps`, `ass-launch`) and one new module
-  (`ass-core::app`) join the workspace. `ass-shell` gains a `Launcher`
+- Two new leaf crates (`aegis-desktop-entries`, `aegis-launcher`) and one new module
+  (`aegis-core::app`) join the workspace. `aegis-shell` gains a `Launcher`
   component and one new `ChromeEvents` field; its dependency graph is
   unchanged.
 - The main loop gains one enumeration step at startup and one intent-drain arm

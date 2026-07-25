@@ -5,7 +5,7 @@
 
 ## Context
 
-[ADR-0021](0021-chrome-component-trait.md) split `ass-shell` into a core
+[ADR-0021](0021-chrome-component-trait.md) split `aegis-shell` into a core
 host and pluggable `Chrome` components, and deferred one crate per
 component until a component gained "a dependency or lifecycle the core
 should not own". Two components now meet that trigger:
@@ -34,14 +34,14 @@ process either way.
 
 ### 1. Promote the dock and the Control Center to their own crates
 
-New crates `ass-dock` and `ass-control-center`, each depending on the
-`ass-shell` contract (`Chrome`, `ChromeEvents`, `AppCatalog`, `AppMenu`)
-and registered by the binary. `ass-shell` keeps the `Shell` host, the
+New crates `aegis-dock` and `aegis-ctl-center`, each depending on the
+`aegis-shell` contract (`Chrome`, `ChromeEvents`, `AppCatalog`, `AppMenu`)
+and registered by the binary. `aegis-shell` keeps the `Shell` host, the
 `Chrome` trait, `ChromeEvents`, shared building blocks (`AppMenu`), and
 the remaining components (launcher, workspace bar and HUD, overview,
 toast, screenshot selector, decorations). The dependency direction is
-`ass-core` ← `ass-shell` ← {`ass-dock`, `ass-control-center`} ← `ass`;
-`ass-shell` depends on no component crate, and `ass` remains the
+`aegis-core` ← `aegis-shell` ← {`aegis-dock`, `aegis-ctl-center`} ← `ass`;
+`aegis-shell` depends on no component crate, and `ass` remains the
 composition root that decides which components exist.
 
 ### 2. `AppCatalog` and `IconSet` replace the leaky signature
@@ -71,10 +71,10 @@ data through constructors.
 
 ### 3. App match keys move onto `Entry`
 
-`Entry::match_keys` in `ass-core` is the single source for the
+`Entry::match_keys` in `aegis-core` is the single source for the
 lowercased ids an entry may be matched by (`StartupWMClass`,
 desktop-file stem, icon name). The binary uses it for pin resolution and
-pin-toggle matching; `ass-dock` uses it for icon lookup and for folding
+pin-toggle matching; `aegis-dock` uses it for icon lookup and for folding
 running windows into pinned tiles.
 
 ### 4. A crate split is not a process split
@@ -93,7 +93,7 @@ the state-in/intent-out boundary and operate on the host directly.
 
 ## Alternatives
 
-- **Keep both as `ass-shell` modules.** Rejected: [ADR-0021](0021-chrome-component-trait.md)'s
+- **Keep both as `aegis-shell` modules.** Rejected: [ADR-0021](0021-chrome-component-trait.md)'s
   own promotion trigger is met, the core was accumulating
   component-specific state, and the trait leak was spreading — `DockApp`
   had already appeared in three unrelated components' update signatures.
@@ -106,16 +106,16 @@ the state-in/intent-out boundary and operate on the host directly.
   binary stays the composition root with static registration; if
   configurability is needed later, a static registry or a config flag in
   `ass` covers it without an ABI.
-- **Move system probing out of `ass-shell` now.** Deferred: the probing
+- **Move system probing out of `aegis-shell` now.** Deferred: the probing
   code is host-only, but the placement of the `SystemStatus` /
   `SystemAction` types is a separate decision tied to the future IPC
   surface and is better made with it.
 
 ## Consequences
 
-- `ass-shell`'s public API names no component-specific type; a component
+- `aegis-shell`'s public API names no component-specific type; a component
   can leave the core without trait changes, and `DockApp` is private to
-  `ass-dock` again.
+  `aegis-dock` again.
 - The icon-texture lifetime invariant has a named home (`IconSet`)
   instead of a comment on the binary's cache.
 - Pin resolution stays in the composition root, which owns the
@@ -126,7 +126,7 @@ the state-in/intent-out boundary and operate on the host directly.
 - Follow-up work this decision creates: converge `ChromeEvents` toward
   component-agnostic intents (remove cross-component addressing such as
   `toggle_launcher` and dock-specific `dock_pin_toggles`); move system
-  probing and its types out of `ass-shell`; extend the IPC with a
+  probing and its types out of `aegis-shell`; extend the IPC with a
   `SystemStatus` subscription and typed system commands; only then can
   the Control Center become an external client whose crash cannot take
   down the compositor.

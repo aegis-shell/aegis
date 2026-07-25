@@ -127,7 +127,7 @@ decisions it *makes*; the coarse event stream already signals them.
 
 ## Consequences
 
-- `ass-core` gains a `JournalEntry` type and an `apply` chokepoint; the
+- `aegis-core` gains a `JournalEntry` type and an `apply` chokepoint; the
   compositor's chrome and keybinding paths route through `apply`. The IPC
   gains `GetJournal`, `SubscribeJournal`, and the `Journal` event.
 - Every chrome and keybinding mutation becomes observable by the agent,

@@ -5,7 +5,7 @@
 
 ## Context
 
-The hand-rolled Wayland server in `ass-server` (per
+The hand-rolled Wayland server in `aegis-compositor` (per
 [ADR-0002](0002-hand-rolled-wayland-server.md)) drives libwayland over FFI by
 defining `*_interface_impl` structs of function pointers and handing them to
 `wl_resource_set_implementation`. libwayland indexes those structs by request
@@ -33,7 +33,7 @@ The hand-rolled FFI seam adopts four discipline rules, each enforced by code
 rather than by vigilance.
 
 1. **Compile-time opcode-count asserts.** Every `*_interface_impl` struct in
-   `ass-server/src/ffi.rs` is paired with an
+   `aegis-compositor/src/ffi.rs` is paired with an
    `assert_impl_opcode_count!(T, N)` invocation that fails the build unless
    `size_of::<T>() == N * size_of::<*const ()>()`. `N` is the request count
    the protocol XML advertises for the version the code binds. Adding a
@@ -69,7 +69,7 @@ rather than by vigilance.
   recurring, so the prevention must also be mechanical.
 - **Generate impl structs from the protocol XML.** Considered and deferred.
   `wayland-scanner` could emit both the interface tables (already shared via
-  `ass-protocols`) and Rust-side impl structs, eliminating the manual size
+  `aegis-protocols`) and Rust-side impl structs, eliminating the manual size
   bookkeeping entirely. This is the long-term right answer, but it does not
   exist yet, and the static assert costs nothing in the meantime.
 - **Use a higher-level binding (`wayland-server-rs`).** Rejected per

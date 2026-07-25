@@ -9,8 +9,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Lint and format the whole workspace. Both run without resolving path
-  # dependencies, so they are cheap and run on every change.
+  # Lint and format all non-optics workspace crates cleanly without needing the optics monorepo.
   fmt-and-clippy:
     runs-on: ubuntu-latest
     steps:
@@ -20,13 +19,28 @@ jobs:
           components: rustfmt, clippy
       - name: Format check
         run: cargo fmt --all -- --check
-      - name: Clippy (flux-dependent crates skipped if deps unresolved)
-        run: cargo clippy --workspace --all-targets -- -D warnings
-        continue-on-error: true
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwayland-dev wayland-protocols \
+            libpipewire-0.3-dev libspa-0.2-dev libclang-dev \
+            pkg-config
+      - name: Clippy (flux-free crates)
+        run: >-
+          cargo clippy
+          -p aegis-core -p aegis-config -p aegis-ipc -p aegis-desktop-entries
+          -p aegis-launcher -p aegis-ctl -p aegis-fuji -p aegis-protocols -p aegis-compositor
+          -p aegis-portal
+          --all-targets -- -D warnings
+      - name: Doc check (flux-free crates)
+        run: >-
+          cargo doc --no-deps
+          -p aegis-core -p aegis-config -p aegis-ipc -p aegis-desktop-entries
+          -p aegis-launcher -p aegis-ctl -p aegis-fuji -p aegis-protocols -p aegis-compositor
+          -p aegis-portal
 
-  # ass-core and ass-protocols have no flux dependency, so their tests run
-  # without needing the sibling flux monorepo. ass-server also runs because
-  # wayland-server is a system dep, not a sibling path dep.
+  # Test all non-optics workspace crates (aegis-core, aegis-config, aegis-ipc, aegis-desktop-entries, aegis-launcher, aegis-ctl, aegis-fuji, aegis-compositor, aegis-protocols, aegis-portal).
   flux-free-tests:
     runs-on: ubuntu-latest
     steps:
@@ -37,13 +51,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwayland-dev wayland-protocols \
+            libpipewire-0.3-dev libspa-0.2-dev libclang-dev \
             pkg-config
-      - name: Test ass-core (no system deps)
-        run: cargo test -p ass-core
-      - name: Test ass-server (needs libwayland)
-        run: cargo test -p ass-server
-      - name: Build ass-protocols
-        run: cargo build -p ass-protocols
+      - name: Test flux-free crates
+        run: >-
+          cargo test
+          -p aegis-core -p aegis-config -p aegis-ipc -p aegis-desktop-entries
+          -p aegis-launcher -p aegis-ctl -p aegis-fuji -p aegis-compositor
+          -p aegis-portal
+      - name: Build aegis-protocols
+        run: cargo build -p aegis-protocols
 
   # Full workspace build + test. Requires the sibling optics stack with a
   # built Meson tree and its Rust bindings. Disabled by default until the

@@ -9,6 +9,269 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "aegis"
+version = "0.0.1"
+dependencies = [
+ "aegis-backend",
+ "aegis-compositor",
+ "aegis-config",
+ "aegis-control-center",
+ "aegis-core",
+ "aegis-desktop-entries",
+ "aegis-dock",
+ "aegis-ipc",
+ "aegis-launcher",
+ "aegis-render",
+ "aegis-shell",
+ "aegis-statusbar",
+ "aegis-wallpaper",
+ "env_logger",
+ "flux",
+ "flux-scene-graph-sys",
+ "flux-sys",
+ "image",
+ "lens",
+ "lens-sys",
+ "log",
+]
+
+[[package]]
+name = "aegis-backend"
+version = "0.0.1"
+dependencies = [
+ "aegis-core",
+ "aegis-protocols",
+ "ash",
+ "drm",
+ "flux",
+ "flux-sys",
+ "input",
+ "libc",
+ "libseat",
+ "log",
+ "pkg-config",
+ "thiserror 1.0.69",
+ "udev",
+]
+
+[[package]]
+name = "aegis-compositor"
+version = "0.0.1"
+dependencies = [
+ "aegis-core",
+ "aegis-protocols",
+ "log",
+ "pkg-config",
+ "thiserror 1.0.69",
+ "xkbcommon",
+]
+
+[[package]]
+name = "aegis-config"
+version = "0.0.1"
+dependencies = [
+ "aegis-core",
+ "dirs",
+ "log",
+ "serde",
+ "thiserror 1.0.69",
+ "toml 0.8.23",
+ "toml_edit 0.22.27",
+]
+
+[[package]]
+name = "aegis-control-center"
+version = "0.0.1"
+dependencies = [
+ "aegis-core",
+ "aegis-design",
+ "aegis-ipc",
+ "aegis-shell",
+ "iris",
+ "lens",
+ "lens-sys",
+]
+
+[[package]]
+name = "aegis-core"
+version = "0.0.1"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aegis-ctl"
+version = "0.0.1"
+dependencies = [
+ "aegis-config",
+ "aegis-core",
+ "aegis-ipc",
+ "clap",
+ "clap_complete",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "aegis-design"
+version = "0.0.1"
+dependencies = [
+ "lens",
+ "lens-sys",
+]
+
+[[package]]
+name = "aegis-desktop-entries"
+version = "0.0.1"
+dependencies = [
+ "aegis-core",
+ "dirs",
+ "log",
+ "rust-ini",
+ "tempfile",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "aegis-dock"
+version = "0.0.1"
+dependencies = [
+ "aegis-core",
+ "aegis-design",
+ "aegis-shell",
+ "lens",
+ "lens-sys",
+]
+
+[[package]]
+name = "aegis-fuji"
+version = "0.0.1"
+dependencies = [
+ "aegis-core",
+ "aegis-desktop-entries",
+ "aegis-ipc",
+ "base64",
+ "clap",
+ "dirs",
+ "futures",
+ "glob",
+ "libc",
+ "regex",
+ "reqwest",
+ "rustyline",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "aegis-ipc"
+version = "0.0.1"
+dependencies = [
+ "aegis-core",
+ "libc",
+ "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aegis-launcher"
+version = "0.0.1"
+dependencies = [
+ "aegis-core",
+ "aegis-desktop-entries",
+ "libc",
+ "log",
+ "tempfile",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "aegis-portal"
+version = "0.0.1"
+dependencies = [
+ "aegis-config",
+ "aegis-core",
+ "aegis-ipc",
+ "env_logger",
+ "log",
+ "pipewire",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "zbus",
+]
+
+[[package]]
+name = "aegis-protocols"
+version = "0.0.1"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "aegis-render"
+version = "0.0.1"
+dependencies = [
+ "aegis-core",
+ "flux",
+ "flux-sys",
+ "libc",
+ "log",
+]
+
+[[package]]
+name = "aegis-shell"
+version = "0.0.1"
+dependencies = [
+ "aegis-core",
+ "aegis-design",
+ "lens",
+ "lens-sys",
+ "log",
+ "serde",
+ "thiserror 1.0.69",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "aegis-statusbar"
+version = "0.0.1"
+dependencies = [
+ "aegis-core",
+ "aegis-design",
+ "aegis-desktop-entries",
+ "aegis-shell",
+ "flux",
+ "image",
+ "lens",
+ "lens-sys",
+ "log",
+ "zbus",
+]
+
+[[package]]
+name = "aegis-wallpaper"
+version = "0.0.1"
+dependencies = [
+ "flux",
+ "flux-scene-graph",
+ "flux-scene-graph-sys",
+ "flux-sys",
+ "image",
+ "log",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -48,6 +311,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e76a019e91224d279006ff972f1e984179a6e9feb050adba6ce8274aef23195"
 dependencies = [
  "alloc-no-stdlib",
+]
+
+[[package]]
+name = "annotate-snippets"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "710e8eae58854cdc1790fcb56cca04d712a17be849eeb81da2a724bf4bae2bc4"
+dependencies = [
+ "anstyle",
+ "unicode-width",
 ]
 
 [[package]]
@@ -145,252 +418,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
 dependencies = [
  "libloading",
-]
-
-[[package]]
-name = "ass"
-version = "0.0.1"
-dependencies = [
- "ass-apps",
- "ass-backend",
- "ass-config",
- "ass-control-center",
- "ass-core",
- "ass-dock",
- "ass-ipc",
- "ass-launch",
- "ass-render",
- "ass-server",
- "ass-shell",
- "ass-statusbar",
- "ass-wallpaper",
- "env_logger",
- "flux",
- "flux-scene-graph-sys",
- "flux-sys",
- "image",
- "lens",
- "lens-sys",
- "log",
-]
-
-[[package]]
-name = "ass-apps"
-version = "0.0.1"
-dependencies = [
- "ass-core",
- "dirs",
- "log",
- "rust-ini",
- "tempfile",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "ass-backend"
-version = "0.0.1"
-dependencies = [
- "ash",
- "ass-core",
- "ass-protocols",
- "drm",
- "flux",
- "flux-sys",
- "input",
- "libc",
- "libseat",
- "log",
- "pkg-config",
- "thiserror 1.0.69",
- "udev",
-]
-
-[[package]]
-name = "ass-config"
-version = "0.0.1"
-dependencies = [
- "ass-core",
- "dirs",
- "log",
- "serde",
- "thiserror 1.0.69",
- "toml",
- "toml_edit 0.22.27",
-]
-
-[[package]]
-name = "ass-control"
-version = "0.0.1"
-dependencies = [
- "ass-config",
- "ass-core",
- "ass-ipc",
- "clap",
- "clap_complete",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "ass-control-center"
-version = "0.0.1"
-dependencies = [
- "ass-core",
- "ass-design",
- "ass-ipc",
- "ass-shell",
- "iris",
- "lens",
- "lens-sys",
-]
-
-[[package]]
-name = "ass-core"
-version = "0.0.1"
-dependencies = [
- "log",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "ass-design"
-version = "0.0.1"
-dependencies = [
- "lens",
- "lens-sys",
-]
-
-[[package]]
-name = "ass-dock"
-version = "0.0.1"
-dependencies = [
- "ass-core",
- "ass-design",
- "ass-shell",
- "lens",
- "lens-sys",
-]
-
-[[package]]
-name = "ass-fuji"
-version = "0.0.1"
-dependencies = [
- "ass-apps",
- "ass-core",
- "ass-ipc",
- "base64",
- "clap",
- "dirs",
- "futures",
- "glob",
- "libc",
- "regex",
- "reqwest",
- "rustyline",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "toml",
-]
-
-[[package]]
-name = "ass-ipc"
-version = "0.0.1"
-dependencies = [
- "ass-core",
- "libc",
- "log",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "ass-launch"
-version = "0.0.1"
-dependencies = [
- "ass-apps",
- "ass-core",
- "libc",
- "log",
- "tempfile",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "ass-protocols"
-version = "0.0.1"
-dependencies = [
- "cc",
-]
-
-[[package]]
-name = "ass-render"
-version = "0.0.1"
-dependencies = [
- "ass-core",
- "flux",
- "flux-sys",
- "log",
-]
-
-[[package]]
-name = "ass-server"
-version = "0.0.1"
-dependencies = [
- "ass-core",
- "ass-protocols",
- "log",
- "pkg-config",
- "thiserror 1.0.69",
- "xkbcommon",
-]
-
-[[package]]
-name = "ass-shell"
-version = "0.0.1"
-dependencies = [
- "ass-core",
- "ass-design",
- "lens",
- "lens-sys",
- "log",
- "serde",
- "thiserror 1.0.69",
- "toml",
-]
-
-[[package]]
-name = "ass-statusbar"
-version = "0.0.1"
-dependencies = [
- "ass-apps",
- "ass-core",
- "ass-design",
- "ass-shell",
- "flux",
- "image",
- "lens",
- "lens-sys",
- "log",
- "zbus",
-]
-
-[[package]]
-name = "ass-wallpaper"
-version = "0.0.1"
-dependencies = [
- "flux",
- "flux-scene-graph",
- "flux-scene-graph-sys",
- "flux-sys",
- "image",
- "log",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -641,6 +668,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindgen"
+version = "0.72.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
+dependencies = [
+ "annotate-snippets",
+ "bitflags",
+ "cexpr",
+ "clang-sys",
+ "itertools 0.13.0",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash 2.1.3",
+ "shlex 1.3.0",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "bit_field"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -764,6 +810,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6fac387a98bb7c37292057cffc56d62ecb629900026402633ae9160df93a8766"
 dependencies = [
  "nom 7.1.3",
+]
+
+[[package]]
+name = "cfg-expr"
+version = "0.20.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb693542bcafa528e198be0ebd9d3632ca5b7c93dbe7237460e199910835997c"
+dependencies = [
+ "smallvec",
+ "target-lexicon",
 ]
 
 [[package]]
@@ -936,6 +992,12 @@ dependencies = [
  "once_cell",
  "tiny-keccak",
 ]
+
+[[package]]
+name = "cookie-factory"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9885fa71e26b8ab7855e2ec7cae6e9b380edff76cd052e07c683a0319d51b3a2"
 
 [[package]]
 name = "core-foundation"
@@ -1297,7 +1359,7 @@ dependencies = [
 name = "flux-scene-graph-sys"
 version = "0.1.1"
 dependencies = [
- "bindgen",
+ "bindgen 0.70.1",
  "pkg-config",
 ]
 
@@ -1305,7 +1367,7 @@ dependencies = [
 name = "flux-sys"
 version = "0.1.1"
 dependencies = [
- "bindgen",
+ "bindgen 0.70.1",
  "pkg-config",
 ]
 
@@ -1845,7 +1907,7 @@ dependencies = [
 name = "iris-sys"
 version = "0.1.0"
 dependencies = [
- "bindgen",
+ "bindgen 0.70.1",
  "pkg-config",
 ]
 
@@ -1986,7 +2048,7 @@ dependencies = [
 name = "lens-sys"
 version = "0.1.0"
 dependencies = [
- "bindgen",
+ "bindgen 0.70.1",
  "pkg-config",
 ]
 
@@ -2043,6 +2105,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8a484fa48be5f62a8d3ffed767779d0ab808cfead91de98ef4362d469097dfb"
 dependencies = [
  "pkg-config",
+]
+
+[[package]]
+name = "libspa"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2909f3be29d674e7f10604aff18d1bbe1bb03c4cd61c8a8ba19c0b1d162f7d4e"
+dependencies = [
+ "bitflags",
+ "cc",
+ "cookie-factory",
+ "libc",
+ "libspa-sys",
+ "nom 8.0.0",
+ "rustix",
+ "system-deps",
+]
+
+[[package]]
+name = "libspa-sys"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69ad52764fca54818486f3cf75afec844d1f1a1568c24dcee25d41b1ab007dda"
+dependencies = [
+ "bindgen 0.72.1",
+ "cc",
+ "system-deps",
 ]
 
 [[package]]
@@ -2359,6 +2448,31 @@ dependencies = [
  "atomic-waker",
  "fastrand",
  "futures-io",
+]
+
+[[package]]
+name = "pipewire"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8585aba8a52ad74ccc633b8e293c1dc4277976bd5d510b925533f34fd6685f38"
+dependencies = [
+ "bitflags",
+ "libc",
+ "libspa",
+ "libspa-sys",
+ "pipewire-sys",
+ "rustix",
+]
+
+[[package]]
+name = "pipewire-sys"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2089f245b548723e60325773c27f586b7a2372c79ea941b246cd0d654706adc"
+dependencies = [
+ "bindgen 0.72.1",
+ "libspa-sys",
+ "system-deps",
 ]
 
 [[package]]
@@ -3052,6 +3166,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_spanned"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3171,13 +3294,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "system-deps"
+version = "7.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "396a35feb67335377e0251fcbc1092fc85c484bd4e3a7a54319399da127796e7"
+dependencies = [
+ "cfg-expr",
+ "heck",
+ "pkg-config",
+ "toml 1.1.3+spec-1.1.0",
+ "version-compare",
+]
+
+[[package]]
+name = "target-lexicon"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -3338,9 +3480,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
 dependencies = [
  "serde",
- "serde_spanned",
+ "serde_spanned 0.6.9",
  "toml_datetime 0.6.11",
  "toml_edit 0.22.27",
+]
+
+[[package]]
+name = "toml"
+version = "1.1.3+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53c96ecdfa941c8fc4fcaed14f99ada8ebed502eef533015095a07e3301d4c3c"
+dependencies = [
+ "indexmap",
+ "serde_core",
+ "serde_spanned 1.1.1",
+ "toml_datetime 1.1.1+spec-1.1.0",
+ "toml_parser",
+ "toml_writer",
+ "winnow 1.0.4",
 ]
 
 [[package]]
@@ -3369,7 +3526,7 @@ checksum = "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a"
 dependencies = [
  "indexmap",
  "serde",
- "serde_spanned",
+ "serde_spanned 0.6.9",
  "toml_datetime 0.6.11",
  "toml_write",
  "winnow 0.7.15",
@@ -3401,6 +3558,12 @@ name = "toml_write"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
+
+[[package]]
+name = "toml_writer"
+version = "1.1.2+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
 name = "tower"
@@ -3581,6 +3744,12 @@ dependencies = [
  "num-traits",
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "version-compare"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03c2856837ef78f57382f06b2b8563a2f512f7185d732608fd9176cb3b8edf0e"
 
 [[package]]
 name = "walkdir"

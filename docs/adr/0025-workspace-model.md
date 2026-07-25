@@ -76,7 +76,7 @@ policy level: a workspace may select a tiling policy that applies to its
 
 ## Consequences
 
-- `ass-core` gains `Output` and `Workspace` types and the window manager
+- `aegis-core` gains `Output` and `Workspace` types and the window manager
   routes map and unmap through the current workspace of the focused output.
   The renderer and chrome receive a per-output snapshot, not a global list.
 - The `WindowList`, `Dock`, and `Launcher` chrome components

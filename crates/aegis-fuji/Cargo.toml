@@ -1,0 +1,59 @@
+[package]
+name = "aegis-fuji"
+description = "fuji (宓姬) — the ASS agent: scoped MCP platform bridge and self-contained agent runtime"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "aegis_fuji"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aegis-fuji-mcp"
+path = "src/bin/aegis-fuji-mcp.rs"
+
+[[bin]]
+name = "fuji"
+path = "src/bin/fuji.rs"
+
+[dependencies]
+# Bridge side: the public ASS model, catalog, and IPC crates.
+aegis-core = { workspace = true, features = ["serde"] }
+aegis-ipc = { workspace = true }
+aegis-desktop-entries = { workspace = true }
+libc = { workspace = true }
+# Agent side: providers, tools, MCP client, sessions. Never any ass-* crate.
+dirs = { workspace = true }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "process",
+    "io-util",
+    "signal",
+    "time",
+] }
+reqwest = { version = "0.13", default-features = false, features = [
+    "rustls",
+    "webpki-roots",
+    "json",
+    "stream",
+    "gzip",
+    "brotli",
+] }
+futures = "0.3"
+rustyline = "15"
+glob = "0.3"
+regex = "1"
+# Shared.
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"

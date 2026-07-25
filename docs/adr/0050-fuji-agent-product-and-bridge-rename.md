@@ -1,4 +1,4 @@
-# ADR-0050: fuji agent product and the ass-fuji bridge rename (amends ADR-0047)
+# ADR-0050: fuji agent product and the aegis-fuji bridge rename (amends ADR-0047)
 
 - Status: Accepted
 - Date: 2026-07-23
@@ -22,22 +22,22 @@ model-free compositor — stays exactly as decided.
 
 ## Decision
 
-Rename `ass-neenee` to `ass-fuji`. The bridge keeps its architecture: the
-`ass-fuji-mcp` binary serves newline-delimited MCP over stdio, requests a
+Rename `ass-neenee` to `aegis-fuji`. The bridge keeps its architecture: the
+`aegis-fuji-mcp` binary serves newline-delimited MCP over stdio, requests a
 configured named scope (default `fuji`), owns one bridge-managed Agent Realm,
 and depends only on the public ASS model, catalog, and IPC crates. Its
 user-facing surface is renamed consistently: `ASS_FUJI_*` environment
 variables, the `fuji` default scope, the `Fuji` default Realm label, and the
-`$XDG_RUNTIME_DIR/ass-fuji/` state directory. The `realm_transfer_window`
+`$XDG_RUNTIME_DIR/aegis-fuji/` state directory. The `realm_transfer_window`
 tool's `target` value `neenee` becomes `fuji`; every other MCP tool name and
 schema is unchanged.
 
-Grow `ass-fuji` into the complete fuji product: alongside the bridge, the
+Grow `aegis-fuji` into the complete fuji product: alongside the bridge, the
 same crate carries fuji's own agent runtime. It owns provider credentials
 and policy (Anthropic and OpenAI-compatible streaming providers), the agent
 loop, built-in file/shell/image tools, an stdio MCP client, sessions,
 skills, and permissions, and ships the `fuji` binary next to
-`ass-fuji-mcp`. The runtime uses no Praxion, no Neenee, and — by module
+`aegis-fuji-mcp`. The runtime uses no Praxion, no Neenee, and — by module
 discipline inside the crate — no `ass-*` import: it reaches ASS exclusively
 as an MCP client of the bridge, the same integration seam every other MCP
 client uses. The compositor never links the crate.
@@ -72,10 +72,10 @@ force.
 
 ## Consequences
 
-- One checkout builds the complete agent: `cargo build -p ass-fuji`
+- One checkout builds the complete agent: `cargo build -p aegis-fuji`
   produces the bridge and the `fuji` CLI. No other repository is required.
 - Existing deployments must rename the binary (`ass-neenee-mcp` →
-  `ass-fuji-mcp`), the `ASS_NEENEE_*` variables (`ASS_FUJI_*`), the scope
+  `aegis-fuji-mcp`), the `ASS_NEENEE_*` variables (`ASS_FUJI_*`), the scope
   (`neenee` → `fuji`), and the Realm label (`Neenee` → `Fuji`); old Realm
   recovery records under `$XDG_RUNTIME_DIR/ass-neenee/` do not migrate.
 - The bridge stays spawnable by third-party MCP clients; only the default

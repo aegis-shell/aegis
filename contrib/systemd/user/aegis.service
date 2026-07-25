@@ -1,0 +1,20 @@
+[Unit]
+Description=Aegis Wayland Compositor
+# Wayland compositor convention (sway.service): bind to the user's
+# graphical-session so D-Bus-activated session services such as
+# xdg-desktop-portal start and stop with the compositor.
+BindsTo=graphical-session.target
+Wants=graphical-session-pre.target
+After=graphical-session-pre.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/aegis --backend auto
+Restart=on-failure
+RestartSec=1
+Slice=session.slice
+Delegate=cpu memory pids
+KillMode=control-group
+TimeoutStopSec=5
+UMask=0077
+LimitNOFILE=1048576

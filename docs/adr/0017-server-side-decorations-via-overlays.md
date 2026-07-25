@@ -65,7 +65,7 @@ shell-driven grab API from ADR-0013).
 ### 4. Constant frame geometry
 
 `TITLE_BAR_HEIGHT = 24.0` and `CLOSE_BUTTON_WIDTH = 24.0` are module-level
-constants in `ass-shell`. Real compositors expose these as
+constants in `aegis-shell`. Real compositors expose these as
 `xdg_toplevel_window_geometry` — the client's `set_window_geometry`
 request is supposed to account for them. M3 leaves that protocol
 interaction unimplemented; the constants are visual-only.
@@ -74,7 +74,7 @@ interaction unimplemented; the constants are visual-only.
 
 - **Draw decorations via raw `flux::Canvas` primitives.** Rejected: would
    bypass flux-ui's input handling. Hit-testing the title bar would have
-   to be re-implemented in ass-shell, duplicating flux-ui's work.
+   to be re-implemented in aegis-shell, duplicating flux-ui's work.
 - **Add a new `Frame::absolute_position(x, y, body)` API to flux-ui.**
    Rejected as redundant: `overlay` already does this and supports
    popups, dropdowns, and now SSD from the same primitive.

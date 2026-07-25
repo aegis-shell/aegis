@@ -10,8 +10,8 @@ and [ADR-0044](0044-dock-and-control-center-crates.md) plus
 [ADR-0045](0045-statusbar-crate-and-sni-tray.md) promoted major surfaces into
 independent crates. That separation exposed product styling that had no
 shared owner. Menu themes, frosted-glass materials, card surfaces, and
-related visual values were repeated across `ass-shell`, `ass-dock`,
-`ass-control-center`, and `ass-statusbar`. ADR-0045 already identified the
+related visual values were repeated across `aegis-shell`, `aegis-dock`,
+`aegis-ctl-center`, and `aegis-statusbar`. ADR-0045 already identified the
 duplicated popover material as follow-up work.
 
 The responsibility boundary in
@@ -26,11 +26,11 @@ presentation data rather than common retained state or interaction behavior.
 
 ## Decision
 
-Create `ass-design`, an internal workspace crate that depends only on lens.
+Create `aegis-design`, an internal workspace crate that depends only on lens.
 It owns semantic product tokens and pure factories that return lens `Theme`,
 `OverlayOpts`, and `LayoutOpts` values.
 
-`ass-design` is data-only. It never receives a lens `Frame` or `Input`, keeps
+`aegis-design` is data-only. It never receives a lens `Frame` or `Input`, keeps
 component state, or emits application intents. Its API names semantic roles
 such as menu text, popover surface, and application accent instead of
 exporting numbered palette values or arbitrary parameter bags.
@@ -53,7 +53,7 @@ local until they become genuine product-wide tokens.
 - **Keep styling private to every component.** Rejected: exact duplicates
   already exist across crate boundaries, and changing one copy does not
   update the others.
-- **Put product styling in `ass-shell`.** Rejected: `ass-shell` is the chrome
+- **Put product styling in `aegis-shell`.** Rejected: `aegis-shell` is the chrome
   host and component contract. A dedicated dependency keeps appearance
   reusable without making the contract crate the owner of every visual
   policy.
@@ -65,9 +65,9 @@ local until they become genuine product-wide tokens.
 
 ## Consequences
 
-- The dependency direction is `lens` ← `ass-design` ← the shell and
-  component crates. `ass-design` has no dependency on `ass-shell`,
-  `ass-core`, or a component crate.
+- The dependency direction is `lens` ← `aegis-design` ← the shell and
+  component crates. `aegis-design` has no dependency on `aegis-shell`,
+  `aegis-core`, or a component crate.
 - Shared visual changes have one semantic owner and can be tested without
   rendering a business component.
 - Generic helper duplication such as rectangle hit-testing and popover

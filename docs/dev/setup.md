@@ -54,7 +54,7 @@ With the compositor running, open the standalone settings application from a
 second terminal:
 
 ```bash
-cargo run -p ass-control-center
+cargo run -p aegis-ctl-center
 ```
 
 `cargo run -p ass` opens a nested window on `$WAYLAND_DISPLAY`, creates a
@@ -81,7 +81,7 @@ RUST_LOG=warn cargo run -p ass       # quiet: only warnings and errors
 cargo test --workspace
 ```
 
-`ass-core` and `ass-server` unit tests run without the flux dependency;
+`aegis-core` and `aegis-compositor` unit tests run without the flux dependency;
 the rest need the sibling optics Meson tree to be built first, same
 as `cargo build`.
 
@@ -93,7 +93,7 @@ in the production topology with:
 scripts/test-realm-sandbox.sh
 ```
 
-The script starts the compiled `ass-launch` test binary as a transient
+The script starts the compiled `aegis-launcher` test binary as a transient
 systemd user service with delegated `cpu`, `memory`, and `pids` controllers.
 It verifies mount-scoped multi-connection Wayland portals, mandatory resource
 limits, cgroup freeze/resume, and `cgroup.kill` against a worker that escapes

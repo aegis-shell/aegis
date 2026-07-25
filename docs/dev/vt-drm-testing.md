@@ -10,7 +10,7 @@ repository root:
 
 ```bash
 meson compile -C ../optics/build
-cargo build --release -p ass -p ass-control
+cargo build --release -p ass -p aegis-ctl
 ```
 
 Do not compile on the test VT. Building first keeps compiler latency and build
@@ -61,9 +61,9 @@ From a terminal running inside ass, inspect the live state and take a
 screenshot:
 
 ```bash
-./target/release/ass-control outputs
-./target/release/ass-control windows
-./target/release/ass-control screenshot /tmp/ass-vt.png
+./target/release/aegis-ctl outputs
+./target/release/aegis-ctl windows
+./target/release/aegis-ctl screenshot /tmp/ass-vt.png
 ```
 
 Open `/tmp/ass-vt.png` after leaving the session and confirm that it matches
@@ -74,7 +74,7 @@ the visible output.
 Request a normal shutdown from a terminal inside ass:
 
 ```bash
-./target/release/ass-control quit
+./target/release/aegis-ctl quit
 ```
 
 You can also select **Quit Session** in Control Center or press the default
@@ -87,6 +87,12 @@ and DRM device before returning to the TTY.
   bypass device permissions.
 - Only one ass process under the same `$XDG_RUNTIME_DIR` can provide the IPC
   socket. Stop an existing ass session before this test.
+- When running ass on a separate VT while another compositor (e.g. Niri or Sway)
+  is actively running under the same user account, wrap the command in
+  `dbus-run-session` (e.g. `dbus-run-session ./target/release/ass --backend drm`).
+  This creates an isolated D-Bus session bus so Flatpak apps (`flatpak-session-helper`),
+  D-Bus portals, and single-instance applications (like Firefox) do not route
+  their windows back to the other compositor's session.
 - Nested mode does not test atomic modesetting, libinput, libseat, physical
   hotplug, or VT suspend and resume.
 - Realm application isolation must be tested through the packaged
@@ -95,3 +101,4 @@ and DRM device before returning to the TTY.
   SSH. Run `pgrep -a -x ass`, verify the exact PID, then use
   `kill -TERM <pid>`. Use `kill -KILL <pid>` only if that verified process does
   not stop.
+

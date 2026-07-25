@@ -1,17 +1,17 @@
 # Control Center Reference
 
-`ass-control-center` is the standalone settings application. It connects to
-the compositor at `$XDG_RUNTIME_DIR/ass.sock` and opens a normal Wayland
+`aegis-ctl-center` is the standalone settings application. It connects to
+the compositor at `$XDG_RUNTIME_DIR/aegis.sock` and opens a normal Wayland
 window.
 
 ## Invocation
 
 | Command | Result |
 |---------|--------|
-| `ass-control-center` | Open the first available settings page. |
-| `ass-control-center display` | Open the display page. |
-| `ass-control-center --module touchpad` | Open the touchpad page. |
-| `ass-control-center --module=window-rules` | Open the window-rules page. |
+| `aegis-ctl-center` | Open the first available settings page. |
+| `aegis-ctl-center display` | Open the display page. |
+| `aegis-ctl-center --module touchpad` | Open the touchpad page. |
+| `aegis-ctl-center --module=window-rules` | Open the window-rules page. |
 
 An unknown module id falls back to the first registered page. The desktop
 application id is `io.github.ming.ass.ControlCenter`; the packaged desktop

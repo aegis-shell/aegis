@@ -39,11 +39,11 @@ ass consumes the split stack:
 - `lens` / `lens-sys` from `../optics/lens-rs/crates/{lens,lens-sys}` (the
   successor to the old `flux-ui` / `flux-ui-sys`).
 
-`ass-shell` migrates from the `flux-ui` API to the `lens` API. The migration
+`aegis-shell` migrates from the `flux-ui` API to the `lens` API. The migration
 is a near-drop-in rename: lens's safe surface (`Ui`, `Frame`, `Input`,
 overlays, `Color` / `Rect` / `Icon` / `OverlayOpts`) matches the surface
-`ass-shell` used, and `lens-sys`'s bindgen allowlist covers the `flux_*` types
-(`flux_device`, `flux_canvas`, `flux_result`) that `ass-shell` casts across at
+`aegis-shell` used, and `lens-sys`'s bindgen allowlist covers the `flux_*` types
+(`flux_device`, `flux_canvas`, `flux_result`) that `aegis-shell` casts across at
 the device-binding seam, so no API drift needed correction.
 
 The terminal binary keeps re-emitting the rpaths the `-sys` crates
@@ -84,6 +84,6 @@ record.
   now `lens`. The decisions themselves (chrome overlays, decorations, dock,
   launcher, chrome trait) are unchanged.
 - A latent bug surfaced once the project compiled end-to-end for the first
-  time: `ass-shell`'s launcher `emit` helper had been placed inside the
+  time: `aegis-shell`'s launcher `emit` helper had been placed inside the
   `impl Chrome for Launcher` block. It is moved to the inherent `impl
   Launcher` block.

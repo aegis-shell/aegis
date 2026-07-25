@@ -1,10 +1,11 @@
 # IPC Reference
 
-The ass IPC is protocol version 4, carried as length-framed JSON over the
-owner-only Unix socket at `$XDG_RUNTIME_DIR/ass.sock`. Every connection starts
+The ass IPC is protocol version 5, carried as length-framed JSON over the
+owner-only Unix socket at `$XDG_RUNTIME_DIR/aegis.sock`. Every connection starts
 with `Hello`; commands are accepted only after capability and scope checks.
-JSON messages are limited to 16 MiB. Large immutable capture payloads use a
-separate sealed-file-descriptor transfer described under [Capture](#capture).
+JSON messages are limited to 16 MiB. Large immutable capture and frame
+payloads use a separate sealed-file-descriptor transfer described under
+[Capture](#capture).
 
 ## Capabilities
 
@@ -41,6 +42,9 @@ The reference client requests 900,000 milliseconds by default.
 | `Settings { expected_revision, action }` | `SettingsApplied` with a commit receipt | `session` |
 | `CaptureOutput` | `CaptureOutput` | `control` + explicit scope op |
 | `CaptureRealm { realm, region }` | `CaptureRealm` | `realm` + `CaptureRealm` scope op |
+| `StreamOutputStart { max_fps }` | `StreamOutputStarted` | `control` + `StreamOutput` scope op |
+| `StreamOutputStop { stream_id }` | `StreamOutputStopped` | `control` + `StreamOutput` scope op |
+| `SetIdleInhibit { inhibit }` | `IdleInhibitSet { inhibited }` | `control` + `IdleInhibit` scope op |
 
 `Subscribe` enables coarse events:
 
@@ -125,7 +129,7 @@ the revision, publishes the replacement snapshot, broadcasts
 `SettingsChanged`, and records the action and before/after revisions in the
 mutation journal.
 
-Display and touchpad are the only settings domains in the version 4 snapshot.
+Display and touchpad are the only settings domains in the current snapshot.
 Mouse, keyboard, appearance, power, accounts, and window-rule modules remain
 unavailable until their authoritative services expose typed state and actions.
 See the [Control Center Reference](control-center.md#modules).
@@ -277,7 +281,7 @@ change the detached snapshot. Captures include the overview grid while
 overview mode is active.
 
 `Command::Screenshot { path, region }` is a journaled `control` command that writes
-the focused output as a PNG file; `ass-control screenshot` is its reference
+the focused output as a PNG file; `aegis-ctl screenshot` is its reference
 frontend. `Request::CaptureOutput` is a synchronous query returning
 `Response::CaptureOutput { width, height, png_bytes }` followed by one sealed
 PNG `memfd` transferred with `SCM_RIGHTS`. The request requires the `control`
@@ -294,10 +298,9 @@ Capture regions use compositor logical pixels. The returned PNG and
 `width`/`height` use physical output pixels, so a region captured at 200%
 scale has twice the logical width and height.
 
-Continuous physical-output frame streaming (screencast,
-`xdg-desktop-portal`) is future work and can reuse the same scale-aware
-frame-copy path. Realm observers do not need to poll: `RealmDamaged` tells
-them when a directed scene should be recaptured.
+Continuous physical-output frame streaming reuses the same scale-aware
+frame-copy path; see [Streaming](#streaming). Realm observers do not need to
+poll: `RealmDamaged` tells them when a directed scene should be recaptured.
 
 `CaptureRealm` reads only the selected Realm's directed virtual output. It
 does not contain physical-desktop chrome, the cursor, or another Realm. The
@@ -317,6 +320,56 @@ result; the sole IPC writer checks the live scope, lock/VT gate, Realm state,
 authority revision, and lease again immediately before it sends the sealed
 descriptor.
 
+## Streaming
+
+`Request::StreamOutputStart { max_fps }` opens a continuous frame stream for
+the focused physical output (ADR-0052). Authorization matches
+`CaptureOutput`: the `control` capability plus an explicit `StreamOutput`
+entry in the connection's scope `ops`, never inherited through the
+unrestricted default. The reply `Response::StreamOutputStarted { stream_id,
+width, height, format }` fixes the output geometry for the stream's lifetime.
+`max_fps` throttles delivery; it defaults to 30 and is clamped to 1–60.
+
+Each presented frame arrives as `Event::StreamFrame { stream_id, sequence,
+width, height, stride, format, damage, dropped, byte_len }` followed
+immediately by one sealed memfd of `byte_len` tightly packed pixels
+(`height` rows of `stride` bytes), transferred with the same sealed-blob
+rules as one-shot captures. `format` is `Bgra8` today; `damage` is
+conservative and reports one full-frame rectangle in this version. `dropped`
+is the cumulative count of frames lost to backpressure since the stream
+started: delivery runs over a bounded two-frame lane per stream, and excess
+frames are dropped rather than queued.
+
+`Request::StreamOutputStop { stream_id }` ends a stream owned by the calling
+connection and answers `Response::StreamOutputStopped`. The server ends a
+stream with `Event::StreamEnded { stream_id, reason }` when the connection's
+scope is revoked or narrowed, its lease expires, the output geometry
+changes, or the compositor shuts down. Session lock and an inactive VT pause
+delivery instead of ending the stream; resuming restarts it transparently.
+Disconnecting the connection stops every stream it owned. Frame events,
+lease-renewal replies, and end events interleave on the streaming
+connection, so streaming clients read one continuous message stream instead
+of one reply per request.
+
+Frame readback currently goes through the same CPU path as one-shot
+captures; a zero-copy dmabuf path (`flux_surface_export_dmabuf`) is future
+work tracked in ADR-0052.
+
+## Idle Inhibition
+
+`Request::SetIdleInhibit { inhibit }` sets or clears the calling
+connection's global, surfaceless idle inhibitor (ADR-0053), built for the
+portal backend's Inhibit interface. Authorization matches `CaptureOutput`:
+the `control` capability, a live lease, and an explicit `IdleInhibit` entry
+in the connection's scope `ops`, never inherited through the unrestricted
+default. While any connection holds an inhibitor, ext-idle-notify
+notifications stay resumed, exactly as if a visible per-surface
+`zwp_idle_inhibit_v1` inhibitor were active; a locked session suppresses
+its effect the same way. The reply `Response::IdleInhibitSet { inhibited }`
+confirms the state the connection now holds. The inhibitor is
+connection-scoped: disconnecting releases it, so a crashed holder can never
+keep the session out of idle.
+
 ## Named Scopes
 
 Named scopes are configured with `[[agent.scope]]`. Every mutation and
@@ -324,9 +377,16 @@ capture resolves the named scope again, including final pixel delivery, so a
 configuration reload can narrow or revoke authority without reconnecting. An
 explicit unknown or removed scope fails closed.
 
-`ass-control` uses the built-in owner-only `ass-control-realm-admin` scope for Realm
+`aegis-ctl` uses the built-in owner-only `aegis-ctl-realm-admin` scope for Realm
 recovery commands. It grants the local user all Realm ids and the explicit
 Realm operation set; it does not weaken the socket's mode `0600` boundary.
+
+`aegis-portal` (the xdg-desktop-portal backend, ADR-0051) uses the built-in
+owner-only `aegis-portal` scope, which grants exactly three operations —
+`CaptureOutput` for the Screenshot portal, `StreamOutput` for the
+ScreenCast portal (ADR-0052), and `IdleInhibit` for the Inhibit portal
+(ADR-0053) — and nothing else. Both built-in
+scopes follow the same fail-closed rule as configured scopes.
 
 See the [Configuration Reference](config.md#agent-scopes) for fields and
 operation names.

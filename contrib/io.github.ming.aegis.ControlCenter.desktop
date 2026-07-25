@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Control Center
+Name[zh_CN]=控制中心
+Comment=Configure the aegis desktop
+Comment[zh_CN]=配置 aegis 桌面
+Exec=aegis-control-center
+Icon=preferences-system
+Terminal=false
+Categories=Settings;
+Keywords=Settings;Display;Mouse;Touchpad;Keyboard;Appearance;Power;Users;Window Rules;
+Keywords[zh_CN]=设置;显示器;鼠标;触控板;键盘;外观;电源;用户;窗口规则;
+StartupNotify=true

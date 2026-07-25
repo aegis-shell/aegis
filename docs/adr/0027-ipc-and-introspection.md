@@ -26,7 +26,7 @@ mode this decision exists to avoid.
 ## Decision
 
 ass exposes a **versioned, schema-driven IPC over a unix domain socket** at
-`$XDG_RUNTIME_DIR/ass.sock`. The IPC is the sole extension and automation
+`$XDG_RUNTIME_DIR/aegis.sock`. The IPC is the sole extension and automation
 surface. There is no in-process scripting.
 
 The wire format is a fixed, schema-versioned request/response envelope with
@@ -34,7 +34,7 @@ a separate event stream. Requests and responses are framed messages; events
 are server-pushed subscriptions. Every message is described by an explicit
 schema with a major version, so a client written against version N continues
 to work against N.x and fails loudly against (N+1). Schema and reference
-client bindings live in a new `ass-ipc` crate that depends on `ass-core` for
+client bindings live in a new `aegis-ipc` crate that depends on `aegis-core` for
 the model types and nothing else.
 
 The IPC exposes the **same model the chrome reads**. A `Window`, a
@@ -83,10 +83,10 @@ configuration is not persisted.
 
 ## Consequences
 
-- A new `ass-ipc` crate owns the schema, the codec, and the reference
-  client; the binary owns the server. The crate depends on `ass-core` and
+- A new `aegis-ipc` crate owns the schema, the codec, and the reference
+  client; the binary owns the server. The crate depends on `aegis-core` and
   not on flux, lens, or Wayland, so it is unit-testable and reusable.
-- The chrome, the IPC, and the agent all read the same `ass-core` snapshot,
+- The chrome, the IPC, and the agent all read the same `aegis-core` snapshot,
   which is the one-model principle made concrete; no consumer reconstructs
   state.
 - Every window-manager operation the chrome can trigger must also be

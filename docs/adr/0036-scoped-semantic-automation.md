@@ -52,7 +52,7 @@ it is absent, so older version-2 peers negotiate input off. The new tagged
 commands are additive.
 
 Do not create `ass-ai`, `ass-automation`, or an empty capture crate. Semantic
-types remain in `ass-core`, wire types remain in `ass-ipc`, and execution
+types remain in `aegis-core`, wire types remain in `aegis-ipc`, and execution
 remains in the server and main-loop input router. If the perceptual-path ADR
 later approves capture, its GPU readback, `memfd`, portal, and PipeWire
 dependencies form a coherent `ass-capture` crate at that time.

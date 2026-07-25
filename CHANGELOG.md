@@ -7,6 +7,95 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### xdg-desktop-portal backend (Phase 3A): Background, Inhibit, ScreenCast persistence
+
+- `aegis-portal` now serves `org.freedesktop.impl.portal.Background` v1 and
+  `org.freedesktop.impl.portal.Inhibit` v1, upgrades
+  `org.freedesktop.impl.portal.ScreenCast` to v2, and emits
+  `SettingChanged` when `[appearance] color_scheme` changes
+  ([ADR-0053](docs/adr/0053-portal-session-services-and-grants.md)).
+  `ass.portal` lists the two new interfaces.
+- Background: requested `background = true` is granted and recorded per
+  app_id; `autostart = true` copies the application's desktop file into
+  `$XDG_CONFIG_HOME/autostart/` (reported `false` when no desktop file
+  exists), and `autostart = false` removes it.
+- Inhibit: flag 4 (idle) is served through a new connection-scoped,
+  fail-closed `SetIdleInhibit` IPC op — `control` capability plus an
+  explicit `IdleInhibit` op in the built-in `aegis-portal` scope, which now
+  grants exactly three operations. The compositor keeps a per-connection
+  registry on the main loop and folds it into a surfaceless global
+  inhibitor in the Wayland idle machinery; disconnecting releases it.
+  Flags 1/2/8 (logout, user switch, suspend) are logged and ignored — they
+  need a session manager ass does not have — and `QueryEndResponse` is
+  declared but never emitted. An application's inhibits are released when
+  its bus name vanishes or the portal restarts.
+- ScreenCast v2: `persist_mode` 1 (token in memory) and 2 (token persisted)
+  are accepted; `Start` returns a `restore_token`, and a valid token
+  presented to `SelectSources` restores the cast with no further check.
+- Portal-owned grants persist as JSON under `$XDG_DATA_HOME/aegis-portal/`
+  (`background.json`, `screencast-tokens.json`, mode `0600`, atomic
+  writes); delete `screencast-tokens.json` to revoke persisted casts.
+
+### Wayland protocol fixes
+
+- Fixed `zwp_pointer_gestures_v1` FFI struct layout in `aegis-compositor`: corrected opcode order to `get_swipe_gesture` (0), `get_pinch_gesture` (1), `release` (2), and `get_hold_gesture` (3). Previously, `destroy` was placed at opcode 0, which caused GTK3 and GTK4 applications (such as GIMP and `gtk3-demo`) to destroy the gestures manager upon binding swipe gestures and crash with Wayland protocol error `Error 22 (Invalid argument)`.
+
+### xdg-desktop-portal backend (Phase 1)
+
+- New `aegis-portal` binary: a standalone, D-Bus-activated xdg-desktop-portal
+  backend that bridges the portal interfaces to the compositor's scoped IPC
+  (ADR-0051). It serves `org.freedesktop.impl.portal.Settings` v1
+  (`org.freedesktop.appearance color-scheme`, read from the new
+  `[appearance] color_scheme` config key) and
+  `org.freedesktop.impl.portal.Screenshot` v1 (non-interactive; pixels come
+  from `CaptureOutput` over sealed-memfd IPC and are delivered as `file://`
+  URIs under the portal cache directory). Interactive screenshot requests
+  fail with response code 2 until Phase 3.
+- The compositor grants the backend a new built-in owner-only IPC scope
+  `aegis-portal` limited to exactly the `CaptureOutput` operation; no user
+  configuration is required.
+- New integration files under `contrib/`: `xdg-desktop-portal/portals/ass.portal`,
+  `xdg-desktop-portal/aegis-portals.conf` (`default=ass;gtk`, so UI-driven
+  portals fall back to the GTK backend), and
+  `dbus-1/services/org.freedesktop.impl.portal.desktop.ass.service`. Install
+  and verification steps are in
+  [How to Install and Verify the Portal Backend](docs/how-to/portals.md).
+
+### xdg-desktop-portal backend (Phase 2): ScreenCast
+
+- `aegis-portal` now serves `org.freedesktop.impl.portal.ScreenCast` v1
+  (monitor sources, no persistence, no cursor capture), so portal-aware
+  applications — browser `getDisplayMedia()`, OBS-style recorders — can cast
+  the screen through the standard portal path. Each started cast republishes
+  the compositor's output frames as a PipeWire producer stream
+  (`aegis-portal-screencast`, raw `BGRx` video at up to 30 fps); a running
+  PipeWire session is required. Interactive source selection remains Phase 3.
+- The compositor IPC grows to protocol version 5 with scoped output-frame
+  streaming ([ADR-0052](docs/adr/0052-scoped-output-frame-streaming.md)):
+  `StreamOutputStart`/`StreamOutputStop` plus pushed `StreamFrame` events
+  whose pixels travel as sealed memfds, reusing the one-shot capture blob
+  channel. Authorization matches `CaptureOutput` (`control` capability plus
+  an explicit `StreamOutput` scope op); the built-in `aegis-portal` scope now
+  grants exactly those two operations. Delivery is backpressured (a bounded
+  two-frame lane per stream, excess frames dropped and counted), pauses
+  while the session is locked or the seat is inactive, and ends on scope
+  revocation, lease expiry, or output-geometry changes.
+
+### Session environment for portals and Flatpak
+
+- The compositor now publishes `WAYLAND_DISPLAY`, `XDG_SESSION_TYPE=wayland`,
+  and `XDG_CURRENT_DESKTOP=ass` once its Wayland socket exists, and exports
+  them to the D-Bus activation environment and the systemd --user manager
+  (`dbus-update-activation-environment --systemd`). D-Bus-activated services
+  such as xdg-desktop-portal and `flatpak-spawn` helpers now see the session,
+  fixing Flatpak applications that previously failed to launch. Nested
+  development sessions skip the export so the host session is unaffected.
+- Launched applications now inherit `DBUS_SESSION_BUS_ADDRESS` and
+  `XDG_CURRENT_DESKTOP`; the launcher's environment whitelist previously
+  dropped both.
+- The packaged `ass.service` now binds to `graphical-session.target`, so
+  D-Bus-activated session services start and stop with the compositor.
+
 ### Screenshot selector: frozen frame and explicit confirmation
 
 - The interactive screenshot selector (Print key) now freezes the screen at
@@ -21,21 +110,21 @@ project cuts a tagged release.
 
 ### fuji (宓姬): rename and self-contained agent runtime
 
-- Renamed `ass-neenee` to `ass-fuji` and its `ass-neenee-mcp` binary to
-  `ass-fuji-mcp`. The environment variables are now `ASS_FUJI_*`, the default
+- Renamed `ass-neenee` to `aegis-fuji` and its `ass-neenee-mcp` binary to
+  `aegis-fuji-mcp`. The environment variables are now `ASS_FUJI_*`, the default
   scope is `fuji`, the default Realm label is `Fuji`, and bridge state moved
-  to `$XDG_RUNTIME_DIR/ass-fuji/`. The `realm_transfer_window` tool's
+  to `$XDG_RUNTIME_DIR/aegis-fuji/`. The `realm_transfer_window` tool's
   `target` value `neenee` is now `fuji`; all other MCP tool names and schemas
   are unchanged. Realm recovery records under the old directory do not
   migrate. fuji is named after Lady Fu (宓妃) of the *Luoshen Fu*.
-- Added fuji's own agent runtime in the same `ass-fuji` crate, with the
+- Added fuji's own agent runtime in the same `aegis-fuji` crate, with the
   `fuji` CLI:
   streaming Anthropic and OpenAI-compatible providers, the agent loop,
   built-in file/shell/image tools, an stdio MCP client, JSONL sessions,
   `SKILL.md` discovery, and a per-tool allow/ask/deny permission policy. The
   agent is self-contained in this workspace: it no longer depends on
   `../praxion` or any external agent product, and reaches the desktop only
-  through `ass-fuji-mcp` (ADR-0050).
+  through `aegis-fuji-mcp` (ADR-0050).
 - Renamed the shipped skill path to `integrations/fuji/skills`; the
   `ass-desktop-realm` skill itself is unchanged for fuji wording.
 
@@ -50,7 +139,7 @@ project cuts a tagged release.
 
 ### Standalone modular Control Center
 
-- `ass-control-center` is now a standalone Iris/Lens Wayland application with
+- `aegis-ctl-center` is now a standalone Iris/Lens Wayland application with
   a stable desktop entry and deep links for `display`, `mouse`, `touchpad`,
   `keyboard`, `appearance`, `power`, `users`, and `window-rules`. Launcher and
   status-bar activation use the ordinary external application path. The old
@@ -68,7 +157,7 @@ project cuts a tagged release.
 
 ### fuji Agent Realm integration
 
-- Added `ass-fuji` and its `ass-fuji-mcp` stdio server, which connect the
+- Added `aegis-fuji` and its `aegis-fuji-mcp` stdio server, which connect the
   fuji agent to ASS without duplicating provider, credential, session, or
   agent-runtime policy in the compositor.
 - Added scope-aware desktop tools plus a bridge-managed Agent Realm lifecycle:
@@ -81,7 +170,7 @@ project cuts a tagged release.
 - The synchronous ass IPC client now supports applying read/write timeouts
   before a scoped handshake, allowing async adapters to bound stalled local
   IPC without hanging the connector.
-- Added `ass-fuji-mcp smoke`, a live reversible acceptance check that reads
+- Added `aegis-fuji-mcp smoke`, a live reversible acceptance check that reads
   start and completion notifications back from compositor state, verifies a
   temporary Agent Realm through active/paused/active transitions, leaves time
   for visual inspection, and confirms revocation. Existing managed Realms are
@@ -105,39 +194,39 @@ project cuts a tagged release.
   in the same dispatch cycle. Realm revoke no longer crashes the compositor,
   and immediate create/pause no longer disconnects ordinary desktop clients.
 
-### Command-line tool renamed to `ass-control`
+### Command-line tool renamed to `aegis-ctl`
 
-- The reference IPC client has been renamed from `ass-ctl` to `ass-control`
+- The reference IPC client has been renamed from `ass-ctl` to `aegis-ctl`
   to align with the workspace's spelled-out naming convention
-  (`ass-control-center`, `ass-backend`, `ass-config`). The installed binary,
+  (`aegis-ctl-center`, `aegis-backend`, `aegis-config`). The installed binary,
   the crate, the library, the module path, and the IPC scope constant
-  `LOCAL_REALM_ADMIN_SCOPE` (now `"ass-control-realm-admin"`) all follow.
+  `LOCAL_REALM_ADMIN_SCOPE` (now `"aegis-ctl-realm-admin"`) all follow.
 - The CLI is now built with `clap` derive. `--help` / `-h` / `--version`
   are recognized on every subcommand; help is per-subcommand
-  (`ass-control realm transfer --help`); shell completions for bash, zsh,
+  (`aegis-ctl realm transfer --help`); shell completions for bash, zsh,
   fish, PowerShell, and elvish are generated by
-  `ass-control completions <shell>`.
+  `aegis-ctl completions <shell>`.
 - Realm commands are grouped under a single `realm` subcommand instead of
   the flat `realm-*` namespace. The `realms` list command is now
   `realm list`. Migration map:
 
   | Old                                | New                                |
   |------------------------------------|------------------------------------|
-  | `ass-ctl realms`                   | `ass-control realm list`           |
-  | `ass-ctl realm-create [label]`     | `ass-control realm create [label]` |
-  | `ass-ctl realm-pause <id>`         | `ass-control realm pause <id>`     |
-  | `ass-ctl realm-resume <id>`        | `ass-control realm resume <id>`    |
-  | `ass-ctl realm-transfer <w> <r>`   | `ass-control realm transfer <w> <r>` |
-  | `ass-ctl realm-launch <r> <app>`   | `ass-control realm launch <r> <app>` |
-  | `ass-ctl realm-capture <r> [path]` | `ass-control realm capture <r> [path]` |
-  | `ass-ctl realm-revoke <r>`         | `ass-control realm revoke <r>`     |
+  | `ass-ctl realms`                   | `aegis-ctl realm list`           |
+  | `ass-ctl realm-create [label]`     | `aegis-ctl realm create [label]` |
+  | `ass-ctl realm-pause <id>`         | `aegis-ctl realm pause <id>`     |
+  | `ass-ctl realm-resume <id>`        | `aegis-ctl realm resume <id>`    |
+  | `ass-ctl realm-transfer <w> <r>`   | `aegis-ctl realm transfer <w> <r>` |
+  | `ass-ctl realm-launch <r> <app>`   | `aegis-ctl realm launch <r> <app>` |
+  | `ass-ctl realm-capture <r> [path]` | `aegis-ctl realm capture <r> [path]` |
+  | `ass-ctl realm-revoke <r>`         | `aegis-ctl realm revoke <r>`     |
 
 - The `--region x,y,w,h` flag is now scoped to `screenshot` and
   `realm capture` only, instead of being a global flag with a runtime
   allowlist. Passing it to any other subcommand is now a usage error
   caught at parse time.
 - `set-geometry` accepts negative coordinates positionally
-  (`ass-control set-geometry 1 -20 30 800 600`); no `--` separator needed.
+  (`aegis-ctl set-geometry 1 -20 30 800 600`); no `--` separator needed.
 - Errors are now typed (`thiserror`-backed `CliError`); exit codes are
   unchanged (0 success, 1 runtime failure, 2 usage). Library callers that
   matched on the previous `Result<_, String>` must switch to
@@ -145,9 +234,9 @@ project cuts a tagged release.
 
 ### Shell component crates
 
-- The dock and the Control Center moved from `ass-shell` modules into
-  their own crates, `ass-dock` and `ass-control-center`, fulfilling the
-  promotion path deferred in ADR-0021. `ass-shell` keeps the `Chrome`
+- The dock and the Control Center moved from `aegis-shell` modules into
+  their own crates, `aegis-dock` and `aegis-ctl-center`, fulfilling the
+  promotion path deferred in ADR-0021. `aegis-shell` keeps the `Chrome`
   host, the shared contract, and the remaining components; the `ass`
   binary remains the composition root that registers every component.
   See ADR-0044.
@@ -157,14 +246,14 @@ project cuts a tagged release.
   textures) that `Shell` owns, seeds into every registered component,
   and replaces through `set_app_catalog`.
 - Application match keys (`StartupWMClass`, desktop-id stem, icon name)
-  are unified on `Entry::match_keys` in `ass-core`, replacing a
+  are unified on `Entry::match_keys` in `aegis-core`, replacing a
   binary-local helper. No user-visible behavior change.
 
 ### Status bar crate and StatusNotifierItem tray
 
-- The top status bar (`HudBar`) moved from `ass-shell` into its own
-  crate `ass-statusbar`, with the component type renamed
-  `HudBar` → `StatusBar`. `ass-shell` exposes `HUD_HEIGHT` as a `pub
+- The top status bar (`HudBar`) moved from `aegis-shell` into its own
+  crate `aegis-statusbar`, with the component type renamed
+  `HudBar` → `StatusBar`. `aegis-shell` exposes `HUD_HEIGHT` as a `pub
   const` (consumed by `Toast` for its top margin) and no longer carries
   any status-bar code. The bar's `[statusbar] enabled` configuration
   flag is the first per-component enable switch; it defaults to `true`
@@ -182,7 +271,7 @@ project cuts a tagged release.
   (`zbus` v5 with `default-features = false` + `async-io` +
   `blocking-api`), running on two dedicated `std::thread`s behind
   `Arc<Mutex<_>>` and `mpsc`. No async runtime enters the dependency
-  graph; `cargo tree -p ass-statusbar` shows no `tokio`, `async-std`,
+  graph; `cargo tree -p aegis-statusbar` shows no `tokio`, `async-std`,
   or `smol`. Without a session bus, the SNI tray silently stays empty
   and startup is unaffected.
 
@@ -516,7 +605,7 @@ project cuts a tagged release.
   machine-readable JSON (serialized straight from the IPC types) instead of
   human text, so scripts and the agent can parse the output. Control commands
   keep their text ack.
-  ass-ctl gained a `serde`/`serde_json` dependency and enables ass-core's
+  ass-ctl gained a `serde`/`serde_json` dependency and enables aegis-core's
   serde feature. Loopback-tested.
 
 ### ass-ctl subscribe: stream server events
@@ -531,7 +620,7 @@ project cuts a tagged release.
   whether it was present), mirroring a user "dismiss" before the TTL. The
   IPC `DismissNotification { id }` command (control), `ass-ctl dismiss <id>`,
   a main-loop drain, and toast click-to-dismiss wire it up. Unit-tested in
-  `ass-core::notify`.
+  `aegis-core::notify`.
 
 ### GetOutputs: query the live output list
 - New `GetOutputs` IPC query and `ass-ctl outputs` expose the live outputs
@@ -548,7 +637,7 @@ project cuts a tagged release.
   IPC snapshot carry a `tiled` flag; `set_tiling`/`ToggleTiling` flip the
   *current* workspace; `apply_tiling` tiles only when the current workspace
   is tiled. The server's global `tiling` bool is gone. Unit-tested in
-  `ass-core::workspace`.
+  `aegis-core::workspace`.
 
 ### IPC: move a window to a workspace
 - New `MoveToWorkspace { window, workspace }` IPC command (control) and
@@ -573,7 +662,7 @@ project cuts a tagged release.
   `windows`, `workspaces`, `focus <id>`, `close <id>`,
   `switch <next|prev>`, `tiling`, `notify <summary> [body]`, `quit`, and
   `help` (which works without a server). Connects to
-  `$XDG_RUNTIME_DIR/ass.sock`; the library's `run` entry point is
+  `$XDG_RUNTIME_DIR/aegis.sock`; the library's `run` entry point is
   unit-tested against a loopback server.
 - This makes the compositor scriptable from the shell and validates the
   client end of the IPC end to end.
@@ -596,7 +685,7 @@ project cuts a tagged release.
 ### Configurable tiling + output-geometry work-area
 - The tiling gaps and master ratio are now configurable via a `[layout]`
   table (`gaps`, `master_ratio`), applied live on config reload. New
-  `ass-config` `LayoutConfig` section converts to `ass_core::layout::LayoutParams`.
+  `aegis-config` `LayoutConfig` section converts to `ass_core::layout::LayoutParams`.
 - The tiling work-area now comes from the focused output's geometry
   (ADR-0028) rather than a hardcoded rect: the server tracks an
   `OutputGeometry` (`set_output_geometry`, called by the backend on resize)
@@ -639,8 +728,8 @@ project cuts a tagged release.
 - Tiling now respects the layout role: a `floating`-role window is exempt
   from tiling even when its workspace is in tiled mode (ADR-0024 floating
   exceptions). New pure module `ass_core::window_rule` owns the matching
-  logic, unit-tested in isolation; `ass-config` deserializes the rules and
-  `ass-server` applies them on map and on config reload.
+  logic, unit-tested in isolation; `aegis-config` deserializes the rules and
+  `aegis-compositor` applies them on map and on config reload.
 - Limitation: rules evaluate at first map; `app_id`/`title` set after mapping
   are not re-evaluated yet (follow-up).
 
@@ -701,7 +790,7 @@ project cuts a tagged release.
   event is pushed to subscribers whenever the model moves (switch, place,
   remove, reap). The binary grants all capabilities to local clients on the
   `$XDG_RUNTIME_DIR` socket (the boundary becomes load-bearing for the agent
-  phase). The workspace snapshot types live in `ass-core` (serde-derived) so
+  phase). The workspace snapshot types live in `aegis-core` (serde-derived) so
   the IPC sends them without reconstructing them.
 - A top-center workspace indicator (`WorkspaceBar` chrome component) shows
   one numbered tile per workspace, highlights the current one (`[n]`), and
@@ -715,7 +804,7 @@ project cuts a tagged release.
 
 ### IPC and introspection surface (query, control, and events)
 - ass now exposes a versioned IPC over a unix socket at
-  `$XDG_RUNTIME_DIR/ass.sock`, the foundation of the extension and
+  `$XDG_RUNTIME_DIR/aegis.sock`, the foundation of the extension and
   automation surface ([ADR-0027](docs/adr/0027-ipc-and-introspection.md)).
   It is the path the chrome, external tools, and the later agent layer all
   share: every capability returns the same `ass_core::window::Window` the
@@ -740,18 +829,18 @@ project cuts a tagged release.
   events never contend; the subscriber registry is reaped on disconnect.
 - Bind failure is non-fatal (the compositor runs without IPC); a stale
   socket from a crashed run is removed on startup and on shutdown.
-- New pure crate `ass-ipc` (depends only on `ass-core`, `serde`,
+- New pure crate `aegis-ipc` (depends only on `aegis-core`, `serde`,
   `serde_json`) owns the schema, codec, server (`Handler` trait + accept
   thread + per-connection reader/writer threads), and reference client,
   verified end-to-end by loopback tests covering query, commands, capability
-  refusal, and event delivery. `ass-core` gained an optional, off-by-default
+  refusal, and event delivery. `aegis-core` gained an optional, off-by-default
   `serde` feature deriving `Serialize`/`Deserialize` on the shared model
   types (`Window`, `WindowState`, `SizeHints`, `Point`, `Size`, `Rect`) so
   the IPC sends the same types rather than reconstructing them.
 
 ### Declarative configuration (TOML + live reload)
 - Configuration now lives in a single TOML file at
-  `$XDG_CONFIG_HOME/ass/config.toml` (defaulting to `~/.config/ass/config.toml`),
+  `$XDG_CONFIG_HOME/ass/config.toml` (defaulting to `~/.config/aegis/config.toml`),
   replacing the ad hoc `$ASS_KEYBINDS` environment variable as the source of
   truth for user-tunable behavior. The file carries an explicit
   `schema_version`; this build supports `1`. See
@@ -783,7 +872,7 @@ project cuts a tagged release.
   structured `config:` diagnostic with field path and (for parse errors)
   source line, and never crashes the compositor. Good entries in a partially
   invalid file still take effect.
-- New pure crate `ass-config` (depends only on `ass-core`, `serde`, `toml`,
+- New pure crate `aegis-config` (depends only on `aegis-core`, `serde`, `toml`,
   `dirs`) owns the schema, the loader, the watcher, and the migration logic;
   it is unit-tested in isolation. `ass_core::keybind::{mod_from_name,
   action_from_name}` are now public so the config layer reuses the existing
@@ -813,7 +902,7 @@ project cuts a tagged release.
   accessor (all other flux types already had one).
 
 ### Build robustness
-- `ass-protocols` build script now probes `pkg-config --cflags-only-I
+- `aegis-protocols` build script now probes `pkg-config --cflags-only-I
   wayland-server` for the include path instead of assuming `wayland-util.h`
   is in the compiler's default search path. Required on sysroot-based
   distributions (e.g. theseus/wright) where libwayland headers live in a
@@ -888,7 +977,7 @@ project cuts a tagged release.
   `lens-sys`). The workspace now depends on `flux` / `flux-sys` from
   `flux-rs` and `lens` / `lens-sys` from `lens-rs`; every `flux_ui` reference
   in the shell became `lens`. The migration was a near-drop-in rename —
-  lens's safe surface matches what `ass-shell` used, and `lens-sys`'s
+  lens's safe surface matches what `aegis-shell` used, and `lens-sys`'s
   bindgen allowlist covers the `flux_*` types the device-binding seam casts
   across. See [ADR-0023](docs/adr/0023-split-flux-lens-stack.md), which
   supersedes ADR-0005.
@@ -900,7 +989,7 @@ project cuts a tagged release.
   `LENS_SOURCE_DIR`) the `-sys` build scripts use to locate freshly-built
   flux and lens without `meson install`. Set `ASS_DEV_ENV_USE_INSTALLED=1`
   to link installed libraries instead.
-- `ass-shell` now compiles end-to-end for the first time. A latent bug
+- `aegis-shell` now compiles end-to-end for the first time. A latent bug
   surfaced: the launcher's `emit` helper had been placed inside the
   `impl Chrome for Launcher` block (not a trait method). It is moved to the
   inherent `impl Launcher` block.
@@ -927,12 +1016,12 @@ project cuts a tagged release.
   `Keyboard::update_key` / `Server::key_char` resolve each key to an
   xkbcommon keysym + printable char to feed the search box. The
   query/filter/selection logic lives in a pure, unit-tested
-  `ass-core::launcher` module; the flux-ui component is a thin adapter.
-- Added two new leaf crates: `ass-apps` (desktop-entry parsing, `XDG_DATA_HOME`
+  `aegis-core::launcher` module; the flux-ui component is a thin adapter.
+- Added two new leaf crates: `aegis-desktop-entries` (desktop-entry parsing, `XDG_DATA_HOME`
   / `XDG_DATA_DIRS` traversal, deduplication with user-overrides-system
   precedence, locale resolution via `LC_MESSAGES`, `Exec` field-code
   expansion, and Icon Theme Spec lookup with the `hicolor` fallback) and
-  `ass-launch` (the detached spawn path, terminal-emulator wrapping for
+  `aegis-launcher` (the detached spawn path, terminal-emulator wrapping for
   `Terminal=true` entries).
 - A bare **Super tap** (press and release with no other key in between) now
   opens the launcher from anywhere, even while an app has keyboard focus.
@@ -943,23 +1032,23 @@ project cuts a tagged release.
   `StartupWMClass` (or desktop-id stem) matches a live toplevel's `app_id`
   focuses that instance instead of spawning a duplicate, via the existing
   focus-by-surface-id path. Running rows are marked with a leading `●`.
-- Added `ass-core::app::Entry` as the shared launchable-application model,
-  `ass-core::launcher` (with the `Launch::{Spawn,Focus}` outcome) for the
+- Added `aegis-core::app::Entry` as the shared launchable-application model,
+  `aegis-core::launcher` (with the `Launch::{Spawn,Focus}` outcome) for the
   search state machine, and
-  `ass-core::input::{KeyChar, KeyAction, key_action, TapDetector}` for the
-  keyboard path — so the shell chrome needs no `ass-apps` dependency.
-- `ass-shell` gains a `Launcher` chrome component, three `Chrome` trait
+  `aegis-core::input::{KeyChar, KeyAction, key_action, TapDetector}` for the
+  keyboard path — so the shell chrome needs no `aegis-desktop-entries` dependency.
+- `aegis-shell` gains a `Launcher` chrome component, three `Chrome` trait
   methods (`captures_keyboard`, `key_char`, `toggle`), and a
   `ChromeEvents::spawn` intent; its dependency graph is unchanged. The binary
   wires enumeration to the launcher, drains the spawn intent into
-  `ass-launch`, routes keyboard capture, and runs the Super-tap detector.
+  `aegis-launcher`, routes keyboard capture, and runs the Super-tap detector.
 - See [ADR-0022](docs/adr/0022-application-launcher.md). Rendering real app
   icons as textures, a runtime application rescan, and a configurable
   keybind (e.g. `Super+Space`) are follow-up work. Apps that set neither a
   matching `app_id` nor `StartupWMClass` will not be recognized as running.
 
 ### Shell architecture
-- Split `ass-shell` into a pure core host and pluggable chrome components.
+- Split `aegis-shell` into a pure core host and pluggable chrome components.
   `Shell` now owns only the flux-ui context, the per-frame window snapshot,
   the interaction sink, and a component registry; it has no built-in chrome.
   Each surface — the window-list side panel, server-side decorations, the
@@ -998,7 +1087,7 @@ project cuts a tagged release.
 - See [ADR-0019](docs/adr/0019-dock-as-bottom-center-overlay.md).
 
 ### Wallpaper
-- Added a new `ass-wallpaper` crate that draws a user-chosen
+- Added a new `aegis-wallpaper` crate that draws a user-chosen
   background as the bottom-most layer of every frame, beneath client
   surfaces and the chrome. Loaded via `$ASS_WALLPAPER` at startup; the
   clear colour shows through when unset or load fails.
@@ -1123,7 +1212,7 @@ project cuts a tagged release.
 - `wl_surface.set_buffer_transform` is now a real handler that stores
   the transform on `SurfaceRec` (8 cases: Normal, Rotate90/180/270,
   FlipHorizontal, FlipRotate90/180/270).
-- New `transform_pixels` helper in `ass-render` applies each transform
+- New `transform_pixels` helper in `aegis-render` applies each transform
   on the CPU at upload time, returning a borrowed `Cow` for `Normal`
   (zero cost) and an owned staging buffer for rotated/flipped cases.
   Six unit tests cover Normal-borrowed, Rotate90 (square and

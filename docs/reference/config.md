@@ -1,7 +1,7 @@
 # Configuration Reference
 
 Exact reference for the ass configuration file at
-`$XDG_CONFIG_HOME/ass/config.toml` (defaulting to `~/.config/ass/config.toml`).
+`$XDG_CONFIG_HOME/ass/config.toml` (defaulting to `~/.config/aegis/config.toml`).
 For the design behind it, the loader, and the live-reload contract, see
 [ADR-0026](../adr/0026-configuration-system.md).
 
@@ -23,6 +23,7 @@ log diagnostic and never crashes the compositor.
 | `[input.touchpad]` | table | touchpad defaults | Touchpad pointing, tapping, and scrolling profile. See [Touchpad](#touchpad). |
 | `[[output]]` | array of tables | none | Per-connector display policy: mode, scale, position, transform, primary. See [Outputs](#outputs). |
 | `[screenshot]` | table | XDG Pictures directory | Screenshot save location. See [Screenshots](#screenshots). |
+| `[appearance]` | table | `color_scheme = "system"` | Desktop-wide appearance preference read by the portal Settings backend. See [Appearance](#appearance). |
 | `[agent]` | table | no scopes | Named automation scopes enforced by the IPC server. See [Agent Scopes](#agent-scopes). |
 | `[realm_sandbox]` | table | default deny | Network, filesystem, and cgroup policy for new Realm application launches. See [Realm Sandbox](#realm-sandbox). |
 
@@ -139,6 +140,25 @@ clipboard.
 save_dir = "/home/alice/Pictures/screenshots"
 ```
 
+## Appearance
+
+The `[appearance]` table holds the desktop-wide appearance preference. The
+compositor does not theme from it yet; the portal backend (`aegis-portal`)
+reads it to answer the freedesktop `org.freedesktop.appearance` settings
+namespace ([ADR-0051](../adr/0051-portal-backend-dbus-bridge.md)), which is
+how portal-aware and sandboxed applications learn whether to prefer a dark
+or light UI. Changes apply on live reload; the portal re-reads the file per
+query, so no restart is needed on either side.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `color_scheme` | string | `"system"` | `system` advertises no preference (portal `color-scheme` 0); `dark` and `light` map to 1 and 2. |
+
+```toml
+[appearance]
+color_scheme = "dark"
+```
+
 ## Outputs
 
 Each `[[output]]` table overrides one aspect of a connector's
@@ -150,7 +170,7 @@ last-wins.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `connector` | string | required | The backend's connector name, as shown by `ass-control outputs` (e.g. `"DP-1"`, `"HDMI-A-1"`, `"nested"`). |
+| `connector` | string | required | The backend's connector name, as shown by `aegis-ctl outputs` (e.g. `"DP-1"`, `"HDMI-A-1"`, `"nested"`). |
 | `scale` | float | backend-reported | Output scale factor, 0.25–4.0. Integer scales advertise through `wl_output`; fractional scales through `wp_fractional_scale_v1`. Applied live on reload. |
 | `mode` | string | connector's preferred mode | Requested display mode, `"WxH"` or `"WxH@Hz"` (e.g. `"2560x1440@144"`). Without `@Hz` the preferred or highest-refresh mode of that size is used. A mode the connector does not advertise falls back to its preferred mode with a log warning. Direct DRM sessions apply changes live after the current page flip retires; nested sessions remain host-managed. |
 | `position` | table | backend arrangement | Top-left of the output in the global logical layout, written `position = { x = 1920, y = 0 }`. Applied live on reload. |
@@ -170,7 +190,7 @@ mode = "1920x1080"
 position = { x = 1707, y = 0 }
 ```
 
-Run `ass-control outputs` to see the modes each connector advertises; the
+Run `aegis-ctl outputs` to see the modes each connector advertises; the
 `mode` value must match one of them (resolution exactly, refresh to the
 nearest whole hertz).
 
@@ -330,7 +350,9 @@ Operation names are `Focus`, `Minimize`, `Close`, `Move`,
 `SetWindowGeometry`, `InjectInput`, `InjectRealmInput`, `Cycle`,
 `SwitchWorkspace`, `SwitchWorkspaceTo`, `MoveToWorkspace`, `ToggleTiling`,
 `ToggleOverview`, `Notify`, `DismissNotification`, `Screenshot`,
-`ScreenshotRegion`, `CaptureOutput`, `CreateRealm`, `TransactRealm`,
+`ScreenshotRegion`, `CaptureOutput`, `StreamOutput`, `IdleInhibit`,
+`CreateRealm`,
+`TransactRealm`,
 `RevokeRealm`, `CaptureRealm`, and `LaunchInRealm`. Names are
 case-insensitive; snake-case forms are also accepted. Invalid names are
 logged and grant nothing. Input, capture, and Realm operations must be listed

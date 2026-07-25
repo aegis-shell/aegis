@@ -21,7 +21,7 @@ button releases.
 
 ## Decision
 
-### 1. Model in `ass-core::window`
+### 1. Model in `aegis-core::window`
 
 Two new types live alongside the `Window` model:
 
@@ -31,7 +31,7 @@ Two new types live alongside the `Window` model:
   - `Move { window_id, origin, start_position }`
   - `Resize { window_id, edges, origin, start_position, start_size }`
 
-Putting these in `ass-core` (rather than in `ass-server`) means the shell
+Putting these in `aegis-core` (rather than in `aegis-compositor`) means the shell
 and the introspection API can observe the grab state and, for example, draw
 a different cursor or pause overview animations while one is in progress.
 
