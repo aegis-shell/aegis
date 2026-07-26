@@ -7,7 +7,7 @@
 //! the shell each frame, and user intents leave through
 //! `aegis_shell::ChromeEvents`.
 //!
-//! Like the dock (`ass-dock`) and the Control Center (`aegis-ctl-center`),
+//! Like the dock (`aegis-dock`) and the modal compositor applications,
 //! the status bar graduated out of `ass-shell` into its own crate on top of
 //! the same component seam (ADR-0021), following the ADR-0044 precedent;
 //! ADR-0045 will cover this split. The composition root (the `ass` binary)

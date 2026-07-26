@@ -1,6 +1,6 @@
 # ADR-0049: Standalone modular Control Center with revisioned settings IPC
 
-- Status: Accepted
+- Status: Superseded by ADR-0056
 - Date: 2026-07-22
 
 ## Context

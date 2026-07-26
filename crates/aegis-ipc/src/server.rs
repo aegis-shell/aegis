@@ -148,6 +148,10 @@ pub trait Handler: Send + Sync {
     fn settings(&self) -> SettingsSnapshot {
         SettingsSnapshot::default()
     }
+    /// Live host and compositor-owned session status.
+    fn system_status(&self) -> aegis_core::system::SystemStatus {
+        aegis_core::system::SystemStatus::default()
+    }
     /// Resolve a named scope from configuration (ADR-0034). Returns `None`
     /// if the name is unknown; an explicitly named connection is refused.
     fn resolve_scope(&self, _name: &str) -> Option<Scope> {
@@ -789,6 +793,17 @@ fn drive_read_loop<H: Handler>(
                     }
                 }
             }
+            Request::GetSystemStatus => {
+                if granted.query {
+                    Response::SystemStatus {
+                        snapshot: handler.system_status(),
+                    }
+                } else {
+                    Response::Error {
+                        message: "GetSystemStatus requires the query capability".into(),
+                    }
+                }
+            }
             Request::Settings {
                 expected_revision,
                 action,
@@ -1214,9 +1229,10 @@ fn drive_read_loop<H: Handler>(
                                 None => Some(granted_scope.clone()),
                             }
                             .is_some_and(|scope| {
-                                scope.ops.as_ref().is_some_and(|ops| {
-                                    ops.contains(&OpClass::PickTarget)
-                                })
+                                scope
+                                    .ops
+                                    .as_ref()
+                                    .is_some_and(|ops| ops.contains(&OpClass::PickTarget))
                             });
                             if !scope_still_allows {
                                 Response::Error {

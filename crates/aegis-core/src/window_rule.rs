@@ -26,6 +26,16 @@ pub struct WindowRule {
     /// Force the layout role (ADR-0024). A `Floating` role exempts the
     /// window from tiling even when its workspace is in tiled mode.
     pub role: Option<crate::layout::LayoutRole>,
+    /// Explicit position override in compositor logical coordinates.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub position: Option<crate::Point>,
+    /// Explicit size override in compositor logical coordinates.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub size: Option<crate::Size>,
+    /// Controls whether window geometry changes are remembered for this app across restarts.
+    /// `None` or `Some(true)` allows auto-remembering; `Some(false)` disables it for matching windows.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub remember: Option<bool>,
 }
 
 impl WindowRule {
@@ -70,6 +80,9 @@ mod tests {
             title: None,
             workspace: None,
             role: None,
+            position: None,
+            size: None,
+            remember: None,
         };
         assert!(r.matches(Some("firefox"), None));
         assert!(r.matches(Some("Firefox"), None));
@@ -85,6 +98,9 @@ mod tests {
             title: Some("Calculator".into()),
             workspace: None,
             role: None,
+            position: None,
+            size: None,
+            remember: None,
         };
         assert!(r.matches(None, Some("GNOME Calculator")));
         assert!(!r.matches(None, Some("Terminal")));
@@ -97,6 +113,9 @@ mod tests {
             title: Some("settings".into()),
             workspace: None,
             role: None,
+            position: None,
+            size: None,
+            remember: None,
         };
         assert!(r.matches(Some("org.example.App"), Some("Settings")));
         assert!(!r.matches(Some("org.example.App"), Some("Main"))); // title misses
@@ -110,6 +129,9 @@ mod tests {
             title: None,
             workspace: Some(2),
             role: Some(LayoutRole::Floating),
+            position: None,
+            size: None,
+            remember: None,
         };
         assert!(!r.matches(Some("anything"), Some("whatever")));
     }

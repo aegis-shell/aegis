@@ -14,7 +14,7 @@ use crate::journal::JournalSnapshot;
 use crate::schema::{
     Capabilities, Command, Event, LeaseGrant, LeaseRequest, PROTOCOL_VERSION, PickKind, PickResult,
     RealmAction, RealmActionResult, Request, Response, Scope, SettingsAction, SettingsReceipt,
-    SettingsSnapshot, StreamPixelFormat, StreamTarget,
+    SettingsSnapshot, StreamPixelFormat, StreamTarget, SystemAction, SystemStatus,
 };
 
 /// Decoded Realm observation returned by [`Client::capture_realm`].
@@ -243,7 +243,10 @@ impl Client {
     }
 
     /// Switch directly to a workspace by id.
-    pub fn switch_workspace_to(&mut self, id: aegis_core::workspace::WorkspaceId) -> io::Result<()> {
+    pub fn switch_workspace_to(
+        &mut self,
+        id: aegis_core::workspace::WorkspaceId,
+    ) -> io::Result<()> {
         self.command(Command::SwitchWorkspaceTo { id })
     }
 
@@ -424,6 +427,24 @@ impl Client {
                 format!("expected Settings, got {other:?}"),
             )),
         }
+    }
+
+    /// Fetch the live host and compositor-owned session status.
+    pub fn system_status(&mut self) -> io::Result<SystemStatus> {
+        write_msg(&mut self.stream, &Request::GetSystemStatus)?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::SystemStatus { snapshot } => Ok(snapshot),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected SystemStatus, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Queue one immediate live-system control.
+    pub fn apply_system_action(&mut self, action: SystemAction) -> io::Result<()> {
+        self.command(Command::System { action })
     }
 
     /// Persist and apply a compositor setting, returning only after the main

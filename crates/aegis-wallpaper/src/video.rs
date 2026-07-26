@@ -220,4 +220,10 @@ impl Source for VideoSource {
     fn frame_count(&self) -> usize {
         0
     }
+
+    fn next_frame_in(&self) -> Option<Duration> {
+        // The reader republishes frames at the `fps=` rate fed to ffmpeg;
+        // polling at that cadence keeps uploads aligned with fresh frames.
+        Some(Duration::from_secs(1) / VIDEO_FPS)
+    }
 }

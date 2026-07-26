@@ -143,7 +143,11 @@ fn exported_flatpak_desktop_symlinks_are_discoverable() {
             // Visibility rules can legitimately exclude an export. The first
             // entry parse_str considers visible must also appear in the full
             // XDG scan under the symlink's exported desktop id.
-            if aegis_desktop_entries::parse_str(&text, id).ok().flatten().is_some() {
+            if aegis_desktop_entries::parse_str(&text, id)
+                .ok()
+                .flatten()
+                .is_some()
+            {
                 assert!(
                     apps.iter().any(|app| app.id == id),
                     "visible Flatpak export {path:?} was not enumerated"
@@ -162,7 +166,14 @@ fn expand_exec_on_real_entries() {
     for e in aegis_desktop_entries::enumerate() {
         let exec = e.exec.as_deref().unwrap();
         // Round-trips without panic for every entry on the host.
-        let _ = aegis_desktop_entries::expand_exec(exec, &[], e.icon.as_deref(), Some(&e.name), None);
-        let _ = aegis_desktop_entries::expand_exec_tokens(exec, &[], e.icon.as_deref(), Some(&e.name), None);
+        let _ =
+            aegis_desktop_entries::expand_exec(exec, &[], e.icon.as_deref(), Some(&e.name), None);
+        let _ = aegis_desktop_entries::expand_exec_tokens(
+            exec,
+            &[],
+            e.icon.as_deref(),
+            Some(&e.name),
+            None,
+        );
     }
 }

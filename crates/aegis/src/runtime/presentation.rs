@@ -15,105 +15,67 @@ impl CompositorRuntime {
             session_locked,
             cursor_hidden,
             cursor_shape,
+            had_input,
             mut pending_screenshots,
         } = state;
+        // Render scale and logical extent come from the server's output
+        // geometry (backend + `[[output]]` overrides), not the host, so a
+        // configured scale actually changes the desktop. Nested outputs
+        // report the host scale, so the nested path is unchanged.
+        let (scale, logical_size) = {
+            let geometry = self.server.output_infos().first().map(|o| o.geometry);
+            let scale = geometry
+                .map(|g| g.scale.as_f32())
+                .filter(|s| *s > 0.0)
+                .unwrap_or_else(|| self.host.scale());
+            let logical = geometry
+                .map(|g| g.logical_size())
+                .map(|s| (s.w.max(1) as u32, s.h.max(1) as u32))
+                .unwrap_or_else(|| self.host.size_u32());
+            (scale, logical)
+        };
+        let physical_size = self.surface.size();
+        // Bind capture requests before the render/skip decision: a bound
+        // capture always forces a presentation frame.
+        let mut frame_capture =
+            self.prepare_frame_capture(session_locked, &mut pending_screenshots);
+        let damage = self.assess_frame_damage(
+            had_input,
+            session_locked,
+            cursor_hidden,
+            cursor_shape,
+            scale,
+            physical_size,
+        );
+        let present_damage = match damage {
+            FrameDamage::Area(rect) => Some(rect),
+            _ => None,
+        };
+        if matches!(damage, FrameDamage::None)
+            && frame_capture.is_none()
+            && self.pending_capture.is_none()
+            && self.pending_realm_capture.is_none()
+            && !self.capture_worker.is_busy()
+            && !self.screenshot_freeze.armed
+            && !self.server.lock_confirmation_pending()
+            && !self.server.retired_buffers_pending()
+            && !self.server.frame_callbacks_pending()
+        {
+            // Nothing visible changed: skip the render and the atomic commit
+            // — the scanout contents are already correct, so presenting
+            // would be pure waste. Pending frame callbacks deliberately
+            // disable the skip: completing them immediately on every
+            // Wayland-fd wake would let a frame-only client spin without
+            // output/vblank pacing.
+            return Ok(PresentationOutcome::Presented);
+        }
         match self.surface.begin_frame() {
             Ok(mut frame) => {
                 self.renderer.begin_frame();
-                // Render scale and logical extent come from the server's
-                // output geometry (backend + `[[output]]` overrides), not
-                // the host, so a configured scale actually changes the
-                // desktop. Nested outputs report the host scale, so the
-                // nested path is unchanged.
-                let (scale, logical_size) = {
-                    let geometry = self.server.output_infos().first().map(|o| o.geometry);
-                    let scale = geometry
-                        .map(|g| g.scale.as_f32())
-                        .filter(|s| *s > 0.0)
-                        .unwrap_or_else(|| self.host.scale());
-                    let logical = geometry
-                        .map(|g| g.logical_size())
-                        .map(|s| (s.w.max(1) as u32, s.h.max(1) as u32))
-                        .unwrap_or_else(|| self.host.size_u32());
-                    (scale, logical)
-                };
                 let render_geometry = RenderGeometry {
                     logical_size,
                     scale,
                 };
-                let physical_size = self.surface.size();
-                // Bind at most one pending request to this presentation
-                // frame. The readback copy is recorded after every scene and
-                // cursor draw, so it captures exactly the pixels submitted
-                // below rather than a later re-render of mutable state.
-                let mut frame_capture: Option<(Option<aegis_core::Rect>, CaptureTarget)> = None;
-                for req in self.capture_rx.try_iter() {
-                    if session_locked || !self.host.is_active() {
-                        let _ = req
-                            .reply
-                            .send(Err("session is locked or inactive".to_owned()));
-                    } else if !self.capture_worker.reserve() {
-                        let _ = req
-                            .reply
-                            .send(Err("another capture is still being processed".to_owned()));
-                    } else {
-                        frame_capture =
-                            Some((req.region, CaptureTarget::Reply { reply: req.reply }));
-                    }
-                }
-                for (cmd, ts, origin) in pending_screenshots.drain(..) {
-                    let aegis_ipc::Command::Screenshot { path, region } = &cmd else {
-                        continue;
-                    };
-                    if session_locked || !self.host.is_active() {
-                        journal_effect_and_broadcast(
-                            &self.journal,
-                            &self.ipc,
-                            ts,
-                            origin,
-                            cmd,
-                            aegis_ipc::Effect::Refused {
-                                reason: "session is locked or inactive".into(),
-                            },
-                        );
-                    } else if !self.capture_worker.reserve() {
-                        journal_effect_and_broadcast(
-                            &self.journal,
-                            &self.ipc,
-                            ts,
-                            origin,
-                            cmd,
-                            aegis_ipc::Effect::Refused {
-                                reason: "another capture is still being processed".into(),
-                            },
-                        );
-                    } else {
-                        frame_capture = Some((
-                            *region,
-                            CaptureTarget::Screenshot {
-                                path: path.clone(),
-                                command: cmd,
-                                ts_mono_ms: ts,
-                                origin,
-                            },
-                        ));
-                    }
-                }
-                // Stream fan-out (ADR-0052): when no one-shot capture claimed
-                // this frame's readback and the staging slot and worker lane
-                // are free, bind one readback shared by every due stream.
-                // One-shots keep priority; a locked or inactive session
-                // simply produces no stream frames (the stream survives).
-                if frame_capture.is_none()
-                    && self.pending_capture.is_none()
-                    && !self.stream_job_in_flight
-                    && !session_locked
-                    && self.host.is_active()
-                    && !self.capture_worker.is_busy()
-                    && !self.streams.due_ids(std::time::Instant::now()).is_empty()
-                {
-                    frame_capture = Some((None, CaptureTarget::Stream));
-                }
                 let blur_sigma = self.shell.backdrop_blur_sigma();
                 let backdrop_regions = self.shell.backdrop_regions(self.input_acc.display_size);
                 let model_active = self
@@ -130,6 +92,26 @@ impl CompositorRuntime {
                 // selector on top. The launcher-blur path stays off for the
                 // whole session.
                 let freeze_capturing = self.screenshot_freeze.needs_capture();
+                // Restrict the backdrop capture to the union of the declared
+                // blur regions (plus the blur footprint): the offscreen pass
+                // re-renders the scene every frame, so covering only what the
+                // blur can sample avoids a second full-screen scene render.
+                // A live 3D wallpaper still draws its model into the whole
+                // capture image, so it keeps the full-frame extent.
+                let capture_bounds = (blur_sigma > 0.0
+                    && !backdrop_regions.is_empty()
+                    && !model_active)
+                    .then(|| {
+                        blur_capture_bounds(
+                            &backdrop_regions,
+                            logical_size,
+                            physical_size,
+                            scale,
+                            blur_sigma,
+                        )
+                    });
+                let (capture_origin, capture_extent) =
+                    capture_bounds.unwrap_or(((0, 0), physical_size));
                 let backdrop_plan = if overview_active || self.screenshot_freeze.armed {
                     BackdropPlan::Direct
                 } else {
@@ -138,7 +120,7 @@ impl CompositorRuntime {
                         &self.device,
                         &self.surface,
                         &frame,
-                        physical_size,
+                        capture_extent,
                     )
                 };
 
@@ -153,9 +135,20 @@ impl CompositorRuntime {
                         let capture_size = self
                             .launcher_backdrop
                             .capture_size(&frame)
-                            .unwrap_or(physical_size);
-                        let capture_ratio = capture_size.0 as f32 / physical_size.0.max(1) as f32;
+                            .unwrap_or(capture_extent);
+                        let capture_ratio = capture_size.0 as f32 / capture_extent.0.max(1) as f32;
                         let capture_scale = scale * capture_ratio;
+
+                        // The capture target only covers `capture_extent`:
+                        // shift the scene so the capture origin lands at
+                        // (0, 0) of the target. The origin is (0, 0) for a
+                        // live 3D wallpaper, whose model pass below re-begins
+                        // the target and so drops this offset.
+                        self.canvas.save();
+                        self.canvas.translate(
+                            -(capture_origin.0 as f32) * capture_ratio,
+                            -(capture_origin.1 as f32) * capture_ratio,
+                        );
 
                         draw_wallpaper_background(
                             &self.canvas,
@@ -182,6 +175,7 @@ impl CompositorRuntime {
                             &self.server,
                             capture_scale,
                         );
+                        self.canvas.restore();
                         let blurred = self.launcher_backdrop.end_capture_and_blur(
                             &self.canvas,
                             &frame,
@@ -222,12 +216,16 @@ impl CompositorRuntime {
                                 }
                                 self.canvas.save();
                                 self.canvas.clip_rect(x, y, w, h);
+                                // The blurred image covers exactly the
+                                // capture bounds; stretching it over that
+                                // rect (instead of the full frame) keeps the
+                                // scene-to-blur sampling identity.
                                 image.draw(
                                     &self.canvas,
-                                    0.0,
-                                    0.0,
-                                    physical_size.0 as f32,
-                                    physical_size.1 as f32,
+                                    capture_origin.0 as f32,
+                                    capture_origin.1 as f32,
+                                    capture_extent.0 as f32,
+                                    capture_extent.1 as f32,
                                 );
                                 self.canvas.restore();
                             }
@@ -347,50 +345,69 @@ impl CompositorRuntime {
                 // The same snapshot is mirrored to the IPC (ADR-0027) so the
                 // chrome and external tools read identical state, and a
                 // change broadcasts `WindowsChanged` to subscribers.
-                let win_snapshot = self.server.windows();
-                let sig: Vec<(aegis_core::window::WindowId, bool, Option<String>)> = win_snapshot
-                    .iter()
-                    .map(|w| (w.id, w.state.activated, w.title.clone()))
-                    .collect();
-                if self.last_win_sig.as_ref() != Some(&sig) {
-                    self.last_win_sig = Some(sig);
-                    if let Some(s) = self.ipc.as_ref() {
-                        s.broadcast(aegis_ipc::Event::WindowsChanged);
+                //
+                // Every snapshot below is rebuilt only when its cheap
+                // revision/signature moves; chrome and IPC keep the copy
+                // pushed last time otherwise, so steady state pays no clone.
+                let windows_hash = self.server.windows_signature();
+                if self.last_windows_hash != Some(windows_hash) {
+                    self.last_windows_hash = Some(windows_hash);
+                    let win_snapshot = self.server.windows();
+                    let sig: Vec<(aegis_core::window::WindowId, bool, Option<String>)> =
+                        win_snapshot
+                            .iter()
+                            .map(|w| (w.id, w.state.activated, w.title.clone()))
+                            .collect();
+                    if self.last_win_sig.as_ref() != Some(&sig) {
+                        self.last_win_sig = Some(sig);
+                        if let Some(s) = self.ipc.as_ref() {
+                            s.broadcast(aegis_ipc::Event::WindowsChanged);
+                        }
                     }
+                    self.live.set_windows(win_snapshot.clone());
+                    self.shell.set_windows(win_snapshot);
                 }
-                self.live.set_windows(win_snapshot.clone());
-                self.shell.set_windows(win_snapshot);
                 // Mirror the workspace snapshot and broadcast `WorkspaceChanged`
                 // on any model mutation (switch, place, remove, reap).
-                let ws_snap = self.server.workspace_snapshot();
-                let ws_changed = self.last_ws_snap.as_ref() != Some(&ws_snap);
-                self.live.set_workspaces(ws_snap.clone());
-                self.shell.set_workspaces(ws_snap.clone());
-                let output_snapshot = self.server.output_infos();
-                self.live.set_outputs(output_snapshot.clone());
-                let display_changed = self.system_status.display.configurable
-                    != (self.host.name() == "drm")
-                    || self.system_status.display.outputs != output_snapshot;
-                if display_changed {
-                    self.system_status.display.configurable = self.host.name() == "drm";
-                    self.system_status.display.outputs = output_snapshot;
-                    self.shell.set_system_status(self.system_status.clone());
-                }
-                let realm_snapshot = self.server.realm_snapshot();
-                self.live.set_realms(realm_snapshot.clone());
-                self.shell.set_realms(realm_snapshot.clone());
-                if self.last_realm_revision != Some(realm_snapshot.revision) {
-                    self.last_realm_revision = Some(realm_snapshot.revision);
-                    if let Some(s) = self.ipc.as_ref() {
-                        s.broadcast(aegis_ipc::Event::RealmsChanged {
-                            revision: realm_snapshot.revision,
-                        });
-                    }
-                }
-                if ws_changed {
-                    self.last_ws_snap = Some(ws_snap);
+                let ws_sig = self.server.workspace_signature();
+                if self.last_ws_sig != Some(ws_sig) {
+                    self.last_ws_sig = Some(ws_sig);
+                    let ws_snap = self.server.workspace_snapshot();
+                    self.live.set_workspaces(ws_snap.clone());
+                    self.shell.set_workspaces(ws_snap);
                     if let Some(s) = self.ipc.as_ref() {
                         s.broadcast(aegis_ipc::Event::WorkspaceChanged);
+                    }
+                }
+                let outputs_revision = self.server.outputs_revision();
+                if self.last_outputs_revision != Some(outputs_revision) {
+                    self.last_outputs_revision = Some(outputs_revision);
+                    let output_snapshot = self.server.output_infos();
+                    self.live.set_outputs(output_snapshot.clone());
+                    let display_changed = self.system_status.display.configurable
+                        != (self.host.name() == "drm")
+                        || self.system_status.display.outputs != output_snapshot;
+                    if display_changed {
+                        self.system_status.display.configurable = self.host.name() == "drm";
+                        self.system_status.display.outputs = output_snapshot;
+                        publish_system_status_parts(
+                            &self.system_status,
+                            &mut self.shell,
+                            &self.live,
+                            &self.ipc,
+                        );
+                    }
+                }
+                let realm_revision = self.server.realm_revision();
+                if self.last_realm_revision != Some(realm_revision) {
+                    self.last_realm_revision = Some(realm_revision);
+                    let realm_snapshot = self.server.realm_snapshot();
+                    self.live.set_realms(realm_snapshot.clone());
+                    self.shell.set_realms(realm_snapshot);
+                    if let Some(s) = self.ipc.as_ref() {
+                        s.broadcast(aegis_ipc::Event::RealmsChanged {
+                            revision: realm_revision,
+                        });
                     }
                 }
                 let do_not_disturb = self.notif_queue.lock().unwrap().do_not_disturb();
@@ -400,7 +417,12 @@ impl CompositorRuntime {
                 {
                     self.system_status.do_not_disturb = do_not_disturb;
                     self.system_status.tiled = tiled;
-                    self.shell.set_system_status(self.system_status.clone());
+                    publish_system_status_parts(
+                        &self.system_status,
+                        &mut self.shell,
+                        &self.live,
+                        &self.ipc,
+                    );
                 }
                 // Report the output scale so lens rasterises chrome crisply on
                 // a HiDPI host; layout and input stay in logical pixels.
@@ -622,7 +644,9 @@ impl CompositorRuntime {
                 for action in self.shell.take_window_actions() {
                     let cmd = match action {
                         aegis_shell::WindowAction::Focus(id) => aegis_ipc::Command::Focus { id },
-                        aegis_shell::WindowAction::Minimize(id) => aegis_ipc::Command::Minimize { id },
+                        aegis_shell::WindowAction::Minimize(id) => {
+                            aegis_ipc::Command::Minimize { id }
+                        }
                         aegis_shell::WindowAction::Close(id) => aegis_ipc::Command::Close { id },
                     };
                     apply_chrome_window_command(
@@ -720,7 +744,7 @@ impl CompositorRuntime {
                             let notification = self.notif_queue.lock().unwrap().push(
                                 "AI Workspace",
                                 error.clone(),
-                                Some("aegis-ctl-center".into()),
+                                Some(aegis_core::app::AI_WORKSPACES_ID.into()),
                                 ts,
                             );
                             if let Some(ipc) = &self.ipc {
@@ -728,7 +752,7 @@ impl CompositorRuntime {
                             }
                         }
                     }
-                    let after_revision = self.server.realm_snapshot().revision;
+                    let after_revision = self.server.realm_revision();
                     let effect = match result {
                         Ok(_) => aegis_ipc::Effect::Applied,
                         Err(reason) => aegis_ipc::Effect::Refused { reason },
@@ -748,88 +772,49 @@ impl CompositorRuntime {
                 }
                 let system_actions = self.shell.take_system_actions();
                 if !system_actions.is_empty() {
+                    let mut applied = false;
                     for action in system_actions {
-                        let settings_action = match &action {
-                            aegis_shell::SystemAction::SetTouchpad(config) => {
-                                Some(aegis_ipc::SettingsAction::SetTouchpad { config: *config })
-                            }
-                            aegis_shell::SystemAction::SetDisplay(settings) => {
-                                Some(aegis_ipc::SettingsAction::SetDisplay {
-                                    settings: settings.clone(),
-                                })
-                            }
-                            _ => None,
+                        let command = aegis_ipc::Command::System {
+                            action: action.clone(),
                         };
-                        if let Some(settings_action) = settings_action {
-                            let before_revision = self.settings_revision;
-                            let result = commit_settings_parts(
-                                None,
-                                settings_action.clone(),
-                                &mut self.settings_revision,
-                                self.config_path.as_deref(),
-                                &mut self.config,
-                                &mut self.keymap,
-                                &mut self.server,
-                                &mut self.shell,
-                                &mut self.cursor_cache,
-                                &mut self.host,
-                                &mut self.reload,
-                                &self.live,
-                                &mut self.system_status,
-                                &mut self.input_acc,
-                                &self.ipc,
-                            );
-                            let effect = match result {
-                                Ok(_) => aegis_ipc::Effect::Applied,
-                                Err(reason) => {
-                                    log::warn!("settings: {reason}");
-                                    aegis_ipc::Effect::Refused { reason }
-                                }
-                            };
-                            journal_mutation_effect_and_broadcast(
-                                &self.journal,
-                                &self.ipc,
-                                ts,
-                                origin,
-                                aegis_ipc::JournalMutation::Settings {
-                                    action: settings_action,
-                                    before_revision,
-                                    after_revision: self.settings_revision,
-                                },
-                                effect,
-                            );
-                            continue;
-                        }
-                        if let Some(cmd) = apply_system_action(
+                        let effect = match apply_system_action(
                             &mut self.server,
                             &self.notif_queue,
                             &mut self.system_status,
                             action,
                         ) {
-                            apply_command_and_journal(
-                                &mut self.server,
-                                &self.notif_queue,
-                                &mut self.quit_requested,
-                                cmd,
-                                &self.ipc,
-                                &self.journal,
-                                ts,
-                                origin,
-                            );
-                        }
+                            Ok(()) => {
+                                applied = true;
+                                aegis_ipc::Effect::Applied
+                            }
+                            Err(reason) => {
+                                log::warn!("system control: {reason}");
+                                aegis_ipc::Effect::Refused { reason }
+                            }
+                        };
+                        journal_effect_and_broadcast(
+                            &self.journal,
+                            &self.ipc,
+                            ts,
+                            origin,
+                            command,
+                            effect,
+                        );
                     }
-                    self.shell.set_system_status(self.system_status.clone());
-                    // Reconcile optimistic hardware state right away: this
-                    // path only fires on an explicit user action (volume,
-                    // brightness, radios), so a one-off detect here is cheap
-                    // and gives the HUD immediate feedback.
-                    let mut detected = aegis_shell::SystemStatus::detect();
-                    detected.do_not_disturb = self.system_status.do_not_disturb;
-                    detected.tiled = self.system_status.tiled;
-                    detected.touchpad = self.host.touchpad_status();
-                    detected.display = self.system_status.display.clone();
-                    self.system_status = detected;
-                    self.shell.set_system_status(self.system_status.clone());
+                    if applied {
+                        publish_system_status_parts(
+                            &self.system_status,
+                            &mut self.shell,
+                            &self.live,
+                            &self.ipc,
+                        );
+                        // Reconcile the optimistic hardware state out of
+                        // cycle: `apply_system_action` already updated the HUD
+                        // with optimistic values, and the poller thread
+                        // re-probes the host right away so the main loop never
+                        // blocks on a wpctl/nmcli subprocess.
+                        let _ = self.status_refresh_tx.send(());
+                    }
                 }
                 // The dock's Launchpad tile was clicked: toggle the launcher,
                 // the same path as the Super-tap hotkey.
@@ -854,12 +839,16 @@ impl CompositorRuntime {
                     );
                     pinned_list =
                         apply_pin_actions(&self.launcher_apps, &pinned_list, &pin_actions);
-                    if let Some(path) = self.config_path.as_deref() {
-                        if let Err(e) = aegis_config::set_dock_pinned(path, &pinned_list) {
-                            log::warn!("dock: failed to persist pins: {e}");
-                        }
-                    } else {
-                        log::warn!("dock: cannot persist pins; no config path");
+                    // Persist off the frame loop: the single worker applies
+                    // the full list in send order, so rapid pin/unpin clicks
+                    // cannot overwrite each other out of order.
+                    if let Err(error) =
+                        self.config_writer
+                            .enqueue(aegis_config::ConfigEdit::SetDockPinned {
+                                pinned: pinned_list.clone(),
+                            })
+                    {
+                        log::warn!("dock: pins not saved: {error}");
                     }
                     if let Some(c) = self.config.as_mut() {
                         c.dock.pinned = pinned_list.clone();
@@ -965,40 +954,49 @@ impl CompositorRuntime {
                         return Err(error.into());
                     }
                 };
-                let completion_fence = match self.host.present(&self.surface, submitted) {
-                    Ok(fence) => fence,
-                    Err(error) => {
-                        if let Some(capture) = capture_for_present.take() {
-                            refuse_capture_target(
-                                &self.capture_worker,
-                                capture.target,
-                                format!("captured frame was not presented: {error}"),
-                                &self.journal,
-                                &self.ipc,
-                            );
+                let completion_fence =
+                    match self.host.present(&self.surface, submitted, present_damage) {
+                        Ok(fence) => fence,
+                        Err(error) => {
+                            if let Some(capture) = capture_for_present.take() {
+                                refuse_capture_target(
+                                    &self.capture_worker,
+                                    capture.target,
+                                    format!("captured frame was not presented: {error}"),
+                                    &self.journal,
+                                    &self.ipc,
+                                );
+                            }
+                            // Transient direct-display conditions (VT switch,
+                            // hotplug reconfigure, flip timeout): drop this frame
+                            // and keep the session alive instead of exiting.
+                            if matches!(
+                                error,
+                                HostError::Drm(
+                                    DrmError::FlipTimeout
+                                        | DrmError::Inactive
+                                        | DrmError::Reconfigured
+                                )
+                            ) {
+                                log::warn!(
+                                    "{}: transient present failure; skipping frame: {error}",
+                                    self.host.name()
+                                );
+                                // Damage/revision baselines were assessed
+                                // before this frame was rendered. They must
+                                // not let the retry skip content that never
+                                // reached scanout.
+                                self.force_full_redraw = true;
+                                return Ok(PresentationOutcome::Retry);
+                            }
+                            return Err(error.into());
                         }
-                        // Transient direct-display conditions (VT switch,
-                        // hotplug reconfigure, flip timeout): drop this frame
-                        // and keep the session alive instead of exiting.
-                        if matches!(
-                            error,
-                            HostError::Drm(
-                                DrmError::FlipTimeout | DrmError::Inactive | DrmError::Reconfigured
-                            )
-                        ) {
-                            log::warn!(
-                                "{}: transient present failure; skipping frame: {error}",
-                                self.host.name()
-                            );
-                            return Ok(PresentationOutcome::Retry);
-                        }
-                        return Err(error.into());
-                    }
-                };
+                    };
                 if let Some(capture) = capture_for_present {
                     debug_assert!(self.pending_capture.is_none());
                     self.pending_capture = Some(capture);
                 }
+                self.server.acknowledge_presented_surface_damage();
                 if self.server.lock_confirmation_pending() {
                     match self.host.wait_presented(&self.device) {
                         Ok(()) => self.server.presentation_complete(),
@@ -1031,6 +1029,12 @@ impl CompositorRuntime {
                 self.server
                     .send_frame_callbacks(self.start.elapsed().as_millis() as u32);
 
+                // The frame landed: re-anchor the present-side damage
+                // baselines (clock minute, cursor, post-resize full redraw).
+                self.last_present_minute = Some(wall_clock_minute());
+                self.last_presented_cursor = Some((cursor_shape, cursor_hidden));
+                self.force_full_redraw = false;
+
                 self.frame_count += 1;
                 if self.frame_count == 1 {
                     log::info!(
@@ -1040,16 +1044,15 @@ impl CompositorRuntime {
                 }
             }
             Err(error) if error.0 == flux_sys::flux_result::FLUX_ERROR_TIMEOUT => {
-                for (command, ts_mono_ms, origin) in pending_screenshots.drain(..) {
-                    journal_effect_and_broadcast(
+                // A capture bound by the pre-pass never got its frame; refuse
+                // it so the worker lane is released for the next iteration.
+                if let Some((_, target)) = frame_capture.take() {
+                    refuse_capture_target(
+                        &self.capture_worker,
+                        target,
+                        "output frame timed out before capture".to_owned(),
                         &self.journal,
                         &self.ipc,
-                        ts_mono_ms,
-                        origin,
-                        command,
-                        aegis_ipc::Effect::Refused {
-                            reason: "output frame timed out before capture".to_owned(),
-                        },
                     );
                 }
                 // The previous frame's GPU work did not retire inside the
@@ -1057,19 +1060,17 @@ impl CompositorRuntime {
                 // swapchain image): transient. Skip this iteration and let
                 // the next wakeup retry instead of rebuilding the
                 // swapchain against a busy device.
+                self.force_full_redraw = true;
                 return Ok(PresentationOutcome::Retry);
             }
             Err(_) => {
-                for (command, ts_mono_ms, origin) in pending_screenshots.drain(..) {
-                    journal_effect_and_broadcast(
+                if let Some((_, target)) = frame_capture.take() {
+                    refuse_capture_target(
+                        &self.capture_worker,
+                        target,
+                        "output changed before capture".to_owned(),
                         &self.journal,
                         &self.ipc,
-                        ts_mono_ms,
-                        origin,
-                        command,
-                        aegis_ipc::Effect::Refused {
-                            reason: "output changed before capture".to_owned(),
-                        },
                     );
                 }
                 // The frame size a stream negotiated at start no longer
@@ -1100,6 +1101,9 @@ impl CompositorRuntime {
                 }
                 let (nw, nh) = self.host.physical_size();
                 self.surface.resize(nw, nh)?;
+                // Damage tracked against the old framebuffer does not
+                // describe the rebuilt one; render the next frame in full.
+                self.force_full_redraw = true;
                 if let Err(error) = self.surface.prepare_readback() {
                     log::warn!(
                         "capture: could not preallocate resized readback staging: {error}{}",
@@ -1110,5 +1114,86 @@ impl CompositorRuntime {
         }
 
         Ok(PresentationOutcome::Presented)
+    }
+
+    /// Drain one-shot and stream capture requests and bind at most one
+    /// readback to the upcoming presentation frame. Runs before the
+    /// render/skip decision so a bound capture always forces presentation.
+    /// The readback copy is recorded after every scene and cursor draw, so it
+    /// captures exactly the pixels submitted rather than a later re-render of
+    /// mutable state.
+    fn prepare_frame_capture(
+        &mut self,
+        session_locked: bool,
+        pending_screenshots: &mut Vec<(aegis_ipc::Command, u64, aegis_ipc::Origin)>,
+    ) -> Option<(Option<aegis_core::Rect>, CaptureTarget)> {
+        let mut frame_capture: Option<(Option<aegis_core::Rect>, CaptureTarget)> = None;
+        for req in self.capture_rx.try_iter() {
+            if session_locked || !self.host.is_active() {
+                let _ = req
+                    .reply
+                    .send(Err("session is locked or inactive".to_owned()));
+            } else if !self.capture_worker.reserve() {
+                let _ = req
+                    .reply
+                    .send(Err("another capture is still being processed".to_owned()));
+            } else {
+                frame_capture = Some((req.region, CaptureTarget::Reply { reply: req.reply }));
+            }
+        }
+        for (cmd, ts, origin) in pending_screenshots.drain(..) {
+            let aegis_ipc::Command::Screenshot { path, region } = &cmd else {
+                continue;
+            };
+            if session_locked || !self.host.is_active() {
+                journal_effect_and_broadcast(
+                    &self.journal,
+                    &self.ipc,
+                    ts,
+                    origin,
+                    cmd,
+                    aegis_ipc::Effect::Refused {
+                        reason: "session is locked or inactive".into(),
+                    },
+                );
+            } else if !self.capture_worker.reserve() {
+                journal_effect_and_broadcast(
+                    &self.journal,
+                    &self.ipc,
+                    ts,
+                    origin,
+                    cmd,
+                    aegis_ipc::Effect::Refused {
+                        reason: "another capture is still being processed".into(),
+                    },
+                );
+            } else {
+                frame_capture = Some((
+                    *region,
+                    CaptureTarget::Screenshot {
+                        path: path.clone(),
+                        command: cmd,
+                        ts_mono_ms: ts,
+                        origin,
+                    },
+                ));
+            }
+        }
+        // Stream fan-out (ADR-0052): when no one-shot capture claimed this
+        // frame's readback and the staging slot and worker lane are free,
+        // bind one readback shared by every due stream. One-shots keep
+        // priority; a locked or inactive session simply produces no stream
+        // frames (the stream survives).
+        if frame_capture.is_none()
+            && self.pending_capture.is_none()
+            && !self.stream_job_in_flight
+            && !session_locked
+            && self.host.is_active()
+            && !self.capture_worker.is_busy()
+            && !self.streams.due_ids(std::time::Instant::now()).is_empty()
+        {
+            frame_capture = Some((None, CaptureTarget::Stream));
+        }
+        frame_capture
     }
 }

@@ -155,7 +155,10 @@ impl OutputStreams {
     }
 
     /// The crop target and start-time physical size of one live stream.
-    pub(super) fn target_of(&self, stream_id: u64) -> Option<(aegis_ipc::StreamTarget, (u32, u32))> {
+    pub(super) fn target_of(
+        &self,
+        stream_id: u64,
+    ) -> Option<(aegis_ipc::StreamTarget, (u32, u32))> {
         self.streams
             .get(&stream_id)
             .map(|stream| (stream.target, stream.size))
@@ -354,8 +357,12 @@ mod tests {
     #[test]
     fn due_streams_respect_the_throttle() {
         let mut streams = OutputStreams::new();
-        let fast = streams.start(1, Some(60), (100, 100), aegis_ipc::StreamTarget::Output).stream_id;
-        let slow = streams.start(1, Some(1), (100, 100), aegis_ipc::StreamTarget::Output).stream_id;
+        let fast = streams
+            .start(1, Some(60), (100, 100), aegis_ipc::StreamTarget::Output)
+            .stream_id;
+        let slow = streams
+            .start(1, Some(1), (100, 100), aegis_ipc::StreamTarget::Output)
+            .stream_id;
         let t0 = Instant::now();
         // Both start due.
         assert_eq!(streams.due_ids(t0), vec![fast, slow]);
@@ -373,7 +380,9 @@ mod tests {
     #[test]
     fn sequence_and_dropped_track_delivery() {
         let mut streams = OutputStreams::new();
-        let id = streams.start(1, Some(30), (100, 100), aegis_ipc::StreamTarget::Output).stream_id;
+        let id = streams
+            .start(1, Some(30), (100, 100), aegis_ipc::StreamTarget::Output)
+            .stream_id;
         let now = Instant::now();
         assert_eq!(streams.sequence_and_dropped(id), Some((1, 0)));
         streams.record_frame(id, now, true);
@@ -417,7 +426,8 @@ mod tests {
         assert_eq!(rect, aegis_core::Rect::new(0, 0, 80, 50));
 
         assert!(
-            window_physical_rect(&windows, aegis_core::window::WindowId(99), 1.0, 100, 100).is_none()
+            window_physical_rect(&windows, aegis_core::window::WindowId(99), 1.0, 100, 100)
+                .is_none()
         );
     }
 
@@ -440,9 +450,15 @@ mod tests {
     #[test]
     fn stop_and_disconnect_remove_stream_state() {
         let mut streams = OutputStreams::new();
-        let a = streams.start(1, None, (100, 100), aegis_ipc::StreamTarget::Output).stream_id;
-        let b = streams.start(2, None, (100, 100), aegis_ipc::StreamTarget::Output).stream_id;
-        let c = streams.start(2, None, (100, 100), aegis_ipc::StreamTarget::Output).stream_id;
+        let a = streams
+            .start(1, None, (100, 100), aegis_ipc::StreamTarget::Output)
+            .stream_id;
+        let b = streams
+            .start(2, None, (100, 100), aegis_ipc::StreamTarget::Output)
+            .stream_id;
+        let c = streams
+            .start(2, None, (100, 100), aegis_ipc::StreamTarget::Output)
+            .stream_id;
         streams.stop(a);
         assert!(!streams.streams.contains_key(&a));
         streams.disconnect(2);

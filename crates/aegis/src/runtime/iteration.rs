@@ -74,10 +74,14 @@ impl CompositorRuntime {
                     origin,
                     security_generation,
                     encoded,
+                    written,
                 } => {
                     let result = if self.capture_worker.permits(security_generation) {
                         encoded.and_then(|png| {
-                            atomic_write_capture(&path, &png)?;
+                            // The worker already committed the atomic write +
+                            // rename; only the clipboard convenience (which
+                            // needs the main-loop server) stays here.
+                            written?;
                             if screenshot_updates_human_clipboard(origin) {
                                 let mut payloads = vec![("image/png".to_owned(), png)];
                                 match screenshot_uri_list(&path) {
@@ -316,7 +320,13 @@ impl CompositorRuntime {
             detected.display = self.system_status.display.clone();
             if detected != self.system_status {
                 self.system_status = detected;
-                self.shell.set_system_status(self.system_status.clone());
+                publish_system_status_parts(
+                    &self.system_status,
+                    &mut self.shell,
+                    &self.live,
+                    &self.ipc,
+                );
+                self.chrome_dirty = true;
             }
         }
         let touchpad_status = self.host.touchpad_status();
@@ -339,6 +349,7 @@ impl CompositorRuntime {
                 &mut self.cursor_cache,
             )
         {
+            self.chrome_dirty = true;
             self.screenshot_dir = self
                 .config
                 .as_ref()
@@ -357,7 +368,12 @@ impl CompositorRuntime {
                     .map(|c| c.input.touchpad)
                     .unwrap_or_default(),
             );
-            self.shell.set_system_status(self.system_status.clone());
+            publish_system_status_parts(
+                &self.system_status,
+                &mut self.shell,
+                &self.live,
+                &self.ipc,
+            );
             self.server.set_outputs(self.host.output_infos());
             if let Some(logical) = self
                 .server
@@ -399,7 +415,7 @@ impl CompositorRuntime {
             self.pending_scan_scale = self.host.scale().ceil().max(1.0) as u32;
             let _ = self.scan_req_tx.send(self.pending_scan_scale);
         }
-        while let Ok((refreshed_theme, refreshed, refreshed_snapshot)) =
+        while let Ok((refreshed_theme, refreshed, refreshed_snapshot, refreshed_decoded)) =
             self.scan_result_rx.try_recv()
         {
             let refreshed_scale = self.pending_scan_scale;
@@ -408,6 +424,7 @@ impl CompositorRuntime {
             let theme_changed = refreshed_theme != self.icon_theme;
             let scale_changed = refreshed_scale != self.icon_scale;
             if catalog_changed || icons_changed || theme_changed || scale_changed {
+                self.chrome_dirty = true;
                 log::info!(
                     "launcher: application catalog/icons changed ({} -> {}, theme {} -> {})",
                     self.launcher_apps.len(),
@@ -415,8 +432,9 @@ impl CompositorRuntime {
                     self.icon_theme,
                     refreshed_theme
                 );
-                let refreshed_icons =
-                    build_icon_cache(&self.device, &refreshed, &refreshed_theme, refreshed_scale);
+                // The worker already decoded every icon off the frame loop;
+                // only the GPU texture upload happens here.
+                let refreshed_icons = build_icon_cache(&self.device, &refreshed_decoded);
                 let pinned = resolve_pinned(
                     &refreshed,
                     &refreshed_icons.map,
@@ -558,6 +576,10 @@ impl CompositorRuntime {
                 apply_realm_action(&mut self.server, request.action)
             };
             if result.is_ok() {
+                // This path updates the realm snapshot and `last_realm_revision`
+                // ahead of the presentation fanout, so the signed revision
+                // compare cannot see the change; flag the chrome explicitly.
+                self.chrome_dirty = true;
                 for realm in realms_explicitly_stopped(&committed_action) {
                     self.automatically_paused_realms.remove(&realm);
                 }
@@ -593,13 +615,14 @@ impl CompositorRuntime {
                 let snapshot = self.server.realm_snapshot();
                 self.last_realm_revision = Some(snapshot.revision);
                 self.live.set_realms(snapshot.clone());
+                self.shell.set_realms(snapshot.clone());
                 if let Some(ipc) = &self.ipc {
                     ipc.broadcast(aegis_ipc::Event::RealmsChanged {
                         revision: snapshot.revision,
                     });
                 }
             }
-            let after_revision = self.server.realm_snapshot().revision;
+            let after_revision = self.server.realm_revision();
             let effect = match &result {
                 Ok(_) => aegis_ipc::Effect::Applied,
                 Err(reason) => aegis_ipc::Effect::Refused {
@@ -628,6 +651,11 @@ impl CompositorRuntime {
             } else {
                 self.commit_settings(request.expected_revision, request.action)
             };
+            if result.is_ok() {
+                // A committed settings action may redraw status chrome
+                // outside the signed server-state paths.
+                self.chrome_dirty = true;
+            }
             let after_revision = self.settings_revision;
             let effect = match &result {
                 Ok(_) => aegis_ipc::Effect::Applied,
@@ -668,6 +696,29 @@ impl CompositorRuntime {
                 );
                 continue;
             }
+            if let aegis_ipc::Command::System { action } = &cmd {
+                let effect = match apply_system_action(
+                    &mut self.server,
+                    &self.notif_queue,
+                    &mut self.system_status,
+                    action.clone(),
+                ) {
+                    Ok(()) => {
+                        publish_system_status_parts(
+                            &self.system_status,
+                            &mut self.shell,
+                            &self.live,
+                            &self.ipc,
+                        );
+                        self.chrome_dirty = true;
+                        let _ = self.status_refresh_tx.send(());
+                        aegis_ipc::Effect::Applied
+                    }
+                    Err(reason) => aegis_ipc::Effect::Refused { reason },
+                };
+                journal_effect_and_broadcast(&self.journal, &self.ipc, ts, origin, cmd, effect);
+                continue;
+            }
             if let aegis_ipc::Command::LaunchInRealm { realm, desktop_id } = &cmd {
                 let effect = match self
                     .launcher_apps
@@ -689,7 +740,8 @@ impl CompositorRuntime {
                                 .as_ref()
                                 .map(|config| config.realm_sandbox.policy_for(&entry.id))
                                 .unwrap_or_else(|| {
-                                    aegis_config::RealmSandboxConfig::default().policy_for(&entry.id)
+                                    aegis_config::RealmSandboxConfig::default()
+                                        .policy_for(&entry.id)
                                 });
                             let opts = aegis_launcher::LaunchOpts {
                                 sandbox: Some(aegis_launcher::RealmSandbox {
@@ -738,7 +790,8 @@ impl CompositorRuntime {
             }
             if matches!(
                 cmd,
-                aegis_ipc::Command::InjectInput { .. } | aegis_ipc::Command::InjectRealmInput { .. }
+                aegis_ipc::Command::InjectInput { .. }
+                    | aegis_ipc::Command::InjectRealmInput { .. }
             ) {
                 pending_synthetic_input.push((cmd, ts, origin));
                 continue;

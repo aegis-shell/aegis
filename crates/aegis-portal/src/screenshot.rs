@@ -261,10 +261,7 @@ pub(crate) fn capture_worker(
         ) {
             log::warn!("portal: could not emit Response for {request_path}: {error}");
         }
-        if let Err(error) = conn
-            .object_server()
-            .remove::<RequestIface, _>(request_path)
-        {
+        if let Err(error) = conn.object_server().remove::<RequestIface, _>(request_path) {
             log::warn!("portal: could not remove {request_path}: {error}");
         }
         tracker.lock().unwrap().forget(request_path);
@@ -336,11 +333,13 @@ fn run_job(
                     if tracker.lock().unwrap().was_closed(request_path) {
                         return (1, HashMap::new());
                     }
-                    log::info!("portal: PickColor for '{app_id}' → #{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
-                    (
-                        0,
-                        HashMap::from([("color".to_string(), color_value(rgb))]),
-                    )
+                    log::info!(
+                        "portal: PickColor for '{app_id}' → #{:02x}{:02x}{:02x}",
+                        rgb[0],
+                        rgb[1],
+                        rgb[2]
+                    );
+                    (0, HashMap::from([("color".to_string(), color_value(rgb))]))
                 }
                 Ok(aegis_ipc::PickResult::Cancelled) => (1, HashMap::new()),
                 Ok(other) => {

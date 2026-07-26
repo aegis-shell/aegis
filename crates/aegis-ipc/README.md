@@ -6,7 +6,7 @@ for ass.
 ## Responsibilities
 
 - Define the JSON request, response, command, event, capability, lease, Realm,
-  revisioned settings, and scope schemas.
+  revisioned settings, live-system control, and scope schemas.
 - Frame messages over a Unix-domain socket.
 - Transfer large immutable capture PNGs as sealed `memfd` descriptors through
   `SCM_RIGHTS`.
@@ -59,6 +59,9 @@ shell scripts and interactive inspection.
 Persistent-settings clients call `Client::settings`, then submit a typed
 action through `Client::apply_settings` with the revision they observed. The
 result is returned only after the compositor main loop applies the action.
+Live-system clients call `Client::system_status` and submit immediate controls
+through `Client::apply_system_action`; both paths use the same
+`aegis-core` model as compositor chrome.
 
 ## Related Documentation
 
@@ -68,5 +71,6 @@ result is returned only after the compositor main loop applies the action.
 - [Fail-closed named scopes](../../docs/adr/0035-fail-closed-named-ipc-scopes.md)
 - [Scoped semantic automation](../../docs/adr/0036-scoped-semantic-automation.md)
 - [Sealed pixel transport](../../docs/adr/0041-sealed-file-descriptor-pixel-transport.md)
-- [Standalone modular Control Center](../../docs/adr/0049-standalone-modular-control-center.md)
+- [System Settings identity and boundary](../../docs/adr/0056-system-settings-identity-and-boundary.md)
+- [Status bar system controls](../../docs/adr/0060-statusbar-system-controls-and-live-system-ipc.md)
 - [Workspace layout](../../docs/dev/project-layout.md)

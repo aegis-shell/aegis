@@ -28,7 +28,7 @@ pub fn menu_disabled(menu: Theme, design: &Design) -> Theme {
     menu.with_fg(design.colors.menu_disabled)
 }
 
-/// The trusted built-in application theme used by Control Center.
+/// The application theme used by System Settings and trusted chrome surfaces.
 #[must_use]
 pub fn application(design: &Design) -> Theme {
     Theme::dark()

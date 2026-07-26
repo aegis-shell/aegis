@@ -214,12 +214,7 @@ impl ScreenshotSelector {
 
     /// Draw the region-mode overlay: selection rect, dimensions label, and
     /// the confirm hint once a selection is staged.
-    fn render_region(
-        &self,
-        frame: &mut Frame,
-        display: (f32, f32),
-        i18n: &Localizer,
-    ) {
+    fn render_region(&self, frame: &mut Frame, display: (f32, f32), i18n: &Localizer) {
         let Some(rect) = self.shown_rect() else {
             return;
         };
@@ -356,12 +351,7 @@ impl ScreenshotSelector {
 
     /// Draw the window-mode highlight over the hovered window, with its
     /// title (or a whole-output marker when hovering empty desktop).
-    fn render_window_pick(
-        &self,
-        frame: &mut Frame,
-        display: (f32, f32),
-        windows: &[Window],
-    ) {
+    fn render_window_pick(&self, frame: &mut Frame, display: (f32, f32), windows: &[Window]) {
         let window = self
             .hovered
             .and_then(|id| windows.iter().find(|window| window.id == id));

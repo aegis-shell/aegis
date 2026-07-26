@@ -23,13 +23,16 @@ pub struct Notification {
 
 /// A time-expiring queue of notifications. Entries older than `ttl_ms` are
 /// dropped by [`Self::expire`]; the chrome calls that each frame before
-/// reading [`Self::recent`].
+/// reading [`Self::recent`]. Every mutation bumps [`Self::revision`], so
+/// per-frame readers can cache their clone of the entries and only re-clone
+/// when the queue actually changed.
 #[derive(Debug)]
 pub struct NotificationQueue {
     entries: Vec<Notification>,
     next_id: u64,
     ttl_ms: u64,
     do_not_disturb: bool,
+    revision: u64,
 }
 
 impl NotificationQueue {
@@ -40,6 +43,7 @@ impl NotificationQueue {
             next_id: 0,
             ttl_ms,
             do_not_disturb: false,
+            revision: 0,
         }
     }
 
@@ -62,13 +66,18 @@ impl NotificationQueue {
         };
         self.next_id += 1;
         self.entries.push(n.clone());
+        self.revision += 1;
         n
     }
 
     /// Drop entries older than `ttl_ms` relative to `now_ms`.
     pub fn expire(&mut self, now_ms: u64) {
+        let before = self.entries.len();
         self.entries
             .retain(|n| now_ms.saturating_sub(n.at_ms) <= self.ttl_ms);
+        if self.entries.len() != before {
+            self.revision += 1;
+        }
     }
 
     /// Dismiss a notification by id. Returns `true` if it was present and
@@ -76,7 +85,12 @@ impl NotificationQueue {
     pub fn dismiss(&mut self, id: u64) -> bool {
         let before = self.entries.len();
         self.entries.retain(|n| n.id != id);
-        self.entries.len() != before
+        if self.entries.len() != before {
+            self.revision += 1;
+            true
+        } else {
+            false
+        }
     }
 
     /// The live entries, oldest first. Call [`Self::expire`] first to age
@@ -101,14 +115,22 @@ impl NotificationQueue {
     }
 
     /// Suppress transient toast presentation while keeping notifications in
-    /// the queue for the control center and IPC history.
+    /// the queue for trusted notification surfaces and IPC history.
     pub fn set_do_not_disturb(&mut self, enabled: bool) {
         self.do_not_disturb = enabled;
+        self.revision += 1;
     }
 
     /// Whether transient notification presentation is currently suppressed.
     pub fn do_not_disturb(&self) -> bool {
         self.do_not_disturb
+    }
+
+    /// Monotonic counter bumped on every mutation (push, expiry, dismiss,
+    /// do-not-disturb toggle). Readers cloning the entries can skip the
+    /// clone while the revision is unchanged.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -169,6 +191,28 @@ mod tests {
         assert!(!q.dismiss(999), "unknown id reports false");
         assert_eq!(q.len(), 1);
         assert_eq!(q.recent()[0].id, b.id);
+    }
+
+    #[test]
+    fn revision_tracks_every_mutation() {
+        let mut q = NotificationQueue::new(1000);
+        assert_eq!(q.revision(), 0);
+        q.push("a", "", None, 0);
+        assert_eq!(q.revision(), 1);
+        // Expiring nothing leaves the revision untouched.
+        q.expire(500);
+        assert_eq!(q.revision(), 1);
+        q.expire(2000);
+        assert_eq!(q.revision(), 2);
+        // Dismissing an unknown id does not bump either.
+        assert!(!q.dismiss(999));
+        assert_eq!(q.revision(), 2);
+        q.push("b", "", None, 2100);
+        let id = q.recent()[0].id;
+        assert!(q.dismiss(id));
+        assert_eq!(q.revision(), 4);
+        q.set_do_not_disturb(true);
+        assert_eq!(q.revision(), 5);
     }
 
     #[test]

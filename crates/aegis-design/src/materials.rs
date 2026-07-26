@@ -31,7 +31,7 @@ pub fn dock(design: &Design) -> OverlayOpts {
     }
 }
 
-/// Base material for Control Center cards.
+/// Base material for settings and system-management cards.
 ///
 /// Callers add component-specific geometry through struct update syntax.
 #[must_use]

@@ -14,12 +14,11 @@
 //!
 //! # Status
 //!
-//! Protocol version 6 adds user-consent interactive picking (`PickTarget`,
-//! ADR-0054) and the window stream target on top of version 5's continuous
-//! physical-output frame streaming (ADR-0052), version 4's revisioned
-//! desktop-settings transactions, Realm authority, connection-bound
-//! capability leases, directed virtual-output capture, state queries, typed
-//! commands, and subscriptions.
+//! Protocol version 7 adds live system-status queries and immediate
+//! system-control commands on top of version 6's user-consent interactive
+//! picking (`PickTarget`, ADR-0054) and window stream target, version 5's
+//! continuous physical-output frame streaming (ADR-0052), and version 4's
+//! revisioned desktop-settings transactions.
 
 pub mod client;
 pub mod codec;
@@ -37,7 +36,7 @@ pub use schema::{
     Capabilities, Command, Event, LOCAL_PORTAL_SCOPE, LOCAL_REALM_ADMIN_SCOPE, LeaseGrant,
     LeaseRequest, OpClass, PROTOCOL_VERSION, PickKind, PickResult, RealmAction, RealmActionResult,
     RealmCapture, Request, Response, Scope, SettingsAction, SettingsReceipt, SettingsSnapshot,
-    StreamPixelFormat, StreamTarget,
+    StreamPixelFormat, StreamTarget, SystemAction, SystemStatus,
 };
 pub use server::{
     CaptureOutputPayload, CaptureRealmPayload, Handler, Server, StreamFramePayload, StreamInfo,

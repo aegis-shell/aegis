@@ -7,6 +7,50 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### System Settings and compositor application boundaries
+
+- Renamed the standalone settings product to **System Settings**. Its Cargo
+  package and executable are now `aegis-settings`, its Wayland application id
+  is `io.github.ming2k.aegis.Settings`, and its desktop file is
+  `io.github.ming2k.aegis.Settings.desktop`
+  ([ADR-0059](docs/adr/0059-first-party-application-installation-and-development-staging.md)).
+- Added a private first-party application staging prefix for development.
+  `scripts/dev.sh` builds, stages, and starts one integrated nested or
+  explicit DRM session. It exposes System Settings through standard `PATH`
+  and `XDG_DATA_DIRS` discovery instead of a compositor-only source-tree
+  fallback.
+- Split persistent settings modules and their IPC application host into the
+  `aegis-settings` crate.
+- Removed the remaining `aegis-control-center` compatibility host. Immediate
+  controls now live in the status bar; Realm lifecycle and authority
+  management remain in `aegis-ai-workspaces`
+  ([ADR-0060](docs/adr/0060-statusbar-system-controls-and-live-system-ipc.md)).
+- Removed the independent `aegis-quick-settings` crate, built-in application
+  identity, and launcher entry. IPC protocol version 7 adds a shared
+  `SystemStatus` snapshot, typed `SystemAction` controls, change events, and a
+  scopeable `SystemControl` operation so external clients use the same runtime
+  control path as compositor chrome. The reference CLI exposes that path
+  through `aegis-ctl system`.
+- The status bar notification panel no longer uses the Control Center name.
+  Its audio, network, and notification controls open one status-and-controls
+  panel, while the Fuji indicator opens AI Workspaces directly.
+- Development installations must remove the obsolete
+  `io.github.ming.aegis.ControlCenter.desktop` file. The former
+  `aegis-control-center` application binary, crate, stale `aegis-ctl-center`
+  fallback command, built-in identity, and old application id have no
+  compatibility aliases.
+
+### Atomic configuration persistence
+
+- Added a path-bound `aegis-config::ConfigStore` and typed `ConfigEdit`
+  operations for dock pins, touchpad profiles, and output settings. Every
+  programmatic edit now preserves unrelated TOML, validates the complete
+  resulting schema, and uses a flushed same-directory atomic replacement.
+- Routed all compositor-owned configuration writes through one serialized
+  worker, preventing rapid dock and System Settings edits from losing one
+  another while keeping authorization and live-state application outside
+  `aegis-config`.
+
 ### xdg-desktop-portal backend (Phase 3A): Background, Inhibit, ScreenCast persistence
 
 - `aegis-portal` now serves `org.freedesktop.impl.portal.Background` v1 and
@@ -142,9 +186,9 @@ project cuts a tagged release.
 - `aegis-ctl-center` is now a standalone Iris/Lens Wayland application with
   a stable desktop entry and deep links for `display`, `mouse`, `touchpad`,
   `keyboard`, `appearance`, `power`, `users`, and `window-rules`. Launcher and
-  status-bar activation use the ordinary external application path. The old
-  in-process surface remains temporarily for Quick Settings and AI Workspace
-  management.
+  status-bar activation use the ordinary external application path. Immediate
+  live controls remain compositor chrome, while AI Workspace management is a
+  separate compositor-owned surface.
 - Settings pages use a KCM-inspired contract: stable metadata, categories,
   search keywords, apply policy, authoritative snapshot updates, and typed
   intents. Display and touchpad are editable. The other domains expose honest

@@ -9,6 +9,7 @@ controlling a running ass session through `aegis-ipc`.
 - Connect to the compositor IPC socket and negotiate capabilities.
 - Format query results for humans or as JSON (`--json` / `-j`).
 - Stream compositor events and mutation-journal entries.
+- Inspect and control normalized live-system state through typed IPC actions.
 - Administer Realm lifecycle, authority transfer, sandbox launch, and capture
   through the built-in owner-only recovery scope.
 - Generate shell completions (`completions <shell>`).
@@ -24,7 +25,7 @@ the running compositor.
 
 Query commands read compositor state. Control commands enqueue typed actions
 such as focus, minimize, close, workspace switching, notification, tiling,
-and shutdown.
+live-system control, and shutdown.
 Realm lifecycle commands return synchronous optimistic commit receipts.
 The `help`, `--help`, `-h`, `--version`, and `completions` commands are
 local and do not require a running compositor.
@@ -37,6 +38,9 @@ cargo run -p aegis-ctl -- windows
 cargo run -p aegis-ctl -- windows --json
 cargo run -p aegis-ctl -- focus 42
 cargo run -p aegis-ctl -- minimize 42
+cargo run -p aegis-ctl -- system status
+cargo run -p aegis-ctl -- system volume 50
+cargo run -p aegis-ctl -- system wifi off
 cargo run -p aegis-ctl -- realm create "Research"
 cargo run -p aegis-ctl -- realm transfer 42 2
 cargo run -p aegis-ctl -- realm capture 2
@@ -49,6 +53,21 @@ Installed binaries use the same commands without the `cargo run -p aegis-ctl --`
 prefix.
 
 ## Subcommand Groups
+
+Immediate controls are grouped under `aegis-ctl system`; they use the same
+`SystemStatus` and `SystemAction` IPC model as the status bar:
+
+```bash
+aegis-ctl system status
+aegis-ctl system mute
+aegis-ctl system step-volume -2
+aegis-ctl system volume 50
+aegis-ctl system brightness 75
+aegis-ctl system wifi on
+aegis-ctl system bluetooth off
+aegis-ctl system do-not-disturb on
+aegis-ctl system tiling off
+```
 
 Realm administration is grouped under `aegis-ctl realm` so the
 owner-only admin scope and lease negotiation happen in one place:
@@ -71,3 +90,4 @@ Run `aegis-ctl realm --help` for the per-subcommand usage.
 - [Command-line reference](../../docs/reference/cli.md)
 - [How to Use AI Workspaces](../../docs/how-to/ai-workspaces.md)
 - [IPC and introspection decision](../../docs/adr/0027-ipc-and-introspection.md)
+- [Status bar system controls](../../docs/adr/0060-statusbar-system-controls-and-live-system-ipc.md)

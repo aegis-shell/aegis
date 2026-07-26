@@ -43,6 +43,22 @@ pub enum Action {
     Quit,
 }
 
+impl Action {
+    /// Whether this compositor action remains available while trusted shell
+    /// chrome owns the keyboard.
+    ///
+    /// Modal chrome still receives ordinary navigation and text input, and
+    /// actions that mutate obscured desktop state stay suppressed. The
+    /// launcher toggle, screenshot selector, and emergency quit path are
+    /// compositor-level controls that must remain reachable.
+    const fn allowed_during_keyboard_capture(self) -> bool {
+        matches!(
+            self,
+            Action::ToggleLauncher | Action::Screenshot | Action::Quit
+        )
+    }
+}
+
 /// One binding: an exact modifier mask plus a keysym, mapped to an action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Keybind {
@@ -152,6 +168,13 @@ impl Keymap {
             .iter()
             .find(|b| b.mods == mods && b.keysym == keysym)
             .map(|b| b.action)
+    }
+
+    /// Match only compositor controls that remain available while trusted
+    /// shell chrome owns the keyboard.
+    pub fn match_key_during_keyboard_capture(&self, mods: Mods, keysym: u32) -> Option<Action> {
+        self.match_key(mods, keysym)
+            .filter(|action| action.allowed_during_keyboard_capture())
     }
 
     /// Number of bindings (for diagnostics / tests).
@@ -282,6 +305,31 @@ mod tests {
         let km = Keymap::defaults();
         // Super+Tab must NOT fire when Ctrl is also held.
         assert_eq!(km.match_key(Mods::SUPER | Mods::CTRL, XKB_KEY_Tab), None);
+    }
+
+    #[test]
+    fn only_modal_safe_actions_bypass_keyboard_capture() {
+        let km = Keymap::defaults();
+        assert_eq!(
+            km.match_key_during_keyboard_capture(Mods::NONE, XKB_KEY_Print),
+            Some(Action::Screenshot)
+        );
+        assert_eq!(
+            km.match_key_during_keyboard_capture(Mods::SUPER, XKB_KEY_Return),
+            Some(Action::ToggleLauncher)
+        );
+        assert_eq!(
+            km.match_key_during_keyboard_capture(Mods::SUPER | Mods::SHIFT, XKB_KEY_Return),
+            Some(Action::Quit)
+        );
+        assert_eq!(
+            km.match_key_during_keyboard_capture(Mods::SUPER, 0x71),
+            None
+        );
+        assert_eq!(
+            km.match_key_during_keyboard_capture(Mods::SUPER, XKB_KEY_Tab),
+            None
+        );
     }
 
     #[test]

@@ -170,13 +170,17 @@ impl Host {
         &mut self,
         surface: &flux::Surface,
         frame: flux::SubmittedFrame<'_>,
+        damage: Option<aegis_core::Rect>,
     ) -> Result<Option<OwnedFd>, HostError> {
         match self {
             Self::Nested(_) => {
+                // The outer compositor owns scanout and does its own damage
+                // tracking; the hint is DRM/KMS-only.
+                let _ = damage;
                 frame.present()?;
                 Ok(None)
             }
-            Self::Drm(host) => Ok(host.present(surface, frame)?),
+            Self::Drm(host) => Ok(host.present(surface, frame, damage)?),
         }
     }
 
@@ -283,6 +287,13 @@ impl Backend for Host {
         match self {
             Self::Nested(host) => host.dispatch_timeout(timeout),
             Self::Drm(host) => host.dispatch_timeout(timeout),
+        }
+    }
+
+    fn set_wakeup_fd(&mut self, fd: std::os::fd::RawFd) {
+        match self {
+            Self::Nested(host) => host.set_wakeup_fd(fd),
+            Self::Drm(host) => host.set_wakeup_fd(fd),
         }
     }
 

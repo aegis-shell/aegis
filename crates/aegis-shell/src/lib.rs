@@ -7,8 +7,8 @@
 //! launcher, the overview — is a [`Chrome`] implementation registered with
 //! [`Shell::add`], and renders itself each frame from the shared snapshot
 //! and input. Larger components live in their own crates on top of the same
-//! contract (the dock in `ass-dock`, the Control Center in
-//! `aegis-ctl-center`, the status bar in `ass-statusbar`). Adding or
+//! contract (the dock in `aegis-dock`, AI Workspaces in
+//! `aegis-ai-workspaces`, and the status bar in `aegis-statusbar`). Adding or
 //! removing a chrome surface is a component change, not a core change.
 //!
 //! Input the compositor captures is fed here as a snapshot before being routed
@@ -22,14 +22,17 @@ use lens::{Frame, Ui};
 
 pub mod chrome;
 pub mod i18n;
+pub mod modal;
 pub mod system;
 pub use chrome::{
-    AgentFeedback, AppMenu, Decorations, Launcher, Overview, PinAction, PickerMode,
+    AgentFeedback, AppMenu, Decorations, Launcher, Overview, PickerMode, PinAction,
     ScreenshotSelector, Toast,
 };
 pub use i18n::{Language, Localizer, Message};
+pub use modal::ModalApplicationSpec;
 pub use system::{
     BatteryStatus, DisplaySettings, DisplayStatus, NetworkState, SystemAction, SystemStatus,
+    detect_system_status,
 };
 
 /// Logical height of the top status bar (the `ass-statusbar` component).
@@ -661,7 +664,7 @@ impl Shell {
     }
 
     /// Replace the Realm authority snapshot and notify the overview and
-    /// Control Center before their next frame.
+    /// AI Workspaces before their next frame.
     pub fn set_realms(&mut self, snapshot: RealmSnapshot) {
         self.realms = snapshot;
         for component in self.components.iter_mut() {

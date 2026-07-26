@@ -9,6 +9,19 @@ The file is TOML. It is hot-reloaded: save it and behavior changes without a
 restart. A malformed file or an unknown field is reported as a `config:`
 log diagnostic and never crashes the compositor.
 
+## Programmatic Edits
+
+System Settings does not write TOML directly. It submits revisioned, typed
+settings transactions to the compositor, which validates authority, serializes
+all configuration writes, and applies live state. Dock pin changes use the
+same serialized path.
+
+`aegis-config::ConfigStore` translates the accepted dock, touchpad, and output
+edits into TOML. Each edit preserves comments and unrelated keys, validates
+the complete resulting schema, flushes a temporary file in the same
+directory, and atomically replaces the configuration file. A malformed or
+schema-incompatible existing file is left untouched.
+
 ## Top-Level Fields
 
 | Field | Type | Default | Description |
@@ -93,10 +106,10 @@ override it.
 ## Touchpad
 
 The `[input.touchpad]` table is applied live to every libinput touchpad in a
-direct DRM session. Settings writes this same profile back to the TOML file
-without replacing comments or unrelated sections. In a nested session the
-outer compositor owns the physical device, so changes are saved for the next
-direct session.
+direct DRM session. System Settings submits this profile to the compositor,
+which persists it without replacing comments or unrelated sections. In a
+nested session the outer compositor owns the physical device, so changes are
+saved for the next direct session.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -194,11 +207,12 @@ Run `aegis-ctl outputs` to see the modes each connector advertises; the
 `mode` value must match one of them (resolution exactly, refresh to the
 nearest whole hertz).
 
-Control Center edits these same `[[output]]` entries. Its display page can
-select a connected output, choose an advertised resolution and refresh rate,
-set fractional scale, select the primary output, and place an extended output
-to the right, left, above, below, or at custom logical coordinates. Existing
-comments, unrelated settings, and `transform` values are preserved.
+System Settings submits edits for these same `[[output]]` entries through the
+compositor. Its display page can select a connected output, choose an
+advertised resolution and refresh rate, set fractional scale, select the
+primary output, and place an extended output to the right, left, above, below,
+or at custom logical coordinates. Existing comments, unrelated settings, and
+`transform` values are preserved.
 
 ## Dock
 
@@ -242,7 +256,7 @@ flag is read once during compositor startup.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | boolean | `true` | Whether the top status bar is registered. When `false`, the bar's reserved edge is released and the rest of the chrome (dock, launcher, Control Center) is unaffected. |
+| `enabled` | boolean | `true` | Whether the top status bar is registered. When `false`, the bar's reserved edge and live-control panel are unavailable; the dock, launcher, and AI Workspaces are unaffected, and live controls remain available over IPC. |
 
 ```toml
 [statusbar]
@@ -341,7 +355,7 @@ capability classes.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | string | required | Scope name presented by an IPC client. Duplicate and empty names are ignored. |
-| `ops` | array of strings | unrestricted except input | Allowed operation classes. `InjectInput` must be listed explicitly. An explicit array containing only unknown values grants no operations. |
+| `ops` | array of strings | unrestricted ordinary operations | Allowed operation classes. High-risk input, capture, picking, and Realm operations must be listed explicitly. An explicit array containing only unknown values grants no operations. |
 | `windows` | array of integers | unrestricted | Allowed durable window IDs. |
 | `workspaces` | array of integers | unrestricted | Allowed workspace IDs. |
 | `realms` | array of integers | unrestricted | Allowed Realm IDs. |
@@ -349,15 +363,14 @@ capability classes.
 Operation names are `Focus`, `Minimize`, `Close`, `Move`,
 `SetWindowGeometry`, `InjectInput`, `InjectRealmInput`, `Cycle`,
 `SwitchWorkspace`, `SwitchWorkspaceTo`, `MoveToWorkspace`, `ToggleTiling`,
-`ToggleOverview`, `Notify`, `DismissNotification`, `Screenshot`,
-`ScreenshotRegion`, `CaptureOutput`, `StreamOutput`, `IdleInhibit`,
-`CreateRealm`,
-`TransactRealm`,
-`RevokeRealm`, `CaptureRealm`, and `LaunchInRealm`. Names are
-case-insensitive; snake-case forms are also accepted. Invalid names are
-logged and grant nothing. Input, capture, and Realm operations must be listed
-explicitly and require their separately negotiated capability; omitting
-`ops` never grants them.
+`ToggleOverview`, `SystemControl`, `Notify`, `DismissNotification`,
+`Screenshot`, `ScreenshotRegion`, `CaptureOutput`, `StreamOutput`,
+`IdleInhibit`, `PickTarget`, `CreateRealm`, `TransactRealm`, `RevokeRealm`,
+`CaptureRealm`, and `LaunchInRealm`. Names are case-insensitive; snake-case
+forms are also accepted. Invalid names are logged and grant nothing. Input,
+capture, interactive-picking, and Realm operations must be listed explicitly
+and require their separately negotiated capability; omitting `ops` never
+grants them.
 
 ```toml
 [[agent.scope]]

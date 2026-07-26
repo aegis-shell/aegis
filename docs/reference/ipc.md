@@ -1,6 +1,6 @@
 # IPC Reference
 
-The ass IPC is protocol version 5, carried as length-framed JSON over the
+The ass IPC is protocol version 7, carried as length-framed JSON over the
 owner-only Unix socket at `$XDG_RUNTIME_DIR/aegis.sock`. Every connection starts
 with `Hello`; commands are accepted only after capability and scope checks.
 JSON messages are limited to 16 MiB. Large immutable capture and frame
@@ -12,7 +12,7 @@ payloads use a separate sealed-file-descriptor transfer described under
 | Capability | Authority | Default |
 |------------|-----------|---------|
 | `query` | Read snapshots and subscribe to events or the journal. | Always granted. |
-| `control` | Mutate windows, workspaces, layout, and notifications. | Server policy. |
+| `control` | Mutate windows, workspaces, live-system state, layout, and notifications. | Server policy. |
 | `input` | Inject bounded actions into a target window. | Named scope required. |
 | `session` | Quit, persist compositor settings, or perform other session-level operations. | Server policy. |
 | `realm` | Create, configure, capture, pause, transfer, launch into, and revoke Realms. | Named scope and explicit operation required. |
@@ -38,6 +38,7 @@ The reference client requests 900,000 milliseconds by default.
 | `GetJournal { since }` | `Journal` | `query` |
 | `GetRealms` | `Realms` | `query` |
 | `GetSettings` | `Settings` with a revisioned snapshot | `query` |
+| `GetSystemStatus` | `SystemStatus` with a live snapshot | `query` |
 | `Realm { action }` | `Realm` with a commit receipt | `realm` + explicit scope op |
 | `Settings { expected_revision, action }` | `SettingsApplied` with a commit receipt | `session` |
 | `CaptureOutput` | `CaptureOutput` | `control` + explicit scope op |
@@ -48,8 +49,8 @@ The reference client requests 900,000 milliseconds by default.
 
 `Subscribe` enables coarse events:
 
-- `WindowsChanged`, `WorkspaceChanged`, `RealmsChanged { revision }`, and
-  `SettingsChanged { revision }`
+- `WindowsChanged`, `WorkspaceChanged`, `RealmsChanged { revision }`,
+  `SettingsChanged { revision }`, and `SystemStatusChanged`
   invalidate the corresponding snapshots.
 - `RealmDamaged { realm, sequence, revision, damage }` reports that an active
   Realm's directed scene changed. `damage` contains at most 64 rectangles in
@@ -87,6 +88,7 @@ live state carry the unchanged revision in both revision fields.
 | `SwitchWorkspaceTo { id }` | `control` | `SwitchWorkspaceTo` | Workspace |
 | `MoveToWorkspace { window, workspace }` | `control` | `MoveToWorkspace` | Window and workspace |
 | `ToggleTiling` | `control` | `ToggleTiling` | Current workspace |
+| `System { action }` | `control` | `SystemControl` | Live host or compositor-owned session state |
 | `ToggleOverview` | `control` | `ToggleOverview` | — |
 | `Notify { summary, body, app_id }` | `control` | `Notify` | — |
 | `DismissNotification { id }` | `control` | `DismissNotification` | Notification |
@@ -100,6 +102,45 @@ If the human Realm is only an observer, focus, minimize, close, move,
 geometry, and workspace mutations produce `Effect::Refused` and do not reach
 the client. Its mirror also blocks physical hit-testing, so a refused click
 cannot fall through to an unrelated window underneath.
+
+## Live System Controls
+
+`GetSystemStatus` returns one normalized observation shared by status-bar
+chrome and external IPC clients:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `volume` | optional percentage | Default audio-sink volume; absent when unavailable. |
+| `muted` | boolean | Default audio-sink mute state. |
+| `network` | `Offline`, `Wifi`, or `Wired` | Coarse active connectivity. |
+| `battery` | optional `{ percent, charging }` | Battery state when a battery is present. |
+| `wifi_enabled` | optional boolean | Wi-Fi radio state; absent when its service is unavailable. |
+| `bluetooth_enabled` | optional boolean | Bluetooth radio state; absent when its service is unavailable. |
+| `brightness` | optional percentage | Backlight level; absent without a controllable backlight. |
+| `do_not_disturb` | boolean | Current notification suppression state. |
+| `tiled` | boolean | Layout mode for the current workspace. |
+| `touchpad`, `display` | status objects | Host-probe data shared with settings surfaces; persistent editors should use `GetSettings` for revisioned state. |
+
+`System { action }` accepts one immediate action:
+
+| Action | Payload | Bounds or effect |
+|--------|---------|------------------|
+| `ToggleMute` | — | Toggle the default audio sink. |
+| `StepVolume` | `delta` | Signed percentage step from -100 through 100. |
+| `SetVolume` | `level` | Percentage from 0 through 100. |
+| `SetBrightness` | `level` | Percentage from 1 through 100. |
+| `SetWifi` | `enabled` | Enable or disable the Wi-Fi radio. |
+| `SetBluetooth` | `enabled` | Unblock or block Bluetooth radios. |
+| `SetDoNotDisturb` | `enabled` | Change notification suppression. |
+| `SetTiling` | `enabled` | Set the current workspace layout mode. |
+
+The command requires `control`, a live privileged lease, and permission for
+the `SystemControl` operation when a named scope restricts `ops`. The server
+validates bounds before dispatch, starts host-service commands without
+blocking the compositor, publishes an optimistic snapshot, and reconciles it
+through the host status poller. `SystemStatusChanged` tells subscribers to
+re-query; it carries no partial snapshot. These actions do not write the
+revisioned compositor configuration.
 
 ## Persistent Settings
 
@@ -132,7 +173,7 @@ mutation journal.
 Display and touchpad are the only settings domains in the current snapshot.
 Mouse, keyboard, appearance, power, accounts, and window-rule modules remain
 unavailable until their authoritative services expose typed state and actions.
-See the [Control Center Reference](control-center.md#modules).
+See the [System Settings Reference](settings.md#modules).
 
 ## Realm Authority
 

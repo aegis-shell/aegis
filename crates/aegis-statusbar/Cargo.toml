@@ -1,6 +1,6 @@
 [package]
 name = "aegis-statusbar"
-description = "Status bar chrome component for the ass compositor: workspaces, tray, clock, system status"
+description = "Status bar chrome component for the ass compositor: workspaces, live controls, notifications, tray, and clock"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
@@ -20,6 +20,8 @@ image = { workspace = true }
 # SNI tray icon upload: borrowed flux device + texture cache (same pixel ->
 # GPU path as the compositor's app icon cache).
 flux = { workspace = true }
+# In-process local-time formatting for the clock (replaces forking `date`).
+libc = { workspace = true }
 lens = { workspace = true }
 zbus = { workspace = true }
 # Direct dep purely so this crate's build script receives DEP_LENS_RPATHS

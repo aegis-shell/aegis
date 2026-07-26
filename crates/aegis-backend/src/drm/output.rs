@@ -463,10 +463,36 @@ pub(super) fn build_output(
         plane_crtc_w: required_prop(&plane_props, "CRTC_W")?,
         plane_crtc_h: required_prop(&plane_props, "CRTC_H")?,
         plane_in_fence_fd: optional_prop(&plane_props, "IN_FENCE_FD"),
+        plane_fb_damage_clips: optional_prop(&plane_props, "FB_DAMAGE_CLIPS"),
     };
     let mode_blob = card.create_property_blob(&candidate.mode)?;
     let property::Value::Blob(mode_blob_id) = mode_blob else {
         unreachable!("create_property_blob always returns Blob")
+    };
+    // A reusable clip covering this output's whole framebuffer rectangle for
+    // commits whose damage is unknown or spans the output. The blob layout is
+    // an array of `drm_mode_rect` — four native i32 values (x1, y1, x2, y2).
+    let (width, height) = candidate.mode.size();
+    let full_damage_blob = if props.plane_fb_damage_clips.is_some() {
+        let rect = [[
+            x as i32,
+            0,
+            (x + u32::from(width)) as i32,
+            i32::from(height),
+        ]];
+        let blob = card
+            .create_property_blob(&rect[..])
+            .ok()
+            .and_then(|value| match value {
+                property::Value::Blob(id) => Some((value, id)),
+                _ => None,
+            });
+        if blob.is_none() {
+            log::warn!("drm: FB_DAMAGE_CLIPS blob allocation failed; damage hints disabled");
+        }
+        blob
+    } else {
+        None
     };
     Ok(Output {
         connector: candidate.connector,
@@ -479,6 +505,7 @@ pub(super) fn build_output(
         x,
         y: 0,
         props,
+        full_damage_blob,
         available_modes: candidate.available_modes,
     })
 }

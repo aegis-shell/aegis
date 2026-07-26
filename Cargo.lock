@@ -12,10 +12,10 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 name = "aegis"
 version = "0.0.1"
 dependencies = [
+ "aegis-ai-workspaces",
  "aegis-backend",
  "aegis-compositor",
  "aegis-config",
- "aegis-control-center",
  "aegis-core",
  "aegis-desktop-entries",
  "aegis-dock",
@@ -33,6 +33,17 @@ dependencies = [
  "lens",
  "lens-sys",
  "log",
+]
+
+[[package]]
+name = "aegis-ai-workspaces"
+version = "0.0.1"
+dependencies = [
+ "aegis-core",
+ "aegis-design",
+ "aegis-shell",
+ "lens",
+ "lens-sys",
 ]
 
 [[package]]
@@ -77,19 +88,6 @@ dependencies = [
  "thiserror 1.0.69",
  "toml 0.8.23",
  "toml_edit 0.22.27",
-]
-
-[[package]]
-name = "aegis-control-center"
-version = "0.0.1"
-dependencies = [
- "aegis-core",
- "aegis-design",
- "aegis-ipc",
- "aegis-shell",
- "iris",
- "lens",
- "lens-sys",
 ]
 
 [[package]]
@@ -229,6 +227,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "aegis-settings"
+version = "0.0.1"
+dependencies = [
+ "aegis-core",
+ "aegis-design",
+ "aegis-ipc",
+ "aegis-shell",
+ "iris",
+ "lens",
+ "lens-sys",
+]
+
+[[package]]
 name = "aegis-shell"
 version = "0.0.1"
 dependencies = [
@@ -254,6 +265,7 @@ dependencies = [
  "image",
  "lens",
  "lens-sys",
+ "libc",
  "log",
  "zbus",
 ]

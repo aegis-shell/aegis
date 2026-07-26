@@ -113,13 +113,15 @@ fn screenshot_file_uri_list_percent_encodes_path_bytes() {
 
 #[test]
 fn only_user_initiated_screenshots_update_the_human_clipboard() {
-    assert!(screenshot_updates_human_clipboard(aegis_ipc::Origin::Chrome));
+    assert!(screenshot_updates_human_clipboard(
+        aegis_ipc::Origin::Chrome
+    ));
     assert!(screenshot_updates_human_clipboard(
         aegis_ipc::Origin::Keybinding
     ));
-    assert!(!screenshot_updates_human_clipboard(aegis_ipc::Origin::Ipc {
-        conn_id: 7,
-    }));
+    assert!(!screenshot_updates_human_clipboard(
+        aegis_ipc::Origin::Ipc { conn_id: 7 }
+    ));
     assert!(!screenshot_updates_human_clipboard(
         aegis_ipc::Origin::Internal
     ));
@@ -174,8 +176,10 @@ fn config_agent_scopes_compile_to_fail_closed_ipc_allowlists() {
 #[test]
 fn realm_scope_expands_atomic_groups_before_authorizing() {
     let mut model = aegis_core::realm::RealmModel::new();
-    let agent =
-        model.create_agent_realm("agent", aegis_core::realm::SeatCapabilities::POINTER_KEYBOARD);
+    let agent = model.create_agent_realm(
+        "agent",
+        aegis_core::realm::SeatCapabilities::POINTER_KEYBOARD,
+    );
     let client = model.register_client(None);
     let first = aegis_core::window::WindowId(7);
     let sibling = aegis_core::window::WindowId(8);
@@ -238,5 +242,9 @@ fn automation_operation_names_accept_canonical_and_snake_case() {
     assert_eq!(
         ipc_op_class("inject_input"),
         Some(aegis_ipc::OpClass::InjectInput)
+    );
+    assert_eq!(
+        ipc_op_class("system_control"),
+        Some(aegis_ipc::OpClass::SystemControl)
     );
 }

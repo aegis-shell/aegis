@@ -256,6 +256,14 @@ impl Source for StillSource {
     fn frame_count(&self) -> usize {
         self.frames.len()
     }
+
+    fn next_frame_in(&self) -> Option<Duration> {
+        (self.frames.len() > 1).then(|| {
+            self.frames[self.current]
+                .duration
+                .saturating_sub(self.last_advance.elapsed())
+        })
+    }
 }
 
 #[cfg(test)]

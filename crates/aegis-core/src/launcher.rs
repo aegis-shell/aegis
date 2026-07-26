@@ -4,6 +4,8 @@
 //! `ass-shell` owns one of these and delegates key handling and rendering to
 //! it; this module is unit-tested in isolation. See ADR-0022.
 
+use std::cell::{Ref, RefCell};
+
 use crate::app::{ApplicationTarget, BuiltInApplication, Entry};
 use crate::input::KeyAction;
 
@@ -42,6 +44,21 @@ pub struct Launcher {
     /// `(app_id, surface_id)` pairs the chrome refreshes each frame from the
     /// server's live toplevel snapshot. Empty when nothing matches.
     running: Vec<(String, crate::window::WindowId)>,
+    /// Cached [`Launcher::filtered`] result, recomputed only when the query
+    /// or the catalog changes. The chrome renders every frame and reads the
+    /// filtered list several times per frame; the catalog scan behind it is
+    /// pure, so it is shared instead of repeated.
+    filter_cache: RefCell<FilterCache>,
+    /// Bumped every time `apps` is replaced, so the filter cache notices a
+    /// catalog rescan without diffing the entries.
+    catalog_revision: u64,
+}
+
+/// A cached filtered-index list plus the key it was computed for. `key` is
+/// `None` until the first [`Launcher::filtered`] call.
+struct FilterCache {
+    key: Option<(String, u64)>,
+    indices: Vec<usize>,
 }
 
 impl Launcher {
@@ -53,6 +70,11 @@ impl Launcher {
             query: String::new(),
             selection: 0,
             running: Vec::new(),
+            filter_cache: RefCell::new(FilterCache {
+                key: None,
+                indices: Vec::new(),
+            }),
+            catalog_revision: 0,
         }
     }
 
@@ -100,13 +122,39 @@ impl Launcher {
     /// compositor restart or unexpectedly close an active launcher.
     pub fn replace_apps(&mut self, apps: Vec<Entry>) {
         self.apps = apps;
+        self.catalog_revision = self.catalog_revision.wrapping_add(1);
         self.clamp_selection();
     }
 
     /// Indices into [`Launcher::apps`] matching the current query, in display
     /// order (which is the apps' already-sorted order). Empty query matches
     /// everything.
-    pub fn filtered(&self) -> Vec<usize> {
+    ///
+    /// The result is cached and recomputed only when the query or the
+    /// application catalog changes, so repeated same-frame calls (render,
+    /// selection clamping, activation) share one catalog scan. The returned
+    /// borrow must not be held across a call that mutates the query or the
+    /// catalog while another miss is still possible.
+    pub fn filtered(&self) -> Ref<'_, Vec<usize>> {
+        let stale = {
+            let cache = self.filter_cache.borrow();
+            cache.key.as_ref().is_none_or(|(query, revision)| {
+                query != &self.query || *revision != self.catalog_revision
+            })
+        };
+        if stale {
+            let indices = self.compute_filtered();
+            *self.filter_cache.borrow_mut() = FilterCache {
+                key: Some((self.query.clone(), self.catalog_revision)),
+                indices,
+            };
+        }
+        Ref::map(self.filter_cache.borrow(), |cache| &cache.indices)
+    }
+
+    /// Scan the whole catalog for the current query. Called by
+    /// [`Launcher::filtered`] only on a cache miss.
+    fn compute_filtered(&self) -> Vec<usize> {
         if self.query.is_empty() {
             return (0..self.apps.len()).collect();
         }
@@ -328,7 +376,7 @@ fn matches_query(e: &Entry, needle: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::Entry;
+    use crate::app::{Entry, SETTINGS_DESKTOP_ID};
 
     fn entry(id: &str, name: &str) -> Entry {
         Entry {
@@ -357,16 +405,18 @@ mod tests {
     }
 
     #[test]
-    fn control_center_entry_spawns_the_standalone_app() {
-        let mut launcher = Launcher::new(vec![Entry::control_center(
-            "Control Center",
-            "System controls",
-        )]);
+    fn settings_entry_spawns_the_standalone_app() {
+        let mut launcher = Launcher::new(vec![Entry {
+            id: SETTINGS_DESKTOP_ID.into(),
+            name: "System Settings".into(),
+            exec: Some("aegis-settings".into()),
+            ..Entry::default()
+        }]);
         launcher.open();
         let Some(Launch::Spawn(entry)) = launcher.handle(KeyAction::Enter) else {
-            panic!("Control Center must launch out of process");
+            panic!("System Settings must launch out of process");
         };
-        assert_eq!(entry.exec.as_deref(), Some("aegis-ctl-center"));
+        assert_eq!(entry.exec.as_deref(), Some("aegis-settings"));
         assert!(!launcher.is_open());
     }
 
@@ -453,7 +503,7 @@ mod tests {
         l.handle(KeyAction::Char('i'));
         l.handle(KeyAction::Char('r'));
         assert_eq!(l.query(), "fir");
-        assert_eq!(l.filtered(), vec![0]); // Firefox
+        assert_eq!(*l.filtered(), vec![0]); // Firefox
 
         // Clear and match by keyword.
         l.handle(KeyAction::Backspace);
@@ -463,7 +513,7 @@ mod tests {
         l.handle(KeyAction::Char('d'));
         l.handle(KeyAction::Char('e'));
         assert_eq!(l.query(), "ide");
-        assert_eq!(l.filtered(), vec![1]); // Code (keyword "ide")
+        assert_eq!(*l.filtered(), vec![1]); // Code (keyword "ide")
     }
 
     #[test]
@@ -541,7 +591,7 @@ mod tests {
         l.handle(KeyAction::Down); // selection = 2
         l.handle(KeyAction::Char('b')); // narrows to [B]
         assert_eq!(l.selection(), 0);
-        assert_eq!(l.filtered(), vec![1]);
+        assert_eq!(*l.filtered(), vec![1]);
     }
 
     #[test]

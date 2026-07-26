@@ -2,14 +2,15 @@
 //!
 //! The reference external tool (ADR-0027): it connects to a running
 //! compositor's IPC socket and drives it — list windows/workspaces, focus,
-//! minimize, close, switch workspace, toggle tiling, post a notification,
-//! quit. The [`run`] entry point is unit-testable against a loopback server;
-//! the thin binary in `main.rs` parses argv via `clap` and prints the result.
+//! minimize, close, switch workspace, inspect and control live-system state,
+//! post a notification, quit. The [`run`] entry point is unit-testable against
+//! a loopback server; the thin binary in `main.rs` parses argv via `clap` and
+//! prints the result.
 
 mod cli;
 mod error;
 
-pub use cli::{Cli, Command, RealmCmd, Region, SwitchDir};
+pub use cli::{Cli, Command, OnOff, RealmCmd, Region, SwitchDir, SystemCmd};
 pub use error::CliError;
 
 use std::path::Path;
@@ -106,6 +107,7 @@ fn dispatch_command(socket: &Path, cli: Cli) -> Result<String, CliError> {
             Ok(render(&snapshot, json, format_journal))
         }
         Cmd::Realm(action) => dispatch_realm(socket, action, json),
+        Cmd::System(action) => dispatch_system(socket, action, json),
         Cmd::Focus { id } => {
             let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
             client
@@ -217,6 +219,58 @@ fn dispatch_command(socket: &Path, cli: Cli) -> Result<String, CliError> {
             Ok("quit requested".into())
         }
     }
+}
+
+fn dispatch_system(socket: &Path, command: SystemCmd, json: bool) -> Result<String, CliError> {
+    if matches!(command, SystemCmd::Status) {
+        let mut client = Client::connect_with(socket, query_caps()).map_err(connect_err)?;
+        let status = client.system_status().map_err(io_err)?;
+        return Ok(render(&status, json, format_system_status));
+    }
+
+    let (action, acknowledgement) = match command {
+        SystemCmd::Status => unreachable!("handled above"),
+        SystemCmd::Mute => (aegis_ipc::SystemAction::ToggleMute, "mute toggled"),
+        SystemCmd::StepVolume { delta } => (
+            aegis_ipc::SystemAction::StepVolume { delta },
+            "volume step queued",
+        ),
+        SystemCmd::Volume { level } => (
+            aegis_ipc::SystemAction::SetVolume { level },
+            "volume change queued",
+        ),
+        SystemCmd::Brightness { level } => (
+            aegis_ipc::SystemAction::SetBrightness { level },
+            "brightness change queued",
+        ),
+        SystemCmd::Wifi { state } => (
+            aegis_ipc::SystemAction::SetWifi {
+                enabled: state.into(),
+            },
+            "Wi-Fi change queued",
+        ),
+        SystemCmd::Bluetooth { state } => (
+            aegis_ipc::SystemAction::SetBluetooth {
+                enabled: state.into(),
+            },
+            "Bluetooth change queued",
+        ),
+        SystemCmd::DoNotDisturb { state } => (
+            aegis_ipc::SystemAction::SetDoNotDisturb {
+                enabled: state.into(),
+            },
+            "Do Not Disturb change queued",
+        ),
+        SystemCmd::Tiling { state } => (
+            aegis_ipc::SystemAction::SetTiling {
+                enabled: state.into(),
+            },
+            "layout change queued",
+        ),
+    };
+    let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
+    client.apply_system_action(action).map_err(io_err)?;
+    Ok(acknowledgement.into())
 }
 
 fn dispatch_realm(socket: &Path, action: RealmCmd, json: bool) -> Result<String, CliError> {
@@ -676,6 +730,50 @@ fn format_notifications(notifications: &[aegis_core::notify::Notification]) -> S
     out
 }
 
+fn format_system_status(status: &aegis_ipc::SystemStatus) -> String {
+    let volume = status
+        .volume
+        .map(|level| format!("{level}%"))
+        .unwrap_or_else(|| "unavailable".into());
+    let network = match status.network {
+        aegis_core::system::NetworkState::Offline => "offline",
+        aegis_core::system::NetworkState::Wifi => "wifi",
+        aegis_core::system::NetworkState::Wired => "wired",
+    };
+    let battery = status
+        .battery
+        .map(|battery| {
+            format!(
+                "{}%{}",
+                battery.percent,
+                if battery.charging { " charging" } else { "" }
+            )
+        })
+        .unwrap_or_else(|| "unavailable".into());
+    let brightness = status
+        .brightness
+        .map(|level| format!("{level}%"))
+        .unwrap_or_else(|| "unavailable".into());
+    format!(
+        "audio: {volume} ({})\nnetwork: {network}; wifi: {}; bluetooth: {}\n\
+         battery: {battery}; brightness: {brightness}\n\
+         do not disturb: {}; layout: {}",
+        if status.muted { "muted" } else { "unmuted" },
+        format_optional_switch(status.wifi_enabled),
+        format_optional_switch(status.bluetooth_enabled),
+        if status.do_not_disturb { "on" } else { "off" },
+        if status.tiled { "tiled" } else { "floating" },
+    )
+}
+
+fn format_optional_switch(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "on",
+        Some(false) => "off",
+        None => "unavailable",
+    }
+}
+
 fn format_journal(snapshot: &aegis_ipc::JournalSnapshot) -> String {
     if snapshot.entries.is_empty() {
         return format!(
@@ -717,6 +815,7 @@ pub fn format_event(ev: &Event) -> String {
         }
         Event::RealmsChanged { revision } => format!("realms changed r{revision}"),
         Event::SettingsChanged { revision } => format!("settings changed r{revision}"),
+        Event::SystemStatusChanged => "system status changed".into(),
         Event::RealmDamaged {
             realm,
             sequence,
@@ -751,6 +850,10 @@ mod tests {
         assert_eq!(
             format_event(&Event::SettingsChanged { revision: 9 }),
             "settings changed r9"
+        );
+        assert_eq!(
+            format_event(&Event::SystemStatusChanged),
+            "system status changed"
         );
     }
 

@@ -446,6 +446,10 @@ pub struct LayoutConfig {
     /// Window rules can still force individual windows floating or tiled.
     #[serde(default)]
     pub default_tiled: bool,
+    /// Whether window positions, sizes, and workspaces are persisted across
+    /// restarts (default true). Window rules can override for specific apps.
+    #[serde(default = "default_remember_window_positions")]
+    pub remember_window_positions: bool,
 }
 
 fn default_gaps() -> i32 {
@@ -454,6 +458,9 @@ fn default_gaps() -> i32 {
 fn default_master_ratio() -> f32 {
     0.5
 }
+fn default_remember_window_positions() -> bool {
+    true
+}
 
 impl Default for LayoutConfig {
     fn default() -> LayoutConfig {
@@ -461,6 +468,7 @@ impl Default for LayoutConfig {
             gaps: default_gaps(),
             master_ratio: default_master_ratio(),
             default_tiled: false,
+            remember_window_positions: default_remember_window_positions(),
         }
     }
 }
@@ -840,7 +848,9 @@ impl Config {
                 aegis_core::output::OutputPolicy {
                     scale: output.scale,
                     mode: output.mode.as_deref().and_then(|m| m.parse().ok()),
-                    position: output.position.map(|p| aegis_core::Point { x: p.x, y: p.y }),
+                    position: output
+                        .position
+                        .map(|p| aegis_core::Point { x: p.x, y: p.y }),
                     transform: output
                         .transform
                         .as_deref()
@@ -884,99 +894,96 @@ pub fn load(path: &Path) -> Result<Option<Config>, LoadError> {
     }
 }
 
-/// Update the `[dock]` section in the config file at `path` after a manual
-/// pin change: writes `pinned` verbatim and sets `autopopulate = false` so an
-/// empty list stays a deliberate choice. The file (and its parent directory)
-/// is created if missing; an existing file is edited with `toml_edit` so user
-/// comments and formatting outside the touched keys are preserved. A file
-/// that exists but is not valid TOML is reported rather than overwritten.
-pub fn set_dock_pinned(path: &Path, pinned: &[String]) -> Result<(), LoadError> {
-    let mut doc = match std::fs::read_to_string(path) {
-        Ok(text) => text
-            .parse::<DocumentMut>()
-            .map_err(|error| LoadError::Invalid {
-                path: path.into(),
-                diagnostics: vec![Diagnostic::new(None, format!("existing file: {error}"))],
-            })?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let mut d = DocumentMut::new();
-            d["schema_version"] = toml_edit::value(i64::from(SUPPORTED_SCHEMA_VERSION));
-            d
-        }
-        Err(e) => {
-            return Err(LoadError::Read {
-                path: path.into(),
-                source: e,
-            });
-        }
-    };
-
-    if !doc.get("dock").map(|i| i.is_table()).unwrap_or(false) {
-        doc["dock"] = toml_edit::Item::Table(toml_edit::Table::new());
-    }
-
-    let mut arr = toml_edit::Array::new();
-    for id in pinned {
-        arr.push(id.as_str());
-    }
-    doc["dock"]["pinned"] = toml_edit::Item::Value(toml_edit::Value::Array(arr));
-    doc["dock"]["autopopulate"] = toml_edit::value(false);
-
-    if let Some(parent) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(parent)
-    {
-        return Err(LoadError::Write {
-            path: path.into(),
-            source: e,
-        });
-    }
-
-    std::fs::write(path, doc.to_string()).map_err(|e| LoadError::Write {
-        path: path.into(),
-        source: e,
-    })
+/// One typed edit to the user-owned configuration document.
+///
+/// Edits are persistence operations, not application commands: the
+/// compositor validates authority and applies live state before or after
+/// submitting them. Keeping this enum in `aegis-config` centralizes the TOML
+/// representation without exposing it to the System Settings application.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigEdit {
+    /// Replace the complete manually managed dock pin list and disable
+    /// automatic population.
+    SetDockPinned { pinned: Vec<String> },
+    /// Replace the complete `[input.touchpad]` profile.
+    SetTouchpad { config: TouchpadConfig },
+    /// Replace the user-editable fields for one `[[output]]` entry.
+    SetOutput {
+        settings: aegis_core::settings::DisplaySettings,
+    },
 }
 
-/// Persist the complete `[input.touchpad]` profile while preserving comments
-/// and unrelated configuration. The file and parent directory are created
-/// when absent; malformed existing TOML is never overwritten.
-pub fn set_touchpad_config(path: &Path, config: &TouchpadConfig) -> Result<(), LoadError> {
-    let mut doc = match std::fs::read_to_string(path) {
-        Ok(text) => text
-            .parse::<DocumentMut>()
-            .map_err(|error| LoadError::Invalid {
-                path: path.into(),
-                diagnostics: vec![Diagnostic::new(None, format!("existing file: {error}"))],
-            })?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let mut d = DocumentMut::new();
-            d["schema_version"] = toml_edit::value(i64::from(SUPPORTED_SCHEMA_VERSION));
-            d
-        }
-        Err(e) => {
-            return Err(LoadError::Read {
-                path: path.into(),
-                source: e,
-            });
-        }
-    };
+/// Path-bound access to the versioned configuration document.
+///
+/// [`ConfigStore::apply`] performs one complete read-modify-validate-write
+/// transaction and publishes the result with an atomic same-directory
+/// replacement. Callers that submit edits concurrently must serialize calls;
+/// the compositor does so on its config-write worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigStore {
+    path: PathBuf,
+}
 
-    if !doc
-        .get("input")
-        .map(|item| item.is_table())
-        .unwrap_or(false)
-    {
-        doc["input"] = toml_edit::Item::Table(toml_edit::Table::new());
+impl ConfigStore {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
     }
-    if !doc["input"]
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn load(&self) -> Result<Option<Config>, LoadError> {
+        load(&self.path)
+    }
+
+    /// Apply one typed edit while preserving comments and unrelated keys.
+    ///
+    /// A missing document is initialized with the current schema version. An
+    /// existing document must remain valid after the edit; malformed TOML,
+    /// unknown fields, unsupported schema versions, and invalid values are
+    /// reported without replacing the original file.
+    pub fn apply(&self, edit: ConfigEdit) -> Result<(), LoadError> {
+        let mut document = editable_document(&self.path)?;
+        match edit {
+            ConfigEdit::SetDockPinned { pinned } => apply_dock_pinned(&mut document, &pinned),
+            ConfigEdit::SetTouchpad { config } => apply_touchpad(&mut document, &config),
+            ConfigEdit::SetOutput { settings } => apply_output(&mut document, settings),
+        }
+        let contents = document.to_string();
+        Config::parse(&contents).map_err(|diagnostics| LoadError::Invalid {
+            path: self.path.clone(),
+            diagnostics,
+        })?;
+        write_document_atomic(&self.path, &contents)
+    }
+}
+
+fn apply_dock_pinned(document: &mut DocumentMut, pinned: &[String]) {
+    if !document.get("dock").is_some_and(toml_edit::Item::is_table) {
+        document["dock"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+
+    let mut values = toml_edit::Array::new();
+    for id in pinned {
+        values.push(id.as_str());
+    }
+    document["dock"]["pinned"] = toml_edit::Item::Value(toml_edit::Value::Array(values));
+    document["dock"]["autopopulate"] = toml_edit::value(false);
+}
+
+fn apply_touchpad(document: &mut DocumentMut, config: &TouchpadConfig) {
+    if !document.get("input").is_some_and(toml_edit::Item::is_table) {
+        document["input"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    if !document["input"]
         .get("touchpad")
-        .map(|item| item.is_table())
-        .unwrap_or(false)
+        .is_some_and(toml_edit::Item::is_table)
     {
-        doc["input"]["touchpad"] = toml_edit::Item::Table(toml_edit::Table::new());
+        document["input"]["touchpad"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
 
-    let touchpad = &mut doc["input"]["touchpad"];
+    let touchpad = &mut document["input"]["touchpad"];
     touchpad["natural_scroll"] = toml_edit::value(config.natural_scroll);
     touchpad["tap_to_click"] = toml_edit::value(config.tap_to_click);
     touchpad["tap_and_drag"] = toml_edit::value(config.tap_and_drag);
@@ -987,61 +994,30 @@ pub fn set_touchpad_config(path: &Path, config: &TouchpadConfig) -> Result<(), L
         TouchpadScrollMethod::TwoFinger => "two-finger",
         TouchpadScrollMethod::Edge => "edge",
     });
-
-    if let Some(parent) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(parent)
-    {
-        return Err(LoadError::Write {
-            path: path.into(),
-            source: e,
-        });
-    }
-    std::fs::write(path, doc.to_string()).map_err(|e| LoadError::Write {
-        path: path.into(),
-        source: e,
-    })
 }
 
-/// Persist the user-editable fields for one `[[output]]` entry while
-/// preserving comments, unrelated settings, and any configured transform.
-///
-/// The write is an atomic same-directory replacement so the compositor's
-/// live-reload watcher can never observe a partially written TOML document.
-/// Selecting a primary output clears that flag from every other entry; an
-/// old primary-only entry is removed instead of leaving an invalid no-op
-/// table behind.
-pub fn set_output_settings(
-    path: &Path,
-    connector: &str,
-    mode: aegis_core::output::ModeSpec,
-    scale: f64,
-    position: aegis_core::Point,
-    primary: bool,
-) -> Result<(), LoadError> {
-    if connector.trim().is_empty() || !scale.is_finite() || !(0.25..=4.0).contains(&scale) {
-        return Err(LoadError::Invalid {
-            path: path.into(),
-            diagnostics: vec![Diagnostic::new(
-                Some("output".into()),
-                "display settings are outside the supported range",
-            )],
-        });
-    }
-
-    let mut doc = editable_document(path)?;
-    if !doc
+fn apply_output(document: &mut DocumentMut, settings: aegis_core::settings::DisplaySettings) {
+    let aegis_core::settings::DisplaySettings {
+        connector,
+        mode,
+        scale,
+        position,
+        primary,
+    } = settings;
+    if !document
         .get("output")
         .is_some_and(toml_edit::Item::is_array_of_tables)
     {
-        doc["output"] = toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
+        document["output"] = toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
     }
-    let outputs = doc["output"]
+    let outputs = document["output"]
         .as_array_of_tables_mut()
         .expect("output was normalized to an array of tables");
 
     if primary {
         for table in outputs.iter_mut() {
-            if table.get("connector").and_then(toml_edit::Item::as_str) != Some(connector) {
+            if table.get("connector").and_then(toml_edit::Item::as_str) != Some(connector.as_str())
+            {
                 table.remove("primary");
             }
         }
@@ -1059,12 +1035,12 @@ pub fn set_output_settings(
         .rev()
         .find(|index| {
             outputs.get(*index).is_some_and(|table| {
-                table.get("connector").and_then(toml_edit::Item::as_str) == Some(connector)
+                table.get("connector").and_then(toml_edit::Item::as_str) == Some(connector.as_str())
             })
         })
         .unwrap_or_else(|| {
             let mut table = toml_edit::Table::new();
-            table["connector"] = toml_edit::value(connector);
+            table["connector"] = toml_edit::value(connector.as_str());
             outputs.push(table);
             outputs.len() - 1
         });
@@ -1083,8 +1059,6 @@ pub fn set_output_settings(
     } else {
         output.remove("primary");
     }
-
-    write_document_atomic(path, &doc.to_string())
 }
 
 fn editable_document(path: &Path) -> Result<DocumentMut, LoadError> {
@@ -1323,10 +1297,14 @@ mod tests {
     }
 
     #[test]
-    fn set_dock_pinned_creates_a_loadable_config() {
+    fn config_store_creates_a_loadable_config_for_dock_pins() {
         let path = temp_config_path("create");
         let _ = std::fs::remove_file(&path);
-        set_dock_pinned(&path, &["foot.desktop".to_string(), "firefox".to_string()]).unwrap();
+        ConfigStore::new(&path)
+            .apply(ConfigEdit::SetDockPinned {
+                pinned: vec!["foot.desktop".to_string(), "firefox".to_string()],
+            })
+            .unwrap();
         let cfg = load(&path).unwrap().expect("file written");
         assert_eq!(cfg.dock.pinned, vec!["foot.desktop", "firefox"]);
         assert!(
@@ -1337,11 +1315,15 @@ mod tests {
     }
 
     #[test]
-    fn set_dock_pinned_preserves_other_content_and_comments() {
+    fn config_store_preserves_other_content_and_comments() {
         let path = temp_config_path("preserve");
         let original = "schema_version = 1\n\n# my apps\n[dock]\npinned = [\"a.desktop\"]\n\n[ui]\nreduced_motion = true\n";
         std::fs::write(&path, original).unwrap();
-        set_dock_pinned(&path, &["b.desktop".to_string()]).unwrap();
+        ConfigStore::new(&path)
+            .apply(ConfigEdit::SetDockPinned {
+                pinned: vec!["b.desktop".to_string()],
+            })
+            .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("# my apps"), "comment survives: {text}");
         let cfg = load(&path).unwrap().expect("file still valid");
@@ -1351,16 +1333,103 @@ mod tests {
     }
 
     #[test]
-    fn set_dock_pinned_reports_an_invalid_existing_file() {
+    fn config_store_does_not_overwrite_invalid_toml() {
         let path = temp_config_path("invalid");
         std::fs::write(&path, "schema_version = [unterminated\n").unwrap();
-        let err = set_dock_pinned(&path, &["a.desktop".to_string()]).unwrap_err();
+        let err = ConfigStore::new(&path)
+            .apply(ConfigEdit::SetDockPinned {
+                pinned: vec!["a.desktop".to_string()],
+            })
+            .unwrap_err();
         assert!(matches!(err, LoadError::Invalid { .. }), "{err}");
         // The invalid file must not be overwritten.
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "schema_version = [unterminated\n"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_store_validates_the_complete_document_before_replacing_it() {
+        let path = temp_config_path("invalid-schema");
+        let original = "schema_version = 99\n";
+        std::fs::write(&path, original).unwrap();
+        let err = ConfigStore::new(&path)
+            .apply(ConfigEdit::SetDockPinned {
+                pinned: vec!["a.desktop".to_string()],
+            })
+            .unwrap_err();
+        assert!(matches!(err, LoadError::Invalid { .. }), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_store_rejects_an_invalid_edit_without_replacing_a_valid_document() {
+        let path = temp_config_path("invalid-edit");
+        let original = "schema_version = 1\n\n# keep this\n[ui]\nreduced_motion = true\n";
+        std::fs::write(&path, original).unwrap();
+        let err = ConfigStore::new(&path)
+            .apply(ConfigEdit::SetOutput {
+                settings: aegis_core::settings::DisplaySettings {
+                    connector: String::new(),
+                    mode: aegis_core::output::ModeSpec {
+                        width: 1920,
+                        height: 1080,
+                        refresh_hz: Some(60),
+                    },
+                    scale: 5.0,
+                    position: aegis_core::Point::default(),
+                    primary: true,
+                },
+            })
+            .unwrap_err();
+        assert!(matches!(err, LoadError::Invalid { .. }), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_store_composes_typed_edits_without_losing_fields() {
+        let path = temp_config_path("composed-edits");
+        let _ = std::fs::remove_file(&path);
+        let store = ConfigStore::new(&path);
+        store
+            .apply(ConfigEdit::SetDockPinned {
+                pinned: vec!["foot.desktop".to_string()],
+            })
+            .unwrap();
+        let touchpad = TouchpadConfig {
+            natural_scroll: true,
+            pointer_speed: 0.25,
+            ..TouchpadConfig::default()
+        };
+        store
+            .apply(ConfigEdit::SetTouchpad { config: touchpad })
+            .unwrap();
+        store
+            .apply(ConfigEdit::SetOutput {
+                settings: aegis_core::settings::DisplaySettings {
+                    connector: "DP-1".into(),
+                    mode: aegis_core::output::ModeSpec {
+                        width: 1920,
+                        height: 1080,
+                        refresh_hz: Some(60),
+                    },
+                    scale: 1.0,
+                    position: aegis_core::Point::default(),
+                    primary: true,
+                },
+            })
+            .unwrap();
+
+        let config = store.load().unwrap().unwrap();
+        assert_eq!(store.path(), path);
+        assert_eq!(config.dock.pinned, vec!["foot.desktop"]);
+        assert_eq!(config.input.touchpad, touchpad);
+        assert_eq!(config.outputs.len(), 1);
+        assert_eq!(config.outputs[0].connector, "DP-1");
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1395,7 +1464,7 @@ mod tests {
     }
 
     #[test]
-    fn set_touchpad_config_creates_profile_and_preserves_other_content() {
+    fn config_store_sets_touchpad_profile_and_preserves_other_content() {
         let path = temp_config_path("touchpad");
         let original = "schema_version = 1\n\n# keep this\n[ui]\nreduced_motion = true\n";
         std::fs::write(&path, original).unwrap();
@@ -1408,7 +1477,9 @@ mod tests {
             pointer_speed: -0.4,
             scroll_method: TouchpadScrollMethod::Edge,
         };
-        set_touchpad_config(&path, &profile).unwrap();
+        ConfigStore::new(&path)
+            .apply(ConfigEdit::SetTouchpad { config: profile })
+            .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("# keep this"), "comment survives: {text}");
         let cfg = load(&path).unwrap().expect("file remains loadable");
@@ -1864,7 +1935,7 @@ mod tests {
     }
 
     #[test]
-    fn output_settings_persist_atomically_and_keep_unrelated_fields() {
+    fn config_store_persists_output_atomically_and_keeps_unrelated_fields() {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
@@ -1882,19 +1953,21 @@ mod tests {
         )
         .unwrap();
 
-        set_output_settings(
-            &path,
-            "HDMI-A-1",
-            aegis_core::output::ModeSpec {
-                width: 2560,
-                height: 1440,
-                refresh_hz: Some(144),
-            },
-            1.5,
-            aegis_core::Point { x: 120, y: -40 },
-            true,
-        )
-        .unwrap();
+        ConfigStore::new(&path)
+            .apply(ConfigEdit::SetOutput {
+                settings: aegis_core::settings::DisplaySettings {
+                    connector: "HDMI-A-1".into(),
+                    mode: aegis_core::output::ModeSpec {
+                        width: 2560,
+                        height: 1440,
+                        refresh_hz: Some(144),
+                    },
+                    scale: 1.5,
+                    position: aegis_core::Point { x: 120, y: -40 },
+                    primary: true,
+                },
+            })
+            .unwrap();
 
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("# keep this comment"));

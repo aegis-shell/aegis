@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{Chrome, ChromeEvents, Localizer};
-use aegis_core::notify::NotificationQueue;
+use aegis_core::notify::{Notification, NotificationQueue};
 use aegis_core::window::Window;
 use aegis_core::workspace::WorkspaceSnapshot;
 
@@ -20,16 +20,21 @@ const TOAST_RIGHT_MARGIN: f32 = 10.0;
 /// Cap the visible stack so a flood does not fill the screen.
 const MAX_VISIBLE: usize = 5;
 
-/// The notification toast stack. Stateless beyond its borrowed queue handle;
-/// the main loop pushes and expires entries, this component only renders.
+/// The notification toast stack. Beyond its borrowed queue handle it caches
+/// the rendered entries keyed by the queue's revision, so an unchanged queue
+/// is not re-cloned every frame; the main loop pushes and expires entries,
+/// this component only renders.
 pub struct Toast {
     queue: Arc<Mutex<NotificationQueue>>,
+    /// `(revision, entries)` of the last clone from the queue; `None` until
+    /// the first render (or after do-not-disturb hid the stack).
+    cache: Option<(u64, Vec<Notification>)>,
 }
 
 impl Toast {
     /// Construct with a shared queue the main loop also pushes to.
     pub fn new(queue: Arc<Mutex<NotificationQueue>>) -> Toast {
-        Toast { queue }
+        Toast { queue, cache: None }
     }
 }
 
@@ -51,21 +56,33 @@ impl Chrome for Toast {
             .first()
             .copied()
             .unwrap_or(false);
-        let notifications: Vec<_> = {
+        // Re-clone only when the queue's revision moved; otherwise render
+        // the cached entries. Newest on top: iterate the tail in reverse,
+        // capped.
+        let notifications: &[Notification] = {
             let queue = self.queue.lock().unwrap();
             if queue.do_not_disturb() {
-                Vec::new()
+                self.cache = None;
+                &[]
             } else {
-                queue
-                    .recent()
-                    .iter()
-                    .rev()
-                    .take(MAX_VISIBLE)
-                    .cloned()
-                    .collect()
+                let stale = self
+                    .cache
+                    .as_ref()
+                    .map(|(revision, _)| *revision != queue.revision())
+                    .unwrap_or(true);
+                if stale {
+                    let entries = queue
+                        .recent()
+                        .iter()
+                        .rev()
+                        .take(MAX_VISIBLE)
+                        .cloned()
+                        .collect();
+                    self.cache = Some((queue.revision(), entries));
+                }
+                &self.cache.as_ref().unwrap().1
             }
         };
-        // Newest on top: iterate the tail in reverse, capped.
         for (i, n) in notifications.iter().enumerate() {
             let rect = Rect {
                 x: disp.x - TOAST_W - TOAST_RIGHT_MARGIN,

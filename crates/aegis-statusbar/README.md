@@ -2,10 +2,9 @@
 
 `aegis-statusbar` is the top status bar chrome component for the ass
 compositor, built on the `Chrome` contract from `aegis-shell` and shared
-materials from `aegis-design`. It hosts
-the session HUD (workspace state, active-window title, clock, system
-status, notification panel) and the compositor's StatusNotifierItem
-(SNI) system tray.
+materials from `aegis-design`. It hosts the session HUD (workspace state,
+active-window title, clock, live system controls, and notifications) and the
+compositor's StatusNotifierItem (SNI) system tray.
 
 ## Responsibilities
 
@@ -13,11 +12,13 @@ status, notification panel) and the compositor's StatusNotifierItem
 - Show one workspace dot per workspace (click to switch), the active
   window's icon and title, a polled clock, and an application tray of
   running app icons.
-- Present compact system status (volume, network, battery, notifications)
-  as icon buttons, with volume mute/step actions on click and scroll.
+- Present compact system status as icon buttons, with direct volume
+  mute/step actions on click and scroll.
+- Open one status-and-controls panel for volume, brightness, Wi-Fi,
+  Bluetooth, Do Not Disturb, current-workspace layout, and recent
+  notifications.
 - Show a persistent, state-colored Agent Realm indicator whenever AI
-  authority is live; clicking it opens Control Center on AI Workspaces.
-- Open a small notification panel from the bell button.
+  authority is live; clicking it opens AI Workspaces directly.
 - Run the session's StatusNotifierWatcher + Host on the session D-Bus,
   render registered SNI items' icons in the tray row, and forward
   left-click (`Activate`), right-click (`SecondaryActivate`, or a
@@ -66,7 +67,7 @@ Register one status bar with the shell, sharing the flux device and the
 notification queue:
 
 ```rust
-shell.add(Box::new(ass_statusbar::StatusBar::with_notifications(
+shell.add(Box::new(aegis_statusbar::StatusBar::with_notifications(
     &device,
     std::sync::Arc::clone(&notif_queue),
 )));
@@ -78,7 +79,7 @@ application catalog and system status.
 ## Related Documentation
 
 - [Status bar crate and SNI tray decision](../../docs/adr/0045-statusbar-crate-and-sni-tray.md)
-- [Component crate split (dock + Control Center precedent)](../../docs/adr/0044-dock-and-control-center-crates.md)
+- [Status bar system controls](../../docs/adr/0060-statusbar-system-controls-and-live-system-ipc.md)
 - [Chrome component decision](../../docs/adr/0021-chrome-component-trait.md)
 - [Design system decision](../../docs/adr/0046-design-system-crate.md)
 - [Configuration reference: `[statusbar]`](../../docs/reference/config.md#status-bar)

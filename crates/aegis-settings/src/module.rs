@@ -1,10 +1,10 @@
-//! Settings-module contract and registry for the Control Center host.
+//! Settings-module contract and registry for the System Settings host.
 //!
 //! The contract deliberately separates module discovery and lifecycle from
 //! the way modules are linked. Modules are statically registered today, so
 //! the application does not expose Rust's unstable dynamic-library ABI. A
 //! future process-isolated loader can preserve the same metadata and state
-//! model without changing the Control Center's navigation contract.
+//! model without changing the System Settings navigation contract.
 
 use aegis_core::settings::{SettingsAction, SettingsSnapshot};
 use aegis_shell::{Localizer, Message};
@@ -68,7 +68,7 @@ pub struct ModuleEvents {
     pub actions: Vec<SettingsAction>,
 }
 
-/// One independently stateful settings page hosted by Control Center.
+/// One independently stateful settings page hosted by System Settings.
 pub trait SettingsModule {
     fn metadata(&self) -> ModuleMetadata;
 

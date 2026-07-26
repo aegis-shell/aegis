@@ -18,25 +18,27 @@ Build the release binary before leaving the graphical session:
 
 ```bash
 meson compile -C ../optics/build
-cargo build --release -p ass
+cargo build --release -p aegis -p aegis-settings -p aegis-ctl
 ```
 
 ## Start
 
-Switch to a free TTY (`Ctrl+Alt+F3`), log in, change to the repository root,
-and run the prebuilt binary:
+Switch to a free TTY (`Ctrl+Alt+F3`), log in as the normal user, change to the
+repository root, and run the prebuilt integrated session:
 
 ```bash
-unset WAYLAND_DISPLAY
-RUST_LOG=info ./target/release/ass --backend drm
+RUST_LOG=info \
+  scripts/dev.sh --backend drm --release --no-build
 ```
 
-`--backend auto` also picks DRM when `$WAYLAND_DISPLAY` is unset.
 `ASS_DRM_DEVICE=/dev/dri/card1` overrides the GPU when there is more than one.
 The log shows the device, seat, connector, and modifier choices as they happen.
-Prebuilding keeps compiler latency and failures outside the hardware session.
+The runner stages System Settings under `target/aegis-dev`, clears
+`WAYLAND_DISPLAY`, and starts exactly one DRM session. It does not install
+files under `~/.local` or `/usr`. Prebuilding keeps compiler latency and
+failures outside the hardware session.
 
-Use the packaged `ass.service` instead of the direct binary when testing
+Use the packaged `aegis.service` instead of the direct binary when testing
 Realm application launch. The service delegates the cgroup controllers that
 mandatory memory, process, CPU, freeze, and revoke boundaries require. It
 also binds to `graphical-session.target`, so session services such as
@@ -56,7 +58,7 @@ the compositor process.
 
 ## Configure displays
 
-Open **Control Center**, select **Sound & Display**, then use the **Display**
+Open **System Settings**, then use the **Display**
 card to:
 
 1. Select a connected monitor.
@@ -101,7 +103,6 @@ First bare-metal run, in order:
 Request a graceful compositor shutdown with one of these methods:
 
 - Run `aegis-ctl quit` from a terminal inside ass.
-- Select **Quit Session** in Control Center.
 - Press the default `Super+Shift+Return` binding.
 
 The compositor disables its outputs, releases the seat and DRM device, and

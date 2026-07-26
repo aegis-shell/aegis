@@ -1,25 +1,46 @@
-//! Runtime Realm management, intentionally separate from persistent settings.
+//! Compositor-owned AI Workspace lifecycle and authority presentation.
 
+use aegis_core::app::BuiltInApplication;
+use aegis_core::input::{KeyAction, KeyChar, key_action};
 use aegis_core::realm::{RealmId, RealmKind, RealmSnapshot, RealmState};
-use aegis_shell::{ChromeEvents, Localizer, Message, RealmIntent};
-use lens::{Align, Frame, LayoutOpts};
+use aegis_core::window::Window;
+use aegis_core::workspace::WorkspaceSnapshot;
+use aegis_design::{Design, materials};
+use aegis_shell::{
+    BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Message, ModalApplicationSpec,
+    RealmIntent, Reserved,
+};
+use lens::{Align, Frame, Icon, Input, LayoutOpts};
 
-use crate::ui::{section_heading_layout, settings_card_layout};
+const SURFACE: ModalApplicationSpec = ModalApplicationSpec {
+    scrim_id: "aegis-ai-workspaces-scrim",
+    panel_id: "aegis-ai-workspaces-app",
+    scroll_id: "aegis-ai-workspaces-page",
+    title: Message::AiWorkspaces,
+    icon: Icon::Grid,
+    max_width: 760.0,
+    max_height: 590.0,
+};
 
-pub(crate) struct RealmManager {
+/// Trusted modal application for Agent Realm lifecycle management.
+pub struct AiWorkspaces {
+    open: bool,
+    modal_reserved: Reserved,
     snapshot: RealmSnapshot,
     pending_revoke: Option<RealmId>,
 }
 
-impl RealmManager {
-    pub(crate) fn new() -> Self {
+impl AiWorkspaces {
+    pub fn new() -> Self {
         Self {
+            open: false,
+            modal_reserved: Reserved::default(),
             snapshot: aegis_core::realm::RealmModel::new().snapshot(),
             pending_revoke: None,
         }
     }
 
-    pub(crate) fn update(&mut self, snapshot: &RealmSnapshot) {
+    fn update_snapshot(&mut self, snapshot: &RealmSnapshot) {
         self.snapshot = snapshot.clone();
         if self.pending_revoke.is_some_and(|id| {
             !self
@@ -32,18 +53,8 @@ impl RealmManager {
         }
     }
 
-    pub(crate) fn render(&mut self, frame: &mut Frame, i18n: &Localizer, out: &mut ChromeEvents) {
-        frame.column_ex(
-            &LayoutOpts {
-                gap: 5.0,
-                cross: Align::Stretch,
-                ..Default::default()
-            },
-            |frame| {
-                frame.heading(i18n.text(Message::AiWorkspaces), 2);
-                frame.label_wrapped_sized(i18n.text(Message::AiWorkspacesDescription), 12.0, 560.0);
-            },
-        );
+    fn render_content(&mut self, frame: &mut Frame, i18n: &Localizer, out: &mut ChromeEvents) {
+        frame.label_wrapped_sized(i18n.text(Message::AiWorkspacesDescription), 12.0, 640.0);
         frame.size_next(0.0, 32.0);
         if frame.button(i18n.text(Message::NewAiWorkspace)) {
             let ordinal = self
@@ -78,7 +89,7 @@ impl RealmManager {
                 .seats
                 .iter()
                 .find(|seat| seat.realm == realm.id);
-            frame.column_ex(&settings_card_layout(), |frame| {
+            frame.column_ex(&workspace_card_layout(), |frame| {
                 frame.row_ex(&section_heading_layout(), |frame| {
                     frame.heading(&realm.label, 3);
                     frame.flex(1.0);
@@ -117,7 +128,7 @@ impl RealmManager {
                                 capabilities.join(" · ")
                             ),
                             11.0,
-                            500.0,
+                            600.0,
                         );
                     }
                 }
@@ -175,8 +186,144 @@ impl RealmManager {
     }
 }
 
-impl Default for RealmManager {
+impl Default for AiWorkspaces {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Chrome for AiWorkspaces {
+    fn render(
+        &mut self,
+        frame: &mut Frame,
+        input: &Input,
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+        i18n: &Localizer,
+        out: &mut ChromeEvents,
+    ) {
+        if !self.open {
+            return;
+        }
+        let reserved = self.modal_reserved;
+        if SURFACE.render(frame, input, reserved, i18n, |frame| {
+            self.render_content(frame, i18n, out);
+        }) {
+            self.open = false;
+        }
+    }
+
+    fn captures_keyboard(&self) -> bool {
+        self.open
+    }
+
+    fn key_char(&mut self, key: &KeyChar, _out: &mut ChromeEvents) {
+        if self.open && matches!(key_action(key.keysym, key.ch), KeyAction::Escape) {
+            self.open = false;
+        }
+    }
+
+    fn open_builtin(&mut self, app: BuiltInApplication) {
+        self.open = app == BuiltInApplication::AiWorkspaces;
+    }
+
+    fn update_realms(&mut self, snapshot: &RealmSnapshot) {
+        self.update_snapshot(snapshot);
+    }
+
+    fn captures_pointer(
+        &self,
+        _x: f32,
+        _y: f32,
+        _display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> bool {
+        self.open
+    }
+
+    fn cursor_shape_at(
+        &self,
+        _x: f32,
+        _y: f32,
+        _display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> Option<CursorShape> {
+        Some(CursorShape::Pointer)
+    }
+
+    fn modal_active(&self) -> bool {
+        self.open
+    }
+
+    fn visible_during_modal(&self) -> bool {
+        true
+    }
+
+    fn set_modal_reserved(&mut self, reserved: Reserved) {
+        self.modal_reserved = reserved;
+    }
+
+    fn backdrop_blur_sigma(&self) -> f32 {
+        if self.open {
+            SURFACE.backdrop_blur_sigma()
+        } else {
+            0.0
+        }
+    }
+
+    fn backdrop_regions(
+        &self,
+        display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> Vec<BackdropRegion> {
+        if self.open {
+            SURFACE.backdrop_regions(display, self.modal_reserved)
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+fn section_heading_layout() -> LayoutOpts {
+    LayoutOpts {
+        height: 24.0,
+        gap: 8.0,
+        cross: Align::Center,
+        ..Default::default()
+    }
+}
+
+fn workspace_card_layout() -> LayoutOpts {
+    LayoutOpts {
+        min_height: 96.0,
+        gap: 8.0,
+        pad: 15.0,
+        cross: Align::Stretch,
+        ..materials::card(&Design::dark())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_ai_workspaces_identity_opens_the_surface() {
+        let mut workspaces = AiWorkspaces::new();
+        workspaces.open_builtin(BuiltInApplication::AiWorkspaces);
+        assert!(workspaces.open);
+        workspaces.open_builtin(BuiltInApplication::ScreenshotSelector);
+        assert!(!workspaces.open);
+    }
+
+    #[test]
+    fn snapshot_update_clears_a_completed_revoke_confirmation() {
+        let mut workspaces = AiWorkspaces::new();
+        workspaces.pending_revoke = Some(RealmId(42));
+        workspaces.update_snapshot(&aegis_core::realm::RealmModel::new().snapshot());
+        assert_eq!(workspaces.pending_revoke, None);
     }
 }

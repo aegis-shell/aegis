@@ -25,6 +25,7 @@ pub(super) struct LiveState {
     outputs: std::sync::RwLock<Vec<aegis_core::output::OutputInfo>>,
     realms: std::sync::RwLock<aegis_core::realm::RealmSnapshot>,
     settings: std::sync::RwLock<aegis_ipc::SettingsSnapshot>,
+    system_status: std::sync::RwLock<aegis_ipc::SystemStatus>,
     notifications: std::sync::Arc<std::sync::Mutex<aegis_core::notify::NotificationQueue>>,
     journal: std::sync::Arc<std::sync::Mutex<aegis_ipc::Journal>>,
     commands: std::sync::Mutex<std::sync::mpsc::Sender<IpcCommandRequest>>,
@@ -56,6 +57,7 @@ impl LiveState {
             outputs: std::sync::RwLock::new(Vec::new()),
             realms: std::sync::RwLock::new(aegis_core::realm::RealmModel::new().snapshot()),
             settings: std::sync::RwLock::new(aegis_ipc::SettingsSnapshot::default()),
+            system_status: std::sync::RwLock::new(aegis_ipc::SystemStatus::default()),
             notifications,
             journal,
             commands: std::sync::Mutex::new(channels.commands),
@@ -90,6 +92,10 @@ impl LiveState {
 
     pub(super) fn set_settings(&self, snapshot: aegis_ipc::SettingsSnapshot) {
         *self.settings.write().unwrap() = snapshot;
+    }
+
+    pub(super) fn set_system_status(&self, snapshot: aegis_ipc::SystemStatus) {
+        *self.system_status.write().unwrap() = snapshot;
     }
 
     pub(super) fn set_scopes(&self, scopes: std::collections::HashMap<String, aegis_ipc::Scope>) {
@@ -137,6 +143,10 @@ impl aegis_ipc::Handler for LiveState {
 
     fn settings(&self) -> aegis_ipc::SettingsSnapshot {
         self.settings.read().unwrap().clone()
+    }
+
+    fn system_status(&self) -> aegis_ipc::SystemStatus {
+        self.system_status.read().unwrap().clone()
     }
 
     fn authorize_realm_action(

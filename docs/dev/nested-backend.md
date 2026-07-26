@@ -1,6 +1,6 @@
 # Nested Backend Development
 
-Use the nested backend for the default compositor development loop. It runs
+Use the nested backend for the default compositor development workflow. It runs
 ass inside an existing Wayland desktop, so crashes and restarts affect one
 host window instead of the active VT. Use the DRM/KMS backend only for
 behavior that depends on direct hardware or session ownership.
@@ -39,19 +39,18 @@ The nested window represents one output named `nested`. Resize the outer
 window to exercise logical resize and swapchain recreation. Move it between
 outputs to exercise integer or fractional scale changes supported by the host.
 
-## Start the Compositor
+## Start One Instance
 
 Run the following commands from the repository root in a terminal belonging
 to an existing Wayland session:
 
 ```bash
-cargo run -p ass -- --backend nested
+scripts/dev.sh
 ```
 
-Pass `--backend nested` explicitly in development commands. The default
-`--backend auto` also selects nested mode when `$WAYLAND_DISPLAY` is set, but
-the explicit flag prevents an unset environment variable from accidentally
-selecting DRM.
+The runner defaults to `--backend nested`; it never selects DRM implicitly.
+It builds and stages the compositor and first-party applications, creates an
+isolated runtime directory, and exits when that compositor instance exits.
 
 A successful start opens an `ass` window and logs both roles:
 
@@ -63,54 +62,51 @@ server: listening on WAYLAND_DISPLAY=wayland-N
 Close the outer window or press `Ctrl+C` in the terminal to stop the nested
 session.
 
+A direct `cargo run -p aegis -- --backend nested` starts only the compositor.
+It does not stage first-party external applications. Use the runner when the
+test includes System Settings discovery or launch.
+
 ## Run Applications Inside ass
 
 Prefer the built-in launcher. It passes the inner socket to the child process
 explicitly, so launched applications reach the nested compositor regardless of
 the environment they inherited.
 
+System Settings is staged as an ordinary XDG application before the
+compositor starts. Launch it from Applications to exercise binary discovery,
+desktop metadata, icon resolution, window grouping, and IPC together. See
+[First-Party Application Development](first-party-applications.md) for the
+staging layout and focused workflows.
+
 To start a test client from another terminal, copy the inner socket name from
-the `server: listening` log line and override it for that command. For example:
+the `server: listening` log line. When `scripts/dev.sh` is running, also copy
+the private runtime directory printed by that command:
 
 ```bash
-WAYLAND_DISPLAY=wayland-1 foot
+XDG_RUNTIME_DIR=/run/user/1000/aegis-dev.ABC123 \
+WAYLAND_DISPLAY=wayland-1 \
+foot
 ```
 
-Replace `wayland-1` with the logged value. Keep the existing
-`$XDG_RUNTIME_DIR`; the inner socket is created there. A client started without
-this override connects to the outer desktop instead.
+Replace both example values with the logged values. A client started without
+these overrides connects to the outer desktop instead. For a manually started
+non-isolated instance, keep the existing `$XDG_RUNTIME_DIR` and override only
+`WAYLAND_DISPLAY`.
 
-Run the in-tree IPC client against the nested session when no other ass
-process owns `$XDG_RUNTIME_DIR/aegis.sock`:
+Run the in-tree IPC client against the development command's private runtime:
 
 ```bash
-cargo run -p aegis-ctl -- windows
-cargo run -p aegis-ctl -- outputs
+XDG_RUNTIME_DIR=/run/user/1000/aegis-dev.ABC123 \
+    cargo run -p aegis-ctl -- windows
+XDG_RUNTIME_DIR=/run/user/1000/aegis-dev.ABC123 \
+    cargo run -p aegis-ctl -- outputs
 ```
 
-Only one ass IPC server can own that path. If the outer compositor is also
-ass, the nested process continues without IPC and logs an address-in-use
-warning. Isolate the nested runtime when testing two ass processes:
-
-```bash
-ass_outer_display=$WAYLAND_DISPLAY
-if [[ $ass_outer_display = /* ]]; then
-    ass_outer_socket=$ass_outer_display
-else
-    ass_outer_socket=$XDG_RUNTIME_DIR/$ass_outer_display
-fi
-ass_nested_runtime=$(mktemp -d)
-printf 'nested runtime: %s\n' "$ass_nested_runtime"
-XDG_RUNTIME_DIR=$ass_nested_runtime \
-WAYLAND_DISPLAY=$ass_outer_socket \
-cargo run -p ass -- --backend nested
-```
-
-The absolute outer display path lets ass reach the host while the temporary
-`$XDG_RUNTIME_DIR` keeps the inner Wayland and IPC sockets separate. In a
-second terminal, set `XDG_RUNTIME_DIR` to the printed directory before running
-`aegis-ctl`. After a graceful compositor exit, remove the empty directory with
-`rmdir`.
+Only one ass IPC server can own an `aegis.sock` path. A manually started
+nested process continues without IPC and logs an address-in-use warning when
+the outer compositor already owns that path. Prefer `scripts/dev.sh`, which
+creates and cleans a private nested runtime while preserving access to common
+host-session services.
 
 ## Iterate on Changes
 
@@ -129,12 +125,14 @@ Choose the narrowest command that answers the current question:
 | Goal | Command |
 |------|---------|
 | Check the crate being edited | `cargo check -p aegis-shell` |
-| Check executable integration | `cargo check -p ass` |
-| Run the nested compositor | `cargo run -p ass -- --backend nested` |
+| Check executable integration | `cargo check -p aegis` |
+| Run one integrated nested instance | `scripts/dev.sh` |
+| Run only the compositor binary | `cargo run -p aegis -- --backend nested` |
 | Test one crate | `cargo test -p aegis-shell` |
 | Validate the workspace | `cargo test --workspace` |
-| Build a production artifact | `cargo build --release -p ass` |
-| Profile a release build | `cargo build --release -p ass --timings` |
+| Test the development workflow | `tests/dev-workflow.sh` |
+| Build a production artifact | `cargo build --release -p aegis` |
+| Profile a release build | `cargo build --release -p aegis --timings` |
 
 Replace `aegis-shell` with the package being edited. Run the release commands
 only before delivery, when validating production performance, or when a bug
@@ -163,39 +161,16 @@ contract.
 ### Rust Code Changes
 
 Rust code is compiled into the executable loaded by the running process and is
-not hot-reloaded. Use Cargo's incremental build, then restart the nested
-process:
+not hot-reloaded in-process. Repeat this explicit development cycle:
 
 1. Save the change.
-2. Run `cargo check -p ass` or wait for the editor's Rust check to pass.
+2. Run `cargo check -p aegis` or wait for the editor's Rust check to pass.
 3. Stop the nested process with `Ctrl+C`.
-4. Run `cargo run -p ass -- --backend nested` again.
+4. Run `scripts/dev.sh` again.
 5. Relaunch any inner client needed for the test.
 
-This manual loop keeps the last working compositor open while a new change
-still has compiler errors.
-
-For short visual iterations where losing the current nested state is
-acceptable, use a maintained file watcher such as
-[Watchexec](https://watchexec.github.io/):
-
-```bash
-cargo install --locked watchexec-cli
-watchexec --restart --exts rs,toml -- cargo run -p ass -- --backend nested
-```
-
-The watcher rebuilds and restarts the process. It does not provide in-process
-code hot reload: windows, Wayland connections, IPC state, and other memory
-state are recreated after every restart. A compilation error also leaves no
-running nested window until the next successful build.
-
-The watcher covers files below the ass repository. After changing Flux, Lens,
-or their bindings in the sibling `../optics` tree, rebuild that tree and
-restart ass:
-
-```bash
-meson compile -C ../optics/build
-```
+Each run recreates windows, Wayland connections, IPC state, and other
+in-memory state.
 
 ## Choose the Validation Target
 

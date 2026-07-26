@@ -80,6 +80,23 @@ impl Handler for CtlHandler {
             at_ms: 10,
         }]
     }
+    fn system_status(&self) -> aegis_ipc::SystemStatus {
+        aegis_ipc::SystemStatus {
+            volume: Some(42),
+            muted: true,
+            network: aegis_core::system::NetworkState::Wifi,
+            battery: Some(aegis_core::system::BatteryStatus {
+                percent: 81,
+                charging: true,
+            }),
+            wifi_enabled: Some(true),
+            bluetooth_enabled: Some(false),
+            brightness: Some(73),
+            do_not_disturb: true,
+            tiled: false,
+            ..aegis_ipc::SystemStatus::default()
+        }
+    }
     fn outputs(&self) -> Vec<aegis_core::output::OutputInfo> {
         vec![aegis_core::output::OutputInfo {
             connector: "nested".into(),
@@ -261,6 +278,58 @@ fn notifications_command_lists_active_notifications() {
     let out = aegis_ctl::run(&path, &["notifications".into()]).unwrap();
     assert!(out.contains("Build complete"), "{out}");
     assert!(out.contains("All checks passed"), "{out}");
+}
+
+#[test]
+fn system_status_command_formats_human_and_json_snapshots() {
+    let path = scratch();
+    let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
+    let out = aegis_ctl::run(&path, &["system".into(), "status".into()]).unwrap();
+    assert!(out.contains("audio: 42% (muted)"), "{out}");
+    assert!(out.contains("wifi: on; bluetooth: off"), "{out}");
+    assert!(out.contains("battery: 81% charging"), "{out}");
+    assert!(out.contains("do not disturb: on"), "{out}");
+
+    let json = aegis_ctl::run(&path, &["--json".into(), "system".into(), "status".into()]).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).expect("system status JSON");
+    assert_eq!(value["volume"], 42);
+    assert_eq!(value["brightness"], 73);
+    assert_eq!(value["network"], "Wifi");
+}
+
+#[test]
+fn system_control_commands_send_typed_actions() {
+    let path = scratch();
+    let handler = Arc::new(CtlHandler::new());
+    let _s = Server::start(&path, Arc::clone(&handler)).unwrap();
+    aegis_ctl::run(&path, &["system".into(), "volume".into(), "55".into()]).unwrap();
+    aegis_ctl::run(&path, &["system".into(), "step-volume".into(), "-2".into()]).unwrap();
+    aegis_ctl::run(&path, &["system".into(), "wifi".into(), "off".into()]).unwrap();
+    assert_eq!(
+        handler.commands.lock().unwrap().as_slice(),
+        &[
+            Command::System {
+                action: aegis_ipc::SystemAction::SetVolume { level: 55 },
+            },
+            Command::System {
+                action: aegis_ipc::SystemAction::StepVolume { delta: -2 },
+            },
+            Command::System {
+                action: aegis_ipc::SystemAction::SetWifi { enabled: false },
+            },
+        ]
+    );
+}
+
+#[test]
+fn system_control_cli_rejects_out_of_range_levels() {
+    let error = aegis_ctl::run(
+        std::path::Path::new(""),
+        &["system".into(), "brightness".into(), "0".into()],
+    )
+    .unwrap_err();
+    assert_eq!(error.exit_code(), 2);
+    assert!(error.to_string().contains("1..=100"), "{error}");
 }
 
 #[test]

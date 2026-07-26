@@ -68,6 +68,10 @@ pub(in crate::runtime) enum CaptureCompletion {
         origin: aegis_ipc::Origin,
         security_generation: u64,
         encoded: Result<Vec<u8>, String>,
+        /// Outcome of the atomic write + rename, already committed by the
+        /// worker so the frame loop never blocks on the multi-MB write/fsync.
+        /// Mirrors `encoded`'s error when encoding itself failed.
+        written: Result<(), String>,
     },
     Reply {
         reply: std::sync::mpsc::Sender<Result<aegis_ipc::CaptureOutputPayload, String>>,
@@ -135,16 +139,30 @@ impl CaptureWorker {
                             origin,
                         } => {
                             let generation = capture.security_generation;
-                            let encoded = if worker_allowed
-                                .load(std::sync::atomic::Ordering::Acquire)
-                                && generation
-                                    == worker_security_generation
-                                        .load(std::sync::atomic::Ordering::Acquire)
-                            {
+                            let permitted = || {
+                                worker_allowed.load(std::sync::atomic::Ordering::Acquire)
+                                    && generation
+                                        == worker_security_generation
+                                            .load(std::sync::atomic::Ordering::Acquire)
+                            };
+                            let encoded = if permitted() {
                                 encode_capture(capture).map(|(_, _, png)| png)
                             } else {
                                 Err("session locked before capture completed".into())
                             };
+                            // Commit the PNG on this worker as well: the
+                            // write + fsync + rename of a multi-MB file must
+                            // not stall the frame loop. Delivery authority is
+                            // re-checked right before the commit so a session
+                            // lock during encoding still suppresses the
+                            // on-disk capture.
+                            let written = encoded.as_ref().map_err(Clone::clone).and_then(|png| {
+                                if permitted() {
+                                    super::output::atomic_write_capture(&path, png)
+                                } else {
+                                    Err("session locked before capture completed".into())
+                                }
+                            });
                             if completion_tx
                                 .send(CaptureCompletion::Screenshot {
                                     path,
@@ -153,6 +171,7 @@ impl CaptureWorker {
                                     origin,
                                     security_generation: generation,
                                     encoded,
+                                    written,
                                 })
                                 .is_err()
                             {

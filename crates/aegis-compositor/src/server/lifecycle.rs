@@ -242,6 +242,18 @@ impl Server {
     pub fn socket(&self) -> &str {
         &self.socket
     }
+
+    /// Raw fd of the server's Wayland event loop, for embedding in an outer
+    /// poll set. It reads ready when client requests (surface commits, new
+    /// connections) are pending, which is how an idle compositor gets woken
+    /// by a committing client. Ownership stays with the display: never close
+    /// it, and only ever dispatch it through [`Server::dispatch`].
+    pub fn event_loop_fd(&self) -> std::os::fd::RawFd {
+        unsafe {
+            let loop_ = ffi::wl_display_get_event_loop(self.state.display);
+            ffi::wl_event_loop_get_fd(loop_)
+        }
+    }
 }
 
 impl Drop for Server {

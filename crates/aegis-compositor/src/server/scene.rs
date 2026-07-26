@@ -13,6 +13,47 @@ impl Server {
             .collect()
     }
 
+    /// Surface resource ids in physical-desktop paint order. This order is
+    /// shared by shm and dma-buf frames; consumers must interleave both
+    /// backing types against it instead of painting one entire type last.
+    pub fn toplevel_frame_order(&self) -> Vec<usize> {
+        let visible = self.visible();
+        self.toplevel_frame_order_for_realm(HUMAN_REALM, Some(&visible))
+    }
+
+    /// Surface resource ids in paint order for a directed Realm output.
+    pub fn realm_toplevel_frame_order(&self, realm: RealmId) -> Vec<usize> {
+        if self.state.session_locked || self.realm_output(realm).is_none() {
+            return Vec::new();
+        }
+        self.toplevel_frame_order_for_realm(realm, None)
+    }
+
+    fn toplevel_frame_order_for_realm(
+        &self,
+        realm: RealmId,
+        visible: Option<&std::collections::HashSet<aegis_core::window::WindowId>>,
+    ) -> Vec<usize> {
+        self.state
+            .live_surfaces()
+            .map(|pointer| unsafe { &*pointer })
+            .filter(|surface| {
+                let root = unsafe {
+                    surface_root_toplevel(*surface as *const SurfaceRec as *mut SurfaceRec)
+                };
+                surface.mapped
+                    && (!surface.xdg_toplevel.is_null() || !surface.xdg_popup.is_null())
+                    && !root.is_null()
+                    && visible.is_none_or(|visible| visible.contains(unsafe { &(*root).window.id }))
+                    && self
+                        .state
+                        .authority
+                        .realm_observes_window(realm, unsafe { (*root).window.id })
+            })
+            .map(|surface| surface.resource as usize)
+            .collect()
+    }
+
     pub fn toplevel_frames(&self) -> Vec<SurfacePixels<'_>> {
         let visible = self.visible();
         self.state
@@ -947,6 +988,15 @@ impl Server {
         }
     }
 
+    /// Whether any client is waiting for an output-paced frame callback.
+    pub fn frame_callbacks_pending(&self) -> bool {
+        self.state
+            .surfaces
+            .iter()
+            .copied()
+            .any(|p| !p.is_null() && unsafe { !(*p).frame_callbacks.is_empty() })
+    }
+
     /// Fire and clear all pending frame callbacks, pacing clients to the output.
     /// `time_ms` is a millisecond timestamp from a monotonic clock.
     pub fn send_frame_callbacks(&mut self, time_ms: u32) {
@@ -963,6 +1013,20 @@ impl Server {
             }
         }
         unsafe { ffi::wl_display_flush_clients(self.state.display) };
+    }
+
+    /// The last submitted frame reached the presentation backend, so every
+    /// surface's accumulated damage is now represented by the renderer's
+    /// retained texture and the scanout baseline.
+    pub fn acknowledge_presented_surface_damage(&mut self) {
+        for &p in &self.state.surfaces {
+            if p.is_null() {
+                continue;
+            }
+            let rec = unsafe { &mut *p };
+            rec.committed_damage.clear();
+            rec.committed_damage_full = false;
+        }
     }
 
     pub fn retired_buffers_pending(&self) -> bool {

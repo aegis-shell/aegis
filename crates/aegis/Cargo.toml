@@ -21,7 +21,7 @@ aegis-shell = { workspace = true }
 # Chrome components split out of ass-shell (ADR-0044); only the binary
 # composes them into the shell.
 aegis-dock = { workspace = true }
-aegis-control-center = { workspace = true }
+aegis-ai-workspaces = { workspace = true }
 aegis-statusbar = { workspace = true }
 aegis-wallpaper = { workspace = true }
 # Declarative configuration: TOML schema + live reload (ADR-0026).

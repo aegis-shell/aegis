@@ -348,9 +348,15 @@ pub struct SurfaceRec {
     /// empty means "client did not report damage, renderer should
     /// re-upload the whole texture on a generation change".
     pending_damage: Vec<aegis_core::Rect>,
-    /// Damage from the most recent commit, surfaced to the renderer via
-    /// `Server::toplevel_frames`. Cleared at the next commit.
+    /// Damage accumulated across every commit since the last successfully
+    /// presented compositor frame, surfaced via `Server::toplevel_frames`.
+    /// Multiple client commits can be dispatched before one render, so
+    /// replacing this at each commit would make both texture upload and KMS
+    /// damage miss earlier changed pixels.
     committed_damage: Vec<aegis_core::Rect>,
+    /// Empty `committed_damage` normally means no outstanding damage. This
+    /// flag distinguishes the conservative "damage is unknown/full" state.
+    committed_damage_full: bool,
 }
 
 impl SurfaceRec {
@@ -415,6 +421,7 @@ impl SurfaceRec {
             buffer_scale: 1,
             pending_damage: Vec::new(),
             committed_damage: Vec::new(),
+            committed_damage_full: false,
             // Tiling (ADR-0024): the last layout rect we configured this
             // surface to. `None` until applied; the apply path reconfigures
             // only when the target moves, so steady state sends no configures.
@@ -944,6 +951,9 @@ pub(crate) struct State {
     /// The first entry is the primary/focused output exposed through the
     /// legacy single wl_output global until per-global resources are split.
     output_infos: Vec<aegis_core::output::OutputInfo>,
+    /// Bumped on every `output_infos` mutation so the frame loop can skip
+    /// re-cloning the list while it is unchanged.
+    outputs_revision: u64,
     /// Per-connector output policies from `[[output]]` config entries
     /// (ADR-0028). Applied to every backend-reported output set in
     /// `set_outputs`.
@@ -962,12 +972,59 @@ pub(crate) struct State {
     pub(crate) epoch: std::time::Instant,
     /// Last remembered floating window position and size per application ID.
     pub(crate) last_app_geometries: std::collections::HashMap<String, aegis_core::Rect>,
+    /// Persistent window state store across restarts.
+    pub(crate) window_state_store: aegis_core::window_state_store::WindowStateStore,
+    /// Path to persistent window state file.
+    pub(crate) window_state_path: std::path::PathBuf,
+    /// Global toggle for remembering window positions across restarts.
+    pub(crate) remember_window_positions: bool,
     next_window_id: u64,
 }
 
 impl State {
     pub(crate) fn now_ms(&self) -> u64 {
         self.epoch.elapsed().as_millis() as u64
+    }
+
+    pub(crate) fn persist_app_geometry(
+        &mut self,
+        app_id: &str,
+        rect: aegis_core::Rect,
+        workspace: Option<u32>,
+        layout_role: Option<aegis_core::layout::LayoutRole>,
+    ) {
+        if app_id.is_empty() {
+            return;
+        }
+        self.last_app_geometries.insert(app_id.to_owned(), rect);
+        self.window_state_store.update(
+            app_id.to_owned(),
+            aegis_core::window_state_store::SavedWindowState {
+                position: Some(rect.origin),
+                size: Some(rect.size),
+                workspace,
+                layout_role,
+                maximized: None,
+            },
+        );
+        let _ = self
+            .window_state_store
+            .save_to_path(&self.window_state_path);
+    }
+
+    pub(crate) fn workspace_number_for_window(
+        &self,
+        window: aegis_core::window::WindowId,
+    ) -> Option<u32> {
+        let workspace = self.workspaces.workspace_of(window)?;
+        let output = self.workspaces.workspace(workspace)?.output;
+        let index = self
+            .workspaces
+            .output(output)?
+            .workspaces
+            .iter()
+            .position(|candidate| *candidate == workspace)?;
+        u32::try_from(index).ok()?.checked_add(1)
     }
 
     fn new(display: *mut ffi::wl_display) -> State {
@@ -980,6 +1037,21 @@ impl State {
             HUMAN_PRINCIPAL,
             SeatCapabilities::ALL,
         ));
+        let window_state_path = aegis_core::window_state_store::WindowStateStore::default_path();
+        let window_state_store =
+            aegis_core::window_state_store::WindowStateStore::load_from_path(&window_state_path);
+        let mut last_app_geometries = std::collections::HashMap::new();
+        for (app_id, entry) in &window_state_store.entries {
+            if let (Some(pos), Some(sz)) = (entry.position, entry.size) {
+                last_app_geometries.insert(
+                    app_id.clone(),
+                    aegis_core::Rect {
+                        origin: pos,
+                        size: sz,
+                    },
+                );
+            }
+        }
         State {
             display,
             authority,
@@ -1029,10 +1101,14 @@ impl State {
                 geometry: aegis_core::output::OutputGeometry::default(),
                 available_modes: Vec::new(),
             }],
+            outputs_revision: 0,
             output_policies: std::collections::HashMap::new(),
             last_work_area: aegis_core::Rect::default(),
             epoch: std::time::Instant::now(),
-            last_app_geometries: std::collections::HashMap::new(),
+            last_app_geometries,
+            window_state_store,
+            window_state_path,
+            remember_window_positions: true,
             next_window_id: 1,
         }
     }
@@ -1236,11 +1312,9 @@ impl State {
         let Some(client_id) = self.clients.get(&(client as usize)).copied() else {
             return advertised;
         };
-        if self
-            .authority
-            .client(client_id)
-            .is_some_and(|client| client.multi_seat == aegis_core::realm::MultiSeatSupport::Supported)
-        {
+        if self.authority.client(client_id).is_some_and(|client| {
+            client.multi_seat == aegis_core::realm::MultiSeatSupport::Supported
+        }) {
             return advertised;
         }
         let realm = self
@@ -1642,7 +1716,9 @@ fn pointer_axis_wire_events(
     version: i32,
     frame: aegis_core::input::PointerAxisFrame,
 ) -> Vec<PointerAxisWireEvent> {
-    use aegis_core::input::{PointerAxisRelativeDirection as Direction, PointerAxisSource as Source};
+    use aegis_core::input::{
+        PointerAxisRelativeDirection as Direction, PointerAxisSource as Source,
+    };
 
     let mut events = Vec::with_capacity(10);
     if version >= 5 {

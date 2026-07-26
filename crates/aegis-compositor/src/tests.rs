@@ -286,7 +286,10 @@ fn draw_origin_walks_nested_subsurface_chains() {
 
     // Detaching (wl_subsurface.destroy / parent destroyed) stops the walk.
     grandchild.parent = std::ptr::null_mut();
-    assert_eq!(surface_draw_origin(&grandchild), aegis_core::Point::default());
+    assert_eq!(
+        surface_draw_origin(&grandchild),
+        aegis_core::Point::default()
+    );
 }
 
 #[test]
@@ -731,6 +734,108 @@ fn physical_observer_mirror_blocks_click_through_without_taking_focus() {
 }
 
 #[test]
+fn window_snapshot_drops_an_unmapped_toplevel() {
+    let mut state = State::new(std::ptr::null_mut());
+    let window = aegis_core::window::WindowId(77);
+    let workspace = state
+        .workspaces
+        .current_workspace(state.output)
+        .expect("bootstrap workspace");
+    state.workspaces.place_toplevel(workspace, window);
+
+    let mut surface = Box::new(SurfaceRec::new(0x100usize as *mut ffi::wl_resource));
+    surface.mapped = true;
+    surface.xdg_toplevel = 0x200usize as *mut ffi::wl_resource;
+    surface.window.id = window;
+    surface.window.app_id = Some("org.example.App".into());
+    state.surfaces = vec![surface.as_mut()];
+
+    // Avoid Server::drop: this fixture uses synthetic resource pointers and
+    // has no wl_display to destroy.
+    let server = std::mem::ManuallyDrop::new(Server {
+        state: Box::new(state),
+        socket: String::new(),
+        realm_portals: Vec::new(),
+        epoch: std::time::Instant::now(),
+    });
+
+    assert_eq!(server.windows().len(), 1);
+    let mapped_signature = server.windows_signature();
+
+    // Closing the last window may only unmap the xdg_toplevel while the
+    // application's process and role resource stay alive. It must disappear
+    // from the shell snapshot so Dock/Launcher choose Spawn, not stale Focus.
+    surface.mapped = false;
+    assert!(server.windows().is_empty());
+    assert_ne!(server.windows_signature(), mapped_signature);
+}
+
+#[test]
+fn raising_a_toplevel_keeps_its_surface_tree_together() {
+    let mut state = State::new(std::ptr::null_mut());
+    let mut settings = Box::new(SurfaceRec::new(0x100usize as *mut ffi::wl_resource));
+    settings.xdg_toplevel = settings.resource;
+    let mut terminal = Box::new(SurfaceRec::new(0x200usize as *mut ffi::wl_resource));
+    terminal.xdg_toplevel = terminal.resource;
+    let mut popup = Box::new(SurfaceRec::new(0x300usize as *mut ffi::wl_resource));
+    popup.xdg_popup = popup.resource;
+    popup.popup_parent = terminal.as_mut();
+
+    state.surfaces = vec![settings.as_mut(), terminal.as_mut(), popup.as_mut()];
+    for (index, surface) in state.surfaces.iter().copied().enumerate() {
+        unsafe { (*surface).index = index };
+    }
+    let mut server = std::mem::ManuallyDrop::new(Server {
+        state: Box::new(state),
+        socket: String::new(),
+        realm_portals: Vec::new(),
+        epoch: std::time::Instant::now(),
+    });
+
+    server.raise_toplevel(settings.resource);
+
+    assert_eq!(
+        server
+            .state
+            .surfaces
+            .iter()
+            .map(|surface| unsafe { (**surface).resource as usize })
+            .collect::<Vec<_>>(),
+        vec![
+            terminal.resource as usize,
+            popup.resource as usize,
+            settings.resource as usize,
+        ]
+    );
+    assert_eq!(terminal.index, 0);
+    assert_eq!(popup.index, 1);
+    assert_eq!(settings.index, 2);
+}
+
+#[test]
+fn persisted_workspace_uses_output_position_not_stable_id() {
+    let mut state = State::new(std::ptr::null_mut());
+    let first = state
+        .workspaces
+        .current_workspace(state.output)
+        .expect("bootstrap workspace");
+    let first_window = aegis_core::window::WindowId(101);
+    state.workspaces.place_toplevel(first, first_window);
+
+    let second = state
+        .workspaces
+        .output(state.output)
+        .and_then(|output| output.workspaces.get(1))
+        .copied()
+        .expect("placing on the first workspace creates a trailing workspace");
+    let second_window = aegis_core::window::WindowId(102);
+    state.workspaces.place_toplevel(second, second_window);
+
+    assert_eq!(state.workspace_number_for_window(first_window), Some(1));
+    assert_eq!(state.workspace_number_for_window(second_window), Some(2));
+}
+
+#[test]
 fn backend_outputs_reconcile_workspace_connectors_and_geometry() {
     if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
         eprintln!("skipping: XDG_RUNTIME_DIR not set");
@@ -849,4 +954,85 @@ fn output_policies_apply_scale_position_and_primary() {
         infos[1].geometry.logical_origin,
         aegis_core::Point { x: 0, y: 0 }
     );
+}
+
+#[test]
+fn surface_damage_accumulates_until_present_and_full_is_sticky() {
+    let mut surface = SurfaceRec::new(std::ptr::null_mut());
+    accumulate_committed_damage(
+        &mut surface,
+        vec![aegis_core::Rect::new(10, 20, 30, 40)],
+        false,
+    );
+    accumulate_committed_damage(
+        &mut surface,
+        vec![aegis_core::Rect::new(100, 5, 10, 10)],
+        false,
+    );
+    assert_eq!(
+        surface.committed_damage,
+        vec![aegis_core::Rect::new(10, 5, 100, 55)]
+    );
+    assert!(!surface.committed_damage_full);
+
+    accumulate_committed_damage(&mut surface, Vec::new(), true);
+    assert!(surface.committed_damage.is_empty());
+    assert!(surface.committed_damage_full);
+
+    // Once any commit lacked usable damage, later precise reports cannot
+    // narrow the aggregate until presentation acknowledges the full update.
+    accumulate_committed_damage(&mut surface, vec![aegis_core::Rect::new(1, 1, 2, 2)], false);
+    assert!(surface.committed_damage.is_empty());
+    assert!(surface.committed_damage_full);
+}
+
+#[test]
+fn xdg_unmap_requires_a_fresh_initial_configure() {
+    let mut surface = SurfaceRec::new(std::ptr::null_mut());
+    surface.xdg_configured = true;
+    surface.xdg_configure_acked = true;
+    surface.pending_xdg_configures = vec![41, 42];
+
+    reset_xdg_configure_state_after_unmap(&mut surface);
+
+    assert!(!surface.xdg_configured);
+    assert!(!surface.xdg_configure_acked);
+    assert!(surface.pending_xdg_configures.is_empty());
+}
+
+#[test]
+fn test_persist_app_geometry_saves_state() {
+    let temp_dir = std::env::temp_dir().join(format!("aegis_test_persist_{}", std::process::id()));
+    let state_file = temp_dir.join("window_state.json");
+    let mut state = State::new(std::ptr::null_mut());
+    state.window_state_path = state_file.clone();
+
+    let app_id = "org.test.app";
+    let rect = aegis_core::Rect {
+        origin: aegis_core::Point { x: 300, y: 400 },
+        size: aegis_core::Size { w: 900, h: 600 },
+    };
+
+    state.persist_app_geometry(
+        app_id,
+        rect,
+        Some(2),
+        Some(aegis_core::layout::LayoutRole::Floating),
+    );
+
+    assert_eq!(state.last_app_geometries.get(app_id), Some(&rect));
+    let store_entry = state.window_state_store.get(app_id).unwrap();
+    assert_eq!(store_entry.position, Some(rect.origin));
+    assert_eq!(store_entry.size, Some(rect.size));
+    assert_eq!(store_entry.workspace, Some(2));
+    assert_eq!(
+        store_entry.layout_role,
+        Some(aegis_core::layout::LayoutRole::Floating)
+    );
+
+    assert!(state_file.exists());
+    let loaded = aegis_core::window_state_store::WindowStateStore::load_from_path(&state_file);
+    assert_eq!(loaded.get(app_id).unwrap(), store_entry);
+
+    let _ = std::fs::remove_dir_all(temp_dir);
 }

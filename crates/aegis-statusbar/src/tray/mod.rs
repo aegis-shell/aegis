@@ -19,6 +19,7 @@
 //! [`TrayCommand::MenuEvent`]. Items without a menu path keep the legacy
 //! `SecondaryActivate` right-click.
 
+mod icon;
 mod watcher;
 
 use std::borrow::Borrow;
@@ -34,8 +35,10 @@ pub struct TrayItem {
     /// `Title` property, falling back to `Id`.
     pub title: String,
     /// Preferred icon source: the raw pixmap when the item ships one, else
-    /// the theme icon name (the bar resolves these through the freedesktop
-    /// icon theme, falling back to a generic glyph), else nothing.
+    /// the theme icon name (the worker resolves these through the freedesktop
+    /// icon theme into a pixmap before publishing; a `Name` left in the
+    /// snapshot means resolution failed and the bar renders a generic glyph),
+    /// else nothing.
     pub icon: TrayIcon,
     pub status: TrayStatus,
     /// Whether the item exposes a dbusmenu `Menu` object path, i.e. whether
@@ -149,6 +152,10 @@ pub struct TraySnapshot {
     pub items: Vec<TrayItem>,
     /// The currently open dbusmenu popover, if any.
     pub menu: Option<MenuState>,
+    /// Bumped by the worker every time `menu` is set or cleared, so the
+    /// render thread can cache the (potentially large) menu tree clone and
+    /// only re-clone on change.
+    pub menu_revision: u64,
 }
 
 /// Click intents handed to the worker thread; `(x, y)` is the cursor

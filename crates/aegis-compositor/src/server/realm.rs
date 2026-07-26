@@ -6,6 +6,13 @@ impl Server {
         self.state.authority.snapshot()
     }
 
+    /// Current authority model revision. Cheap alternative to
+    /// [`Self::realm_snapshot`] for per-frame change detection: the frame
+    /// loop rebuilds the owned snapshot only when this moves.
+    pub fn realm_revision(&self) -> u64 {
+        self.state.authority.revision()
+    }
+
     /// Prepare a capability listener for one compositor-mediated Realm launch.
     ///
     /// The randomized host pathname exists only while bubblewrap installs a

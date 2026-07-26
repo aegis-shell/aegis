@@ -22,8 +22,9 @@ impl DrmBackend {
         }
     }
 
-    /// One poll + dispatch round over the seat, card, input, and hotplug fds.
-    /// Returns `false` when the backend has failed and the loop must exit.
+    /// One poll + dispatch round over the seat, card, input, hotplug, and
+    /// Wayland server fds. Returns `false` when the backend has failed and
+    /// the loop must exit.
     pub(super) fn poll_round(&mut self, timeout_ms: i32) -> bool {
         let seat_fd = match self.seat.borrow_mut().get_fd() {
             Ok(fd) => fd.as_raw_fd(),
@@ -36,6 +37,7 @@ impl DrmBackend {
         let card_fd = self.card().as_fd().as_raw_fd();
         let input_fd = self.input.as_ref().map(AsRawFd::as_raw_fd).unwrap_or(-1);
         let hotplug_fd = self.hotplug.as_ref().map(AsRawFd::as_raw_fd).unwrap_or(-1);
+        let server_fd = self.wakeup_fd.unwrap_or(-1);
         let mut fds = [
             libc::pollfd {
                 fd: seat_fd,
@@ -55,6 +57,14 @@ impl DrmBackend {
             libc::pollfd {
                 fd: hotplug_fd,
                 events: libc::POLLIN,
+                revents: 0,
+            },
+            // Client surface commits wake an idle compositor the same way
+            // input does. Readability needs no handling here: the main loop
+            // dispatches the server event loop itself after poll returns.
+            libc::pollfd {
+                fd: server_fd,
+                events: if self.active { libc::POLLIN } else { 0 },
                 revents: 0,
             },
         ];

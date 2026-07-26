@@ -188,6 +188,7 @@ impl NestedHost {
                 ash: None,
                 vk_surface: 0,
                 touchpad_config: aegis_core::input::TouchpadConfig::default(),
+                wakeup_fd: None,
             })
         }
     }
@@ -403,20 +404,35 @@ impl Backend for NestedHost {
             // POLLOUT is unnecessary here because the regular frame loop will
             // retry and our small request stream fits the Wayland socket.
             let _ = ffi::wl_display_flush(self.display);
-            let mut fd = super::listeners::libc::pollfd {
-                fd: ffi::wl_display_get_fd(self.display),
-                events: super::listeners::libc::POLLIN,
-                revents: 0,
-            };
+            // The second fd is the compositor's own Wayland server event
+            // loop: a committing client must wake an idle compositor just
+            // like outer-compositor input does. Its readability needs no
+            // handling here — the main loop dispatches the server itself.
+            let mut fds = [
+                super::listeners::libc::pollfd {
+                    fd: ffi::wl_display_get_fd(self.display),
+                    events: super::listeners::libc::POLLIN,
+                    revents: 0,
+                },
+                super::listeners::libc::pollfd {
+                    fd: self.wakeup_fd.unwrap_or(-1),
+                    events: super::listeners::libc::POLLIN,
+                    revents: 0,
+                },
+            ];
             let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
-            let ready = super::listeners::libc::poll(&mut fd, 1, timeout_ms);
+            let ready = super::listeners::libc::poll(fds.as_mut_ptr(), fds.len(), timeout_ms);
             let dispatch_failed =
-                ready > 0 && fd.revents != 0 && ffi::wl_display_dispatch(self.display) < 0;
+                ready > 0 && fds[0].revents != 0 && ffi::wl_display_dispatch(self.display) < 0;
             if ready < 0 || dispatch_failed {
                 self.state.should_close = true;
             }
         }
         !self.state.should_close
+    }
+
+    fn set_wakeup_fd(&mut self, fd: std::os::fd::RawFd) {
+        self.wakeup_fd = Some(fd);
     }
 
     /// Drain input events buffered since the last call. Empty until the host

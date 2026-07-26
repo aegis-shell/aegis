@@ -242,20 +242,19 @@ fn run_cast(
             move |io| {
                 let message = io.0.borrow_mut().next_stream_message();
                 match message {
-                    Ok(StreamMessage::Frame(frame)) => {
-                        match frame.format {
-                            aegis_ipc::StreamPixelFormat::Bgra8 | aegis_ipc::StreamPixelFormat::Rgba8 => {
-                                if frame.pixels.len() == (width as usize) * (height as usize) * 4 {
-                                    *latest.borrow_mut() = Some(Rc::new(frame.pixels));
-                                }
-                            }
-                            aegis_ipc::StreamPixelFormat::Dmabuf { .. } => {
-                                if frame.pixels.len() == (width as usize) * (height as usize) * 4 {
-                                    *latest.borrow_mut() = Some(Rc::new(frame.pixels));
-                                }
+                    Ok(StreamMessage::Frame(frame)) => match frame.format {
+                        aegis_ipc::StreamPixelFormat::Bgra8
+                        | aegis_ipc::StreamPixelFormat::Rgba8 => {
+                            if frame.pixels.len() == (width as usize) * (height as usize) * 4 {
+                                *latest.borrow_mut() = Some(Rc::new(frame.pixels));
                             }
                         }
-                    }
+                        aegis_ipc::StreamPixelFormat::Dmabuf { .. } => {
+                            if frame.pixels.len() == (width as usize) * (height as usize) * 4 {
+                                *latest.borrow_mut() = Some(Rc::new(frame.pixels));
+                            }
+                        }
+                    },
                     Ok(StreamMessage::LeaseRenewed) => {}
                     Ok(StreamMessage::Ended { reason, .. }) => {
                         log::info!("portal: compositor ended stream for {session_path}: {reason}");

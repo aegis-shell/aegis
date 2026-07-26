@@ -15,9 +15,11 @@ pub mod output;
 pub mod overview;
 pub mod realm;
 pub mod settings;
+pub mod system;
 pub mod transition;
 pub mod window;
 pub mod window_rule;
+pub mod window_state_store;
 pub mod workspace;
 
 /// An integer point in compositor (logical) coordinate space.

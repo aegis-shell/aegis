@@ -21,8 +21,10 @@
 //! moving cursor and settles with a gentle bounce. Brand-new tiles (a window
 //! just mapped) spring up from a seed size instead of popping in.
 
+use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::hash::Hasher;
 
 use aegis_design::{Design, materials};
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect};
@@ -107,6 +109,7 @@ pub struct DockApp {
 
 /// One resolved tile for the current frame: a pinned app, a running window, or
 /// a pinned app that also has a running window folded into it.
+#[derive(Clone)]
 struct Tile {
     /// Stable identity for per-frame size easing (survives across frames).
     key: String,
@@ -209,6 +212,27 @@ pub struct Dock {
     autohide_idle: f32,
     /// Configurable inactivity timeout in seconds before an autohiding dock collapses.
     autohide_timeout: f32,
+    /// Resolved tile strip cache (Launchpad tile first), shared by `render`
+    /// and `pointer_bounds` (via `backdrop_regions`/`captures_pointer`) so the
+    /// strip is built once per change instead of up to three times per frame.
+    /// Interior mutability: the pointer-side trait methods take `&self`.
+    tile_cache: RefCell<TileCache>,
+    /// Bumped on every catalog push so the tile cache notices pinned-app and
+    /// icon changes without diffing the entries.
+    catalog_revision: u64,
+}
+
+/// The cached tile strip plus the signature of the inputs it was built from.
+/// `signature` is `None` until the first build.
+struct TileCache {
+    /// Signature over the catalog revision and the window fields the tiles
+    /// derive from (see [`Dock::tile_signature`]).
+    signature: Option<u64>,
+    /// The localized "Applications" label the strip was built with. Tracked
+    /// separately so pointer-only callers, which do not know the label, can
+    /// reuse the strip as long as the windows match.
+    label: String,
+    tiles: Vec<Tile>,
 }
 
 /// A damped-spring state for one animated scalar (a tile's edge length).
@@ -245,6 +269,12 @@ impl Dock {
             autohide_reveal: 1.0,
             autohide_idle: 0.0,
             autohide_timeout: AUTOHIDE_IDLE_TIMEOUT,
+            tile_cache: RefCell::new(TileCache {
+                signature: None,
+                label: String::new(),
+                tiles: Vec::new(),
+            }),
+            catalog_revision: 0,
         }
     }
 
@@ -328,23 +358,96 @@ impl Dock {
         state.value
     }
 
-    /// Resolve the current frame's tiles: every pinned app (with any running
-    /// window folded in), followed by running windows that match no pinned
-    /// app. A window matches an app when its lowercased `app_id` is among the
-    /// app's [`DockApp::keys`].
-    fn tiles(&self, windows: &[Window]) -> Vec<Tile> {
-        self.localized_tiles(windows, "")
+    /// The current frame's tile strip: the Launchpad tile, then every pinned
+    /// app (with any running window folded in), then running windows that
+    /// match no pinned app. A window matches an app when its lowercased
+    /// `app_id` is among the app's [`DockApp::keys`].
+    ///
+    /// The strip is cached: `render` and `pointer_bounds` (called by both
+    /// `backdrop_regions` and `captures_pointer`) all need it every frame, but
+    /// it only changes when the window set, the pinned catalog, or the
+    /// localized label does. Callers that do not know the localized label
+    /// (the pointer-side trait methods) pass `None` and reuse the strip as
+    /// long as the window signature matches.
+    ///
+    /// An associated function (not a method) so the returned borrow ties to
+    /// `tile_cache` alone and `render` can keep mutating its other fields
+    /// while iterating the strip.
+    #[allow(clippy::too_many_arguments)]
+    fn frame_tiles<'a>(
+        tile_cache: &'a RefCell<TileCache>,
+        apps: &[DockApp],
+        icons: &IconSet,
+        catalog_revision: u64,
+        windows: &[Window],
+        application_label: Option<&str>,
+    ) -> Ref<'a, Vec<Tile>> {
+        let signature = Self::tile_signature(catalog_revision, windows);
+        let stale = {
+            let cache = tile_cache.borrow();
+            cache.signature != Some(signature)
+                || application_label.is_some_and(|label| label != cache.label)
+        };
+        if stale {
+            let label = application_label
+                .map(str::to_string)
+                .unwrap_or_else(|| tile_cache.borrow().label.clone());
+            let tiles = Self::build_tiles(apps, icons, windows, &label);
+            *tile_cache.borrow_mut() = TileCache {
+                signature: Some(signature),
+                label,
+                tiles,
+            };
+        }
+        Ref::map(tile_cache.borrow(), |cache| &cache.tiles)
     }
 
-    fn localized_tiles(&self, windows: &[Window], application_label: &str) -> Vec<Tile> {
+    /// A cheap signature over everything the tile strip derives from that can
+    /// change between frames: the catalog revision (pinned apps and icons)
+    /// plus each window's id, `app_id`, title, activation and read-only flag.
+    fn tile_signature(catalog_revision: u64, windows: &[Window]) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        hasher.write_u64(catalog_revision);
+        for w in windows {
+            hasher.write_u64(w.id.0);
+            match &w.app_id {
+                Some(app_id) => {
+                    hasher.write_u8(1);
+                    hasher.write(app_id.as_bytes());
+                }
+                None => hasher.write_u8(0),
+            }
+            match &w.title {
+                Some(title) => {
+                    hasher.write_u8(1);
+                    hasher.write(title.as_bytes());
+                }
+                None => hasher.write_u8(0),
+            }
+            hasher.write_u8(w.state.activated as u8);
+            hasher.write_u8(w.read_only as u8);
+        }
+        hasher.finish()
+    }
+
+    /// Build the full strip from scratch. Called by [`Dock::frame_tiles`]
+    /// only on a cache miss, so the per-window lowercasing and key/label
+    /// allocations here no longer happen every frame.
+    fn build_tiles(
+        apps: &[DockApp],
+        icons: &IconSet,
+        windows: &[Window],
+        application_label: &str,
+    ) -> Vec<Tile> {
         let win_appid: Vec<Option<String>> = windows
             .iter()
             .map(|w| w.app_id.as_ref().map(|a| a.to_ascii_lowercase()))
             .collect();
         let mut claimed = vec![false; windows.len()];
-        let mut tiles = Vec::with_capacity(self.apps.len() + windows.len());
+        let mut tiles = Vec::with_capacity(apps.len() + windows.len() + 1);
+        tiles.push(Tile::launchpad(application_label));
 
-        for (i, app) in self.apps.iter().enumerate() {
+        for (i, app) in apps.iter().enumerate() {
             let mut running = false;
             let mut activated = false;
             let mut focus = None;
@@ -368,7 +471,7 @@ impl Dock {
                     }
                 }
             }
-            let icon = app.keys.iter().find_map(|k| self.icons.get(k));
+            let icon = app.keys.iter().find_map(|k| icons.get(k));
             tiles.push(Tile {
                 key: format!("app:{}", app.entry.id),
                 icon,
@@ -388,7 +491,7 @@ impl Dock {
             if claimed[wi] {
                 continue;
             }
-            let icon = win_appid[wi].as_ref().and_then(|a| self.icons.get(a));
+            let icon = win_appid[wi].as_ref().and_then(|a| icons.get(a));
             tiles.push(Tile {
                 key: format!("win:{}", w.id.0),
                 icon,
@@ -410,12 +513,33 @@ impl Dock {
         tiles
     }
 
+    /// The strip without the leading Launchpad tile — the view the unit tests
+    /// assert against.
+    #[cfg(test)]
+    fn tiles(&self, windows: &[Window]) -> Vec<Tile> {
+        Self::frame_tiles(
+            &self.tile_cache,
+            &self.apps,
+            &self.icons,
+            self.catalog_revision,
+            windows,
+            None,
+        )[1..]
+            .to_vec()
+    }
+
     /// Bounds of the live dock interaction surface. Uses the current spring
     /// widths (or rest width before a tile's first render) so pointer routing
     /// follows the bar as it expands without claiming the entire bottom edge.
     fn pointer_bounds(&self, windows: &[Window], display: (f32, f32)) -> Rect {
-        let mut tiles = vec![Tile::launchpad("")];
-        tiles.extend(self.tiles(windows));
+        let tiles = Self::frame_tiles(
+            &self.tile_cache,
+            &self.apps,
+            &self.icons,
+            self.catalog_revision,
+            windows,
+            None,
+        );
         let widths: Vec<f32> = tiles
             .iter()
             .map(|t| {
@@ -467,11 +591,18 @@ impl Chrome for Dock {
         let menu_was_open = self.app_menu.is_open();
 
         // The Launchpad tile always leads the strip (macOS-style), followed by
-        // the pinned apps and any unpinned running windows.
-        let mut tiles = Vec::with_capacity(self.apps.len() + windows.len() + 1);
+        // the pinned apps and any unpinned running windows. The strip comes
+        // from the cache shared with `pointer_bounds`, so it is rebuilt only
+        // when the window set, the catalog, or the localized label changes.
         let application_label = i18n.text(Message::Applications);
-        tiles.push(Tile::launchpad(application_label));
-        tiles.extend(self.localized_tiles(windows, application_label));
+        let tiles = Self::frame_tiles(
+            &self.tile_cache,
+            &self.apps,
+            &self.icons,
+            self.catalog_revision,
+            windows,
+            Some(application_label),
+        );
         let n = tiles.len();
         let pinned_count = tiles.iter().filter(|t| t.pinned).count();
         let unpinned_count = n.saturating_sub(pinned_count);
@@ -483,7 +614,9 @@ impl Chrome for Dock {
 
         // Drop eased sizes for tiles no longer present so the map does not
         // grow unbounded across long sessions.
-        self.sizes.retain(|k, _| tiles.iter().any(|t| &t.key == k));
+        let live_keys: std::collections::HashSet<&str> =
+            tiles.iter().map(|t| t.key.as_str()).collect();
+        self.sizes.retain(|key, _| live_keys.contains(key.as_str()));
 
         let rest_panel_y = disp.y - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN;
 
@@ -551,14 +684,19 @@ impl Chrome for Dock {
                 0.0
             };
             let target = DOCK_TILE + (DOCK_TILE_MAX - DOCK_TILE) * factor;
-            let state = self.sizes.entry(t.key.clone()).or_insert(SpringState {
-                value: if menu_was_open {
-                    DOCK_TILE
-                } else {
-                    DOCK_TILE_BIRTH
-                },
-                vel: 0.0,
-            });
+            // Look up before inserting so an existing tile does not pay a
+            // key clone every frame.
+            let state = match self.sizes.get_mut(&t.key) {
+                Some(state) => state,
+                None => self.sizes.entry(t.key.clone()).or_insert(SpringState {
+                    value: if menu_was_open {
+                        DOCK_TILE
+                    } else {
+                        DOCK_TILE_BIRTH
+                    },
+                    vel: 0.0,
+                }),
+            };
             // A context menu must not become a moving target. Freeze the
             // complete wave exactly where it was opened; once the menu closes,
             // the same springs resume toward the live pointer targets.
@@ -770,10 +908,7 @@ impl Chrome for Dock {
                 };
                 let dot_id = format!("ass-dock-dot-{}", t.key);
                 f.layer(&dot_id, dot_rect, &tile_opts(), |f| {
-                    f.column_ex(
-                        &sized_fill(dot_w, DOCK_DOT, color, DOCK_DOT * 0.5),
-                        |_| {},
-                    );
+                    f.column_ex(&sized_fill(dot_w, DOCK_DOT, color, DOCK_DOT * 0.5), |_| {});
                 });
             }
         }
@@ -1043,6 +1178,7 @@ impl Chrome for Dock {
             })
             .collect();
         self.icons = catalog.icons.clone();
+        self.catalog_revision = self.catalog_revision.wrapping_add(1);
     }
 }
 

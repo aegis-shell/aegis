@@ -94,6 +94,62 @@ static SURFACE_IMPL: ffi::wl_surface_interface_impl = ffi::wl_surface_interface_
     damage_buffer: surface_damage_buffer,
 };
 
+/// Merge one commit's damage into the not-yet-presented surface damage.
+/// Keep a single bounding box: KMS consumes a conservative box and the
+/// renderer's row upload is cheaper with one bounded region than with an
+/// unbounded list after a burst of commits.
+pub(crate) fn accumulate_committed_damage(
+    rec: &mut SurfaceRec,
+    pending: Vec<aegis_core::Rect>,
+    unknown_full: bool,
+) {
+    if rec.committed_damage_full {
+        return;
+    }
+    if unknown_full {
+        rec.committed_damage.clear();
+        rec.committed_damage_full = true;
+        return;
+    }
+    let mut bbox = rec.committed_damage.first().copied();
+    for rect in rec
+        .committed_damage
+        .iter()
+        .skip(1)
+        .chain(pending.iter())
+        .copied()
+    {
+        bbox = Some(match bbox {
+            Some(old) => {
+                let x0 = old.origin.x.min(rect.origin.x);
+                let y0 = old.origin.y.min(rect.origin.y);
+                let x1 = old
+                    .origin
+                    .x
+                    .saturating_add(old.size.w)
+                    .max(rect.origin.x.saturating_add(rect.size.w));
+                let y1 = old
+                    .origin
+                    .y
+                    .saturating_add(old.size.h)
+                    .max(rect.origin.y.saturating_add(rect.size.h));
+                aegis_core::Rect::new(x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0))
+            }
+            None => rect,
+        });
+    }
+    rec.committed_damage.clear();
+    if let Some(rect) = bbox {
+        rec.committed_damage.push(rect);
+    }
+}
+
+pub(crate) fn reset_xdg_configure_state_after_unmap(rec: &mut SurfaceRec) {
+    rec.xdg_configured = false;
+    rec.xdg_configure_acked = false;
+    rec.pending_xdg_configures.clear();
+}
+
 unsafe extern "C" fn surface_destroy(
     _client: *mut ffi::wl_client,
     resource: *mut ffi::wl_resource,
@@ -216,14 +272,22 @@ pub(crate) unsafe extern "C" fn surface_commit(
         // The pending transform and scale are surfaced to the renderer via
         // `SurfaceGeometry` (see toplevel_*_frames below); the renderer applies
         // them at composite time.
-        // Rotate the pending damage into committed_damage for the renderer to
-        // read this frame; clear pending so the next commit starts fresh.
-        // Bounding boxes are clamped to surface bounds when surfaced.
-        (*rec).committed_damage = std::mem::take(&mut (*rec).pending_damage);
+        // Accumulate until a compositor frame is actually presented. The
+        // event loop can dispatch several commits before rendering once; only
+        // retaining the newest commit's damage would leave earlier pixels
+        // stale in the retained shm snapshot/GPU texture and under-report the
+        // KMS damage hint. Empty damage on a new buffer carries no usable
+        // information and therefore poisons the aggregate to full.
+        let pending_damage = std::mem::take(&mut (*rec).pending_damage);
+        let unknown_full = buffer_set && !buffer.is_null() && pending_damage.is_empty();
+        accumulate_committed_damage(&mut *rec, pending_damage, unknown_full);
         if buffer_set && buffer.is_null() {
             retire_surface_buffer(rec);
             (*rec).dmabuf = None;
             (*rec).mapped = false;
+            if was_mapped && !(*rec).xdg_surface.is_null() {
+                reset_xdg_configure_state_after_unmap(&mut *rec);
+            }
             (*rec).pixels.clear();
             (*rec).content_is_dmabuf = false;
             (*rec).generation = (*rec).generation.wrapping_add(1);
@@ -387,27 +451,72 @@ pub(crate) unsafe extern "C" fn surface_commit(
             }
         }
 
+        // Buffer transform/scale/viewport/window-geometry commits alter the
+        // composed pixels even when no new wl_buffer is attached. Give the
+        // render/damage generation tracker an edge to observe; its geometry
+        // guard conservatively promotes these cases to full damage.
+        if visual_metadata_changed && !buffer_set {
+            (*rec).generation = (*rec).generation.wrapping_add(1);
+        }
+
         if (*rec).mapped && !was_mapped && !(*rec).xdg_toplevel.is_null() {
-            let remembered = if !(*rec).state.is_null() {
-                (*rec)
-                    .window
-                    .app_id
-                    .as_deref()
-                    .and_then(|id| (*(*rec).state).last_app_geometries.get(id).copied())
+            let app_id = (*rec).window.app_id.clone();
+            let title = (*rec).window.title.clone();
+            let rule = if !(*rec).state.is_null() {
+                let st = &mut *(*rec).state;
+                st.window_rules
+                    .iter()
+                    .find(|r| r.matches(app_id.as_deref(), title.as_deref()))
+                    .cloned()
             } else {
                 None
             };
-            if let Some(rect) = remembered {
+
+            let rule_pos = rule.as_ref().and_then(|r| r.position);
+            let rule_size = rule.as_ref().and_then(|r| r.size);
+            let rule_remember = rule.as_ref().and_then(|r| r.remember);
+
+            let allow_remember = rule_remember.unwrap_or(true)
+                && if !(*rec).state.is_null() {
+                    (*(*rec).state).remember_window_positions
+                } else {
+                    true
+                };
+
+            let remembered_store_entry = if allow_remember && !(*rec).state.is_null() {
+                app_id
+                    .as_deref()
+                    .and_then(|id| (*(*rec).state).window_state_store.get(id).cloned())
+            } else {
+                None
+            };
+
+            let target_pos =
+                rule_pos.or_else(|| remembered_store_entry.as_ref().and_then(|s| s.position));
+            if let Some(pos) = target_pos {
+                let (output_w, output_h) = if !(*rec).state.is_null() {
+                    let rect = (*(*rec).state).output_geometry.logical_rect();
+                    (rect.size.w, rect.size.h)
+                } else {
+                    (1920, 1080)
+                };
+                let max_x = (output_w - 100).max(0);
+                let max_y = (output_h - 100).max(0);
+                let clamped_pos = aegis_core::Point {
+                    x: pos.x.clamp(0, max_x),
+                    y: pos.y.clamp(0, max_y),
+                };
+                (*rec).position = clamped_pos;
+                (*rec).window.position = clamped_pos;
+            } else if let Some(rect) = app_id.as_deref().and_then(|id| {
+                if !(*rec).state.is_null() {
+                    (*(*rec).state).last_app_geometries.get(id).copied()
+                } else {
+                    None
+                }
+            }) {
                 (*rec).position = rect.origin;
                 (*rec).window.position = rect.origin;
-                if rect.size.w > 0 && rect.size.h > 0 {
-                    (*rec).window.size = rect.size;
-                } else {
-                    (*rec).window.size = (*rec)
-                        .window_geometry
-                        .map(|geometry| geometry.size)
-                        .unwrap_or_else(|| surface_logical_size(&*rec));
-                }
             } else {
                 let count = if (*rec).state.is_null() {
                     0
@@ -423,40 +532,48 @@ pub(crate) unsafe extern "C" fn surface_commit(
                     y: 60 + idx * 32,
                 };
                 (*rec).window.position = (*rec).position;
+            }
+
+            let target_size =
+                rule_size.or_else(|| remembered_store_entry.as_ref().and_then(|s| s.size));
+            if let Some(size) = target_size {
+                if size.w >= 100 && size.h >= 100 {
+                    (*rec).window.size = size;
+                    reconfigure_with_size(rec, size.w, size.h);
+                } else {
+                    (*rec).window.size = (*rec)
+                        .window_geometry
+                        .map(|geometry| geometry.size)
+                        .unwrap_or_else(|| surface_logical_size(&*rec));
+                }
+            } else {
                 (*rec).window.size = (*rec)
                     .window_geometry
                     .map(|geometry| geometry.size)
                     .unwrap_or_else(|| surface_logical_size(&*rec));
             }
+
             log::info!(
                 "[server] surface mapped at {:?}: {}x{}",
                 (*rec).position,
                 (*rec).width,
                 (*rec).height
             );
-            // Place the new toplevel on the focused output's current workspace
-            // (ADR-0025). The model's trailing-empty invariant appends a fresh
-            // workspace if this one fills the last.
+
             if !(*rec).state.is_null() {
                 let id = (*rec).window.id;
                 let st = &mut *(*rec).state;
                 if let Some(wid) = st.workspaces.current_workspace(st.output) {
                     st.workspaces.place_toplevel(wid, id);
                 }
-                // Apply the first matching window rule (ADR-0026): a workspace
-                // move and/or a forced layout role. `app_id`/`title` may not be
-                // set yet at first map; rules re-evaluating on title changes is a
-                // follow-up.
-                let app_id = (*rec).window.app_id.clone();
-                let title = (*rec).window.title.clone();
-                let rule = st
-                    .window_rules
-                    .iter()
-                    .find(|r| r.matches(app_id.as_deref(), title.as_deref()));
-                let rule_role = rule.and_then(|r| r.role);
-                if let Some(rule) = rule
-                    && let Some(ws_idx1) = rule.workspace
-                {
+                let target_workspace = rule.as_ref().and_then(|r| r.workspace).or_else(|| {
+                    if allow_remember {
+                        remembered_store_entry.as_ref().and_then(|s| s.workspace)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(ws_idx1) = target_workspace {
                     let idx = (ws_idx1 as usize).saturating_sub(1);
                     if let Some(o) = st.workspaces.output(st.output)
                         && let Some(&target) = o.workspaces.get(idx)
@@ -464,9 +581,15 @@ pub(crate) unsafe extern "C" fn surface_commit(
                         st.workspaces.move_toplevel(id, target);
                     }
                 }
-                // Pick the layout role (ADR-0024/0026): an explicit rule role
-                // wins; a transient dialog always floats; otherwise the tiled
-                // flag of the workspace the toplevel landed on decides.
+
+                let rule_role = rule.as_ref().and_then(|r| r.role).or_else(|| {
+                    if allow_remember {
+                        remembered_store_entry.as_ref().and_then(|s| s.layout_role)
+                    } else {
+                        None
+                    }
+                });
+
                 let workspace_tiled = st
                     .workspaces
                     .workspace_of(id)
@@ -648,7 +771,9 @@ unsafe extern "C" fn surface_damage(
         if rec.is_null() || w <= 0 || h <= 0 {
             return;
         }
-        (*rec).pending_damage.push(aegis_core::Rect::new(x, y, w, h));
+        (*rec)
+            .pending_damage
+            .push(aegis_core::Rect::new(x, y, w, h));
     }
 }
 
@@ -669,7 +794,9 @@ unsafe extern "C" fn surface_damage_buffer(
         if rec.is_null() || w <= 0 || h <= 0 {
             return;
         }
-        (*rec).pending_damage.push(aegis_core::Rect::new(x, y, w, h));
+        (*rec)
+            .pending_damage
+            .push(aegis_core::Rect::new(x, y, w, h));
     }
 }
 
@@ -710,15 +837,22 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
         // slot is nulled so the resource address is still readable.
         if !(*rec).state.is_null() {
             let state = &mut *(*rec).state;
-            if let Some(app_id) = (*rec).window.app_id.as_deref() {
-                if !app_id.is_empty() {
-                    let rect = (*rec).saved_floating_rect.unwrap_or(aegis_core::Rect {
-                        origin: (*rec).position,
-                        size: (*rec).window.size,
-                    });
-                    if rect.size.w > 0 && rect.size.h > 0 {
-                        state.last_app_geometries.insert(app_id.to_owned(), rect);
-                    }
+            if let Some(app_id) = (*rec).window.app_id.as_deref()
+                && !app_id.is_empty()
+            {
+                let rect = (*rec).saved_floating_rect.unwrap_or(aegis_core::Rect {
+                    origin: (*rec).position,
+                    size: (*rec).window.size,
+                });
+                if rect.size.w > 0 && rect.size.h > 0 {
+                    let ws_idx = state.workspace_number_for_window((*rec).window.id);
+
+                    state.persist_app_geometry(
+                        app_id,
+                        rect,
+                        ws_idx,
+                        Some((*rec).window.layout_role),
+                    );
                 }
             }
             let seats = state.seats.keys().copied().collect::<Vec<_>>();
@@ -833,7 +967,10 @@ unsafe extern "C" fn region_add(
     }
 }
 
-pub(crate) fn subtract_rect(source: aegis_core::Rect, cut: aegis_core::Rect) -> Vec<aegis_core::Rect> {
+pub(crate) fn subtract_rect(
+    source: aegis_core::Rect,
+    cut: aegis_core::Rect,
+) -> Vec<aegis_core::Rect> {
     let sx1 = source.origin.x;
     let sy1 = source.origin.y;
     let sx2 = sx1.saturating_add(source.size.w);

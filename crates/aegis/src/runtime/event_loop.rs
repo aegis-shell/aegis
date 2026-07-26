@@ -6,7 +6,7 @@ impl CompositorRuntime {
         // immediately. Idle frames block until input, a client commit, or the
         // one-second maintenance tick arrives.
         let alive = if self.animating {
-            let frame_interval = std::time::Duration::from_micros(16_667);
+            let frame_interval = self.frame_interval();
             let remaining = frame_interval.saturating_sub(self.previous_frame_at.elapsed());
             if remaining.is_zero() {
                 self.host.dispatch_nonblocking()
@@ -14,10 +14,39 @@ impl CompositorRuntime {
                 self.host.dispatch_timeout(remaining)
             }
         } else {
-            self.host
-                .dispatch_timeout(std::time::Duration::from_secs(1))
+            // Animated wallpapers (video, multi-frame GIF/WebP) pace their own
+            // frames: wake in time for the next one instead of leaving them
+            // frozen on the maintenance tick, which still bounds the wait so
+            // idle housekeeping keeps its one-second cadence.
+            let wait = self
+                .wallpaper
+                .as_ref()
+                .and_then(aegis_wallpaper::Wallpaper::next_frame_in)
+                .unwrap_or(std::time::Duration::from_secs(1))
+                .min(std::time::Duration::from_secs(1));
+            self.host.dispatch_timeout(wait)
         };
         alive && !self.shell.should_quit() && !self.quit_requested
+    }
+
+    /// Frame pacing for the animation tick, derived from the fastest active
+    /// output's refresh rate so high-refresh outputs animate at their native
+    /// cadence instead of being clamped to 60fps. Backends that report no
+    /// mode (nested, where the outer compositor owns pacing) keep 60 Hz.
+    fn frame_interval(&self) -> std::time::Duration {
+        let refresh_mhz = self
+            .server
+            .output_infos()
+            .iter()
+            .map(|output| output.geometry.mode.refresh_mhz)
+            .max()
+            .unwrap_or(0);
+        if refresh_mhz == 0 {
+            std::time::Duration::from_micros(16_667)
+        } else {
+            // refresh_mhz is in millihertz: period_ns = 1e12 / refresh_mhz.
+            std::time::Duration::from_nanos(1_000_000_000_000 / u64::from(refresh_mhz))
+        }
     }
 
     fn update_animation_state(&mut self) {

@@ -26,8 +26,8 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use aegis_desktop_entries::expand_exec;
 use aegis_core::app::Entry;
+use aegis_desktop_entries::expand_exec;
 
 /// Minimal view of a desktop entry the launcher needs.
 ///
@@ -495,6 +495,12 @@ pub fn launch(source: &dyn LaunchSource, opts: &LaunchOpts) -> Result<LaunchRepo
                 status,
             });
         }
+    } else {
+        std::thread::Builder::new()
+            .name("aegis-launch-reaper".into())
+            .spawn(move || {
+                let _ = child.wait();
+            })?;
     }
     Ok(LaunchReport {
         pid,
@@ -1030,6 +1036,19 @@ mod tests {
         }
         assert!(ok, "detached child never wrote the marker");
         assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), "det");
+
+        let supervisor = std::path::PathBuf::from(format!("/proc/{}/stat", report.pid));
+        for _ in 0..300 {
+            if !supervisor.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            !supervisor.exists(),
+            "setsid supervisor {} was not reaped",
+            report.pid
+        );
     }
 
     #[test]

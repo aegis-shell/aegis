@@ -466,6 +466,7 @@ unsafe extern "C" fn popup_destroy(_client: *mut ffi::wl_client, resource: *mut 
     unsafe {
         let rec = ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec;
         if !rec.is_null() {
+            reset_xdg_configure_state_after_unmap(&mut *rec);
             (*rec).xdg_popup = std::ptr::null_mut();
             (*rec).popup_parent = std::ptr::null_mut();
             (*rec).popup_grabbed = false;
@@ -526,6 +527,7 @@ unsafe extern "C" fn xdg_toplevel_destroy(
             if !(*rec).state.is_null() {
                 (*(*rec).state).unregister_window((*rec).window.id);
             }
+            reset_xdg_configure_state_after_unmap(&mut *rec);
             (*rec).xdg_toplevel = std::ptr::null_mut();
             (*rec).mapped = false;
         }
@@ -580,13 +582,46 @@ unsafe extern "C" fn toplevel_set_app_id(
             (*rec).window.app_id = id_opt.clone();
             if !(*rec).state.is_null() {
                 if let Some(id_str) = id_opt {
-                    if let Some(rect) = (*(*rec).state).last_app_geometries.get(&id_str).copied() {
-                        if !(*rec).window.state.maximized && !(*rec).window.state.fullscreen {
-                            (*rec).position = rect.origin;
-                            (*rec).window.position = rect.origin;
-                            if rect.size.w > 0 && rect.size.h > 0 {
-                                (*rec).window.size = rect.size;
-                            }
+                    let st = &mut *(*rec).state;
+                    let rule = st
+                        .window_rules
+                        .iter()
+                        .find(|r| r.matches(Some(&id_str), (*rec).window.title.as_deref()))
+                        .cloned();
+                    let allow_remember = rule.as_ref().and_then(|r| r.remember).unwrap_or(true)
+                        && st.remember_window_positions;
+
+                    let saved = if allow_remember {
+                        st.window_state_store.get(&id_str).cloned()
+                    } else {
+                        None
+                    };
+
+                    if !(*rec).window.state.maximized && !(*rec).window.state.fullscreen {
+                        if let Some(pos) = rule
+                            .as_ref()
+                            .and_then(|r| r.position)
+                            .or_else(|| saved.as_ref().and_then(|s| s.position))
+                        {
+                            let screen_rect = st.output_geometry.logical_rect();
+                            let max_x = (screen_rect.size.w - 100).max(0);
+                            let max_y = (screen_rect.size.h - 100).max(0);
+                            let clamped_pos = aegis_core::Point {
+                                x: pos.x.clamp(0, max_x),
+                                y: pos.y.clamp(0, max_y),
+                            };
+                            (*rec).position = clamped_pos;
+                            (*rec).window.position = clamped_pos;
+                        }
+                        if let Some(size) = rule
+                            .as_ref()
+                            .and_then(|r| r.size)
+                            .or_else(|| saved.as_ref().and_then(|s| s.size))
+                            && size.w >= 100
+                            && size.h >= 100
+                        {
+                            (*rec).window.size = size;
+                            reconfigure_with_size(rec, size.w, size.h);
                         }
                     }
                 }
@@ -867,7 +902,8 @@ pub(crate) unsafe fn minimize_toplevel_record(rec: *mut SurfaceRec) {
             };
             let old_screen_h = (*state).output_geometry.logical_rect().size.h;
             let now = (*state).now_ms();
-            (*rec).window.transition = Some(aegis_core::transition::WindowTransition::new(old, now));
+            (*rec).window.transition =
+                Some(aegis_core::transition::WindowTransition::new(old, now));
             let target_origin = aegis_core::Point {
                 x: old.origin.x + old.size.w / 4,
                 y: old_screen_h - 20,
@@ -941,8 +977,7 @@ unsafe extern "C" fn toplevel_move(
         if (*state_ptr).interactive.is_some() {
             return; // Already grabbing; ignore.
         }
-        let layout_changed =
-            (*rec).window.layout_role != aegis_core::layout::LayoutRole::Floating;
+        let layout_changed = (*rec).window.layout_role != aegis_core::layout::LayoutRole::Floating;
         (*rec).window.layout_role = aegis_core::layout::LayoutRole::Floating;
         (*rec).layout_target = None;
         let state_changed = (*rec).window.state.maximized || (*rec).window.state.fullscreen;

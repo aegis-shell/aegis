@@ -1,6 +1,6 @@
 [package]
-name = "aegis-control-center"
-description = "Modular Control Center application and compatibility chrome for ass"
+name = "aegis-ai-workspaces"
+description = "Compositor-owned AI Workspace lifecycle and authority UI"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
@@ -11,9 +11,7 @@ build = "build.rs"
 [dependencies]
 aegis-core = { workspace = true }
 aegis-design = { workspace = true }
-aegis-ipc = { workspace = true }
 aegis-shell = { workspace = true }
-iris = { workspace = true }
 lens = { workspace = true }
 # Direct dep purely so this crate's build script receives DEP_LENS_RPATHS
 # (published via the -sys crate's `links` metadata) and can re-emit the rpaths

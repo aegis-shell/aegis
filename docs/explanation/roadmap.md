@@ -140,7 +140,7 @@ seed surface (ADR-0027): versioned length-framed JSON over
 main loop, and `WindowsChanged`/`WorkspaceChanged`/`Notified` event streams.
 Protocol version 4 extends the same boundary with revisioned persistent
 settings snapshots, confirmed display/touchpad transactions, and settings
-journal entries for the standalone modular Control Center.
+journal entries for the standalone modular System Settings application.
 Layout, dock, UI policy, window rules, and agent scopes all load from the
 same file and apply live. See
 [ADR-0026](../adr/0026-configuration-system.md) and
@@ -222,9 +222,9 @@ land with the libinput backend.
 flux engine first). Multi-monitor rendering correctness and gesture/tablet
 feel need real hardware to verify. The per-output display policy landed as
 `[[output]]` config entries: scale, live DRM mode selection, position, and
-primary are in effect and editable through Control Center; the output
+primary are in effect and editable through System Settings; the output
 transform is parsed but deferred until the renderer applies it.
-Control Center now runs as an ordinary Wayland application; display and
+System Settings now runs as an ordinary Wayland application; display and
 touchpad pages share a module contract, while unfinished settings domains
 remain visible but explicitly unavailable.
 

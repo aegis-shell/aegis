@@ -57,9 +57,8 @@ impl CompositorRuntime {
             match request.action {
                 PickControl::Start { kind, reply } => {
                     if self.pending_pick.is_some() {
-                        let _ = reply.send(Err(
-                            "another interactive pick is in progress".to_owned()
-                        ));
+                        let _ =
+                            reply.send(Err("another interactive pick is in progress".to_owned()));
                     } else if self.server.session_locked() || !self.host.is_active() {
                         let _ = reply.send(Err("session is locked or inactive".to_owned()));
                     } else if self.shell.screenshot_active() {

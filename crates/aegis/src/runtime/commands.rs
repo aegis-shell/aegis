@@ -42,7 +42,9 @@ pub(super) fn draw_direct_desktop_scene(
     Ok(())
 }
 
-pub(super) fn physical_window_target(cmd: &aegis_ipc::Command) -> Option<aegis_core::window::WindowId> {
+pub(super) fn physical_window_target(
+    cmd: &aegis_ipc::Command,
+) -> Option<aegis_core::window::WindowId> {
     use aegis_ipc::Command;
     match cmd {
         Command::Focus { id }
@@ -95,6 +97,11 @@ pub(super) fn apply_command(
         Command::ToggleOverview => {
             // The overview is shell-owned; toggled beside the IPC drain.
             debug_assert!(false, "ToggleOverview reached the generic command path");
+        }
+        Command::System { .. } => {
+            // Live system controls need the normalized status snapshot and are
+            // handled beside the IPC/chrome drains.
+            debug_assert!(false, "System reached the generic command path");
         }
         Command::Cycle { forward } => server.cycle_focus(*forward),
         Command::SwitchWorkspace { dir } => server.switch_workspace(*dir),
@@ -219,17 +226,20 @@ pub(super) fn realm_action_invalidates_capture(
     match action {
         aegis_ipc::RealmAction::Create { .. } => std::collections::BTreeSet::new(),
         aegis_ipc::RealmAction::Revoke { realm, .. } => std::collections::BTreeSet::from([*realm]),
-        aegis_ipc::RealmAction::Transact { mutations, .. } => mutations
-            .iter()
-            .filter_map(|mutation| match mutation {
-                aegis_core::realm::RealmMutation::SetState {
-                    realm,
-                    state:
-                        aegis_core::realm::RealmState::Paused | aegis_core::realm::RealmState::Revoked,
-                } => Some(*realm),
-                _ => None,
-            })
-            .collect(),
+        aegis_ipc::RealmAction::Transact { mutations, .. } => {
+            mutations
+                .iter()
+                .filter_map(|mutation| match mutation {
+                    aegis_core::realm::RealmMutation::SetState {
+                        realm,
+                        state:
+                            aegis_core::realm::RealmState::Paused
+                            | aegis_core::realm::RealmState::Revoked,
+                    } => Some(*realm),
+                    _ => None,
+                })
+                .collect()
+        }
     }
 }
 
@@ -343,91 +353,4 @@ pub(super) fn apply_chrome_window_command(
         ts_mono_ms,
         aegis_ipc::Origin::Chrome,
     );
-}
-
-/// Apply one trusted Control Center mutation. Compositor-native layout changes
-/// return an IPC command so they pass through the journal chokepoint; host
-/// hardware controls are dispatched through their standard Linux tools.
-pub(super) fn apply_system_action(
-    server: &mut aegis_compositor::Server,
-    notifications: &std::sync::Arc<std::sync::Mutex<aegis_core::notify::NotificationQueue>>,
-    status: &mut aegis_shell::SystemStatus,
-    action: aegis_shell::SystemAction,
-) -> Option<aegis_ipc::Command> {
-    use aegis_shell::SystemAction;
-
-    match action {
-        SystemAction::ToggleMute => {
-            spawn_host_command("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]);
-            status.muted = !status.muted;
-        }
-        SystemAction::StepVolume(delta) => {
-            let amount = format!(
-                "{}%{}",
-                delta.unsigned_abs(),
-                if delta >= 0 { "+" } else { "-" }
-            );
-            spawn_host_command(
-                "wpctl",
-                &["set-volume", "@DEFAULT_AUDIO_SINK@", &amount, "-l", "1.0"],
-            );
-            let current = status.volume.unwrap_or(0) as i16;
-            status.volume = Some((current + i16::from(delta)).clamp(0, 100) as u8);
-        }
-        SystemAction::SetVolume(level) => {
-            let level = level.min(100);
-            let amount = format!("{level}%");
-            spawn_host_command(
-                "wpctl",
-                &["set-volume", "@DEFAULT_AUDIO_SINK@", &amount, "-l", "1.0"],
-            );
-            status.volume = Some(level);
-        }
-        SystemAction::SetBrightness(level) => {
-            let level = level.clamp(1, 100);
-            let amount = format!("{level}%");
-            spawn_host_command("brightnessctl", &["--class=backlight", "set", &amount]);
-            status.brightness = Some(level);
-        }
-        SystemAction::SetWifi(enabled) => {
-            spawn_host_command(
-                "nmcli",
-                &["radio", "wifi", if enabled { "on" } else { "off" }],
-            );
-            status.wifi_enabled = Some(enabled);
-        }
-        SystemAction::SetBluetooth(enabled) => {
-            spawn_host_command(
-                "rfkill",
-                &[if enabled { "unblock" } else { "block" }, "bluetooth"],
-            );
-            status.bluetooth_enabled = Some(enabled);
-        }
-        SystemAction::SetDoNotDisturb(enabled) => {
-            notifications.lock().unwrap().set_do_not_disturb(enabled);
-            status.do_not_disturb = enabled;
-        }
-        SystemAction::SetTiling(enabled) => {
-            status.tiled = enabled;
-            if server.tiling() != enabled {
-                return Some(aegis_ipc::Command::ToggleTiling);
-            }
-        }
-        // Touchpad profiles are persisted and applied by the main loop, which
-        // owns both the config file and the selected input backend.
-        SystemAction::SetTouchpad(_) | SystemAction::SetDisplay(_) => {}
-    }
-    None
-}
-
-pub(super) fn spawn_host_command(program: &str, args: &[&str]) {
-    let result = std::process::Command::new(program)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-    if let Err(error) = result {
-        log::warn!("control center: failed to start {program}: {error}");
-    }
 }

@@ -53,21 +53,22 @@ pub(super) fn selected_icon_theme() -> String {
         .unwrap_or_else(|| aegis_desktop_entries::DEFAULT_ICON_THEME.to_string())
 }
 
-/// Merge XDG applications with the development fallback for Control Center.
-/// A packaged desktop file wins by id; source-tree runs still receive a
-/// launchable entry when the file has not been installed.
-pub(super) fn application_catalog(icon_theme: &str, icon_scale: u32) -> Vec<aegis_core::app::Entry> {
-    let mut applications = aegis_desktop_entries::enumerate_with_theme_and_scale(icon_theme, icon_scale.max(1));
+/// Enumerate XDG applications and append compositor-owned virtual entries.
+///
+/// First-party external applications use the same installed metadata path as
+/// every other client. Development tooling stages that layout under `target/`
+/// instead of synthesizing compositor-only external entries.
+pub(super) fn application_catalog(
+    icon_theme: &str,
+    icon_scale: u32,
+) -> Vec<aegis_core::app::Entry> {
+    let mut applications =
+        aegis_desktop_entries::enumerate_with_theme_and_scale(icon_theme, icon_scale.max(1));
     let i18n = aegis_shell::Localizer::from_env();
-    if !applications
-        .iter()
-        .any(|entry| entry.id == aegis_core::app::CONTROL_CENTER_DESKTOP_ID)
-    {
-        applications.push(aegis_core::app::Entry::control_center(
-            i18n.text(aegis_shell::Message::ControlCenter),
-            i18n.text(aegis_shell::Message::StandaloneSettingsApp),
-        ));
-    }
+    applications.push(aegis_core::app::Entry::ai_workspaces(
+        i18n.text(aegis_shell::Message::AiWorkspaces),
+        i18n.text(aegis_shell::Message::AiWorkspacesDescription),
+    ));
     applications
 }
 
@@ -212,20 +213,32 @@ pub(super) fn materialize_pins_for_manual_edit(
     pinned.to_vec()
 }
 
-/// Decode each app entry's icon into a flux texture, keyed by every id the
-/// window might report as `app_id` (StartupWMClass, the desktop-id stem, and
-/// the icon name, all lowercased). The first key to claim a texture wins per
-/// entry, so a texture is never double-counted.
-pub(super) fn build_icon_cache(
-    device: &flux::Device,
+/// One icon decoded to GPU-ready BGRA8 pixels. Produced off the frame loop
+/// (icon decoding forks `rsvg-convert` per SVG — far too slow for the main
+/// thread); the main loop only uploads the pixels as flux textures.
+pub(super) struct DecodedIcon {
+    /// Every map key the texture is inserted under. For applications these
+    /// are the ids a window might report as `app_id` (StartupWMClass, the
+    /// desktop-id stem, and the icon name, all lowercased); for HUD symbols
+    /// the `ass-hud:*` keys.
+    pub(super) keys: Vec<String>,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) bgra: Vec<u8>,
+    /// HUD symbols overwrite existing keys; application icons let the first
+    /// key to claim a texture win so a texture is never double-counted.
+    pub(super) overwrite: bool,
+}
+
+/// Decode every application and HUD icon into raw BGRA8 pixels. Runs on the
+/// app-scan worker thread: it performs no GPU work, only file I/O and
+/// (for SVG) `rsvg-convert` subprocesses.
+pub(super) fn decode_icons(
     apps: &[aegis_core::app::Entry],
     icon_theme: &str,
     icon_scale: u32,
-) -> IconCache {
-    use std::ffi::c_void;
-    let mut images: Vec<flux::Image> = Vec::new();
-    let mut map: std::collections::HashMap<String, *mut c_void> = std::collections::HashMap::new();
-
+) -> Vec<DecodedIcon> {
+    let mut decoded = Vec::new();
     for entry in apps {
         let Some(path) = &entry.icon_path else {
             continue;
@@ -235,28 +248,22 @@ pub(super) fn build_icon_cache(
             .and_then(|e| e.to_str())
             .map(|e| e.to_ascii_lowercase())
             .unwrap_or_default();
-        let Some(decoded) = decode_icon(path, &ext, icon_scale) else {
+        let Some(image) = decode_icon(path, &ext, icon_scale) else {
             continue;
         };
-        let rgba = decoded.to_rgba8();
+        let rgba = image.to_rgba8();
         let (w, h) = rgba.dimensions();
         let mut bgra = rgba.into_raw();
         for chunk in bgra.chunks_exact_mut(4) {
             chunk.swap(0, 2); // RGBA8 -> BGRA8 (flux samples BGRA8_UNORM).
         }
-        match flux::Image::from_bytes(device, w, h, flux::Format::FLUX_FORMAT_BGRA8_UNORM, &bgra) {
-            Ok(img) => {
-                let ptr = img.as_raw() as *mut c_void;
-                // Key the texture under every id a window might report as its
-                // `app_id`; the dock resolves both icons and running-window
-                // matches through these same keys.
-                for key in entry.match_keys() {
-                    map.entry(key).or_insert(ptr);
-                }
-                images.push(img);
-            }
-            Err(e) => log::warn!("icon: upload failed for {}: {e:?}", path.display()),
-        }
+        decoded.push(DecodedIcon {
+            keys: entry.match_keys(),
+            width: w,
+            height: h,
+            bgra,
+            overwrite: false,
+        });
     }
 
     // HUD status assets come from the same icon theme as applications. SVGs
@@ -271,11 +278,14 @@ pub(super) fn build_icon_cache(
         symbolic_names.push(format!("battery-level-{level}-symbolic"));
         symbolic_names.push(format!("battery-level-{level}-charging-symbolic"));
     }
-    let mut hud_count = 0usize;
     for name in symbolic_names {
-        let Some(path) =
-            aegis_desktop_entries::resolve_icon_scaled(&name, Some(icon_theme), &[], 24, icon_scale.max(1))
-        else {
+        let Some(path) = aegis_desktop_entries::resolve_icon_scaled(
+            &name,
+            Some(icon_theme),
+            &[],
+            24,
+            icon_scale.max(1),
+        ) else {
             log::debug!("hud icon: '{name}' was not found in theme '{icon_theme}'");
             continue;
         };
@@ -284,10 +294,10 @@ pub(super) fn build_icon_cache(
             .and_then(|extension| extension.to_str())
             .map(str::to_ascii_lowercase)
             .unwrap_or_default();
-        let Some(decoded) = decode_icon(&path, &ext, icon_scale) else {
+        let Some(image) = decode_icon(&path, &ext, icon_scale) else {
             continue;
         };
-        let mut rgba = decoded.to_rgba8();
+        let mut rgba = image.to_rgba8();
         // Symbolic themes commonly encode a dark CSS foreground intended for
         // toolkit recolouring. The compositor has no GTK style context, so
         // apply the HUD's light foreground while preserving every coverage
@@ -304,19 +314,61 @@ pub(super) fn build_icon_cache(
         for chunk in bgra.chunks_exact_mut(4) {
             chunk.swap(0, 2);
         }
-        match flux::Image::from_bytes(device, w, h, flux::Format::FLUX_FORMAT_BGRA8_UNORM, &bgra) {
-            Ok(image) => {
-                let ptr = image.as_raw() as *mut c_void;
-                map.insert(format!("ass-hud:{name}"), ptr);
-                if name == "preferences-system-symbolic" {
-                    // Stable application-icon key for the compositor-owned
-                    // control center entry and component header.
-                    map.insert("aegis-ctl-center".into(), ptr);
+        let mut keys = vec![format!("ass-hud:{name}")];
+        if name == "preferences-system-symbolic" {
+            // Stable keys for the external System Settings fallback and the
+            // compositor-owned AI Workspaces surface.
+            keys.push("aegis-settings".into());
+            keys.push(aegis_core::app::AI_WORKSPACES_ID.into());
+        }
+        decoded.push(DecodedIcon {
+            keys,
+            width: w,
+            height: h,
+            bgra,
+            overwrite: true,
+        });
+    }
+    decoded
+}
+
+/// Upload decoded icons as flux textures, keyed by every id the window might
+/// report as `app_id`. Pure GPU work: all file I/O and decoding happened in
+/// [`decode_icons`] on the worker thread.
+pub(super) fn build_icon_cache(device: &flux::Device, decoded: &[DecodedIcon]) -> IconCache {
+    use std::ffi::c_void;
+    let mut images: Vec<flux::Image> = Vec::new();
+    let mut map: std::collections::HashMap<String, *mut c_void> = std::collections::HashMap::new();
+    let mut hud_count = 0usize;
+
+    for icon in decoded {
+        match flux::Image::from_bytes(
+            device,
+            icon.width,
+            icon.height,
+            flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+            &icon.bgra,
+        ) {
+            Ok(img) => {
+                let ptr = img.as_raw() as *mut c_void;
+                // The dock resolves both icons and running-window matches
+                // through these same keys.
+                if icon.overwrite {
+                    for key in &icon.keys {
+                        map.insert(key.clone(), ptr);
+                    }
+                    hud_count += 1;
+                } else {
+                    for key in &icon.keys {
+                        map.entry(key.clone()).or_insert(ptr);
+                    }
                 }
-                images.push(image);
-                hud_count += 1;
+                images.push(img);
             }
-            Err(error) => log::warn!("hud icon: upload failed for {}: {error:?}", path.display()),
+            Err(e) => log::warn!(
+                "icon: upload failed for {:?}: {e:?}",
+                icon.keys.first().map(String::as_str).unwrap_or("?")
+            ),
         }
     }
 

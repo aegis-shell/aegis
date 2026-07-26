@@ -76,6 +76,14 @@ struct Shared {
     /// The currently open dbusmenu popover (the worker refreshes it on
     /// `LayoutUpdated`, the render thread reads it under the snapshot lock).
     menu: Option<MenuState>,
+    /// Bumped on every `menu` assignment so the render thread can cache its
+    /// clone of the menu tree; mirrored into [`TraySnapshot::menu_revision`].
+    menu_revision: u64,
+    /// Theme-icon resolution memo keyed by icon name: `None` entries are
+    /// failed lookups (missing or undecodable), so a bad name never rescans
+    /// the theme. Runs on the worker so the render thread only uploads
+    /// ready-made pixmaps.
+    icon_cache: HashMap<String, Option<TrayPixmap>>,
 }
 
 impl Shared {
@@ -93,7 +101,23 @@ impl Shared {
         *snapshot.lock().unwrap() = TraySnapshot {
             items,
             menu: self.menu.clone(),
+            menu_revision: self.menu_revision,
         };
+    }
+}
+
+/// Resolve a theme-named icon to a pixmap in place, memoized per name. A
+/// failed resolution keeps the `Name` (the bar renders the fallback glyph)
+/// and stays memoized so the theme is not rescanned on the next update.
+fn resolve_named_icon(icon: &mut TrayIcon, cache: &mut HashMap<String, Option<TrayPixmap>>) {
+    let TrayIcon::Name(name) = icon else {
+        return;
+    };
+    if let Some(pixmap) = cache
+        .entry(name.clone())
+        .or_insert_with(|| super::icon::resolve_theme_icon(name))
+    {
+        *icon = TrayIcon::Pixmap(pixmap.clone());
     }
 }
 
@@ -144,7 +168,7 @@ impl WatcherIface {
             &sender
         };
 
-        let props = fetch_props_async(&self.conn, destination, &path).await;
+        let mut props = fetch_props_async(&self.conn, destination, &path).await;
         let menu_path = props.menu_path.clone();
         let mut item = TrayItem {
             key: key.clone(),
@@ -161,6 +185,7 @@ impl WatcherIface {
             if let Some(previous) = shared.items.get(&key) {
                 item.icon_generation = previous.item.icon_generation;
             }
+            resolve_named_icon(&mut props.icon, &mut shared.icon_cache);
             apply_props(&mut item, props);
             shared.items.insert(
                 key.clone(),
@@ -445,9 +470,10 @@ fn handle_signal(
                     .map(|(key, _)| key.clone())
             };
             let Some(key) = key else { return };
-            let props =
+            let mut props =
                 fetch_props_blocking(conn, &sender, path.as_deref().unwrap_or(DEFAULT_ITEM_PATH));
             let mut shared = shared.lock().unwrap();
+            resolve_named_icon(&mut props.icon, &mut shared.icon_cache);
             if let Some(entry) = shared.items.get_mut(&key) {
                 apply_props(&mut entry.item, props);
                 shared.republish();
@@ -511,6 +537,7 @@ fn refresh_open_menu(conn: &zbus::blocking::Connection, shared: &Arc<Mutex<Share
         root,
         revision,
     });
+    shared.menu_revision += 1;
     shared.republish();
 }
 
@@ -588,6 +615,7 @@ fn fetch_menu_command(conn: &zbus::blocking::Connection, shared: &Arc<Mutex<Shar
         root,
         revision,
     });
+    shared.menu_revision += 1;
     shared.republish();
 }
 
@@ -640,6 +668,7 @@ fn close_menu_command(shared: &Arc<Mutex<Shared>>, key: &str) {
         .unwrap_or(false)
     {
         shared.menu = None;
+        shared.menu_revision += 1;
         shared.republish();
     }
 }

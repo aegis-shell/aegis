@@ -265,9 +265,13 @@ fn fuji_stdio_discovers_manages_captures_and_revokes_realm() {
             .any(|realm| realm.state == aegis_core::realm::RealmState::Revoked)
     );
 
-    let config =
-        aegis_fuji::bridge::BridgeConfig::new(&socket, &runtime_dir, "fuji-test", "Fuji smoke test")
-            .expect("smoke config");
+    let config = aegis_fuji::bridge::BridgeConfig::new(
+        &socket,
+        &runtime_dir,
+        "fuji-test",
+        "Fuji smoke test",
+    )
+    .expect("smoke config");
     let mut platform = aegis_fuji::bridge::AssPlatform::connect(config).expect("smoke platform");
     let report = platform
         .smoke_with_input(Duration::ZERO, Some(WindowId(7)))

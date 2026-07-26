@@ -1,13 +1,11 @@
 //! The session status bar: a compact top bar with integrated workspace state,
 //! active window context, clock, application tray, system status, and a small
-//! control centre. Its information architecture follows the user's Quickshell
-//! HUD, while the rendering and interaction remain compositor-owned lens
-//! chrome.
+//! status-and-controls panel. The rendering and interaction remain
+//! compositor-owned lens chrome.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
-use std::path::Path;
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -17,14 +15,14 @@ use aegis_core::realm::{RealmKind, RealmSnapshot, RealmState};
 use aegis_core::window::Window;
 use aegis_core::workspace::WorkspaceSnapshot;
 use aegis_design::{Design, materials, themes};
-use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect};
+use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
 
 use aegis_shell::{
     AppCatalog, BackdropRegion, BatteryStatus, Chrome, ChromeEvents, CursorShape, HUD_HEIGHT,
     IconSet, Localizer, Message, NetworkState, Reserved, SystemAction, SystemStatus,
 };
 
-use crate::tray::{self, MenuNode, TrayCommand, TrayIcon, TraySnapshot};
+use crate::tray::{self, MenuNode, MenuState, TrayCommand, TrayIcon, TraySnapshot};
 
 const WORKSPACE_SLOT_W: f32 = 18.0;
 const WORKSPACE_ACTIVE_DOT: f32 = 8.0;
@@ -33,15 +31,15 @@ const LEFT_MARGIN: f32 = 10.0;
 const RIGHT_MARGIN: f32 = 6.0;
 const TRAY_CELL_W: f32 = 26.0;
 const MAX_TRAY_ITEMS: usize = 5;
-/// Scale theme-resolved SNI icons are looked up and rasterized at; the
-/// texture is sampled down to the 18px cell glyph, so 2x keeps HiDPI crisp.
-const TRAY_ICON_SCALE: u32 = 2;
 const PANEL_GAP: f32 = 6.0;
 const PANEL_W: f32 = 420.0;
-const PANEL_H: f32 = 326.0;
+const PANEL_H: f32 = 400.0;
 const CLOCK_POLL_INTERVAL: Duration = Duration::from_secs(15);
 const BACKDROP_BLUR_SIGMA: f32 = 12.0;
 const AGENT_INDICATOR_MAX_W: f32 = 154.0;
+const FUJI_PANEL_GAP: f32 = 7.0;
+const FUJI_PANEL_W: f32 = 372.0;
+const FUJI_PANEL_H: f32 = 224.0;
 
 // dbusmenu popover geometry (mirrors ass-shell's app_menu.rs — kept private
 // here so ass-statusbar does not reach into ass-shell's chrome internals).
@@ -59,6 +57,16 @@ pub struct StatusBar {
     prev_down: bool,
     prev_right_down: bool,
     panel_open: bool,
+    /// Whether the Fuji assistant surface is expanded from its permanent
+    /// status-bar entry.
+    fuji_open: bool,
+    /// Eased reveal amount retained while the panel closes, so the surface
+    /// contracts back into the entry instead of disappearing in one frame.
+    fuji_reveal: f32,
+    /// Continuous phase for the compositor-owned algorithm visualization.
+    fuji_phase: f32,
+    /// Accessibility reduced-motion policy shared with the other chrome.
+    reduced_motion: bool,
     icons: IconSet,
     notifications: Option<Arc<Mutex<NotificationQueue>>>,
     status: SystemStatus,
@@ -78,11 +86,19 @@ pub struct StatusBar {
     /// One-frame flag suppressing the same right-press that opened the menu
     /// from also immediately closing it (mirrors app_menu.rs's `just_opened`).
     menu_just_opened: bool,
+    /// Notification list cache keyed by the queue's revision; re-cloned only
+    /// when the queue actually changes.
+    notification_cache: Option<(u64, Arc<Vec<Notification>>)>,
+    /// dbusmenu tree cache keyed by the snapshot's `menu_revision`
+    /// (`RefCell` because `captures_pointer`/`backdrop_regions` read the
+    /// menu through `&self`).
+    menu_cache: RefCell<Option<MenuSnapshotCache>>,
 }
 
 /// Render-thread half of the StatusNotifierItem tray: the shared snapshot the
 /// worker writes, the command channel back to it, and the texture cache the
-/// bar uploads from item pixmaps or theme-resolved icon names.
+/// bar uploads from item pixmaps (theme-named icons arrive pre-resolved as
+/// pixmaps; see `tray::icon`).
 struct SniTray {
     device: flux::Device,
     snapshot: Arc<Mutex<TraySnapshot>>,
@@ -90,9 +106,9 @@ struct SniTray {
     /// Uploaded SNI textures keyed by item key, tagged with the snapshot's
     /// icon generation so status-only updates do not re-upload.
     textures: HashMap<String, (u64, flux::Image)>,
-    /// Item keys whose theme-icon resolution failed at the tagged generation,
-    /// so a missing or undecodable name does not rescan the theme every frame.
-    failed: HashMap<String, u64>,
+    /// Last frame's cells, reused when the snapshot lock is contended (the
+    /// worker publishing a large menu tree must never stall rendering).
+    cached_cells: Vec<SniCell>,
 }
 
 struct TrayCell {
@@ -102,12 +118,22 @@ struct TrayCell {
 }
 
 /// One SNI cell to draw this frame, distilled from the tray snapshot.
+#[derive(Clone)]
 struct SniCell {
     key: String,
     has_menu: bool,
     textured: bool,
     /// Cell rect (filled in during the tray-row layout pass).
     rect: Rect,
+}
+
+/// Render-side cache of the shared dbusmenu tree, tagged with the worker's
+/// `menu_revision` so the (potentially large) tree is re-cloned only when
+/// the menu actually changed, and shared cheaply between the render,
+/// hit-test, and backdrop paths within a frame.
+struct MenuSnapshotCache {
+    revision: u64,
+    menu: Option<Arc<MenuState>>,
 }
 
 /// How the combined tray row folds into the slot budget: app-tray cells
@@ -156,7 +182,7 @@ impl StatusBar {
                 snapshot,
                 commands,
                 textures: HashMap::new(),
-                failed: HashMap::new(),
+                cached_cells: Vec::new(),
             })
         });
         let now = Instant::now();
@@ -164,6 +190,10 @@ impl StatusBar {
             prev_down: false,
             prev_right_down: false,
             panel_open: false,
+            fuji_open: false,
+            fuji_reveal: 0.0,
+            fuji_phase: 0.0,
+            reduced_motion: false,
             icons: IconSet::default(),
             notifications,
             status: SystemStatus::default(),
@@ -180,6 +210,8 @@ impl StatusBar {
                 h: 0.0,
             },
             menu_just_opened: false,
+            notification_cache: None,
+            menu_cache: RefCell::new(None),
         }
     }
 
@@ -202,21 +234,233 @@ impl StatusBar {
             h,
         }
     }
+
+    fn panel_notification_list_y(display: (f32, f32)) -> f32 {
+        Self::panel_bounds(display).y + 298.0
+    }
+
+    fn fuji_panel_bounds(display: (f32, f32)) -> Rect {
+        let w = FUJI_PANEL_W.min((display.0 - 16.0).max(240.0));
+        let h = FUJI_PANEL_H.min((display.1 - HUD_HEIGHT - 16.0).max(160.0));
+        Rect {
+            x: (display.0 - w - 8.0).max(8.0),
+            y: HUD_HEIGHT + FUJI_PANEL_GAP,
+            w,
+            h,
+        }
+    }
+
+    fn revealed_fuji_panel_bounds(&self, display: (f32, f32)) -> Rect {
+        let panel = Self::fuji_panel_bounds(display);
+        let progress = ease_out_cubic(self.fuji_reveal.clamp(0.0, 1.0));
+        let w = 76.0_f32.min(panel.w) + (panel.w - 76.0_f32.min(panel.w)) * progress;
+        let h = HUD_HEIGHT.min(panel.h) + (panel.h - HUD_HEIGHT.min(panel.h)) * progress;
+        Rect {
+            x: panel.x + panel.w - w,
+            y: panel.y,
+            w,
+            h,
+        }
+    }
+
+    fn fuji_action_bounds(&self, display: (f32, f32)) -> Rect {
+        let panel = self.revealed_fuji_panel_bounds(display);
+        let split = (panel.w * 0.43).clamp(98.0, 154.0);
+        Rect {
+            x: panel.x + split,
+            y: panel.y + panel.h - 45.0,
+            w: (panel.w - split - 15.0).max(1.0),
+            h: 32.0,
+        }
+    }
+
+    fn advance_fuji_animation(&mut self, dt: f32) {
+        let target = if self.fuji_open { 1.0 } else { 0.0 };
+        if self.reduced_motion {
+            self.fuji_reveal = target;
+            return;
+        }
+        let dt = dt.clamp(0.0, 1.0 / 15.0);
+        let follow = 1.0 - (-15.0 * dt).exp();
+        self.fuji_reveal += (target - self.fuji_reveal) * follow;
+        if (target - self.fuji_reveal).abs() < 0.002 {
+            self.fuji_reveal = target;
+        }
+        if self.fuji_open || self.fuji_reveal > 0.01 {
+            self.fuji_phase = (self.fuji_phase + dt).rem_euclid(std::f32::consts::TAU);
+        }
+    }
+
+    fn render_fuji_panel(
+        &self,
+        frame: &mut Frame,
+        display: (f32, f32),
+        cursor: (f32, f32),
+        indicator: &AgentIndicator,
+        i18n: &Localizer,
+    ) {
+        let panel = self.revealed_fuji_panel_bounds(display);
+        let reveal = self.fuji_reveal.clamp(0.0, 1.0);
+        let content = ((reveal - 0.24) / 0.76).clamp(0.0, 1.0);
+        frame.layer(
+            "ass-hud-fuji-panel",
+            panel,
+            &OverlayOpts {
+                bg: Color::rgba(15, 19, 34, fade_alpha(220, reveal)),
+                border: Color::rgba(149, 184, 255, fade_alpha(112, reveal)),
+                border_width: 1.0,
+                radius: 22.0 * ease_out_cubic(reveal) + 10.0,
+                ..Default::default()
+            },
+            |_| {},
+        );
+        if content <= 0.01 || panel.w < 150.0 || panel.h < 90.0 {
+            return;
+        }
+
+        let original_theme = frame.theme();
+        frame.set_theme(faded_theme(original_theme, content));
+
+        let split = (panel.w * 0.43).clamp(98.0, 154.0);
+        let visual = Rect {
+            x: panel.x + 8.0,
+            y: panel.y + 34.0,
+            w: (split - 12.0).max(70.0),
+            h: (panel.h - 45.0).max(70.0),
+        };
+        render_fuji_algorithm(
+            frame,
+            visual,
+            self.fuji_phase,
+            content,
+            indicator.state == AgentIndicatorState::Active,
+            self.reduced_motion,
+        );
+
+        let copy_x = panel.x + split;
+        let copy_w = (panel.w - split - 15.0).max(1.0);
+        render_text_left(
+            frame,
+            "ass-hud-fuji-title",
+            Rect {
+                x: copy_x,
+                y: panel.y + 20.0,
+                w: copy_w,
+                h: 27.0,
+            },
+            i18n.text(Message::Fuji),
+            18.0,
+        );
+        render_text_left(
+            frame,
+            "ass-hud-fuji-subtitle",
+            Rect {
+                x: copy_x,
+                y: panel.y + 52.0,
+                w: copy_w,
+                h: 22.0,
+            },
+            &truncate(
+                i18n.text(Message::FujiPanelDescription),
+                (copy_w / 6.2) as usize,
+            ),
+            11.0,
+        );
+
+        let state_label = match indicator.state {
+            AgentIndicatorState::Ready => i18n.text(Message::FujiReady),
+            AgentIndicatorState::Active => i18n.text(Message::RealmActive),
+            AgentIndicatorState::Paused => i18n.text(Message::RealmPaused),
+        };
+        let state = Rect {
+            x: copy_x,
+            y: panel.y + 84.0,
+            w: (frame.measure_text(state_label, 10.5).width + 22.0).min(copy_w),
+            h: 25.0,
+        };
+        let state_accent = indicator_accent(indicator.state);
+        frame.layer(
+            "ass-hud-fuji-state",
+            state,
+            &OverlayOpts {
+                bg: state_accent.with_alpha(fade_alpha(34, content)),
+                border: state_accent.with_alpha(fade_alpha(118, content)),
+                border_width: 1.0,
+                radius: state.h * 0.5,
+                ..Default::default()
+            },
+            |_| {},
+        );
+        render_text(frame, "ass-hud-fuji-state-label", state, state_label, 10.5);
+
+        let action = self.fuji_action_bounds(display);
+        let hovered = contains(action, cursor.0, cursor.1);
+        frame.layer(
+            "ass-hud-fuji-open",
+            action,
+            &OverlayOpts {
+                bg: if hovered {
+                    Color::rgba(102, 119, 255, fade_alpha(164, content))
+                } else {
+                    Color::rgba(81, 95, 218, fade_alpha(116, content))
+                },
+                border: Color::rgba(182, 202, 255, fade_alpha(126, content)),
+                border_width: 1.0,
+                radius: 11.0,
+                ..Default::default()
+            },
+            |frame| {
+                frame.row_ex(
+                    &LayoutOpts {
+                        width: action.w,
+                        height: action.h,
+                        gap: 6.0,
+                        cross: Align::Center,
+                        ..Default::default()
+                    },
+                    |frame| {
+                        frame.label_compact_sized(
+                            &truncate(
+                                i18n.text(Message::FujiOpenWorkspaces),
+                                ((action.w - 27.0) / 6.2).max(4.0) as usize,
+                            ),
+                            10.5,
+                        );
+                        frame.icon(Icon::ChevronRight, 13.0);
+                    },
+                );
+            },
+        );
+        frame.set_theme(original_theme);
+    }
     fn refresh_status(&mut self) {
         let now = Instant::now();
         if now.duration_since(self.last_clock_poll) >= CLOCK_POLL_INTERVAL {
-            if let Some(clock) = command_output("date", &["+%H:%M"]) {
+            if let Some(clock) = local_clock() {
                 self.clock = clock;
             }
             self.last_clock_poll = now;
         }
     }
 
-    fn notification_snapshot(&self) -> Vec<Notification> {
-        self.notifications
+    /// Clone the notification queue, memoized on the queue's revision: an
+    /// unchanged queue reuses the cached `Arc` instead of re-cloning every
+    /// entry every frame.
+    fn notification_snapshot(&mut self) -> Arc<Vec<Notification>> {
+        let Some(queue) = &self.notifications else {
+            return Arc::new(Vec::new());
+        };
+        let queue = queue.lock().unwrap();
+        let revision = queue.revision();
+        let stale = self
+            .notification_cache
             .as_ref()
-            .map(|queue| queue.lock().unwrap().snapshot())
-            .unwrap_or_default()
+            .map(|(cached, _)| *cached != revision)
+            .unwrap_or(true);
+        if stale {
+            self.notification_cache = Some((revision, Arc::new(queue.snapshot())));
+        }
+        Arc::clone(&self.notification_cache.as_ref().unwrap().1)
     }
 
     fn send_tray_command(&self, command: TrayCommand) {
@@ -230,12 +474,28 @@ impl StatusBar {
         self.icons.get(&format!("ass-hud:{name}"))
     }
 
-    /// Read the shared menu snapshot under the worker's lock. Returns `None`
-    /// when no menu is currently open or the bar has no SNI tray.
-    fn menu_snapshot(&self) -> Option<crate::tray::MenuState> {
+    /// Read the shared menu snapshot, memoized on the worker's
+    /// `menu_revision` so the menu tree is re-cloned only when it changes and
+    /// shared between all readers in a frame. A contended snapshot lock (the
+    /// worker publishing a large tree) serves the cached menu rather than
+    /// blocking the frame. Returns `None` when no menu is currently open or
+    /// the bar has no SNI tray.
+    fn menu_snapshot(&self) -> Option<Arc<MenuState>> {
         let tray = self.tray.as_ref()?;
-        let snapshot = tray.snapshot.lock().unwrap();
-        snapshot.menu.clone()
+        let mut cache = self.menu_cache.borrow_mut();
+        if let Ok(snapshot) = tray.snapshot.try_lock() {
+            let stale = cache
+                .as_ref()
+                .map(|cache| cache.revision != snapshot.menu_revision)
+                .unwrap_or(true);
+            if stale {
+                *cache = Some(MenuSnapshotCache {
+                    revision: snapshot.menu_revision,
+                    menu: snapshot.menu.clone().map(Arc::new),
+                });
+            }
+        }
+        cache.as_ref()?.menu.clone()
     }
 
     fn tray_cells(&self, windows: &[Window]) -> Vec<TrayCell> {
@@ -261,15 +521,17 @@ impl StatusBar {
 
     /// Read the SNI snapshot under a brief lock, upload any new or changed
     /// icons into the texture cache, and return the visible cells for this
-    /// frame. Runs on the render thread; never touches D-Bus.
+    /// frame. Runs on the render thread; never touches D-Bus. When the worker
+    /// holds the snapshot lock (publishing what may be a large menu tree) the
+    /// previous frame's cells are reused rather than blocking the frame.
     fn sni_cells(&mut self) -> Vec<SniCell> {
         let Some(tray) = &mut self.tray else {
             return Vec::new();
         };
-        let snapshot = tray.snapshot.lock().unwrap();
+        let Ok(snapshot) = tray.snapshot.try_lock() else {
+            return tray.cached_cells.clone();
+        };
         tray.textures
-            .retain(|key, _| snapshot.items.iter().any(|item| &item.key == key));
-        tray.failed
             .retain(|key, _| snapshot.items.iter().any(|item| &item.key == key));
         let mut cells = Vec::new();
         for item in &snapshot.items {
@@ -281,52 +543,31 @@ impl StatusBar {
                 .get(&item.key)
                 .map(|(generation, _)| *generation != item.icon_generation)
                 .unwrap_or(true);
-            match &item.icon {
-                TrayIcon::Pixmap(pixmap) => {
-                    if stale {
-                        match flux::Image::from_bytes(
-                            &tray.device,
-                            pixmap.width,
-                            pixmap.height,
-                            flux::Format::FLUX_FORMAT_BGRA8_UNORM,
-                            &pixmap.bgra,
-                        ) {
-                            Ok(image) => {
-                                tray.textures
-                                    .insert(item.key.clone(), (item.icon_generation, image));
-                            }
-                            Err(error) => {
-                                log::warn!("tray: icon upload for {} failed: {error}", item.key);
-                                tray.textures.remove(&item.key);
-                            }
+            if let TrayIcon::Pixmap(pixmap) = &item.icon {
+                if stale {
+                    match flux::Image::from_bytes(
+                        &tray.device,
+                        pixmap.width,
+                        pixmap.height,
+                        flux::Format::FLUX_FORMAT_BGRA8_UNORM,
+                        &pixmap.bgra,
+                    ) {
+                        Ok(image) => {
+                            tray.textures
+                                .insert(item.key.clone(), (item.icon_generation, image));
+                        }
+                        Err(error) => {
+                            log::warn!("tray: icon upload for {} failed: {error}", item.key);
+                            tray.textures.remove(&item.key);
                         }
                     }
                 }
-                TrayIcon::Name(name) => {
-                    // The icon generation also bumps on `IconName` changes, so
-                    // the same generation tag keys theme-resolved textures.
-                    let attempted = tray.failed.get(&item.key) == Some(&item.icon_generation);
-                    if stale && !attempted {
-                        match themed_tray_icon(&tray.device, name) {
-                            Some(image) => {
-                                tray.textures
-                                    .insert(item.key.clone(), (item.icon_generation, image));
-                            }
-                            None => {
-                                // Missing or undecodable icons keep the
-                                // fallback glyph; memo the generation so the
-                                // theme is not rescanned every frame.
-                                tray.failed.insert(item.key.clone(), item.icon_generation);
-                                tray.textures.remove(&item.key);
-                            }
-                        }
-                    }
-                }
-                TrayIcon::None => {
-                    // An item that drops its icon must not keep rendering the
-                    // previous texture.
-                    tray.textures.remove(&item.key);
-                }
+            } else {
+                // `None` ships no icon; a `Name` left in the snapshot means
+                // the worker's theme resolution failed (memoized there, so
+                // the theme is never rescanned on the render thread). Either
+                // way the item must not keep rendering the previous texture.
+                tray.textures.remove(&item.key);
             }
             cells.push(SniCell {
                 key: item.key.clone(),
@@ -340,6 +581,7 @@ impl StatusBar {
                 },
             });
         }
+        tray.cached_cells = cells.clone();
         cells
     }
 
@@ -350,6 +592,7 @@ impl StatusBar {
         cursor: (f32, f32),
         notifications: &[Notification],
         i18n: &Localizer,
+        out: &mut ChromeEvents,
     ) {
         let panel = Self::panel_bounds(display);
         f.layer("ass-hud-panel", panel, &panel_opts(), |f| {
@@ -365,7 +608,7 @@ impl StatusBar {
                 w: panel.w - 70.0,
                 h: 24.0,
             },
-            i18n.text(Message::ControlCenter),
+            i18n.text(Message::StatusAndControls),
             15.0,
         );
         let close = Rect {
@@ -386,93 +629,240 @@ impl StatusBar {
 
         let gap = 10.0;
         let card_w = (panel.w - 36.0 - gap) * 0.5;
-        let card_h = 72.0;
         let card_y = panel.y + 50.0;
         let audio = Rect {
             x: panel.x + 13.0,
             y: card_y,
             w: card_w,
-            h: card_h,
+            h: 100.0,
         };
-        let network = Rect {
+        let brightness = Rect {
             x: audio.x + card_w + gap,
             ..audio
         };
-        let battery = Rect {
-            y: card_y + card_h + gap,
+        let connectivity = Rect {
+            y: card_y + audio.h + gap,
+            h: 92.0,
             ..audio
         };
-        let notices = Rect {
-            x: network.x,
-            ..battery
+        let desktop = Rect {
+            x: connectivity.x + card_w + gap,
+            ..connectivity
         };
 
-        let volume = match self.status.volume {
-            Some(level) if self.status.muted => i18n.muted_volume(level),
-            Some(level) => format!("{level}%"),
-            None => i18n.text(Message::Unavailable).to_string(),
-        };
-        render_status_card(
-            f,
-            "ass-hud-audio-card",
-            audio,
-            self.themed_icon(volume_icon_name(&self.status)),
-            volume_icon(&self.status),
-            (i18n.text(Message::Volume), &volume),
-            contains(audio, cursor.0, cursor.1),
+        let themed_volume_icon = self.themed_icon(volume_icon_name(&self.status));
+        let mut volume = self.status.volume.unwrap_or(0) as f32;
+        let mut muted = self.status.muted;
+        f.layer("ass-hud-audio-card", audio, &card_opts(false), |f| {
+            f.column_ex(
+                &LayoutOpts {
+                    width: audio.w,
+                    height: audio.h,
+                    gap: 5.0,
+                    pad: 10.0,
+                    cross: Align::Stretch,
+                    ..Default::default()
+                },
+                |f| {
+                    f.row_ex(
+                        &LayoutOpts {
+                            height: 20.0,
+                            gap: 7.0,
+                            cross: Align::Center,
+                            ..Default::default()
+                        },
+                        |f| {
+                            match themed_volume_icon {
+                                Some(icon) => unsafe {
+                                    f.image(icon as *mut lens::sys::flux_image, 16.0, 16.0)
+                                },
+                                None => f.icon(volume_icon(&self.status), 15.0),
+                            }
+                            f.label_compact_sized(i18n.text(Message::Sound), 12.0);
+                            f.flex(1.0);
+                            f.spacer(0.0);
+                            f.label_compact_sized(
+                                &self
+                                    .status
+                                    .volume
+                                    .map(|level| format!("{level}%"))
+                                    .unwrap_or_else(|| "--".into()),
+                                10.5,
+                            );
+                        },
+                    );
+                    if self.status.volume.is_some() {
+                        if f.slider("##statusbar-volume", &mut volume, 0.0, 100.0) {
+                            out.system_actions.push(SystemAction::SetVolume {
+                                level: volume.round().clamp(0.0, 100.0) as u8,
+                            });
+                        }
+                        if f.checkbox(i18n.text(Message::Muted), &mut muted) {
+                            out.system_actions.push(SystemAction::ToggleMute);
+                        }
+                    } else {
+                        f.label_compact_sized(i18n.text(Message::Unavailable), 10.5);
+                    }
+                },
+            );
+        });
+
+        let mut brightness_level = self.status.brightness.unwrap_or(1) as f32;
+        f.layer(
+            "ass-hud-brightness-card",
+            brightness,
+            &card_opts(false),
+            |f| {
+                f.column_ex(
+                    &LayoutOpts {
+                        width: brightness.w,
+                        height: brightness.h,
+                        gap: 8.0,
+                        pad: 10.0,
+                        cross: Align::Stretch,
+                        ..Default::default()
+                    },
+                    |f| {
+                        f.row_ex(
+                            &LayoutOpts {
+                                height: 20.0,
+                                gap: 7.0,
+                                cross: Align::Center,
+                                ..Default::default()
+                            },
+                            |f| {
+                                f.icon(Icon::Zap, 15.0);
+                                f.label_compact_sized(i18n.text(Message::Brightness), 12.0);
+                                f.flex(1.0);
+                                f.spacer(0.0);
+                                f.label_compact_sized(
+                                    &self
+                                        .status
+                                        .brightness
+                                        .map(|level| format!("{level}%"))
+                                        .unwrap_or_else(|| "--".into()),
+                                    10.5,
+                                );
+                            },
+                        );
+                        if self.status.brightness.is_some() {
+                            if f.slider("##statusbar-brightness", &mut brightness_level, 1.0, 100.0)
+                            {
+                                out.system_actions.push(SystemAction::SetBrightness {
+                                    level: brightness_level.round().clamp(1.0, 100.0) as u8,
+                                });
+                            }
+                        } else {
+                            f.label_compact_sized(i18n.text(Message::Unavailable), 10.5);
+                        }
+                    },
+                );
+            },
         );
+
         let network_text = match self.status.network {
             NetworkState::Wifi => i18n.text(Message::WifiConnected),
             NetworkState::Wired => i18n.text(Message::WiredConnected),
             NetworkState::Offline => i18n.text(Message::Disconnected),
         };
-        render_status_card(
-            f,
-            "ass-hud-network-card",
-            network,
-            self.themed_icon(network_icon_name(self.status.network)),
-            Icon::Globe,
-            (i18n.text(Message::Network), network_text),
-            contains(network, cursor.0, cursor.1),
-        );
-        let battery_text = self
-            .status
-            .battery
-            .map(|battery| {
-                if battery.charging {
-                    i18n.charging_battery(battery.percent)
-                } else {
-                    format!("{}%", battery.percent)
-                }
-            })
-            .unwrap_or_else(|| i18n.text(Message::NoBatteryDetected).to_string());
-        let battery_icon = self
-            .status
-            .battery
-            .and_then(|battery| self.themed_icon(&battery_icon_name(battery)));
-        render_status_card(
-            f,
-            "ass-hud-battery-card",
-            battery,
-            battery_icon,
-            Icon::Zap,
-            (i18n.text(Message::Battery), &battery_text),
-            contains(battery, cursor.0, cursor.1),
-        );
-        render_status_card(
-            f,
-            "ass-hud-notification-card",
-            notices,
-            self.themed_icon("preferences-system-notifications-symbolic"),
-            Icon::Bell,
-            (
-                i18n.text(Message::Notifications),
-                &i18n.recent_notification_count(notifications.len()),
-            ),
-            contains(notices, cursor.0, cursor.1),
+        let network_icon = self.themed_icon(network_icon_name(self.status.network));
+        let mut wifi = self.status.wifi_enabled.unwrap_or(false);
+        let mut bluetooth = self.status.bluetooth_enabled.unwrap_or(false);
+        f.layer(
+            "ass-hud-connectivity-card",
+            connectivity,
+            &card_opts(false),
+            |f| {
+                f.column_ex(
+                    &LayoutOpts {
+                        width: connectivity.w,
+                        height: connectivity.h,
+                        gap: 5.0,
+                        pad: 10.0,
+                        cross: Align::Stretch,
+                        ..Default::default()
+                    },
+                    |f| {
+                        f.row_ex(
+                            &LayoutOpts {
+                                height: 20.0,
+                                gap: 7.0,
+                                cross: Align::Center,
+                                ..Default::default()
+                            },
+                            |f| {
+                                match network_icon {
+                                    Some(icon) => unsafe {
+                                        f.image(icon as *mut lens::sys::flux_image, 16.0, 16.0)
+                                    },
+                                    None => f.icon(Icon::Globe, 15.0),
+                                }
+                                f.label_compact_sized(i18n.text(Message::Connectivity), 12.0);
+                                f.flex(1.0);
+                                f.spacer(0.0);
+                                f.label_compact_sized(network_text, 10.0);
+                            },
+                        );
+                        if self.status.wifi_enabled.is_some() {
+                            if f.checkbox(i18n.text(Message::Wifi), &mut wifi) {
+                                out.system_actions
+                                    .push(SystemAction::SetWifi { enabled: wifi });
+                            }
+                        } else {
+                            unavailable_control(f, i18n.text(Message::Wifi), i18n);
+                        }
+                        if self.status.bluetooth_enabled.is_some() {
+                            if f.checkbox(i18n.text(Message::Bluetooth), &mut bluetooth) {
+                                out.system_actions
+                                    .push(SystemAction::SetBluetooth { enabled: bluetooth });
+                            }
+                        } else {
+                            unavailable_control(f, i18n.text(Message::Bluetooth), i18n);
+                        }
+                    },
+                );
+            },
         );
 
-        let heading_y = battery.y + card_h + 14.0;
+        let mut do_not_disturb = self.status.do_not_disturb;
+        let mut tiled = self.status.tiled;
+        f.layer("ass-hud-desktop-card", desktop, &card_opts(false), |f| {
+            f.column_ex(
+                &LayoutOpts {
+                    width: desktop.w,
+                    height: desktop.h,
+                    gap: 5.0,
+                    pad: 10.0,
+                    cross: Align::Stretch,
+                    ..Default::default()
+                },
+                |f| {
+                    f.row_ex(
+                        &LayoutOpts {
+                            height: 20.0,
+                            gap: 7.0,
+                            cross: Align::Center,
+                            ..Default::default()
+                        },
+                        |f| {
+                            f.icon(Icon::Grid, 15.0);
+                            f.label_compact_sized(i18n.text(Message::Desktop), 12.0);
+                        },
+                    );
+                    if f.checkbox(i18n.text(Message::DoNotDisturb), &mut do_not_disturb) {
+                        out.system_actions.push(SystemAction::SetDoNotDisturb {
+                            enabled: do_not_disturb,
+                        });
+                    }
+                    if f.checkbox(i18n.text(Message::TiledLayout), &mut tiled) {
+                        out.system_actions
+                            .push(SystemAction::SetTiling { enabled: tiled });
+                    }
+                },
+            );
+        });
+
+        let heading_y = panel.y + 264.0;
         render_text_left(
             f,
             "ass-hud-notification-heading",
@@ -485,7 +875,7 @@ impl StatusBar {
             i18n.text(Message::RecentNotifications),
             12.0,
         );
-        let list_y = heading_y + 24.0;
+        let list_y = Self::panel_notification_list_y(display);
         if notifications.is_empty() {
             render_text_left(
                 f,
@@ -669,32 +1059,53 @@ enum MenuRowAction {
     Click(i32),
 }
 
-/// Compact, always-visible authority summary. The detailed controls live in
-/// Control Center; the bar deliberately answers only "is an agent active?"
-/// and provides a direct route to that state.
+/// Permanent Fuji entry plus the live Agent Realm state it summarizes.
 struct AgentIndicator {
     label: String,
-    active: bool,
+    state: AgentIndicatorState,
 }
 
-fn agent_indicator(snapshot: &RealmSnapshot, i18n: &Localizer) -> Option<AgentIndicator> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentIndicatorState {
+    Ready,
+    Active,
+    Paused,
+}
+
+fn agent_indicator(snapshot: &RealmSnapshot, i18n: &Localizer) -> AgentIndicator {
     let live = snapshot
         .realms
         .iter()
         .filter(|realm| realm.kind == RealmKind::Agent && realm.state != RealmState::Revoked)
         .collect::<Vec<_>>();
     let active = live.iter().any(|realm| realm.state == RealmState::Active);
-    let state = if active {
-        i18n.text(Message::RealmActive)
-    } else {
-        i18n.text(Message::RealmPaused)
+    let state = match live.as_slice() {
+        [] => AgentIndicatorState::Ready,
+        _ if active => AgentIndicatorState::Active,
+        _ => AgentIndicatorState::Paused,
     };
     let label = match live.as_slice() {
-        [] => return None,
-        [realm] => format!("{} · {state}", realm.label),
-        realms => format!("AI {} · {state}", realms.len()),
+        [] => i18n.text(Message::Fuji).to_string(),
+        [realm] => format!(
+            "{} · {}",
+            realm.label,
+            if active {
+                i18n.text(Message::RealmActive)
+            } else {
+                i18n.text(Message::RealmPaused)
+            }
+        ),
+        realms => format!(
+            "AI {} · {}",
+            realms.len(),
+            if active {
+                i18n.text(Message::RealmActive)
+            } else {
+                i18n.text(Message::RealmPaused)
+            }
+        ),
     };
-    Some(AgentIndicator { label, active })
+    AgentIndicator { label, state }
 }
 
 fn render_agent_indicator(
@@ -703,11 +1114,7 @@ fn render_agent_indicator(
     indicator: &AgentIndicator,
     hovered: bool,
 ) {
-    let accent = if indicator.active {
-        Color::rgba(92, 168, 255, 255)
-    } else {
-        Color::rgba(240, 184, 84, 255)
-    };
+    let accent = indicator_accent(indicator.state);
     frame.layer(
         "ass-hud-agent-indicator",
         rect,
@@ -726,27 +1133,228 @@ fn render_agent_indicator(
     );
     let dot = Rect {
         x: rect.x + 9.0,
-        y: rect.y + (rect.h - 7.0) * 0.5,
-        w: 7.0,
-        h: 7.0,
+        y: rect.y + (rect.h - 10.0) * 0.5,
+        w: 10.0,
+        h: 10.0,
     };
     frame.layer(
-        "ass-hud-agent-state-dot",
+        "ass-hud-fuji-entry-orb",
         dot,
-        &OverlayOpts::default(),
-        |frame| frame.column_ex(&sized_fill(dot.w, dot.h, accent, dot.w * 0.5), |_| {}),
+        &OverlayOpts {
+            bg: accent.with_alpha(66),
+            border: accent,
+            border_width: 1.0,
+            radius: dot.w * 0.5,
+            ..Default::default()
+        },
+        |_| {},
     );
     render_text_left(
         frame,
-        "ass-hud-agent-state-label",
+        "ass-hud-fuji-entry-label",
         Rect {
-            x: rect.x + 22.0,
+            x: rect.x + 24.0,
             y: rect.y,
-            w: (rect.w - 28.0).max(1.0),
+            w: (rect.w - 30.0).max(1.0),
             h: rect.h,
         },
-        &truncate(&indicator.label, ((rect.w - 28.0) / 6.8).max(4.0) as usize),
+        &truncate(&indicator.label, ((rect.w - 30.0) / 6.8).max(4.0) as usize),
         10.5,
+    );
+}
+
+fn indicator_accent(state: AgentIndicatorState) -> Color {
+    match state {
+        AgentIndicatorState::Ready => Color::rgba(173, 119, 255, 255),
+        AgentIndicatorState::Active => Color::rgba(82, 193, 255, 255),
+        AgentIndicatorState::Paused => Color::rgba(240, 184, 84, 255),
+    }
+}
+
+/// Draw a seek-safe, compositor-owned "algorithm core": layered Siri-like
+/// colour fields, orbiting inference nodes, and a responsive signal strip.
+/// It is presentation only; fuji's model and credentials remain out of
+/// process behind the existing Agent/Realm boundary.
+fn render_fuji_algorithm(
+    frame: &mut Frame,
+    rect: Rect,
+    phase: f32,
+    progress: f32,
+    active: bool,
+    reduced_motion: bool,
+) {
+    let phase = if reduced_motion { 0.82 } else { phase };
+    let diameter = (rect.w * 0.74).min(rect.h * 0.62).clamp(42.0, 94.0);
+    let center = (
+        rect.x + rect.w * 0.5,
+        rect.y + (rect.h * 0.48).min(rect.h - 27.0),
+    );
+    let energy = if active { 1.0 } else { 0.72 };
+    let breathe = 1.0 + phase.sin() * 0.045 * energy;
+
+    render_disc(
+        frame,
+        "ass-hud-fuji-glow",
+        center,
+        diameter * 1.48 * breathe,
+        Color::rgba(78, 83, 255, fade_alpha(34, progress)),
+    );
+    render_ring(
+        frame,
+        "ass-hud-fuji-orbit-outer",
+        center,
+        diameter * 1.18,
+        Color::rgba(101, 220, 255, fade_alpha(78, progress)),
+        1.0,
+    );
+    render_ring(
+        frame,
+        "ass-hud-fuji-orbit-inner",
+        center,
+        diameter * 0.86,
+        Color::rgba(215, 111, 255, fade_alpha(96, progress)),
+        1.0,
+    );
+
+    let core_layers = [
+        (
+            diameter * 0.68,
+            Color::rgba(72, 105, 255, fade_alpha(224, progress)),
+            0.0_f32,
+        ),
+        (
+            diameter * 0.54,
+            Color::rgba(190, 77, 255, fade_alpha(206, progress)),
+            2.1,
+        ),
+        (
+            diameter * 0.38,
+            Color::rgba(255, 91, 184, fade_alpha(194, progress)),
+            4.2,
+        ),
+        (
+            diameter * 0.22,
+            Color::rgba(116, 241, 255, fade_alpha(238, progress)),
+            5.3,
+        ),
+    ];
+    for (index, (size, color, offset)) in core_layers.into_iter().enumerate() {
+        let drift = diameter * 0.065 * energy;
+        let layer_center = (
+            center.0 + (phase * 1.25 + offset).cos() * drift,
+            center.1 + (phase * 1.55 + offset).sin() * drift,
+        );
+        render_disc(
+            frame,
+            &format!("ass-hud-fuji-core-{index}"),
+            layer_center,
+            size * breathe,
+            color,
+        );
+    }
+
+    for index in 0..7 {
+        let offset = index as f32 * std::f32::consts::TAU / 7.0;
+        let angle = phase * (0.58 + index as f32 * 0.025) + offset;
+        let radius = diameter * (0.49 + (index % 2) as f32 * 0.09);
+        let node_center = (
+            center.0 + angle.cos() * radius,
+            center.1 + angle.sin() * radius * 0.58,
+        );
+        let node_size = 3.2 + (index % 3) as f32 * 1.25;
+        let color = match index % 3 {
+            0 => Color::rgba(91, 226, 255, fade_alpha(220, progress)),
+            1 => Color::rgba(187, 112, 255, fade_alpha(212, progress)),
+            _ => Color::rgba(255, 117, 198, fade_alpha(204, progress)),
+        };
+        render_disc(
+            frame,
+            &format!("ass-hud-fuji-node-{index}"),
+            node_center,
+            node_size,
+            color,
+        );
+    }
+
+    let bar_count = 9;
+    let strip_w = (rect.w * 0.62).min(76.0);
+    let bar_w = 3.0;
+    let gap = (strip_w - bar_count as f32 * bar_w) / (bar_count - 1) as f32;
+    let strip_x = center.0 - strip_w * 0.5;
+    let baseline = rect.y + rect.h - 8.0;
+    for index in 0..bar_count {
+        let wave = ((phase * 2.6 + index as f32 * 0.72).sin() * 0.5 + 0.5) * energy;
+        let height = 3.0 + wave * 12.0;
+        let bar = Rect {
+            x: strip_x + index as f32 * (bar_w + gap),
+            y: baseline - height,
+            w: bar_w,
+            h: height,
+        };
+        frame.layer(
+            &format!("ass-hud-fuji-signal-{index}"),
+            bar,
+            &OverlayOpts {
+                bg: Color::rgba(
+                    119 + (index as u8 * 9).min(80),
+                    141,
+                    255,
+                    fade_alpha(196, progress),
+                ),
+                border: Color::TRANSPARENT,
+                radius: bar_w * 0.5,
+                ..Default::default()
+            },
+            |_| {},
+        );
+    }
+}
+
+fn render_disc(frame: &mut Frame, id: &str, center: (f32, f32), diameter: f32, color: Color) {
+    let rect = Rect {
+        x: center.0 - diameter * 0.5,
+        y: center.1 - diameter * 0.5,
+        w: diameter,
+        h: diameter,
+    };
+    frame.layer(
+        id,
+        rect,
+        &OverlayOpts {
+            bg: color,
+            border: Color::TRANSPARENT,
+            radius: diameter * 0.5,
+            ..Default::default()
+        },
+        |_| {},
+    );
+}
+
+fn render_ring(
+    frame: &mut Frame,
+    id: &str,
+    center: (f32, f32),
+    diameter: f32,
+    color: Color,
+    width: f32,
+) {
+    let rect = Rect {
+        x: center.0 - diameter * 0.5,
+        y: center.1 - diameter * 0.5,
+        w: diameter,
+        h: diameter,
+    };
+    frame.layer(
+        id,
+        rect,
+        &OverlayOpts {
+            bg: Color::TRANSPARENT,
+            border: color,
+            border_width: width,
+            radius: diameter * 0.5,
+            ..Default::default()
+        },
+        |_| {},
     );
 }
 
@@ -768,6 +1376,7 @@ impl Chrome for StatusBar {
     ) {
         self.refresh_status();
         let raw = input.as_raw();
+        self.advance_fuji_animation(raw.dt_seconds.max(0.0));
         let display = (raw.display_size.x, raw.display_size.y);
         let cursor = (raw.cursor.x, raw.cursor.y);
         let down = raw.mouse_down.first().copied().unwrap_or(false);
@@ -906,13 +1515,14 @@ impl Chrome for StatusBar {
             contains(bell, cursor.0, cursor.1),
         );
         let agent_indicator = agent_indicator(&self.realms, i18n);
-        let agent = agent_indicator.as_ref().map(|indicator| {
-            let label_w = indicator.label.chars().count() as f32 * 6.8 + 30.0;
-            take_right(&mut right_x, label_w.clamp(72.0, AGENT_INDICATOR_MAX_W))
-        });
-        if let (Some(indicator), Some(rect)) = (&agent_indicator, agent) {
-            render_agent_indicator(f, rect, indicator, contains(rect, cursor.0, cursor.1));
-        }
+        let label_w = agent_indicator.label.chars().count() as f32 * 6.8 + 32.0;
+        let agent = take_right(&mut right_x, label_w.clamp(72.0, AGENT_INDICATOR_MAX_W));
+        render_agent_indicator(
+            f,
+            agent,
+            &agent_indicator,
+            contains(agent, cursor.0, cursor.1),
+        );
         if let Some(battery) = self.status.battery {
             let rect = take_right(&mut right_x, 62.0);
             render_icon_button(
@@ -1062,17 +1672,37 @@ impl Chrome for StatusBar {
 
         if pressed && contains(audio, cursor.0, cursor.1) {
             out.system_actions.push(SystemAction::ToggleMute);
+        } else if pressed && contains(network, cursor.0, cursor.1) {
+            self.panel_open = !self.panel_open;
+            self.fuji_open = false;
         }
         let scroll_y = raw.scroll_y * 40.0 + raw.scroll_pixels_y;
         if contains(audio, cursor.0, cursor.1) && scroll_y.abs() > 0.01 {
             let amount = if scroll_y < 0.0 { 2 } else { -2 };
-            out.system_actions.push(SystemAction::StepVolume(amount));
+            out.system_actions
+                .push(SystemAction::StepVolume { delta: amount });
         }
         if pressed && contains(bell, cursor.0, cursor.1) {
             self.panel_open = !self.panel_open;
-        } else if pressed && agent.is_some_and(|rect| contains(rect, cursor.0, cursor.1)) {
+            self.fuji_open = false;
+        } else if pressed && contains(agent, cursor.0, cursor.1) {
             self.panel_open = false;
-            out.open_builtin = Some(BuiltInApplication::AiWorkspaces);
+            self.fuji_open = !self.fuji_open;
+        }
+
+        if self.fuji_open && pressed {
+            let action = self.fuji_action_bounds(display);
+            if self.fuji_reveal > 0.45 && contains(action, cursor.0, cursor.1) {
+                self.fuji_open = false;
+                out.open_builtin = Some(BuiltInApplication::AiWorkspaces);
+            } else if !contains(Self::fuji_panel_bounds(display), cursor.0, cursor.1)
+                && !contains(agent, cursor.0, cursor.1)
+            {
+                self.fuji_open = false;
+            }
+        }
+        if self.fuji_reveal > 0.001 {
+            self.render_fuji_panel(f, display, cursor, &agent_indicator, i18n);
         }
 
         if self.panel_open {
@@ -1083,19 +1713,10 @@ impl Chrome for StatusBar {
                 w: 30.0,
                 h: 30.0,
             };
-            let card_w = (panel.w - 46.0) * 0.5;
-            let audio_card = Rect {
-                x: panel.x + 13.0,
-                y: panel.y + 50.0,
-                w: card_w,
-                h: 72.0,
-            };
             if pressed && contains(close, cursor.0, cursor.1) {
                 self.panel_open = false;
-            } else if pressed && contains(audio_card, cursor.0, cursor.1) {
-                out.system_actions.push(SystemAction::ToggleMute);
             } else if pressed {
-                let list_y = panel.y + 242.0;
+                let list_y = Self::panel_notification_list_y(display);
                 if let Some(notification) =
                     notifications
                         .iter()
@@ -1115,7 +1736,7 @@ impl Chrome for StatusBar {
                     out.dismissed_notification = Some(notification.id);
                 }
             }
-            self.render_panel(f, display, cursor, &notifications, i18n);
+            self.render_panel(f, display, cursor, &notifications, i18n, out);
         }
 
         // dbusmenu popover for the SNI item whose key is in `menu_open_for`.
@@ -1132,7 +1753,9 @@ impl Chrome for StatusBar {
                 self.send_tray_command(TrayCommand::CloseMenu { key });
             }
         }
-        if let Some(menu) = self.menu_snapshot()
+        // Skip the snapshot read entirely while no popover is open.
+        if self.menu_open_for.is_some()
+            && let Some(menu) = self.menu_snapshot()
             && Some(&menu.key) == self.menu_open_for.as_ref()
         {
             self.render_menu(f, &menu, display, cursor, pressed);
@@ -1154,6 +1777,11 @@ impl Chrome for StatusBar {
             return true;
         }
         if self.panel_open && contains(Self::panel_bounds(display), x, y) {
+            return true;
+        }
+        if (self.fuji_open || self.fuji_reveal > 0.001)
+            && contains(Self::fuji_panel_bounds(display), x, y)
+        {
             return true;
         }
         // The popover needs pointer capture for its own click handling AND so
@@ -1191,6 +1819,22 @@ impl Chrome for StatusBar {
 
     fn update_realms(&mut self, snapshot: &RealmSnapshot) {
         self.realms = snapshot.clone();
+    }
+
+    fn anim_pending(&self) -> bool {
+        if self.reduced_motion {
+            false
+        } else {
+            self.fuji_open
+                || (self.fuji_reveal - if self.fuji_open { 1.0 } else { 0.0 }).abs() > 0.002
+        }
+    }
+
+    fn set_reduced_motion(&mut self, reduced: bool) {
+        self.reduced_motion = reduced;
+        if reduced {
+            self.fuji_reveal = if self.fuji_open { 1.0 } else { 0.0 };
+        }
     }
 
     fn reserved(&self) -> Reserved {
@@ -1232,6 +1876,22 @@ impl Chrome for StatusBar {
                 h: (panel.h - radius * 2.0).max(0.0),
             });
         }
+        if self.fuji_open || self.fuji_reveal > 0.001 {
+            let panel = self.revealed_fuji_panel_bounds(display);
+            let radius = 22.0_f32.min(panel.w * 0.5).min(panel.h * 0.5);
+            regions.push(BackdropRegion {
+                x: panel.x + radius,
+                y: panel.y,
+                w: (panel.w - radius * 2.0).max(0.0),
+                h: panel.h,
+            });
+            regions.push(BackdropRegion {
+                x: panel.x,
+                y: panel.y + radius,
+                w: panel.w,
+                h: (panel.h - radius * 2.0).max(0.0),
+            });
+        }
         // The popover paints a translucent glass material; tell the blur pass
         // to keep sampling the desktop behind it (same two-rect decomposition
         // as the panel, dodging the rounded corners).
@@ -1259,16 +1919,22 @@ impl Chrome for StatusBar {
     }
 }
 
-fn command_output(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program)
-        .args(args)
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+/// The current local time as `HH:MM` — the same string `date +%H:%M`
+/// produced, but resolved in-process so the render thread never forks.
+/// `localtime_r` is the thread-safe local-time breakdown.
+fn local_clock() -> Option<String> {
+    // SAFETY: `time` writes a valid `time_t` into `now`, and `localtime_r`
+    // either writes a valid `tm` into `broken` and returns a pointer to it or
+    // returns null.
+    unsafe {
+        let mut now: libc::time_t = 0;
+        libc::time(&mut now);
+        let mut broken: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&now, &mut broken).is_null() {
+            return None;
+        }
+        Some(format!("{:02}:{:02}", broken.tm_hour, broken.tm_min))
+    }
 }
 
 // ---- dbusmenu popover helpers -------------------------------------------
@@ -1419,95 +2085,6 @@ fn fold_tray(sni: usize, apps: usize, max: usize) -> TrayFold {
     }
 }
 
-/// Raster extensions the `image` crate decodes directly. SVG/SVGZ uses the
-/// standard librsvg command-line rasterizer when installed and otherwise
-/// falls back to the generic glyph. Mirrors the compositor's app-icon path
-/// (`ass::runtime::apps`).
-const RASTER_ICON_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif", "tiff", "ico"];
-const SVG_ICON_EXTS: &[&str] = &["svg", "svgz"];
-
-/// Resolve an SNI `IconName` through the freedesktop icon theme, decode it,
-/// and upload the BGRA8 texture. Returns `None` (caller renders the fallback
-/// glyph) when the name is unknown or the file undecodable. Runs on the
-/// render thread; the generation-tagged cache in `SniTray` bounds this to at
-/// most one resolution per item per name.
-fn themed_tray_icon(device: &flux::Device, name: &str) -> Option<flux::Image> {
-    let path = aegis_desktop_entries::resolve_icon_scaled(name, None, &[], 24, TRAY_ICON_SCALE)?;
-    let ext = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_default();
-    let decoded = decode_icon(&path, &ext, TRAY_ICON_SCALE)?;
-    let mut rgba = decoded.to_rgba8();
-    if is_symbolic_icon(&path) {
-        // Symbolic themes commonly encode a dark CSS foreground intended for
-        // toolkit recolouring. Apply the bar's light foreground while
-        // preserving every coverage value from SVG antialiasing (same
-        // treatment as the compositor's HUD symbols).
-        for pixel in rgba.pixels_mut() {
-            if pixel[3] != 0 {
-                pixel[0] = 246;
-                pixel[1] = 246;
-                pixel[2] = 248;
-            }
-        }
-    }
-    let (w, h) = rgba.dimensions();
-    let mut bgra = rgba.into_raw();
-    for chunk in bgra.chunks_exact_mut(4) {
-        chunk.swap(0, 2);
-    }
-    match flux::Image::from_bytes(device, w, h, flux::Format::FLUX_FORMAT_BGRA8_UNORM, &bgra) {
-        Ok(image) => Some(image),
-        Err(error) => {
-            log::warn!("tray: icon upload for {} failed: {error}", path.display());
-            None
-        }
-    }
-}
-
-/// Decode a resolved theme icon. Raster formats stay in-process; SVG is
-/// converted to a bounded PNG on stdout so malformed or enormous vector
-/// sources cannot dictate an unbounded GPU texture. Copied from the
-/// compositor's app icon cache (`ass::runtime::apps::decode_icon`).
-fn decode_icon(path: &Path, ext: &str, scale: u32) -> Option<image::DynamicImage> {
-    if RASTER_ICON_EXTS.contains(&ext) {
-        return image::open(path).ok();
-    }
-    if !SVG_ICON_EXTS.contains(&ext) {
-        return None;
-    }
-    let target = aegis_desktop_entries::DEFAULT_ICON_SIZE
-        .saturating_mul(scale.max(1))
-        .min(512)
-        .to_string();
-    let output = Command::new("rsvg-convert")
-        .args([
-            "--width",
-            &target,
-            "--height",
-            &target,
-            "--keep-aspect-ratio",
-        ])
-        .arg(path)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        log::debug!("tray: SVG rasterization failed for {}", path.display());
-        return None;
-    }
-    image::load_from_memory(&output.stdout).ok()
-}
-
-/// Symbolic icons (name ends in `-symbolic`) are the only theme icons the bar
-/// recolours; regular SNI icons are full-color application artwork.
-fn is_symbolic_icon(path: &Path) -> bool {
-    path.file_stem()
-        .and_then(|stem| stem.to_str())
-        .is_some_and(|stem| stem.ends_with("-symbolic"))
-}
-
 fn render_text(f: &mut Frame, id: &str, rect: Rect, text: &str, size: f32) {
     f.layer(id, rect, &centered_layer(), |f| {
         f.row_ex(
@@ -1569,47 +2146,21 @@ fn render_icon_button(
     });
 }
 
-fn render_status_card(
-    f: &mut Frame,
-    id: &str,
-    rect: Rect,
-    themed_icon: Option<*mut c_void>,
-    fallback: Icon,
-    copy: (&str, &str),
-    hovered: bool,
-) {
-    let (title, value) = copy;
-    f.layer(id, rect, &card_opts(hovered), |f| {
-        f.column_ex(
-            &LayoutOpts {
-                width: rect.w,
-                height: rect.h,
-                gap: 4.0,
-                pad: 10.0,
-                cross: Align::Start,
-                ..Default::default()
-            },
-            |f| {
-                f.row_ex(
-                    &LayoutOpts {
-                        gap: 7.0,
-                        cross: Align::Center,
-                        ..Default::default()
-                    },
-                    |f| {
-                        match themed_icon {
-                            Some(icon) => unsafe {
-                                f.image(icon as *mut lens::sys::flux_image, 16.0, 16.0)
-                            },
-                            None => f.icon(fallback, 15.0),
-                        }
-                        f.label_compact_sized(title, 12.0);
-                    },
-                );
-                f.label_compact_sized(value, 10.5);
-            },
-        );
-    });
+fn unavailable_control(f: &mut Frame, label: &str, i18n: &Localizer) {
+    f.row_ex(
+        &LayoutOpts {
+            height: 20.0,
+            gap: 6.0,
+            cross: Align::Center,
+            ..Default::default()
+        },
+        |f| {
+            f.label_compact_sized(label, 10.5);
+            f.flex(1.0);
+            f.spacer(0.0);
+            f.label_compact_sized(i18n.text(Message::Unavailable), 10.0);
+        },
+    );
 }
 
 fn bar_opts() -> OverlayOpts {
@@ -1741,6 +2292,30 @@ fn truncate(value: &str, max_chars: usize) -> String {
     out
 }
 
+fn ease_out_cubic(value: f32) -> f32 {
+    let inverse = 1.0 - value.clamp(0.0, 1.0);
+    1.0 - inverse * inverse * inverse
+}
+
+fn fade_alpha(base: u8, progress: f32) -> u8 {
+    (base as f32 * progress.clamp(0.0, 1.0)).round() as u8
+}
+
+fn faded_theme(theme: Theme, progress: f32) -> Theme {
+    let fade = |color: Color| {
+        let (_, _, _, opacity) = color.components();
+        color.with_alpha(fade_alpha(opacity, progress))
+    };
+    theme
+        .with_fg(fade(theme.fg()))
+        .with_accent(fade(theme.accent()))
+        .with_border(fade(theme.border()))
+        .with_hover(fade(theme.hover()))
+        .with_active(fade(theme.active()))
+        .with_disabled(fade(theme.disabled()))
+        .with_error(fade(theme.error()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1751,13 +2326,17 @@ mod tests {
     }
 
     #[test]
-    fn agent_indicator_tracks_live_realm_state_and_hides_revoked_realms() {
+    fn fuji_entry_is_permanent_and_tracks_live_realm_state() {
         let i18n = Localizer::new("en-US");
         let mut model = aegis_core::realm::RealmModel::new();
+        let indicator = agent_indicator(&model.snapshot(), &i18n);
+        assert_eq!(indicator.state, AgentIndicatorState::Ready);
+        assert_eq!(indicator.label, "Fuji");
+
         let bundle = model.create_agent_realm("Fuji", Default::default());
         let mut snapshot = model.snapshot();
-        let indicator = agent_indicator(&snapshot, &i18n).expect("live indicator");
-        assert!(indicator.active);
+        let indicator = agent_indicator(&snapshot, &i18n);
+        assert_eq!(indicator.state, AgentIndicatorState::Active);
         assert_eq!(indicator.label, "Fuji · Active");
 
         snapshot
@@ -1766,8 +2345,8 @@ mod tests {
             .find(|realm| realm.id == bundle.realm)
             .expect("agent Realm")
             .state = RealmState::Paused;
-        let indicator = agent_indicator(&snapshot, &i18n).expect("paused indicator");
-        assert!(!indicator.active);
+        let indicator = agent_indicator(&snapshot, &i18n);
+        assert_eq!(indicator.state, AgentIndicatorState::Paused);
         assert_eq!(indicator.label, "Fuji · Paused");
 
         snapshot
@@ -1776,7 +2355,9 @@ mod tests {
             .find(|realm| realm.id == bundle.realm)
             .expect("agent Realm")
             .state = RealmState::Revoked;
-        assert!(agent_indicator(&snapshot, &i18n).is_none());
+        let indicator = agent_indicator(&snapshot, &i18n);
+        assert_eq!(indicator.state, AgentIndicatorState::Ready);
+        assert_eq!(indicator.label, "Fuji");
     }
 
     #[test]
@@ -1786,6 +2367,21 @@ mod tests {
         assert!(panel.x + panel.w <= 320.0);
         assert!(panel.y >= HUD_HEIGHT);
         assert!(panel.y + panel.h <= 480.0);
+    }
+
+    #[test]
+    fn fuji_panel_stays_inside_narrow_displays_and_expands_from_the_right() {
+        let final_panel = StatusBar::fuji_panel_bounds((320.0, 480.0));
+        assert!(final_panel.x >= 0.0);
+        assert!(final_panel.x + final_panel.w <= 320.0);
+        assert!(final_panel.y + final_panel.h <= 480.0);
+
+        let mut bar = StatusBar::new();
+        let collapsed = bar.revealed_fuji_panel_bounds((320.0, 480.0));
+        bar.fuji_reveal = 1.0;
+        let expanded = bar.revealed_fuji_panel_bounds((320.0, 480.0));
+        assert!(expanded.w > collapsed.w);
+        assert_eq!(expanded.x + expanded.w, collapsed.x + collapsed.w);
     }
 
     #[test]
@@ -1875,18 +2471,5 @@ mod tests {
             (fold.visible_sni, fold.visible_apps, fold.hidden),
             (0, 4, 4)
         );
-    }
-
-    #[test]
-    fn symbolic_icon_detection_uses_the_file_stem() {
-        assert!(is_symbolic_icon(Path::new(
-            "/usr/share/icons/Adwaita/symbolic/apps/foo-symbolic.svg"
-        )));
-        assert!(!is_symbolic_icon(Path::new(
-            "/usr/share/icons/hicolor/48x48/apps/foo.png"
-        )));
-        // "symbolic" appearing elsewhere in the name does not count.
-        assert!(!is_symbolic_icon(Path::new("symbolic.png")));
-        assert!(!is_symbolic_icon(Path::new("foo-symbolicx.svg")));
     }
 }

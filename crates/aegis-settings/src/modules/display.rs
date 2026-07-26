@@ -165,7 +165,7 @@ impl SettingsModule for DisplayModule {
             let before_output = self.output_index;
             frame.label_sized(i18n.text(Message::Displays), 12.0);
             frame.dropdown(
-                "##control-center-display-output",
+                "##settings-display-output",
                 &mut self.output_index,
                 &output_items,
             );
@@ -198,11 +198,7 @@ impl SettingsModule for DisplayModule {
                 .mode_index
                 .clamp(0, modes.len().saturating_sub(1) as i32);
             frame.label_sized(i18n.text(Message::ResolutionAndRefresh), 12.0);
-            if frame.dropdown(
-                "##control-center-display-mode",
-                &mut self.mode_index,
-                &mode_items,
-            ) {
+            if frame.dropdown("##settings-display-mode", &mut self.mode_index, &mode_items) {
                 self.dirty = true;
             }
 
@@ -212,7 +208,7 @@ impl SettingsModule for DisplayModule {
                 frame.spacer(0.0);
                 frame.label_sized(&format!("{:.0}%", self.scale * 100.0), 12.0);
             });
-            if frame.slider("##control-center-display-scale", &mut self.scale, 0.25, 4.0) {
+            if frame.slider("##settings-display-scale", &mut self.scale, 0.25, 4.0) {
                 self.scale = (self.scale * 4.0).round() / 4.0;
                 self.dirty = true;
             }
@@ -242,7 +238,7 @@ impl SettingsModule for DisplayModule {
                 self.layout = LAYOUT_CUSTOM;
                 frame.label_sized(i18n.text(Message::CustomPosition), 11.0);
             } else if frame.dropdown(
-                "##control-center-display-arrangement",
+                "##settings-display-arrangement",
                 &mut self.layout,
                 &arrangement_labels,
             ) {
@@ -265,9 +261,7 @@ impl SettingsModule for DisplayModule {
                             },
                             |frame| {
                                 frame.label_sized(i18n.text(Message::HorizontalPosition), 11.0);
-                                if frame
-                                    .textfield("##control-center-display-position-x", &mut self.x)
-                                {
+                                if frame.textfield("##settings-display-position-x", &mut self.x) {
                                     self.dirty = true;
                                 }
                             },
@@ -281,9 +275,7 @@ impl SettingsModule for DisplayModule {
                             },
                             |frame| {
                                 frame.label_sized(i18n.text(Message::VerticalPosition), 11.0);
-                                if frame
-                                    .textfield("##control-center-display-position-y", &mut self.y)
-                                {
+                                if frame.textfield("##settings-display-position-y", &mut self.y) {
                                     self.dirty = true;
                                 }
                             },

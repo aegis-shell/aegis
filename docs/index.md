@@ -25,8 +25,8 @@ the [README](../README.md) for the project pitch and the shortest run path.
   Xfce: read [Comparative Survey](explanation/comparative-survey.md).
 - Looking for a config key or option: read the
   [Configuration Reference](reference/config.md).
-- Looking for Control Center module routes and backend availability: read the
-  [Control Center Reference](reference/control-center.md).
+- Looking for System Settings module routes and backend availability: read the
+  [System Settings Reference](reference/settings.md).
 - Starting applications or using app-level window actions: read
   [How to Use the Dock and Launcher](how-to/dock-and-launcher.md).
 - Managing a borderless window: read

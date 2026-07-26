@@ -44,6 +44,6 @@ shell.add(Box::new(ass_dock::Dock::new()));
 ## Related Documentation
 
 - [Dock and launcher operations](../../docs/how-to/dock-and-launcher.md)
-- [Component crate split](../../docs/adr/0044-dock-and-control-center-crates.md)
+- [Chrome component contract](../../docs/adr/0021-chrome-component-trait.md)
 - [Chrome component decision](../../docs/adr/0021-chrome-component-trait.md)
 - [Design system decision](../../docs/adr/0046-design-system-crate.md)

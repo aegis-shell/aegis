@@ -5,6 +5,9 @@ pub(super) struct FrameState {
     pub(super) session_locked: bool,
     pub(super) cursor_hidden: bool,
     pub(super) cursor_shape: u32,
+    /// Any host input (physical, gesture, or text) or synthetic input was
+    /// applied this iteration; conservatively forces a full-damage frame.
+    pub(super) had_input: bool,
     pub(super) pending_screenshots: Vec<(aegis_ipc::Command, u64, aegis_ipc::Origin)>,
 }
 
@@ -95,10 +98,13 @@ impl CompositorRuntime {
         for state in self.server.take_text_input_states() {
             self.host.set_text_input_state(state);
         }
+        let mut had_input = false;
         for event in self.host.take_text_input() {
+            had_input = true;
             self.server.text_input_event(&event);
         }
         for event in self.host.take_pointer_gestures() {
+            had_input = true;
             self.server.pointer_gesture_event(&event);
         }
         // Drain backend input: forward to clients (via the server's seat) and
@@ -123,6 +129,7 @@ impl CompositorRuntime {
         let pointer_before = self.input_acc.cursor;
         let mut events = self.host.take_input();
         if !events.is_empty() {
+            had_input = true;
             self.server.note_user_activity();
         }
         // Coordinate contract: backends emit absolute coordinates in their
@@ -163,6 +170,7 @@ impl CompositorRuntime {
         // reports capture state from the previous frame's render / key
         // handling, so this is stable for the whole batch.
         let keyboard_captured = !session_locked && self.shell.captures_keyboard();
+        let mut captured_actions = Vec::new();
         if !events.is_empty() {
             for ev in &events {
                 use aegis_core::input::InputEvent::*;
@@ -214,7 +222,19 @@ impl CompositorRuntime {
                         if let Some(kc) = self.server.key_char(code, state.is_pressed())
                             && state.is_pressed()
                         {
-                            self.shell.key_char(kc);
+                            // Modal chrome owns ordinary keys, but a small,
+                            // explicit set of compositor controls remains
+                            // reachable. Match after advancing xkb so layouts
+                            // and modifiers use the same resolved KeyChar as
+                            // the ordinary global-binding path.
+                            if let Some(action) = self
+                                .keymap
+                                .match_key_during_keyboard_capture(kc.mods, kc.keysym)
+                            {
+                                captured_actions.push(action);
+                            } else {
+                                self.shell.key_char(kc);
+                            }
                         }
                         // VT switch keys stay compositor-owned while chrome
                         // holds the keyboard too.
@@ -379,7 +399,8 @@ impl CompositorRuntime {
                     _ => forwarded.push(ev),
                 }
             }
-            let actions = self.server.forward_input(&forwarded, &self.keymap);
+            let mut actions = captured_actions;
+            actions.extend(self.server.forward_input(&forwarded, &self.keymap));
             // Ctrl+Alt+Fn: the compositor performs console VT switches itself
             // through libseat (the kernel never sees the key once libinput
             // owns evdev). No-op on the nested backend.
@@ -387,8 +408,8 @@ impl CompositorRuntime {
                 log::info!("{}: VT switch requested to tty{vt}", self.host.name());
                 self.host.switch_vt(vt);
             }
-            // Dispatch matched global bindings. (Empty while the launcher
-            // captures the keyboard — those keys went to the search box.)
+            // Dispatch ordinary global bindings plus the explicitly
+            // modal-safe bindings recovered above while chrome had capture.
             for action in actions {
                 use aegis_core::keybind::Action;
                 let ts = self.start.elapsed().as_millis() as u64;
@@ -519,14 +540,15 @@ impl CompositorRuntime {
         // xkb modifier state. The target-local batch was authorized on the IPC
         // thread; this main-loop pass validates live geometry, z-order, and
         // shell occlusion before sending any event.
+        had_input |= !pending_synthetic_input.is_empty();
         for (cmd, ts, origin) in pending_synthetic_input {
             let effect = match &cmd {
                 aegis_ipc::Command::InjectInput { id, actions } => {
                     let prepared = self.server.prepare_synthetic_input(*id, actions);
                     if let Some(events) = prepared {
-                        let has_key = events
-                            .iter()
-                            .any(|event| matches!(event, aegis_core::input::InputEvent::Key { .. }));
+                        let has_key = events.iter().any(|event| {
+                            matches!(event, aegis_core::input::InputEvent::Key { .. })
+                        });
                         let blocked_by_chrome = (has_key && self.shell.captures_keyboard())
                             || events.iter().any(|event| {
                                 matches!(
@@ -646,6 +668,10 @@ impl CompositorRuntime {
         // geometry stay logical. Re-advertise the buffer scale so the host
         // keeps mapping our pre-scaled buffer 1:1.
         if let Some(sz) = self.host.take_resize() {
+            // The swapchain was rebuilt at a new size or modifier set; damage
+            // from before the reconfigure does not describe the new
+            // framebuffer, so the next frame renders in full.
+            self.force_full_redraw = true;
             if let Some(capture) = self.pending_capture.take() {
                 refuse_capture_target(
                     &self.capture_worker,
@@ -775,6 +801,7 @@ impl CompositorRuntime {
             session_locked,
             cursor_hidden,
             cursor_shape,
+            had_input,
             pending_screenshots,
         })
     }

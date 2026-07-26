@@ -437,6 +437,31 @@ impl WorkspaceModel {
         WorkspaceSnapshot { outputs }
     }
 
+    /// A cheap content hash of exactly what [`Self::snapshot`] would publish.
+    /// The frame loop compares this per frame and rebuilds the owned snapshot
+    /// only when it moves, so steady state pays no clone. Hash collisions
+    /// would only stall a refresh until the next change.
+    pub fn signature(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for o in &self.outputs {
+            o.id.hash(&mut hasher);
+            o.connector.hash(&mut hasher);
+            o.workspaces.get(o.current).hash(&mut hasher);
+            o.workspaces.len().hash(&mut hasher);
+            for &wid in &o.workspaces {
+                let ws = self.workspaces.get(&wid);
+                wid.hash(&mut hasher);
+                ws.and_then(|w| w.label.as_deref()).hash(&mut hasher);
+                ws.map(|w| w.tiled).unwrap_or(false).hash(&mut hasher);
+                ws.map(|w| w.toplevels.as_slice())
+                    .unwrap_or(&[])
+                    .hash(&mut hasher);
+            }
+        }
+        hasher.finish()
+    }
+
     // ----- internals -----------------------------------------------------
 
     fn alloc_output(&mut self) -> OutputId {

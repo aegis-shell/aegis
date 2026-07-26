@@ -11,7 +11,7 @@
 //! and output size. See ADR-0018 for the design.
 
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 mod model;
 mod still;
@@ -56,6 +56,11 @@ trait Source {
     fn poll(&mut self, now: Instant) -> (&[u8], u64);
     /// Number of decoded frames; 0 for live sources such as video.
     fn frame_count(&self) -> usize;
+    /// Delay after which the source's visible frame changes and it wants
+    /// to be polled again, or `None` for single-frame sources. Lets an
+    /// otherwise idle compositor wake in time for the next animation frame
+    /// instead of pacing it with a fixed timer.
+    fn next_frame_in(&self) -> Option<Duration>;
 }
 
 enum SourceKind {
@@ -177,6 +182,17 @@ impl Wallpaper {
 
     pub fn has_model(&self) -> bool {
         self.model.is_some()
+    }
+
+    /// Delay after which the wallpaper's visible frame changes, if the
+    /// source animates (video or multi-frame image). `None` for single-frame
+    /// sources; the 3D model layer is paced by the caller's animation tick
+    /// and does not count here.
+    pub fn next_frame_in(&self) -> Option<Duration> {
+        match &self.source {
+            SourceKind::Still(s) => s.next_frame_in(),
+            SourceKind::Video(v) => v.next_frame_in(),
+        }
     }
 
     /// Draw the optional 3D model into its own depth-tested pass. The caller

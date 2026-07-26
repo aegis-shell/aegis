@@ -24,6 +24,7 @@ impl CompositorRuntime {
             action,
             &mut self.settings_revision,
             self.config_path.as_deref(),
+            &self.config_writer,
             &mut self.config,
             &mut self.keymap,
             &mut self.server,
@@ -52,7 +53,7 @@ pub(super) fn publish_settings_parts(
         display: status.display.clone(),
     };
     live.set_settings(snapshot.clone());
-    shell.set_system_status(status.clone());
+    publish_system_status_parts(status, shell, live, ipc);
     if let Some(ipc) = ipc {
         ipc.broadcast(aegis_ipc::Event::SettingsChanged {
             revision: snapshot.revision,
@@ -69,6 +70,7 @@ pub(super) fn commit_settings_parts(
     action: aegis_ipc::SettingsAction,
     revision: &mut u64,
     config_path: Option<&std::path::Path>,
+    config_writer: &ConfigWriter,
     config: &mut Option<aegis_config::Config>,
     keymap: &mut aegis_core::keybind::Keymap,
     server: &mut aegis_compositor::Server,
@@ -92,9 +94,11 @@ pub(super) fn commit_settings_parts(
 
     let result = match action {
         aegis_ipc::SettingsAction::SetTouchpad { config: touchpad } => {
-            let path = config_path
-                .ok_or_else(|| "cannot persist touchpad settings: no config path".to_owned())?;
-            aegis_config::set_touchpad_config(path, &touchpad)
+            // The TOML rewrite runs on the serialized config-write worker so
+            // it cannot interleave with dock-pin writes; the receipt keeps
+            // the IPC reply synchronous.
+            config_writer
+                .apply_and_wait(aegis_config::ConfigEdit::SetTouchpad { config: touchpad })
                 .map_err(|error| format!("failed to persist touchpad settings: {error}"))?;
             if let Some(current) = config.as_mut() {
                 current.input.touchpad = touchpad;
@@ -105,6 +109,7 @@ pub(super) fn commit_settings_parts(
         aegis_ipc::SettingsAction::SetDisplay { settings } => apply_display_settings(
             settings,
             config_path,
+            config_writer,
             config,
             keymap,
             server,

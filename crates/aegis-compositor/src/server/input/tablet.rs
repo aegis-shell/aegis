@@ -261,7 +261,12 @@ impl Server {
     /// Tip down/up: protocol `down`/`up` on the focus client's tool resource
     /// (with click-to-focus parity on down), or a BTN_LEFT click on the
     /// emulated pointer path.
-    pub(crate) fn tablet_tip(&mut self, tool: u64, state: aegis_core::input::ButtonState, time: u32) {
+    pub(crate) fn tablet_tip(
+        &mut self,
+        tool: u64,
+        state: aegis_core::input::ButtonState,
+        time: u32,
+    ) {
         const BTN_LEFT: u32 = 0x110;
         if self.state.tablet_focus.is_null() {
             self.pointer_button(BTN_LEFT, state);

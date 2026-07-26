@@ -1,7 +1,12 @@
 use super::*;
 
 type IconSnapshot = std::collections::BTreeMap<std::path::PathBuf, Option<IconFileStamp>>;
-type AppScanResult = (String, Vec<aegis_core::app::Entry>, IconSnapshot);
+pub(super) type AppScanResult = (
+    String,
+    Vec<aegis_core::app::Entry>,
+    IconSnapshot,
+    Vec<DecodedIcon>,
+);
 
 /// Owns the mutable composition state used by the compositor event loop.
 ///
@@ -51,6 +56,15 @@ pub(super) struct CompositorRuntime {
     pub(super) keymap: aegis_core::keybind::Keymap,
     pub(super) system_status: aegis_shell::SystemStatus,
     pub(super) status_rx: std::sync::mpsc::Receiver<aegis_shell::SystemStatus>,
+    /// Wakes the status poller for an out-of-cycle refresh after a system
+    /// action, so the HUD reconciles optimistic values without the main loop
+    /// ever blocking on a probe subprocess.
+    pub(super) status_refresh_tx: std::sync::mpsc::Sender<()>,
+    /// Handle to the serialized config-write worker. Typed edits share one
+    /// path-bound store and reach the TOML file in submission order. Dock
+    /// edits are fire-and-forget; settings edits wait for an accurate IPC
+    /// receipt.
+    pub(super) config_writer: ConfigWriter,
     pub(super) reload: Option<aegis_config::ReloadWatcher>,
     pub(super) quit_requested: bool,
     pub(super) ipc_cmd_rx: std::sync::mpsc::Receiver<IpcCommandRequest>,
@@ -73,8 +87,33 @@ pub(super) struct CompositorRuntime {
     pub(super) live: std::sync::Arc<LiveState>,
     pub(super) ipc: Option<aegis_ipc::Server>,
     pub(super) last_win_sig: Option<Vec<(aegis_core::window::WindowId, bool, Option<String>)>>,
-    pub(super) last_ws_snap: Option<aegis_core::workspace::WorkspaceSnapshot>,
+    /// Content hash of the last fanned-out window snapshot; the full
+    /// `Server::windows()` clone only happens when this changes.
+    pub(super) last_windows_hash: Option<u64>,
+    pub(super) last_ws_sig: Option<u64>,
     pub(super) last_realm_revision: Option<u64>,
+    pub(super) last_outputs_revision: Option<u64>,
+    // ----- output damage pipeline (see runtime/damage.rs) -----
+    /// Per-surface content generations at the last damage assessment; a
+    /// mismatch marks that surface's region damaged.
+    pub(super) last_surface_gens: std::collections::HashMap<usize, SurfaceDamageBaseline>,
+    pub(super) last_notif_revision: Option<u64>,
+    /// (overview open, keyboard captured by chrome, screenshot selector open)
+    /// at the last assessment — modal chrome changes outside the signed paths.
+    pub(super) last_chrome_mode: Option<(bool, bool, bool)>,
+    pub(super) last_session_locked: bool,
+    /// (shape, hidden) as of the last presented frame.
+    pub(super) last_presented_cursor: Option<(u32, bool)>,
+    /// Wall-clock minute of the last presented frame; a rollover forces one
+    /// frame so the status-bar clock cannot go stale while idle.
+    pub(super) last_present_minute: Option<u64>,
+    /// Shell mutations applied outside the signed paths (status poller,
+    /// config reload, app rescan, IPC settings/Realm control) since the last
+    /// assessment.
+    pub(super) chrome_dirty: bool,
+    /// Set when the output was resized/recreated; the next frame must render
+    /// in full regardless of damage.
+    pub(super) force_full_redraw: bool,
     pub(super) settings_revision: u64,
     pub(super) previous_agent_suspended: bool,
     pub(super) automatically_paused_realms: std::collections::BTreeSet<aegis_core::realm::RealmId>,

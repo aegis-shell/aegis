@@ -4,6 +4,7 @@ mod apps;
 mod capture;
 mod commands;
 mod config;
+mod damage;
 mod event_loop;
 mod idle;
 mod input;
@@ -17,11 +18,13 @@ mod session;
 mod settings;
 mod state;
 mod stream;
+mod system;
 
 use apps::*;
 use capture::*;
 use commands::*;
 use config::*;
+use damage::*;
 use idle::*;
 use input::*;
 use ipc::*;
@@ -30,12 +33,70 @@ use pick::*;
 use presentation::*;
 use realm::*;
 use rendering::*;
-use settings::*;
 use state::*;
 use stream::*;
+use system::*;
 
 #[cfg(test)]
 mod tests;
+
+/// One serialized queue for every write to the user TOML config file
+/// (ADR-0026). `aegis-config` persists edits as read-modify-write cycles, so
+/// concurrent writers (dock pin clicks, System Settings commits)
+/// could lose each other's updates; funnelling all writes through a single
+/// worker thread makes them execute strictly in send order. Fire-and-forget
+/// jobs (dock pins) log failures on the worker; synchronous jobs (settings
+/// commits) carry a oneshot receipt so the IPC reply stays accurate while
+/// the write itself still happens off the main loop.
+#[derive(Clone)]
+pub(super) struct ConfigWriter {
+    store: Option<aegis_config::ConfigStore>,
+    tx: std::sync::mpsc::Sender<ConfigWriteJob>,
+}
+
+struct ConfigWriteJob {
+    store: aegis_config::ConfigStore,
+    edit: aegis_config::ConfigEdit,
+    receipt: Option<std::sync::mpsc::Sender<Result<(), String>>>,
+}
+
+impl ConfigWriter {
+    /// Queue a typed edit without blocking the caller.
+    pub(super) fn enqueue(&self, edit: aegis_config::ConfigEdit) -> Result<(), String> {
+        let store = self
+            .store
+            .clone()
+            .ok_or_else(|| "no writable configuration path is available".to_owned())?;
+        self.tx
+            .send(ConfigWriteJob {
+                store,
+                edit,
+                receipt: None,
+            })
+            .map_err(|_| "config write worker stopped".to_owned())
+    }
+
+    /// Queue a write and block until the worker reports the result. Used by
+    /// settings commits, which must surface persistence failures in their
+    /// IPC reply; the block is bounded by one TOML rewrite per queued job.
+    pub(super) fn apply_and_wait(&self, edit: aegis_config::ConfigEdit) -> Result<(), String> {
+        let store = self
+            .store
+            .clone()
+            .ok_or_else(|| "no writable configuration path is available".to_owned())?;
+        let (receipt_tx, receipt_rx) = std::sync::mpsc::channel();
+        self.tx
+            .send(ConfigWriteJob {
+                store,
+                edit,
+                receipt: Some(receipt_tx),
+            })
+            .map_err(|_| "config write worker stopped".to_owned())?;
+        receipt_rx
+            .recv()
+            .map_err(|_| "config write worker stopped".to_owned())?
+    }
+}
 
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     log::info!(
@@ -152,6 +213,11 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     server.set_outputs(host.output_infos());
     log::info!("server: listening on WAYLAND_DISPLAY={}", server.socket());
+    // A committing client must wake the frame loop the same way input does:
+    // the backends poll the server's event-loop fd so an idle compositor
+    // stops waiting out the one-second maintenance tick (it would otherwise
+    // throttle frame-callback-driven clients to ~1fps).
+    host.set_wakeup_fd(server.event_loop_fd());
     // Publish the session environment now that the socket name is known, so
     // launched clients and D-Bus-activated services can connect back.
     session::publish(server.socket(), host.name() == "nested");
@@ -185,7 +251,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // SVG icons are rasterized through the host's standard rsvg-convert when
     // available. The cache owns the GPU textures and must outlive the shell,
     // so it is declared before it.
-    let icon_cache = build_icon_cache(&device, &launcher_apps, &icon_theme, icon_scale);
+    let decoded_icons = decode_icons(&launcher_apps, &icon_theme, icon_scale);
+    let icon_cache = build_icon_cache(&device, &decoded_icons);
     let icon_snapshot = snapshot_icons(&launcher_apps);
 
     // Compositor chrome, bound to the same device. The core host ships with
@@ -219,9 +286,9 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // scene; registered with the modal chrome so it covers ordinary overlays.
     shell.add(Box::new(aegis_shell::Overview::new()));
     // Built-in applications share the launcher catalog with XDG entries but
-    // render in-process through optics/lens. Register the backing component
-    // above the launcher and ordinary chrome, while leaving the dock last.
-    shell.add(Box::new(aegis_control_center::ControlCenter::new()));
+    // render in-process through optics/lens. Immediate system controls live in
+    // the status bar; Realm authority management remains its own surface.
+    shell.add(Box::new(aegis_ai_workspaces::AiWorkspaces::new()));
     // Interactive screenshot region selector, triggered by the Print key.
     shell.add(Box::new(aegis_shell::ScreenshotSelector::new()));
     // The dock is registered after the config is loaded below, so the pushed
@@ -348,6 +415,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(c) = config.as_ref() {
         server.set_layout_params(c.layout.clone().into());
         server.set_tiling_default(c.layout.default_tiled);
+        server.set_remember_window_positions(c.layout.remember_window_positions);
         shell.set_reduced_motion(c.ui.reduced_motion);
         server.set_reduced_motion(c.ui.reduced_motion);
         cursor_cache.set_config(c.ui.cursor_theme.clone(), c.ui.cursor_size);
@@ -378,10 +446,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         pinned,
         icons: aegis_shell::IconSet::from_raw(icon_cache.map.clone()),
     });
-    let autohide = config
-        .as_ref()
-        .map(|c| c.dock.autohide)
-        .unwrap_or(false);
+    let autohide = config.as_ref().map(|c| c.dock.autohide).unwrap_or(false);
     let autohide_timeout = config
         .as_ref()
         .map(|c| c.dock.autohide_timeout)
@@ -391,12 +456,12 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     dock.set_autohide_timeout(autohide_timeout);
     shell.add(Box::new(dock));
 
-    // One normalized status snapshot feeds both the compact HUD and the
-    // built-in Control Center. Host probes (wpctl fork+exec) run on a helper
-    // thread so the compositor never blocks a frame on a subprocess; the
-    // main loop applies the latest snapshot it finds on the channel.
+    // One normalized status snapshot feeds compositor chrome and IPC. Host
+    // probes (wpctl fork+exec) run on a helper thread so the compositor never
+    // blocks a frame on a subprocess; the main loop applies the latest
+    // snapshot it finds on the channel.
     const SYSTEM_STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
-    let mut system_status = aegis_shell::SystemStatus::detect();
+    let mut system_status = aegis_shell::detect_system_status();
     system_status.do_not_disturb = notif_queue.lock().unwrap().do_not_disturb();
     system_status.tiled = server.tiling();
     system_status.touchpad = host.touchpad_status();
@@ -407,11 +472,22 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     shell.set_system_status(system_status.clone());
     let (status_tx, status_rx) = std::sync::mpsc::channel::<aegis_shell::SystemStatus>();
+    // System actions wake the poller for an out-of-cycle refresh so the HUD
+    // reconciles its optimistic values right away; the main loop itself never
+    // waits on a probe subprocess.
+    let (status_refresh_tx, status_refresh_rx) = std::sync::mpsc::channel::<()>();
     std::thread::Builder::new()
         .name("ass-status".into())
         .spawn(move || {
-            while status_tx.send(aegis_shell::SystemStatus::detect()).is_ok() {
-                std::thread::sleep(SYSTEM_STATUS_INTERVAL);
+            while status_tx.send(aegis_shell::detect_system_status()).is_ok() {
+                // A queued refresh request re-probes out of cycle instead of
+                // waiting out the interval; disconnection means the main
+                // loop is gone.
+                if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) =
+                    status_refresh_rx.recv_timeout(SYSTEM_STATUS_INTERVAL)
+                {
+                    break;
+                }
             }
         })
         .expect("spawn status poller");
@@ -420,6 +496,35 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // default config path on this host.
     let reload = config_path.as_deref().map(aegis_config::ReloadWatcher::at);
     let quit_requested = false;
+
+    // Config-file persistence: every TOML rewrite (dock pins, touchpad
+    // profile, output settings) runs on this single worker in send order, so
+    // the read-modify-write cycles in `aegis-config` can never interleave
+    // and lose each other's updates, and the frame loop never blocks on the
+    // file write itself (settings commits block only on the receipt).
+    let (config_write_tx, config_write_rx) = std::sync::mpsc::channel::<ConfigWriteJob>();
+    std::thread::Builder::new()
+        .name("ass-config-write".into())
+        .spawn(move || {
+            while let Ok(job) = config_write_rx.recv() {
+                let result = job.store.apply(job.edit).map_err(|error| error.to_string());
+                match job.receipt {
+                    Some(receipt) => {
+                        let _ = receipt.send(result);
+                    }
+                    None => {
+                        if let Err(e) = result {
+                            log::warn!("{e}");
+                        }
+                    }
+                }
+            }
+        })
+        .expect("spawn config write worker");
+    let config_writer = ConfigWriter {
+        store: config_path.clone().map(aegis_config::ConfigStore::new),
+        tx: config_write_tx,
+    };
 
     // IPC and introspection surface (ADR-0027). A unix socket at
     // `$XDG_RUNTIME_DIR/aegis.sock` serves the `query` capability over a
@@ -440,7 +545,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (pick_control_tx, pick_control_rx) = std::sync::mpsc::channel::<PickControlRequest>();
     let (journal_refusal_tx, journal_refusal_rx) =
         std::sync::mpsc::channel::<JournalRefusalRequest>();
-    let journal = std::sync::Arc::new(std::sync::Mutex::new(aegis_ipc::Journal::default_capacity()));
+    let journal =
+        std::sync::Arc::new(std::sync::Mutex::new(aegis_ipc::Journal::default_capacity()));
     let live = std::sync::Arc::new(LiveState::new(
         LiveChannels {
             commands: ipc_cmd_tx,
@@ -464,6 +570,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         touchpad: system_status.touchpad.clone(),
         display: system_status.display.clone(),
     });
+    live.set_system_status(system_status.clone());
     let ipc: Option<aegis_ipc::Server> = match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(d) => {
             let path = std::path::PathBuf::from(d).join("aegis.sock");
@@ -485,15 +592,20 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     // Signature of the last broadcast window set, used to detect changes.
     let last_win_sig: Option<Vec<(aegis_core::window::WindowId, bool, Option<String>)>> = None;
-    // Last broadcast workspace snapshot, used to detect model changes.
-    let last_ws_snap: Option<aegis_core::workspace::WorkspaceSnapshot> = None;
+    // Content hashes/revisions of the last fanned-out snapshots. The frame
+    // loop rebuilds the owned snapshots only when these move; chrome and IPC
+    // keep the previously pushed copy otherwise.
+    let last_windows_hash: Option<u64> = None;
+    let last_ws_sig: Option<u64> = None;
     let last_realm_revision: Option<u64> = None;
+    let last_outputs_revision: Option<u64> = None;
     let previous_agent_suspended = false;
     let automatically_paused_realms = std::collections::BTreeSet::new();
     // Whether chrome reported a multi-frame animation in flight last frame.
-    // While true the loop pumps non-blocking dispatches and renders at a
-    // ~60fps cadence so the animation advances even with the pointer still;
-    // once it rests the loop goes back to blocking on the host event queue.
+    // While true the loop pumps non-blocking dispatches and renders at the
+    // output's refresh cadence so the animation advances even with the
+    // pointer still; once it rests the loop goes back to blocking on the
+    // host event queue.
     let animating = false;
     // Pointer ownership at the end of the previous input batch. Keeping the
     // edge lets us send exactly one wl_pointer.leave when entering chrome and
@@ -509,17 +621,12 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Runtime application rescan: package managers and user-created desktop
     // entries become visible in launcher/dock during a long-running session.
     // The scan decodes icon files — far too slow for the frame loop — so a
-    // worker thread does the reading and the main loop only applies results
-    // (GPU texture upload + catalog swap) when they arrive.
+    // worker thread does the reading and decoding, and the main loop only
+    // applies results (GPU texture upload + catalog swap) when they arrive.
     const APP_RESCAN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
     let next_app_scan = std::time::Instant::now() + APP_RESCAN_INTERVAL;
     let (scan_req_tx, scan_req_rx) = std::sync::mpsc::channel::<u32>();
-    #[allow(clippy::type_complexity)]
-    let (scan_result_tx, scan_result_rx) = std::sync::mpsc::channel::<(
-        String,
-        Vec<aegis_core::app::Entry>,
-        std::collections::BTreeMap<std::path::PathBuf, Option<IconFileStamp>>,
-    )>();
+    let (scan_result_tx, scan_result_rx) = std::sync::mpsc::channel::<AppScanResult>();
     std::thread::Builder::new()
         .name("ass-app-scan".into())
         .spawn(move || {
@@ -527,7 +634,11 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let theme = selected_icon_theme();
                 let catalog = application_catalog(&theme, scale);
                 let snapshot = snapshot_icons(&catalog);
-                if scan_result_tx.send((theme, catalog, snapshot)).is_err() {
+                let decoded = decode_icons(&catalog, &theme, scale);
+                if scan_result_tx
+                    .send((theme, catalog, snapshot, decoded))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -577,6 +688,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         keymap,
         system_status,
         status_rx,
+        status_refresh_tx,
+        config_writer,
         reload,
         quit_requested,
         ipc_cmd_rx,
@@ -595,8 +708,18 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         live,
         ipc,
         last_win_sig,
-        last_ws_snap,
+        last_windows_hash,
+        last_ws_sig,
         last_realm_revision,
+        last_outputs_revision,
+        last_surface_gens: std::collections::HashMap::new(),
+        last_notif_revision: None,
+        last_chrome_mode: None,
+        last_session_locked: false,
+        last_presented_cursor: None,
+        last_present_minute: None,
+        chrome_dirty: false,
+        force_full_redraw: false,
         settings_revision,
         previous_agent_suspended,
         automatically_paused_realms,

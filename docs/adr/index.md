@@ -55,10 +55,15 @@ background and how the decisions fit together, see
 | [0046](0046-design-system-crate.md) | Product design system as a data-only crate | Accepted |
 | [0047](0047-neenee-agent-realm-platform-bridge.md) | Neenee Agent Realm platform bridge (amends [0031](0031-agent-as-scoped-ipc-client.md)) | Accepted |
 | [0048](0048-compositor-owned-agent-operation-feedback.md) | Compositor-owned Agent operation feedback (amends [0040](0040-realms-seats-and-transferable-interaction-authority.md)) | Accepted |
-| [0049](0049-standalone-modular-control-center.md) | Standalone modular Control Center with revisioned settings IPC (amends [0044](0044-dock-and-control-center-crates.md)) | Accepted |
+| [0049](0049-standalone-modular-control-center.md) | Standalone modular Control Center with revisioned settings IPC (amends [0044](0044-dock-and-control-center-crates.md)) | Superseded by [0056](0056-system-settings-identity-and-boundary.md) |
 | [0050](0050-fuji-agent-product-and-bridge-rename.md) | fuji agent product and the aegis-fuji bridge rename (amends [0047](0047-neenee-agent-realm-platform-bridge.md)) | Accepted |
 | [0051](0051-portal-backend-dbus-bridge.md) | xdg-desktop-portal backend as an out-of-process D-Bus bridge | Proposed |
 | [0052](0052-scoped-output-frame-streaming.md) | Scoped output frame streaming | Proposed |
 | [0053](0053-portal-session-services-and-grants.md) | Portal session services, connection-scoped idle inhibition, and portal-owned grants | Proposed |
 | [0054](0054-interactive-target-picking.md) | Interactive target picking and window-scoped stream targets | Proposed |
 | [0055](0055-zero-copy-dmabuf-frame-export.md) | Zero-copy dmabuf export for ScreenCast and frame capture | Proposed |
+| [0056](0056-system-settings-identity-and-boundary.md) | System Settings identity and Control Center boundary (supersedes [0049](0049-standalone-modular-control-center.md)) | Superseded by [0057](0057-system-settings-canonical-namespace.md) |
+| [0057](0057-system-settings-canonical-namespace.md) | System Settings canonical namespace (supersedes [0056](0056-system-settings-identity-and-boundary.md)) | Superseded by [0059](0059-first-party-application-installation-and-development-staging.md) |
+| [0058](0058-independent-quick-settings-and-ai-workspaces.md) | Independent Quick Settings and AI Workspaces applications (amends [0044](0044-dock-and-control-center-crates.md)) | Superseded by [0060](0060-statusbar-system-controls-and-live-system-ipc.md) |
+| [0059](0059-first-party-application-installation-and-development-staging.md) | First-party application installation and development staging (supersedes [0057](0057-system-settings-canonical-namespace.md)) | Accepted |
+| [0060](0060-statusbar-system-controls-and-live-system-ipc.md) | Status bar system controls and live-system IPC (supersedes [0058](0058-independent-quick-settings-and-ai-workspaces.md)) | Accepted |

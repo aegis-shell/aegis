@@ -130,7 +130,10 @@ impl Server {
         if self.state.active_seat == HUMAN_SEAT
             && state.is_pressed()
             && (button == BTN_LEFT || button == BTN_RIGHT)
-            && self.state.depressed_mods.has(aegis_core::input::Mods::SUPER)
+            && self
+                .state
+                .depressed_mods
+                .has(aegis_core::input::Mods::SUPER)
             && self.state.interactive.is_none()
             && !self.state.pointer_focus.is_null()
         {
@@ -486,14 +489,40 @@ impl Server {
     /// End an interactive move/resize, clearing the protocol resizing state
     /// and notifying the client once after the final geometry.
     pub(crate) fn finish_interactive(&mut self) {
-        if let Some(aegis_core::window::Interactive::Resize { window_id, .. }) =
-            self.state.interactive
-        {
+        let interactive = self.state.interactive;
+        if let Some(interactive_grab) = interactive {
+            let window_id = match interactive_grab {
+                aegis_core::window::Interactive::Move { window_id, .. } => window_id,
+                aegis_core::window::Interactive::Resize { window_id, .. } => window_id,
+            };
             let rec = self.find_surface_by_window_id(window_id);
             if !rec.is_null() {
                 unsafe {
-                    (*rec).window.state.resizing = false;
-                    reconfigure_with_state(rec);
+                    if matches!(
+                        interactive_grab,
+                        aegis_core::window::Interactive::Resize { .. }
+                    ) {
+                        (*rec).window.state.resizing = false;
+                        reconfigure_with_state(rec);
+                    }
+                    if let Some(app_id) = (*rec).window.app_id.as_deref()
+                        && !app_id.is_empty()
+                    {
+                        let rect = (*rec).saved_floating_rect.unwrap_or(aegis_core::Rect {
+                            origin: (*rec).position,
+                            size: (*rec).window.size,
+                        });
+                        if rect.size.w > 0 && rect.size.h > 0 {
+                            let ws_idx = self.state.workspace_number_for_window((*rec).window.id);
+
+                            self.state.persist_app_geometry(
+                                app_id,
+                                rect,
+                                ws_idx,
+                                Some((*rec).window.layout_role),
+                            );
+                        }
+                    }
                 }
             }
         }

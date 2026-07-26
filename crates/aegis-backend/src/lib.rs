@@ -102,6 +102,13 @@ pub trait Backend {
         self.dispatch()
     }
 
+    /// Register the compositor's Wayland server event-loop fd so client
+    /// requests (surface commits) wake the timed/blocking dispatches
+    /// alongside input and hotplug. Readability is only a wakeup — the main
+    /// loop dispatches the server itself. The default ignores the fd for
+    /// backends that cannot multiplex extra fds.
+    fn set_wakeup_fd(&mut self, _fd: std::os::fd::RawFd) {}
+
     /// Drain buffered input events since the last call. Drained events are
     /// routed by the main loop: the focused client receives them via
     /// `wl_seat`, with a copy to the chrome when the pointer is over it.

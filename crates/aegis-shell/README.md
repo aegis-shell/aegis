@@ -9,8 +9,11 @@ as typed intents to the compositor loop.
 - Host pluggable `Chrome` components in a defined render order.
 - Own the shared chrome contract — `Chrome`, `ChromeEvents`, and the
   `AppCatalog` snapshot — consumed by in-crate components and by the
-  separate `aegis-dock`, `aegis-ctl-center`, and `aegis-statusbar` component
-  crates.
+  separate `aegis-dock`, `aegis-ai-workspaces`, and `aegis-statusbar`
+  component crates. Persistent settings live in the standalone
+  `aegis-settings` crate.
+- Provide the shared modal-application layout and material primitive used by
+  compositor-owned application components.
 - Draw decorations, the launcher, workspace bar, notification toasts,
   Overview, the Realm transfer shelf, and trusted Agent operation feedback.
 - Consume window, workspace, Realm, application, notification, and input
@@ -61,6 +64,6 @@ shell.
 - [Borderless window operations](../../docs/how-to/window-management.md)
 - [AI Workspace operations](../../docs/how-to/ai-workspaces.md)
 - [Chrome component decision](../../docs/adr/0021-chrome-component-trait.md)
-- [Component crate split](../../docs/adr/0044-dock-and-control-center-crates.md)
+- [Status bar system controls](../../docs/adr/0060-statusbar-system-controls-and-live-system-ipc.md)
 - [Design system decision](../../docs/adr/0046-design-system-crate.md)
 - [Agent operation feedback decision](../../docs/adr/0048-compositor-owned-agent-operation-feedback.md)

@@ -219,7 +219,10 @@ mod tests {
         let config = load(&[("XDG_RUNTIME_DIR", "/run/user/1000")]).expect("config");
         assert_eq!(config.scope, "fuji");
         assert_eq!(config.realm_label, "Fuji");
-        assert_eq!(config.socket_path, PathBuf::from("/run/user/1000/aegis.sock"));
+        assert_eq!(
+            config.socket_path,
+            PathBuf::from("/run/user/1000/aegis.sock")
+        );
         assert!(config.revoke_on_exit);
     }
 

@@ -83,21 +83,29 @@ impl Server {
         }
     }
 
-    /// Move a focused toplevel to the top of the stacking order while keeping
-    /// every live record's destroy-slot index correct. Raw `SurfaceRec`
-    /// allocations do not move; only their pointers in the Vec do.
+    /// Move a focused toplevel and its whole surface tree to the top of the
+    /// stacking order while keeping every live record's destroy-slot index
+    /// correct. Raw `SurfaceRec` allocations do not move; only their pointers
+    /// in the Vec do.
     pub(crate) fn raise_toplevel(&mut self, resource: *mut ffi::wl_resource) {
         let Some(pos) = self.state.surfaces.iter().position(|p| {
             !p.is_null() && unsafe { (**p).resource == resource && !(**p).xdg_toplevel.is_null() }
         }) else {
             return;
         };
-        if self.state.surfaces[pos + 1..].iter().all(|p| p.is_null()) {
-            return;
+        let root = self.state.surfaces[pos];
+        let mut rest = Vec::with_capacity(self.state.surfaces.len());
+        let mut raised = Vec::new();
+        for ptr in self.state.surfaces.drain(..) {
+            if !ptr.is_null() && unsafe { surface_root_toplevel(ptr) == root } {
+                raised.push(ptr);
+            } else {
+                rest.push(ptr);
+            }
         }
-        let rec = self.state.surfaces.remove(pos);
-        self.state.surfaces.push(rec);
-        for (index, ptr) in self.state.surfaces.iter().copied().enumerate().skip(pos) {
+        rest.append(&mut raised);
+        self.state.surfaces = rest;
+        for (index, ptr) in self.state.surfaces.iter().copied().enumerate() {
             if !ptr.is_null() {
                 unsafe { (*ptr).index = index };
             }

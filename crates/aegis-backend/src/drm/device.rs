@@ -101,6 +101,7 @@ impl DrmBackend {
             configured_modes,
             touchpads: HashMap::new(),
             touchpad_config: TouchpadConfig::default(),
+            wakeup_fd: None,
         };
         // udev_assign_seat + dispatch queues the initial DeviceAdded events
         // even before the fd becomes pollable. Drain them now so Settings can
@@ -142,10 +143,16 @@ impl DrmBackend {
     /// Complete a Flux frame, export it, and queue it on the primary plane.
     /// The next backend dispatch waits for its page-flip event before another
     /// frame may be rendered.
+    ///
+    /// `damage` is the conservative bounding box of this frame's changes in
+    /// physical desktop (framebuffer) pixels, forwarded to KMS as
+    /// `FB_DAMAGE_CLIPS` where the plane supports it. `None` means "unknown",
+    /// which commits a full-output clip — always safe for the driver.
     pub fn present(
         &mut self,
         surface: &flux::Surface,
         frame: flux::SubmittedFrame<'_>,
+        damage: Option<aegis_core::Rect>,
     ) -> Result<Option<OwnedFd>, DrmError> {
         if !self.active || !self.render_ready {
             return Err(DrmError::Inactive);
@@ -175,7 +182,7 @@ impl DrmBackend {
             .map(OwnedFd::try_clone)
             .transpose()?;
         let scanout = self.import_scanout(dmabuf)?;
-        self.commit_scanout(scanout)?;
+        self.commit_scanout(scanout, damage)?;
         Ok(completion_fence)
     }
 
@@ -227,13 +234,20 @@ impl DrmBackend {
         }
     }
 
-    pub(super) fn commit_scanout(&mut self, mut scanout: Scanout) -> Result<(), DrmError> {
+    pub(super) fn commit_scanout(
+        &mut self,
+        mut scanout: Scanout,
+        damage: Option<aegis_core::Rect>,
+    ) -> Result<(), DrmError> {
         let mut request = atomic::AtomicModeReq::new();
         let acquire_fd = scanout
             .acquire_fence
             .as_ref()
             .map(AsRawFd::as_raw_fd)
             .unwrap_or(-1);
+        // Per-commit FB_DAMAGE_CLIPS blobs, destroyed once the commit ioctl
+        // has run (the kernel references the blob, it does not borrow ours).
+        let mut damage_blobs: Vec<u64> = Vec::new();
         for output in &self.displays.outputs {
             let props = output.props;
             let (width, height) = output.mode.size();
@@ -305,6 +319,44 @@ impl DrmBackend {
                     property::Value::SignedRange(acquire_fd as i64),
                 );
             }
+            // Damage hint for PSR-style scanout: every commit sets the
+            // property explicitly so no stale clip can linger regardless of
+            // kernel stickiness. An untouched output gets blob 0 (NULL: "no
+            // damage information", which drivers must read as full damage),
+            // never an empty clip list.
+            if let Some(clips_prop) = props.plane_fb_damage_clips {
+                let (w32, h32) = (u32::from(width), u32::from(height));
+                let value = match damage_clip_for_output(damage, output.x, output.y, w32, h32) {
+                    Some(rect) => {
+                        let full = [
+                            output.x as i32,
+                            output.y as i32,
+                            (output.x + w32) as i32,
+                            (output.y + h32) as i32,
+                        ];
+                        let full_blob = output.full_damage_blob.as_ref().map(|(value, _)| *value);
+                        if rect == full
+                            && let Some(value) = full_blob
+                        {
+                            value
+                        } else {
+                            match self.card().create_property_blob(&[rect][..]) {
+                                Ok(value @ property::Value::Blob(id)) => {
+                                    damage_blobs.push(id);
+                                    value
+                                }
+                                // Fall back to "no damage information"
+                                // (conservative full) if the blob cannot be
+                                // allocated: a missing or NULL hint is always
+                                // safe, a wrong one is not.
+                                _ => full_blob.unwrap_or(property::Value::Blob(0)),
+                            }
+                        }
+                    }
+                    None => property::Value::Blob(0),
+                };
+                request.add_property(output.plane, clips_prop, value);
+            }
         }
         let mut flags = AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT;
         if !self.modeset_done {
@@ -315,13 +367,22 @@ impl DrmBackend {
                 AtomicCommitFlags::ALLOW_MODESET | AtomicCommitFlags::TEST_ONLY,
                 request.clone(),
             ) {
+                for blob in damage_blobs {
+                    let _ = self.card().destroy_property_blob(blob);
+                }
                 self.release_scanout(scanout);
                 return Err(commit_error(error));
             }
         }
         if let Err(error) = self.card().atomic_commit(flags, request) {
+            for blob in damage_blobs {
+                let _ = self.card().destroy_property_blob(blob);
+            }
             self.release_scanout(scanout);
             return Err(commit_error(error));
+        }
+        for blob in damage_blobs {
+            let _ = self.card().destroy_property_blob(blob);
         }
 
         // The ioctl imported the sync_file; userspace retains and closes its

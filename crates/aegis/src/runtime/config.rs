@@ -104,6 +104,7 @@ pub(super) fn reload_config(
         if let Some(c) = config.as_ref() {
             server.set_layout_params(c.layout.clone().into());
             server.set_tiling_default(c.layout.default_tiled);
+            server.set_remember_window_positions(c.layout.remember_window_positions);
             shell.set_reduced_motion(c.ui.reduced_motion);
             server.set_reduced_motion(c.ui.reduced_motion);
             cursor_cache.set_config(c.ui.cursor_theme.clone(), c.ui.cursor_size);
@@ -111,6 +112,7 @@ pub(super) fn reload_config(
         } else {
             server.set_layout_params(aegis_core::layout::LayoutParams::default());
             server.set_tiling_default(false);
+            server.set_remember_window_positions(true);
             shell.set_reduced_motion(false);
             server.set_reduced_motion(false);
             cursor_cache.set_config(None, None);
@@ -147,7 +149,7 @@ pub(super) fn reload_config(
     }
 }
 
-/// Persist and apply one validated Control Center display edit through the
+/// Persist and apply one validated System Settings display edit through the
 /// same configuration path used by startup and external file changes.
 /// Explicit field borrows let this run after chrome rendering while the
 /// current Flux frame still borrows the unrelated presentation surface.
@@ -155,6 +157,7 @@ pub(super) fn reload_config(
 pub(super) fn apply_display_settings(
     settings: aegis_shell::DisplaySettings,
     config_path: Option<&std::path::Path>,
+    config_writer: &ConfigWriter,
     config: &mut Option<aegis_config::Config>,
     keymap: &mut aegis_core::keybind::Keymap,
     server: &mut aegis_compositor::Server,
@@ -172,15 +175,10 @@ pub(super) fn apply_display_settings(
     let path = config_path
         .map(std::path::Path::to_path_buf)
         .ok_or_else(|| "no writable configuration path is available".to_owned())?;
-    aegis_config::set_output_settings(
-        &path,
-        &settings.connector,
-        settings.mode,
-        settings.scale,
-        settings.position,
-        settings.primary,
-    )
-    .map_err(|error| error.to_string())?;
+    // Persist through the serialized config-write worker (same queue as dock
+    // pins and touchpad) and block on the receipt, so this read-modify-write
+    // cannot lose a concurrent edit and the settings reply stays synchronous.
+    config_writer.apply_and_wait(aegis_config::ConfigEdit::SetOutput { settings })?;
 
     if !reload_config(&path, config, keymap, server, shell, cursor_cache) {
         return Err("the saved display configuration could not be reloaded".into());
@@ -445,6 +443,7 @@ pub(super) fn ipc_op_class(name: &str) -> Option<aegis_ipc::OpClass> {
         "switchworkspaceto" | "switch_workspace_to" => Some(OpClass::SwitchWorkspaceTo),
         "movetoworkspace" | "move_to_workspace" => Some(OpClass::MoveToWorkspace),
         "toggletiling" | "toggle_tiling" => Some(OpClass::ToggleTiling),
+        "systemcontrol" | "system_control" => Some(OpClass::SystemControl),
         "notify" => Some(OpClass::Notify),
         "dismissnotification" | "dismiss_notification" => Some(OpClass::DismissNotification),
         "streamoutput" | "stream_output" => Some(OpClass::StreamOutput),

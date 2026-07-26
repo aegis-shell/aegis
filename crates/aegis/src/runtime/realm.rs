@@ -40,7 +40,8 @@ pub(super) struct JournalRefusalRequest {
 
 #[derive(Default)]
 pub(super) struct RealmProcesses {
-    launches: std::collections::BTreeMap<aegis_core::realm::RealmId, Vec<aegis_launcher::ManagedLaunch>>,
+    launches:
+        std::collections::BTreeMap<aegis_core::realm::RealmId, Vec<aegis_launcher::ManagedLaunch>>,
 }
 
 impl RealmProcesses {
@@ -247,14 +248,14 @@ pub(super) fn begin_realm_capture(
     }
     let shm = server.realm_toplevel_frames(realm);
     let dmabuf = server.realm_toplevel_dmabuf_frames(realm);
+    let toplevel_order = server.realm_toplevel_frame_order(realm);
     let sub_shm_below = server.realm_subsurface_frames_below(realm);
     let sub_shm_above = server.realm_subsurface_frames_above(realm);
     let sub_dmabuf_below = server.realm_subsurface_dmabuf_frames_below(realm);
     let sub_dmabuf_above = server.realm_subsurface_dmabuf_frames_above(realm);
     renderer.draw_subsurfaces(device, &target.canvas, &sub_shm_below);
     renderer.draw_dmabuf_subsurfaces(device, &target.canvas, &sub_dmabuf_below);
-    renderer.draw_toplevels(device, &target.canvas, &shm, (0.0, 0.0));
-    renderer.draw_dmabuf_toplevels(device, &target.canvas, &dmabuf, (0.0, 0.0));
+    renderer.draw_toplevels_ordered(device, &target.canvas, &toplevel_order, &shm, &dmabuf);
     renderer.draw_subsurfaces(device, &target.canvas, &sub_shm_above);
     renderer.draw_dmabuf_subsurfaces(device, &target.canvas, &sub_dmabuf_above);
     target.canvas.restore();

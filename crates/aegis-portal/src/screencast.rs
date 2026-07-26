@@ -557,9 +557,7 @@ fn start_cast(
             log::warn!("portal: Start refused: {error}");
             return (2, HashMap::new());
         }
-        let source = sessions
-            .source(session_path)
-            .unwrap_or(CastSource::Monitor);
+        let source = sessions.source(session_path).unwrap_or(CastSource::Monitor);
         drop(sessions);
         // A window source reports its compositor-logical geometry in the
         // stream properties; a window gone at Start time fails the Start.
@@ -585,7 +583,12 @@ fn start_cast(
     };
     // The cast thread reports compositor-side stream ends back to this
     // worker through a clone of the worker's own job channel.
-    let handle = match cast::spawn(socket.to_path_buf(), session_path.to_string(), jobs.clone(), window) {
+    let handle = match cast::spawn(
+        socket.to_path_buf(),
+        session_path.to_string(),
+        jobs.clone(),
+        window,
+    ) {
         Ok(handle) => handle,
         Err(error) => {
             log::warn!("portal: could not spawn cast for {session_path}: {error}");
@@ -705,10 +708,7 @@ fn streams_value(
             "position".to_string(),
             Value::Structure(Structure::from(position)),
         ),
-        (
-            "size".to_string(),
-            Value::Structure(Structure::from(size)),
-        ),
+        ("size".to_string(), Value::Structure(Structure::from(size))),
         ("source_type".to_string(), Value::U32(source_type)),
     ]);
     // `append_field` keeps each field's dynamic signature, so the structure
@@ -738,7 +738,9 @@ fn streams_value(
 pub(crate) enum TokenSource {
     #[default]
     Monitor,
-    Window { window: u64 },
+    Window {
+        window: u64,
+    },
 }
 
 impl From<CastSource> for TokenSource {
@@ -1050,10 +1052,9 @@ mod tests {
 
     #[test]
     fn persisted_tokens_without_a_source_decode_as_monitor() {
-        let record: TokenRecord = serde_json::from_str(
-            r#"{"app_id":"org.example.App","cursor_mode":1}"#,
-        )
-        .expect("legacy token record decodes");
+        let record: TokenRecord =
+            serde_json::from_str(r#"{"app_id":"org.example.App","cursor_mode":1}"#)
+                .expect("legacy token record decodes");
         assert_eq!(record.source, TokenSource::Monitor);
 
         let window = TokenRecord {

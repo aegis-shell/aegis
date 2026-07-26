@@ -342,7 +342,7 @@ impl AssPlatform {
             },
             visual: SmokeVisualReport {
                 status_indicator: "persistent while the Agent Realm is live",
-                details_surface: "click the status indicator to open Control Center → AI Workspaces",
+                details_surface: "click the status indicator to open AI Workspaces",
                 observation_millis: observation.as_millis(),
                 input_probe,
             },

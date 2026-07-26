@@ -47,8 +47,9 @@ backend, renderer, and shell behind clear seams so the
 | **Shell / interaction** | `aegis-shell` | Compositor chrome host and `Chrome` contract on lens, plus shared components: launcher, overview, decorations, toast |
 | | `aegis-design` | Product design tokens, themes, and data-only surface materials shared by chrome components |
 | | `aegis-dock` | Bottom-center dock chrome component: pinned and running apps, magnification, pin actions |
-| | `aegis-ctl-center` | Standalone modular settings application, plus the temporary Quick Settings and Realm compatibility host |
-| | `aegis-statusbar` | Top status bar chrome component: workspace state, clock, system status, and the host-rendered StatusNotifierItem tray |
+| | `aegis-ai-workspaces` | Compositor-owned Agent Realm lifecycle and authority management |
+| | `aegis-settings` | Standalone modular System Settings application |
+| | `aegis-statusbar` | Top status bar chrome component: workspace state, clock, live-system controls, notifications, and the host-rendered StatusNotifierItem tray |
 | | `aegis-wallpaper` | Background layer: multi-format image and short-video wallpaper |
 | | `aegis-config` | Declarative configuration: versioned TOML schema, loader, live reload |
 | **Convenience channels** | `aegis-desktop-entries` | freedesktop.org desktop-entry enumeration and icon-theme lookup |
@@ -72,10 +73,11 @@ user sees or can do" tasks:
 - **"Manage windows"** (focus, close, move, tile, workspace) → `aegis-compositor`.
 - **"Change the chrome / interactions"** (dock, launcher, bars) → `aegis-shell`
   for the host and contract; the dock and status bar live in the `aegis-dock`
-  and `aegis-statusbar` component crates. Persistent settings run as the
-  standalone `aegis-ctl-center` application
-  ([ADR-0044](../adr/0044-dock-and-control-center-crates.md),
-  [ADR-0049](../adr/0049-standalone-modular-control-center.md),
+  and `aegis-statusbar` component crates. The status bar owns live-system
+  controls, AI Workspaces has an independent compositor-owned component, and
+  persistent settings run as the standalone `aegis-settings` application
+  ([ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md),
+  [ADR-0059](../adr/0059-first-party-application-installation-and-development-staging.md),
   [ADR-0045](../adr/0045-statusbar-crate-and-sni-tray.md)).
 - **"Add an external control path"** (CLI or scripts) → `aegis-ipc` +
   `aegis-ctl`; the fuji agent consumes that same IPC through
@@ -90,7 +92,7 @@ user sees or can do" tasks:
 
 Persistent settings use the same state-in, intent-out direction as the rest
 of the compositor without placing their presentation inside its process. The
-Control Center reads a coherent settings snapshot over the scoped IPC and
+System Settings reads a coherent settings snapshot over the scoped IPC and
 returns typed edits with the revision it observed. The compositor remains the
 authority that validates, persists, applies, journals, and publishes the next
 revision.
@@ -102,13 +104,15 @@ compositor: account modules use system account and authorization services,
 power modules use power services, and compositor-owned display/input policy
 uses the ass settings IPC.
 
-Quick Settings stays separate. Volume, brightness, radios, and session
-actions are immediate service controls rather than persistent settings. Realm
-lifecycle is authority management rather than configuration. The temporary
-in-process host still presents those two surfaces while the standalone app is
-the canonical persistent-settings UI. See
-[ADR-0049](../adr/0049-standalone-modular-control-center.md) and the
-[Control Center Reference](../reference/control-center.md).
+Volume, brightness, radios, Do Not Disturb, and current-workspace layout are
+immediate service or session controls rather than persistent settings. The
+status bar presents them, external clients use the live-system IPC, and both
+paths converge on one runtime handler. Realm lifecycle is authority
+management rather than configuration and retains the independent AI
+Workspaces surface. The standalone System Settings app remains the canonical
+persistent-settings UI. See
+[ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md) and
+the [System Settings Reference](../reference/settings.md).
 
 ## Backend Abstraction
 

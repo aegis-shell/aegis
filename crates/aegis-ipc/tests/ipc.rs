@@ -13,6 +13,7 @@ use aegis_core::window::{Window, WindowId};
 use aegis_ipc::{
     Capabilities, Client, Command, Event, Handler, OpClass, PROTOCOL_VERSION, RealmAction,
     RealmActionResult, Scope, Server, SettingsAction, SettingsReceipt, SettingsSnapshot,
+    SystemAction, SystemStatus,
 };
 
 /// A unique throwaway socket path under the temp dir, namespaced by pid +
@@ -36,6 +37,7 @@ struct TestHandler {
     realm_actions: Mutex<Vec<RealmAction>>,
     realm_connections: Mutex<Vec<u64>>,
     settings: Mutex<SettingsSnapshot>,
+    system_status: Mutex<SystemStatus>,
     settings_actions: Mutex<Vec<SettingsAction>>,
     settings_connections: Mutex<Vec<u64>>,
     refusals: Mutex<Vec<(u64, aegis_ipc::JournalMutation, String)>>,
@@ -64,6 +66,11 @@ impl TestHandler {
             settings: Mutex::new(SettingsSnapshot {
                 revision: 7,
                 ..SettingsSnapshot::default()
+            }),
+            system_status: Mutex::new(SystemStatus {
+                volume: Some(42),
+                brightness: Some(73),
+                ..SystemStatus::default()
             }),
             settings_actions: Mutex::new(Vec::new()),
             settings_connections: Mutex::new(Vec::new()),
@@ -98,6 +105,11 @@ impl TestHandler {
             settings: Mutex::new(SettingsSnapshot {
                 revision: 7,
                 ..SettingsSnapshot::default()
+            }),
+            system_status: Mutex::new(SystemStatus {
+                volume: Some(42),
+                brightness: Some(73),
+                ..SystemStatus::default()
             }),
             settings_actions: Mutex::new(Vec::new()),
             settings_connections: Mutex::new(Vec::new()),
@@ -160,13 +172,19 @@ impl Handler for TestHandler {
     }
     fn realms(&self) -> aegis_core::realm::RealmSnapshot {
         let mut model = aegis_core::realm::RealmModel::new();
-        model.create_agent_realm("test", aegis_core::realm::SeatCapabilities::POINTER_KEYBOARD);
+        model.create_agent_realm(
+            "test",
+            aegis_core::realm::SeatCapabilities::POINTER_KEYBOARD,
+        );
         let mut snapshot = model.snapshot();
         snapshot.revision = 4;
         snapshot
     }
     fn settings(&self) -> SettingsSnapshot {
         self.settings.lock().unwrap().clone()
+    }
+    fn system_status(&self) -> SystemStatus {
+        self.system_status.lock().unwrap().clone()
     }
     fn settings_action(
         &self,
@@ -355,6 +373,13 @@ fn test_scopes() -> HashMap<String, Scope> {
             },
         ),
         (
+            "system".into(),
+            Scope {
+                ops: Some(vec![OpClass::SystemControl]),
+                ..Scope::default()
+            },
+        ),
+        (
             "pick".into(),
             Scope {
                 ops: Some(vec![OpClass::PickTarget]),
@@ -492,6 +517,65 @@ fn settings_query_and_confirmed_transaction_round_trip() {
         &[action]
     );
     assert_eq!(client.settings().unwrap().touchpad.config, config);
+}
+
+#[test]
+fn system_status_query_and_control_round_trip() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(vec![]));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let requested = Capabilities {
+        query: true,
+        control: true,
+        ..Capabilities::default()
+    };
+    let mut client = Client::connect_scoped(&path, requested, "system").expect("connect");
+    assert_eq!(client.scope().ops, Some(vec![OpClass::SystemControl]));
+
+    let status = client.system_status().expect("system status");
+    assert_eq!(status.volume, Some(42));
+    assert_eq!(status.brightness, Some(73));
+
+    let action = SystemAction::SetBrightness { level: 55 };
+    client
+        .apply_system_action(action.clone())
+        .expect("queue system control");
+    assert!(
+        handler
+            .commands
+            .lock()
+            .unwrap()
+            .contains(&Command::System { action })
+    );
+
+    let mut denied =
+        Client::connect_scoped(&path, requested, "focus-first").expect("restricted connect");
+    let error = denied
+        .apply_system_action(SystemAction::ToggleMute)
+        .unwrap_err();
+    assert!(error.to_string().contains("out of scope"), "{error}");
+}
+
+#[test]
+fn invalid_system_control_is_refused_before_dispatch() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(vec![]));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let mut client = Client::connect_with(
+        &path,
+        Capabilities {
+            query: true,
+            control: true,
+            ..Capabilities::default()
+        },
+    )
+    .expect("connect");
+
+    let error = client
+        .apply_system_action(SystemAction::SetVolume { level: 101 })
+        .unwrap_err();
+    assert!(error.to_string().contains("outside 0..=100"), "{error}");
+    assert!(handler.commands.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -789,12 +873,16 @@ fn pick_target_requires_control_and_an_explicit_scope_op() {
 
     // Unscoped connections never inherit the op (fail-closed, like input).
     let mut unscoped = Client::connect_with(&path, requested).expect("unscoped connect");
-    let err = unscoped.pick_target(aegis_ipc::PickKind::Window).unwrap_err();
+    let err = unscoped
+        .pick_target(aegis_ipc::PickKind::Window)
+        .unwrap_err();
     assert!(err.to_string().contains("out of scope"), "{err}");
 
     // Without the control capability the request is refused earlier.
     let mut query_only = Client::connect(&path).expect("query connect");
-    let err = query_only.pick_target(aegis_ipc::PickKind::Region).unwrap_err();
+    let err = query_only
+        .pick_target(aegis_ipc::PickKind::Region)
+        .unwrap_err();
     assert!(err.to_string().contains("control capability"), "{err}");
 
     // A locked/inactive session refuses before any chrome opens.
@@ -837,7 +925,9 @@ fn stream_output_start_forwards_a_window_target() {
 
     // The default target stays the whole output.
     let mut scoped = Client::connect_scoped(&path, requested, "stream").expect("scoped connect");
-    scoped.start_output_stream(None).expect("output stream starts");
+    scoped
+        .start_output_stream(None)
+        .expect("output stream starts");
     assert_eq!(
         handler.stream_targets.lock().unwrap().as_slice(),
         &[

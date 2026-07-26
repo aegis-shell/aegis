@@ -35,25 +35,32 @@ existing Wayland session:
 ```bash
 meson setup ../optics/build ../optics -Dtests=false -Dbuildtype=debugoptimized
 meson compile -C ../optics/build
-cargo run -p ass
+scripts/dev.sh
 ```
 
 Skip `meson setup` when `../optics/build` already exists.
 
-Open the standalone settings application from a second terminal:
+The development runner builds the compositor and standalone System Settings
+application, stages the application under `target/aegis-dev`, and opens one
+nested compositor session. Open System Settings from Applications to exercise
+the same XDG discovery and launch path used by an installed system.
+
+Run the application directly only for focused UI or IPC testing:
 
 ```bash
-cargo run -p aegis-ctl-center
+cargo run -p aegis-settings
 ```
 
 The Rust bindings automatically discover the sibling build tree and publish
 its runtime library paths, so no shell environment setup is required.
-`cargo run -p aegis` opens a nested window on `$WAYLAND_DISPLAY` and presents
-the shell. `cargo run -p aegis-control-center` opens the standalone settings
-application and connects it to the running compositor over its owner-only IPC.
+`cargo run -p aegis-settings` opens the standalone application and connects
+it to the compositor over its owner-only IPC, but it does not register the
+application with the Dock or launcher. A direct `cargo run -p aegis` starts
+only the compositor; use the development runner for first-party application
+integration.
 On a bare TTY (no host session) the compositor binary drives the display
 directly through the DRM/KMS backend; force a target with
-`--backend auto|drm|nested` or `AEGIS_BACKEND`. See [Setup](docs/dev/setup.md)
+`--backend auto|drm|nested` or `ASS_BACKEND`. See [Setup](docs/dev/setup.md)
 for prerequisites and details.
 
 Realm application sandboxes require Aegis to run in its own systemd user

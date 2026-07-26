@@ -5,9 +5,8 @@ application process tree from the physical desktop.
 
 ## Create a Workspace
 
-1. Open **Control Center** from the launcher.
-2. Select **AI Workspaces**.
-3. Select **New AI Workspace**.
+1. Click the Agent indicator in the status bar to open **AI Workspaces**.
+2. Select **New AI Workspace**.
 
 The workspace starts with an independent pointer/keyboard seat and a
 1920×1080 virtual output. Each application launched into it receives a
@@ -111,7 +110,7 @@ identifies the changed Realm and virtual-output damage; request
 
 ## Pause or Revoke a Workspace
 
-Use **Pause** in Control Center, or run:
+Use **Pause** in AI Workspaces, or run:
 
 ```bash
 aegis-ctl realm pause 2

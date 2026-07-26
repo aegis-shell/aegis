@@ -82,6 +82,20 @@ impl Server {
         self.state.workspaces.snapshot()
     }
 
+    /// Cheap content hash of the workspace model. The frame loop compares
+    /// this per frame and only rebuilds the owned
+    /// [`Self::workspace_snapshot`] when it moves.
+    pub fn workspace_signature(&self) -> u64 {
+        self.state.workspaces.signature()
+    }
+
+    /// Revision of the backend-reported output list, bumped on every
+    /// mutation. Lets the frame loop skip re-cloning
+    /// [`Self::output_infos`] while unchanged.
+    pub fn outputs_revision(&self) -> u64 {
+        self.state.outputs_revision
+    }
+
     /// Whether the current workspace is in tiled mode (ADR-0024).
     pub fn tiling(&self) -> bool {
         self.state
@@ -140,6 +154,11 @@ impl Server {
         self.state.window_rules = rules;
     }
 
+    /// Set whether window positions and geometries are remembered across restarts.
+    pub fn set_remember_window_positions(&mut self, remember: bool) {
+        self.state.remember_window_positions = remember;
+    }
+
     /// Replace the tiling layout parameters (gaps, master ratio) from the
     /// config (ADR-0024/0026). Applied on the next `apply_tiling`.
     pub fn set_layout_params(&mut self, params: aegis_core::layout::LayoutParams) {
@@ -187,7 +206,8 @@ impl Server {
                 .transition
                 .and_then(|t| t.rect_at(old, now))
                 .unwrap_or(old);
-            (*rec).window.transition = Some(aegis_core::transition::WindowTransition::new(from, now));
+            (*rec).window.transition =
+                Some(aegis_core::transition::WindowTransition::new(from, now));
         }
     }
 
@@ -297,6 +317,7 @@ impl Server {
         }
         unsafe { reconcile_output_globals(self.state.as_mut(), &outputs) };
         self.state.output_infos = outputs;
+        self.state.outputs_revision = self.state.outputs_revision.wrapping_add(1);
         self.set_output_geometry(primary.geometry);
     }
 
@@ -334,6 +355,7 @@ impl Server {
         if let Some(primary) = self.state.output_infos.first_mut() {
             primary.geometry = geo;
         }
+        self.state.outputs_revision = self.state.outputs_revision.wrapping_add(1);
         let infos = self.state.output_infos.clone();
         unsafe { reconcile_output_globals(self.state.as_mut(), &infos) };
         // Resend to every bound wl_output resource.

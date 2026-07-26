@@ -32,6 +32,9 @@ const SEARCH_TOP: f32 = 38.0;
 const SEARCH_H: f32 = 44.0;
 const SEARCH_MAX_W: f32 = 520.0;
 const SEARCH_MIN_W: f32 = 280.0;
+const SEARCH_FONT_SIZE: f32 = 15.0;
+const SEARCH_TEXT_X: f32 = 43.0;
+const SEARCH_CARET_W: f32 = 2.0;
 const GRID_TOP: f32 = 126.0;
 /// Space inside the modal work area reserved for pagination and breathing
 /// room. Persistent chrome (notably the dock) is subtracted separately from
@@ -337,7 +340,10 @@ impl Chrome for Launcher {
         self.columns = layout.columns;
         self.page_capacity = layout.capacity().max(1);
 
-        let filtered = self.brain.filtered();
+        // The brain caches the filtered list (recomputed only when the query
+        // or catalog changes); clone the indices so this frame can still call
+        // `&mut` brain methods (page selection, launch) while iterating.
+        let filtered = self.brain.filtered().clone();
         let page_total = page_count(filtered.len(), self.page_capacity);
         self.page = self.page.min(page_total.saturating_sub(1));
 
@@ -393,8 +399,9 @@ impl Chrome for Launcher {
         let mut clicked_page = None;
         let mut context_app = None;
 
-        // A fixed-size child, rather than the layer's anchor alone, guarantees
-        // that the dim surface covers every logical output pixel.
+        // Paint the scrim on the fixed full-screen layer itself. A nested
+        // child would inherit OverlayOpts' default padding and leave visible
+        // seams along the top and sides.
         let full = Rect {
             x: 0.0,
             y: 0.0,
@@ -404,23 +411,16 @@ impl Chrome for Launcher {
         frame.layer(
             "ass-launcher-backdrop",
             full,
-            &OverlayOpts::default(),
-            |frame| {
-                frame.column_ex(
-                    &sized_fill(
-                        display.x,
-                        display.y,
-                        Color::rgba(8, 10, 20, alpha(126, progress)),
-                        0.0,
-                    ),
-                    |_| {},
-                );
-            },
+            &backdrop_layer(progress),
+            |_| {},
         );
 
         let search_rect = Self::search_rect_for_display((display.x, display.y), progress);
         let search_w = search_rect.w;
         let search_y = search_rect.y;
+        let query_metrics = frame.measure_text(self.brain.query(), SEARCH_FONT_SIZE);
+        let font_metrics = frame.measure_text("Ag", SEARCH_FONT_SIZE);
+        let caret_rect = search_caret_rect(search_rect, query_metrics.width, font_metrics.height);
         if pressed {
             self.search_focused = contains(search_rect, cursor.x, cursor.y);
         }
@@ -446,40 +446,28 @@ impl Chrome for Launcher {
                             // Keep the placeholder on the exact same text
                             // origin as a real query. Its caret is an overlay
                             // below so the caret does not consume layout width.
-                            frame.label_compact_sized(i18n.text(Message::SearchApplications), 15.0);
-                        } else {
-                            frame.row_ex(
-                                &LayoutOpts {
-                                    height: SEARCH_H,
-                                    gap: 3.0,
-                                    cross: Align::Center,
-                                    ..Default::default()
-                                },
-                                |frame| {
-                                    // The regular label carries theme padding,
-                                    // which shifts text inside this fixed-height
-                                    // field. The compact form keeps its measured
-                                    // box vertically centred.
-                                    frame.label_compact_sized(self.brain.query(), 15.0);
-                                    search_caret(frame, progress, self.search_focused);
-                                },
+                            frame.label_compact_sized(
+                                i18n.text(Message::SearchApplications),
+                                SEARCH_FONT_SIZE,
                             );
+                        } else {
+                            // The regular label carries theme padding, which
+                            // shifts text inside this fixed-height field. The
+                            // compact form keeps its measured box vertically
+                            // centred; the caret is overlaid at the shaped text
+                            // edge below so it does not alter layout.
+                            frame.label_compact_sized(self.brain.query(), SEARCH_FONT_SIZE);
                         }
                     },
                 );
             },
         );
-        if self.brain.query().is_empty() && self.search_focused {
+        if self.search_focused {
             frame.layer(
-                "ass-launcher-search-empty-caret",
-                Rect {
-                    x: search_rect.x + 42.0,
-                    y: search_rect.y + (SEARCH_H - 18.0) * 0.5,
-                    w: 2.0,
-                    h: 18.0,
-                },
-                &centered_layer(),
-                |frame| search_caret(frame, progress, true),
+                "ass-launcher-search-caret",
+                caret_rect,
+                &search_caret_layer(progress),
+                |_| {},
             );
         }
 
@@ -905,6 +893,15 @@ fn centered_layer() -> OverlayOpts {
     }
 }
 
+fn backdrop_layer(progress: f32) -> OverlayOpts {
+    OverlayOpts {
+        gap: 0.0,
+        pad: 0.0,
+        bg: Color::rgba(8, 10, 20, alpha(126, progress)),
+        ..Default::default()
+    }
+}
+
 /// Frosted-glass panel material shared with the dock: a light translucent
 /// tint over the compositor's backdrop blur with a bright 1px edge.
 fn glass_panel(progress: f32, radius: f32, focused: bool) -> OverlayOpts {
@@ -924,20 +921,25 @@ fn glass_panel(progress: f32, radius: f32, focused: bool) -> OverlayOpts {
     }
 }
 
-fn search_caret(frame: &mut Frame, progress: f32, focused: bool) {
-    frame.column_ex(
-        &sized_fill(
-            2.0,
-            18.0,
-            if focused {
-                Color::rgba(255, 255, 255, alpha(230, progress))
-            } else {
-                Color::TRANSPARENT
-            },
-            1.0,
-        ),
-        |_| {},
-    );
+fn search_caret_layer(progress: f32) -> OverlayOpts {
+    OverlayOpts {
+        gap: 0.0,
+        pad: 0.0,
+        bg: Color::rgba(255, 255, 255, alpha(230, progress)),
+        radius: SEARCH_CARET_W * 0.5,
+        ..Default::default()
+    }
+}
+
+fn search_caret_rect(search: Rect, query_width: f32, caret_height: f32) -> Rect {
+    Rect {
+        // Match Lens text fields: the 2 px caret is centred on the shaped
+        // insertion edge instead of sitting after a layout gap.
+        x: search.x + SEARCH_TEXT_X + query_width - SEARCH_CARET_W * 0.5,
+        y: search.y + (search.h - caret_height) * 0.5,
+        w: SEARCH_CARET_W,
+        h: caret_height,
+    }
 }
 
 fn faded_theme(theme: Theme, progress: f32) -> Theme {
@@ -1023,6 +1025,14 @@ mod tests {
     }
 
     #[test]
+    fn backdrop_layer_has_no_layout_inset() {
+        let opts = backdrop_layer(1.0);
+        assert_eq!(opts.pad, 0.0);
+        assert_eq!(opts.gap, 0.0);
+        assert_ne!(opts.bg, Color::TRANSPARENT);
+    }
+
+    #[test]
     fn pages_cover_every_application_without_a_render_cap() {
         let capacity = GridLayout::for_display(1280.0, 720.0, Reserved::default()).capacity();
         let pages = page_count(257, capacity);
@@ -1043,6 +1053,20 @@ mod tests {
         launcher.toggle(&mut ChromeEvents::default());
         assert!(launcher.brain.is_open());
         assert!(!launcher.search_focused);
+    }
+
+    #[test]
+    fn search_caret_is_centered_on_the_shaped_text_edge() {
+        let search = Rect {
+            x: 100.0,
+            y: 38.0,
+            w: 520.0,
+            h: SEARCH_H,
+        };
+        let caret = search_caret_rect(search, 90.0, 18.0);
+        assert_eq!(caret.x + caret.w * 0.5, search.x + SEARCH_TEXT_X + 90.0);
+        assert_eq!(caret.y + caret.h * 0.5, search.y + search.h * 0.5);
+        assert_eq!(caret.w, SEARCH_CARET_W);
     }
 
     #[test]

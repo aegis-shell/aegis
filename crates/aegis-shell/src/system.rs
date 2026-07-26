@@ -1,101 +1,45 @@
-//! Read-only host system status and typed intents emitted by trusted shell
-//! applications.
+//! Host probes for the backend-neutral live system model.
 //!
-//! Probing lives here so the HUD and control center consume one normalized
-//! snapshot. Mutations remain owned by the executable: chrome emits a
-//! [`SystemAction`], and the compositor main loop decides how to apply it.
+//! Probing remains outside `aegis-core` because it uses Linux files and host
+//! commands. Mutations remain owned by the executable.
 
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
 pub use aegis_core::settings::{DisplaySettings, DisplayStatus};
+pub use aegis_core::system::{BatteryStatus, NetworkState, SystemAction, SystemStatus};
 
-/// Coarse connectivity state shown in compact status surfaces.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum NetworkState {
-    #[default]
-    Offline,
-    Wifi,
-    Wired,
-}
+/// Probe live host services through standard Linux interfaces.
+///
+/// Every source is optional so VMs, nested sessions, and desktops without a
+/// given service still receive a coherent snapshot.
+pub fn detect_system_status() -> SystemStatus {
+    let volume_output = command_output("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"]);
+    let (volume, muted) = volume_output
+        .as_deref()
+        .map(|output| {
+            let value = output
+                .split_whitespace()
+                .find_map(|part| part.parse::<f32>().ok())
+                .map(|value| (value * 100.0).round().clamp(0.0, 100.0) as u8);
+            (value, output.contains("MUTED"))
+        })
+        .unwrap_or((None, false));
 
-/// Battery state read from Linux power-supply sysfs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BatteryStatus {
-    pub percent: u8,
-    pub charging: bool,
-}
-
-/// One coherent snapshot consumed by compositor-owned system UI.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct SystemStatus {
-    pub volume: Option<u8>,
-    pub muted: bool,
-    pub network: NetworkState,
-    pub battery: Option<BatteryStatus>,
-    /// `None` means NetworkManager's radio state is unavailable.
-    pub wifi_enabled: Option<bool>,
-    /// `None` means no Bluetooth rfkill device was found.
-    pub bluetooth_enabled: Option<bool>,
-    /// Backlight level in percent, or `None` on displays without a backlight.
-    pub brightness: Option<u8>,
-    /// Compositor-owned state filled by the executable after host probing.
-    pub do_not_disturb: bool,
-    /// Current workspace layout state filled by the executable.
-    pub tiled: bool,
-    /// Physical touchpad capabilities and the selected device profile.
-    pub touchpad: aegis_core::input::TouchpadStatus,
-    /// Connected displays and whether this session may configure them.
-    pub display: DisplayStatus,
-}
-
-impl SystemStatus {
-    /// Probe the host using standard Linux interfaces. Every source is
-    /// optional so a desktop, VM, or nested compositor without that subsystem
-    /// still gets a usable control center.
-    pub fn detect() -> SystemStatus {
-        let volume_output = command_output("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"]);
-        let (volume, muted) = volume_output
-            .as_deref()
-            .map(|output| {
-                let value = output
-                    .split_whitespace()
-                    .find_map(|part| part.parse::<f32>().ok())
-                    .map(|value| (value * 100.0).round().clamp(0.0, 100.0) as u8);
-                (value, output.contains("MUTED"))
-            })
-            .unwrap_or((None, false));
-
-        SystemStatus {
-            volume,
-            muted,
-            network: detect_network(),
-            battery: detect_battery(),
-            wifi_enabled: detect_wifi_radio(),
-            bluetooth_enabled: detect_bluetooth_radio(),
-            brightness: detect_brightness(),
-            do_not_disturb: false,
-            tiled: false,
-            touchpad: aegis_core::input::TouchpadStatus::default(),
-            display: DisplayStatus::default(),
-        }
+    SystemStatus {
+        volume,
+        muted,
+        network: detect_network(),
+        battery: detect_battery(),
+        wifi_enabled: detect_wifi_radio(),
+        bluetooth_enabled: detect_bluetooth_radio(),
+        brightness: detect_brightness(),
+        do_not_disturb: false,
+        tiled: false,
+        touchpad: aegis_core::input::TouchpadStatus::default(),
+        display: DisplayStatus::default(),
     }
-}
-
-/// Trusted system mutation requested by the control center or compact HUD.
-#[derive(Debug, Clone, PartialEq)]
-pub enum SystemAction {
-    ToggleMute,
-    StepVolume(i8),
-    SetVolume(u8),
-    SetBrightness(u8),
-    SetWifi(bool),
-    SetBluetooth(bool),
-    SetDoNotDisturb(bool),
-    SetTiling(bool),
-    SetTouchpad(aegis_core::input::TouchpadConfig),
-    SetDisplay(DisplaySettings),
 }
 
 fn detect_network() -> NetworkState {

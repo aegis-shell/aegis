@@ -44,6 +44,9 @@ pub enum Command {
     /// Manage isolated AI workspaces (Realm lifecycle and capture).
     #[command(subcommand)]
     Realm(RealmCmd),
+    /// Inspect and control immediate live-system state.
+    #[command(subcommand)]
+    System(SystemCmd),
     /// Focus and raise a toplevel by id.
     Focus { id: u64 },
     /// Minimize a toplevel by id.
@@ -87,7 +90,7 @@ pub enum Command {
     },
     /// Toggle the window/workspace overview.
     Overview,
-    /// Stream coarse window, workspace, and notification events until disconnected.
+    /// Stream coarse compositor state-change events until disconnected.
     Subscribe,
     /// Stream detailed mutation-journal events until disconnected.
     SubscribeJournal,
@@ -95,6 +98,39 @@ pub enum Command {
     Completions { shell: clap_complete::Shell },
     /// Request compositor shutdown.
     Quit,
+}
+
+/// Subcommands grouped under `aegis-ctl system`.
+#[derive(Debug, clap::Subcommand)]
+pub enum SystemCmd {
+    /// Show the normalized live-system snapshot.
+    Status,
+    /// Toggle mute on the default audio sink.
+    Mute,
+    /// Adjust the default audio sink by a signed percentage step.
+    #[command(allow_hyphen_values = true)]
+    StepVolume {
+        #[arg(value_parser = clap::value_parser!(i8).range(-100..=100))]
+        delta: i8,
+    },
+    /// Set the default audio-sink volume percentage.
+    Volume {
+        #[arg(value_parser = clap::value_parser!(u8).range(0..=100))]
+        level: u8,
+    },
+    /// Set the backlight percentage.
+    Brightness {
+        #[arg(value_parser = clap::value_parser!(u8).range(1..=100))]
+        level: u8,
+    },
+    /// Enable or disable the Wi-Fi radio.
+    Wifi { state: OnOff },
+    /// Enable or disable Bluetooth radios.
+    Bluetooth { state: OnOff },
+    /// Enable or disable notification suppression.
+    DoNotDisturb { state: OnOff },
+    /// Set the current workspace layout mode.
+    Tiling { state: OnOff },
 }
 
 /// Subcommands grouped under `aegis-ctl realm`. They all share the
@@ -149,6 +185,19 @@ pub enum SwitchDir {
     /// Accept `previous` as a long form.
     #[value(alias = "previous")]
     Prev,
+}
+
+/// Explicit boolean state accepted by live-system controls.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum OnOff {
+    On,
+    Off,
+}
+
+impl From<OnOff> for bool {
+    fn from(value: OnOff) -> Self {
+        matches!(value, OnOff::On)
+    }
 }
 
 impl From<SwitchDir> for aegis_core::workspace::Switch {

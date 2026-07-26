@@ -1,4 +1,4 @@
-//! Standalone Wayland host for the ass settings modules.
+//! Standalone Wayland host for the aegis System Settings modules.
 
 use std::collections::VecDeque;
 use std::error::Error;
@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
-use aegis_control_center::builtin_settings_modules;
-use aegis_control_center::module::{ModuleAvailability, ModuleEvents, ModuleId, ModuleRegistry};
 use aegis_core::settings::{SettingsAction, SettingsSnapshot};
 use aegis_design::{Design, themes};
 use aegis_ipc::{Capabilities, Client};
+use aegis_settings::builtin_settings_modules;
+use aegis_settings::module::{ModuleAvailability, ModuleEvents, ModuleId, ModuleRegistry};
 use aegis_shell::{Localizer, Message};
 use iris::{Application, Config, Input, PaintHost, request_animation_frame};
 use lens::{Align, Color, Frame, Icon, LayoutOpts};
@@ -79,9 +79,9 @@ impl SettingsApp {
         let (worker_tx, command_rx) = mpsc::channel();
         let (event_tx, worker_rx) = mpsc::channel();
         std::thread::Builder::new()
-            .name("ass-settings-ipc".into())
+            .name("aegis-settings-ipc".into())
             .spawn(move || worker_loop(socket, command_rx, event_tx))
-            .expect("spawn Control Center IPC worker");
+            .expect("spawn System Settings IPC worker");
 
         let mut app = Self {
             modules,
@@ -267,7 +267,7 @@ impl SettingsApp {
                         ..Default::default()
                     },
                     |frame| {
-                        frame.heading(self.i18n.text(Message::ControlCenter), 2);
+                        frame.heading(self.i18n.text(Message::SystemSettings), 2);
                         frame.label_sized(self.i18n.text(Message::StandaloneSettingsApp), 11.0);
                     },
                 );
@@ -382,7 +382,7 @@ impl SettingsApp {
     }
 }
 
-fn module_label(i18n: &Localizer, module: aegis_control_center::module::ModuleMetadata) -> String {
+fn module_label(i18n: &Localizer, module: aegis_settings::module::ModuleMetadata) -> String {
     let title = i18n.text(module.title);
     match module.availability {
         ModuleAvailability::Available => title.to_owned(),
@@ -502,8 +502,8 @@ fn requested_module(args: impl IntoIterator<Item = String>) -> Option<String> {
 fn main() -> Result<(), Box<dyn Error>> {
     let requested = requested_module(std::env::args().skip(1));
     let mut app = SettingsApp::new(requested.as_deref(), socket_path());
-    let config = Config::new(app.i18n.text(Message::ControlCenter))?
-        .app_id(aegis_core::app::CONTROL_CENTER_APP_ID)?
+    let config = Config::new(app.i18n.text(Message::SystemSettings))?
+        .app_id(aegis_core::app::SETTINGS_APP_ID)?
         .size(920, 680)
         .force_dark();
     Application::run::<_, fn(PaintHost)>(

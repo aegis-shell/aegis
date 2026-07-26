@@ -185,6 +185,48 @@ pub struct Renderer {
     frame_epoch: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrderedSurfaceSource {
+    Shm(usize),
+    Dmabuf(usize),
+}
+
+fn ordered_surface_sources(
+    order: &[usize],
+    shm_ids: &[usize],
+    dmabuf_ids: &[usize],
+) -> Vec<OrderedSurfaceSource> {
+    let mut by_id = HashMap::with_capacity(shm_ids.len() + dmabuf_ids.len());
+    for (index, id) in shm_ids.iter().copied().enumerate() {
+        by_id.insert(id, OrderedSurfaceSource::Shm(index));
+    }
+    for (index, id) in dmabuf_ids.iter().copied().enumerate() {
+        by_id.insert(id, OrderedSurfaceSource::Dmabuf(index));
+    }
+
+    let mut sources = Vec::with_capacity(by_id.len());
+    for id in order {
+        if let Some(source) = by_id.remove(id) {
+            sources.push(source);
+        }
+    }
+
+    // Keep a frame visible if future filtering changes ever make it absent
+    // from the supplied order, while preserving deterministic relative order
+    // within each backing type.
+    for (index, id) in shm_ids.iter().enumerate() {
+        if by_id.remove(id).is_some() {
+            sources.push(OrderedSurfaceSource::Shm(index));
+        }
+    }
+    for (index, id) in dmabuf_ids.iter().enumerate() {
+        if by_id.remove(id).is_some() {
+            sources.push(OrderedSurfaceSource::Dmabuf(index));
+        }
+    }
+    sources
+}
+
 impl Renderer {
     pub fn new() -> Renderer {
         Renderer {
@@ -263,12 +305,69 @@ impl Renderer {
         self.draw_toplevels_impl(device, canvas, frames, Some(map));
     }
 
+    /// Composite shm and dma-buf toplevels in one compositor-provided
+    /// stacking order. Painting the two backing types in separate batches
+    /// would incorrectly force every dma-buf window above every shm window.
+    pub fn draw_toplevels_ordered(
+        &mut self,
+        device: &flux::Device,
+        canvas: &flux::Canvas,
+        order: &[usize],
+        shm: &[SurfacePixels<'_>],
+        dmabuf: &[SurfaceDmabuf],
+    ) {
+        self.draw_toplevels_ordered_impl(device, canvas, order, shm, dmabuf, None);
+    }
+
+    /// Ordered mixed-backing drawing with overview placement applied.
+    pub fn draw_toplevels_ordered_mapped(
+        &mut self,
+        device: &flux::Device,
+        canvas: &flux::Canvas,
+        order: &[usize],
+        shm: &[SurfacePixels<'_>],
+        dmabuf: &[SurfaceDmabuf],
+        map: &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
+    ) {
+        self.draw_toplevels_ordered_impl(device, canvas, order, shm, dmabuf, Some(map));
+    }
+
+    fn draw_toplevels_ordered_impl(
+        &mut self,
+        device: &flux::Device,
+        canvas: &flux::Canvas,
+        order: &[usize],
+        shm: &[SurfacePixels<'_>],
+        dmabuf: &[SurfaceDmabuf],
+        map: Option<
+            &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
+        >,
+    ) {
+        let shm_ids = shm.iter().map(|frame| frame.id).collect::<Vec<_>>();
+        let dmabuf_ids = dmabuf.iter().map(|frame| frame.id).collect::<Vec<_>>();
+        for source in ordered_surface_sources(order, &shm_ids, &dmabuf_ids) {
+            match source {
+                OrderedSurfaceSource::Shm(index) => {
+                    self.draw_toplevels_impl(device, canvas, std::slice::from_ref(&shm[index]), map)
+                }
+                OrderedSurfaceSource::Dmabuf(index) => self.draw_dmabuf_toplevels_impl(
+                    device,
+                    canvas,
+                    std::slice::from_ref(&dmabuf[index]),
+                    map,
+                ),
+            }
+        }
+    }
+
     fn draw_toplevels_impl(
         &mut self,
         device: &flux::Device,
         canvas: &flux::Canvas,
         frames: &[SurfacePixels<'_>],
-        map: Option<&dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect>,
+        map: Option<
+            &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
+        >,
     ) {
         for f in frames.iter() {
             // Upload gating has two layers:
@@ -479,7 +578,9 @@ impl Renderer {
         device: &flux::Device,
         canvas: &flux::Canvas,
         frames: &[SurfaceDmabuf],
-        map: Option<&dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect>,
+        map: Option<
+            &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
+        >,
     ) {
         for f in frames.iter() {
             let stale = self
@@ -900,5 +1001,18 @@ mod tests {
     fn viewport_source_converts_post_scale_coordinates_to_buffer_uvs() {
         let src = aegis_core::Rect::new(10, 5, 30, 20);
         assert_eq!(viewport_uv(src, (200, 100), 2), (0.1, 0.1, 0.3, 0.4));
+    }
+
+    #[test]
+    fn mixed_backing_sources_follow_compositor_order() {
+        let sources = ordered_surface_sources(&[10, 20, 30], &[10, 30], &[20]);
+        assert_eq!(
+            sources,
+            vec![
+                OrderedSurfaceSource::Shm(0),
+                OrderedSurfaceSource::Dmabuf(0),
+                OrderedSurfaceSource::Shm(1),
+            ]
+        );
     }
 }

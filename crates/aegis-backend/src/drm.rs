@@ -108,6 +108,30 @@ fn commit_error(error: std::io::Error) -> DrmError {
     }
 }
 
+/// Clip a desktop-wide damage bounding box (physical framebuffer pixels) to
+/// one output's scanout rectangle, yielding the `drm_mode_rect` fields
+/// `(x1, y1, x2, y2)` for `FB_DAMAGE_CLIPS`. `None` damage means "unknown"
+/// and covers the whole output; `None` result means the output is untouched
+/// by this frame's damage.
+fn damage_clip_for_output(
+    damage: Option<aegis_core::Rect>,
+    output_x: u32,
+    output_y: u32,
+    width: u32,
+    height: u32,
+) -> Option<[i32; 4]> {
+    let (ox, oy) = (output_x as i32, output_y as i32);
+    let full = [ox, oy, ox + width as i32, oy + height as i32];
+    let Some(damage) = damage else {
+        return Some(full);
+    };
+    let x1 = damage.origin.x.max(ox);
+    let y1 = damage.origin.y.max(oy);
+    let x2 = (damage.origin.x.saturating_add(damage.size.w)).min(full[2]);
+    let y2 = (damage.origin.y.saturating_add(damage.size.h)).min(full[3]);
+    (x2 > x1 && y2 > y1).then_some([x1, y1, x2, y2])
+}
+
 #[derive(Debug)]
 struct Card {
     device: libseat::Device,
@@ -139,6 +163,10 @@ struct AtomicProperties {
     plane_crtc_w: property::Handle,
     plane_crtc_h: property::Handle,
     plane_in_fence_fd: Option<property::Handle>,
+    /// `FB_DAMAGE_CLIPS`: per-commit damage hint consumed by PSR-style
+    /// drivers. Absent on planes/kernels without damage tracking; commits
+    /// then carry no hint at all.
+    plane_fb_damage_clips: Option<property::Handle>,
 }
 
 #[derive(Debug)]
@@ -153,6 +181,10 @@ struct Output {
     x: u32,
     y: u32,
     props: AtomicProperties,
+    /// Pre-created `FB_DAMAGE_CLIPS` blob covering the output's whole
+    /// framebuffer rectangle, reused by every commit whose damage is unknown
+    /// or spans the output. Present only when the plane exposes the property.
+    full_damage_blob: Option<(property::Value<'static>, u64)>,
     /// The connector's advertised modes at selection time (deduplicated,
     /// highest resolution first), surfaced through `output_infos`.
     available_modes: Vec<OutputMode>,
@@ -294,6 +326,10 @@ pub struct DrmBackend {
     /// Retained libinput handles for touchpads currently on the seat.
     touchpads: HashMap<String, Device>,
     touchpad_config: TouchpadConfig,
+    /// The compositor's Wayland server event-loop fd, registered via
+    /// `Backend::set_wakeup_fd`. Polled for readability only — the main loop
+    /// dispatches the server itself once the wait wakes.
+    wakeup_fd: Option<RawFd>,
 }
 
 fn wheel_axis(event: &PointerScrollWheelEvent, axis: Axis) -> PointerAxis {
@@ -423,7 +459,7 @@ impl Backend for DrmBackend {
         // Re-use the hotplug reconciliation path: it waits until every
         // in-flight page flip has retired, probes only advertised modes, and
         // hands a size/modifier change back to the main loop before another
-        // frame is acquired. This makes a Control Center mode edit live
+        // frame is acquired. This makes a System Settings mode edit live
         // without racing scanout ownership.
         self.hotplug_pending = true;
     }
@@ -447,6 +483,10 @@ impl Backend for DrmBackend {
 
     fn dispatch_timeout(&mut self, timeout: Duration) -> bool {
         self.pump(Some(timeout), !self.pending_flips.is_empty())
+    }
+
+    fn set_wakeup_fd(&mut self, fd: RawFd) {
+        self.wakeup_fd = Some(fd);
     }
 
     fn take_input(&mut self) -> Vec<InputEvent> {
@@ -510,6 +550,9 @@ impl Drop for DrmBackend {
         if let Some(card) = self.card.take() {
             for output in &self.displays.outputs {
                 let _ = card.destroy_property_blob(output.mode_blob_id);
+                if let Some((_, blob_id)) = output.full_damage_blob.as_ref() {
+                    let _ = card.destroy_property_blob(*blob_id);
+                }
             }
             if let Err(error) = self.seat.borrow_mut().close_device(card.device) {
                 log::warn!(
@@ -524,6 +567,32 @@ impl Drop for DrmBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn damage_clip_intersects_output_rect() {
+        use aegis_core::Rect;
+        // Unknown damage covers the whole output.
+        assert_eq!(
+            damage_clip_for_output(None, 1920, 0, 1920, 1080),
+            Some([1920, 0, 3840, 1080])
+        );
+        // A box spanning both outputs of a side-by-side desktop clips to each.
+        let damage = Some(Rect::new(1900, 100, 100, 200));
+        assert_eq!(
+            damage_clip_for_output(damage, 0, 0, 1920, 1080),
+            Some([1900, 100, 1920, 300])
+        );
+        assert_eq!(
+            damage_clip_for_output(damage, 1920, 0, 1920, 1080),
+            Some([1920, 100, 2000, 300])
+        );
+        // Disjoint damage leaves the output untouched.
+        let other = Some(Rect::new(0, 0, 100, 100));
+        assert_eq!(damage_clip_for_output(other, 1920, 0, 1920, 1080), None);
+        // Damage fully outside the framebuffer on the negative side.
+        let negative = Some(Rect::new(-50, -50, 40, 40));
+        assert_eq!(damage_clip_for_output(negative, 0, 0, 1920, 1080), None);
+    }
 
     #[test]
     fn poll_deadline_shapes_timeout_values() {

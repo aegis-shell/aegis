@@ -5,6 +5,58 @@ use super::*;
 /// 16x pixel reduction bounds the cost of live 2D + 3D wallpaper capture.
 pub(super) const BACKDROP_DOWNSAMPLE: u32 = 4;
 
+/// Union of the declared backdrop regions in physical pixels, expanded by
+/// the blur footprint and aligned to the downsample factor.
+///
+/// The backdrop capture only needs to cover what the blur can sample: the
+/// regions themselves plus a 3σ margin on every side (dual-Kawase gathers
+/// within roughly that radius), so the offscreen pass renders a fraction of
+/// the desktop instead of the full screen. Origin and size are aligned to
+/// [`BACKDROP_DOWNSAMPLE`] so the capture maps the scene at exactly
+/// 1/BACKDROP_DOWNSAMPLE on both axes and the origin stays an integer
+/// capture-pixel offset. Everything is clamped to the physical extent, so
+/// blur sampling at the screen edge keeps the capture's clamp-to-edge
+/// behaviour rather than sampling undefined padding.
+pub(super) fn blur_capture_bounds(
+    regions: &[aegis_shell::BackdropRegion],
+    logical_size: (u32, u32),
+    physical_size: (u32, u32),
+    scale: f32,
+    sigma: f32,
+) -> ((u32, u32), (u32, u32)) {
+    let mut x0 = f32::INFINITY;
+    let mut y0 = f32::INFINITY;
+    let mut x1 = f32::NEG_INFINITY;
+    let mut y1 = f32::NEG_INFINITY;
+    for region in regions {
+        // Same clamping as the composition pass: regions are logical and
+        // may extend past the output edge.
+        let x = region.x.max(0.0);
+        let y = region.y.max(0.0);
+        let w = region.w.max(0.0).min(logical_size.0 as f32 - x) * scale;
+        let h = region.h.max(0.0).min(logical_size.1 as f32 - y) * scale;
+        if w <= 0.0 || h <= 0.0 {
+            continue;
+        }
+        x0 = x0.min(x * scale);
+        y0 = y0.min(y * scale);
+        x1 = x1.max(x * scale + w);
+        y1 = y1.max(y * scale + h);
+    }
+    if !x0.is_finite() {
+        return ((0, 0), physical_size);
+    }
+    let pad = 3.0 * sigma * scale;
+    let align = BACKDROP_DOWNSAMPLE as f32;
+    let ox = (((x0 - pad) / align).floor() * align).max(0.0);
+    let oy = (((y0 - pad) / align).floor() * align).max(0.0);
+    let ex = ((x1 + pad) / align).ceil() * align;
+    let ey = ((y1 + pad) / align).ceil() * align;
+    let ex = ex.max(ox + align).min(physical_size.0 as f32);
+    let ey = ey.max(oy + align).min(physical_size.1 as f32);
+    ((ox as u32, oy as u32), ((ex - ox) as u32, (ey - oy) as u32))
+}
+
 pub(super) struct BackdropCapture {
     image: flux::Image,
     size: (u32, u32),
@@ -41,13 +93,16 @@ impl LauncherBackdrop {
         })
     }
 
+    /// `extent` is the physical-pixel area the capture must cover (the blur
+    /// regions' padded union, or the full surface for a live 3D wallpaper);
+    /// the capture target is allocated at `extent / BACKDROP_DOWNSAMPLE`.
     pub(super) fn prepare(
         &mut self,
         active: bool,
         device: &flux::Device,
         surface: &flux::Surface,
         frame: &flux::Frame<'_>,
-        surface_size: (u32, u32),
+        extent: (u32, u32),
     ) -> BackdropPlan {
         if !active {
             self.was_active = false;
@@ -60,7 +115,7 @@ impl LauncherBackdrop {
         if opening {
             self.failed_session = false;
         }
-        if self.unsupported || self.failed_session || surface_size.0 == 0 || surface_size.1 == 0 {
+        if self.unsupported || self.failed_session || extent.0 == 0 || extent.1 == 0 {
             return BackdropPlan::Direct;
         }
         let format = match surface.format() {
@@ -77,8 +132,8 @@ impl LauncherBackdrop {
         };
 
         let size = (
-            surface_size.0.div_ceil(BACKDROP_DOWNSAMPLE).max(1),
-            surface_size.1.div_ceil(BACKDROP_DOWNSAMPLE).max(1),
+            extent.0.div_ceil(BACKDROP_DOWNSAMPLE).max(1),
+            extent.1.div_ceil(BACKDROP_DOWNSAMPLE).max(1),
         );
         let slot = frame.index() as usize;
         if self.captures.len() <= slot {
@@ -356,6 +411,7 @@ pub(super) fn draw_client_scene(
     }
     let shm = server.toplevel_frames();
     let dmabuf = server.toplevel_dmabuf_frames();
+    let toplevel_order = server.toplevel_frame_order();
     let sub_shm_below = server.subsurface_frames_below();
     let sub_shm_above = server.subsurface_frames_above();
     let sub_dmabuf_below = server.subsurface_dmabuf_frames_below();
@@ -374,8 +430,7 @@ pub(super) fn draw_client_scene(
         .chain(overlay_dmabuf.iter().map(|frame| frame.id)));
     renderer.draw_subsurfaces(device, canvas, &sub_shm_below);
     renderer.draw_dmabuf_subsurfaces(device, canvas, &sub_dmabuf_below);
-    renderer.draw_toplevels(device, canvas, &shm, (0.0, 0.0));
-    renderer.draw_dmabuf_toplevels(device, canvas, &dmabuf, (0.0, 0.0));
+    renderer.draw_toplevels_ordered(device, canvas, &toplevel_order, &shm, &dmabuf);
     renderer.draw_subsurfaces(device, canvas, &sub_shm_above);
     renderer.draw_dmabuf_subsurfaces(device, canvas, &sub_dmabuf_above);
     renderer.draw_toplevels(device, canvas, &overlay_shm, (0.0, 0.0));
@@ -492,6 +547,7 @@ pub(super) fn draw_overview_scene(
     }
     let shm = server.toplevel_frames();
     let dmabuf = server.toplevel_dmabuf_frames();
+    let toplevel_order = server.toplevel_frame_order();
     let sub_shm_below = server.subsurface_frames_below();
     let sub_shm_above = server.subsurface_frames_above();
     let sub_dmabuf_below = server.subsurface_dmabuf_frames_below();
@@ -506,8 +562,7 @@ pub(super) fn draw_overview_scene(
         .chain(sub_dmabuf_above.iter().map(|frame| frame.id)));
     renderer.draw_subsurfaces_mapped(device, canvas, &sub_shm_below, &map);
     renderer.draw_dmabuf_subsurfaces_mapped(device, canvas, &sub_dmabuf_below, &map);
-    renderer.draw_toplevels_mapped(device, canvas, &shm, &map);
-    renderer.draw_dmabuf_toplevels_mapped(device, canvas, &dmabuf, &map);
+    renderer.draw_toplevels_ordered_mapped(device, canvas, &toplevel_order, &shm, &dmabuf, &map);
     renderer.draw_subsurfaces_mapped(device, canvas, &sub_shm_above, &map);
     renderer.draw_dmabuf_subsurfaces_mapped(device, canvas, &sub_dmabuf_above, &map);
     canvas.restore();
@@ -609,4 +664,106 @@ pub(super) fn draw_glyph_cursor(
         }
     }
     canvas.restore();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn region(x: f32, y: f32, w: f32, h: f32) -> aegis_shell::BackdropRegion {
+        aegis_shell::BackdropRegion { x, y, w, h }
+    }
+
+    #[test]
+    fn capture_bounds_cover_top_bar_with_blur_margin() {
+        // 32px status bar at the top of a 1920x1080 output, sigma 12: the
+        // capture spans the full width but only the bar plus the 3σ margin.
+        let (origin, size) = blur_capture_bounds(
+            &[region(0.0, 0.0, 1920.0, 32.0)],
+            (1920, 1080),
+            (1920, 1080),
+            1.0,
+            12.0,
+        );
+        assert_eq!(origin, (0, 0));
+        assert_eq!(size, (1920, 68));
+    }
+
+    #[test]
+    fn capture_bounds_union_disjoint_regions() {
+        // Top bar + bottom dock: the union covers both, including margins.
+        let (origin, size) = blur_capture_bounds(
+            &[
+                region(0.0, 0.0, 1920.0, 32.0),
+                region(400.0, 1040.0, 1120.0, 40.0),
+            ],
+            (1920, 1080),
+            (1920, 1080),
+            1.0,
+            12.0,
+        );
+        assert_eq!(origin, (0, 0));
+        assert_eq!(size, (1920, 1080));
+    }
+
+    #[test]
+    fn capture_bounds_align_to_downsample() {
+        // A floating region: origin/size land on BACKDROP_DOWNSAMPLE
+        // multiples so the capture scale stays exactly 1/4.
+        let (origin, size) = blur_capture_bounds(
+            &[region(100.0, 100.0, 200.0, 50.0)],
+            (1920, 1080),
+            (1920, 1080),
+            1.0,
+            12.0,
+        );
+        assert_eq!(origin, (64, 64));
+        assert_eq!(size, (272, 124));
+        assert_eq!(origin.0 % BACKDROP_DOWNSAMPLE, 0);
+        assert_eq!(origin.1 % BACKDROP_DOWNSAMPLE, 0);
+        assert_eq!(size.0 % BACKDROP_DOWNSAMPLE, 0);
+        assert_eq!(size.1 % BACKDROP_DOWNSAMPLE, 0);
+    }
+
+    #[test]
+    fn capture_bounds_respect_output_scale() {
+        // scale=2: regions are logical, bounds physical (16 logical px bar
+        // = 32 physical px; margin is 3σ in physical pixels).
+        let (origin, size) = blur_capture_bounds(
+            &[region(0.0, 0.0, 960.0, 16.0)],
+            (960, 540),
+            (1920, 1080),
+            2.0,
+            12.0,
+        );
+        assert_eq!(origin, (0, 0));
+        assert_eq!(size, (1920, 104));
+    }
+
+    #[test]
+    fn capture_bounds_clamp_to_physical_extent() {
+        // Bottom-edge dock: the margin past the screen edge is clamped away.
+        let (origin, size) = blur_capture_bounds(
+            &[region(400.0, 1048.0, 1120.0, 32.0)],
+            (1920, 1080),
+            (1920, 1080),
+            1.0,
+            12.0,
+        );
+        assert_eq!(origin, (364, 1012));
+        assert_eq!(size, (1192, 68));
+    }
+
+    #[test]
+    fn capture_bounds_fall_back_to_full_frame_without_regions() {
+        let (origin, size) = blur_capture_bounds(
+            &[region(10.0, 10.0, 0.0, 0.0)],
+            (1920, 1080),
+            (1920, 1080),
+            1.0,
+            12.0,
+        );
+        assert_eq!(origin, (0, 0));
+        assert_eq!(size, (1920, 1080));
+    }
 }

@@ -11,6 +11,7 @@ Before starting, ensure your Linux system has the following build tools installe
 - **Rust toolchain** (Rust 1.88+ / 2024 edition)
 - **Meson** and **Ninja**
 - **Pkg-config**
+- **Bash 4.3+**
 - System C headers for **Wayland** (`libwayland-dev`, `wayland-protocols`), **Vulkan**, and **xkbcommon**
 
 ---
@@ -32,42 +33,43 @@ meson compile -C ../optics/build
 
 ## Step 2: Running the Compositor in Nested Mode
 
-Run `ass` inside your existing X11 or Wayland session:
+Run the integrated development command inside an existing Wayland session:
 
 ```bash
-cargo run -p ass
+scripts/dev.sh
 ```
 
-This launches the compositor in a nested window on your display. You should see the desktop background, statusbar, and dock appear inside the nested window.
+The runner builds `aegis` and `aegis-settings`, stages System Settings under
+`target/aegis-dev`, and launches one compositor session in a nested window.
+The desktop background, status bar, and Dock appear inside that window.
 
 ---
 
-## Step 3: Launching the Control Center
+## Step 3: Launching System Settings
 
-Open a second terminal window and run the standalone settings app:
+Open Applications inside the nested session and select **System Settings**.
+The launcher discovers its staged desktop entry and icon, starts the
+independent process, and connects it to the nested compositor's Wayland and
+owner-only IPC sockets.
 
-```bash
-cargo run -p aegis-ctl-center
-```
-
-The Control Center connects to the running compositor over its owner-only IPC socket, allowing you to configure display settings, input preferences, and themes interactively.
+The Settings window appears as its own application and groups under the
+System Settings Dock identity.
 
 ---
 
 ## Step 4: Interacting via the Control CLI
 
-You can query compositor state and send commands using `aegis-ctl`:
+The development command prints its private runtime directory at startup.
+Copy that path, then query compositor state from a second terminal:
 
 ```bash
-# Query active outputs and windows
-cargo run -p aegis-ctl -- get outputs
-cargo run -p aegis-ctl -- get windows
-
-# Subscribe to compositor events
-cargo run -p aegis-ctl -- subscribe
+aegis_runtime=/run/user/1000/aegis-dev.ABC123
+XDG_RUNTIME_DIR="$aegis_runtime" cargo run -p aegis-ctl -- get outputs
+XDG_RUNTIME_DIR="$aegis_runtime" cargo run -p aegis-ctl -- get windows
 ```
 
----
+Replace the example value with the directory printed by
+`scripts/dev.sh`. Both commands return state from the nested compositor.
 
 ## Next Steps
 

@@ -48,7 +48,9 @@ fn load_reads_and_parses_a_real_file() {
          action = \"close\"\n",
     )
     .unwrap();
-    let cfg = aegis_config::load(&path).unwrap().expect("file should load");
+    let cfg = aegis_config::load(&path)
+        .unwrap()
+        .expect("file should load");
     let (binds, errs) = cfg.resolve_keybinds();
     assert!(errs.is_empty());
     assert_eq!(binds.len(), 1);

@@ -106,7 +106,11 @@ impl Server {
     /// state still advances so modifier tracking stays consistent when the
     /// client resumes ownership. Returns `None` only when the server has no
     /// keyboard compiled. See ADR-0022.
-    pub fn key_char(&mut self, evdev_code: u32, pressed: bool) -> Option<aegis_core::input::KeyChar> {
+    pub fn key_char(
+        &mut self,
+        evdev_code: u32,
+        pressed: bool,
+    ) -> Option<aegis_core::input::KeyChar> {
         let o = self
             .state
             .keyboard
@@ -348,7 +352,7 @@ impl Server {
         self.state
             .live_surfaces()
             .map(|p| unsafe { &*p })
-            .filter(|s| !s.xdg_toplevel.is_null() && visible.contains(&s.window.id))
+            .filter(|s| s.mapped && !s.xdg_toplevel.is_null() && visible.contains(&s.window.id))
             .map(|s| {
                 let mut w = s.window.clone();
                 w.read_only = !self.state.authority.seat_controls_window(HUMAN_SEAT, w.id);
@@ -368,6 +372,62 @@ impl Server {
                 w
             })
             .collect()
+    }
+
+    /// Content hash of exactly what [`Self::windows`] would publish, computed
+    /// without cloning any `Window`. The frame loop compares this per frame
+    /// and rebuilds the owned snapshot only when it moves; a collision would
+    /// only stall a refresh until the next change.
+    pub fn windows_signature(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let visible = self.visible();
+        let now = self.now_ms();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for s in self
+            .state
+            .live_surfaces()
+            .map(|p| unsafe { &*p })
+            .filter(|s| s.mapped && !s.xdg_toplevel.is_null() && visible.contains(&s.window.id))
+        {
+            let w = &s.window;
+            w.id.hash(&mut hasher);
+            w.title.as_deref().hash(&mut hasher);
+            w.app_id.as_deref().hash(&mut hasher);
+            w.parent.hash(&mut hasher);
+            w.size_hints.min_w.hash(&mut hasher);
+            w.size_hints.min_h.hash(&mut hasher);
+            w.size_hints.max_w.hash(&mut hasher);
+            w.size_hints.max_h.hash(&mut hasher);
+            w.state.maximized.hash(&mut hasher);
+            w.state.fullscreen.hash(&mut hasher);
+            w.state.resizing.hash(&mut hasher);
+            // `windows()` overrides these two from live seat state.
+            self.seat_focuses_window(HUMAN_SEAT, w.id).hash(&mut hasher);
+            (!self.state.authority.seat_controls_window(HUMAN_SEAT, w.id)).hash(&mut hasher);
+            w.minimized.hash(&mut hasher);
+            (w.layout_role as u8).hash(&mut hasher);
+            w.position.x.hash(&mut hasher);
+            w.position.y.hash(&mut hasher);
+            w.size.w.hash(&mut hasher);
+            w.size.h.hash(&mut hasher);
+            // Only in-flight transitions are published; settled ones read as
+            // `None` in the snapshot (ADR-0029).
+            let target = aegis_core::Rect {
+                origin: w.position,
+                size: w.size,
+            };
+            let published = w.transition.filter(|t| t.rect_at(target, now).is_some());
+            published.is_some().hash(&mut hasher);
+            if let Some(t) = published {
+                t.from.origin.x.hash(&mut hasher);
+                t.from.origin.y.hash(&mut hasher);
+                t.from.size.w.hash(&mut hasher);
+                t.from.size.h.hash(&mut hasher);
+                t.started_ms.hash(&mut hasher);
+                t.duration_ms.hash(&mut hasher);
+            }
+        }
+        hasher.finish()
     }
 
     /// Whether compositor-owned physical chrome may mutate this window.

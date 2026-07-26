@@ -15,20 +15,22 @@ use aegis_core::realm::{
     RealmWindowPlacement, SeatCapabilities, VirtualOutput,
 };
 pub use aegis_core::settings::{SettingsAction, SettingsReceipt, SettingsSnapshot};
+pub use aegis_core::system::{SystemAction, SystemStatus};
 use aegis_core::window::{Window, WindowId};
 use aegis_core::workspace::{OutputId, Switch, WorkspaceId, WorkspaceSnapshot};
 
 use crate::journal::{JournalEntry, JournalSnapshot};
 
 /// The protocol major version this build speaks. A client must offer the
-/// same major version at the [`Request::Hello`] handshake. Version 6 adds
-/// user-consent interactive picking (`PickTarget` → `Picked`, ADR-0054) and
-/// the window target on `StreamOutputStart`. Version 5 adds continuous
+/// same major version at the [`Request::Hello`] handshake. Version 7 adds
+/// live system-status queries and immediate system-control commands. Version
+/// 6 adds user-consent interactive picking (`PickTarget` → `Picked`, ADR-0054)
+/// and the window target on `StreamOutputStart`. Version 5 adds continuous
 /// physical-output frame streaming (`StreamOutputStart`,
 /// `Event::StreamFrame`, `Event::StreamEnded`, `StreamOutputStop`,
 /// ADR-0052). Version 4 adds revisioned desktop-settings snapshots,
 /// subscriptions, and confirmed settings transactions.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 /// Built-in owner-only scope used by the compositor's reference CLI for
 /// Realm recovery and administration. The Unix socket remains user-private;
 /// naming this scope opts the connection into the high-risk Realm operation
@@ -142,6 +144,7 @@ pub enum OpClass {
     SwitchWorkspaceTo,
     MoveToWorkspace,
     ToggleTiling,
+    SystemControl,
     Notify,
     DismissNotification,
     Screenshot,
@@ -425,6 +428,8 @@ pub enum Command {
     },
     /// Toggle the current workspace between tiled and floating (ADR-0024). `control`.
     ToggleTiling,
+    /// Apply one immediate live-system control. `control`.
+    System { action: SystemAction },
     /// Post a notification (M9, delivered over the IPC). `control`.
     Notify {
         summary: String,
@@ -534,6 +539,7 @@ impl Command {
             {
                 Err("desktop id length is out of range")
             }
+            Command::System { action } => action.validate(),
             _ => Ok(()),
         }
     }
@@ -555,6 +561,7 @@ impl Command {
             Command::SwitchWorkspaceTo { .. } => OpClass::SwitchWorkspaceTo,
             Command::MoveToWorkspace { .. } => OpClass::MoveToWorkspace,
             Command::ToggleTiling => OpClass::ToggleTiling,
+            Command::System { .. } => OpClass::SystemControl,
             Command::Notify { .. } => OpClass::Notify,
             Command::DismissNotification { .. } => OpClass::DismissNotification,
             Command::Screenshot {
@@ -592,6 +599,9 @@ pub enum Event {
     /// Persistent compositor settings changed. Consumers re-query with
     /// [`Request::GetSettings`] and discard snapshots older than `revision`.
     SettingsChanged { revision: u64 },
+    /// Live host or compositor-owned session status changed. Consumers
+    /// re-query with [`Request::GetSystemStatus`].
+    SystemStatusChanged,
     /// A Realm-directed scene changed. Damage is expressed in that Realm's
     /// virtual-output logical coordinates and is conservative: every changed
     /// pixel is included, but topology changes may invalidate the full output.
@@ -690,7 +700,10 @@ pub enum PickResult {
     Region { rect: Rect },
     /// A picked point in compositor logical pixels and the straight-alpha
     /// RGB of the presented frame at that point.
-    Pixel { point: aegis_core::Point, rgb: [u8; 3] },
+    Pixel {
+        point: aegis_core::Point,
+        rgb: [u8; 3],
+    },
     /// A picked toplevel.
     Window { id: WindowId },
     /// The user declined a specific window and chose the whole output (a
@@ -757,6 +770,8 @@ pub enum Request {
     GetRealms,
     /// Fetch the compositor-owned persistent settings snapshot.
     GetSettings,
+    /// Fetch live host and compositor-owned session status.
+    GetSystemStatus,
     /// Persist and apply one settings edit on the compositor main loop. The
     /// response confirms completion and carries the new revision.
     Settings {
@@ -876,6 +891,10 @@ pub enum Response {
     Settings {
         snapshot: SettingsSnapshot,
     },
+    /// Reply to [`Request::GetSystemStatus`].
+    SystemStatus {
+        snapshot: SystemStatus,
+    },
     SettingsApplied {
         receipt: SettingsReceipt,
     },
@@ -912,7 +931,9 @@ pub enum Response {
     },
     /// Reply to [`Request::PickTarget`] (ADR-0054): what the user picked,
     /// or [`PickResult::Cancelled`].
-    Picked { result: PickResult },
+    Picked {
+        result: PickResult,
+    },
     LeaseRenewed {
         lease: LeaseGrant,
     },
@@ -1138,6 +1159,22 @@ mod tests {
     }
 
     #[test]
+    fn system_control_command_has_a_stable_tagged_shape() {
+        let cmd = Command::System {
+            action: SystemAction::SetVolume { level: 55 },
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"System","action":{"type":"SetVolume","level":55}}"#
+        );
+        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
+        assert_eq!(cmd.op_class(), OpClass::SystemControl);
+        assert!(cmd.required_cap().control);
+        assert!(cmd.validate().is_ok());
+    }
+
+    #[test]
     fn move_to_workspace_command_round_trips() {
         let cmd = Command::MoveToWorkspace {
             window: WindowId(42),
@@ -1320,7 +1357,10 @@ mod tests {
         let json = serde_json::to_string(&with_fps).unwrap();
         assert!(json.contains(r#""type":"StreamOutputStart""#), "{json}");
         assert!(json.contains(r#""max_fps":60"#), "{json}");
-        assert!(!json.contains("target"), "default target is skipped: {json}");
+        assert!(
+            !json.contains("target"),
+            "default target is skipped: {json}"
+        );
         assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), with_fps);
 
         let default: Request = serde_json::from_str(r#"{"type":"StreamOutputStart"}"#).unwrap();
