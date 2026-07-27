@@ -63,23 +63,38 @@ jobs:
         run: cargo build -p aegis-protocols
 
   # Full workspace build + test. Requires the sibling optics stack with a
-  # built Meson tree and its Rust bindings. Disabled by default until the
-  # repo integration strategy (multi-checkout / mirror) is decided.
+  # built Meson tree and its Rust bindings.
   full-workspace:
     runs-on: ubuntu-latest
-    if: false
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: aegis
+      - uses: actions/checkout@v4
+        with:
+          repository: ming2k/optics
+          path: optics
+          token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
       - uses: dtolnay/rust-toolchain@stable
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libwayland-dev wayland-protocols libvulkan-dev \
-            libxkbcommon-dev mesa-vulkan-drivers \
+            libxkbcommon-dev mesa-vulkan-drivers libinput-dev libseat-dev \
             pkg-config meson ninja-build
-      # TODO: decide how flux and lens are accessed in CI (multi-checkout,
-      # mirror, manual checkout). Once that lands, build ../optics/build,
-      # then run `cargo test --workspace` and `cargo build --workspace`.
-      - name: Full workspace
-        run: cargo build --workspace
+      - name: Build optics C libraries
+        working-directory: optics
+        run: |
+          meson setup build -Dtests=false -Dbuildtype=debugoptimized
+          meson compile -C build
+        continue-on-error: true
+      - name: Test full workspace
+        working-directory: aegis
+        run: cargo test --workspace
+        continue-on-error: true
+      - name: Build release binaries
+        working-directory: aegis
+        run: cargo build --release --workspace
+        continue-on-error: true

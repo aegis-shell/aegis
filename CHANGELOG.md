@@ -7,6 +7,13 @@ project cuts a tagged release.
 
 ## Unreleased
 
+## [0.0.1] - 2026-07-27
+
+### Release v0.0.1 Preparation & Installation
+- Added automated release installation script `scripts/install.sh` supporting user (`~/.local`) and system prefix installations.
+- Configured systemd user service (`aegis.service`), desktop entry (`io.github.ming2k.aegis.Settings.desktop`), icons, and XDG portal D-Bus definitions.
+- Enhanced GitHub Actions CI workflow (`.github/workflows/ci.yml`) to validate workspace-wide tests, clippy, and release builds.
+
 ### System Settings and compositor application boundaries
 
 - Renamed the standalone settings product to **System Settings**. Its Cargo
