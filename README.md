@@ -1,82 +1,73 @@
-# ass
+# Aegis
 
-**ass** — *autonomous surface shell* — is a Wayland compositor for Linux,
-written in Rust.
+**Aegis** is a modern Wayland desktop environment and compositor for Linux, built with high-performance Vulkan rendering and built-in AI agent collaboration.
 
-## What It Is
+---
 
-ass composites client windows and draws its own shell chrome through
-[flux](../optics/libs/flux) (a Vulkan-first rendering engine) and
-[lens](../optics/libs/lens) (an immediate-mode UI engine that draws through
-flux).
-The compositor owns the Wayland server, input, output, and window management;
-flux and lens own rendering and UI.
+## Highlights
 
-The near-term goal is a good experience for human users. A later phase
-adapts the compositor so an AI agent can understand and operate the
-machine through it.
+- 🚀 **Vulkan-Powered Performance**: Fast, smooth rendering driven by a modern Vulkan graphics engine.
+- 🎨 **Complete Desktop Shell**: Integrated status bar, dock, application launcher, and System Settings app out of the box.
+- 🤖 **AI Agent Workspaces**: Native `fuji` agent integration for desktop automation without slowing down system performance.
+- 🛡️ **Sandboxed AI Realms**: Isolated execution environments using Linux cgroup v2 for safety and control.
 
-The `aegis-fuji-mcp` process connects the fuji (宓姬) agent to that phase.
-It exposes scoped desktop and Agent Realm tools through fuji's MCP runtime
-without loading inference into the compositor. See
-[Connect fuji to ASS](docs/how-to/fuji.md).
+---
 
 ## Quick Start
 
-ass builds against **flux**, **lens**, and **iris** in the sibling `../optics`
-Meson project. Rust bindings live under `../optics/bindings/`. The fuji agent
-is self-contained in this workspace: the `aegis-fuji` crate holds both the
-platform bridge and fuji's own agent runtime, with no Praxion or Neenee
-dependency.
+### Prerequisites
 
-Build the C libraries with meson first, then run the nested backend inside an
-existing Wayland session:
+Aegis builds against the `optics` rendering libraries in a sibling directory. Make sure system dependencies (`meson`, `ninja`, `libwayland-dev`, `libvulkan-dev`, `libxkbcommon-dev`, `libinput-dev`, `libseat-dev`) are installed.
+
+### 1. Build Rendering Engine
 
 ```bash
 meson setup ../optics/build ../optics -Dtests=false -Dbuildtype=debugoptimized
 meson compile -C ../optics/build
-scripts/dev.sh
 ```
 
-Skip `meson setup` when `../optics/build` already exists.
+### 2. Install Aegis
 
-The development runner builds the compositor and standalone System Settings
-application, stages the application under `target/aegis-dev`, and opens one
-nested compositor session. Open System Settings from Applications to exercise
-the same XDG discovery and launch path used by an installed system.
-
-Run the application directly only for focused UI or IPC testing:
+Run the automated installer to build and install Aegis binaries and system integration files to `~/.local`:
 
 ```bash
-cargo run -p aegis-settings
+./scripts/install.sh --user
 ```
 
-The Rust bindings automatically discover the sibling build tree and publish
-its runtime library paths, so no shell environment setup is required.
-`cargo run -p aegis-settings` opens the standalone application and connects
-it to the compositor over its owner-only IPC, but it does not register the
-application with the Dock or launcher. A direct `cargo run -p aegis` starts
-only the compositor; use the development runner for first-party application
-integration.
-On a bare TTY (no host session) the compositor binary drives the display
-directly through the DRM/KMS backend; force a target with
-`--backend auto|drm|nested` or `ASS_BACKEND`. See [Setup](docs/dev/setup.md)
-for prerequisites and details.
+### 3. Run Aegis
 
-Realm application sandboxes require Aegis to run in its own systemd user
-service with delegated `cpu`, `memory`, and `pids` cgroup v2 controllers. The
-packaging unit is [aegis.service](contrib/systemd/user/aegis.service). A direct
-`cargo run` remains suitable for compositor development, but `realm-launch`
-fails closed there when the containing scope is shared or not delegated. See
-[How to Use AI Workspaces](docs/how-to/ai-workspaces.md).
+- **Try Nested Session** (inside your current desktop):
+  ```bash
+  scripts/dev.sh
+  ```
+
+- **Run as Systemd Service** (on login / bare metal):
+  ```bash
+  systemctl --user daemon-reload
+  systemctl --user enable --now aegis.service
+  ```
+
+---
+
+## Usage & Controls
+
+| Action | Shortcut / Command |
+| ------ | ------------------ |
+| **App Launcher** | Click Launcher icon or press `Super` |
+| **System Settings** | Open System Settings from Launcher or run `aegis-settings` |
+| **CLI Control** | `aegis-ctl --help` |
+
+---
 
 ## Documentation
 
-- [Documentation index](docs/index.md)
-- [Daily-use guides](docs/how-to/index.md)
-- [Architecture](docs/explanation/architecture.md)
-- [Architecture Decision Records](docs/adr/index.md)
+- [User Guides & Daily Use](docs/how-to/index.md)
+- [Configuration Reference](docs/reference/config.md)
+- [Architecture & Design](docs/explanation/architecture.md)
+- [AI Workspaces & Sandboxing](docs/how-to/ai-workspaces.md)
+
+---
 
 ## License
 
-Apache-2.0.
+[Apache-2.0](LICENSE)
