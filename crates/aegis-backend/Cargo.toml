@@ -24,3 +24,6 @@ thiserror.workspace = true
 
 [build-dependencies]
 pkg-config = "0.3"
+
+[package.metadata.cargo-machete]
+ignored = ["flux-sys", "pkg-config"]

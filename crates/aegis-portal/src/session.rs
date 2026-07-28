@@ -21,8 +21,9 @@ pub(crate) enum CastSource {
 
 /// State of one portal screencast session.
 pub(crate) struct CastSession {
-    #[allow(dead_code)]
-    pub(crate) app_id: String,
+    /// Application identity bound by the first successful `SelectSources`.
+    /// `CreateSession` has no `app_id` argument, so the owner starts unset.
+    pub(crate) app_id: Option<String>,
     pub(crate) sources_selected: bool,
     /// The armed source; meaningful once `sources_selected` holds.
     pub(crate) source: CastSource,
@@ -44,14 +45,14 @@ pub(crate) struct SessionRegistry {
 impl SessionRegistry {
     /// Register a fresh session. Duplicate paths are refused so a hostile or
     /// buggy client cannot shadow another application's session.
-    pub(crate) fn insert(&mut self, path: &str, app_id: String) -> Result<(), String> {
+    pub(crate) fn insert(&mut self, path: &str) -> Result<(), String> {
         if self.sessions.contains_key(path) {
             return Err(format!("session {path} already exists"));
         }
         self.sessions.insert(
             path.to_string(),
             CastSession {
-                app_id,
+                app_id: None,
                 sources_selected: false,
                 source: CastSource::Monitor,
                 restore_token: None,
@@ -69,6 +70,7 @@ impl SessionRegistry {
     pub(crate) fn mark_sources_selected(
         &mut self,
         path: &str,
+        app_id: &str,
         restore_token: Option<String>,
         source: CastSource,
     ) -> Result<(), String> {
@@ -79,15 +81,19 @@ impl SessionRegistry {
         if session.sources_selected {
             return Err(format!("session {path} already selected sources"));
         }
+        if app_id.is_empty() {
+            return Err("application id must not be empty".to_string());
+        }
+        if let Some(owner) = &session.app_id
+            && owner != app_id
+        {
+            return Err(format!("session {path} belongs to another application"));
+        }
+        session.app_id = Some(app_id.to_string());
         session.sources_selected = true;
         session.source = source;
         session.restore_token = restore_token;
         Ok(())
-    }
-
-    /// The source `Start` must cast (ADR-0054).
-    pub(crate) fn source(&self, path: &str) -> Option<CastSource> {
-        self.sessions.get(path).map(|session| session.source)
     }
 
     /// The restore token `Start` must report, if the session was armed with
@@ -96,19 +102,22 @@ impl SessionRegistry {
         self.sessions.get(path)?.restore_token.clone()
     }
 
-    /// Whether `Start` may proceed for this session.
-    pub(crate) fn can_start(&self, path: &str) -> Result<(), String> {
+    /// Validate the application owner and return the source `Start` must cast.
+    pub(crate) fn source_for_start(&self, path: &str, app_id: &str) -> Result<CastSource, String> {
         let session = self
             .sessions
             .get(path)
             .ok_or_else(|| format!("unknown session {path}"))?;
+        if session.app_id.as_deref() != Some(app_id) {
+            return Err(format!("session {path} belongs to another application"));
+        }
         if !session.sources_selected {
             return Err(format!("session {path} has not selected sources"));
         }
         if session.cast_thread.is_some() {
             return Err(format!("session {path} already started"));
         }
-        Ok(())
+        Ok(session.source)
     }
 
     pub(crate) fn mark_started(
@@ -162,7 +171,7 @@ mod tests {
 
     fn registry_with(path: &str) -> SessionRegistry {
         let mut registry = SessionRegistry::default();
-        registry.insert(path, "org.example.App".into()).unwrap();
+        registry.insert(path).unwrap();
         registry
     }
 
@@ -170,35 +179,51 @@ mod tests {
     fn duplicate_session_paths_are_refused() {
         let mut registry = registry_with("/s/1");
         assert!(registry.contains("/s/1"));
-        assert!(registry.insert("/s/1", "other".into()).is_err());
-        assert!(registry.insert("/s/2", "other".into()).is_ok());
+        assert!(registry.insert("/s/1").is_err());
+        assert!(registry.insert("/s/2").is_ok());
     }
 
     #[test]
     fn start_requires_selected_sources_and_single_use() {
         let mut registry = registry_with("/s/1");
-        assert!(registry.can_start("/s/1").is_err());
-        registry
-            .mark_sources_selected("/s/1", None, CastSource::Monitor)
-            .unwrap();
-        assert!(registry.can_start("/s/1").is_ok());
         assert!(
             registry
-                .mark_sources_selected("/s/1", None, CastSource::Monitor)
+                .source_for_start("/s/1", "org.example.App")
+                .is_err()
+        );
+        registry
+            .mark_sources_selected("/s/1", "org.example.App", None, CastSource::Monitor)
+            .unwrap();
+        assert_eq!(
+            registry.source_for_start("/s/1", "org.example.App"),
+            Ok(CastSource::Monitor)
+        );
+        assert!(
+            registry
+                .source_for_start("/s/1", "org.example.Other")
+                .is_err()
+        );
+        assert!(
+            registry
+                .mark_sources_selected("/s/1", "org.example.App", None, CastSource::Monitor)
                 .is_err()
         );
 
         let (stop, _read) = UnixStream::pair().unwrap();
         let thread = std::thread::spawn(|| {});
         registry.mark_started("/s/1", stop, thread);
-        assert!(registry.can_start("/s/1").is_err());
+        assert!(
+            registry
+                .source_for_start("/s/1", "org.example.App")
+                .is_err()
+        );
     }
 
     #[test]
     fn remove_stops_and_joins_the_cast() {
         let mut registry = registry_with("/s/1");
         registry
-            .mark_sources_selected("/s/1", None, CastSource::Monitor)
+            .mark_sources_selected("/s/1", "org.example.App", None, CastSource::Monitor)
             .unwrap();
         let (stop, read) = UnixStream::pair().unwrap();
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

@@ -9,7 +9,7 @@ configuration; Aegis remains the authority for every desktop action.
 From the Aegis repository:
 
 ```bash
-cargo build --release -p aegis-fuji
+cargo build --locked --release -p aegis-fuji
 ```
 
 The binaries are `target/release/aegis-fuji-mcp` and `target/release/fuji`.

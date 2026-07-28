@@ -83,7 +83,6 @@ version = "0.0.4"
 dependencies = [
  "aegis-core",
  "dirs",
- "log",
  "serde",
  "thiserror 1.0.69",
  "toml 0.8.23",
@@ -94,7 +93,6 @@ dependencies = [
 name = "aegis-core"
 version = "0.0.4"
 dependencies = [
- "log",
  "serde",
  "serde_json",
 ]
@@ -175,7 +173,6 @@ version = "0.0.4"
 dependencies = [
  "aegis-core",
  "libc",
- "log",
  "serde",
  "serde_json",
 ]
@@ -247,7 +244,6 @@ dependencies = [
  "aegis-design",
  "lens",
  "lens-sys",
- "log",
  "serde",
  "thiserror 1.0.69",
  "toml 0.8.23",
@@ -1355,6 +1351,7 @@ dependencies = [
 [[package]]
 name = "flux"
 version = "0.0.3"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.3#8fa0a0c5fe7c6c4abb4bb10c5efa51be4a7e1c87"
 dependencies = [
  "flux-sys",
 ]
@@ -1362,6 +1359,7 @@ dependencies = [
 [[package]]
 name = "flux-scene-graph"
 version = "0.0.3"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.3#8fa0a0c5fe7c6c4abb4bb10c5efa51be4a7e1c87"
 dependencies = [
  "flux",
  "flux-scene-graph-sys",
@@ -1370,6 +1368,7 @@ dependencies = [
 [[package]]
 name = "flux-scene-graph-sys"
 version = "0.0.3"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.3#8fa0a0c5fe7c6c4abb4bb10c5efa51be4a7e1c87"
 dependencies = [
  "bindgen 0.70.1",
  "pkg-config",
@@ -1378,6 +1377,7 @@ dependencies = [
 [[package]]
 name = "flux-sys"
 version = "0.0.3"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.3#8fa0a0c5fe7c6c4abb4bb10c5efa51be4a7e1c87"
 dependencies = [
  "bindgen 0.70.1",
  "pkg-config",
@@ -1909,6 +1909,7 @@ checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
 [[package]]
 name = "iris"
 version = "0.0.3"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.3#8fa0a0c5fe7c6c4abb4bb10c5efa51be4a7e1c87"
 dependencies = [
  "iris-sys",
  "lens",
@@ -1918,6 +1919,7 @@ dependencies = [
 [[package]]
 name = "iris-sys"
 version = "0.0.3"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.3#8fa0a0c5fe7c6c4abb4bb10c5efa51be4a7e1c87"
 dependencies = [
  "bindgen 0.70.1",
  "pkg-config",
@@ -2051,6 +2053,7 @@ checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
 [[package]]
 name = "lens"
 version = "0.0.3"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.3#8fa0a0c5fe7c6c4abb4bb10c5efa51be4a7e1c87"
 dependencies = [
  "flux",
  "lens-sys",
@@ -2059,6 +2062,7 @@ dependencies = [
 [[package]]
 name = "lens-sys"
 version = "0.0.3"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.3#8fa0a0c5fe7c6c4abb4bb10c5efa51be4a7e1c87"
 dependencies = [
  "bindgen 0.70.1",
  "pkg-config",

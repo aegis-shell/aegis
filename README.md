@@ -1,72 +1,73 @@
 # Aegis
 
-**Aegis** is a modern Wayland desktop environment and compositor for Linux, built with high-performance Vulkan rendering and built-in AI agent collaboration.
+Aegis is a Wayland compositor and desktop shell for Linux. It combines a
+Vulkan-first renderer, native shell surfaces, standalone System Settings,
+and scoped AI-agent workspaces behind explicit process and security
+boundaries.
 
----
+## Capabilities
 
-## Highlights
-
-- 🚀 **Vulkan-Powered Performance**: Fast, smooth rendering driven by a modern Vulkan graphics engine.
-- 🎨 **Complete Desktop Shell**: Integrated status bar, dock, application launcher, and System Settings app out of the box.
-- 🤖 **AI Agent Workspaces**: Native `fuji` agent integration for desktop automation without slowing down system performance.
-- 🛡️ **Sandboxed AI Realms**: Isolated execution environments using Linux cgroup v2 for safety and control.
-
----
+- Vulkan rendering through the
+  [Optics](https://github.com/ming2k/optics) stack
+- Native status bar, Dock, application launcher, notifications, and
+  multi-workspace window management
+- Nested Wayland development and direct DRM/KMS presentation
+- Versioned local IPC with a command-line client and desktop portal backend
+- Isolated Agent Realms with cgroup and capability boundaries
 
 ## Quick Start
 
-### Prerequisites
+The safest first run is a nested session inside an existing Wayland desktop.
+Aegis requires Rust 1.88 or later and the native build dependencies listed in
+the [Getting Started tutorial](docs/tutorials/01-getting-started.md).
 
-Aegis builds against the `optics` rendering libraries in a sibling directory. Make sure system dependencies (`meson`, `ninja`, `libwayland-dev`, `libvulkan-dev`, `libxkbcommon-dev`, `libinput-dev`, `libseat-dev`) are installed.
-
-### 1. Build Rendering Engine
+Install the Optics `v0.0.3` native libraries from a distribution package or
+build the matching source release:
 
 ```bash
-meson setup ../optics/build ../optics -Dtests=false -Dbuildtype=debugoptimized
+git clone --branch v0.0.3 --depth 1 \
+  https://github.com/ming2k/optics.git ../optics
+meson setup ../optics/build ../optics \
+  -Dtests=false -Dbuildtype=debugoptimized
 meson compile -C ../optics/build
+sudo meson install -C ../optics/build
+sudo ldconfig
+pkg-config --modversion flux flux-scene-graph lens iris
 ```
 
-### 2. Install Aegis
-
-Run the automated installer to build and install Aegis binaries and system integration files to `~/.local`:
+From the Aegis repository root, start the compositor:
 
 ```bash
-./scripts/install.sh --user
+cargo run --locked -p aegis
 ```
 
-### 3. Run Aegis
+`AEGIS_BACKEND=auto` is the default. A terminal with `WAYLAND_DISPLAY` set
+opens a nested window; a login on a bare TTY selects direct DRM/KMS.
 
-- **Try Nested Session** (inside your current desktop):
-  ```bash
-  scripts/dev.sh
-  ```
+Source-tree Cargo commands do not install systemd, D-Bus, portal, desktop, or
+icon metadata. An installed distribution package can start the compositor as
+a user service:
 
-- **Run as Systemd Service** (on login / bare metal):
-  ```bash
-  systemctl --user daemon-reload
-  systemctl --user enable --now aegis.service
-  ```
+```bash
+systemctl --user enable --now aegis.service
+```
 
----
+## Controls
 
-## Usage & Controls
-
-| Action | Shortcut / Command |
-| ------ | ------------------ |
-| **App Launcher** | Click Launcher icon or press `Super` |
-| **System Settings** | Open System Settings from Launcher or run `aegis-settings` |
-| **CLI Control** | `aegis-ctl --help` |
-
----
+| Action | Shortcut or command |
+|--------|---------------------|
+| Open Applications | Click Launchpad or press `Super` |
+| Open System Settings | Select it in Applications or run `aegis-settings` |
+| Inspect compositor state | Run `aegis-ctl --help` |
 
 ## Documentation
 
-- [User Guides & Daily Use](docs/how-to/index.md)
-- [Configuration Reference](docs/reference/config.md)
-- [Architecture & Design](docs/explanation/architecture.md)
-- [AI Workspaces & Sandboxing](docs/how-to/ai-workspaces.md)
-
----
+- [Documentation home](docs/index.md)
+- [Getting Started](docs/tutorials/01-getting-started.md)
+- [Daily-use guides](docs/how-to/index.md)
+- [Configuration reference](docs/reference/config.md)
+- [Architecture](docs/explanation/architecture.md)
+- [AI Workspaces](docs/how-to/ai-workspaces.md)
 
 ## License
 

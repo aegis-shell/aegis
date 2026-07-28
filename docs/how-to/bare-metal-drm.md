@@ -10,33 +10,30 @@ is the bare-metal bring-up and smoke checklist.
   `seat` group. Verify with `seatd-launch true` or `loginctl seat-status`.
 - KMS permissions: your user can open `/dev/dri/cardN` through the seat
   manager (no root needed when the seat manager works).
-- The sibling `../optics` source and Meson build trees.
+- Optics `0.0.3` native libraries installed and visible to `pkg-config`.
 
 ## Build
 
 Build the release binary before leaving the graphical session:
 
 ```bash
-meson compile -C ../optics/build
-cargo build --release -p aegis -p aegis-settings -p aegis-ctl
+cargo build --locked --release -p aegis -p aegis-settings -p aegis-ctl
 ```
 
 ## Start
 
 Switch to a free TTY (`Ctrl+Alt+F3`), log in as the normal user, change to the
-repository root, and run the prebuilt integrated session:
+repository root, and run the prebuilt compositor:
 
 ```bash
-RUST_LOG=info \
-  scripts/dev.sh --backend drm --release --no-build
+AEGIS_BACKEND=drm RUST_LOG=info target/release/aegis
 ```
 
 `AEGIS_DRM_DEVICE=/dev/dri/card1` overrides the GPU when there is more than one.
 The log shows the device, seat, connector, and modifier choices as they happen.
-The runner stages System Settings under `target/aegis-dev`, clears
-`WAYLAND_DISPLAY`, and starts exactly one DRM session. It does not install
-files under `~/.local` or `/usr`. Prebuilding keeps compiler latency and
-failures outside the hardware session.
+Prebuilding keeps compiler latency and failures outside the hardware session.
+Install the release first when the launcher must discover System Settings and
+its desktop metadata.
 
 Use the packaged `aegis.service` instead of the direct binary when testing
 Realm application launch. The service delegates the cgroup controllers that

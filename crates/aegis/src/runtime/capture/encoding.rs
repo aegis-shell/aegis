@@ -16,6 +16,7 @@ pub(in crate::runtime) struct CapturedPixels {
 /// Cursor pixels to composite into a saved screenshot after GPU readback.
 /// The source is premultiplied BGRA8, matching Xcursor/Flux; `(x, y)` is the
 /// physical-pixel top-left after applying the hotspot.
+#[derive(Clone)]
 pub(in crate::runtime) struct CaptureCursor {
     pub(in crate::runtime) x: i32,
     pub(in crate::runtime) y: i32,

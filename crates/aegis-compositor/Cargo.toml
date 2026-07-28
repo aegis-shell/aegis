@@ -17,3 +17,6 @@ xkbcommon = "0.9"
 
 [build-dependencies]
 pkg-config = "0.3"
+
+[package.metadata.cargo-machete]
+ignored = ["pkg-config"]

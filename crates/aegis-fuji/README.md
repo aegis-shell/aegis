@@ -11,7 +11,7 @@ product for Aegis: one crate, two binaries.
   compositor remains model-free.
 
 ```bash
-cargo build --release -p aegis-fuji
+cargo build --locked --release -p aegis-fuji
 target/release/fuji print-config   # annotated example configuration
 target/release/fuji check          # validate config, credentials, MCP
 target/release/aegis-fuji-mcp check  # probe the compositor-granted scope

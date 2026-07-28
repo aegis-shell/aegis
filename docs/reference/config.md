@@ -499,10 +499,3 @@ mods = ["super"]
 key = "right"
 action = "workspace_next"
 ```
-
-## Migration from `$AEGIS_KEYBINDS`
-
-The `$AEGIS_KEYBINDS` environment variable (`mods+key=action;...`) is
-deprecated and remains honored as a transitional override that takes
-precedence over the file. To migrate, move each entry into a `[[keybind]]`
-table. The variable will be removed before the desktop phase closes.

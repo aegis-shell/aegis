@@ -1,13 +1,14 @@
 # Vision and Scope
 
 aegis is a Wayland compositor and graphical shell for Linux, written in Rust
-on [flux](../../../optics/libs/flux) and [lens](../../../optics/libs/lens). This page states
-what the project is for, what it is not for, and the design principles that
-keep it small as it grows toward the feature richness of a full desktop
+on [flux](https://github.com/ming2k/optics/tree/main/libs/flux) and
+[lens](https://github.com/ming2k/optics/tree/main/libs/lens). This page
+states what the project is for, what it is not for, and the design principles
+that keep it small as it grows toward the feature richness of a full desktop
 shell. The concrete milestone sequence is [Roadmap](roadmap.md); the
-decisions behind the principles are [Architecture Decision Records](../adr/index.md);
-the systems aegis borrows from are surveyed in
-[Comparative Survey](comparative-survey.md).
+decisions behind the principles are
+[Architecture Decision Records](../adr/index.md); the systems aegis borrows
+from are surveyed in [Comparative Survey](comparative-survey.md).
 
 ## The Two Phases
 

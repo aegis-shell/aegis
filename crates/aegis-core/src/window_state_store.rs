@@ -104,9 +104,12 @@ impl WindowStateStore {
         let Ok(content) = std::fs::read_to_string(path) else {
             return Self::default();
         };
-        let mut store: Self = serde_json::from_str(&content).unwrap_or_default();
-        store.migrate();
-        store
+        let store: Self = serde_json::from_str(&content).unwrap_or_default();
+        if store.version == Self::CURRENT_VERSION {
+            store
+        } else {
+            Self::default()
+        }
     }
 
     /// Save the store to a JSON file. Automatically creates parent directories.
@@ -143,29 +146,6 @@ impl WindowStateStore {
             }
         }
     }
-
-    #[cfg(feature = "serde")]
-    fn migrate(&mut self) {
-        if self.version == 0 {
-            for state in self.entries.values_mut() {
-                state.workspace = state
-                    .workspace
-                    .map(|workspace| workspace.saturating_sub(1).max(1));
-            }
-        }
-        if self.version < 2 {
-            // Version 1 also persisted transient-dialog geometry under the
-            // application's main app_id.  Those values cannot be
-            // distinguished from genuine main-window geometry after the
-            // fact, so do not replay potentially contaminated positions and
-            // sizes once.  The next main-window move/close repopulates them.
-            for state in self.entries.values_mut() {
-                state.position = None;
-                state.size = None;
-            }
-        }
-        self.version = Self::CURRENT_VERSION;
-    }
 }
 
 #[cfg(test)]
@@ -194,7 +174,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "serde")]
-    fn legacy_workspace_ids_are_migrated_to_one_based_positions() {
+    fn unsupported_versions_are_rejected() {
         let dir = std::env::temp_dir().join(format!(
             "aegis-window-state-migration-{}",
             std::process::id()
@@ -205,54 +185,14 @@ mod tests {
             &path,
             r#"{
                 "entries": {
-                    "first": { "workspace": 2 },
-                    "second": { "workspace": 3 }
+                    "first": { "workspace": 2 }
                 }
             }"#,
         )
         .unwrap();
 
         let store = WindowStateStore::load_from_path(&path);
-        assert_eq!(store.get("first").unwrap().workspace, Some(1));
-        assert_eq!(store.get("second").unwrap().workspace, Some(2));
-
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    #[cfg(feature = "serde")]
-    fn version_one_geometry_is_dropped_because_dialogs_contaminated_it() {
-        let dir = std::env::temp_dir().join(format!(
-            "aegis-window-state-v1-migration-{}",
-            std::process::id()
-        ));
-        let path = dir.join("window_state.json");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            &path,
-            r#"{
-                "version": 1,
-                "entries": {
-                    "org.mozilla.firefox": {
-                        "position": { "x": 234, "y": 149 },
-                        "size": { "w": 500, "h": 200 },
-                        "workspace": 2,
-                        "layout_role": "floating"
-                    }
-                }
-            }"#,
-        )
-        .unwrap();
-
-        let store = WindowStateStore::load_from_path(&path);
-        let firefox = store.get("org.mozilla.firefox").unwrap();
-        assert_eq!(firefox.position, None);
-        assert_eq!(firefox.size, None);
-        assert_eq!(firefox.workspace, Some(2));
-        assert_eq!(
-            firefox.layout_role,
-            Some(crate::layout::LayoutRole::Floating)
-        );
+        assert!(store.entries.is_empty());
 
         let _ = std::fs::remove_dir_all(dir);
     }

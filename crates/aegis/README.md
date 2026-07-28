@@ -16,9 +16,8 @@ Wayland compositor built on flux and lens.
 
 Reusable models and mechanisms do not belong in this crate. They live in the
 corresponding `aegis-*` library so the executable remains wiring and lifecycle
-code. The executable selects the presentation backend (`--backend
-auto|drm|nested` or `AEGIS_BACKEND`): nested inside an existing session for
-development, direct DRM/KMS on a bare TTY via `aegis-backend`.
+code. The executable selects the presentation backend from `AEGIS_BACKEND`:
+`auto` nests inside an existing session and drives DRM/KMS on a bare TTY.
 
 ## Runtime Effect
 
@@ -31,11 +30,13 @@ functions remain available when that preflight fails.
 
 ## Use
 
-Build the sibling optics libraries first, then run from the repository root:
+For cross-repository development, build the sibling Optics libraries first,
+activate the local Cargo override once, then run from the repository root:
 
 ```bash
 meson compile -C ../optics/build
-cargo run -p aegis -- --backend nested
+cp .cargo/optics-local.toml .cargo/config.toml
+cargo run --locked -p aegis
 ```
 
 The repository [Quick Start](../../README.md#quick-start) contains the full

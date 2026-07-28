@@ -14,3 +14,6 @@ flux = { workspace = true }
 flux-sys = { workspace = true }
 libc.workspace = true
 log.workspace = true
+
+[package.metadata.cargo-machete]
+ignored = ["flux-sys"]

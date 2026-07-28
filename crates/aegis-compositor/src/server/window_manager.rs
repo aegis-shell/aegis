@@ -430,10 +430,7 @@ impl Server {
                     output,
                     self.state.as_ref() as *const State as *mut State,
                 );
-                let version = ffi::wl_resource_get_version(res);
-                if version >= 2 {
-                    ffi::wl_resource_post_event(res, ffi::ZXDG_OUTPUT_V1_DONE);
-                }
+                extensions::finish_xdg_output_batch(res, output);
             }
         }
     }

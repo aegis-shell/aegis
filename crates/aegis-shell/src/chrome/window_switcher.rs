@@ -7,7 +7,7 @@
 
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
-use crate::{AppCatalog, Chrome, ChromeEvents, IconSet, Localizer};
+use crate::{AppCatalog, Chrome, ChromeEvents, IconSet, Localizer, truncate};
 use aegis_core::window::Window;
 use aegis_core::workspace::WorkspaceSnapshot;
 
@@ -221,15 +221,6 @@ fn to_lens(rect: aegis_core::Rect) -> Rect {
         w: rect.size.w as f32,
         h: rect.size.h as f32,
     }
-}
-
-fn truncate(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-    let mut truncated: String = text.chars().take(max_chars.saturating_sub(1)).collect();
-    truncated.push('…');
-    truncated
 }
 
 #[cfg(test)]

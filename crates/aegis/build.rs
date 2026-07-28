@@ -1,15 +1,13 @@
-//! Re-emit the rpaths published by the flux / lens `-sys` crates (via their
-//! `links` metadata) so the final `aegis` binary resolves libflux.so and
-//! liblens.so from the sibling meson build trees at runtime without
-//! `LD_LIBRARY_PATH`. `rustc-link-arg` does not propagate across crates, so the
-//! terminal binary must re-emit them itself.
+//! Re-emit the native-library paths published by the Optics `-sys` crates via
+//! their `links` metadata. This keeps the final binary correct for both
+//! system-installed libraries and the opt-in local Optics override.
+//! `rustc-link-arg` does not propagate across crates, so the terminal binary
+//! must re-emit the paths itself.
 
 fn main() {
-    // A stale system libflux may sit in /usr/lib (pulled in as a link-search by
-    // system deps such as vulkan/freetype). Search the build-tree flux first so
-    // `-lflux` binds to the current library, not the system one. Emitted from
-    // the terminal binary because link-search order follows crate order and the
-    // binary's own paths come first.
+    // Keep the flux path selected by flux-sys ahead of unrelated search paths
+    // introduced by dependencies such as Vulkan or FreeType. Emitting it from
+    // the terminal binary gives it the intended link-search precedence.
     if let Ok(rpaths) = std::env::var("DEP_FLUX_RPATHS") {
         for dir in rpaths.split(';').filter(|s| !s.is_empty()) {
             println!("cargo:rustc-link-search=native={dir}");

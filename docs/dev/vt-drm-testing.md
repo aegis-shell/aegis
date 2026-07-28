@@ -10,7 +10,7 @@ repository root:
 
 ```bash
 meson compile -C ../optics/build
-cargo build --release -p aegis -p aegis-settings -p aegis-ctl
+cargo build --locked --release -p aegis -p aegis-settings -p aegis-ctl
 ```
 
 Do not compile on the test VT. Building first keeps compiler latency and build
@@ -27,25 +27,24 @@ failures out of the hardware test.
 5. Start the DRM backend:
 
 ```bash
-RUST_BACKTRACE=1 RUST_LOG=info \
-  scripts/dev.sh --backend drm --release --no-build
+AEGIS_BACKEND=drm RUST_BACKTRACE=1 RUST_LOG=info \
+  target/release/aegis
 ```
 
 On a multi-GPU machine, select the intended DRM card explicitly:
 
 ```bash
 AEGIS_DRM_DEVICE=/dev/dri/card1 \
-RUST_BACKTRACE=1 RUST_LOG=info \
-  scripts/dev.sh --backend drm --release --no-build
+AEGIS_BACKEND=drm RUST_BACKTRACE=1 RUST_LOG=info \
+  target/release/aegis
 ```
 
 Replace `/dev/dri/card1` with the card that owns the display connectors being
 tested.
 
-The runner stages the prebuilt Settings executable and XDG metadata, prepends
-that private prefix to `PATH` and `XDG_DATA_DIRS`, clears
-`WAYLAND_DISPLAY`, and starts exactly one DRM session. It does not install
-files into the user or system prefix.
+Stage the development prefix from [Setup](setup.md#build-and-run) before
+switching VTs when this test must include discovery of the Settings
+executable and its XDG metadata.
 
 ## Try the Desktop
 
@@ -94,7 +93,7 @@ outputs and releases the seat and DRM device before returning to the TTY.
 - When running aegis on a separate VT while another compositor (e.g. Niri or Sway)
   is actively running under the same user account, wrap the command in
   `dbus-run-session` (e.g.
-  `dbus-run-session scripts/dev.sh --backend drm --release --no-build`).
+  `dbus-run-session env AEGIS_BACKEND=drm target/release/aegis`).
   This creates an isolated D-Bus session bus so Flatpak apps
   (`flatpak-session-helper`), D-Bus portals, and single-instance applications
   (like Firefox) do not route their windows back to the other compositor's

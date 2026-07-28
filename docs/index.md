@@ -1,8 +1,9 @@
 # aegis Documentation
 
 aegis is a Wayland compositor for Linux, written in Rust on
-[flux](../../optics/libs/flux) and [lens](../../optics/libs/lens). Start with
-the [README](../README.md) for the project pitch and the shortest run path.
+[flux](https://github.com/ming2k/optics/tree/main/libs/flux) and
+[lens](https://github.com/ming2k/optics/tree/main/libs/lens). Start with the
+[README](../README.md) for the project pitch and the shortest run path.
 
 ## Sections
 

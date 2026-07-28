@@ -5,7 +5,7 @@ ordinary Wayland clients. System Settings is the first application following
 this model.
 
 The architecture is defined by
-[ADR-0059](../adr/0059-first-party-application-installation-and-development-staging.md).
+[ADR-0069](../adr/0069-documentation-owned-installation-and-throwaway-development-staging.md).
 
 ## Process Boundary
 
@@ -54,38 +54,16 @@ compiled binaries.
 
 ## Development Staging
 
-Development simulates installation without writing to `~/.local` or `/usr`.
-The private prefix defaults to:
+Direct Cargo commands are the default development loop. Stage the complete
+first-party application contract into a throwaway prefix only when a test
+needs XDG discovery, so the user's `~/.local` stays clean. Follow the
+canonical recipe in [Setup](setup.md#build-and-run).
 
-```text
-target/aegis-dev/
-├── bin/
-│   └── aegis-settings
-└── share/
-    ├── applications/
-    │   └── io.github.ming2k.aegis.Settings.desktop
-    └── icons/hicolor/scalable/apps/
-        └── io.github.ming2k.aegis.Settings.svg
-```
-
-Run one integrated development session:
-
-```bash
-scripts/dev.sh
-```
-
-The runner:
-
-1. builds `aegis` and `aegis-settings`;
-2. stages the compiled application and its XDG metadata;
-3. prepends `target/aegis-dev/bin` to `PATH`;
-4. prepends `target/aegis-dev/share` to `XDG_DATA_DIRS`;
-5. starts one nested compositor session; and
-6. lets the normal XDG scanner discover System Settings.
-
-The staging directory is a build artifact. It persists across development
-runs for inspection and is safe to remove through the normal Cargo target
-cleanup process.
+The desktop entry's `Exec=aegis-settings` resolves through `PATH` and its
+`Icon` through `XDG_DATA_DIRS`, so the launcher follows the same lookup path
+as a packaged installation. Distribution installation also owns the systemd
+unit, D-Bus service, and portal metadata; its complete manifest is in
+[Distribution Packaging](packaging.md).
 
 ## One-Off Workflows
 
@@ -95,7 +73,7 @@ Run System Settings directly when only its UI, IPC behavior, or module state
 needs testing:
 
 ```bash
-cargo run -p aegis-settings
+cargo run --locked -p aegis-settings
 ```
 
 This starts the independent application but does not register it with the
@@ -104,49 +82,31 @@ current `XDG_RUNTIME_DIR` and `WAYLAND_DISPLAY`.
 
 ### XDG Integration
 
-Use the runner for normal integration testing:
+With the staging prefix exported above, start the compositor:
 
 ```bash
-scripts/dev.sh
+cargo run --locked -p aegis
 ```
 
 Open Applications inside the nested session and launch System Settings. This
-path verifies desktop discovery, icon resolution, `TryExec`, detached launch,
-Wayland application grouping, and IPC connectivity together.
-
-### Staging Layout
-
-The staging step is intentionally small. To inspect it without starting the
-compositor, run:
-
-```bash
-install -Dm0755 target/debug/aegis-settings \
-  target/aegis-dev/bin/aegis-settings
-install -Dm0644 contrib/io.github.ming2k.aegis.Settings.desktop \
-  target/aegis-dev/share/applications/io.github.ming2k.aegis.Settings.desktop
-install -Dm0644 contrib/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg \
-  target/aegis-dev/share/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg
-find target/aegis-dev -type f -print
-```
-
-Adjust `target/debug` when using another Cargo target directory or profile.
+verifies desktop discovery, icon resolution, `TryExec`, detached launch,
+Wayland application grouping, and IPC connectivity together. Inspect the
+staged tree at any time with `find "$stage" -type f -print`.
 
 ## Test Selection
 
 | Change | Minimum focused validation |
 |--------|----------------------------|
-| Settings module or UI | `cargo test -p aegis-settings` |
-| Shared application identity | `cargo test -p aegis-core app::tests` |
-| Desktop scanning or icon lookup | `cargo test -p aegis-desktop-entries` |
-| Development build, staging, and environment behavior | `tests/dev-workflow.sh` |
-| Dock and launcher integration | Run `scripts/dev.sh` and launch Settings from Applications |
+| Settings module or UI | `cargo test --locked -p aegis-settings` |
+| Shared application identity | `cargo test --locked -p aegis-core app::tests` |
+| Desktop scanning or icon lookup | `cargo test --locked -p aegis-desktop-entries` |
+| Dock and launcher integration | Stage the development prefix, start Aegis, and launch Settings from Applications |
 | Production package | Install into a clean prefix and verify the same desktop id, icon, and executable |
 
 Run the workspace suite before delivery:
 
 ```bash
-cargo test --workspace
-tests/dev-workflow.sh
+cargo test --locked --workspace
 ```
 
 ## New First-Party Applications
@@ -157,10 +117,9 @@ When adding another external application:
 2. Assign one reverse-DNS application id.
 3. Add a desktop entry whose filename and `StartupWMClass` match that id.
 4. Add a hicolor icon whose name matches the desktop entry's `Icon`.
-5. Add the binary and metadata to the staging step in `scripts/dev.sh`.
-6. Extend `tests/dev-workflow.sh`.
-7. Add the artifacts to the production package manifest.
-8. Test launching it from Applications instead of synthesizing a catalog
+5. Add the binary and metadata to the development staging recipe and
+   production package manifest.
+6. Test launching it from Applications instead of synthesizing a catalog
    entry.
 
 Compositor-owned virtual surfaces are different: they do not have an
@@ -170,9 +129,8 @@ external executable and may remain explicit built-in catalog entries.
 
 | Symptom | Check |
 |---------|-------|
-| Settings is absent from Applications | Use `scripts/dev.sh`; confirm the staged desktop file exists and `XDG_DATA_DIRS` starts with the staged `share` directory. |
-| Settings appears but does not launch | Confirm the staged binary is executable, staged `bin` is on `PATH`, and `TryExec=aegis-settings` resolves. |
-| Settings uses a fallback glyph | Confirm the desktop `Icon` matches the staged SVG filename and `rsvg-convert` is available. |
+| Settings is absent from Applications | Stage the development prefix and confirm the desktop file exists under `$XDG_DATA_DIRS` and `$aegis_stage/share/applications`. |
+| Settings appears but does not launch | Confirm `aegis-settings` is executable on `PATH` and `TryExec=aegis-settings` resolves. |
+| Settings uses a fallback glyph | Confirm the desktop `Icon` matches the installed SVG filename and `rsvg-convert` is available. |
 | A running Settings window is a separate Dock item | Confirm `StartupWMClass`, the Wayland application id, and the desktop-file stem share the canonical identity. |
-| Host applications disappear | Preserve `/usr/local/share:/usr/share` after the staged directory in `XDG_DATA_DIRS`. |
-| A direct `cargo run -p aegis` cannot find Settings | This is expected; direct Cargo runs do not stage first-party applications. |
+| A direct `cargo run --locked -p aegis` cannot find Settings | Stage the development prefix first; Cargo does not install desktop entries or icons. |

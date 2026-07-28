@@ -2,9 +2,10 @@
 
 aegis is a Wayland compositor for Linux, written in Rust. It composites
 client windows and draws its own shell chrome through
-[flux](../../../optics/libs/flux), a Vulkan-first rendering engine, and
-[lens](../../../optics/libs/lens), an immediate-mode UI engine that draws through
-flux.
+[flux](https://github.com/ming2k/optics/tree/main/libs/flux), a Vulkan-first
+rendering engine, and
+[lens](https://github.com/ming2k/optics/tree/main/libs/lens), an
+immediate-mode UI engine that draws through flux.
 
 This page explains how the components fit together and where the project is
 headed. For the product direction, see [Vision and Scope](vision.md); for
@@ -59,10 +60,13 @@ backend, renderer, and shell behind clear seams so the
 | **AI integration** | `aegis-fuji` | fuji in one crate: the out-of-process MCP adapter plus its own agent runtime, scoped desktop tools and one bridge-managed Agent Realm |
 | **Binary** | `aegis` | The binary: wires the parts together and runs the event loop |
 
-flux and lens are consumed through Rust bindings kept in separate
-repositories from their C libraries, following the openssl-sys /
-rusqlite convention: `flux-rs` (`flux` / `flux-sys`) and `lens-rs`
-(`lens` / `lens-sys`). See [ADR-0023](../adr/0023-split-flux-lens-stack.md).
+flux and lens are consumed through separately versioned Rust binding
+workspaces in the Optics monorepo, following the openssl-sys / rusqlite
+convention: `flux-rs` (`flux` / `flux-sys`) and `lens-rs`
+(`lens` / `lens-sys`). Native libraries cross the repository boundary
+through `pkg-config`; binding sources come from a locked release by default.
+See
+[ADR-0067](../adr/0067-remote-optics-dependencies-and-local-overrides.md).
 
 ### Naming note: where the "user-facing" logic lives
 
@@ -77,7 +81,7 @@ user sees or can do" tasks:
   controls, AI Workspaces has an independent compositor-owned component, and
   persistent settings run as the standalone `aegis-settings` application
   ([ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md),
-  [ADR-0059](../adr/0059-first-party-application-installation-and-development-staging.md),
+  [ADR-0069](../adr/0069-documentation-owned-installation-and-throwaway-development-staging.md),
   [ADR-0045](../adr/0045-statusbar-crate-and-sni-tray.md)).
 - **"Add an external control path"** (CLI or scripts) → `aegis-ipc` +
   `aegis-ctl`; the fuji agent consumes that same IPC through

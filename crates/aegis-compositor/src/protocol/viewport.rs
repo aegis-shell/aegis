@@ -205,14 +205,3 @@ unsafe extern "C" fn viewport_set_destination(
         (*rec).pending_viewport_dst = Some(Some(aegis_core::Size { w, h }));
     }
 }
-
-#[allow(dead_code)]
-unsafe extern "C" fn viewport_noop_source(
-    _c: *mut ffi::wl_client,
-    _r: *mut ffi::wl_resource,
-    _x: i32,
-    _y: i32,
-    _w: i32,
-    _h: i32,
-) {
-}

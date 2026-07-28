@@ -1,4 +1,4 @@
-//! Make the crate's test harness resolve the sibling Flux build tree.
+//! Propagate the Flux native-library path to this crate's test harness.
 
 fn main() {
     if let Ok(rpaths) = std::env::var("DEP_FLUX_RPATHS") {

@@ -161,9 +161,8 @@ schema, full live reload, and validation errors reported back to the user
 rather than silently ignored. The decision, and the rejection of an embedded
 scripting language and of ad hoc INI, is in
 [ADR-0026](../adr/0026-configuration-system.md). TOML is chosen over KDL for
-tooling maturity and over YAML for explicitness. The current `$AEGIS_KEYBINDS`
-environment variable (see [CHANGELOG](../../CHANGELOG.md)) is a placeholder
-that the config file subsumes.
+tooling maturity and over YAML for explicitness. Configuration has one
+authoritative surface rather than environment-specific overrides.
 
 ## Extension and Automation
 

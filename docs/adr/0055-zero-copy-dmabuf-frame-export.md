@@ -9,7 +9,10 @@
 
 While CPU readback unblocked initial ScreenCast functionality, continuous CPU readback (GPU staging copy $\rightarrow$ CPU pixel conversion $\rightarrow$ memfd transfer $\rightarrow$ PipeWire shm) introduces memory bandwidth overhead at high frame rates and resolutions (e.g. 4K @ 60 FPS).
 
-[flux](../../libs/flux) already supports direct GPU dmabuf export via `Surface::offscreen_dmabuf` and `export_dmabuf`. PipeWire and modern video consumers (Firefox, Chromium, OBS) natively support `SPA_VIDEO_FORMAT_DMA_DRM` zero-copy buffer passing.
+[flux](https://github.com/ming2k/optics/tree/v0.0.3/bindings/flux-rs/crates/flux)
+already supports direct GPU dmabuf export via `Surface::offscreen_dmabuf` and
+`export_dmabuf`. PipeWire and modern video consumers (Firefox, Chromium, OBS)
+natively support `SPA_VIDEO_FORMAT_DMA_DRM` zero-copy buffer passing.
 
 ## Decision
 

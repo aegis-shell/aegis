@@ -1,11 +1,10 @@
 //! Configurable global key bindings.
 //!
 //! Pure: a [`Keymap`] is an ordered list of [`Keybind`]s — (modifier mask,
-//! keysym) → [`Action`]. The binary builds one from the built-in defaults
-//! plus an optional `AEGIS_KEYBINDS` env var, and matches each non-captured
-//! key press against it. Keeping this module in `aegis-core` (no flux, lens, or
-//! Wayland dependency) lets the binding table and its parser be unit-tested
-//! in isolation.
+//! keysym) → [`Action`]. The binary layers the configuration file over the
+//! built-in defaults and matches each non-captured key press against it.
+//! Keeping this module in `aegis-core` (no flux, lens, or Wayland dependency)
+//! lets the binding table and name resolvers be unit-tested in isolation.
 //!
 //! Matching is exact on the depressed modifier mask: a binding fires only when
 //! the active modifiers equal its mask exactly (so `Super+Q` does not also
@@ -74,9 +73,8 @@ pub struct Keymap {
 }
 
 impl Keymap {
-    /// Built-in defaults, used when `AEGIS_KEYBINDS` is unset or empty. A bare
-    /// Super tap (handled by `TapDetector` in the binary, not a binding) also
-    /// toggles the launcher, so these are additive.
+    /// Built-in defaults. A bare Super tap (handled by `TapDetector` in the
+    /// binary, not a binding) also toggles the launcher, so these are additive.
     pub fn defaults() -> Keymap {
         Keymap {
             binds: vec![
@@ -96,61 +94,6 @@ impl Keymap {
                 kb(Mods::SUPER | Mods::SHIFT, 0xff0d, Action::Quit),
             ],
         }
-    }
-
-    /// Parse `AEGIS_KEYBINDS`-style overrides: `Mod+Mod+key=action;...`
-    /// (e.g. `super+space=launcher;super+q=close`). Returns the parsed
-    /// bindings plus one error string per malformed entry, so the caller can
-    /// log the rejects without aborting the good ones. Empty / whitespace-only
-    /// entries are skipped silently.
-    pub fn parse_overrides(s: &str) -> (Vec<Keybind>, Vec<String>) {
-        let mut binds = Vec::new();
-        let mut errs = Vec::new();
-        for raw in s.split(';') {
-            let entry = raw.trim();
-            if entry.is_empty() {
-                continue;
-            }
-            let Some((lhs, rhs)) = entry.split_once('=') else {
-                errs.push(format!("'{entry}': missing '='"));
-                continue;
-            };
-            let mut mods = Mods::NONE;
-            let mut keysym = None;
-            // At most one diagnostic per entry: the first problem seen wins,
-            // later checks short-circuit so a malformed entry is not noisy.
-            let mut err: Option<String> = None;
-            for tok in lhs.split('+') {
-                let t = tok.trim().to_ascii_lowercase();
-                if t.is_empty() {
-                    continue;
-                }
-                if err.is_some() {
-                    continue;
-                }
-                if let Some(m) = mod_from_name(&t) {
-                    mods |= m;
-                } else if let Some(k) = keysym_from_name(&t) {
-                    keysym = Some(k);
-                } else {
-                    err = Some(format!("unknown token '{}'", tok.trim()));
-                }
-            }
-            if err.is_none() && keysym.is_none() {
-                err = Some("no key found".to_string());
-            }
-            let action = action_from_name(rhs.trim());
-            if err.is_none() && action.is_none() {
-                err = Some(format!("unknown action '{}'", rhs.trim()));
-            }
-            match (err, keysym, action) {
-                (Some(e), _, _) => errs.push(format!("'{entry}': {e}")),
-                (None, Some(k), Some(a)) => binds.push(kb(mods, k, a)),
-                // Unreachable: err is set whenever keysym or action is None.
-                (None, _, _) => {}
-            }
-        }
-        (binds, errs)
     }
 
     /// Prepend `overrides` so user bindings take precedence over the
@@ -334,9 +277,8 @@ mod tests {
 
     #[test]
     fn override_takes_precedence_and_keeps_defaults() {
-        let (binds, errs) = Keymap::parse_overrides("super+space=launcher");
-        assert!(errs.is_empty());
-        let km = Keymap::defaults().with_overrides(binds);
+        let km =
+            Keymap::defaults().with_overrides(vec![kb(Mods::SUPER, 0x20, Action::ToggleLauncher)]);
         // Override present.
         assert_eq!(
             km.match_key(Mods::SUPER, 0x20),
@@ -348,25 +290,6 @@ mod tests {
             Some(Action::CycleFocus)
         );
         assert!(km.len() >= 6);
-    }
-
-    #[test]
-    fn parser_handles_multiple_entries_and_whitespace() {
-        let (binds, errs) = Keymap::parse_overrides(" super + q = close ; super+f4 = quit ");
-        assert!(errs.is_empty(), "{errs:?}");
-        assert_eq!(binds.len(), 2);
-        assert_eq!(binds[0].action, Action::CloseFocused);
-        assert_eq!(binds[1].action, Action::Quit);
-    }
-
-    #[test]
-    fn parser_collects_errors_without_aborting() {
-        // One diagnostic per malformed entry; good entries still parse.
-        let (binds, errs) = Keymap::parse_overrides("super+q=close; nokey=launcher; super=fake");
-        assert_eq!(binds.len(), 1);
-        assert_eq!(binds[0].action, Action::CloseFocused);
-        // "nokey=launcher" → unknown token; "super=fake" → no key found.
-        assert_eq!(errs.len(), 2, "{errs:?}");
     }
 
     #[test]

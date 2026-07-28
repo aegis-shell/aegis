@@ -237,6 +237,10 @@ impl LauncherBackdrop {
 pub(super) struct ScreenshotFreeze {
     captures: Vec<Option<BackdropCapture>>,
     active_slot: Option<usize>,
+    /// The compositor-owned cursor as it appeared on the trigger frame.
+    /// Client cursor surfaces are already part of `captures`; this is the
+    /// themed cursor used by nested backends and direct KMS.
+    cursor: Option<CaptureCursor>,
     /// A freeze session is in progress (requested, capturing, or frozen).
     pub(super) armed: bool,
     /// The snapshot holds the trigger frame.
@@ -254,6 +258,7 @@ impl ScreenshotFreeze {
         Self {
             captures: Vec::new(),
             active_slot: None,
+            cursor: None,
             armed: false,
             captured: false,
             failed: false,
@@ -273,6 +278,7 @@ impl ScreenshotFreeze {
         self.pending_open = true;
         self.opened = false;
         self.active_slot = None;
+        self.cursor = None;
     }
 
     /// Whether this frame must render the scene into the snapshot target.
@@ -285,9 +291,14 @@ impl ScreenshotFreeze {
         self.armed && self.captured && !self.failed
     }
 
-    pub(super) fn mark_captured(&mut self, frame: &flux::Frame<'_>) {
+    pub(super) fn mark_captured(&mut self, frame: &flux::Frame<'_>, cursor: Option<CaptureCursor>) {
         self.active_slot = Some(frame.index() as usize);
+        self.cursor = cursor;
         self.captured = true;
+    }
+
+    pub(super) fn cursor(&self) -> Option<&CaptureCursor> {
+        self.cursor.as_ref()
     }
 
     pub(super) fn mark_opened(&mut self) {
@@ -308,6 +319,7 @@ impl ScreenshotFreeze {
         self.pending_open = false;
         self.opened = false;
         self.active_slot = None;
+        self.cursor = None;
     }
 
     /// The snapshot image, once the trigger frame has been captured.

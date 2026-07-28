@@ -936,10 +936,6 @@ unsafe extern "C" fn surface_set_buffer_scale(
         (*rec).pending_scale = value;
     }
 }
-#[allow(dead_code)]
-unsafe extern "C" fn surface_noop_i32(_c: *mut ffi::wl_client, _r: *mut ffi::wl_resource, _v: i32) {
-}
-
 /// `wl_surface.damage` (v1): damage in surface-local coords. The renderer's
 /// texture is in buffer pixel coords, so under buffer_scale > 1 these rects
 /// cover only a fraction of the buffer. The renderer bypasses the

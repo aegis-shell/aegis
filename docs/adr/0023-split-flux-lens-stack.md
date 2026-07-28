@@ -1,6 +1,6 @@
 # ADR-0023: Depend on the split flux / lens stack via out-of-tree Rust bindings
 
-- Status: Accepted
+- Status: Superseded by ADR-0067
 - Date: 2026-06-23
 
 ## Context

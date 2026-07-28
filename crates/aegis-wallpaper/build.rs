@@ -1,4 +1,5 @@
-//! Re-emit the scene-graph build-tree rpath for this crate's test harness.
+//! Propagate the Flux and scene-graph native-library paths to this crate's
+//! test harness.
 
 fn main() {
     let mut emitted_dtags = false;

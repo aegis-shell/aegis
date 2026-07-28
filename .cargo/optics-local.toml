@@ -1,0 +1,19 @@
+# Opt-in source overrides for cross-repository development.
+#
+# Activate once for ordinary Cargo commands:
+#   cp .cargo/optics-local.toml .cargo/config.toml
+#
+# The destination is ignored by Git. Remove it to return to the canonical
+# locked Git dependencies.
+# Cargo path overrides preserve the canonical remote entries in Cargo.lock, so
+# switching between local and remote modes does not dirty the lockfile.
+paths = [
+    "../optics/bindings/flux-rs/crates/flux",
+    "../optics/bindings/flux-rs/crates/flux-sys",
+    "../optics/bindings/flux-rs/crates/flux-scene-graph",
+    "../optics/bindings/flux-rs/crates/flux-scene-graph-sys",
+    "../optics/bindings/lens-rs/crates/lens",
+    "../optics/bindings/lens-rs/crates/lens-sys",
+    "../optics/bindings/iris-rs/crates/iris",
+    "../optics/bindings/iris-rs/crates/iris-sys",
+]

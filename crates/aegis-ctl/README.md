@@ -33,23 +33,24 @@ local and do not require a running compositor.
 ## Use
 
 ```bash
-cargo run -p aegis-ctl -- help
-cargo run -p aegis-ctl -- windows
-cargo run -p aegis-ctl -- windows --json
-cargo run -p aegis-ctl -- focus 42
-cargo run -p aegis-ctl -- minimize 42
-cargo run -p aegis-ctl -- system status
-cargo run -p aegis-ctl -- system volume 50
-cargo run -p aegis-ctl -- system wifi off
-cargo run -p aegis-ctl -- realm create "Research"
-cargo run -p aegis-ctl -- realm transfer 42 2
-cargo run -p aegis-ctl -- realm capture 2
-cargo run -p aegis-ctl -- realm capture 2 --region 0,0,1280,720 out.png
-cargo run -p aegis-ctl -- subscribe
-cargo run -p aegis-ctl -- completions bash
+cargo run --locked -p aegis-ctl -- help
+cargo run --locked -p aegis-ctl -- windows
+cargo run --locked -p aegis-ctl -- windows --json
+cargo run --locked -p aegis-ctl -- focus 42
+cargo run --locked -p aegis-ctl -- minimize 42
+cargo run --locked -p aegis-ctl -- system status
+cargo run --locked -p aegis-ctl -- system volume 50
+cargo run --locked -p aegis-ctl -- system wifi off
+cargo run --locked -p aegis-ctl -- realm create "Research"
+cargo run --locked -p aegis-ctl -- realm transfer 42 2
+cargo run --locked -p aegis-ctl -- realm capture 2
+cargo run --locked -p aegis-ctl -- realm capture 2 --region 0,0,1280,720 out.png
+cargo run --locked -p aegis-ctl -- subscribe
+cargo run --locked -p aegis-ctl -- completions bash
 ```
 
-Installed binaries use the same commands without the `cargo run -p aegis-ctl --`
+Installed binaries use the same commands without
+`cargo run --locked -p aegis-ctl --`
 prefix.
 
 ## Subcommand Groups

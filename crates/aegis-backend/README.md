@@ -29,9 +29,9 @@ ignores the direct-display-only calls (VT switch, surface recreation).
 
 ## Use
 
-The executable selects a target through `host::Host` (`--backend
-auto|drm|nested` or `AEGIS_BACKEND`; `auto` nests when `$WAYLAND_DISPLAY` is
-set and drives KMS on a TTY), then drives it through the `Backend` trait:
+The executable selects a target through `host::Host` from `AEGIS_BACKEND`;
+`auto` nests when `$WAYLAND_DISPLAY` is set and drives KMS on a TTY. It then
+drives the selected host through the `Backend` trait:
 
 ```rust
 use aegis_backend::host::{BackendKind, Host};

@@ -30,9 +30,11 @@ aegis/
   docs/                 documentation (see docs/index.md)
 ```
 
-flux and lens live in the sibling `../optics` Meson project under
-`libs/flux` and `libs/lens`. Their Rust bindings live under
-`../optics/bindings/`; aegis consumes them as path dependencies.
+flux, lens, iris, and their Rust binding workspaces live in the
+[Optics monorepo](https://github.com/ming2k/optics). The canonical dependency
+graph uses the locked Optics Git release and system-installed C libraries.
+The local development configuration overrides the binding sources into
+`../optics/bindings` and discovers that checkout's uninstalled Meson tree.
 
 ## Modules
 
@@ -46,7 +48,7 @@ flux and lens live in the sibling `../optics` Meson project under
 | [`aegis-shell`](../../crates/aegis-shell/README.md) | Chrome host, `Chrome` contract, and shared components on lens | [ADR-0021](../adr/0021-chrome-component-trait.md) |
 | [`aegis-dock`](../../crates/aegis-dock/README.md) | Bottom-center dock chrome component | [ADR-0019](../adr/0019-dock-as-bottom-center-overlay.md), [ADR-0021](../adr/0021-chrome-component-trait.md) |
 | [`aegis-ai-workspaces`](../../crates/aegis-ai-workspaces/README.md) | Compositor-owned Agent Realm lifecycle and authority UI | [ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md) |
-| [`aegis-settings`](../../crates/aegis-settings/README.md) | Standalone modular System Settings application | [ADR-0059](../adr/0059-first-party-application-installation-and-development-staging.md) |
+| [`aegis-settings`](../../crates/aegis-settings/README.md) | Standalone modular System Settings application | [ADR-0069](../adr/0069-documentation-owned-installation-and-throwaway-development-staging.md) |
 | [`aegis-statusbar`](../../crates/aegis-statusbar/README.md) | Top status bar chrome component with live-system controls, notifications, and the StatusNotifierItem tray | [ADR-0045](../adr/0045-statusbar-crate-and-sni-tray.md), [ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md) |
 | [`aegis-wallpaper`](../../crates/aegis-wallpaper/README.md) | Image and short-video background layer | [ADR-0018](../adr/0018-wallpaper-crate.md) |
 | [`aegis-config`](../../crates/aegis-config/README.md) | Versioned TOML schema, typed atomic persistence, loader, and mtime-based live reload | [ADR-0026](../adr/0026-configuration-system.md) |

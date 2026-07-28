@@ -7,21 +7,21 @@ version = "0.0.4"
 edition = "2024"
 license = "Apache-2.0"
 rust-version = "1.88"
-repository = "."
+repository = "https://github.com/ming2k/aegis"
 
 [workspace.dependencies]
 # flux (rendering engine) + lens (immediate-mode UI engine) Rust bindings.
-# flux-rs wraps libflux; lens-rs wraps liblens (the successor to the old
-# flux-ui). The C libraries and their bindings live under ../optics (bindings
-# in ../optics/bindings); built with meson. The sys crates auto-discover the
-# sibling optics checkout and its build tree.
-flux = { path = "../optics/bindings/flux-rs/crates/flux" }
-flux-sys = { path = "../optics/bindings/flux-rs/crates/flux-sys" }
-flux-scene-graph = { path = "../optics/bindings/flux-rs/crates/flux-scene-graph" }
-flux-scene-graph-sys = { path = "../optics/bindings/flux-rs/crates/flux-scene-graph-sys" }
-lens = { path = "../optics/bindings/lens-rs/crates/lens" }
-lens-sys = { path = "../optics/bindings/lens-rs/crates/lens-sys" }
-iris = { path = "../optics/bindings/iris-rs/crates/iris" }
+# The canonical build resolves the binding sources from the tagged optics
+# monorepo and links the C libraries discovered by pkg-config. Development
+# commands can opt into ../optics through .cargo/optics-local.toml without
+# making a sibling checkout mandatory for CI or downstream packagers.
+flux = { git = "https://github.com/ming2k/optics", tag = "v0.0.3" }
+flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.3" }
+flux-scene-graph = { git = "https://github.com/ming2k/optics", tag = "v0.0.3" }
+flux-scene-graph-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.3" }
+lens = { git = "https://github.com/ming2k/optics", tag = "v0.0.3" }
+lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.3" }
+iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.3" }
 
 # Observability: the facade in every crate, the impl only in the binary.
 # Long-term this seam is also how the AI-adaptation phase subscribes to
@@ -63,7 +63,7 @@ libc = "0.2"
 # Launcher (aegis-desktop-entries): XDG base-directory resolution and .desktop / index.theme
 # INI parsing. Kept off every other crate.
 dirs = "5"
-rust-ini = "0.20"
+ini = { package = "rust-ini", version = "0.20" }
 
 # Internal crates.
 aegis-core = { path = "crates/aegis-core" }

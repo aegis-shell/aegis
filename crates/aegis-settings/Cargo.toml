@@ -19,3 +19,6 @@ lens = { workspace = true }
 # (published via the -sys crate's `links` metadata) and can re-emit the rpaths
 # for the test harness — `rustc-link-arg` does not propagate across crates.
 lens-sys = { workspace = true }
+
+[package.metadata.cargo-machete]
+ignored = ["lens-sys"]

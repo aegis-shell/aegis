@@ -50,8 +50,11 @@ impl CompositorRuntime {
         // Portal pick sessions also use the freeze, but retain their own
         // cursor-free capture contract and are not governed by this setting.
         let human_screenshot_session = self.screenshot_freeze.armed && self.pending_pick.is_none();
-        let cursorless_saved_frame =
-            !screenshot_include_cursor && (bound_saved_screenshot || human_screenshot_session);
+        let frozen_screenshot_cursor = human_screenshot_session
+            .then(|| self.screenshot_freeze.cursor().cloned())
+            .flatten();
+        let cursorless_saved_frame = !screenshot_include_cursor && bound_saved_screenshot;
+        let mut capturing_frozen_screenshot = false;
         let damage = self.assess_frame_damage(
             had_input,
             session_locked,
@@ -464,14 +467,22 @@ impl CompositorRuntime {
                 // Protocol overlays sit above ordinary shell chrome. A modal
                 // screenshot/picker owns the whole frame and suppresses live
                 // client overlays without changing Wayland keyboard focus.
-                if !session_locked && !self.shell.screenshot_active() {
+                if !session_locked
+                    && !self.shell.screenshot_active()
+                    && !self.screenshot_freeze.active()
+                {
+                    let include_live_cursor = if freeze_capturing {
+                        human_screenshot_session && screenshot_include_cursor
+                    } else {
+                        !cursorless_saved_frame
+                    };
                     draw_client_overlays(
                         &self.canvas,
                         &self.device,
                         &mut self.renderer,
                         &self.server,
                         scale,
-                        !cursorless_saved_frame,
+                        include_live_cursor,
                     );
                 }
                 // Finish the freeze snapshot pass: the chrome above rendered
@@ -482,7 +493,21 @@ impl CompositorRuntime {
                 // live scene instead.
                 if freeze_capturing && !self.screenshot_freeze.failed {
                     self.canvas.end_target();
-                    self.screenshot_freeze.mark_captured(&frame);
+                    let frozen_cursor = if human_screenshot_session
+                        && screenshot_include_cursor
+                        && !cursor_hidden
+                    {
+                        capture_cursor_snapshot(
+                            &self.device,
+                            &mut self.cursor_cache,
+                            self.input_acc.cursor,
+                            cursor_shape,
+                            scale,
+                        )
+                    } else {
+                        None
+                    };
+                    self.screenshot_freeze.mark_captured(&frame, frozen_cursor);
                     self.canvas.begin(&frame, Some(self.clear))?;
                     if let Some(image) = self.screenshot_freeze.image() {
                         self.canvas.draw_image(
@@ -526,6 +551,7 @@ impl CompositorRuntime {
                     false
                 };
                 if let Some(region) = screenshot_region.filter(|_| !pick_consumed_region) {
+                    capturing_frozen_screenshot = self.screenshot_freeze.active();
                     let path = screenshot_path(&self.screenshot_dir);
                     let ts = self.start.elapsed().as_millis() as u64;
                     let command = aegis_ipc::Command::Screenshot {
@@ -910,7 +936,11 @@ impl CompositorRuntime {
                         Err(e) => log::warn!("launcher: failed to spawn {}: {e}", entry.id),
                     }
                 }
-                if self.host.uses_software_cursor() && !cursor_hidden && !cursorless_saved_frame {
+                if self.host.uses_software_cursor()
+                    && !cursor_hidden
+                    && !cursorless_saved_frame
+                    && !capturing_frozen_screenshot
+                {
                     draw_software_cursor(
                         &self.canvas,
                         &self.device,
@@ -924,19 +954,20 @@ impl CompositorRuntime {
                 let mut capture_for_present = frame_capture.take().and_then(|(crop, target)| {
                     let cursor = if screenshot_include_cursor
                         && matches!(&target, CaptureTarget::Screenshot { .. })
-                        && !self.host.uses_software_cursor()
-                        && !cursor_hidden
                     {
-                        let position = self.input_acc.cursor;
-                        self.cursor_cache
-                            .get(&self.device, cursor_shape, scale)
-                            .map(|loaded| CaptureCursor {
-                                x: (position.0 * scale - loaded.xhot).round() as i32,
-                                y: (position.1 * scale - loaded.yhot).round() as i32,
-                                width: loaded.width.round().max(1.0) as u32,
-                                height: loaded.height.round().max(1.0) as u32,
-                                bgra: std::sync::Arc::clone(&loaded.pixels),
-                            })
+                        if capturing_frozen_screenshot {
+                            frozen_screenshot_cursor.clone()
+                        } else if !self.host.uses_software_cursor() && !cursor_hidden {
+                            capture_cursor_snapshot(
+                                &self.device,
+                                &mut self.cursor_cache,
+                                self.input_acc.cursor,
+                                cursor_shape,
+                                scale,
+                            )
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     };
@@ -1228,4 +1259,20 @@ impl CompositorRuntime {
         }
         frame_capture
     }
+}
+
+fn capture_cursor_snapshot(
+    device: &flux::Device,
+    cache: &mut cursor::CursorCache,
+    position: (f32, f32),
+    shape: u32,
+    scale: f32,
+) -> Option<CaptureCursor> {
+    cache.get(device, shape, scale).map(|loaded| CaptureCursor {
+        x: (position.0 * scale - loaded.xhot).round() as i32,
+        y: (position.1 * scale - loaded.yhot).round() as i32,
+        width: loaded.width.round().max(1.0) as u32,
+        height: loaded.height.round().max(1.0) as u32,
+        bgra: std::sync::Arc::clone(&loaded.pixels),
+    })
 }

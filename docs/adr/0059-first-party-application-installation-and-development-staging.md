@@ -1,6 +1,6 @@
 # ADR-0059: First-party application installation and development staging
 
-- Status: Accepted
+- Status: Superseded by ADR-0069
 - Date: 2026-07-26
 
 ## Context

@@ -71,7 +71,7 @@ See [persistent settings](ipc.md#persistent-settings) and
 their wire schemas,
 [ADR-0056](../adr/0056-system-settings-identity-and-boundary.md) for the
 application boundary, and
-[ADR-0059](../adr/0059-first-party-application-installation-and-development-staging.md)
+[ADR-0069](../adr/0069-documentation-owned-installation-and-throwaway-development-staging.md)
 for the canonical namespace and installation model. The separation between
 status-bar controls, IPC, and independent application surfaces is recorded in
 [ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md).

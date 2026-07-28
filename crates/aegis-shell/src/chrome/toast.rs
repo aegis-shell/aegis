@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
-use crate::{Chrome, ChromeEvents, Localizer};
+use crate::{Chrome, ChromeEvents, Localizer, truncate};
 use aegis_core::notify::{Notification, NotificationQueue};
 use aegis_core::window::Window;
 use aegis_core::workspace::WorkspaceSnapshot;
@@ -151,18 +151,6 @@ impl Chrome for Toast {
             x >= left && x < left + TOAST_W && y >= top && y < top + TOAST_H
         })
     }
-}
-
-fn truncate(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_string();
-    }
-    let mut out = value
-        .chars()
-        .take(max_chars.saturating_sub(1))
-        .collect::<String>();
-    out.push('…');
-    out
 }
 
 #[cfg(test)]

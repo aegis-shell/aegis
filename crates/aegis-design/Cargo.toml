@@ -11,5 +11,8 @@ build = "build.rs"
 [dependencies]
 lens = { workspace = true }
 # Direct dep so this crate's test harness receives DEP_LENS_RPATHS and can
-# resolve the sibling Lens/Flux build trees through build.rs.
+# resolve the selected Lens/Flux native libraries through build.rs.
 lens-sys = { workspace = true }
+
+[package.metadata.cargo-machete]
+ignored = ["lens-sys"]

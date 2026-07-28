@@ -43,3 +43,6 @@ env_logger.workspace = true
 flux-sys = { workspace = true }
 flux-scene-graph-sys = { workspace = true }
 lens-sys = { workspace = true }
+
+[package.metadata.cargo-machete]
+ignored = ["flux-scene-graph-sys", "lens-sys"]

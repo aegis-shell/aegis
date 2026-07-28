@@ -316,8 +316,8 @@ fn build_props(
         .or(id)
         .unwrap_or_default();
     let status = TrayStatus::parse(status.as_deref().unwrap_or("Active"));
-    // Prefer the raw pixmap: we can always render it, while theme-name icons
-    // currently fall back to a generic glyph (theme resolution is a TODO).
+    // Prefer the raw pixmap because it preserves the item's exact artwork.
+    // Theme names remain available as a deterministic generic-icon fallback.
     let icon = match (icon_pixmap, icon_name) {
         (Some(pixmaps), name) => match select_pixmap(&pixmaps, PIXMAP_TARGET) {
             Some(index) => {

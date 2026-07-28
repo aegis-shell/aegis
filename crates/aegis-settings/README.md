@@ -46,14 +46,14 @@ remain unavailable until their backends exist.
 Run the app from the workspace:
 
 ```bash
-cargo run -p aegis-settings
-cargo run -p aegis-settings -- --module display
-cargo run -p aegis-settings -- touchpad
+cargo run --locked -p aegis-settings
+cargo run --locked -p aegis-settings -- --module display
+cargo run --locked -p aegis-settings -- touchpad
 ```
 
 These commands test the application directly but do not register it with
-application launchers. Use `scripts/dev-loop.sh` from the repository root to
-build and stage the binary, desktop entry, and icon for Dock and launcher
+application launchers. Use the throwaway prefix in
+[Setup](../../docs/dev/setup.md#build-and-run) for Dock and launcher
 integration.
 
 Production packages install
@@ -63,7 +63,7 @@ icon alongside the binary.
 ## Related Documentation
 
 - [System Settings Reference](../../docs/reference/settings.md)
-- [First-party application installation and staging](../../docs/adr/0059-first-party-application-installation-and-development-staging.md)
+- [Documentation-owned installation and throwaway development staging](../../docs/adr/0069-documentation-owned-installation-and-throwaway-development-staging.md)
 - [First-Party Application Development](../../docs/dev/first-party-applications.md)
 - [Status bar system controls](../../docs/adr/0060-statusbar-system-controls-and-live-system-ipc.md)
 - [System Settings identity and boundary](../../docs/adr/0056-system-settings-identity-and-boundary.md)

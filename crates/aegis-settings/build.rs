@@ -1,5 +1,5 @@
-//! Make the crate's binaries and test harnesses resolve the sibling
-//! Iris/Lens/Flux build trees.
+//! Propagate the Optics native-library paths to this crate's binaries and test
+//! harnesses.
 
 fn main() {
     let mut emitted_dtags = false;

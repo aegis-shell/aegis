@@ -192,7 +192,7 @@ impl ScreenCastIface {
         self.sessions
             .lock()
             .unwrap()
-            .insert(&path, String::new())
+            .insert(&path)
             .map_err(zbus::fdo::Error::Failed)?;
         self.conn
             .object_server()
@@ -378,6 +378,7 @@ pub(crate) fn cast_worker(
                     &mut picker,
                     &request_path,
                     &session_path,
+                    &app_id,
                 );
                 log::info!("portal: Start for '{app_id}' → response {code}");
                 finish_request(&conn, &tracker, &request_path, code, results);
@@ -385,7 +386,7 @@ pub(crate) fn cast_worker(
                 // client may retry Start or close the session itself.
             }
             CastJob::CloseSession { session_path } | CastJob::SessionEnded { session_path } => {
-                close_session(&conn, &sessions, &session_path);
+                close_session(&conn, &sessions, &mut tokens, &session_path);
             }
         }
     }
@@ -423,7 +424,7 @@ fn select_sources(
     // anything else is treated as no token (logged) and re-picked/re-minted.
     let restored = if persist_mode > 0 {
         restore_token.and_then(|token| {
-            let record = tokens.lookup(token)?;
+            let record = tokens.lookup_for_app(token, app_id)?;
             match record.source {
                 TokenSource::Monitor if source_types & SOURCE_TYPE_MONITOR != 0 => {
                     Some((token.to_string(), CastSource::Monitor))
@@ -484,7 +485,7 @@ fn select_sources(
     match sessions
         .lock()
         .unwrap()
-        .mark_sources_selected(session_path, token, source)
+        .mark_sources_selected(session_path, app_id, token, source)
     {
         Ok(()) => 0,
         Err(error) => {
@@ -547,17 +548,20 @@ fn start_cast(
     picker: &mut crate::ipc::PortalCapture,
     request_path: &str,
     session_path: &str,
+    app_id: &str,
 ) -> (u32, HashMap<String, Value<'static>>) {
     if tracker.lock().unwrap().was_closed(request_path) {
         return (1, HashMap::new());
     }
     let (source, window_geometry) = {
         let sessions = sessions.lock().unwrap();
-        if let Err(error) = sessions.can_start(session_path) {
-            log::warn!("portal: Start refused: {error}");
-            return (2, HashMap::new());
-        }
-        let source = sessions.source(session_path).unwrap_or(CastSource::Monitor);
+        let source = match sessions.source_for_start(session_path, app_id) {
+            Ok(source) => source,
+            Err(error) => {
+                log::warn!("portal: Start refused: {error}");
+                return (2, HashMap::new());
+            }
+        };
         drop(sessions);
         // A window source reports its compositor-logical geometry in the
         // stream properties; a window gone at Start time fails the Start.
@@ -656,10 +660,14 @@ fn start_cast(
 fn close_session(
     conn: &zbus::blocking::Connection,
     sessions: &Arc<Mutex<SessionRegistry>>,
+    tokens: &mut TokenStore,
     session_path: &str,
 ) {
-    if sessions.lock().unwrap().remove(session_path).is_none() {
+    let Some(session) = sessions.lock().unwrap().remove(session_path) else {
         return;
+    };
+    if let Some(token) = session.restore_token {
+        tokens.expire_transient(&token);
     }
     log::info!("portal: screencast session {session_path} closed");
     if let Err(error) = conn.emit_signal(None::<&str>, session_path, SESSION_IFACE, "Closed", &()) {
@@ -730,17 +738,12 @@ fn streams_value(
     Value::Array(streams)
 }
 
-/// The source a restore token stands for (ADR-0054). Documents persisted
-/// before window sources existed carry no `source` key and decode as
-/// `Monitor`, their original meaning.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// The source a restore token stands for (ADR-0054).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
 pub(crate) enum TokenSource {
-    #[default]
     Monitor,
-    Window {
-        window: u64,
-    },
+    Window { window: u64 },
 }
 
 impl From<CastSource> for TokenSource {
@@ -753,14 +756,12 @@ impl From<CastSource> for TokenSource {
 }
 
 /// What a restore token stands for: the requesting application, the cursor
-/// mode, and the source the grant was minted for. The record exists so a
-/// presented token can be validated and so a future permission UI can list
-/// or revoke grants.
+/// mode, and the source the grant was minted for. Every presented token is
+/// checked against the complete record before it grants a restored source.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct TokenRecord {
     pub(crate) app_id: String,
     pub(crate) cursor_mode: u32,
-    #[serde(default)]
     pub(crate) source: TokenSource,
 }
 
@@ -771,9 +772,8 @@ struct TokenDoc {
 
 /// Restore-token store, owned by the screencast worker. Mode 2 tokens live
 /// in `persistent` and are written through to the state directory on every
-/// change; mode 1 tokens live in `transient` and die with the process (aegis
-/// has no application-exit tracking, so "until the application exits"
-/// degrades to "until the portal restarts").
+/// change; mode 1 tokens live in `transient` and are removed with the session
+/// that minted them.
 pub(crate) struct TokenStore {
     dir: Option<PathBuf>,
     persistent: HashMap<String, TokenRecord>,
@@ -797,6 +797,15 @@ impl TokenStore {
         self.persistent
             .get(token)
             .or_else(|| self.transient.get(token))
+    }
+
+    /// Resolve a restore token only for the application it was issued to.
+    pub(crate) fn lookup_for_app(&self, token: &str, app_id: &str) -> Option<&TokenRecord> {
+        self.lookup(token).filter(|record| record.app_id == app_id)
+    }
+
+    fn expire_transient(&mut self, token: &str) {
+        self.transient.remove(token);
     }
 
     /// Mint a fresh unguessable token for `app_id`. Mode 2 persists it;
@@ -824,19 +833,6 @@ impl TokenStore {
             self.transient.insert(token.clone(), record);
         }
         Ok(token)
-    }
-
-    /// Drop a token (both maps), persisting the removal. Returns whether a
-    /// token was found. Revocation is backend-internal today — a future
-    /// PermissionStore integration or settings UI calls the same path.
-    #[allow(dead_code)]
-    pub(crate) fn revoke(&mut self, token: &str) -> bool {
-        let found =
-            self.transient.remove(token).is_some() | self.persistent.remove(token).is_some();
-        if found {
-            self.save().ok();
-        }
-        found
     }
 
     fn save(&self) -> std::io::Result<()> {
@@ -963,19 +959,23 @@ mod tests {
                 source: TokenSource::Window { window: 9 },
             })
         );
+        assert!(
+            store
+                .lookup_for_app(&persisted, "org.example.App")
+                .is_some()
+        );
+        assert!(
+            store
+                .lookup_for_app(&persisted, "org.example.Other")
+                .is_none()
+        );
+        store.expire_transient(&transient);
+        assert!(store.lookup(&transient).is_none());
 
         // A reload sees only the mode 2 token.
         let reloaded = TokenStore::load(Some(dir.clone()));
         assert!(reloaded.lookup(&persisted).is_some());
         assert!(reloaded.lookup(&transient).is_none());
-
-        // Revocation removes and persists the removal.
-        let mut store = reloaded;
-        assert!(!store.revoke("no-such-token"));
-        assert!(store.revoke(&persisted));
-        assert!(store.lookup(&persisted).is_none());
-        let reloaded = TokenStore::load(Some(dir.clone()));
-        assert!(reloaded.lookup(&persisted).is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1051,12 +1051,7 @@ mod tests {
     }
 
     #[test]
-    fn persisted_tokens_without_a_source_decode_as_monitor() {
-        let record: TokenRecord =
-            serde_json::from_str(r#"{"app_id":"org.example.App","cursor_mode":1}"#)
-                .expect("legacy token record decodes");
-        assert_eq!(record.source, TokenSource::Monitor);
-
+    fn token_sources_round_trip_explicitly() {
         let window = TokenRecord {
             app_id: "org.example.App".to_string(),
             cursor_mode: 4,

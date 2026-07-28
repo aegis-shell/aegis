@@ -16,7 +16,9 @@ use aegis_core::window::{Window, WindowId};
 use aegis_core::workspace::WorkspaceSnapshot;
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
-use crate::{AgentActivity, AgentInputKind, Chrome, ChromeEvents, HUD_HEIGHT, Localizer, Message};
+use crate::{
+    AgentActivity, AgentInputKind, Chrome, ChromeEvents, HUD_HEIGHT, Localizer, Message, truncate,
+};
 
 const HOLD_FOR: Duration = Duration::from_secs(4);
 const FADE_FOR: Duration = Duration::from_secs(2);
@@ -582,18 +584,6 @@ fn render_shape(
             );
         },
     );
-}
-
-fn truncate(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_string();
-    }
-    let mut out = value
-        .chars()
-        .take(max_chars.saturating_sub(1))
-        .collect::<String>();
-    out.push('…');
-    out
 }
 
 #[cfg(test)]

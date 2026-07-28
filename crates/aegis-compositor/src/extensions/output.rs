@@ -12,6 +12,52 @@ static XDG_OUTPUT_IMPL: ffi::zxdg_output_v1_interface_impl = ffi::zxdg_output_v1
     destroy: crate::res_destroy,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum XdgOutputBatchDone {
+    XdgOutput,
+    WlOutput,
+}
+
+/// xdg-output v3 deprecated `zxdg_output_v1.done` in favour of a second
+/// `wl_output.done` sent after the logical geometry. Clients such as SDL3
+/// deliberately wait for that second core-output event before constructing
+/// their display record.
+fn xdg_output_batch_done(xdg_version: i32, wl_output_version: i32) -> XdgOutputBatchDone {
+    if xdg_version >= 3 && wl_output_version >= 2 {
+        XdgOutputBatchDone::WlOutput
+    } else {
+        // `zxdg_output_v1.done` exists since v1. Keep it as a compatibility
+        // fallback when a v3 manager is paired with a legacy wl_output v1
+        // resource, which has no core `done` event.
+        XdgOutputBatchDone::XdgOutput
+    }
+}
+
+pub(crate) unsafe fn finish_xdg_output_batch(
+    xdg_output: *mut ffi::wl_resource,
+    output: *mut ffi::wl_resource,
+) {
+    unsafe {
+        if xdg_output.is_null() {
+            return;
+        }
+        let xdg_version = ffi::wl_resource_get_version(xdg_output);
+        let wl_output_version = if output.is_null() {
+            0
+        } else {
+            ffi::wl_resource_get_version(output)
+        };
+        match xdg_output_batch_done(xdg_version, wl_output_version) {
+            XdgOutputBatchDone::XdgOutput => {
+                ffi::wl_resource_post_event(xdg_output, ffi::ZXDG_OUTPUT_V1_DONE);
+            }
+            XdgOutputBatchDone::WlOutput => {
+                ffi::wl_resource_post_event(output, ffi::WL_OUTPUT_DONE);
+            }
+        }
+    }
+}
+
 pub(crate) unsafe extern "C" fn xdg_output_manager_bind(
     client: *mut ffi::wl_client,
     data: *mut c_void,
@@ -62,12 +108,7 @@ unsafe extern "C" fn xdg_output_manager_get_xdg_output(
             (*state).xdg_output_links.insert(res as usize, output);
         }
         send_xdg_output_geometry(res, output, state);
-        // The xdg-output spec requires a final `done`; for v3+ that is the
-        // xdg_output.done, for v1/v2 it is the paired wl_output.done which the
-        // client already received. We send done on v3+ here.
-        if ver >= 3 {
-            ffi::wl_resource_post_event(res, ffi::ZXDG_OUTPUT_V1_DONE);
-        }
+        finish_xdg_output_batch(res, output);
     }
 }
 
@@ -122,5 +163,26 @@ pub(crate) unsafe fn send_xdg_output_geometry(
             let name = CString::new(connector).unwrap_or_else(|_| CString::new("output").unwrap());
             ffi::wl_resource_post_event(res, ffi::ZXDG_OUTPUT_V1_NAME, name.as_ptr());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_xdg_output_batches_end_on_the_xdg_resource() {
+        assert_eq!(xdg_output_batch_done(1, 4), XdgOutputBatchDone::XdgOutput);
+        assert_eq!(xdg_output_batch_done(2, 4), XdgOutputBatchDone::XdgOutput);
+    }
+
+    #[test]
+    fn xdg_output_v3_batches_end_with_a_second_wl_output_done() {
+        assert_eq!(xdg_output_batch_done(3, 4), XdgOutputBatchDone::WlOutput);
+    }
+
+    #[test]
+    fn xdg_output_v3_falls_back_for_wl_output_v1() {
+        assert_eq!(xdg_output_batch_done(3, 1), XdgOutputBatchDone::XdgOutput);
     }
 }

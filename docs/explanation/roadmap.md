@@ -80,7 +80,8 @@ it, and receive pointer input directly when topmost.
 **Outcome.** Multiple toplevels with focus, interactive move and resize,
 minimization, borderless compositor-owned controls, a window list, a
 macOS-style dock, and an application launcher. Shell surfaces remain behind
-the `Chrome` trait. Key bindings are configurable through `$AEGIS_KEYBINDS`.
+the `Chrome` trait. Key bindings are configurable through the versioned TOML
+configuration.
 Real application icons render in the dock.
 
 **Status.** Complete. Shipped: toplevel metadata and state machine
@@ -121,8 +122,8 @@ dma-bufs (GBM-less) through a two-slot page-flip ring with explicit-sync
 (pointer, keyboard, touch, touchpad gestures, tablet tools), owns the session
 through libseat with VT switch suspend/resume, and handles udev hotplug with
 per-connector workspace restore (ADR-0025) and surface recreation when the
-modifier set changes. `--backend auto|drm|nested` (or `AEGIS_BACKEND`) selects
-the target at startup.
+modifier set changes. `AEGIS_BACKEND=auto|drm|nested` selects the target at
+startup.
 
 **Verification.** aegis starts from a TTY on a single monitor, lights the
 display, and runs M3's chrome against real clients without a host session.
@@ -132,16 +133,15 @@ presentation.
 
 ## M5: Configuration and IPC
 
-**Outcome.** The placeholder `$AEGIS_KEYBINDS` environment variable is
-replaced by a single declarative TOML file with a versioned schema and full
-live reload. A versioned IPC over a unix socket exposes the same model the
+**Outcome.** A single declarative TOML file provides a versioned schema and
+full live reload. Versioned IPC over a unix socket exposes the same model the
 shell reads, so external programs can query and mutate windows, workspaces,
 outputs, and inputs.
 
 **Status.** Complete. The configuration system shipped
 (ADR-0026): one TOML file at `$XDG_CONFIG_HOME/aegis/config.toml`, schema
-version 1, mtime live reload, structured diagnostics, with `$AEGIS_KEYBINDS`
-retained as a deprecated transitional override. The IPC shipped its full
+version 1, mtime live reload, and structured diagnostics. The IPC shipped its
+full
 seed surface (ADR-0027): versioned length-framed JSON over
 `$XDG_RUNTIME_DIR/aegis.sock`, capability-gated handshake, `query`
 (`GetWindows`, `GetWorkspaces`, `GetOutputs`, `GetNotifications`),

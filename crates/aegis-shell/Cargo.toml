@@ -13,7 +13,9 @@ aegis-core = { workspace = true }
 aegis-design = { workspace = true }
 lens = { workspace = true }
 lens-sys = { workspace = true }
-log.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+
+[package.metadata.cargo-machete]
+ignored = ["lens-sys"]

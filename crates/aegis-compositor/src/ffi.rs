@@ -146,8 +146,8 @@ pub const XDG_POPUP_POPUP_DONE: u32 = 1;
 
 /// `zxdg_output_v1` event opcodes.
 /// `logical_position`/`logical_size`/`name`/`description` are sent on first
-/// bind and whenever the output's logical extents change; `done` (added in
-/// v2) flushes a batch of changes so clients apply them atomically.
+/// bind and whenever the output's logical extents change. `done` exists since
+/// v1 and is deprecated in v3, where a paired `wl_output.done` ends the batch.
 pub const ZXDG_OUTPUT_V1_LOGICAL_POSITION: u32 = 0;
 pub const ZXDG_OUTPUT_V1_LOGICAL_SIZE: u32 = 1;
 pub const ZXDG_OUTPUT_V1_DONE: u32 = 2;

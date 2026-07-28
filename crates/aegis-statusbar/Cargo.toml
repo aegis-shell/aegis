@@ -29,3 +29,6 @@ zbus = { workspace = true }
 # for the test harness — `rustc-link-arg` does not propagate across crates.
 lens-sys = { workspace = true }
 log = { workspace = true }
+
+[package.metadata.cargo-machete]
+ignored = ["lens-sys"]

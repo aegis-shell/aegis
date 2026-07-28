@@ -29,7 +29,7 @@ background and how the decisions fit together, see
 | [0020](0020-buffer-scale-applied-at-composite.md) | Apply buffer_scale at composite time | Accepted |
 | [0021](0021-chrome-component-trait.md) | Chrome component trait (pure core shell) | Accepted |
 | [0022](0022-application-launcher.md) | Application launcher via freedesktop.org desktop entries | Accepted |
-| [0023](0023-split-flux-lens-stack.md) | Depend on the split flux / lens stack via out-of-tree Rust bindings | Accepted |
+| [0023](0023-split-flux-lens-stack.md) | Depend on the split flux / lens stack via out-of-tree Rust bindings | Superseded by [0067](0067-remote-optics-dependencies-and-local-overrides.md) |
 | [0024](0024-layout-model.md) | Layout model — floating base with an optional tiling policy | Accepted |
 | [0025](0025-workspace-model.md) | Workspace model — dynamic and per-output | Accepted |
 | [0026](0026-configuration-system.md) | Configuration system — one declarative file with live reload | Accepted |
@@ -65,7 +65,7 @@ background and how the decisions fit together, see
 | [0056](0056-system-settings-identity-and-boundary.md) | System Settings identity and Control Center boundary (supersedes [0049](0049-standalone-modular-control-center.md)) | Superseded by [0057](0057-system-settings-canonical-namespace.md) |
 | [0057](0057-system-settings-canonical-namespace.md) | System Settings canonical namespace (supersedes [0056](0056-system-settings-identity-and-boundary.md)) | Superseded by [0059](0059-first-party-application-installation-and-development-staging.md) |
 | [0058](0058-independent-quick-settings-and-ai-workspaces.md) | Independent Quick Settings and AI Workspaces applications (amends [0044](0044-dock-and-control-center-crates.md)) | Superseded by [0060](0060-statusbar-system-controls-and-live-system-ipc.md) |
-| [0059](0059-first-party-application-installation-and-development-staging.md) | First-party application installation and development staging (supersedes [0057](0057-system-settings-canonical-namespace.md)) | Accepted |
+| [0059](0059-first-party-application-installation-and-development-staging.md) | First-party application installation and development staging (supersedes [0057](0057-system-settings-canonical-namespace.md)) | Superseded by [0069](0069-documentation-owned-installation-and-throwaway-development-staging.md) |
 | [0060](0060-statusbar-system-controls-and-live-system-ipc.md) | Status bar system controls and live-system IPC (supersedes [0058](0058-independent-quick-settings-and-ai-workspaces.md)) | Accepted |
 | [0061](0061-window-tree-atomic-client-surface-compositing.md) | Window-tree-atomic client surface compositing (supersedes [0011](0011-subsurface-tree-and-z-split-rendering.md)) | Accepted |
 | [0062](0062-wayland-input-method-v2-host-integration.md) | Wayland input-method-v2 host integration | Accepted |
@@ -73,3 +73,6 @@ background and how the decisions fit together, see
 | [0064](0064-output-space-use-and-chrome-policy.md) | Output space-use state and chrome policy | Accepted |
 | [0065](0065-compositor-chrome-key-routing-without-focus-churn.md) | Compositor chrome key routing without focus churn | Accepted |
 | [0066](0066-canonical-aegis-namespace.md) | Canonical Aegis namespace | Accepted |
+| [0067](0067-remote-optics-dependencies-and-local-overrides.md) | Remote Optics dependencies with local development overrides | Accepted |
+| [0068](0068-cargo-native-development-and-environment-backend-selection.md) | Cargo-native development and environment-only backend selection | Superseded by [0069](0069-documentation-owned-installation-and-throwaway-development-staging.md) |
+| [0069](0069-documentation-owned-installation-and-throwaway-development-staging.md) | Documentation-owned installation and throwaway development staging (supersedes [0068](0068-cargo-native-development-and-environment-backend-selection.md)) | Accepted |

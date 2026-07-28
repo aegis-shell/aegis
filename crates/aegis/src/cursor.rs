@@ -25,9 +25,6 @@ pub struct XcursorImage {
     pub height: u32,
     pub xhot: u32,
     pub yhot: u32,
-    /// Animation frame delay (only the first frame is used today).
-    #[allow(dead_code)]
-    pub delay_ms: u32,
     /// BGRA premultiplied pixels, row-major (the flux/wl_shm contract).
     pub pixels: Vec<u8>,
 }
@@ -101,11 +98,11 @@ pub fn parse_xcursor(data: &[u8]) -> Option<XcursorFile> {
         if width == 0 || height == 0 || width > 256 || height > 256 {
             continue;
         }
-        let (xhot, yhot, delay) = (
-            u32at(position + 24)?,
-            u32at(position + 28)?,
-            u32at(position + 32)?,
-        );
+        let (xhot, yhot) = (u32at(position + 24)?, u32at(position + 28)?);
+        // The delay at `position + 32` belongs to animated cursor playback.
+        // Aegis intentionally selects one static image, so validate that the
+        // field exists without retaining unused animation state.
+        u32at(position + 32)?;
         let start = position + 36;
         let len = width as usize * height as usize * 4;
         let raw = data.get(start..start + len)?;
@@ -126,7 +123,6 @@ pub fn parse_xcursor(data: &[u8]) -> Option<XcursorFile> {
             height,
             xhot,
             yhot,
-            delay_ms: delay,
             pixels,
         });
     }
@@ -238,12 +234,6 @@ impl CursorTheme {
             chain,
             size: size.max(1),
         }
-    }
-
-    /// Preferred cursor size in pixels, before output scaling.
-    #[allow(dead_code)] // public surface of the theme; used by callers to come
-    pub fn size(&self) -> u32 {
-        self.size
     }
 
     /// Load the best image for a `wp_cursor_shape` value at `scale`, trying

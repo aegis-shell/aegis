@@ -1,31 +1,22 @@
 use super::*;
 
-/// Resolve `--backend auto|drm|nested`, falling back to `$AEGIS_BACKEND` and
-/// then `auto`. X11/XWayland are intentionally not accepted backends.
+/// Resolve `$AEGIS_BACKEND`, defaulting to `auto`.
+///
+/// Backend selection is process environment because it describes the launch
+/// environment, not an Aegis command. X11/XWayland are intentionally not
+/// accepted backends.
 pub(super) fn requested_backend() -> Result<BackendKind, Box<dyn std::error::Error>> {
-    let mut selected = std::env::var("AEGIS_BACKEND").unwrap_or_else(|_| "auto".to_owned());
-    let mut args = std::env::args().skip(1);
-    while let Some(argument) = args.next() {
-        if let Some(value) = argument.strip_prefix("--backend=") {
-            selected = value.to_owned();
-        } else if argument == "--backend" {
-            selected = args.next().ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "--backend requires auto, drm, or nested",
-                )
-            })?;
-        } else if argument == "--help" || argument == "-h" {
-            println!("Usage: aegis [--backend auto|drm|nested]");
-            std::process::exit(0);
-        } else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("unknown option {argument:?}; try --help"),
-            )
-            .into());
-        }
+    if let Some(argument) = std::env::args().nth(1) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "aegis accepts no command-line options (got {argument:?}); \
+                 set AEGIS_BACKEND=auto|drm|nested to select a backend"
+            ),
+        )
+        .into());
     }
+    let selected = std::env::var("AEGIS_BACKEND").unwrap_or_else(|_| "auto".to_owned());
     Ok(selected.parse()?)
 }
 
@@ -233,30 +224,10 @@ pub(super) fn output_geometry_from_host(
 }
 
 /// Build the active keymap from the config file's `[[keybind]]` entries,
-/// layered over the built-in defaults. The deprecated `$AEGIS_KEYBINDS` env
-/// var is honored as a transitional override that takes precedence over the
-/// file (ADR-0026); it is logged and removed before the desktop phase
-/// closes.
+/// layered over the built-in defaults.
 pub(super) fn build_keymap(config: Option<&aegis_config::Config>) -> aegis_core::keybind::Keymap {
     let mut overrides: Vec<aegis_core::keybind::Keybind> = Vec::new();
 
-    // Deprecated env override — highest precedence so existing setups keep
-    // working during the transition.
-    if let Ok(s) = std::env::var("AEGIS_KEYBINDS")
-        && !s.trim().is_empty()
-    {
-        log::warn!(
-            "keybind: $AEGIS_KEYBINDS is deprecated; move it to the \
-                 `[[keybind]]` section of the config file"
-        );
-        let (env_binds, errs) = aegis_core::keybind::Keymap::parse_overrides(&s);
-        for e in &errs {
-            log::warn!("keybind: {e}");
-        }
-        overrides.extend(env_binds);
-    }
-
-    // Config-file overrides — below the env override.
     if let Some(cfg) = config {
         let (cfg_binds, errs) = cfg.resolve_keybinds();
         for e in &errs {

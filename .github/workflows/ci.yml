@@ -5,13 +5,22 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
+  OPTICS_REF: v0.0.3
 
 jobs:
-  # Lint and format all non-optics workspace crates cleanly without needing the optics monorepo.
+  # Resolve the locked remote binding sources, but do not build native
+  # rendering crates in this fast job.
   fmt-and-clippy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -28,21 +37,20 @@ jobs:
             pkg-config
       - name: Clippy (flux-free crates)
         run: >-
-          cargo clippy
+          cargo clippy --locked
           -p aegis-core -p aegis-config -p aegis-ipc -p aegis-desktop-entries
           -p aegis-launcher -p aegis-ctl -p aegis-fuji -p aegis-protocols -p aegis-compositor
           -p aegis-portal
           --all-targets -- -D warnings
       - name: Doc check (flux-free crates)
         run: >-
-          cargo doc --no-deps
+          cargo doc --locked --no-deps
           -p aegis-core -p aegis-config -p aegis-ipc -p aegis-desktop-entries
           -p aegis-launcher -p aegis-ctl -p aegis-fuji -p aegis-protocols -p aegis-compositor
           -p aegis-portal
 
-  # Test all non-optics workspace crates (aegis-core, aegis-config, aegis-ipc, aegis-desktop-entries, aegis-launcher, aegis-ctl, aegis-fuji, aegis-compositor, aegis-protocols, aegis-portal).
   flux-free-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -55,46 +63,44 @@ jobs:
             pkg-config
       - name: Test flux-free crates
         run: >-
-          cargo test
+          cargo test --locked
           -p aegis-core -p aegis-config -p aegis-ipc -p aegis-desktop-entries
           -p aegis-launcher -p aegis-ctl -p aegis-fuji -p aegis-compositor
           -p aegis-portal
       - name: Build aegis-protocols
-        run: cargo build -p aegis-protocols
+        run: cargo build --locked -p aegis-protocols
 
-  # Full workspace build + test. Requires the sibling optics stack with a
-  # built Meson tree and its Rust bindings.
+  # Exercise the downstream contract: Rust bindings come from the locked
+  # optics Git source, while native libraries come from a system install.
   full-workspace:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: aegis
       - uses: actions/checkout@v4
         with:
           repository: ming2k/optics
           path: optics
-          token: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
+          ref: ${{ env.OPTICS_REF }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential meson ninja-build pkg-config glslang-tools \
             libwayland-dev wayland-protocols libvulkan-dev \
-            libxkbcommon-dev mesa-vulkan-drivers libinput-dev libseat-dev \
-            pkg-config meson ninja-build
-      - name: Build optics C libraries
-        working-directory: optics
+            vulkan-validationlayers mesa-vulkan-drivers \
+            libfreetype-dev libharfbuzz-dev libfontconfig1-dev libfribidi-dev \
+            libglfw3-dev libxkbcommon-dev libsystemd-dev libclang-dev \
+            libinput-dev libseat-dev libpipewire-0.3-dev libspa-0.2-dev
+      - name: Build and install optics C libraries
         run: |
-          meson setup build -Dtests=false -Dbuildtype=debugoptimized
-          meson compile -C build
-        continue-on-error: true
+          meson setup optics/build optics \
+            -Dexamples=false -Dtests=false --buildtype=release
+          meson compile -C optics/build
+          sudo meson install -C optics/build
+          sudo ldconfig
+          pkg-config --modversion flux flux-scene-graph lens iris
       - name: Test full workspace
-        working-directory: aegis
-        run: cargo test --workspace
-        continue-on-error: true
+        run: cargo test --locked --workspace
       - name: Build release binaries
-        working-directory: aegis
-        run: cargo build --release --workspace
-        continue-on-error: true
+        run: cargo build --locked --release --workspace

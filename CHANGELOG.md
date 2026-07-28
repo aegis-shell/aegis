@@ -7,6 +7,24 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### Build and dependency acquisition
+
+- Canonical builds now resolve the Optics Rust bindings from the locked
+  `v0.0.3` Git release and link system-installed C libraries through
+  `pkg-config`, so CI and package builds no longer require `../optics`.
+- Cross-repository development keeps an opt-in local Cargo override that can
+  be activated once as the ignored project Cargo configuration.
+- The full GitHub Actions job now installs Optics before testing Aegis and
+  fails on checkout, native build, workspace test, or release-build errors.
+- Removed the redundant development-session wrapper and its shell-only test.
+  `cargo run --locked -p aegis` is the standard development entry point, and
+  `AEGIS_BACKEND` is the only backend override.
+- Removed `scripts/install.sh`. The distribution install contract now lives in
+  the [Distribution Packaging](docs/dev/packaging.md) guide, which also
+  documents the `aegis-portal`, `fuji`, and portal metadata the script
+  omitted. Tests that need XDG discovery stage the debug binary and its
+  metadata into a throwaway `mktemp` prefix instead of writing to `~/.local`.
+
 ### Wayland browser compatibility
 
 - Browser menus now retain the correct popup grab and keyboard-focus owner.
@@ -16,14 +34,17 @@ project cuts a tagged release.
 - Newly mapped, controllable toplevels now receive keyboard focus. Activation
   configures preserve the mapped window size, and remembered application
   geometry applies only to main windows rather than same-application
-  dialogs. Version 1 saved geometry is cleared once during migration because
-  it may contain dialog dimensions.
+  dialogs. Unsupported window-state file versions are rejected as a unit
+  instead of retaining one-off migration code or replaying ambiguous state.
 
 ### Screen casting
 
 - The portal ScreenCast stream now publishes a PipeWire output port.
   Consumers such as OBS can link the node and receive compositor frames
   instead of seeing a source with no video flow.
+- ScreenCast sessions and restore tokens are bound to the application id that
+  selected them. Another application cannot reuse a discovered session handle
+  or restore token.
 
 ### Window resize
 
@@ -40,12 +61,26 @@ project cuts a tagged release.
 
 ### Dock interaction
 
-- Maximizing a window now leaves the Dock collapsed as a centered capsule
-  until the pointer exits and re-enters its local reveal target.
+- The Dock now collapses only when a visible window intersects its stable
+  resting rectangle. A maximized window that respects the reserved edge keeps
+  the Dock visible; an actual overlap hides it behind the local reveal handle.
 - Normal Dock hover, click, and pointer-capture bounds now remain fixed to
   the unmagnified panel. Icon animation no longer expands chrome ownership
   into application content, while the visual glass backdrop still follows
   the animated width.
+
+### Configuration and maintenance
+
+- Removed the deprecated `$AEGIS_KEYBINDS` parser and environment override.
+  Versioned `[[keybind]]` entries in `config.toml` are the only key-binding
+  configuration surface.
+- Removed unused protocol handlers, cursor animation state, token-revocation
+  scaffolding, and unused ordinary dependencies.
+- Split Dock state/layout, rendering, and tests into focused modules, and
+  separated status-bar rendering and configuration tests from their runtime
+  modules. Popup placement and Unicode-safe label truncation now use one
+  shared shell implementation across the Dock, status bar, menus, switcher,
+  and feedback surfaces.
 
 ## [0.0.4] - 2026-07-28
 

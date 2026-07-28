@@ -395,10 +395,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let keyboard_capture = aegis_core::input::KeyboardCaptureState::default();
 
     // Global key bindings: built-in defaults overridden by the config file's
-    // `[[keybind]]` entries. The deprecated `$AEGIS_KEYBINDS` env var is still
-    // honored as a transitional override (logged) and takes precedence over
-    // the file; it is removed before the desktop phase closes. `forward_input`
-    // consumes a matched key before delivering it to the focused client.
+    // `[[keybind]]` entries. `forward_input` consumes a matched key before
+    // delivering it to the focused client.
     let keymap = build_keymap(config.as_ref());
     log::info!("keybinds: {} active", keymap.len());
     // Seed the window rules from the loaded config (ADR-0026). Re-applied on

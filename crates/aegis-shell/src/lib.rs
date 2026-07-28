@@ -23,17 +23,21 @@ use lens::{Frame, Ui};
 pub mod chrome;
 pub mod i18n;
 pub mod modal;
+mod popup;
 pub mod system;
+mod text;
 pub use chrome::{
     AgentFeedback, AppMenu, Launcher, Overview, PickerMode, PinAction, ScreenshotSelector, Toast,
     WindowSwitcher,
 };
 pub use i18n::{Language, Localizer, Message};
 pub use modal::ModalApplicationSpec;
+pub use popup::{POPUP_GAP, POPUP_MARGIN, place_popup};
 pub use system::{
     BatteryStatus, DisplaySettings, DisplayStatus, NetworkState, SystemAction, SystemStatus,
     detect_system_status,
 };
+pub use text::truncate;
 
 /// Logical height of the top status bar (the `aegis-statusbar` component).
 /// Defined here, at the shell seam, so shell-resident chrome that must align

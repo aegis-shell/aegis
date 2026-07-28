@@ -5,11 +5,9 @@ use aegis_core::window::{Window, WindowId};
 use aegis_design::{Design, materials, themes};
 use lens::{Frame, Input, LayoutOpts, Rect};
 
-use crate::{ChromeEvents, Localizer, Message, WindowAction};
+use crate::{ChromeEvents, Localizer, Message, WindowAction, place_popup, truncate};
 
 const MENU_WIDTH: f32 = 236.0;
-const MENU_MARGIN: f32 = 8.0;
-const MENU_GAP: f32 = 8.0;
 const MENU_PAD: f32 = 7.0;
 const ROW_HEIGHT: f32 = 28.0;
 const HEADER_HEIGHT: f32 = 23.0;
@@ -402,40 +400,14 @@ fn menu_height(rows: usize, separators: usize) -> f32 {
     MENU_PAD * 2.0 + HEADER_HEIGHT + rows as f32 * ROW_HEIGHT + separators as f32 * SECTION_HEIGHT
 }
 
-fn place_popup(owner: Rect, size: (f32, f32), display: (f32, f32)) -> Rect {
-    let w = size.0.min((display.0 - MENU_MARGIN * 2.0).max(1.0));
-    let h = size.1.min((display.1 - MENU_MARGIN * 2.0).max(1.0));
-    let max_x = (display.0 - w - MENU_MARGIN).max(MENU_MARGIN);
-    let owner_centre = owner.x + owner.w * 0.5;
-    let x = (owner_centre - w * 0.5).clamp(MENU_MARGIN, max_x);
-    let above = owner.y - MENU_GAP - h;
-    let below = owner.y + owner.h + MENU_GAP;
-    let y = if above >= MENU_MARGIN {
-        above
-    } else if below + h <= display.1 - MENU_MARGIN {
-        below
-    } else {
-        above.clamp(MENU_MARGIN, (display.1 - h - MENU_MARGIN).max(MENU_MARGIN))
-    };
-    Rect { x, y, w, h }
-}
-
 fn contains(rect: Rect, x: f32, y: f32) -> bool {
     x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h
-}
-
-fn truncate(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-    let mut value: String = text.chars().take(max_chars.saturating_sub(1)).collect();
-    value.push('…');
-    value
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{POPUP_GAP, POPUP_MARGIN};
 
     #[test]
     fn popup_centres_above_a_bottom_tile_and_stays_on_screen() {
@@ -446,10 +418,10 @@ mod tests {
             h: 72.0,
         };
         let rect = place_popup(owner, (MENU_WIDTH, 180.0), (800.0, 600.0));
-        assert!(rect.x >= MENU_MARGIN);
-        assert!(rect.x + rect.w <= 800.0 - MENU_MARGIN);
-        assert!(rect.y + rect.h <= owner.y - MENU_GAP);
-        assert!(rect.y >= MENU_MARGIN);
+        assert!(rect.x >= POPUP_MARGIN);
+        assert!(rect.x + rect.w <= 800.0 - POPUP_MARGIN);
+        assert!(rect.y + rect.h <= owner.y - POPUP_GAP);
+        assert!(rect.y >= POPUP_MARGIN);
     }
 
     #[test]
@@ -461,7 +433,7 @@ mod tests {
             h: 56.0,
         };
         let rect = place_popup(owner, (MENU_WIDTH, 180.0), (800.0, 600.0));
-        assert!(rect.y >= owner.y + owner.h + MENU_GAP);
+        assert!(rect.y >= owner.y + owner.h + POPUP_GAP);
     }
 
     #[test]
