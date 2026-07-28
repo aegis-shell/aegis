@@ -70,3 +70,4 @@ background and how the decisions fit together, see
 | [0061](0061-window-tree-atomic-client-surface-compositing.md) | Window-tree-atomic client surface compositing (supersedes [0011](0011-subsurface-tree-and-z-split-rendering.md)) | Accepted |
 | [0062](0062-wayland-input-method-v2-host-integration.md) | Wayland input-method-v2 host integration | Accepted |
 | [0063](0063-compositor-owned-borderless-decoration-policy.md) | Compositor-owned borderless decoration policy | Accepted |
+| [0064](0064-output-space-use-and-chrome-policy.md) | Output space-use state and chrome policy | Accepted |

@@ -254,10 +254,10 @@ glyph.
 
 ## Status Bar
 
-The `[statusbar]` table controls whether the top status bar (workspace
-state, active-window title, clock, system status, and the tray row) is
-registered at startup (ADR-0045). Changes apply on the next launch; the
-flag is read once during compositor startup.
+The `[statusbar]` table controls whether the top status bar (workspace state,
+clock, system status, and the registered tray row) is registered at startup
+(ADR-0045). Changes apply on the next launch; the flag is read once during
+compositor startup.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -268,16 +268,14 @@ flag is read once during compositor startup.
 enabled = false
 ```
 
-The bar's tray row hosts both per-application icons for open windows and
-real StatusNotifierItem (SNI) tray icons published on the session D-Bus.
+The bar's tray row contains only StatusNotifierItem (SNI) entries explicitly
+registered on the session D-Bus. Ordinary windows do not become tray icons.
 SNI support runs silently: without a session bus, or when another watcher
-already owns the `org.kde.StatusNotifierWatcher` name, no SNI icons
-appear and startup is unaffected. SNI items that ship a dbusmenu `Menu`
-object path get a compositor-rendered right-click popover; items without
-one fall back to `SecondaryActivate` per the spec. The combined tray row
-fits a five-slot budget: open-window cells keep priority, SNI cells fill
-the remaining slots, and any excess collapses into a `+N` overflow
-indicator.
+already owns the `org.kde.StatusNotifierWatcher` name, no tray icons appear
+and startup is unaffected. SNI items that ship a dbusmenu `Menu` object path
+get a compositor-rendered right-click popover; items without one fall back to
+`SecondaryActivate` per the specification. The row fits a five-slot budget;
+any excess collapses into a `+N` overflow indicator.
 
 ## Window Rules
 
@@ -450,8 +448,8 @@ Letters (`a`–`z`, lowercased), digits (`0`–`9`), and the common controls:
 |------|---------|--------|
 | `launcher` | `togglelauncher`, `apps` | Open or close the application launcher |
 | `close` | `closefocused` | Close the focused toplevel |
-| `cycle` | `next` | Move focus to the next toplevel |
-| `prev` | `previous`, `cycleback` | Move focus to the previous toplevel |
+| `cycle` | `next` | Move focus to the next toplevel; while `Super` remains held, show the live preview strip |
+| `prev` | `previous`, `cycleback` | Move focus to the previous toplevel; while `Super` remains held, show the live preview strip |
 | `workspace_next` | `next_workspace`, `ws_next` | Switch to the next workspace |
 | `workspace_prev` | `prev_workspace`, `ws_prev` | Switch to the previous workspace |
 | `tiling` | `toggle_tiling` | Toggle tiling on the current workspace |

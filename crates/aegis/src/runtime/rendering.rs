@@ -544,6 +544,80 @@ pub(super) fn draw_overview_scene(
     canvas.restore();
 }
 
+/// Super+Tab scene: preserve the live desktop underneath a dim scrim, then
+/// paint every visible window again into the shared horizontal preview strip.
+/// Shell chrome draws labels and the selected-card border over these targets.
+pub(super) fn draw_window_switcher_scene(
+    canvas: &flux::Canvas,
+    device: &flux::Device,
+    renderer: &mut aegis_render::Renderer,
+    server: &aegis_compositor::Server,
+    logical_size: (u32, u32),
+    scale: f32,
+) {
+    canvas.save();
+    canvas.fill_rect(
+        0.0,
+        0.0,
+        logical_size.0 as f32 * scale,
+        logical_size.1 as f32 * scale,
+        flux::rgba(5, 7, 12, 145),
+    );
+    canvas.restore();
+
+    let windows = server.windows();
+    if windows.is_empty() {
+        return;
+    }
+    let display = aegis_core::Rect::new(0, 0, logical_size.0 as i32, logical_size.1 as i32);
+    let layout = aegis_core::window_switcher::layout(display, windows.len());
+    let cells: std::collections::HashMap<
+        aegis_core::window::WindowId,
+        (aegis_core::Rect, aegis_core::Point, aegis_core::Size),
+    > = windows
+        .iter()
+        .zip(layout.cards.iter())
+        .map(|(window, card)| {
+            (
+                window.id,
+                (
+                    aegis_core::overview::fit(card.preview, window.size),
+                    window.position,
+                    window.size,
+                ),
+            )
+        })
+        .collect();
+    let map = move |window: Option<aegis_core::window::WindowId>, natural: aegis_core::Rect| {
+        let Some((cell, base, window_size)) = window.and_then(|id| cells.get(&id)) else {
+            return natural;
+        };
+        let scale = (cell.size.w as f32 / window_size.w.max(1) as f32)
+            .min(cell.size.h as f32 / window_size.h.max(1) as f32);
+        let remap = |value: i32, origin: i32| (value - origin) as f32 * scale;
+        aegis_core::Rect::new(
+            cell.origin.x + remap(natural.origin.x, base.x).round() as i32,
+            cell.origin.y + remap(natural.origin.y, base.y).round() as i32,
+            (natural.size.w as f32 * scale).round().max(1.0) as i32,
+            (natural.size.h as f32 * scale).round().max(1.0) as i32,
+        )
+    };
+
+    canvas.save();
+    if scale != 1.0 {
+        canvas.scale(scale, scale);
+    }
+    let shm = server.client_surface_frames();
+    let dmabuf = server.client_surface_dmabuf_frames();
+    let surface_order = server.client_surface_frame_order();
+    renderer.gc(shm
+        .iter()
+        .map(|frame| frame.id)
+        .chain(dmabuf.iter().map(|frame| frame.id)));
+    renderer.draw_surfaces_ordered_mapped(device, canvas, &surface_order, &shm, &dmabuf, &map);
+    canvas.restore();
+}
+
 /// Software cursor for direct KMS. First the XDG cursor theme
 /// (`$XCURSOR_THEME`/`$XCURSOR_SIZE`, inheritance included) via
 /// [`cursor::CursorCache`]; the hand-drawn glyph set below remains as the

@@ -799,6 +799,7 @@ fn format_journal(snapshot: &aegis_ipc::JournalSnapshot) -> String {
 pub fn format_event(ev: &Event) -> String {
     match ev {
         Event::WindowsChanged => "windows changed".into(),
+        Event::SpaceUseChanged { state } => format!("space use changed: {state:?}"),
         Event::WorkspaceChanged => "workspace changed".into(),
         Event::Notified { notification } => {
             let n = notification;
@@ -846,6 +847,12 @@ mod tests {
     #[test]
     fn format_event_windows_and_workspace() {
         assert_eq!(format_event(&Event::WindowsChanged), "windows changed");
+        assert_eq!(
+            format_event(&Event::SpaceUseChanged {
+                state: aegis_core::window::SpaceUse::Maximized,
+            }),
+            "space use changed: Maximized"
+        );
         assert_eq!(format_event(&Event::WorkspaceChanged), "workspace changed");
         assert_eq!(
             format_event(&Event::SettingsChanged { revision: 9 }),

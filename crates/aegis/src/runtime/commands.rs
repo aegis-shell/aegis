@@ -18,6 +18,7 @@ pub(super) fn draw_direct_desktop_scene(
     server: &aegis_compositor::Server,
     geometry: RenderGeometry,
     overview: bool,
+    window_switcher: bool,
 ) -> Result<(), flux::Error> {
     let RenderGeometry {
         logical_size,
@@ -38,6 +39,9 @@ pub(super) fn draw_direct_desktop_scene(
         draw_overview_scene(canvas, device, renderer, server, logical_size, scale);
     } else {
         draw_client_scene(canvas, device, renderer, server, scale);
+        if window_switcher {
+            draw_window_switcher_scene(canvas, device, renderer, server, logical_size, scale);
+        }
     }
     Ok(())
 }

@@ -190,6 +190,13 @@ impl Server {
         (self.state.pointer_x, self.state.pointer_y)
     }
 
+    /// Current depressed keyboard modifiers after the most recently routed
+    /// key event. The composition root uses this to keep held-modifier chrome
+    /// (notably Super+Tab) open until the modifier is actually released.
+    pub fn depressed_modifiers(&self) -> aegis_core::input::Mods {
+        self.state.depressed_mods
+    }
+
     /// Validate and translate target-local automation actions into the same
     /// backend-agnostic events used by physical input. The method is pure with
     /// respect to compositor state: the caller can reject the complete batch

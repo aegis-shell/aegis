@@ -80,6 +80,18 @@ close the overview; click a rail tile to switch workspaces while the
 overview stays open. `Escape`, `Super+O` again, or a click on empty space
 dismisses it.
 
+## Switch Windows with Live Previews
+
+1. Hold `Super`.
+2. Press `Tab` to select the next window, or `Shift+Tab` to select the
+   previous window.
+3. Keep holding `Super` while pressing `Tab` again to move through the live
+   preview strip.
+4. Release `Super` on the required window.
+
+The selected window receives focus on each step. The preview strip closes
+when `Super` is released.
+
 ## Control a Window from the Command Line
 
 Query the current ids, then issue a control command:

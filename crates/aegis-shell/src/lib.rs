@@ -26,6 +26,7 @@ pub mod modal;
 pub mod system;
 pub use chrome::{
     AgentFeedback, AppMenu, Launcher, Overview, PickerMode, PinAction, ScreenshotSelector, Toast,
+    WindowSwitcher,
 };
 pub use i18n::{Language, Localizer, Message};
 pub use modal::ModalApplicationSpec;
@@ -407,6 +408,19 @@ pub trait Chrome {
         false
     }
 
+    /// Begin the held-modifier window switcher. Static components ignore it;
+    /// the switcher component keeps its preview strip visible until
+    /// [`Chrome::finish_window_switcher`] arrives.
+    fn start_window_switcher(&mut self) {}
+
+    /// Close the held-modifier window switcher when Super is released.
+    fn finish_window_switcher(&mut self) {}
+
+    /// Whether the Super+Tab preview strip is currently active.
+    fn window_switcher_active(&self) -> bool {
+        false
+    }
+
     /// Whether the screenshot region selector is currently active. Default
     /// `false`; the screenshot selector overrides this.
     fn screenshot_active(&self) -> bool {
@@ -719,6 +733,27 @@ impl Shell {
     /// desktop scene for the overview thumbnail grid while this holds.
     pub fn overview_active(&self) -> bool {
         self.components.iter().any(|c| c.overview_active())
+    }
+
+    /// Open the compositor-owned Super+Tab preview strip.
+    pub fn start_window_switcher(&mut self) {
+        for component in self.components.iter_mut() {
+            component.start_window_switcher();
+        }
+    }
+
+    /// Close the preview strip after the held Super modifier is released.
+    pub fn finish_window_switcher(&mut self) {
+        for component in self.components.iter_mut() {
+            component.finish_window_switcher();
+        }
+    }
+
+    /// Whether the Super+Tab preview strip is active.
+    pub fn window_switcher_active(&self) -> bool {
+        self.components
+            .iter()
+            .any(|component| component.window_switcher_active())
     }
 
     /// Window id the overview asked to focus this frame, if any.

@@ -454,6 +454,9 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     dock.set_autohide(autohide);
     dock.set_autohide_timeout(autohide_timeout);
     shell.add(Box::new(dock));
+    // Register the held-Super switcher last so its selection chrome stacks
+    // above the Dock while the renderer supplies live window previews below.
+    shell.add(Box::new(aegis_shell::WindowSwitcher::new()));
 
     // One normalized status snapshot feeds compositor chrome and IPC. Host
     // probes (wpctl fork+exec) run on a helper thread so the compositor never
@@ -590,7 +593,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     // Signature of the last broadcast window set, used to detect changes.
-    let last_win_sig: Option<Vec<(aegis_core::window::WindowId, bool, Option<String>)>> = None;
+    let last_win_sig: Option<WindowEventSignature> = None;
+    let last_space_use = None;
     // Content hashes/revisions of the last fanned-out snapshots. The frame
     // loop rebuilds the owned snapshots only when these move; chrome and IPC
     // keep the previously pushed copy otherwise.
@@ -707,6 +711,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         live,
         ipc,
         last_win_sig,
+        last_space_use,
         last_windows_hash,
         last_ws_sig,
         last_realm_revision,

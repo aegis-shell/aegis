@@ -1,6 +1,6 @@
 # IPC Reference
 
-The ass IPC is protocol version 7, carried as length-framed JSON over the
+The ass IPC is protocol version 8, carried as length-framed JSON over the
 owner-only Unix socket at `$XDG_RUNTIME_DIR/aegis.sock`. Every connection starts
 with `Hello`; commands are accepted only after capability and scope checks.
 JSON messages are limited to 16 MiB. Large immutable capture and frame
@@ -52,6 +52,9 @@ The reference client requests 900,000 milliseconds by default.
 - `WindowsChanged`, `WorkspaceChanged`, `RealmsChanged { revision }`,
   `SettingsChanged { revision }`, and `SystemStatusChanged`
   invalidate the corresponding snapshots.
+- `SpaceUseChanged { state }` reports the strongest visible output-space
+  consumer. `state` is `available`, `maximized`, or `fullscreen`; fullscreen
+  has precedence over maximized.
 - `RealmDamaged { realm, sequence, revision, damage }` reports that an active
   Realm's directed scene changed. `damage` contains at most 64 rectangles in
   virtual-output logical coordinates. Surface commits conservatively

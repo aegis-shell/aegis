@@ -761,6 +761,10 @@ pub(crate) struct SeatRuntime {
     last_button_serial: u32,
     implicit_grab_active: bool,
     depressed_mods: aegis_core::input::Mods,
+    /// Presses consumed by compositor shortcuts. Their matching releases are
+    /// consumed too so a newly focused client never receives a release for a
+    /// key press it did not receive.
+    suppressed_shortcut_keys: std::collections::HashSet<u32>,
     keyboard: Option<keyboard::Keyboard>,
     interactive: Option<aegis_core::window::Interactive>,
     compositor_pointer_grab: bool,
@@ -826,6 +830,7 @@ impl SeatRuntime {
             last_button_serial: 0,
             implicit_grab_active: false,
             depressed_mods: aegis_core::input::Mods::NONE,
+            suppressed_shortcut_keys: std::collections::HashSet::new(),
             keyboard: None,
             interactive: None,
             compositor_pointer_grab: false,

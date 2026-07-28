@@ -31,7 +31,7 @@ use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect};
 
 use aegis_core::app::Entry;
 use aegis_core::input::{KeyAction, KeyChar, key_action};
-use aegis_core::window::Window;
+use aegis_core::window::{SpaceUse, Window};
 use aegis_core::workspace::WorkspaceSnapshot;
 use aegis_shell::{
     AppCatalog, AppMenu, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet, Localizer,
@@ -87,6 +87,11 @@ const AUTOHIDE_IDLE_TIMEOUT: f32 = 2.5;
 const AUTOHIDE_HANDLE_WIDTH: f32 = 140.0;
 /// Height of the thin stadium handle shown when the dock is autohidden.
 const AUTOHIDE_HANDLE_HEIGHT: f32 = 6.0;
+/// Horizontal breathing room around the collapsed handle that reveals the
+/// Dock. The rest of the bottom edge remains client-owned.
+const AUTOHIDE_TRIGGER_PAD_X: f32 = 40.0;
+/// Vertical approach band around the collapsed handle.
+const AUTOHIDE_TRIGGER_HEIGHT: f32 = 24.0;
 /// Pointer dwell before an application name appears. This keeps labels from
 /// flashing while the pointer merely crosses the dock.
 const TOOLTIP_DWELL: f32 = 0.30;
@@ -94,19 +99,6 @@ const TOOLTIP_DWELL: f32 = 0.30;
 const TOOLTIP_FADE_SPEED: f32 = 18.0;
 const TOOLTIP_HEIGHT: f32 = 28.0;
 const TOOLTIP_GAP: f32 = 9.0;
-
-/// Strongest window state currently covering the visible workspace.
-///
-/// Maximized and fullscreen windows cover the dock completely. Keeping the
-/// two states distinct preserves fullscreen precedence when several visible
-/// windows report different states.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum WindowCover {
-    #[default]
-    None,
-    Maximized,
-    Fullscreen,
-}
 
 /// One application pinned to the dock: the launchable entry plus the lowercased
 /// `app_id`s a running toplevel might report, used to fold a running window
@@ -228,7 +220,7 @@ pub struct Dock {
     /// Compositor-derived cover state for the current visible windows. Kept
     /// outside render state because reserved edges, pointer capture, and
     /// backdrop capture are queried before the dock renders.
-    window_cover: WindowCover,
+    space_use: SpaceUse,
     /// Resolved tile strip cache (Launchpad tile first), shared by `render`
     /// and `pointer_bounds` (via `backdrop_regions`/`captures_pointer`) so the
     /// strip is built once per change instead of up to three times per frame.
@@ -286,7 +278,7 @@ impl Dock {
             autohide_reveal: 1.0,
             autohide_idle: 0.0,
             autohide_timeout: AUTOHIDE_IDLE_TIMEOUT,
-            window_cover: WindowCover::None,
+            space_use: SpaceUse::Available,
             tile_cache: RefCell::new(TileCache {
                 signature: None,
                 label: String::new(),
@@ -299,7 +291,7 @@ impl Dock {
     /// Set whether the dock automatically hides after an inactivity period.
     pub fn set_autohide(&mut self, autohide: bool) {
         self.autohide = autohide;
-        if !autohide {
+        if !autohide && self.space_use == SpaceUse::Available {
             self.autohide_reveal = 1.0;
             self.autohide_idle = 0.0;
         }
@@ -316,23 +308,33 @@ impl Dock {
         self.set_autohide(!current);
     }
 
-    /// Whether a visible application window must completely cover the dock.
-    fn covered_by_window(&self) -> bool {
-        self.window_cover != WindowCover::None
+    /// Fullscreen owns the complete output: unlike maximized mode, it exposes
+    /// neither Dock chrome nor a reveal target.
+    fn fullscreen_locked(&self) -> bool {
+        self.space_use == SpaceUse::Fullscreen
     }
 
-    /// Derive the strictest dock policy from visible, non-minimized windows.
-    fn window_cover(windows: &[Window]) -> WindowCover {
-        let mut cover = WindowCover::None;
-        for window in windows.iter().filter(|window| !window.minimized) {
-            if window.state.fullscreen {
-                return WindowCover::Fullscreen;
-            }
-            if window.state.maximized {
-                cover = WindowCover::Maximized;
-            }
+    /// Maximized mode forces the same collapsed overlay mechanics as the
+    /// user's autohide preference, without changing that preference.
+    fn effective_autohide(&self) -> bool {
+        self.autohide || self.space_use == SpaceUse::Maximized
+    }
+
+    fn hidden_trigger_bounds(display: (f32, f32)) -> Rect {
+        Rect {
+            x: (display.0 - AUTOHIDE_HANDLE_WIDTH) * 0.5 - AUTOHIDE_TRIGGER_PAD_X,
+            y: display.1 - AUTOHIDE_TRIGGER_HEIGHT,
+            w: AUTOHIDE_HANDLE_WIDTH + AUTOHIDE_TRIGGER_PAD_X * 2.0,
+            h: AUTOHIDE_TRIGGER_HEIGHT,
         }
-        cover
+    }
+
+    fn hidden_trigger_contains(cursor: (f32, f32), display: (f32, f32)) -> bool {
+        let trigger = Self::hidden_trigger_bounds(display);
+        cursor.0 >= trigger.x
+            && cursor.1 >= trigger.y
+            && cursor.0 < trigger.x + trigger.w
+            && cursor.1 < trigger.y + trigger.h
     }
 
     /// Close UI that must not survive an automatic dock hide.
@@ -637,11 +639,11 @@ impl Chrome for Dock {
         let cursor = input.as_raw().cursor;
         let down = input.as_raw().mouse_down.first().copied().unwrap_or(false);
 
-        // A maximized or fullscreen client owns the whole output edge: no
-        // animation, handle, hover target, popup, or residual tooltip may
-        // surface above it. Keep the button level in sync so restoring a
-        // window while the button is held cannot synthesize a dock click.
-        if self.covered_by_window() {
+        // A fullscreen client owns the whole output edge: no animation,
+        // handle, hover target, popup, or residual tooltip may surface above
+        // it. Maximized is intentionally different and continues through the
+        // forced-autohide path below.
+        if self.fullscreen_locked() {
             self.dismiss_transient_ui();
             self.autohide_reveal = 0.0;
             self.autohide_idle = self.autohide_timeout;
@@ -681,17 +683,17 @@ impl Chrome for Dock {
         self.sizes.retain(|key, _| live_keys.contains(key.as_str()));
 
         let rest_panel_y = disp.y - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN;
+        let effective_autohide = self.effective_autohide();
 
         // Pointer activation band for magnification and autohide reveal.
-        let trigger_y = if self.autohide && self.autohide_reveal < 0.2 {
-            disp.y - 20.0
+        let in_band = if effective_autohide && self.autohide_reveal < 0.2 {
+            Self::hidden_trigger_contains((cursor.x, cursor.y), (disp.x, disp.y))
         } else {
-            rest_panel_y - MAGNIFY_APPROACH_BAND
+            cursor.y >= rest_panel_y - MAGNIFY_APPROACH_BAND
         };
-        let in_band = cursor.y >= trigger_y;
         let menu_open = self.app_menu.is_open();
 
-        if self.autohide {
+        if effective_autohide {
             if in_band || menu_open {
                 self.autohide_idle = 0.0;
             } else {
@@ -699,7 +701,7 @@ impl Chrome for Dock {
             }
         }
 
-        let target_reveal = if self.autohide {
+        let target_reveal = if effective_autohide {
             if self.autohide_idle >= self.autohide_timeout && !menu_open {
                 0.0
             } else {
@@ -856,7 +858,7 @@ impl Chrome for Dock {
             },
         );
 
-        if self.autohide && self.autohide_reveal < 0.99 {
+        if effective_autohide && self.autohide_reveal < 0.99 {
             let handle_w = AUTOHIDE_HANDLE_WIDTH;
             let handle_h = AUTOHIDE_HANDLE_HEIGHT;
             let handle_x = (disp.x - handle_w) * 0.5;
@@ -1116,7 +1118,7 @@ impl Chrome for Dock {
     /// the bar (ADR-0024 chrome-aware work-area). The magnified-icon overshoot
     /// above the bar is intentionally not reserved — chrome draws over windows.
     fn reserved(&self) -> Reserved {
-        if self.autohide || self.covered_by_window() {
+        if self.effective_autohide() || self.fullscreen_locked() {
             Reserved::default()
         } else {
             Reserved {
@@ -1129,7 +1131,7 @@ impl Chrome for Dock {
     }
 
     fn backdrop_blur_sigma(&self) -> f32 {
-        if self.covered_by_window() || (self.autohide && self.autohide_reveal <= 0.05) {
+        if self.fullscreen_locked() || (self.effective_autohide() && self.autohide_reveal <= 0.05) {
             0.0
         } else {
             12.0
@@ -1142,7 +1144,7 @@ impl Chrome for Dock {
         windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<BackdropRegion> {
-        if self.covered_by_window() || (self.autohide && self.autohide_reveal <= 0.05) {
+        if self.fullscreen_locked() || (self.effective_autohide() && self.autohide_reveal <= 0.05) {
             return Vec::new();
         }
         let bounds = self.pointer_bounds(windows, display);
@@ -1181,10 +1183,11 @@ impl Chrome for Dock {
     /// the main loop keeps rendering (instead of blocking on the host queue)
     /// until every spring has rested.
     fn anim_pending(&self) -> bool {
-        if self.covered_by_window() {
+        if self.fullscreen_locked() {
             return false;
         }
-        let target = if self.autohide {
+        let effective_autohide = self.effective_autohide();
+        let target = if effective_autohide {
             if self.autohide_idle >= self.autohide_timeout && !self.app_menu.is_open() {
                 0.0
             } else {
@@ -1193,7 +1196,7 @@ impl Chrome for Dock {
         } else {
             1.0
         };
-        self.anim_active || (self.autohide && (target - self.autohide_reveal).abs() > 0.002)
+        self.anim_active || (effective_autohide && (target - self.autohide_reveal).abs() > 0.002)
     }
 
     fn set_reduced_motion(&mut self, reduced: bool) {
@@ -1208,14 +1211,14 @@ impl Chrome for Dock {
         windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> bool {
-        if self.covered_by_window() {
+        if self.fullscreen_locked() {
             return false;
         }
         if self.app_menu.contains(x, y, display) {
             return true;
         }
-        if self.autohide && self.autohide_reveal < 0.1 {
-            return y >= display.1 - 16.0;
+        if self.effective_autohide() && self.autohide_reveal < 0.1 {
+            return Self::hidden_trigger_contains((x, y), display);
         }
         let r = self.pointer_bounds(windows, display);
         x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h
@@ -1237,14 +1240,14 @@ impl Chrome for Dock {
     }
 
     fn update_windows(&mut self, windows: &[Window]) {
-        let cover = Self::window_cover(windows);
-        if cover == self.window_cover {
+        let space_use = SpaceUse::from_windows(windows);
+        if space_use == self.space_use {
             return;
         }
 
-        self.window_cover = cover;
-        match cover {
-            WindowCover::Fullscreen => {
+        self.space_use = space_use;
+        match space_use {
+            SpaceUse::Fullscreen => {
                 // Lock immediately; fullscreen must not expose even the
                 // hidden-dock edge trigger between snapshot and render.
                 self.dismiss_transient_ui();
@@ -1252,13 +1255,16 @@ impl Chrome for Dock {
                 self.autohide_idle = self.autohide_timeout;
                 self.anim_active = false;
             }
-            WindowCover::Maximized => {
+            SpaceUse::Maximized => {
+                // Collapse to the visible handle immediately. Rendering and
+                // hit-testing remain active so hovering near that handle can
+                // reveal the overlay Dock.
                 self.dismiss_transient_ui();
                 self.autohide_reveal = 0.0;
                 self.autohide_idle = self.autohide_timeout;
                 self.anim_active = false;
             }
-            WindowCover::None => {
+            SpaceUse::Available => {
                 self.autohide_idle = 0.0;
             }
         }
@@ -1587,13 +1593,13 @@ mod tests {
     }
 
     #[test]
-    fn maximized_window_covers_dock_without_hot_edge() {
+    fn maximized_window_collapses_to_a_local_reveal_handle() {
         let mut dock = Dock::new();
         let mut maximized = window(7, "org.example.Game", true);
         maximized.state.maximized = true;
         dock.update_windows(&[maximized]);
 
-        assert_eq!(dock.window_cover, WindowCover::Maximized);
+        assert_eq!(dock.space_use, SpaceUse::Maximized);
         assert_eq!(dock.autohide_reveal, 0.0);
         assert_eq!(dock.reserved(), Reserved::default());
         assert_eq!(dock.backdrop_blur_sigma(), 0.0);
@@ -1601,13 +1607,12 @@ mod tests {
             dock.backdrop_regions((1920.0, 1080.0), &[], &workspace_snapshot())
                 .is_empty()
         );
-        assert!(!dock.captures_pointer(
-            960.0,
-            1079.0,
-            (1920.0, 1080.0),
-            &[],
-            &workspace_snapshot(),
-        ));
+        assert!(
+            dock.captures_pointer(960.0, 1079.0, (1920.0, 1080.0), &[], &workspace_snapshot(),)
+        );
+        assert!(
+            !dock.captures_pointer(20.0, 1079.0, (1920.0, 1080.0), &[], &workspace_snapshot(),)
+        );
         assert!(!dock.anim_pending());
     }
 
@@ -1618,7 +1623,7 @@ mod tests {
         fullscreen.state.fullscreen = true;
         dock.update_windows(&[fullscreen]);
 
-        assert_eq!(dock.window_cover, WindowCover::Fullscreen);
+        assert_eq!(dock.space_use, SpaceUse::Fullscreen);
         assert_eq!(dock.autohide_reveal, 0.0);
         assert_eq!(dock.reserved(), Reserved::default());
         assert_eq!(dock.backdrop_blur_sigma(), 0.0);
@@ -1643,11 +1648,11 @@ mod tests {
         let mut fullscreen = window(8, "org.example.Game", false);
         fullscreen.state.fullscreen = true;
         dock.update_windows(&[maximized, fullscreen.clone()]);
-        assert_eq!(dock.window_cover, WindowCover::Fullscreen);
+        assert_eq!(dock.space_use, SpaceUse::Fullscreen);
 
         fullscreen.minimized = true;
         dock.update_windows(&[fullscreen]);
-        assert_eq!(dock.window_cover, WindowCover::None);
+        assert_eq!(dock.space_use, SpaceUse::Available);
         assert_eq!(
             dock.reserved().bottom,
             (DOCK_PANEL_HEIGHT + DOCK_BOTTOM_MARGIN) as i32

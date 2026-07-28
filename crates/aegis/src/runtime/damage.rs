@@ -310,6 +310,7 @@ impl CompositorRuntime {
         // selector.
         let chrome_mode = (
             self.shell.overview_active(),
+            self.shell.window_switcher_active(),
             self.shell.captures_keyboard(),
             self.shell.screenshot_active(),
         );

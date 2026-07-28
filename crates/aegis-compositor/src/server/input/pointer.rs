@@ -284,6 +284,9 @@ impl Server {
             self.state.pending_vt_switch = Some((outcome.keysym - XF86_SWITCH_VT_1 + 1) as i32);
             return None;
         }
+        if !state.is_pressed() && self.state.suppressed_shortcut_keys.remove(&evdev_code) {
+            return None;
+        }
         // A key that matches a global binding on press is consumed (not posted
         // to the focused client) and its action returned for the caller to
         // dispatch. Modifier-only keys never match, so modifiers still post.
@@ -297,6 +300,7 @@ impl Server {
             None
         };
         if matched.is_some() {
+            self.state.suppressed_shortcut_keys.insert(evdev_code);
             return matched;
         }
         let time = self.epoch.elapsed().as_millis() as u32;

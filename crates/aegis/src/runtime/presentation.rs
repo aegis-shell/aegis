@@ -85,6 +85,7 @@ impl CompositorRuntime {
                 // Overview mode (M9) swaps the whole client scene for the
                 // thumbnail grid and skips the launcher-blur capture path.
                 let overview_active = self.shell.overview_active();
+                let window_switcher_active = self.shell.window_switcher_active();
                 // A screenshot freeze session replaces the whole frame with
                 // the trigger-frame snapshot: the capture frame renders the
                 // desktop scene *and* the chrome into an offscreen target
@@ -112,17 +113,18 @@ impl CompositorRuntime {
                     });
                 let (capture_origin, capture_extent) =
                     capture_bounds.unwrap_or(((0, 0), physical_size));
-                let backdrop_plan = if overview_active || self.screenshot_freeze.armed {
-                    BackdropPlan::Direct
-                } else {
-                    self.launcher_backdrop.prepare(
-                        blur_sigma > 0.0 && !backdrop_regions.is_empty(),
-                        &self.device,
-                        &self.surface,
-                        &frame,
-                        capture_extent,
-                    )
-                };
+                let backdrop_plan =
+                    if overview_active || window_switcher_active || self.screenshot_freeze.armed {
+                        BackdropPlan::Direct
+                    } else {
+                        self.launcher_backdrop.prepare(
+                            blur_sigma > 0.0 && !backdrop_regions.is_empty(),
+                            &self.device,
+                            &self.surface,
+                            &frame,
+                            capture_extent,
+                        )
+                    };
 
                 match backdrop_plan {
                     BackdropPlan::Capture
@@ -196,6 +198,7 @@ impl CompositorRuntime {
                             &self.server,
                             render_geometry,
                             overview_active,
+                            window_switcher_active,
                         )?;
                         if let Some(image) = blurred {
                             for region in &backdrop_regions {
@@ -322,6 +325,7 @@ impl CompositorRuntime {
                                     &self.server,
                                     render_geometry,
                                     overview_active,
+                                    window_switcher_active,
                                 )?;
                             }
                         } else {
@@ -335,6 +339,7 @@ impl CompositorRuntime {
                                 &self.server,
                                 render_geometry,
                                 overview_active,
+                                window_switcher_active,
                             )?;
                         }
                     }
@@ -353,15 +358,30 @@ impl CompositorRuntime {
                 if self.last_windows_hash != Some(windows_hash) {
                     self.last_windows_hash = Some(windows_hash);
                     let win_snapshot = self.server.windows();
-                    let sig: Vec<(aegis_core::window::WindowId, bool, Option<String>)> =
-                        win_snapshot
-                            .iter()
-                            .map(|w| (w.id, w.state.activated, w.title.clone()))
-                            .collect();
+                    let sig: WindowEventSignature = win_snapshot
+                        .iter()
+                        .map(|w| {
+                            (
+                                w.id,
+                                w.state.activated,
+                                w.state.maximized,
+                                w.state.fullscreen,
+                                w.minimized,
+                                w.title.clone(),
+                            )
+                        })
+                        .collect();
                     if self.last_win_sig.as_ref() != Some(&sig) {
                         self.last_win_sig = Some(sig);
                         if let Some(s) = self.ipc.as_ref() {
                             s.broadcast(aegis_ipc::Event::WindowsChanged);
+                        }
+                    }
+                    let space_use = aegis_core::window::SpaceUse::from_windows(&win_snapshot);
+                    if self.last_space_use != Some(space_use) {
+                        self.last_space_use = Some(space_use);
+                        if let Some(s) = self.ipc.as_ref() {
+                            s.broadcast(aegis_ipc::Event::SpaceUseChanged { state: space_use });
                         }
                     }
                     self.live.set_windows(win_snapshot.clone());

@@ -52,9 +52,29 @@ project cuts a tagged release.
 
 ### Smart Dock visibility
 
-- Maximized and fullscreen windows now cover the Dock completely. Moving the
-  pointer to the bottom edge no longer raises the Dock over a maximized
-  application.
+- Maximized windows now collapse the Dock into a centered translucent capsule.
+  Hovering near the capsule reveals the Dock; the rest of the bottom edge stays
+  client-owned.
+- Fullscreen windows remove the Dock, capsule, hover target, and status bar
+  until fullscreen ends. Maximized windows keep the status bar visible.
+- IPC protocol version 8 adds explicit `available`, `maximized`, and
+  `fullscreen` space-use transition events.
+
+### Window switching
+
+- Holding `Super` while using `Tab` or `Shift+Tab` now presents live previews
+  of every visible window and highlights the focused selection until `Super`
+  is released.
+- Global shortcut releases are consumed with their matching presses, so the
+  newly focused client no longer receives a stray Tab release.
+
+### Status bar and tray
+
+- Removed the active-window title and icon from the left side of the status
+  bar.
+- The tray now displays only applications that explicitly register a
+  StatusNotifierItem. Ordinary windows such as Chrome and foot no longer
+  appear as synthetic tray entries.
 
 ## [0.0.2] - 2026-07-28
 

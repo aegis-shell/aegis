@@ -23,6 +23,7 @@ mod launcher;
 mod overview;
 mod screenshot;
 mod toast;
+mod window_switcher;
 
 pub use agent_feedback::AgentFeedback;
 pub use app_menu::{AppMenu, PinAction};
@@ -30,3 +31,4 @@ pub use launcher::Launcher;
 pub use overview::Overview;
 pub use screenshot::{PickerMode, ScreenshotSelector};
 pub use toast::Toast;
+pub use window_switcher::WindowSwitcher;

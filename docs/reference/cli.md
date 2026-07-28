@@ -47,7 +47,7 @@ shell completion scripts for bash, zsh, fish, PowerShell, and elvish.
 | `aegis-ctl dismiss <id>` | Dismiss an active notification. |
 | `aegis-ctl screenshot [path.png] [--region x,y,w,h]` | Capture the focused output to a PNG file (default: a timestamped file in `$XDG_PICTURES_DIR/screenshots`, falling back to `~/Pictures/screenshots`). This IPC command does not modify the physical clipboard. |
 | `aegis-ctl overview` | Toggle the window/workspace overview. |
-| `aegis-ctl subscribe` | Stream coarse window, workspace, notification, settings, live-system, and Realm events. |
+| `aegis-ctl subscribe` | Stream coarse window, output-space-use, workspace, notification, settings, live-system, and Realm events. |
 | `aegis-ctl subscribe-journal` | Stream detailed mutation-journal events. |
 | `aegis-ctl completions <shell>` | Print shell completions for `bash`, `zsh`, `fish`, `powershell`, or `elvish`. |
 | `aegis-ctl quit` | Request compositor shutdown. |

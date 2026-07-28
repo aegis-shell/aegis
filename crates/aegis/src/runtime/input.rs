@@ -80,6 +80,9 @@ impl CompositorRuntime {
         // Process client protocol traffic.
         self.server.dispatch();
         let session_locked = self.server.session_locked();
+        if session_locked {
+            self.shell.finish_window_switcher();
+        }
         let realm_revision = self.server.realm_snapshot().revision;
         for (realm, damage) in self.server.take_realm_damage() {
             self.realm_damage_sequence = self.realm_damage_sequence.saturating_add(1);
@@ -401,6 +404,13 @@ impl CompositorRuntime {
             }
             let mut actions = captured_actions;
             actions.extend(self.server.forward_input(&forwarded, &self.keymap));
+            let super_held = self
+                .server
+                .depressed_modifiers()
+                .has(aegis_core::input::Mods::SUPER);
+            if self.shell.window_switcher_active() && !super_held {
+                self.shell.finish_window_switcher();
+            }
             // Ctrl+Alt+Fn: the compositor performs console VT switches itself
             // through libseat (the kernel never sees the key once libinput
             // owns evdev). No-op on the nested backend.
@@ -433,6 +443,9 @@ impl CompositorRuntime {
                         }
                     }
                     Action::CycleFocus => {
+                        if super_held {
+                            self.shell.start_window_switcher();
+                        }
                         let cmd = aegis_ipc::Command::Cycle { forward: true };
                         apply_command_and_journal(
                             &mut self.server,
@@ -446,6 +459,9 @@ impl CompositorRuntime {
                         );
                     }
                     Action::CycleFocusBack => {
+                        if super_held {
+                            self.shell.start_window_switcher();
+                        }
                         let cmd = aegis_ipc::Command::Cycle { forward: false };
                         apply_command_and_journal(
                             &mut self.server,

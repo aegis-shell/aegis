@@ -41,6 +41,43 @@ pub struct WindowState {
     pub activated: bool,
 }
 
+/// Strongest way a visible window is consuming the current output's usable
+/// space.
+///
+/// Maximized and fullscreen are deliberately separate states: maximized
+/// windows still coexist with persistent top chrome and a revealable Dock,
+/// while fullscreen windows own the complete output. Fullscreen has
+/// precedence when several visible windows report different states.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SpaceUse {
+    /// No visible, non-minimized window consumes an output edge.
+    #[default]
+    Available,
+    /// At least one visible, non-minimized window is maximized.
+    Maximized,
+    /// At least one visible, non-minimized window is fullscreen.
+    Fullscreen,
+}
+
+impl SpaceUse {
+    /// Derive output space use from the visible window snapshot delivered to
+    /// shell chrome and IPC consumers.
+    pub fn from_windows(windows: &[Window]) -> SpaceUse {
+        let mut use_state = SpaceUse::Available;
+        for window in windows.iter().filter(|window| !window.minimized) {
+            if window.state.fullscreen {
+                return SpaceUse::Fullscreen;
+            }
+            if window.state.maximized {
+                use_state = SpaceUse::Maximized;
+            }
+        }
+        use_state
+    }
+}
+
 impl WindowState {
     /// Serialize the active state bits into a `u32` array matching the
     /// `xdg_toplevel.configure.states` argument layout. The order matches
@@ -329,6 +366,35 @@ mod tests {
             activated: false,
         };
         assert_eq!(s.to_state_array(), vec![2]);
+    }
+
+    #[test]
+    fn visible_space_use_distinguishes_maximized_and_fullscreen() {
+        let mut maximized = Window::new(WindowId(1));
+        maximized.state.maximized = true;
+        assert_eq!(SpaceUse::from_windows(&[maximized]), SpaceUse::Maximized);
+
+        let mut fullscreen = Window::new(WindowId(2));
+        fullscreen.state.fullscreen = true;
+        assert_eq!(
+            SpaceUse::from_windows(&[fullscreen.clone()]),
+            SpaceUse::Fullscreen
+        );
+
+        fullscreen.minimized = true;
+        assert_eq!(SpaceUse::from_windows(&[fullscreen]), SpaceUse::Available);
+    }
+
+    #[test]
+    fn fullscreen_space_use_has_precedence_over_maximized() {
+        let mut maximized = Window::new(WindowId(1));
+        maximized.state.maximized = true;
+        let mut fullscreen = Window::new(WindowId(2));
+        fullscreen.state.fullscreen = true;
+        assert_eq!(
+            SpaceUse::from_windows(&[maximized, fullscreen]),
+            SpaceUse::Fullscreen
+        );
     }
 
     #[test]

@@ -1,10 +1,10 @@
 //! The session status bar: a compact top bar with integrated workspace state,
-//! active window context, clock, application tray, system status, and a small
-//! status-and-controls panel. The rendering and interaction remain
+//! clock, registered StatusNotifierItem tray entries, system status, and a
+//! small status-and-controls panel. The rendering and interaction remain
 //! compositor-owned lens chrome.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use aegis_core::app::BuiltInApplication;
 use aegis_core::notify::{Notification, NotificationQueue};
 use aegis_core::realm::{RealmKind, RealmSnapshot, RealmState};
-use aegis_core::window::Window;
+use aegis_core::window::{SpaceUse, Window};
 use aegis_core::workspace::WorkspaceSnapshot;
 use aegis_design::{Design, materials, themes};
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
@@ -112,12 +112,6 @@ struct SniTray {
     cached_cells: Vec<SniCell>,
 }
 
-struct TrayCell {
-    window: aegis_core::window::WindowId,
-    key: String,
-    icon: Option<*mut c_void>,
-}
-
 /// One SNI cell to draw this frame, distilled from the tray snapshot.
 #[derive(Clone)]
 struct SniCell {
@@ -137,13 +131,10 @@ struct MenuSnapshotCache {
     menu: Option<Arc<MenuState>>,
 }
 
-/// How the combined tray row folds into the slot budget: app-tray cells
-/// (open windows) keep priority, SNI cells fill the remaining slots, and
-/// past budget the last slot becomes a "+N" overflow indicator counting
-/// everything hidden (see [`fold_tray`]).
+/// How registered SNI items fold into the slot budget. Past budget the last
+/// slot becomes a "+N" overflow indicator counting everything hidden.
 struct TrayFold {
-    visible_apps: usize,
-    visible_sni: usize,
+    visible: usize,
     hidden: usize,
 }
 
@@ -507,27 +498,6 @@ impl StatusBar {
             }
         }
         cache.as_ref()?.menu.clone()
-    }
-
-    fn tray_cells(&self, windows: &[Window]) -> Vec<TrayCell> {
-        let mut seen = HashSet::new();
-        windows
-            .iter()
-            .filter(|window| !window.read_only)
-            .filter_map(|window| {
-                let app_id = window.app_id.as_deref()?.to_ascii_lowercase();
-                if !seen.insert(app_id.clone()) {
-                    return None;
-                }
-                Some(TrayCell {
-                    window: window.id,
-                    icon: self.icons.get(&app_id),
-                    key: app_id,
-                })
-            })
-            // No slot limit here: the combined row folds into MAX_TRAY_ITEMS
-            // in `render` (see `fold_tray`).
-            .collect()
     }
 
     /// Read the SNI snapshot under a brief lock, upload any new or changed
@@ -1380,7 +1350,7 @@ impl Chrome for StatusBar {
         &mut self,
         f: &mut Frame,
         input: &Input,
-        windows: &[Window],
+        _windows: &[Window],
         workspaces: &WorkspaceSnapshot,
         i18n: &Localizer,
         out: &mut ChromeEvents,
@@ -1403,14 +1373,12 @@ impl Chrome for StatusBar {
         let right_down = raw.mouse_down.get(1).copied().unwrap_or(false);
         let right_pressed = right_down && !self.prev_right_down;
         let notifications = self.notification_snapshot();
-        let mut tray = self.tray_cells(windows);
         let mut sni = self.sni_cells();
-        // Fold the combined tray row into the slot budget (see `fold_tray`):
-        // app-tray cells keep priority, SNI cells fill the rest, and any
-        // remainder collapses into a "+N" indicator.
-        let fold = fold_tray(sni.len(), tray.len(), MAX_TRAY_ITEMS);
-        tray.truncate(fold.visible_apps);
-        sni.truncate(fold.visible_sni);
+        // Only applications that explicitly registered a StatusNotifierItem
+        // belong in the tray. Ordinary toplevels remain windows, never
+        // synthetic tray entries.
+        let fold = fold_tray(sni.len(), MAX_TRAY_ITEMS);
+        sni.truncate(fold.visible);
 
         let bar = Self::bar_bounds(display.0);
         f.layer("ass-hud-bar", bar, &bar_opts(), |f| {
@@ -1455,47 +1423,6 @@ impl Chrome for StatusBar {
                     out.switch_workspace = Some(workspace.id);
                 }
                 left_x += WORKSPACE_SLOT_W;
-            }
-        }
-
-        if let Some(active) = windows.iter().find(|window| window.state.activated) {
-            left_x += 12.0;
-            let max_title_w = (display.0 * 0.5 - left_x - 54.0).max(0.0);
-            if max_title_w > 42.0 {
-                if let Some(app_id) = active.app_id.as_deref() {
-                    let key = app_id.to_ascii_lowercase();
-                    if let Some(icon) = self.icons.get(&key) {
-                        let icon_rect = Rect {
-                            x: left_x,
-                            y: 7.0,
-                            w: 18.0,
-                            h: 18.0,
-                        };
-                        f.layer(
-                            "ass-hud-window-icon",
-                            icon_rect,
-                            &centered_layer(),
-                            |f| unsafe { f.image(icon as *mut lens::sys::flux_image, 18.0, 18.0) },
-                        );
-                        left_x += 25.0;
-                    }
-                }
-                let title = active
-                    .title
-                    .as_deref()
-                    .unwrap_or_else(|| i18n.text(Message::Untitled));
-                render_text_left(
-                    f,
-                    "ass-hud-window-title",
-                    Rect {
-                        x: left_x,
-                        y: 0.0,
-                        w: max_title_w,
-                        h: HUD_HEIGHT,
-                    },
-                    &truncate(title, (max_title_w / 7.4).max(4.0) as usize),
-                    12.0,
-                );
             }
         }
 
@@ -1578,39 +1505,7 @@ impl Chrome for StatusBar {
             contains(audio, cursor.0, cursor.1),
         );
 
-        for tray_cell in tray.iter().rev() {
-            let rect = take_right(&mut right_x, TRAY_CELL_W);
-            let hovered = contains(rect, cursor.0, cursor.1);
-            let id = format!("ass-hud-tray-{}", tray_cell.key);
-            f.layer(&id, rect, &icon_button_opts(hovered), |f| {
-                f.row_ex(
-                    &LayoutOpts {
-                        width: rect.w,
-                        height: rect.h,
-                        cross: Align::Center,
-                        ..Default::default()
-                    },
-                    |f| match tray_cell.icon {
-                        Some(icon) => unsafe {
-                            f.image(icon as *mut lens::sys::flux_image, 18.0, 18.0)
-                        },
-                        None => match self.themed_icon("application-x-executable-symbolic") {
-                            Some(icon) => unsafe {
-                                f.image(icon as *mut lens::sys::flux_image, 18.0, 18.0)
-                            },
-                            None => f.icon(Icon::FileText, 16.0),
-                        },
-                    },
-                );
-            });
-            if pressed && hovered {
-                out.clicked = Some(tray_cell.window);
-            }
-        }
-
-        // StatusNotifierItem cells continue the row leftwards from the
-        // app-tray cells (same right-to-left `take_right` layout, same cell
-        // size and hover style).
+        // StatusNotifierItem cells fill the tray row right-to-left.
         for sni_cell in sni.iter_mut().rev() {
             let rect = take_right(&mut right_x, TRAY_CELL_W);
             sni_cell.rect = rect;
@@ -1842,9 +1737,7 @@ impl Chrome for StatusBar {
     }
 
     fn update_windows(&mut self, windows: &[Window]) {
-        let fullscreen_active = windows
-            .iter()
-            .any(|window| !window.minimized && window.state.fullscreen);
+        let fullscreen_active = SpaceUse::from_windows(windows) == SpaceUse::Fullscreen;
         if fullscreen_active && !self.fullscreen_active {
             self.dismiss_transient_ui();
         }
@@ -2102,26 +1995,20 @@ fn take_right(x: &mut f32, width: f32) -> Rect {
     rect
 }
 
-/// Decide the fold for `sni` visible SNI items and `apps` app-tray cells
-/// given `max` slots (assumes `max >= 1`). Within budget everything renders.
-/// Past it, one slot is reserved for the "+N" indicator and the remaining
-/// capacity goes to app-tray cells first — open windows stay reachable, the
-/// more numerous SNI icons fold away.
-fn fold_tray(sni: usize, apps: usize, max: usize) -> TrayFold {
-    if apps + sni <= max {
+/// Decide the fold for `items` registered SNI entries given `max` slots
+/// (assumes `max >= 1`). Within budget everything renders. Past it, one slot
+/// is reserved for the "+N" indicator.
+fn fold_tray(items: usize, max: usize) -> TrayFold {
+    if items <= max {
         return TrayFold {
-            visible_apps: apps,
-            visible_sni: sni,
+            visible: items,
             hidden: 0,
         };
     }
-    let capacity = max.saturating_sub(1);
-    let visible_apps = apps.min(capacity);
-    let visible_sni = sni.min(capacity - visible_apps);
+    let visible = max.saturating_sub(1);
     TrayFold {
-        visible_apps,
-        visible_sni,
-        hidden: apps + sni - visible_apps - visible_sni,
+        visible,
+        hidden: items - visible,
     }
 }
 
@@ -2523,46 +2410,18 @@ mod tests {
 
     #[test]
     fn tray_fold_keeps_everything_within_budget() {
-        let fold = fold_tray(2, 3, 5);
-        assert_eq!(
-            (fold.visible_sni, fold.visible_apps, fold.hidden),
-            (2, 3, 0)
-        );
-        let fold = fold_tray(0, 0, 5);
-        assert_eq!(
-            (fold.visible_sni, fold.visible_apps, fold.hidden),
-            (0, 0, 0)
-        );
+        let fold = fold_tray(5, 5);
+        assert_eq!((fold.visible, fold.hidden), (5, 0));
+        let fold = fold_tray(0, 5);
+        assert_eq!((fold.visible, fold.hidden), (0, 0));
         // Exactly at budget no indicator slot is reserved.
-        let fold = fold_tray(2, 3, 5);
+        let fold = fold_tray(5, 5);
         assert_eq!(fold.hidden, 0);
     }
 
     #[test]
-    fn tray_fold_reserves_one_slot_and_keeps_apps_first() {
-        // 3 apps + 4 SNI in 5 slots: 4 icon slots, apps win, "+3" indicator.
-        let fold = fold_tray(4, 3, 5);
-        assert_eq!(
-            (fold.visible_sni, fold.visible_apps, fold.hidden),
-            (1, 3, 3)
-        );
-    }
-
-    #[test]
-    fn tray_fold_hides_sni_before_apps() {
-        let fold = fold_tray(9, 4, 5);
-        assert_eq!(
-            (fold.visible_sni, fold.visible_apps, fold.hidden),
-            (0, 4, 9)
-        );
-    }
-
-    #[test]
-    fn tray_fold_folds_apps_when_they_alone_overflow() {
-        let fold = fold_tray(0, 8, 5);
-        assert_eq!(
-            (fold.visible_sni, fold.visible_apps, fold.hidden),
-            (0, 4, 4)
-        );
+    fn tray_fold_reserves_one_slot_for_registered_sni_overflow() {
+        let fold = fold_tray(7, 5);
+        assert_eq!((fold.visible, fold.hidden), (4, 3));
     }
 }

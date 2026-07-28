@@ -7,6 +7,14 @@ pub(super) type AppScanResult = (
     IconSnapshot,
     Vec<DecodedIcon>,
 );
+pub(super) type WindowEventSignature = Vec<(
+    aegis_core::window::WindowId,
+    bool,
+    bool,
+    bool,
+    bool,
+    Option<String>,
+)>;
 
 /// Owns the mutable composition state used by the compositor event loop.
 ///
@@ -90,7 +98,9 @@ pub(super) struct CompositorRuntime {
     pub(super) journal: std::sync::Arc<std::sync::Mutex<aegis_ipc::Journal>>,
     pub(super) live: std::sync::Arc<LiveState>,
     pub(super) ipc: Option<aegis_ipc::Server>,
-    pub(super) last_win_sig: Option<Vec<(aegis_core::window::WindowId, bool, Option<String>)>>,
+    pub(super) last_win_sig: Option<WindowEventSignature>,
+    /// Last output-space state announced to IPC subscribers.
+    pub(super) last_space_use: Option<aegis_core::window::SpaceUse>,
     /// Content hash of the last fanned-out window snapshot; the full
     /// `Server::windows()` clone only happens when this changes.
     pub(super) last_windows_hash: Option<u64>,
@@ -102,9 +112,9 @@ pub(super) struct CompositorRuntime {
     /// mismatch marks that surface's region damaged.
     pub(super) last_surface_gens: std::collections::HashMap<usize, SurfaceDamageBaseline>,
     pub(super) last_notif_revision: Option<u64>,
-    /// (overview open, keyboard captured by chrome, screenshot selector open)
-    /// at the last assessment — modal chrome changes outside the signed paths.
-    pub(super) last_chrome_mode: Option<(bool, bool, bool)>,
+    /// (overview, window switcher, keyboard capture, screenshot selector) at
+    /// the last assessment — modal chrome changes outside signed paths.
+    pub(super) last_chrome_mode: Option<(bool, bool, bool, bool)>,
     pub(super) last_session_locked: bool,
     /// (shape, hidden) as of the last presented frame.
     pub(super) last_presented_cursor: Option<(u32, bool)>,

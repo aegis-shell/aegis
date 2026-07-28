@@ -16,12 +16,17 @@ using this hover label.
 
 ## Access the Dock Around a Maximized Window
 
-1. Restore or minimize the maximized window.
-2. Use the Dock.
+1. Move the pointer to the centered translucent capsule at the bottom edge.
+2. Keep the pointer near the capsule until the Dock expands.
+3. Move onto the Dock and use the required application tile.
 
-A visible maximized or fullscreen window covers the Dock completely. The
-bottom edge does not reveal the Dock over that window, regardless of the
-`[dock] autohide` setting. Minimized windows do not affect this behavior.
+A maximized window forces the Dock into this collapsed overlay mode regardless
+of the `[dock] autohide` setting. Moving to another part of the bottom edge
+does not reveal it.
+
+A fullscreen window removes the Dock and capsule completely. Pointer hover
+has no effect until fullscreen ends. Minimized windows do not affect either
+policy.
 
 ## Open the Launcher
 

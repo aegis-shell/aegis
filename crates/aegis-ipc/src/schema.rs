@@ -16,13 +16,14 @@ use aegis_core::realm::{
 };
 pub use aegis_core::settings::{SettingsAction, SettingsReceipt, SettingsSnapshot};
 pub use aegis_core::system::{SystemAction, SystemStatus};
-use aegis_core::window::{Window, WindowId};
+use aegis_core::window::{SpaceUse, Window, WindowId};
 use aegis_core::workspace::{OutputId, Switch, WorkspaceId, WorkspaceSnapshot};
 
 use crate::journal::{JournalEntry, JournalSnapshot};
 
 /// The protocol major version this build speaks. A client must offer the
-/// same major version at the [`Request::Hello`] handshake. Version 7 adds
+/// same major version at the [`Request::Hello`] handshake. Version 8 adds
+/// explicit output-space-use transition events. Version 7 adds
 /// live system-status queries and immediate system-control commands. Version
 /// 6 adds user-consent interactive picking (`PickTarget` → `Picked`, ADR-0054)
 /// and the window target on `StreamOutputStart`. Version 5 adds continuous
@@ -30,7 +31,7 @@ use crate::journal::{JournalEntry, JournalSnapshot};
 /// `Event::StreamFrame`, `Event::StreamEnded`, `StreamOutputStop`,
 /// ADR-0052). Version 4 adds revisioned desktop-settings snapshots,
 /// subscriptions, and confirmed settings transactions.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 /// Built-in owner-only scope used by the compositor's reference CLI for
 /// Realm recovery and administration. The Unix socket remains user-private;
 /// naming this scope opts the connection into the high-risk Realm operation
@@ -582,6 +583,10 @@ pub enum Event {
     /// closed, focused, or retitled, or the current workspace switched).
     /// The client re-queries with [`Request::GetWindows`] for the new snapshot.
     WindowsChanged,
+    /// The strongest visible output-space consumer changed. Maximized and
+    /// fullscreen remain distinct so shell surfaces and external observers do
+    /// not infer fullscreen behavior from a maximized window.
+    SpaceUseChanged { state: SpaceUse },
     /// The workspace model changed (switch, a toplevel placed on or removed
     /// from a workspace, a workspace created or reaped). Re-query with
     /// [`Request::GetWorkspaces`].
@@ -1134,6 +1139,25 @@ mod tests {
         assert_eq!(json, r#"{"type":"WindowsChanged"}"#);
         let back: Event = serde_json::from_str(&json).unwrap();
         assert_eq!(back, Event::WindowsChanged);
+    }
+
+    #[test]
+    fn space_use_event_preserves_maximized_and_fullscreen() {
+        let maximized = Event::SpaceUseChanged {
+            state: SpaceUse::Maximized,
+        };
+        let fullscreen = Event::SpaceUseChanged {
+            state: SpaceUse::Fullscreen,
+        };
+        let maximized_json = serde_json::to_string(&maximized).unwrap();
+        let fullscreen_json = serde_json::to_string(&fullscreen).unwrap();
+        assert!(maximized_json.contains(r#""state":"maximized""#));
+        assert!(fullscreen_json.contains(r#""state":"fullscreen""#));
+        assert_ne!(maximized_json, fullscreen_json);
+        assert_eq!(
+            serde_json::from_str::<Event>(&fullscreen_json).unwrap(),
+            fullscreen
+        );
     }
 
     #[test]
