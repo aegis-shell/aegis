@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## Unreleased
 
+## [0.0.3] - 2026-07-28
+
 ### Canonical Aegis namespace
 
 - Standardized the compositor, desktop identity, Realm isolation, portal,
