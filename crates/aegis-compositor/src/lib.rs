@@ -953,6 +953,10 @@ pub(crate) struct State {
     /// Accessibility reduced-motion policy (ADR-0029): when true, window
     /// transitions resolve in one frame and none are recorded.
     reduced_motion: bool,
+    /// Effective decoration ownership announced to xdg-decoration clients.
+    /// Borderless is compositor-owned: clients omit CSDs while window
+    /// controls remain available through gestures and shell surfaces.
+    decoration_policy: aegis_core::window::DecorationPolicy,
     /// Config-driven window rules (ADR-0026). Evaluated on first map; the
     /// first match prescribes a workspace move and/or a forced layout role.
     window_rules: Vec<aegis_core::window_rule::WindowRule>,
@@ -1106,6 +1110,7 @@ impl State {
             output,
             layout_params: aegis_core::layout::LayoutParams::default(),
             reduced_motion: false,
+            decoration_policy: aegis_core::window::DecorationPolicy::default(),
             window_rules: Vec::new(),
             output_geometry: aegis_core::output::OutputGeometry::default(),
             output_infos: vec![aegis_core::output::OutputInfo {

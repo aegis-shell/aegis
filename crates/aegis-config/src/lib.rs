@@ -69,7 +69,8 @@ pub struct Config {
     #[serde(default)]
     pub statusbar: StatusBarConfig,
 
-    /// Shell-wide UI policy, written as a `[ui]` table.
+    /// Desktop-wide UI and window-presentation policy, written as a `[ui]`
+    /// table.
     #[serde(default)]
     pub ui: UiConfig,
 
@@ -361,7 +362,8 @@ impl Default for StatusBarConfig {
     }
 }
 
-/// The `[ui]` section: shell-wide UI policy (ADR-0029).
+/// The `[ui]` section: desktop-wide UI and window-presentation policy
+/// (ADR-0029 and ADR-0063).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UiConfig {
@@ -378,6 +380,11 @@ pub struct UiConfig {
     /// Cursor size in logical pixels. `$XCURSOR_SIZE` wins when set.
     #[serde(default)]
     pub cursor_size: Option<u32>,
+    /// Window-decoration ownership. `borderless` keeps controls in
+    /// compositor gestures and shell surfaces without per-window title bars;
+    /// `client-side` asks applications to draw their own frames.
+    #[serde(default)]
+    pub window_decorations: aegis_core::window::DecorationPolicy,
 }
 
 /// The `[input]` section.
@@ -1687,6 +1694,35 @@ mod tests {
         let cfg2 = Config::parse("schema_version = 1\n").unwrap();
         assert!(!cfg2.ui.reduced_motion);
         assert_eq!(cfg2.ui, UiConfig::default());
+    }
+
+    #[test]
+    fn ui_window_decorations_default_to_borderless_and_accept_client_side() {
+        let default = Config::parse("schema_version = 1\n").unwrap();
+        assert_eq!(
+            default.ui.window_decorations,
+            aegis_core::window::DecorationPolicy::Borderless
+        );
+
+        let client = Config::parse(
+            "schema_version = 1\n\
+             [ui]\n\
+             window_decorations = \"client-side\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            client.ui.window_decorations,
+            aegis_core::window::DecorationPolicy::ClientSide
+        );
+
+        assert!(
+            Config::parse(
+                "schema_version = 1\n\
+                 [ui]\n\
+                 window_decorations = \"server-side\"\n",
+            )
+            .is_err()
+        );
     }
 
     #[test]

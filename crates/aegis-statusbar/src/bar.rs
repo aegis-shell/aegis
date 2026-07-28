@@ -56,6 +56,7 @@ const MENU_SECTION_HEIGHT: f32 = 7.0;
 pub struct StatusBar {
     prev_down: bool,
     prev_right_down: bool,
+    fullscreen_active: bool,
     panel_open: bool,
     /// Whether the Fuji assistant surface is expanded from its permanent
     /// status-bar entry.
@@ -189,6 +190,7 @@ impl StatusBar {
         StatusBar {
             prev_down: false,
             prev_right_down: false,
+            fullscreen_active: false,
             panel_open: false,
             fuji_open: false,
             fuji_reveal: 0.0,
@@ -288,6 +290,15 @@ impl StatusBar {
         }
         if self.fuji_open || self.fuji_reveal > 0.01 {
             self.fuji_phase = (self.fuji_phase + dt).rem_euclid(std::f32::consts::TAU);
+        }
+    }
+
+    fn dismiss_transient_ui(&mut self) {
+        self.panel_open = false;
+        self.fuji_open = false;
+        self.fuji_reveal = 0.0;
+        if let Some(key) = self.menu_open_for.clone() {
+            self.close_menu(key);
         }
     }
 
@@ -1374,8 +1385,14 @@ impl Chrome for StatusBar {
         i18n: &Localizer,
         out: &mut ChromeEvents,
     ) {
-        self.refresh_status();
         let raw = input.as_raw();
+        if self.fullscreen_active {
+            self.prev_down = raw.mouse_down.first().copied().unwrap_or(false);
+            self.prev_right_down = raw.mouse_down.get(1).copied().unwrap_or(false);
+            return;
+        }
+
+        self.refresh_status();
         self.advance_fuji_animation(raw.dt_seconds.max(0.0));
         let display = (raw.display_size.x, raw.display_size.y);
         let cursor = (raw.cursor.x, raw.cursor.y);
@@ -1773,6 +1790,9 @@ impl Chrome for StatusBar {
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> bool {
+        if self.fullscreen_active {
+            return false;
+        }
         if contains(Self::bar_bounds(display.0), x, y) {
             return true;
         }
@@ -1821,8 +1841,18 @@ impl Chrome for StatusBar {
         self.realms = snapshot.clone();
     }
 
+    fn update_windows(&mut self, windows: &[Window]) {
+        let fullscreen_active = windows
+            .iter()
+            .any(|window| !window.minimized && window.state.fullscreen);
+        if fullscreen_active && !self.fullscreen_active {
+            self.dismiss_transient_ui();
+        }
+        self.fullscreen_active = fullscreen_active;
+    }
+
     fn anim_pending(&self) -> bool {
-        if self.reduced_motion {
+        if self.fullscreen_active || self.reduced_motion {
             false
         } else {
             self.fuji_open
@@ -1838,6 +1868,9 @@ impl Chrome for StatusBar {
     }
 
     fn reserved(&self) -> Reserved {
+        if self.fullscreen_active {
+            return Reserved::default();
+        }
         Reserved {
             top: HUD_HEIGHT as i32,
             ..Reserved::default()
@@ -1845,7 +1878,11 @@ impl Chrome for StatusBar {
     }
 
     fn backdrop_blur_sigma(&self) -> f32 {
-        BACKDROP_BLUR_SIGMA
+        if self.fullscreen_active {
+            0.0
+        } else {
+            BACKDROP_BLUR_SIGMA
+        }
     }
 
     fn backdrop_regions(
@@ -1854,6 +1891,9 @@ impl Chrome for StatusBar {
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<BackdropRegion> {
+        if self.fullscreen_active {
+            return Vec::new();
+        }
         let mut regions = vec![BackdropRegion {
             x: 0.0,
             y: 0.0,
@@ -2323,6 +2363,59 @@ mod tests {
     #[test]
     fn status_bar_reserves_exactly_its_visual_height() {
         assert_eq!(StatusBar::new().reserved().top, HUD_HEIGHT as i32);
+    }
+
+    #[test]
+    fn fullscreen_window_hides_status_bar_and_releases_its_surface_policy() {
+        let mut bar = StatusBar::new();
+        bar.panel_open = true;
+        bar.fuji_open = true;
+        bar.fuji_reveal = 1.0;
+        bar.menu_open_for = Some("org.example.Tray".to_string());
+
+        let mut fullscreen = Window::new(aegis_core::window::WindowId(7));
+        fullscreen.state.fullscreen = true;
+        bar.update_windows(&[fullscreen]);
+
+        let workspaces = WorkspaceSnapshot {
+            outputs: Vec::new(),
+        };
+        assert!(bar.fullscreen_active);
+        assert!(!bar.panel_open);
+        assert!(!bar.fuji_open);
+        assert_eq!(bar.fuji_reveal, 0.0);
+        assert!(bar.menu_open_for.is_none());
+        assert_eq!(bar.reserved(), Reserved::default());
+        assert_eq!(bar.backdrop_blur_sigma(), 0.0);
+        assert!(
+            bar.backdrop_regions((1920.0, 1080.0), &[], &workspaces)
+                .is_empty()
+        );
+        assert!(!bar.captures_pointer(10.0, 10.0, (1920.0, 1080.0), &[], &workspaces,));
+        assert!(!bar.anim_pending());
+
+        bar.update_windows(&[]);
+        assert!(!bar.fullscreen_active);
+        assert_eq!(bar.reserved().top, HUD_HEIGHT as i32);
+        assert_eq!(bar.backdrop_blur_sigma(), BACKDROP_BLUR_SIGMA);
+        assert!(bar.captures_pointer(10.0, 10.0, (1920.0, 1080.0), &[], &workspaces,));
+    }
+
+    #[test]
+    fn maximized_and_minimized_fullscreen_windows_keep_status_bar_visible() {
+        let mut bar = StatusBar::new();
+        let mut maximized = Window::new(aegis_core::window::WindowId(7));
+        maximized.state.maximized = true;
+        bar.update_windows(&[maximized]);
+        assert!(!bar.fullscreen_active);
+
+        let mut minimized_fullscreen = Window::new(aegis_core::window::WindowId(8));
+        minimized_fullscreen.state.fullscreen = true;
+        minimized_fullscreen.minimized = true;
+        bar.update_windows(&[minimized_fullscreen]);
+        assert!(!bar.fullscreen_active);
+        assert_eq!(bar.reserved().top, HUD_HEIGHT as i32);
+        assert_eq!(bar.backdrop_blur_sigma(), BACKDROP_BLUR_SIGMA);
     }
 
     #[test]

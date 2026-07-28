@@ -74,16 +74,34 @@ unsafe extern "C" fn xdg_decoration_get_toplevel(
             rec as *mut c_void,
             Some(xdg_toplevel_decoration_resource_destroy),
         );
-        configure_client_side_decoration(resource, rec);
+        configure_decoration(resource, rec);
     }
 }
 
-unsafe fn configure_client_side_decoration(resource: *mut ffi::wl_resource, rec: *mut SurfaceRec) {
+fn protocol_mode(policy: aegis_core::window::DecorationPolicy) -> u32 {
+    match policy {
+        aegis_core::window::DecorationPolicy::Borderless => {
+            // Borderless windows are compositor-owned. Aegis supplies move,
+            // resize, close, and state controls outside a per-window frame,
+            // so the client must not add its own title bar.
+            ffi::ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+        }
+        aegis_core::window::DecorationPolicy::ClientSide => {
+            ffi::ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
+        }
+    }
+}
+
+pub(crate) unsafe fn configure_decoration(resource: *mut ffi::wl_resource, rec: *mut SurfaceRec) {
     unsafe {
+        if resource.is_null() || rec.is_null() || (*rec).state.is_null() {
+            return;
+        }
+        let policy = (*(*rec).state).decoration_policy;
         ffi::wl_resource_post_event(
             resource,
             ffi::ZXDG_TOPLEVEL_DECORATION_V1_CONFIGURE,
-            ffi::ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE,
+            protocol_mode(policy),
         );
         crate::reconfigure_with_state(rec);
     }
@@ -107,9 +125,9 @@ unsafe extern "C" fn xdg_toplevel_decoration_set_mode(
         }
         let rec = ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec;
         if !rec.is_null() {
-            // ASS currently renders client content without an out-of-band frame,
-            // so client-side decorations are the only truthful effective mode.
-            configure_client_side_decoration(resource, rec);
+            // set_mode is a preference, not an instruction. The compositor's
+            // explicit desktop policy selects the effective mode.
+            configure_decoration(resource, rec);
         }
     }
 }
@@ -121,7 +139,7 @@ unsafe extern "C" fn xdg_toplevel_decoration_unset_mode(
     unsafe {
         let rec = ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec;
         if !rec.is_null() {
-            configure_client_side_decoration(resource, rec);
+            configure_decoration(resource, rec);
         }
     }
 }
@@ -143,5 +161,26 @@ unsafe extern "C" fn xdg_toplevel_decoration_resource_destroy(resource: *mut ffi
         if !rec.is_null() && (*rec).xdg_decoration == resource {
             (*rec).xdg_decoration = std::ptr::null_mut();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn borderless_policy_uses_server_side_protocol_ownership() {
+        assert_eq!(
+            protocol_mode(aegis_core::window::DecorationPolicy::Borderless),
+            ffi::ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+        );
+    }
+
+    #[test]
+    fn client_side_policy_uses_client_side_protocol_mode() {
+        assert_eq!(
+            protocol_mode(aegis_core::window::DecorationPolicy::ClientSide),
+            ffi::ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
+        );
     }
 }

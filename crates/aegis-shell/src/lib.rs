@@ -25,8 +25,7 @@ pub mod i18n;
 pub mod modal;
 pub mod system;
 pub use chrome::{
-    AgentFeedback, AppMenu, Decorations, Launcher, Overview, PickerMode, PinAction,
-    ScreenshotSelector, Toast,
+    AgentFeedback, AppMenu, Launcher, Overview, PickerMode, PinAction, ScreenshotSelector, Toast,
 };
 pub use i18n::{Language, Localizer, Message};
 pub use modal::ModalApplicationSpec;
@@ -214,20 +213,15 @@ pub enum RealmIntent {
 
 /// Interaction intents chrome components emit during a frame. The core
 /// collects these and the main loop drains them into server window-management
-/// actions (`focus_surface_by_id`, `close_toplevel`,
-/// `start_interactive_move`) or, for [`ChromeEvents::spawn`], into
-/// `ass-launch`. Scalar intents keep the latest value; application menus use
-/// an ordered queue for multi-window actions.
+/// actions or, for [`ChromeEvents::spawn`], into `ass-launch`. Scalar intents
+/// keep the latest value; application menus use an ordered queue for
+/// multi-window actions.
 #[derive(Debug, Default)]
 pub struct ChromeEvents {
     /// The chrome requested the session to quit.
     pub quit: bool,
     /// Window id a component asked to focus/activate.
     pub clicked: Option<aegis_core::window::WindowId>,
-    /// Window id a component asked to close.
-    pub closed: Option<aegis_core::window::WindowId>,
-    /// Window id a component asked to start an interactive move on.
-    pub move_requested: Option<aegis_core::window::WindowId>,
     /// Ordered window actions emitted by popup menus. A queue allows an
     /// application-level action such as "close all windows" to preserve one
     /// journal entry per affected toplevel.
@@ -626,19 +620,6 @@ impl Shell {
     /// frame, if any.
     pub fn take_clicked_window(&mut self) -> Option<aegis_core::window::WindowId> {
         self.events.clicked.take()
-    }
-
-    /// Drain the surface id of the window a component asked to close this
-    /// frame, if any.
-    pub fn take_closed_window(&mut self) -> Option<aegis_core::window::WindowId> {
-        self.events.closed.take()
-    }
-
-    /// Drain the surface id of the window a component asked to move this
-    /// frame, if any. The main loop forwards this to
-    /// `Server::start_interactive_move`.
-    pub fn take_move_requested(&mut self) -> Option<aegis_core::window::WindowId> {
-        self.events.move_requested.take()
     }
 
     /// Drain ordered window actions emitted by application context menus.

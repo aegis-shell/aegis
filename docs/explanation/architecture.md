@@ -23,7 +23,7 @@ own rendering and UI. The split is fixed in
 | Input, output, session and seat management | ass |
 | Window management, surface and scene model, focus | ass |
 | GPU rendering, client buffer import as textures | flux |
-| Compositor chrome (panels, decorations, overview) | lens |
+| Compositor chrome (panels, overview, notifications) | lens |
 
 flux is a client-side renderer: it presents into a caller-supplied
 `VkSurfaceKHR` and has no windowing code. lens consumes input as a data
@@ -44,7 +44,7 @@ backend, renderer, and shell behind clear seams so the
 | **Server / window management** | `aegis-compositor` | Hand-rolled Wayland server: globals, protocol object lifecycle, per-Realm seats and outputs, focus, authority transfer, tiling, and workspaces |
 | | `aegis-backend` | Presentation and input targets: nested (development) and DRM/KMS + libinput + libseat (bare TTY) |
 | | `aegis-render` | Compositing: client buffers to flux textures, scene to the output via flux |
-| **Shell / interaction** | `aegis-shell` | Compositor chrome host and `Chrome` contract on lens, plus shared components: launcher, overview, decorations, toast |
+| **Shell / interaction** | `aegis-shell` | Compositor chrome host and `Chrome` contract on lens, plus shared components: launcher, overview, screenshot selector, toast |
 | | `aegis-design` | Product design tokens, themes, and data-only surface materials shared by chrome components |
 | | `aegis-dock` | Bottom-center dock chrome component: pinned and running apps, magnification, pin actions |
 | | `aegis-ai-workspaces` | Compositor-owned Agent Realm lifecycle and authority management |

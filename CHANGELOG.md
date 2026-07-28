@@ -7,6 +7,19 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### Borderless window decoration policy
+
+- Aegis now negotiates compositor-owned decorations by default, so
+  decoration-aware Wayland clients such as foot omit client-side title bars.
+  Window movement, resizing, closing, and state controls remain available
+  through compositor gestures, invisible borders, the Dock, and other shell
+  surfaces.
+- Added the live-reloadable `[ui] window_decorations` setting. Its default is
+  `"borderless"`; set it to `"client-side"` when application-drawn frames are
+  preferred.
+- Removed the dormant server-side title-bar chrome component and its unused
+  window-action plumbing.
+
 ### Wayland client stability and responsiveness
 
 - Fixed a compositor crash when an input method destroyed a keyboard resource

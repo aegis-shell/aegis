@@ -108,6 +108,7 @@ pub(super) fn reload_config(
             server.set_remember_window_positions(c.layout.remember_window_positions);
             shell.set_reduced_motion(c.ui.reduced_motion);
             server.set_reduced_motion(c.ui.reduced_motion);
+            server.set_decoration_policy(c.ui.window_decorations);
             cursor_cache.set_config(c.ui.cursor_theme.clone(), c.ui.cursor_size);
             server.set_output_policies(c.output_policies());
         } else {
@@ -116,6 +117,7 @@ pub(super) fn reload_config(
             server.set_remember_window_positions(true);
             shell.set_reduced_motion(false);
             server.set_reduced_motion(false);
+            server.set_decoration_policy(aegis_core::window::DecorationPolicy::default());
             cursor_cache.set_config(None, None);
             server.set_output_policies(std::collections::HashMap::new());
         }

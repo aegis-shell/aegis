@@ -51,6 +51,19 @@ fullscreen. Layout-owned windows do not expose the invisible border.
 The same procedure applies to any Wayland `xdg_toplevel`, regardless of
 whether the client provides decorations.
 
+## Show Client-Side Title Bars
+
+Set the decoration policy when an application-drawn title bar is preferred:
+
+```toml
+[ui]
+window_decorations = "client-side"
+```
+
+Save the configuration. Existing decoration-aware Wayland windows reconfigure
+without restarting. Restore the default borderless policy with
+`window_decorations = "borderless"`.
+
 ## Minimize, Restore, or Close a Window
 
 Right-click the application's Dock icon or launcher cell and choose the

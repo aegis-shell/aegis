@@ -1,6 +1,6 @@
 # ADR-0017: Server-side decorations via flux-ui overlays
 
-- Status: Accepted
+- Status: Superseded by ADR-0063
 - Date: 2026-06-18
 
 ## Context

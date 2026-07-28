@@ -208,7 +208,7 @@ Chrome is where ass is most explicit about borrowing.
 | Dock | macOS, GNOME Dash | Bottom-center overlay, already shipped ([ADR-0019](../adr/0019-dock-as-bottom-center-overlay.md)) |
 | Application launcher | GNOME, KDE KRunner, macOS Spotlight | Centered list with search, already shipped ([ADR-0022](../adr/0022-application-launcher.md)) |
 | Overview | GNOME, niri | A unified window-and-workspace picker; planned, not shipped |
-| Server-side decorations | sway, KDE | Already shipped ([ADR-0017](../adr/0017-server-side-decorations-via-overlays.md)) |
+| Borderless window controls | sway, macOS | Compositor-owned gestures, invisible resize borders, and shell controls; users may opt into client-drawn frames ([ADR-0063](../adr/0063-compositor-owned-borderless-decoration-policy.md)) |
 | Window list | Xfce, KDE | A fallback chrome component; already shipped |
 | Notifications | freedesktop.org spec | Planned, served by the same `Chrome` trait |
 | Wallpaper | sway (`swaybg`), Xfce | Already shipped as its own crate ([ADR-0018](../adr/0018-wallpaper-crate.md)) |

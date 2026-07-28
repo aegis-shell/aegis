@@ -30,6 +30,12 @@ configure events. Activated Realm portals have no host pathname; dispatch
 accepts their sandbox-only connections and assigns Realm identity before
 registry enumeration.
 
+Decoration-aware toplevels use compositor-owned, borderless frames by default:
+clients omit their own title bars while move, resize, close, and state controls
+remain available through compositor input and shell surfaces. The runtime may
+switch to client-side decorations through the shared decoration policy, and
+existing clients receive the required configure sequence.
+
 Clipboard selections are scoped to one logical seat. Client-owned selections
 forward transfers to the owning `wl_data_source`; compositor-owned selections
 retain immutable MIME payloads and write them through a bounded background

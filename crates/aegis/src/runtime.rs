@@ -258,9 +258,9 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Compositor chrome, bound to the same device. The core host ships with
     // no chrome of its own; compose it from the components the binary wants.
     let mut shell = unsafe { aegis_shell::Shell::new(device.as_raw() as *mut _) }?;
-    // Window decorations are intentionally not registered: windows are
-    // borderless (macOS-style), managed through the dock, tiling, and key
-    // bindings rather than per-window title bars.
+    // Per-window chrome is intentionally absent: decoration ownership lives
+    // in the Wayland server, and borderless windows are managed through the
+    // Dock, gestures, tiling, and key bindings.
     // Agent input feedback is compositor-owned and non-interactive. Register
     // it first so it appears above client content but below the status bar,
     // notifications, and modal trusted chrome. Directed Realm capture renders
@@ -416,6 +416,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         server.set_remember_window_positions(c.layout.remember_window_positions);
         shell.set_reduced_motion(c.ui.reduced_motion);
         server.set_reduced_motion(c.ui.reduced_motion);
+        server.set_decoration_policy(c.ui.window_decorations);
         cursor_cache.set_config(c.ui.cursor_theme.clone(), c.ui.cursor_size);
         server.set_output_policies(c.output_policies());
     }

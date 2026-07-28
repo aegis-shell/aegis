@@ -619,28 +619,6 @@ impl CompositorRuntime {
                         origin,
                     );
                 }
-                if let Some(id) = self.shell.take_closed_window() {
-                    apply_chrome_window_command(
-                        &mut self.server,
-                        &self.notif_queue,
-                        &mut self.quit_requested,
-                        aegis_ipc::Command::Close { id },
-                        &self.ipc,
-                        &self.journal,
-                        ts,
-                    );
-                }
-                if let Some(id) = self.shell.take_move_requested() {
-                    apply_chrome_window_command(
-                        &mut self.server,
-                        &self.notif_queue,
-                        &mut self.quit_requested,
-                        aegis_ipc::Command::Move { id },
-                        &self.ipc,
-                        &self.journal,
-                        ts,
-                    );
-                }
                 for action in self.shell.take_window_actions() {
                     let cmd = match action {
                         aegis_shell::WindowAction::Focus(id) => aegis_ipc::Command::Focus { id },

@@ -6,6 +6,23 @@
 //! introspection. Keeping this in `ass-core` (rather than in `ass-server`)
 //! means the shell never needs a server dependency to display window state.
 
+/// Desktop-wide ownership policy for Wayland toplevel decorations.
+///
+/// `Borderless` keeps window controls in compositor-owned gestures, borders,
+/// the Dock, and other shell surfaces. On the wire this is server-side
+/// decoration ownership: clients omit their own title bars, while the
+/// compositor intentionally draws no per-window frame.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DecorationPolicy {
+    /// Compositor-owned controls without a per-window title bar.
+    #[default]
+    Borderless,
+    /// Let each client draw and operate its own decoration frame.
+    ClientSide,
+}
+
 /// State bits advertised to the client via `xdg_toplevel.configure`'s states
 /// array. Mapped one-to-one to the protocol's state enum values; the
 /// compositor OR's the active bits into the array on each configure.
@@ -107,7 +124,7 @@ pub struct Window {
     /// Logical extent of the toplevel in compositor space. Set on first map
     /// (from the committed buffer size) and updated by interactive move and
     /// resize. The renderer reads `position`; the shell reads `position` and
-    /// `size` for hit-testing and decorations.
+    /// `size` for hit-testing and window controls.
     pub position: crate::Point,
     pub size: crate::Size,
     /// In-flight geometry transition (ADR-0029), recorded when the window
@@ -277,6 +294,11 @@ impl Interactive {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoration_policy_defaults_to_borderless() {
+        assert_eq!(DecorationPolicy::default(), DecorationPolicy::Borderless);
+    }
 
     #[test]
     fn empty_state_serializes_to_empty_array() {

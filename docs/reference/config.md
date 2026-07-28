@@ -32,7 +32,7 @@ schema-incompatible existing file is left untouched.
 | `[layout]` | table | gaps `8`, master_ratio `0.5` | Tiling policy parameters. See [Layout](#layout). |
 | `[dock]` | table | automatic pins | Applications pinned to the dock. See [Dock](#dock). |
 | `[statusbar]` | table | `enabled = true` | Whether the top status bar is registered at startup. See [Status Bar](#status-bar). |
-| `[ui]` | table | reduced_motion `false` | Shell-wide UI policy. See [UI](#ui). |
+| `[ui]` | table | borderless windows, reduced_motion `false` | Desktop-wide UI and window-presentation policy. See [UI](#ui). |
 | `[input.touchpad]` | table | touchpad defaults | Touchpad pointing, tapping, and scrolling profile. See [Touchpad](#touchpad). |
 | `[[output]]` | array of tables | none | Per-connector display policy: mode, scale, position, transform, primary. See [Outputs](#outputs). |
 | `[screenshot]` | table | XDG Pictures directory | Screenshot save location. See [Screenshots](#screenshots). |
@@ -84,24 +84,29 @@ windows they cover.
 
 ## UI
 
-The `[ui]` table holds shell-wide UI policy (ADR-0029). Applied live on
-reload.
+The `[ui]` table holds desktop-wide UI and window-presentation policy
+([ADR-0029](../adr/0029-animation-and-effect-policy.md) and
+[ADR-0063](../adr/0063-compositor-owned-borderless-decoration-policy.md)).
+Applied live on reload.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `reduced_motion` | boolean | `false` | Accessibility reduced-motion switch. When `true`, every chrome and lens transition (dock magnification, launcher reveal, fades, slides) resolves to its end state in at most one frame. |
 | `cursor_theme` | string | none | XDG cursor theme for the software cursor on direct display. `$XCURSOR_THEME` wins when set; use this on bare-metal sessions with no cursor environment. |
 | `cursor_size` | integer | `24` | Cursor size in logical pixels, 8–128. `$XCURSOR_SIZE` wins when set. |
+| `window_decorations` | string | `"borderless"` | Decoration ownership for Wayland toplevels. `"borderless"` makes Aegis own window controls without drawing per-window title bars; `"client-side"` asks applications to draw their own frames. |
 
 ```toml
 [ui]
 reduced_motion = true
 cursor_theme = "Bibata-Modern-Ice"
 cursor_size = 24
+window_decorations = "borderless"
 ```
 
-This is the single switch for animation policy; individual effects do not
-override it.
+`reduced_motion` is the single switch for animation policy; individual
+effects do not override it. Changes to `window_decorations` reconfigure
+existing decoration-aware Wayland windows as well as newly created windows.
 
 ## Touchpad
 

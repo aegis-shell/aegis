@@ -14,12 +14,12 @@ as typed intents to the compositor loop.
   `aegis-settings` crate.
 - Provide the shared modal-application layout and material primitive used by
   compositor-owned application components.
-- Draw decorations, the launcher, workspace bar, notification toasts,
-  Overview, the Realm transfer shelf, and trusted Agent operation feedback.
+- Draw the launcher, notification toasts, Overview, the Realm transfer shelf,
+  and trusted Agent operation feedback.
 - Consume window, workspace, Realm, application, notification, and input
   snapshots.
-- Report focus, minimize, close, move, launch, workspace, and notification
-  intents plus optimistic Realm lifecycle and authority-transfer intents.
+- Report focus, minimize, close, launch, workspace, and notification intents
+  plus optimistic Realm lifecycle and authority-transfer intents.
 
 ## Boundaries
 

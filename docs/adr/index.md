@@ -23,7 +23,7 @@ background and how the decisions fit together, see
 | [0014](0014-buffer-transform-and-viewport-crop.md) | Buffer transform (CPU staging) and viewport crop | Accepted |
 | [0015](0015-damage-tracking.md) | Per-commit damage tracking | Accepted |
 | [0016](0016-shell-server-window-management-bridge.md) | Shell ↔ server window-management bridge | Accepted |
-| [0017](0017-server-side-decorations-via-overlays.md) | Server-side decorations via flux-ui overlays | Accepted |
+| [0017](0017-server-side-decorations-via-overlays.md) | Server-side decorations via flux-ui overlays | Superseded by [0063](0063-compositor-owned-borderless-decoration-policy.md) |
 | [0018](0018-wallpaper-crate.md) | Wallpaper as an independent crate | Accepted |
 | [0019](0019-dock-as-bottom-center-overlay.md) | macOS-style dock via a bottom-center overlay | Accepted |
 | [0020](0020-buffer-scale-applied-at-composite.md) | Apply buffer_scale at composite time | Accepted |
@@ -69,3 +69,4 @@ background and how the decisions fit together, see
 | [0060](0060-statusbar-system-controls-and-live-system-ipc.md) | Status bar system controls and live-system IPC (supersedes [0058](0058-independent-quick-settings-and-ai-workspaces.md)) | Accepted |
 | [0061](0061-window-tree-atomic-client-surface-compositing.md) | Window-tree-atomic client surface compositing (supersedes [0011](0011-subsurface-tree-and-z-split-rendering.md)) | Accepted |
 | [0062](0062-wayland-input-method-v2-host-integration.md) | Wayland input-method-v2 host integration | Accepted |
+| [0063](0063-compositor-owned-borderless-decoration-policy.md) | Compositor-owned borderless decoration policy | Accepted |

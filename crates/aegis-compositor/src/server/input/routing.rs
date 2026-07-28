@@ -514,8 +514,8 @@ impl Server {
         }
     }
 
-    /// Begin an interactive move from the shell (server-side decorations,
-    /// overview drag, etc.). Unlike the client-initiated
+    /// Begin an interactive move from the shell (for example, an overview
+    /// drag). Unlike the client-initiated
     /// `xdg_toplevel.move` path, no serial validation is performed — the
     /// compositor is initiating the grab itself. No-op if a grab is already
     /// active, the surface is not a live toplevel, or the active seat does not

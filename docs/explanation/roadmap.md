@@ -72,10 +72,10 @@ it, and receive pointer input directly when topmost.
 ## M3: Window Management and First Chrome
 
 **Outcome.** Multiple toplevels with focus, interactive move and resize,
-minimization, server-side decorations, a window list, a macOS-style dock,
-and an application launcher, all behind the `Chrome` trait. Key bindings are
-configurable through `$ASS_KEYBINDS`. Real application icons render in the
-dock.
+minimization, borderless compositor-owned controls, a window list, a
+macOS-style dock, and an application launcher. Shell surfaces remain behind
+the `Chrome` trait. Key bindings are configurable through `$ASS_KEYBINDS`.
+Real application icons render in the dock.
 
 **Status.** Complete. Shipped: toplevel metadata and state machine
 ([ADR-0012](../adr/0012-toplevel-metadata-and-state-machine.md)),
@@ -83,7 +83,8 @@ interactive move and resize
 ([ADR-0013](../adr/0013-interactive-move-and-resize.md)),
 shell ↔ server bridge
 ([ADR-0016](../adr/0016-shell-server-window-management-bridge.md)),
-decorations ([ADR-0017](../adr/0017-server-side-decorations-via-overlays.md)),
+decoration policy
+([ADR-0063](../adr/0063-compositor-owned-borderless-decoration-policy.md)),
 dock ([ADR-0019](../adr/0019-dock-as-bottom-center-overlay.md)),
 the `Chrome` trait ([ADR-0021](../adr/0021-chrome-component-trait.md)),
 and the launcher ([ADR-0022](../adr/0022-application-launcher.md)).

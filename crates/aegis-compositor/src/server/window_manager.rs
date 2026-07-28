@@ -177,6 +177,26 @@ impl Server {
         }
     }
 
+    /// Apply the desktop-wide xdg-decoration ownership policy.
+    ///
+    /// Existing decoration-aware toplevels receive a fresh decoration
+    /// configure followed by the required xdg-surface configure, so config
+    /// reload changes take effect without restarting applications.
+    pub fn set_decoration_policy(&mut self, policy: aegis_core::window::DecorationPolicy) {
+        if self.state.decoration_policy == policy {
+            return;
+        }
+        self.state.decoration_policy = policy;
+        for rec in self.state.live_surfaces() {
+            unsafe {
+                if !(*rec).xdg_decoration.is_null() {
+                    extensions::configure_decoration((*rec).xdg_decoration, rec);
+                }
+            }
+        }
+        unsafe { ffi::wl_display_flush_clients(self.state.display) };
+    }
+
     /// Compositor-relative millisecond timestamp for transition records.
     pub(crate) fn now_ms(&self) -> u64 {
         self.epoch.elapsed().as_millis() as u64

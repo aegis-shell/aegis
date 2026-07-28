@@ -53,10 +53,11 @@ already the basis of the `Chrome` trait
 the introspection API ([ADR-0027](../adr/0027-ipc-and-introspection.md)).
 
 **The chrome is a component, not a privilege.** First-party chrome (dock,
-launcher, decorations, window list) is registered into the shell at startup
-and can be replaced or omitted. The core never hard-codes an appearance.
-This keeps the core small and lets the agent or an alternative shell replace
-the human-facing chrome without forking the compositor.
+launcher, overview, window list) is registered into the shell at startup and
+can be replaced or omitted. Window-decoration ownership remains compositor
+policy rather than a second chrome implementation. This keeps the core small
+and lets the agent or an alternative shell replace the human-facing chrome
+without forking the compositor.
 
 **Configuration is data, not code.** One declarative file, one versioned
 schema, full live reload. ass does not embed a scripting language. Power and
@@ -89,8 +90,8 @@ The following are in scope for the desktop phase:
 - A DRM/KMS backend for bare-TTY operation alongside the nested backend
   ([ADR-0003](../adr/0003-nested-first-bring-up.md)).
 - A coherent first-party shell: panel, dock, launcher, overview,
-  notifications, wallpaper, server-side decorations, all as `Chrome`
-  components.
+  notifications, and wallpaper as `Chrome` components, with borderless
+  window controls owned by the compositor.
 - Dynamic per-output workspaces
   ([ADR-0025](../adr/0025-workspace-model.md)) and a floating-first layout
   with optional tiling ([ADR-0024](../adr/0024-layout-model.md)).
