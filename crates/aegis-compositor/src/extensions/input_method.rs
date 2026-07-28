@@ -30,6 +30,7 @@ struct InputMethodRec {
     active: bool,
     done_count: u32,
     text_state: TextInputState,
+    cursor_anchor: Option<TextInputCursorAnchor>,
     pending: PendingInputMethodEdit,
     popups: Vec<*mut ffi::wl_resource>,
     keyboard_grab: *mut ffi::wl_resource,
@@ -40,6 +41,7 @@ struct InputPopupRec {
     seat: SeatId,
     input_method: *mut ffi::wl_resource,
     surface: *mut SurfaceRec,
+    last_text_input_rectangle: Option<(i32, i32, i32, i32)>,
 }
 
 struct InputMethodKeyboardGrabRec {
@@ -183,6 +185,7 @@ unsafe extern "C" fn input_method_manager_get(
             active: false,
             done_count: 0,
             text_state: TextInputState::default(),
+            cursor_anchor: None,
             pending: PendingInputMethodEdit::default(),
             popups: Vec::new(),
             keyboard_grab: std::ptr::null_mut(),
@@ -199,8 +202,8 @@ unsafe extern "C" fn input_method_manager_get(
             ffi::wl_resource_post_event(resource, ffi::ZWP_INPUT_METHOD_V2_UNAVAILABLE);
             return;
         }
-        if let Some(current) = super::current_text_input_state(state, seat) {
-            publish_text_input_state(resource, current);
+        if let Some((current, cursor_anchor)) = super::current_text_input_context(state, seat) {
+            publish_text_input_state(resource, current, cursor_anchor);
         }
     }
 }
@@ -229,13 +232,14 @@ pub(crate) unsafe fn route_text_input_state(
     state: *mut State,
     seat: SeatId,
     text_state: TextInputState,
+    cursor_anchor: Option<TextInputCursorAnchor>,
 ) -> bool {
     unsafe {
         let input_method = active_input_method(state, seat);
         if input_method.is_null() {
             return false;
         }
-        publish_text_input_state(input_method, text_state);
+        publish_text_input_state(input_method, text_state, cursor_anchor);
         true
     }
 }
@@ -243,6 +247,7 @@ pub(crate) unsafe fn route_text_input_state(
 unsafe fn publish_text_input_state(
     input_method: *mut ffi::wl_resource,
     text_state: TextInputState,
+    cursor_anchor: Option<TextInputCursorAnchor>,
 ) {
     unsafe {
         let rec = ffi::wl_resource_get_user_data(input_method) as *mut InputMethodRec;
@@ -257,8 +262,9 @@ unsafe fn publish_text_input_state(
             }
             (*rec).active = false;
             (*rec).text_state = TextInputState::default();
+            (*rec).cursor_anchor = None;
             (*rec).pending = PendingInputMethodEdit::default();
-            update_input_popup_positions((*rec).state, (*rec).seat);
+            update_input_popup_positions((*rec).state, (*rec).seat, true);
             return;
         }
 
@@ -291,8 +297,9 @@ unsafe fn publish_text_input_state(
         );
         (*rec).active = true;
         (*rec).text_state = text_state;
+        (*rec).cursor_anchor = cursor_anchor;
         send_input_method_done(input_method, rec);
-        update_input_popup_positions((*rec).state, (*rec).seat);
+        update_input_popup_positions((*rec).state, (*rec).seat, true);
     }
 }
 
@@ -355,7 +362,7 @@ unsafe extern "C" fn input_method_delete_surrounding(
 unsafe extern "C" fn input_method_commit(
     _client: *mut ffi::wl_client,
     resource: *mut ffi::wl_resource,
-    serial: u32,
+    _serial: u32,
 ) {
     unsafe {
         let rec = ffi::wl_resource_get_user_data(resource) as *mut InputMethodRec;
@@ -363,9 +370,14 @@ unsafe extern "C" fn input_method_commit(
             return;
         }
         let pending = std::mem::take(&mut (*rec).pending);
-        if !(*rec).active || serial != (*rec).done_count {
+        if !(*rec).active {
             return;
         }
+        // A stale serial means the input method based this transaction on an
+        // older text-input state. The protocol still requires the compositor
+        // to apply the staged text edits; only the input-method object's
+        // current state must remain unchanged, and this path does not mutate
+        // that state.
         let state = (*rec).state;
         let Some(_guard) = crate::ActiveSeatGuard::enter(&mut *state, (*rec).seat) else {
             return;
@@ -429,6 +441,7 @@ unsafe extern "C" fn input_method_get_popup(
             seat: (*input_method_rec).seat,
             input_method,
             surface,
+            last_text_input_rectangle: None,
         }));
         ffi::wl_resource_set_implementation(
             resource,
@@ -440,7 +453,7 @@ unsafe extern "C" fn input_method_get_popup(
         (*surface).input_popup_surface = rec.cast();
         (*input_method_rec).popups.push(resource);
         (*(*input_method_rec).state).track_seat_resource(resource, (*input_method_rec).seat);
-        update_input_popup_positions((*input_method_rec).state, (*input_method_rec).seat);
+        update_input_popup_positions((*input_method_rec).state, (*input_method_rec).seat, true);
     }
 }
 
@@ -867,7 +880,7 @@ pub(crate) unsafe fn input_popup_surface_committed(surface: *mut SurfaceRec) {
             return;
         }
         let popup = (*surface).input_popup_surface as *mut InputPopupRec;
-        update_input_popup_positions((*popup).state, (*popup).seat);
+        update_input_popup_positions((*popup).state, (*popup).seat, true);
     }
 }
 
@@ -884,6 +897,11 @@ pub(crate) unsafe fn input_popup_resources(
         if rec.is_null() || !(*rec).active {
             return Vec::new();
         }
+        // The text-input rectangle is surface-local. Recompute its compositor
+        // position at presentation time so moving the focused window also
+        // moves the input-method popup, even when the client has not committed
+        // another text-input state.
+        update_input_popup_positions(state, seat, false);
         (*rec)
             .popups
             .iter()
@@ -939,7 +957,20 @@ fn input_popup_position(
     }
 }
 
-unsafe fn update_input_popup_positions(state: *mut State, seat: SeatId) {
+fn input_popup_anchor(
+    rect: (i32, i32, i32, i32),
+    surface_origin: aegis_core::Point,
+) -> aegis_core::Rect {
+    let (x, y, width, height) = rect;
+    aegis_core::Rect::new(
+        x.saturating_add(surface_origin.x),
+        y.saturating_add(surface_origin.y),
+        width.max(1),
+        height.max(1),
+    )
+}
+
+unsafe fn update_input_popup_positions(state: *mut State, seat: SeatId, force_notify: bool) {
     unsafe {
         let input_method = active_input_method(state, seat);
         if input_method.is_null() {
@@ -949,10 +980,18 @@ unsafe fn update_input_popup_positions(state: *mut State, seat: SeatId) {
         if rec.is_null() || !(*rec).active {
             return;
         }
-        let Some((x, y, width, height)) = (*rec).text_state.cursor_rect else {
-            return;
+        let anchor = if let Some(cursor_anchor) = (*rec).cursor_anchor {
+            let surface = ffi::wl_resource_get_user_data(cursor_anchor.surface) as *mut SurfaceRec;
+            if surface.is_null() {
+                return;
+            }
+            input_popup_anchor(cursor_anchor.rect, crate::surface_draw_origin(&*surface))
+        } else {
+            let Some(rect) = (*rec).text_state.cursor_rect else {
+                return;
+            };
+            input_popup_anchor(rect, aegis_core::Point { x: 0, y: 0 })
         };
-        let anchor = aegis_core::Rect::new(x, y, width.max(1), height.max(1));
         let output = (*state)
             .output_infos
             .iter()
@@ -967,14 +1006,23 @@ unsafe fn update_input_popup_positions(state: *mut State, seat: SeatId) {
             let surface = (*popup).surface;
             let popup_size = crate::surface_logical_size(&*surface);
             (*surface).position = input_popup_position(anchor, popup_size, output);
-            ffi::wl_resource_post_event(
-                popup_resource,
-                ffi::ZWP_INPUT_POPUP_SURFACE_V2_TEXT_INPUT_RECTANGLE,
+            let text_input_rectangle = (
                 anchor.origin.x - (*surface).position.x,
                 anchor.origin.y - (*surface).position.y,
                 anchor.size.w,
                 anchor.size.h,
             );
+            if force_notify || (*popup).last_text_input_rectangle != Some(text_input_rectangle) {
+                ffi::wl_resource_post_event(
+                    popup_resource,
+                    ffi::ZWP_INPUT_POPUP_SURFACE_V2_TEXT_INPUT_RECTANGLE,
+                    text_input_rectangle.0,
+                    text_input_rectangle.1,
+                    text_input_rectangle.2,
+                    text_input_rectangle.3,
+                );
+                (*popup).last_text_input_rectangle = Some(text_input_rectangle);
+            }
         }
     }
 }
@@ -1018,6 +1066,19 @@ mod tests {
         assert_eq!(
             input_popup_position(anchor, popup, output),
             aegis_core::Point { x: 320, y: 475 }
+        );
+    }
+
+    #[test]
+    fn popup_anchor_tracks_a_moved_text_input_surface() {
+        let local = (72, 0, 9, 19);
+        assert_eq!(
+            input_popup_anchor(local, aegis_core::Point { x: 17, y: 46 }),
+            aegis_core::Rect::new(89, 46, 9, 19)
+        );
+        assert_eq!(
+            input_popup_anchor(local, aegis_core::Point { x: 300, y: 220 }),
+            aegis_core::Rect::new(372, 220, 9, 19)
         );
     }
 }

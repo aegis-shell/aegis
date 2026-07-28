@@ -22,6 +22,12 @@ project cuts a tagged release.
 
 ### Wayland client stability and responsiveness
 
+- Input-method candidate popups now follow the focused text surface when its
+  window moves, instead of retaining the caret's old compositor position.
+- Input-method preedit and commit transactions now continue to the focused
+  application when their serial references an older text-input state, as
+  required by `zwp_input_method_v2`; this prevents intermittent missing
+  preedit in clients such as foot.
 - Fixed a compositor crash when an input method destroyed a keyboard resource
   while virtual-keyboard modifiers were being forwarded.
 - Chromium-based Wayland clients now fall back to the compositor's working

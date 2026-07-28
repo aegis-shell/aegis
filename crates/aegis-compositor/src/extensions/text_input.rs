@@ -11,6 +11,12 @@ struct TextInputRec {
     commit_serial: u32,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct TextInputCursorAnchor {
+    pub(crate) surface: *mut ffi::wl_resource,
+    pub(crate) rect: (i32, i32, i32, i32),
+}
+
 static TEXT_INPUT_MANAGER_IMPL: ffi::zwp_text_input_manager_v3_interface_impl =
     ffi::zwp_text_input_manager_v3_interface_impl {
         destroy: crate::res_destroy,
@@ -135,6 +141,7 @@ unsafe extern "C" fn text_input_resource_destroy(resource: *mut ffi::wl_resource
                     state,
                     (*rec).seat,
                     aegis_core::input::TextInputState::default(),
+                    None,
                 );
             }
             (*state).untrack_seat_resource(resource);
@@ -264,7 +271,8 @@ unsafe fn queue_text_input_state(rec: *mut TextInputRec) {
             return;
         }
         let value = text_input_state_in_compositor_space(rec);
-        route_or_queue_text_input_state(state, (*rec).seat, value);
+        let cursor_anchor = text_input_cursor_anchor(rec);
+        route_or_queue_text_input_state(state, (*rec).seat, value, cursor_anchor);
     }
 }
 
@@ -272,11 +280,27 @@ unsafe fn route_or_queue_text_input_state(
     state: *mut State,
     seat: aegis_core::realm::SeatId,
     value: aegis_core::input::TextInputState,
+    cursor_anchor: Option<TextInputCursorAnchor>,
 ) {
     unsafe {
-        if !super::route_text_input_state(state, seat, value.clone()) {
+        if !super::route_text_input_state(state, seat, value.clone(), cursor_anchor) {
             (*state).pending_text_input_states.push(value);
         }
+    }
+}
+
+unsafe fn text_input_cursor_anchor(rec: *mut TextInputRec) -> Option<TextInputCursorAnchor> {
+    unsafe {
+        if rec.is_null() || !(*rec).current.enabled || (*rec).current_surface.is_null() {
+            return None;
+        }
+        (*rec)
+            .current
+            .cursor_rect
+            .map(|rect| TextInputCursorAnchor {
+                surface: (*rec).current_surface,
+                rect,
+            })
     }
 }
 
@@ -302,6 +326,16 @@ pub(crate) unsafe fn current_text_input_state(
     state: *mut State,
     seat: aegis_core::realm::SeatId,
 ) -> Option<aegis_core::input::TextInputState> {
+    unsafe { current_text_input_context(state, seat).map(|(text_state, _)| text_state) }
+}
+
+pub(crate) unsafe fn current_text_input_context(
+    state: *mut State,
+    seat: aegis_core::realm::SeatId,
+) -> Option<(
+    aegis_core::input::TextInputState,
+    Option<TextInputCursorAnchor>,
+)> {
     unsafe {
         let _guard = crate::ActiveSeatGuard::enter_existing(&mut *state, seat)?;
         let focus = (*state).keyboard_focus;
@@ -318,7 +352,10 @@ pub(crate) unsafe fn current_text_input_state(
             {
                 None
             } else {
-                Some(text_input_state_in_compositor_space(rec))
+                Some((
+                    text_input_state_in_compositor_space(rec),
+                    text_input_cursor_anchor(rec),
+                ))
             }
         })
     }
@@ -355,6 +392,7 @@ pub(crate) unsafe fn text_input_focus_changed(
                         state,
                         (*rec).seat,
                         aegis_core::input::TextInputState::default(),
+                        None,
                     );
                 }
                 (*rec).current_surface = std::ptr::null_mut();
