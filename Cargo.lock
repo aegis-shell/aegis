@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aegis"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aegis-ai-workspaces",
  "aegis-backend",
@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-ai-workspaces"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aegis-core",
  "aegis-design",
@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-backend"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aegis-core",
  "aegis-protocols",
@@ -67,7 +67,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-compositor"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aegis-core",
  "aegis-protocols",
@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-config"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aegis-core",
  "dirs",
@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "log",
  "serde",
@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-ctl"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aegis-config",
  "aegis-core",
@@ -116,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-design"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "lens",
  "lens-sys",
@@ -124,7 +124,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-desktop-entries"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aegis-core",
  "dirs",
@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-dock"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aegis-core",
  "aegis-design",
@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-fuji"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aegis-core",
  "aegis-desktop-entries",
@@ -171,7 +171,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-ipc"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aegis-core",
  "libc",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-launcher"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aegis-core",
  "aegis-desktop-entries",
@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-portal"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aegis-config",
  "aegis-core",
@@ -210,14 +210,14 @@ dependencies = [
 
 [[package]]
 name = "aegis-protocols"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "aegis-render"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aegis-core",
  "flux",
@@ -228,7 +228,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-settings"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aegis-core",
  "aegis-design",
@@ -241,7 +241,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-shell"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aegis-core",
  "aegis-design",
@@ -255,7 +255,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-statusbar"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aegis-core",
  "aegis-design",
@@ -272,7 +272,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-wallpaper"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "flux",
  "flux-scene-graph",

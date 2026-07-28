@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## Unreleased
 
+## [0.0.2] - 2026-07-28
+
 ### Wayland input methods and browser stability
 
 - Added host-side Wayland input-method support through
