@@ -54,6 +54,13 @@ struct VirtualKeyboardRec {
     keymap_set: bool,
 }
 
+fn resource_belongs_to_client(
+    resource: *mut ffi::wl_resource,
+    client: *mut ffi::wl_client,
+) -> bool {
+    !resource.is_null() && unsafe { ffi::wl_resource_get_client(resource) == client }
+}
+
 static INPUT_METHOD_MANAGER_IMPL: ffi::zwp_input_method_manager_v2_interface_impl =
     ffi::zwp_input_method_manager_v2_interface_impl {
         get_input_method: input_method_manager_get,
@@ -706,7 +713,7 @@ unsafe extern "C" fn virtual_keyboard_key(
             .keyboard_resources
             .iter()
             .copied()
-            .filter(|keyboard| ffi::wl_resource_get_client(*keyboard) == focus_client)
+            .filter(|keyboard| resource_belongs_to_client(*keyboard, focus_client))
         {
             ffi::wl_resource_post_event(
                 keyboard,
@@ -753,7 +760,7 @@ unsafe extern "C" fn virtual_keyboard_modifiers(
             .keyboard_resources
             .iter()
             .copied()
-            .filter(|keyboard| ffi::wl_resource_get_client(*keyboard) == focus_client)
+            .filter(|keyboard| resource_belongs_to_client(*keyboard, focus_client))
         {
             ffi::wl_resource_post_event(
                 keyboard,
@@ -827,7 +834,7 @@ unsafe extern "C" fn input_method_resource_destroy(resource: *mut ffi::wl_resour
                 .virtual_keyboards
                 .iter()
                 .copied()
-                .filter(|keyboard| ffi::wl_resource_get_client(*keyboard) == client)
+                .filter(|keyboard| resource_belongs_to_client(*keyboard, client))
                 .collect::<Vec<_>>();
             for keyboard in virtual_keyboards {
                 ffi::wl_resource_destroy(keyboard);
@@ -975,6 +982,14 @@ unsafe fn update_input_popup_positions(state: *mut State, seat: SeatId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn destroyed_keyboard_tombstone_never_matches_a_client() {
+        assert!(!resource_belongs_to_client(
+            std::ptr::null_mut(),
+            std::ptr::null_mut()
+        ));
+    }
 
     #[test]
     fn surrounding_text_truncation_preserves_utf8_boundaries() {

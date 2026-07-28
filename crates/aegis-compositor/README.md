@@ -42,7 +42,13 @@ physical seat, one host input method may consume that context through
 `zwp_input_method_v2`, grab the hardware keyboard, forward unhandled keys
 through its paired `zwp_virtual_keyboard_v1`, and present candidate surfaces
 as compositor-positioned overlays. Realm registries do not expose the
-input-method or virtual-keyboard manager globals.
+input-method or virtual-keyboard manager globals. Destroyed keyboard resources
+are removed from forwarding without dereferencing their lifecycle tombstones.
+
+The server deliberately does not advertise `wp_presentation` until the backend
+can provide commit-correlated presentation timestamps. Clients use
+`wl_surface.frame` callbacks instead; the runtime completes those callbacks
+after output presentation.
 
 ## Use
 

@@ -163,42 +163,69 @@ impl WatcherIface {
         };
         let key = format!("{bus_name}{path}");
         let destination = if sender.is_empty() {
-            &bus_name
+            bus_name.clone()
         } else {
-            &sender
+            sender.clone()
         };
 
-        let mut props = fetch_props_async(&self.conn, destination, &path).await;
-        let menu_path = props.menu_path.clone();
-        let mut item = TrayItem {
-            key: key.clone(),
-            title: String::new(),
-            icon: TrayIcon::None,
-            status: TrayStatus::Active,
-            has_menu: false,
-            icon_generation: 0,
-        };
         {
             let mut shared = self.shared.lock().unwrap();
+            let mut item = TrayItem {
+                key: key.clone(),
+                title: String::new(),
+                icon: TrayIcon::None,
+                status: TrayStatus::Active,
+                has_menu: false,
+                icon_generation: 0,
+            };
             // Re-registration keeps the generation counter so unchanged
             // icons do not force a texture re-upload.
             if let Some(previous) = shared.items.get(&key) {
                 item.icon_generation = previous.item.icon_generation;
             }
-            resolve_named_icon(&mut props.icon, &mut shared.icon_cache);
-            apply_props(&mut item, props);
             shared.items.insert(
                 key.clone(),
                 ItemEntry {
                     bus_name,
-                    unique_name: sender,
-                    path,
-                    menu_path,
+                    unique_name: sender.clone(),
+                    path: path.clone(),
+                    menu_path: None,
                     item,
                 },
             );
             shared.republish();
         }
+
+        // Registration must return before querying the item. Several SNI
+        // implementations make this call synchronously on the same thread
+        // that serves their properties; awaiting GetAll/Get there deadlocks
+        // the item until its registration call times out.
+        let conn = self.conn.clone();
+        let refresh_conn = conn.clone();
+        let shared = Arc::clone(&self.shared);
+        let refresh_key = key.clone();
+        conn.executor()
+            .spawn(
+                async move {
+                    let mut props = fetch_props_async(&refresh_conn, &destination, &path).await;
+                    let menu_path = props.menu_path.clone();
+                    let mut shared = shared.lock().unwrap();
+                    resolve_named_icon(&mut props.icon, &mut shared.icon_cache);
+                    let Some(entry) = shared.items.get_mut(&refresh_key) else {
+                        return;
+                    };
+                    // Ignore a stale read that completed after a new owner
+                    // re-registered the same well-known name.
+                    if entry.unique_name != sender || entry.path != path {
+                        return;
+                    }
+                    entry.menu_path = menu_path;
+                    apply_props(&mut entry.item, props);
+                    shared.republish();
+                },
+                "sni-initial-properties",
+            )
+            .detach();
 
         log::info!("tray: registered {key}");
         if let Err(error) = emitter.status_notifier_item_registered(service).await {
@@ -472,9 +499,11 @@ fn handle_signal(
             let Some(key) = key else { return };
             let mut props =
                 fetch_props_blocking(conn, &sender, path.as_deref().unwrap_or(DEFAULT_ITEM_PATH));
+            let menu_path = props.menu_path.clone();
             let mut shared = shared.lock().unwrap();
             resolve_named_icon(&mut props.icon, &mut shared.icon_cache);
             if let Some(entry) = shared.items.get_mut(&key) {
+                entry.menu_path = menu_path;
                 apply_props(&mut entry.item, props);
                 shared.republish();
             }

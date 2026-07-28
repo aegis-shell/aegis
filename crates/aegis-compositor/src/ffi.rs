@@ -275,9 +275,10 @@ pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_TITLE: u32 = 2;
 pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_APP_ID: u32 = 3;
 pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_IDENTIFIER: u32 = 4;
 
-// wp_presentation_feedback (bitfield flags, but event opcode is 0)
-pub const WP_PRESENTATION_FEEDBACK_PRESENTED: u32 = 0;
-pub const WP_PRESENTATION_FEEDBACK_DISCARDED: u32 = 1;
+// wp_presentation_feedback
+pub const WP_PRESENTATION_FEEDBACK_SYNC_OUTPUT: u32 = 0;
+pub const WP_PRESENTATION_FEEDBACK_PRESENTED: u32 = 1;
+pub const WP_PRESENTATION_FEEDBACK_DISCARDED: u32 = 2;
 
 // zwp_text_input_v3
 pub const ZWP_TEXT_INPUT_V3_ENTER: u32 = 0;

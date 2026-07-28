@@ -2,13 +2,14 @@
 //!
 //! Each extension advertised by the compositor lives here: a bind callback
 //! creating the resource, and request vtables. Several are fully functional
-//! (xdg-output, fractional-scale, presentation-time, relative-pointer,
+//! (xdg-output, fractional-scale, relative-pointer,
 //! pointer-constraints, cursor-shape, idle-inhibit, ext-idle-notify,
 //! ext-foreign-toplevel-list, text-input-v3, input-method-v2, and
 //! virtual-keyboard-v1), while others accept requests but defer some
 //! compositor-side behavior (ext-session-lock surfaces). Every advertised
 //! protocol still owns a complete object lifecycle so clients do not fail
-//! with protocol errors.
+//! with protocol errors. Presentation-time remains unadvertised until the
+//! backend can return commit-correlated timestamps.
 //!
 //! Every global stores `State*` in its resource user-data (or derives it
 //! from a bound object), matching the core protocol handlers in lib.rs.
@@ -50,7 +51,6 @@ pub(crate) use keyboard_shortcuts::*;
 pub(crate) use output::*;
 pub(crate) use pointer_constraints::*;
 pub(crate) use pointer_gestures::*;
-pub(crate) use presentation::*;
 pub(crate) use relative_pointer::*;
 pub(crate) use session_lock::*;
 pub(crate) use tablet::*;

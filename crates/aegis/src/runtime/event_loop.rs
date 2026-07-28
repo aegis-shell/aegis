@@ -30,9 +30,10 @@ impl CompositorRuntime {
     }
 
     /// Frame pacing for the animation tick, derived from the fastest active
-    /// output's refresh rate so high-refresh outputs animate at their native
-    /// cadence instead of being clamped to 60fps. Backends that report no
-    /// mode (nested, where the outer compositor owns pacing) keep 60 Hz.
+    /// output's refresh rate and capped at 60fps. Rendering a full-resolution
+    /// animated wallpaper faster than that consumes substantial GPU bandwidth
+    /// without improving shell responsiveness. Backends that report no mode
+    /// (nested, where the outer compositor owns pacing) keep 60 Hz.
     fn frame_interval(&self) -> std::time::Duration {
         let refresh_mhz = self
             .server
@@ -41,11 +42,13 @@ impl CompositorRuntime {
             .map(|output| output.geometry.mode.refresh_mhz)
             .max()
             .unwrap_or(0);
+        const SIXTY_HZ: std::time::Duration = std::time::Duration::from_micros(16_667);
         if refresh_mhz == 0 {
-            std::time::Duration::from_micros(16_667)
+            SIXTY_HZ
         } else {
             // refresh_mhz is in millihertz: period_ns = 1e12 / refresh_mhz.
             std::time::Duration::from_nanos(1_000_000_000_000 / u64::from(refresh_mhz))
+                .max(SIXTY_HZ)
         }
     }
 

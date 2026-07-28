@@ -48,8 +48,8 @@ The icon-theme override is checked during each application-catalog refresh.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ASS_ICON_THEME` | GTK `org.gnome.desktop.interface icon-theme`, then `hicolor` | Icon theme used by the dock and launcher. Theme inheritance and `hicolor` fallback still apply. |
-| `ASS_WALLPAPER` | bundled `procedural-generation.png` | Image, animated image, short-video, or model-only `.glb` source. Setting an image or video suppresses the built-in model unless `ASS_WALLPAPER_MODEL` is also set. |
-| `ASS_WALLPAPER_MODEL` | built-in procedural knot for the default wallpaper | Optional `.glb` model drawn over an image or video with an orbiting camera and animated directional light. Ignored when `ASS_WALLPAPER` is itself a `.glb`. |
+| `ASS_WALLPAPER` | bundled `procedural-generation.png` | Image, animated image, short-video, or model-only `.glb` source. An image or video is shown without a 3D overlay unless `ASS_WALLPAPER_MODEL` is also set. |
+| `ASS_WALLPAPER_MODEL` | unset | Optional 3D model drawn over an image or video with an orbiting camera and animated directional light. Set to `builtin` for the bundled procedural knot or to a `.glb` path for a custom model. Ignored when `ASS_WALLPAPER` is itself a `.glb`. |
 
 The launcher captures image/video, 3D, and client layers into one quarter-scale
 RGBA8 offscreen scene and updates a fixed-cost Dual-Kawase backdrop every

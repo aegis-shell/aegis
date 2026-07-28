@@ -14,17 +14,14 @@ different icon restarts the delay, and leaving the Dock hides the name. The
 full-screen launcher keeps application names below their cells instead of
 using this hover label.
 
-## Reveal the Dock for a Maximized Window
+## Access the Dock Around a Maximized Window
 
-1. Maximize a window.
-2. Move the pointer to the bottom edge of the output.
-3. Use the revealed Dock, then move the pointer away to hide it again.
+1. Restore or minimize the maximized window.
+2. Use the Dock.
 
-The Dock switches to this edge-reveal behavior automatically while a visible
-window is maximized, regardless of the `[dock] autohide` setting. A
-fullscreen window applies a stricter lock: the Dock stays hidden and the
-bottom-edge trigger is disabled until fullscreen ends. Minimized windows do
-not affect either behavior.
+A visible maximized or fullscreen window covers the Dock completely. The
+bottom edge does not reveal the Dock over that window, regardless of the
+`[dock] autohide` setting. Minimized windows do not affect this behavior.
 
 ## Open the Launcher
 

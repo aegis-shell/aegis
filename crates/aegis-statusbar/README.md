@@ -38,16 +38,21 @@ composition root's icon cache and pushed through
 `Chrome::update_app_catalog`. It never mutates Wayland state or writes
 configuration.
 
-The SNI tray is the workspace's first D-Bus surface. It runs on two
-dedicated `std::thread`s (`sni-tray-signals`, `sni-tray-commands`) using
-`zbus` v5 with `default-features = false` and the `async-io` +
-`blocking-api` features — pure Rust, no libdbus system dependency, no
-`tokio`/`async-std` in the dependency graph. State crosses the thread
-boundary only as plain values through `Arc<Mutex<_>>` and
-`std::sync::mpsc`; the compositor's render thread reads a `TraySnapshot`
-once per frame and never blocks on D-Bus. SNI icon pixmaps are uploaded
-through a borrowed `flux::Device` (refcounted in C, held non-owning on
-the render thread, matching `Shell::new`'s pattern).
+The SNI tray is the workspace's first D-Bus surface. `zbus` serves watcher
+methods on its internal executor, while signals and outgoing commands run on
+two dedicated `std::thread`s (`sni-tray-signals`, `sni-tray-commands`).
+Registration publishes a placeholder and replies before an executor task
+reads the item's properties, so a synchronous item never waits on property
+requests that it cannot serve until registration returns.
+
+The integration uses `zbus` v5 with `default-features = false` and the
+`async-io` + `blocking-api` features — pure Rust, no libdbus system dependency,
+and no `tokio`/`async-std` in the dependency graph. State crosses thread
+boundaries only as plain values through `Arc<Mutex<_>>` and
+`std::sync::mpsc`; the compositor's render thread reads a `TraySnapshot` once
+per frame and never blocks on D-Bus. SNI icon pixmaps are uploaded through a
+borrowed `flux::Device` (refcounted in C, held non-owning on the render thread,
+matching `Shell::new`'s pattern).
 
 Failure stays silent: without a session bus, or when another watcher
 already owns the `org.kde.StatusNotifierWatcher` name, the tray simply

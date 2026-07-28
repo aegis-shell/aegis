@@ -359,12 +359,10 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let model_override = std::env::var("ASS_WALLPAPER_MODEL")
                     .ok()
                     .filter(|value| !value.is_empty());
-                let model_result = if let Some(path) = model_override.as_deref() {
-                    wallpaper.set_model_from_gltf(&device, &surface, path)
-                } else if wallpaper_override.is_none() {
-                    wallpaper.set_builtin_model(&device, &surface)
-                } else {
-                    Ok(())
+                let model_result = match model_override.as_deref() {
+                    Some("builtin") => wallpaper.set_builtin_model(&device, &surface),
+                    Some(path) => wallpaper.set_model_from_gltf(&device, &surface, path),
+                    None => Ok(()),
                 };
                 if let Err(error) = model_result {
                     log::warn!("wallpaper: 3D model disabled: {error}");

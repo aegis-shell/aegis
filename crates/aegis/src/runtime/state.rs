@@ -17,10 +17,14 @@ pub(super) struct CompositorRuntime {
     pub(super) notif_queue: std::sync::Arc<std::sync::Mutex<aegis_core::notify::NotificationQueue>>,
     pub(super) config_path: Option<std::path::PathBuf>,
     pub(super) config: Option<aegis_config::Config>,
-    pub(super) device: flux::Device,
-    pub(super) host: Host,
-    pub(super) surface: flux::Surface,
+    // Rust drops fields in declaration order. The canvas and its Vulkan
+    // surface must disappear before a nested host tears down the Wayland
+    // display that owns the swapchain's wl_buffers. Flux resources retain the
+    // device themselves, so keeping the explicit device handle last is safe.
     pub(super) canvas: flux::Canvas,
+    pub(super) surface: flux::Surface,
+    pub(super) host: Host,
+    pub(super) device: flux::Device,
     pub(super) launcher_backdrop: LauncherBackdrop,
     pub(super) screenshot_freeze: ScreenshotFreeze,
     pub(super) pending_capture: Option<PendingCapture>,

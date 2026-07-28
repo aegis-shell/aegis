@@ -120,13 +120,10 @@ impl Server {
                 data,
                 extensions::xdg_decoration_manager_bind,
             );
-            ffi::wl_global_create(
-                display,
-                &ffi::wp_presentation_interface,
-                1,
-                data,
-                extensions::presentation_bind,
-            );
+            // Do not advertise wp_presentation until feedback can be tied to
+            // the corresponding commit and completed with a real presentation
+            // timestamp. Clients fall back to wl_surface.frame, which this
+            // server completes after the output presents.
             ffi::wl_global_create(
                 display,
                 &ffi::wp_fractional_scale_manager_v1_interface,

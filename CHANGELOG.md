@@ -7,6 +7,36 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### Wayland client stability and responsiveness
+
+- Fixed a compositor crash when an input method destroyed a keyboard resource
+  while virtual-keyboard modifiers were being forwarded.
+- Chromium-based Wayland clients now fall back to the compositor's working
+  surface frame callbacks instead of receiving incomplete presentation-time
+  feedback, avoiding severe browser sluggishness.
+- Nested sessions now release their canvas and Vulkan surface before tearing
+  down the host display, preventing shutdown-order crashes.
+
+### StatusNotifierItem interoperability
+
+- StatusNotifierItem registration now replies before reading the item's
+  properties, preventing synchronous tray clients and input methods from
+  timing out or deadlocking during startup.
+
+### Wallpaper and frame pacing
+
+- Animated rendering remains capped at 60 frames per second on high-refresh
+  outputs to avoid unnecessary full-resolution wallpaper GPU work.
+- The built-in 3D wallpaper model is now opt-in. Set
+  `ASS_WALLPAPER_MODEL=builtin` to enable it, or set the variable to a `.glb`
+  path to use a custom model.
+
+### Smart Dock visibility
+
+- Maximized and fullscreen windows now cover the Dock completely. Moving the
+  pointer to the bottom edge no longer raises the Dock over a maximized
+  application.
+
 ## [0.0.2] - 2026-07-28
 
 ### Wayland input methods and browser stability

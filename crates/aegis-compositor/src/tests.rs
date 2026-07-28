@@ -478,6 +478,10 @@ fn registry_exposes_clipboard_and_host_ime_protocols() {
         "host virtual-keyboard global missing:\n{stdout}"
     );
     assert!(
+        !stdout.contains("interface: 'wp_presentation'"),
+        "incomplete presentation feedback must not be advertised:\n{stdout}"
+    );
+    assert!(
         !stdout.contains("zwp_primary_selection_device_manager_v1"),
         "Primary Selection must not be advertised:\n{stdout}"
     );

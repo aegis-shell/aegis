@@ -47,6 +47,11 @@ impl FakeItem {
 
     #[zbus(property)]
     fn id(&self) -> &str {
+        // A synchronous item may not dispatch property requests until its
+        // RegisterStatusNotifierItem call returns. A slow getter models that
+        // shape and guards the watcher from putting property I/O on the
+        // registration reply path.
+        std::thread::sleep(Duration::from_millis(750));
         "fake-item"
     }
 
@@ -119,9 +124,14 @@ fn watcher_registers_item_and_delivers_activate() {
         "org.kde.StatusNotifierWatcher",
     )
     .unwrap();
+    let register_started = Instant::now();
     watcher
         .call::<_, _, ()>("RegisterStatusNotifierItem", &"org.example.FakeItem")
         .unwrap();
+    assert!(
+        register_started.elapsed() < Duration::from_millis(500),
+        "registration waited for item properties"
+    );
 
     // The item shows up in the snapshot, mirrored from the fake properties.
     let key = "org.example.FakeItem/StatusNotifierItem";
@@ -131,7 +141,7 @@ fn watcher_registers_item_and_delivers_activate() {
             .unwrap()
             .items
             .iter()
-            .any(|item| item.key == key)
+            .any(|item| item.key == key && item.title == "Fake Item")
     }));
     {
         let snapshot = snapshot.lock().unwrap();
