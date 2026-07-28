@@ -7,6 +7,24 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### Wayland browser compatibility
+
+- Browser menus now retain the correct popup grab and keyboard-focus owner.
+  Firefox `xdg_popup` menus receive complete clicks, while Chromium UI
+  bubbles implemented as `wl_subsurface` trees keep keyboard focus on their
+  owning `xdg_toplevel` instead of closing before the button action runs.
+- Newly mapped, controllable toplevels now receive keyboard focus. Activation
+  configures preserve the mapped window size, and remembered application
+  geometry applies only to main windows rather than same-application
+  dialogs. Version 1 saved geometry is cleared once during migration because
+  it may contain dialog dimensions.
+
+### Screen casting
+
+- The portal ScreenCast stream now publishes a PipeWire output port.
+  Consumers such as OBS can link the node and receive compositor frames
+  instead of seeing a source with no video flow.
+
 ## [0.0.4] - 2026-07-28
 
 ### Input-method keyboard grab

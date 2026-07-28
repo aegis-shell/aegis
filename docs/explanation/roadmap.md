@@ -51,6 +51,12 @@ is routed to the focused client with xkbcommon keymaps and modifier state.
 [ADR-0009](../adr/0009-input-pipeline-and-pointer-focus.md), and
 [ADR-0010](../adr/0010-keyboard-pipeline-and-xkbcommon-ownership.md).
 
+Popup grabs are scoped to their seat and preserve pointer events for the
+owning client while dismissing outside clicks. Keyboard focus follows the
+nearest xdg role rather than a child surface, so browser UI implemented as
+either an `xdg_popup` or a `wl_subsurface` remains interactive without
+displacing its owning toplevel.
+
 ## M2: GPU Client Buffers
 
 **Outcome.** `zwp_linux_dmabuf_v1` is implemented with flux dmabuf import,
@@ -93,7 +99,10 @@ icons are rasterized when librsvg is available, the application catalog is
 refreshed while the compositor is running, and
 `xdg_toplevel.set_window_geometry` frame insets are honored end to end —
 client-decorated windows place, hit-test, and receive input by their visible
-window rect, excluding shadow margins.
+window rect, excluding shadow margins. Initial configuration restores
+remembered geometry only for main windows, state-only configures preserve a
+mapped window's size, and transient dialogs are centered without overwriting
+their application's saved main-window geometry.
 
 ## M4: DRM/KMS Backend
 

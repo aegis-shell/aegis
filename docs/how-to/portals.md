@@ -119,6 +119,16 @@ the stream appears as a PipeWire node named `aegis-portal-screencast`:
 pw-dump | grep -A5 aegis-portal-screencast
 ```
 
+Confirm that the node exposes an output port:
+
+```sh
+pw-link -o | grep aegis-portal-screencast
+```
+
+OBS and other capture consumers link this output port to receive frames. If
+the node appears only as an input, replace the installed `aegis-portal`
+binary with the current build and restart `xdg-desktop-portal`.
+
 Sharing pauses while the session is locked or the seat is inactive and
 resumes afterwards; it ends when the app stops sharing, the app exits, or
 the portal session is closed.

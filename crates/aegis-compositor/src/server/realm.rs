@@ -821,6 +821,12 @@ impl Server {
         {
             self.change_keyboard_focus(surface);
         }
+        let pending_popup_focus = std::mem::take(&mut self.state.pending_popup_focus);
+        for (seat, surface) in pending_popup_focus {
+            if let Some(_guard) = ActiveSeatGuard::enter(self.state.as_mut(), seat) {
+                self.change_keyboard_focus(surface);
+            }
+        }
         if self.state.lock_focus_dirty {
             self.state.lock_focus_dirty = false;
             let focus = self.state.pending_lock_focus;

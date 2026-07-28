@@ -260,6 +260,9 @@ pub struct SurfaceRec {
     xdg_popup: *mut ffi::wl_resource,
     popup_parent: *mut SurfaceRec,
     popup_grabbed: bool,
+    /// Routed seat that owns this popup's explicit grab. A grabbing popup is
+    /// the keyboard-focus target for this seat from map until dismissal.
+    popup_grab_seat: Option<SeatId>,
     cursor_role: bool,
     drag_icon_role: bool,
     /// The permanent input-popup role. The protocol object may be destroyed,
@@ -393,6 +396,7 @@ impl SurfaceRec {
             xdg_popup: std::ptr::null_mut(),
             popup_parent: std::ptr::null_mut(),
             popup_grabbed: false,
+            popup_grab_seat: None,
             cursor_role: false,
             drag_icon_role: false,
             input_popup_role: false,
@@ -979,6 +983,10 @@ pub(crate) struct State {
     foreign_handles: std::collections::HashMap<u64, Vec<*mut ffi::wl_resource>>,
     activation_tokens: std::collections::HashMap<String, SeatId>,
     pending_activation: Option<(SeatId, *mut ffi::wl_resource)>,
+    /// Keyboard-focus transitions requested from xdg-popup protocol
+    /// callbacks. Callbacks cannot construct a second mutable `Server`, so
+    /// dispatch applies the newest target for each seat after they return.
+    pending_popup_focus: std::collections::BTreeMap<SeatId, *mut ffi::wl_resource>,
     /// Active ext-session-lock object and fail-closed visibility state.
     pub(crate) session_lock: *mut c_void,
     pub(crate) session_locked: bool,
@@ -1143,6 +1151,7 @@ impl State {
             foreign_handles: std::collections::HashMap::new(),
             activation_tokens: std::collections::HashMap::new(),
             pending_activation: None,
+            pending_popup_focus: std::collections::BTreeMap::new(),
             session_lock: std::ptr::null_mut(),
             session_locked: false,
             lock_focus_dirty: false,

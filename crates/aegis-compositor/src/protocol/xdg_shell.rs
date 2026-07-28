@@ -466,26 +466,98 @@ unsafe extern "C" fn popup_destroy(_client: *mut ffi::wl_client, resource: *mut 
     unsafe {
         let rec = ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec;
         if !rec.is_null() {
+            let grab_seat = (*rec).popup_grab_seat;
+            let focus_after_dismissal = popup_keyboard_focus_after_dismissal(rec);
             reset_xdg_configure_state_after_unmap(&mut *rec);
             (*rec).xdg_popup = std::ptr::null_mut();
             (*rec).popup_parent = std::ptr::null_mut();
             (*rec).popup_grabbed = false;
+            (*rec).popup_grab_seat = None;
             (*rec).mapped = false;
+            if let Some(seat) = grab_seat
+                && !(*rec).state.is_null()
+            {
+                (*(*rec).state)
+                    .pending_popup_focus
+                    .insert(seat, focus_after_dismissal);
+            }
         }
         ffi::wl_resource_destroy(resource);
     }
 }
 
 unsafe extern "C" fn popup_grab(
-    _client: *mut ffi::wl_client,
+    client: *mut ffi::wl_client,
     popup: *mut ffi::wl_resource,
-    _seat: *mut ffi::wl_resource,
+    seat: *mut ffi::wl_resource,
     _serial: u32,
 ) {
     unsafe {
         let rec = ffi::wl_resource_get_user_data(popup) as *mut SurfaceRec;
-        if !rec.is_null() {
-            (*rec).popup_grabbed = true;
+        if rec.is_null() || (*rec).state.is_null() || seat.is_null() {
+            return;
+        }
+        let state = (*rec).state;
+        let Some(_guard) = ActiveSeatGuard::for_client_seat_resource(state, client, seat, true)
+        else {
+            return;
+        };
+        if ffi::wl_resource_get_client((*rec).resource) != client {
+            return;
+        }
+        (*rec).popup_grabbed = true;
+        (*rec).popup_grab_seat = Some((*state).active_seat);
+        // xdg_popup.grab is requested before the first mapping commit. The
+        // commit path defers keyboard focus until the surface is actually
+        // mapped; see `surface_commit`.
+        if (*rec).mapped {
+            (*state)
+                .pending_popup_focus
+                .insert((*state).active_seat, (*rec).resource);
+        }
+    }
+}
+
+/// Topmost mapped popup holding an explicit grab for `seat`.
+///
+/// Creation order is also popup stacking order, and raising a toplevel keeps
+/// the surfaces in each toplevel unit ordered, so the last matching record is
+/// the protocol's topmost grabbing popup.
+pub(crate) fn topmost_grabbed_popup(state: &State, seat: SeatId) -> Option<*mut SurfaceRec> {
+    state
+        .live_surfaces()
+        .filter(|surface| unsafe {
+            (**surface).mapped
+                && !(**surface).xdg_popup.is_null()
+                && (**surface).popup_grabbed
+                && (**surface).popup_grab_seat == Some(seat)
+        })
+        .last()
+}
+
+/// Keyboard target after the topmost popup is dismissed: a grabbing parent
+/// popup regains the grab; otherwise focus returns to the owning toplevel.
+pub(crate) unsafe fn popup_keyboard_focus_after_dismissal(
+    popup: *mut SurfaceRec,
+) -> *mut ffi::wl_resource {
+    unsafe {
+        if popup.is_null() {
+            return std::ptr::null_mut();
+        }
+        let parent = (*popup).popup_parent;
+        if !parent.is_null()
+            && (*parent).mapped
+            && !(*parent).xdg_popup.is_null()
+            && (*parent).popup_grabbed
+            && (*parent).popup_grab_seat == (*popup).popup_grab_seat
+        {
+            return (*parent).resource;
+        }
+        let root = surface_root_toplevel(popup);
+        if root.is_null() {
+            std::ptr::null_mut()
+        } else {
+            (*root).resource
         }
     }
 }
@@ -578,53 +650,14 @@ unsafe extern "C" fn toplevel_set_app_id(
     unsafe {
         let rec = ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec;
         if !rec.is_null() {
-            let id_opt = cstr_to_string(app_id);
-            (*rec).window.app_id = id_opt.clone();
+            (*rec).window.app_id = cstr_to_string(app_id);
             if !(*rec).state.is_null() {
-                if let Some(id_str) = id_opt {
-                    let st = &mut *(*rec).state;
-                    let rule = st
-                        .window_rules
-                        .iter()
-                        .find(|r| r.matches(Some(&id_str), (*rec).window.title.as_deref()))
-                        .cloned();
-                    let allow_remember = rule.as_ref().and_then(|r| r.remember).unwrap_or(true)
-                        && st.remember_window_positions;
-
-                    let saved = if allow_remember {
-                        st.window_state_store.get(&id_str).cloned()
-                    } else {
-                        None
-                    };
-
-                    if !(*rec).window.state.maximized && !(*rec).window.state.fullscreen {
-                        if let Some(pos) = rule
-                            .as_ref()
-                            .and_then(|r| r.position)
-                            .or_else(|| saved.as_ref().and_then(|s| s.position))
-                        {
-                            let screen_rect = st.output_geometry.logical_rect();
-                            let max_x = (screen_rect.size.w - 100).max(0);
-                            let max_y = (screen_rect.size.h - 100).max(0);
-                            let clamped_pos = aegis_core::Point {
-                                x: pos.x.clamp(0, max_x),
-                                y: pos.y.clamp(0, max_y),
-                            };
-                            (*rec).position = clamped_pos;
-                            (*rec).window.position = clamped_pos;
-                        }
-                        if let Some(size) = rule
-                            .as_ref()
-                            .and_then(|r| r.size)
-                            .or_else(|| saved.as_ref().and_then(|s| s.size))
-                            && size.w >= 100
-                            && size.h >= 100
-                        {
-                            (*rec).window.size = size;
-                            reconfigure_with_size(rec, size.w, size.h);
-                        }
-                    }
-                }
+                // Geometry policy is resolved on the initial no-buffer
+                // commit, after the client has also had a chance to set its
+                // transient parent.  Applying app-id state here races
+                // `set_parent`, sends a configure before the protocol's
+                // initial configure, and makes dialogs inherit their main
+                // window's remembered size.
                 extensions::foreign_toplevel_updated(rec, (*rec).state);
             }
         }
@@ -706,10 +739,22 @@ pub(crate) fn clamp_size_to_hints(
     }
 }
 
-/// Common path for state transitions: set the bit, send a configure event
-/// carrying the new states array. `width` / `height` of 0 means "let the
-/// client pick" per xdg-shell; we pass 0,0 for state-only changes and reserve
-/// non-zero dimensions for fullscreen-on-output (deferred).
+/// Dimensions for a state-only configure. Once a toplevel has a compositor
+/// size, activation/deactivation and decoration changes must preserve it.
+/// Sending 0,0 here delegates sizing back to the client; Firefox responds to
+/// the focus-time `activated` configure by reverting to its own small default.
+pub(crate) fn state_configure_dimensions(size: aegis_core::Size) -> (i32, i32) {
+    if size.w > 0 && size.h > 0 {
+        (size.w, size.h)
+    } else {
+        // Before first map there may not be an authoritative size yet.
+        (0, 0)
+    }
+}
+
+/// Common path for state transitions: update compositor-owned geometry and
+/// send a configure carrying both the new states array and the authoritative
+/// current size.
 pub(crate) unsafe fn reconfigure_with_state(rec: *mut SurfaceRec) {
     unsafe {
         if rec.is_null() {
@@ -761,7 +806,7 @@ pub(crate) unsafe fn reconfigure_with_state(rec: *mut SurfaceRec) {
                 (*rec).window.size = saved.size;
             }
             (*rec).layout_target = None;
-            (0, 0)
+            state_configure_dimensions((*rec).window.size)
         };
         reconfigure_with_size(rec, w, h);
     }

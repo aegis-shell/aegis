@@ -387,6 +387,112 @@ fn layout_role_resolution_prefers_rule_then_transient_then_workspace() {
     );
 }
 
+#[test]
+fn initial_size_restores_main_windows_but_not_same_app_transients() {
+    let mut state = State::new(std::ptr::null_mut());
+    state.window_state_store.update(
+        "com.example.App".to_owned(),
+        aegis_core::window_state_store::SavedWindowState {
+            size: Some(aegis_core::Size { w: 960, h: 720 }),
+            ..Default::default()
+        },
+    );
+    let mut surface = SurfaceRec::new(std::ptr::null_mut());
+    surface.state = &mut state;
+    surface.window.app_id = Some("com.example.App".to_owned());
+
+    assert_eq!(
+        unsafe { initial_toplevel_size(&mut surface) },
+        Some(aegis_core::Size { w: 960, h: 720 })
+    );
+
+    surface.window.parent = Some(0x1234);
+    assert_eq!(unsafe { initial_toplevel_size(&mut surface) }, None);
+}
+
+#[test]
+fn transient_centering_uses_parent_geometry_and_output_origin() {
+    let parent = aegis_core::Rect::new(500, 200, 800, 600);
+    let output = aegis_core::Rect::new(320, 100, 1200, 800);
+    assert_eq!(
+        centered_transient_position(parent, aegis_core::Size { w: 400, h: 200 }, output),
+        aegis_core::Point { x: 700, y: 400 }
+    );
+
+    // A parent partly beyond the output would center the child off-screen;
+    // the compositor keeps the whole child visible instead.
+    assert_eq!(
+        centered_transient_position(
+            aegis_core::Rect::new(1400, 800, 400, 300),
+            aegis_core::Size { w: 300, h: 200 },
+            output
+        ),
+        aegis_core::Point { x: 1220, y: 700 }
+    );
+}
+
+#[test]
+fn state_only_configures_preserve_a_mapped_window_size() {
+    assert_eq!(
+        state_configure_dimensions(aegis_core::Size { w: 1180, h: 760 }),
+        (1180, 760)
+    );
+    assert_eq!(
+        state_configure_dimensions(aegis_core::Size { w: 0, h: 0 }),
+        (0, 0),
+        "an unmapped toplevel still lets the client choose its first size"
+    );
+}
+
+#[test]
+fn newly_mapped_focus_policy_excludes_hidden_read_only_and_minimized_windows() {
+    assert!(should_focus_mapped_toplevel(true, true, false));
+    assert!(!should_focus_mapped_toplevel(false, true, false));
+    assert!(!should_focus_mapped_toplevel(true, false, false));
+    assert!(!should_focus_mapped_toplevel(true, true, true));
+}
+
+#[test]
+fn popup_grab_focus_tracks_the_topmost_popup_and_unwinds_to_its_parent() {
+    let mut state = State::new(std::ptr::null_mut());
+    let mut root = Box::new(SurfaceRec::new(0x100usize as *mut ffi::wl_resource));
+    root.xdg_toplevel = 0x101usize as *mut ffi::wl_resource;
+    root.mapped = true;
+
+    let mut parent_popup = Box::new(SurfaceRec::new(0x200usize as *mut ffi::wl_resource));
+    parent_popup.xdg_popup = 0x201usize as *mut ffi::wl_resource;
+    parent_popup.popup_parent = root.as_mut();
+    parent_popup.popup_grabbed = true;
+    parent_popup.popup_grab_seat = Some(HUMAN_SEAT);
+    parent_popup.mapped = true;
+
+    let mut child_popup = Box::new(SurfaceRec::new(0x300usize as *mut ffi::wl_resource));
+    child_popup.xdg_popup = 0x301usize as *mut ffi::wl_resource;
+    child_popup.popup_parent = parent_popup.as_mut();
+    child_popup.popup_grabbed = true;
+    child_popup.popup_grab_seat = Some(HUMAN_SEAT);
+    child_popup.mapped = true;
+
+    state.surfaces = vec![root.as_mut(), parent_popup.as_mut(), child_popup.as_mut()];
+
+    assert_eq!(
+        topmost_grabbed_popup(&state, HUMAN_SEAT),
+        Some(child_popup.as_mut() as *mut SurfaceRec)
+    );
+    assert_eq!(
+        unsafe { popup_keyboard_focus_after_dismissal(child_popup.as_mut()) },
+        parent_popup.resource,
+        "a nested popup returns keyboard focus to its grabbing parent"
+    );
+
+    parent_popup.popup_grabbed = false;
+    assert_eq!(
+        unsafe { popup_keyboard_focus_after_dismissal(child_popup.as_mut()) },
+        root.resource,
+        "the popup chain ultimately returns focus to the owning toplevel"
+    );
+}
+
 /// `Server::new` brings up the display, binds an auto-named socket, and
 /// returns a non-empty socket name. The socket lives in `XDG_RUNTIME_DIR`
 /// (libwayland's convention) and is removed by `wl_display_destroy`.
@@ -411,6 +517,166 @@ fn server_new_creates_socket() {
         !std::path::Path::new(&path).exists(),
         "socket file should be removed after drop: {path}"
     );
+}
+
+/// Manual browser interoperability probe. It is ignored in normal CI because
+/// it requires the Flatpak Chrome installation, but it drives Chrome's real
+/// Extensions bubble through this `Server` rather than mocking focus state.
+/// `AEGIS_CHROME_E2E_PROFILE` must point to a disposable copy of a profile
+/// containing at least one enabled extension.
+#[test]
+#[ignore = "requires flatpak com.google.Chrome"]
+fn chrome_extensions_menu_receives_a_complete_click() {
+    let Some(profile) = std::env::var_os("AEGIS_CHROME_E2E_PROFILE") else {
+        eprintln!("skipping: AEGIS_CHROME_E2E_PROFILE is not set");
+        return;
+    };
+    let profile = profile.to_string_lossy().into_owned();
+    if std::env::var_os("XDG_RUNTIME_DIR").is_none()
+        || !std::process::Command::new("flatpak")
+            .args(["info", "com.google.Chrome"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    {
+        eprintln!("skipping: Flatpak Chrome or XDG_RUNTIME_DIR unavailable");
+        return;
+    }
+
+    let mut server = Server::new().expect("Server::new");
+    let profile_arg = format!("--user-data-dir={profile}");
+    let mut chrome = std::process::Command::new("flatpak")
+        .args([
+            "run",
+            "com.google.Chrome",
+            "--ozone-platform=wayland",
+            "--disable-gpu",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-sync",
+            profile_arg.as_str(),
+            "--window-size=1000,700",
+            "data:text/html,<title>AEGIS_ORIGINAL</title>",
+        ])
+        .env("WAYLAND_DISPLAY", server.socket())
+        .env("XDG_SESSION_TYPE", "wayland")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("launch Flatpak Chrome");
+
+    let pump = |server: &mut Server, iterations: usize| {
+        for _ in 0..iterations {
+            server.dispatch();
+            server.presentation_complete();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    };
+    pump(&mut server, 2_000);
+
+    let root = server
+        .state
+        .live_surfaces()
+        .find(|surface| unsafe { !(**surface).xdg_toplevel.is_null() && (**surface).mapped })
+        .expect("Chrome toplevel did not map");
+    let original_title = unsafe { (*root).window.title.clone() };
+    let (menu_x, menu_y) = unsafe {
+        (
+            (*root).position.x + (*root).window.size.w - 112,
+            (*root).position.y + 64,
+        )
+    };
+    let keymap = aegis_core::keybind::Keymap::default();
+    let surfaces_before_menu = server
+        .state
+        .live_surfaces()
+        .map(|surface| unsafe { (*surface).resource as usize })
+        .collect::<std::collections::HashSet<_>>();
+    server.forward_input(
+        &[aegis_core::input::InputEvent::PointerMotion {
+            x: menu_x as f32,
+            y: menu_y as f32,
+        }],
+        &keymap,
+    );
+    assert_eq!(
+        server.pointer_focus_surface(),
+        Some(unsafe { (*root).resource })
+    );
+    pump(&mut server, 100);
+    server.forward_input(
+        &[aegis_core::input::InputEvent::PointerButton {
+            button: 0x110,
+            state: aegis_core::input::ButtonState::Pressed,
+        }],
+        &keymap,
+    );
+    pump(&mut server, 100);
+    server.forward_input(
+        &[aegis_core::input::InputEvent::PointerButton {
+            button: 0x110,
+            state: aegis_core::input::ButtonState::Released,
+        }],
+        &keymap,
+    );
+    pump(&mut server, 500);
+
+    let popup = server
+        .state
+        .live_surfaces()
+        .filter(|surface| unsafe {
+            (**surface).mapped
+                && !surfaces_before_menu.contains(&((**surface).resource as usize))
+                && ((**surface).parent == root || !(**surface).xdg_popup.is_null())
+        })
+        .last()
+        .expect("Chrome Extensions surface did not map");
+    unsafe {
+        eprintln!(
+            "Chrome Extensions surface: xdg_popup={} grabbed={} origin={:?} size={:?}",
+            !(*popup).xdg_popup.is_null(),
+            (*popup).popup_grabbed,
+            surface_draw_origin(&*popup),
+            surface_logical_size(&*popup)
+        );
+    }
+    let (item_x, item_y) = unsafe {
+        let size = surface_logical_size(&*popup);
+        let origin = surface_draw_origin(&*popup);
+        (origin.x + 100, origin.y + size.h - 28)
+    };
+    server.forward_input(
+        &[
+            aegis_core::input::InputEvent::PointerMotion {
+                x: item_x as f32,
+                y: item_y as f32,
+            },
+            aegis_core::input::InputEvent::PointerButton {
+                button: 0x110,
+                state: aegis_core::input::ButtonState::Pressed,
+            },
+            aegis_core::input::InputEvent::PointerButton {
+                button: 0x110,
+                state: aegis_core::input::ButtonState::Released,
+            },
+        ],
+        &keymap,
+    );
+    pump(&mut server, 1_000);
+
+    let root = unsafe { &*root };
+    eprintln!(
+        "Chrome title before={original_title:?} after={:?}",
+        root.window.title
+    );
+    assert_ne!(
+        root.window.title, original_title,
+        "Chrome kept the original tab active, so Manage extensions was swallowed"
+    );
+
+    let _ = chrome.kill();
+    let _ = chrome.wait();
 }
 
 #[test]

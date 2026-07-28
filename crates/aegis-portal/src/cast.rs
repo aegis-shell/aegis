@@ -1,7 +1,7 @@
 //! One PipeWire producer stream per started ScreenCast session.
 //!
 //! Each cast runs on its own thread: a scoped IPC connection receives the
-//! compositor's output-frame stream ([ADR-0052]) and a PipeWire `Input`
+//! compositor's output-frame stream ([ADR-0052]) and a PipeWire `Output`
 //! stream republishes every frame as raw `BGRx` video. The PipeWire main
 //! loop is also the IPC event loop — the IPC socket, the stop socket, and
 //! the lease-renewal timer are ordinary loop sources, so the thread never
@@ -35,6 +35,8 @@ use crate::screencast::CastJob;
 
 /// Frame rate requested from the compositor and offered to PipeWire.
 const STREAM_FPS: u32 = 30;
+/// A screencast publishes frames for PipeWire capture consumers.
+const STREAM_DIRECTION: Direction = Direction::Output;
 /// Lease TTL requested at handshake and renewal; renewed at half TTL.
 const LEASE_TTL_MS: u64 = 900_000;
 
@@ -297,7 +299,11 @@ fn run_cast(
     let mut params = [Pod::from_bytes(&format_pod).expect("format pod")];
     stream
         .connect(
-            Direction::Input,
+            // This stream publishes compositor frames. `Input` describes a
+            // capture consumer (for example a camera reader) and leaves OBS
+            // with no producer port to link to; a screencast source must
+            // expose an output port.
+            STREAM_DIRECTION,
             None,
             StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS,
             &mut params,
@@ -427,6 +433,11 @@ mod tests {
         let (head, words, tail) = unsafe { bytes.align_to::<u32>() };
         assert!(head.is_empty() && tail.is_empty());
         words
+    }
+
+    #[test]
+    fn screencast_stream_is_a_pipewire_producer() {
+        assert!(matches!(STREAM_DIRECTION, Direction::Output));
     }
 
     #[test]

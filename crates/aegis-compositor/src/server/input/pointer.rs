@@ -28,6 +28,72 @@ fn is_matching_top_border_double_click(
             <= TOP_BORDER_CLICK_DISTANCE * TOP_BORDER_CLICK_DISTANCE
 }
 
+/// xdg-popup grabs use owner-events semantics: every surface belonging to
+/// the client that owns the grab continues receiving pointer events normally.
+/// The client decides whether a click on one of its other surfaces dismisses
+/// the popup; the compositor dismisses only clicks outside that client.
+pub(crate) fn popup_grab_allows_owner_event(
+    grab_client: *mut ffi::wl_client,
+    focus_client: *mut ffi::wl_client,
+) -> bool {
+    !grab_client.is_null() && grab_client == focus_client
+}
+
+/// The xdg role whose surface tree contains `surface`, or null for a
+/// role-less tree. `wl_subsurface` parents are the only links followed here:
+/// an xdg-popup's protocol parent is a separate role surface, not part of the
+/// same input tree.
+unsafe fn surface_xdg_role(mut surface: *mut SurfaceRec) -> *mut SurfaceRec {
+    unsafe {
+        for _ in 0..32 {
+            if surface.is_null()
+                || !(*surface).xdg_toplevel.is_null()
+                || !(*surface).xdg_popup.is_null()
+            {
+                return surface;
+            }
+            surface = (*surface).parent;
+        }
+        std::ptr::null_mut()
+    }
+}
+
+/// Resolve click-to-focus at the xdg role boundary.
+///
+/// A grabbing popup is pinned as keyboard focus. A non-grabbing popup never
+/// receives keyboard focus: activate its owning toplevel. Likewise, a
+/// `wl_subsurface` is only a pointer-focus target inside its parent's surface
+/// tree; keyboard focus belongs to the xdg role surface. Chrome implements
+/// browser bubbles as subsurfaces and closes them if the compositor focuses
+/// the child directly.
+unsafe fn xdg_role_aware_keyboard_target(
+    pointer_surface: *mut SurfaceRec,
+    current_keyboard_focus: *mut ffi::wl_resource,
+    grabbed_popup: Option<*mut SurfaceRec>,
+) -> *mut ffi::wl_resource {
+    unsafe {
+        if let Some(popup) = grabbed_popup {
+            return (*popup).resource;
+        }
+        let role = surface_xdg_role(pointer_surface);
+        if role.is_null() {
+            return if pointer_surface.is_null() {
+                std::ptr::null_mut()
+            } else {
+                (*pointer_surface).resource
+            };
+        }
+        if (*role).xdg_popup.is_null() {
+            return (*role).resource;
+        }
+        let popup_root = surface_root_toplevel(role);
+        if popup_root.is_null() {
+            return current_keyboard_focus;
+        }
+        (*popup_root).resource
+    }
+}
+
 /// Resolve direct resize in bottom-to-top stacking order. Every visible
 /// window rectangle is an input barrier: when a foreground window contains
 /// the point, it clears any resize candidate contributed by a lower window.
@@ -216,25 +282,30 @@ impl Server {
             }
         }
 
-        if state.is_pressed() {
-            let grabbed_popup = self
-                .state
-                .live_surfaces()
-                .filter(|surface| unsafe {
-                    (**surface).mapped
-                        && !(**surface).xdg_popup.is_null()
-                        && (**surface).popup_grabbed
-                })
-                .last();
-            if let Some(popup) = grabbed_popup
-                && self.state.pointer_focus != unsafe { (*popup).resource }
-            {
-                unsafe {
+        let grabbed_popup = state
+            .is_pressed()
+            .then(|| topmost_grabbed_popup(&self.state, self.state.active_seat))
+            .flatten();
+        if let Some(popup) = grabbed_popup {
+            unsafe {
+                let focus_client = if self.state.pointer_focus.is_null() {
+                    std::ptr::null_mut()
+                } else {
+                    ffi::wl_resource_get_client(self.state.pointer_focus)
+                };
+                let grab_client = ffi::wl_resource_get_client((*popup).xdg_popup);
+                // Owner events continue through the ordinary button path.
+                // Clicking another client or empty desktop dismisses the
+                // topmost grab and consumes that outside click.
+                if !popup_grab_allows_owner_event(grab_client, focus_client) {
+                    let focus_after_dismissal = popup_keyboard_focus_after_dismissal(popup);
                     ffi::wl_resource_post_event((*popup).xdg_popup, ffi::XDG_POPUP_POPUP_DONE);
                     (*popup).popup_grabbed = false;
+                    (*popup).popup_grab_seat = None;
                     (*popup).mapped = false;
+                    self.change_keyboard_focus(focus_after_dismissal);
+                    return;
                 }
-                return;
             }
         }
 
@@ -351,10 +422,23 @@ impl Server {
             self.state.last_top_border_click = None;
         }
         // Click-to-focus: when a button is pressed over a surface, that
-        // surface also gains keyboard focus. Released edges do not change
-        // focus (matches GTK/Qt click-to-focus expectations).
+        // surface also gains keyboard focus. An explicit xdg-popup grab is
+        // different: the protocol requires its topmost popup to retain
+        // keyboard focus even while owner-events deliver the click to another
+        // surface of the same client. A non-grabbing popup must not receive
+        // keyboard focus at all.
         if state.is_pressed() && !self.state.pointer_focus.is_null() {
-            self.change_keyboard_focus(self.state.pointer_focus);
+            let pointer_surface = unsafe {
+                ffi::wl_resource_get_user_data(self.state.pointer_focus) as *mut SurfaceRec
+            };
+            let keyboard_target = unsafe {
+                xdg_role_aware_keyboard_target(
+                    pointer_surface,
+                    self.state.keyboard_focus,
+                    grabbed_popup,
+                )
+            };
+            self.change_keyboard_focus(keyboard_target);
         }
         if self.state.pointer_focus.is_null() {
             return;
@@ -739,7 +823,8 @@ impl Server {
                         (*rec).window.state.resizing = false;
                         reconfigure_with_state(rec);
                     }
-                    if let Some(app_id) = (*rec).window.app_id.as_deref()
+                    if (*rec).window.parent.is_none()
+                        && let Some(app_id) = (*rec).window.app_id.as_deref()
                         && !app_id.is_empty()
                     {
                         let rect = (*rec).saved_floating_rect.unwrap_or(aegis_core::Rect {
@@ -1025,6 +1110,56 @@ impl Server {
 #[cfg(test)]
 mod resize_tests {
     use super::*;
+
+    #[test]
+    fn popup_grab_routes_owner_events_and_dismisses_true_outside_clicks() {
+        let chrome = 0x100usize as *mut ffi::wl_client;
+        let another_client = 0x200usize as *mut ffi::wl_client;
+
+        assert!(popup_grab_allows_owner_event(chrome, chrome));
+        assert!(!popup_grab_allows_owner_event(chrome, another_client));
+        assert!(!popup_grab_allows_owner_event(chrome, std::ptr::null_mut()));
+    }
+
+    #[test]
+    fn click_focus_stays_on_xdg_roles_for_popups_and_subsurfaces() {
+        let mut root = SurfaceRec::new(0x100usize as *mut ffi::wl_resource);
+        root.xdg_toplevel = 0x101usize as *mut ffi::wl_resource;
+        let mut popup = SurfaceRec::new(0x200usize as *mut ffi::wl_resource);
+        popup.xdg_popup = 0x201usize as *mut ffi::wl_resource;
+        popup.popup_parent = &mut root;
+
+        assert_eq!(
+            unsafe { xdg_role_aware_keyboard_target(&mut popup, std::ptr::null_mut(), None) },
+            root.resource,
+            "a non-grabbing browser bubble must not steal keyboard focus"
+        );
+        assert_eq!(
+            unsafe {
+                xdg_role_aware_keyboard_target(&mut popup, std::ptr::null_mut(), Some(&mut popup))
+            },
+            popup.resource,
+            "an explicit grab pins focus to the popup"
+        );
+
+        let mut child = SurfaceRec::new(0x300usize as *mut ffi::wl_resource);
+        child.parent = &mut popup;
+        assert_eq!(
+            unsafe { xdg_role_aware_keyboard_target(&mut child, std::ptr::null_mut(), None) },
+            root.resource,
+            "subsurfaces of a non-grabbing popup follow the same rule"
+        );
+
+        let mut chrome_bubble = SurfaceRec::new(0x400usize as *mut ffi::wl_resource);
+        chrome_bubble.parent = &mut root;
+        assert_eq!(
+            unsafe {
+                xdg_role_aware_keyboard_target(&mut chrome_bubble, std::ptr::null_mut(), None)
+            },
+            root.resource,
+            "Chrome UI subsurfaces keep keyboard focus on their xdg_toplevel"
+        );
+    }
 
     fn window(id: u64, x: i32, y: i32, w: i32, h: i32) -> aegis_core::window::Window {
         let mut window = aegis_core::window::Window::new(aegis_core::window::WindowId(id));

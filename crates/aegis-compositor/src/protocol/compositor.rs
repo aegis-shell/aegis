@@ -193,6 +193,116 @@ unsafe fn retire_surface_buffer(rec: *mut SurfaceRec) {
     }
 }
 
+fn valid_policy_size(size: aegis_core::Size) -> Option<aegis_core::Size> {
+    (size.w >= 100 && size.h >= 100).then_some(size)
+}
+
+/// Size to advertise in the first toplevel configure.
+///
+/// At the initial no-buffer commit, xdg-shell metadata (including
+/// `set_parent`) is complete. This is the first safe point to restore a
+/// main-window size: doing it from `set_app_id` races the transient
+/// relationship, while doing it after the first buffer maps visibly resizes
+/// the window.
+pub(crate) unsafe fn initial_toplevel_size(rec: *mut SurfaceRec) -> Option<aegis_core::Size> {
+    unsafe {
+        if rec.is_null() || (*rec).state.is_null() {
+            return None;
+        }
+        if (*rec).window.state.maximized || (*rec).window.state.fullscreen {
+            return valid_policy_size((*rec).window.size);
+        }
+        let state = &*(*rec).state;
+        let rule = state
+            .window_rules
+            .iter()
+            .find(|rule| {
+                rule.matches(
+                    (*rec).window.app_id.as_deref(),
+                    (*rec).window.title.as_deref(),
+                )
+            })
+            .cloned();
+        if let Some(size) = rule.as_ref().and_then(|rule| rule.size) {
+            return valid_policy_size(size);
+        }
+        // Application-level remembered state belongs to primary windows,
+        // never to an xdg_toplevel transient. Dialogs commonly share the
+        // exact app_id of their parent.
+        if (*rec).window.parent.is_some()
+            || !state.remember_window_positions
+            || !rule.as_ref().and_then(|rule| rule.remember).unwrap_or(true)
+        {
+            return None;
+        }
+        (*rec)
+            .window
+            .app_id
+            .as_deref()
+            .and_then(|app_id| state.window_state_store.get(app_id))
+            .and_then(|saved| saved.size)
+            .and_then(valid_policy_size)
+    }
+}
+
+/// Center a transient in its parent and keep it inside the output whenever
+/// the transient fits. Both rectangles use compositor-logical coordinates.
+pub(crate) fn centered_transient_position(
+    parent: aegis_core::Rect,
+    child: aegis_core::Size,
+    output: aegis_core::Rect,
+) -> aegis_core::Point {
+    let centered = aegis_core::Point {
+        x: parent.origin.x + (parent.size.w - child.w) / 2,
+        y: parent.origin.y + (parent.size.h - child.h) / 2,
+    };
+    let max_x = output
+        .origin
+        .x
+        .saturating_add(output.size.w)
+        .saturating_sub(child.w)
+        .max(output.origin.x);
+    let max_y = output
+        .origin
+        .y
+        .saturating_add(output.size.h)
+        .saturating_sub(child.h)
+        .max(output.origin.y);
+    aegis_core::Point {
+        x: centered.x.clamp(output.origin.x, max_x),
+        y: centered.y.clamp(output.origin.y, max_y),
+    }
+}
+
+unsafe fn transient_parent_rect(rec: *mut SurfaceRec) -> Option<aegis_core::Rect> {
+    unsafe {
+        let parent = (*rec).window.parent? as *mut SurfaceRec;
+        if parent.is_null() || (*rec).state.is_null() {
+            return None;
+        }
+        // Verify that the protocol-object pointer still names a live surface
+        // before dereferencing it; a parent may be destroyed first.
+        let live = (*(*rec).state)
+            .live_surfaces()
+            .any(|candidate| candidate == parent);
+        if !live || !(*parent).mapped || (*parent).xdg_toplevel.is_null() {
+            return None;
+        }
+        Some(aegis_core::Rect {
+            origin: (*parent).position,
+            size: (*parent).window.size,
+        })
+    }
+}
+
+pub(crate) fn should_focus_mapped_toplevel(
+    visible: bool,
+    human_controls: bool,
+    minimized: bool,
+) -> bool {
+    visible && human_controls && !minimized
+}
+
 pub(crate) unsafe extern "C" fn surface_commit(
     _client: *mut ffi::wl_client,
     resource: *mut ffi::wl_resource,
@@ -233,12 +343,16 @@ pub(crate) unsafe extern "C" fn surface_commit(
         // later commit.
         if !(*rec).xdg_surface.is_null() && !(*rec).xdg_configured {
             if !(*rec).xdg_toplevel.is_null() {
+                let initial_size = initial_toplevel_size(rec);
+                if let Some(size) = initial_size {
+                    (*rec).window.size = size;
+                }
                 let mut states = ffi::wl_array::empty();
                 ffi::wl_resource_post_event(
                     (*rec).xdg_toplevel,
                     ffi::XDG_TOPLEVEL_CONFIGURE,
-                    0i32,
-                    0i32,
+                    initial_size.map(|size| size.w).unwrap_or(0),
+                    initial_size.map(|size| size.h).unwrap_or(0),
                     &mut states as *mut ffi::wl_array,
                 );
             }
@@ -475,8 +589,10 @@ pub(crate) unsafe extern "C" fn surface_commit(
             let rule_pos = rule.as_ref().and_then(|r| r.position);
             let rule_size = rule.as_ref().and_then(|r| r.size);
             let rule_remember = rule.as_ref().and_then(|r| r.remember);
+            let is_transient = (*rec).window.parent.is_some();
 
-            let allow_remember = rule_remember.unwrap_or(true)
+            let allow_remember = !is_transient
+                && rule_remember.unwrap_or(true)
                 && if !(*rec).state.is_null() {
                     (*(*rec).state).remember_window_positions
                 } else {
@@ -490,34 +606,49 @@ pub(crate) unsafe extern "C" fn surface_commit(
             } else {
                 None
             };
+            let last_app_rect = if allow_remember {
+                app_id.as_deref().and_then(|id| {
+                    if !(*rec).state.is_null() {
+                        (*(*rec).state).last_app_geometries.get(id).copied()
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            };
+            let parent_rect = transient_parent_rect(rec);
 
             let target_pos =
                 rule_pos.or_else(|| remembered_store_entry.as_ref().and_then(|s| s.position));
             if let Some(pos) = target_pos {
-                let (output_w, output_h) = if !(*rec).state.is_null() {
-                    let rect = (*(*rec).state).output_geometry.logical_rect();
-                    (rect.size.w, rect.size.h)
+                let output = if !(*rec).state.is_null() {
+                    (*(*rec).state).output_geometry.logical_rect()
                 } else {
-                    (1920, 1080)
+                    aegis_core::Rect::new(0, 0, 1920, 1080)
                 };
-                let max_x = (output_w - 100).max(0);
-                let max_y = (output_h - 100).max(0);
+                let max_x = output
+                    .origin
+                    .x
+                    .saturating_add(output.size.w)
+                    .saturating_sub(100)
+                    .max(output.origin.x);
+                let max_y = output
+                    .origin
+                    .y
+                    .saturating_add(output.size.h)
+                    .saturating_sub(100)
+                    .max(output.origin.y);
                 let clamped_pos = aegis_core::Point {
-                    x: pos.x.clamp(0, max_x),
-                    y: pos.y.clamp(0, max_y),
+                    x: pos.x.clamp(output.origin.x, max_x),
+                    y: pos.y.clamp(output.origin.y, max_y),
                 };
                 (*rec).position = clamped_pos;
                 (*rec).window.position = clamped_pos;
-            } else if let Some(rect) = app_id.as_deref().and_then(|id| {
-                if !(*rec).state.is_null() {
-                    (*(*rec).state).last_app_geometries.get(id).copied()
-                } else {
-                    None
-                }
-            }) {
+            } else if let Some(rect) = last_app_rect {
                 (*rec).position = rect.origin;
                 (*rec).window.position = rect.origin;
-            } else {
+            } else if parent_rect.is_none() {
                 let count = if (*rec).state.is_null() {
                     0
                 } else {
@@ -536,21 +667,34 @@ pub(crate) unsafe extern "C" fn surface_commit(
 
             let target_size =
                 rule_size.or_else(|| remembered_store_entry.as_ref().and_then(|s| s.size));
-            if let Some(size) = target_size {
-                if size.w >= 100 && size.h >= 100 {
-                    (*rec).window.size = size;
+            let mapped_size = (*rec)
+                .window_geometry
+                .map(|geometry| geometry.size)
+                .unwrap_or_else(|| surface_logical_size(&*rec));
+            if let Some(size) = target_size.and_then(valid_policy_size) {
+                (*rec).window.size = size;
+                // Normally this was already advertised in the initial
+                // configure. Only correct a client that mapped a different
+                // size; do not send the redundant post-map configure that
+                // made windows visibly "open, then shrink".
+                if mapped_size != size {
                     reconfigure_with_size(rec, size.w, size.h);
-                } else {
-                    (*rec).window.size = (*rec)
-                        .window_geometry
-                        .map(|geometry| geometry.size)
-                        .unwrap_or_else(|| surface_logical_size(&*rec));
                 }
             } else {
-                (*rec).window.size = (*rec)
-                    .window_geometry
-                    .map(|geometry| geometry.size)
-                    .unwrap_or_else(|| surface_logical_size(&*rec));
+                (*rec).window.size = mapped_size;
+            }
+
+            if rule_pos.is_none()
+                && let Some(parent) = parent_rect
+            {
+                let output = if !(*rec).state.is_null() {
+                    (*(*rec).state).output_geometry.logical_rect()
+                } else {
+                    aegis_core::Rect::new(0, 0, 1920, 1080)
+                };
+                let centered = centered_transient_position(parent, (*rec).window.size, output);
+                (*rec).position = centered;
+                (*rec).window.position = centered;
             }
 
             log::info!(
@@ -602,6 +746,23 @@ pub(crate) unsafe extern "C" fn surface_commit(
             // Live-update the foreign-toplevel list so taskbars see the new window.
             if !(*rec).state.is_null() {
                 extensions::foreign_toplevel_added(rec, (*rec).state);
+                let state = &mut *(*rec).state;
+                let id = (*rec).window.id;
+                let visible = state.workspaces.visible_toplevels().contains(&id);
+                let human_controls = state.authority.seat_controls_window(HUMAN_SEAT, id);
+                // Mapping happens inside libwayland's dispatch callback, where
+                // constructing a second mutable `Server` would alias state.
+                // Use the same deferred handoff as xdg-activation; `dispatch`
+                // applies it after protocol callbacks finish.
+                if state.pending_activation.is_none()
+                    && should_focus_mapped_toplevel(
+                        visible,
+                        human_controls,
+                        (*rec).window.minimized,
+                    )
+                {
+                    state.pending_activation = Some((HUMAN_SEAT, (*rec).resource));
+                }
             }
         } else if (*rec).mapped && !(*rec).xdg_toplevel.is_null() {
             (*rec).window.size = (*rec)
@@ -614,6 +775,31 @@ pub(crate) unsafe extern "C" fn surface_commit(
             if was_mapped != (*rec).mapped || old_window_size != (*rec).window.size {
                 (*(*rec).state).queue_realm_layouts_for_window(window);
             }
+        }
+        if !(*rec).mapped && was_mapped && !(*rec).xdg_popup.is_null() && (*rec).popup_grabbed {
+            let focus_after_dismissal = popup_keyboard_focus_after_dismissal(rec);
+            if let Some(seat) = (*rec).popup_grab_seat.take()
+                && !(*rec).state.is_null()
+            {
+                (*(*rec).state)
+                    .pending_popup_focus
+                    .insert(seat, focus_after_dismissal);
+            }
+            (*rec).popup_grabbed = false;
+        }
+        if (*rec).mapped
+            && !was_mapped
+            && !(*rec).xdg_popup.is_null()
+            && (*rec).popup_grabbed
+            && let Some(seat) = (*rec).popup_grab_seat
+            && !(*rec).state.is_null()
+        {
+            // The xdg-shell grab contract requires the topmost grabbing popup
+            // to hold keyboard focus. Defer out of this libwayland callback so
+            // no second mutable `Server` aliases `State`.
+            (*(*rec).state)
+                .pending_popup_focus
+                .insert(seat, (*rec).resource);
         }
         if (*rec).mapped && !was_mapped && !(*rec).state.is_null() {
             let root = surface_root_toplevel(rec);
@@ -839,7 +1025,8 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
         // slot is nulled so the resource address is still readable.
         if !(*rec).state.is_null() {
             let state = &mut *(*rec).state;
-            if let Some(app_id) = (*rec).window.app_id.as_deref()
+            if (*rec).window.parent.is_none()
+                && let Some(app_id) = (*rec).window.app_id.as_deref()
                 && !app_id.is_empty()
             {
                 let rect = (*rec).saved_floating_rect.unwrap_or(aegis_core::Rect {
@@ -903,6 +1090,9 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
             {
                 state.pending_activation = None;
             }
+            state
+                .pending_popup_focus
+                .retain(|_, pending| *pending != resource);
             state.workspaces.remove_toplevel(id);
             // Notify foreign-toplevel listeners the window is gone.
             if !(*rec).xdg_toplevel.is_null() {
