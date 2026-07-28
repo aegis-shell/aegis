@@ -1,13 +1,12 @@
 //! XDG cursor themes for the software cursor on direct display.
 //!
 //! The DRM backend has no hardware cursor plane yet, so the compositor draws
-//! the cursor itself. Instead of hand-drawn glyphs, load real cursor themes
-//! per the freedesktop cursor specification: `$XCURSOR_THEME` /
-//! `$XCURSOR_SIZE`, theme search over `~/.icons`, `$XDG_DATA_HOME/icons`,
-//! `$XDG_DATA_DIRS/icons`, `/usr/share/pixmaps`, `index.theme` inheritance,
-//! and the Xcursor file format. Client-provided cursor surfaces are
-//! composited by the server as before; this covers the `wp_cursor_shape`
-//! protocol and compositor-owned (resize/move) cursors.
+//! the cursor itself. Load real cursor themes per the freedesktop cursor
+//! specification: `$XCURSOR_THEME` / `$XCURSOR_SIZE`, `$XCURSOR_PATH` or the
+//! standard icon roots, `index.theme` inheritance, and the Xcursor file
+//! format. Client-provided cursor surfaces are composited by the server as
+//! before; this covers the `wp_cursor_shape` protocol and compositor-owned
+//! (resize/move) cursors.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -34,43 +33,47 @@ pub struct XcursorImage {
 }
 
 /// `wp_cursor_shape_device_v1.shape` value with its XDG candidate names,
-/// most specific first. The first name found in the theme wins.
+/// protocol/CSS name first and legacy Xcursor aliases afterwards. The first
+/// name found in the theme wins.
 fn shape_candidates(shape: u32) -> &'static [&'static str] {
     match shape {
+        1 => &["default", "left_ptr", "arrow"],
         2 => &["context-menu", "left_ptr"],
-        3 => &["question_arrow", "help", "left_ptr"],
-        4 => &["pointer", "hand2", "left_ptr"],
+        3 => &["help", "question_arrow", "left_ptr_help", "left_ptr"],
+        4 => &["pointer", "hand2", "pointing_hand", "left_ptr"],
         5 => &["progress", "left_ptr_watch", "watch"],
-        6 => &["watch", "wait", "left_ptr"],
+        6 => &["wait", "watch", "left_ptr"],
         7 => &["cell", "crosshair"],
         8 => &["crosshair", "cross"],
-        9 => &["xterm", "text"],
+        9 => &["text", "xterm", "ibeam"],
         10 => &["vertical-text", "xterm"],
         11 => &["alias", "dnd-link", "left_ptr"],
         12 => &["copy", "dnd-copy", "left_ptr"],
-        13 => &["move", "fleur", "all-scroll"],
+        13 => &["move", "dnd-move", "fleur", "all-scroll"],
         14 => &["no-drop", "not-allowed"],
         15 => &["not-allowed", "forbidden", "crossed_circle"],
         16 => &["grab", "hand1", "openhand", "left_ptr"],
         17 => &["grabbing", "closedhand", "hand1"],
-        18 => &["right_side", "e-resize", "sb_h_double_arrow"],
-        19 => &["top_side", "n-resize", "sb_v_double_arrow"],
-        20 => &["top_right_corner", "ne-resize", "sb_h_double_arrow"],
-        21 => &["top_left_corner", "nw-resize", "sb_h_double_arrow"],
-        22 => &["bottom_side", "s-resize", "sb_v_double_arrow"],
-        23 => &["bottom_right_corner", "se-resize", "sb_h_double_arrow"],
-        24 => &["bottom_left_corner", "sw-resize", "sb_h_double_arrow"],
-        25 => &["left_side", "w-resize", "sb_h_double_arrow"],
-        26 => &["sb_h_double_arrow", "ew-resize", "h_double_arrow"],
-        27 => &["sb_v_double_arrow", "ns-resize", "v_double_arrow"],
-        28 => &["bd_double_arrow", "nesw-resize", "size_bdiag"],
-        29 => &["fd_double_arrow", "nwse-resize", "size_fdiag"],
+        18 => &["e-resize", "right_side", "sb_h_double_arrow"],
+        19 => &["n-resize", "top_side", "sb_v_double_arrow"],
+        20 => &["ne-resize", "top_right_corner", "sb_h_double_arrow"],
+        21 => &["nw-resize", "top_left_corner", "sb_h_double_arrow"],
+        22 => &["s-resize", "bottom_side", "sb_v_double_arrow"],
+        23 => &["se-resize", "bottom_right_corner", "sb_h_double_arrow"],
+        24 => &["sw-resize", "bottom_left_corner", "sb_h_double_arrow"],
+        25 => &["w-resize", "left_side", "sb_h_double_arrow"],
+        26 => &["ew-resize", "sb_h_double_arrow", "h_double_arrow"],
+        27 => &["ns-resize", "sb_v_double_arrow", "v_double_arrow"],
+        28 => &["nesw-resize", "bd_double_arrow", "size_bdiag"],
+        29 => &["nwse-resize", "fd_double_arrow", "size_fdiag"],
         30 => &["col-resize", "sb_h_double_arrow", "h_double_arrow"],
         31 => &["row-resize", "sb_v_double_arrow", "v_double_arrow"],
         32 => &["all-scroll", "fleur", "move"],
         33 => &["zoom-in", "zoom_in"],
         34 => &["zoom-out", "zoom_out"],
-        _ => &["left_ptr", "arrow"],
+        35 => &["dnd-ask", "question_arrow", "help"],
+        36 => &["all-resize", "all-scroll", "fleur", "move"],
+        _ => &["default", "left_ptr", "arrow"],
     }
 }
 
@@ -156,6 +159,13 @@ pub fn best_image(file: &XcursorFile, want: u32) -> Option<&XcursorImage> {
 
 /// Cursor theme search roots, in XDG priority order.
 fn search_roots() -> Vec<PathBuf> {
+    if let Some(path) = std::env::var_os("XCURSOR_PATH") {
+        let roots = std::env::split_paths(&path).collect::<Vec<_>>();
+        if !roots.is_empty() {
+            return roots;
+        }
+    }
+
     let mut roots = Vec::new();
     if let Some(home) = std::env::var_os("HOME") {
         roots.push(PathBuf::from(&home).join(".icons"));
@@ -311,11 +321,20 @@ impl CursorCache {
     }
 
     /// The cursor for a `wp_cursor_shape` value at `scale`, or `None` when no
-    /// theme ships it (the caller falls back to its glyph set).
+    /// theme ships it. Missing theme data deliberately does not fall back to
+    /// a compositor-designed cursor: cursor appearance belongs to the theme.
     pub fn get(&mut self, device: &flux::Device, shape: u32, scale: f32) -> Option<&LoadedCursor> {
         let (name, size) = self.effective();
         if !matches!(&self.theme, Some((n, s, _)) if *n == name && *s == size) {
-            self.theme = Some((name.clone(), size, CursorTheme::resolve(&name, size)));
+            let theme = CursorTheme::resolve(&name, size);
+            if theme.chain.is_empty() {
+                log::error!(
+                    "cursor: Xcursor theme {name:?} was not found; no compositor-designed fallback will be used"
+                );
+            } else {
+                log::info!("cursor: using Xcursor theme {name:?} at {size} logical px");
+            }
+            self.theme = Some((name.clone(), size, theme));
             self.cursors.clear();
         }
         let key = (shape, (scale * 4.0).round() as u32);
@@ -408,7 +427,13 @@ mod tests {
         for shape in [1, 4, 9, 13, 18, 23, 26, 32] {
             assert!(!shape_candidates(shape).is_empty(), "shape {shape}");
         }
-        assert_eq!(shape_candidates(1)[0], "left_ptr");
+        assert_eq!(shape_candidates(1)[0], "default");
+        assert_eq!(shape_candidates(3)[0], "help");
+        assert_eq!(shape_candidates(6)[0], "wait");
+        assert_eq!(shape_candidates(9)[0], "text");
+        assert_eq!(shape_candidates(18)[0], "e-resize");
+        assert_eq!(shape_candidates(35)[0], "dnd-ask");
+        assert_eq!(shape_candidates(36)[0], "all-resize");
     }
 
     #[test]

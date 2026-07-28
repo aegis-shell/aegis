@@ -421,6 +421,25 @@ pub(super) fn draw_client_scene(
         .chain(overlay_shm.iter().map(|frame| frame.id))
         .chain(overlay_dmabuf.iter().map(|frame| frame.id)));
     renderer.draw_surfaces_ordered(device, canvas, &surface_order, &shm, &dmabuf);
+    canvas.restore();
+}
+
+/// Input-method popups, drag icons, and client cursor surfaces are protocol
+/// overlays, not ordinary client content. Draw them after compositor chrome
+/// so a Dock or status bar cannot cover the candidate panel or cursor.
+pub(super) fn draw_client_overlays(
+    canvas: &flux::Canvas,
+    device: &flux::Device,
+    renderer: &mut aegis_render::Renderer,
+    server: &aegis_compositor::Server,
+    scale: f32,
+) {
+    canvas.save();
+    if scale != 1.0 {
+        canvas.scale(scale, scale);
+    }
+    let overlay_shm = server.overlay_frames();
+    let overlay_dmabuf = server.overlay_dmabuf_frames();
     renderer.draw_toplevels(device, canvas, &overlay_shm, (0.0, 0.0));
     renderer.draw_dmabuf_toplevels(device, canvas, &overlay_dmabuf, (0.0, 0.0));
     canvas.restore();
@@ -618,10 +637,9 @@ pub(super) fn draw_window_switcher_scene(
     canvas.restore();
 }
 
-/// Software cursor for direct KMS. First the XDG cursor theme
-/// (`$XCURSOR_THEME`/`$XCURSOR_SIZE`, inheritance included) via
-/// [`cursor::CursorCache`]; the hand-drawn glyph set below remains as the
-/// fallback when the theme ships no image for the requested shape.
+/// Software cursor for direct KMS, sourced exclusively from the XDG cursor
+/// theme (`$XCURSOR_THEME`/`$XCURSOR_SIZE`, inheritance included) via
+/// [`cursor::CursorCache`].
 /// Client-provided cursor surfaces are already composited by `aegis-server`;
 /// this covers the cursor-shape protocol and compositor-owned cursors.
 pub(super) fn draw_software_cursor(
@@ -644,76 +662,7 @@ pub(super) fn draw_software_cursor(
             cursor.height * inv,
         );
         canvas.restore();
-        return;
     }
-    draw_glyph_cursor(canvas, position, shape, scale);
-}
-
-/// Hand-drawn glyph fallback: used only when the XDG theme has no image for
-/// the shape (or no theme is installed at all).
-pub(super) fn draw_glyph_cursor(
-    canvas: &flux::Canvas,
-    position: (f32, f32),
-    shape: u32,
-    scale: f32,
-) {
-    let black = flux::rgba(12, 12, 16, 255);
-    let white = flux::rgba(245, 245, 248, 255);
-    canvas.save();
-    canvas.scale(scale, scale);
-    canvas.translate(position.0, position.1);
-
-    let bar = |canvas: &flux::Canvas, x: f32, y: f32, w: f32, h: f32| {
-        canvas.fill_rrect(x - 1.0, y - 1.0, w + 2.0, h + 2.0, 1.5, black);
-        canvas.fill_rrect(x, y, w, h, 1.0, white);
-    };
-    match shape {
-        7 | 8 | 32 | 36 => {
-            bar(canvas, 8.0, 0.0, 3.0, 19.0);
-            bar(canvas, 0.0, 8.0, 19.0, 3.0);
-        }
-        9 => {
-            bar(canvas, 8.0, 0.0, 3.0, 20.0);
-            bar(canvas, 4.0, 0.0, 11.0, 3.0);
-            bar(canvas, 4.0, 17.0, 11.0, 3.0);
-        }
-        10 => {
-            bar(canvas, 0.0, 8.0, 20.0, 3.0);
-            bar(canvas, 0.0, 4.0, 3.0, 11.0);
-            bar(canvas, 17.0, 4.0, 3.0, 11.0);
-        }
-        18 | 25 | 26 | 30 => {
-            bar(canvas, 0.0, 8.0, 20.0, 3.0);
-            bar(canvas, 0.0, 4.0, 3.0, 11.0);
-            bar(canvas, 17.0, 4.0, 3.0, 11.0);
-        }
-        19 | 22 | 27 | 31 => {
-            bar(canvas, 8.0, 0.0, 3.0, 20.0);
-            bar(canvas, 4.0, 0.0, 11.0, 3.0);
-            bar(canvas, 4.0, 17.0, 11.0, 3.0);
-        }
-        20 | 24 | 28 => {
-            canvas.translate(2.0, 15.0);
-            canvas.rotate(-std::f32::consts::FRAC_PI_4);
-            bar(canvas, 0.0, 0.0, 22.0, 3.0);
-            bar(canvas, 0.0, -3.0, 3.0, 9.0);
-            bar(canvas, 19.0, -3.0, 3.0, 9.0);
-        }
-        21 | 23 | 29 => {
-            canvas.translate(4.0, 0.0);
-            canvas.rotate(std::f32::consts::FRAC_PI_4);
-            bar(canvas, 0.0, 0.0, 22.0, 3.0);
-            bar(canvas, 0.0, -3.0, 3.0, 9.0);
-            bar(canvas, 19.0, -3.0, 3.0, 9.0);
-        }
-        _ => {
-            // Arrow-like diagonal with a short tail; hotspot is (0, 0).
-            canvas.rotate(-std::f32::consts::FRAC_PI_4);
-            bar(canvas, 0.0, 0.0, 18.0, 4.0);
-            bar(canvas, 10.0, 2.0, 4.0, 10.0);
-        }
-    }
-    canvas.restore();
 }
 
 #[cfg(test)]

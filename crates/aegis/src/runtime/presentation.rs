@@ -448,11 +448,24 @@ impl CompositorRuntime {
                 // a HiDPI host; layout and input stay in logical pixels.
                 self.shell.set_scale(scale);
                 unsafe { self.shell.render(self.canvas.as_raw() as *mut _, &input)? };
+                // Protocol overlays sit above ordinary shell chrome. A modal
+                // screenshot/picker owns the whole frame and suppresses live
+                // client overlays without changing Wayland keyboard focus.
+                if !session_locked && !self.shell.screenshot_active() {
+                    draw_client_overlays(
+                        &self.canvas,
+                        &self.device,
+                        &mut self.renderer,
+                        &self.server,
+                        scale,
+                    );
+                }
                 // Finish the freeze snapshot pass: the chrome above rendered
-                // into the target as well, so the snapshot is the whole
-                // trigger frame. Resolve it into the on-screen blit, then
-                // open the selector over the frozen screen. On failure the
-                // selector opens right away over the live scene instead.
+                // into the target as well; protocol overlays are included
+                // above it. Resolve that whole trigger frame into the
+                // on-screen blit, then open the selector over the frozen
+                // screen. On failure the selector opens right away over the
+                // live scene instead.
                 if freeze_capturing && !self.screenshot_freeze.failed {
                     self.canvas.end_target();
                     self.screenshot_freeze.mark_captured(&frame);

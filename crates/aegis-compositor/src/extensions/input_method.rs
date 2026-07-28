@@ -63,6 +63,15 @@ fn resource_belongs_to_client(
     !resource.is_null() && unsafe { ffi::wl_resource_get_client(resource) == client }
 }
 
+/// Keyboard-grab ownership follows the grab resource, independently of the
+/// active/deactivated text-input state carried on the input-method object.
+fn keyboard_grab_owns_key_stream(
+    _text_input_active: bool,
+    keyboard_grab: *mut ffi::wl_resource,
+) -> bool {
+    !keyboard_grab.is_null()
+}
+
 static INPUT_METHOD_MANAGER_IMPL: ffi::zwp_input_method_manager_v2_interface_impl =
     ffi::zwp_input_method_manager_v2_interface_impl {
         get_input_method: input_method_manager_get,
@@ -590,9 +599,18 @@ pub(crate) unsafe fn input_method_grab_key(
             return false;
         }
         let rec = ffi::wl_resource_get_user_data(input_method) as *mut InputMethodRec;
-        if rec.is_null() || !(*rec).active || (*rec).keyboard_grab.is_null() {
+        if rec.is_null() || !keyboard_grab_owns_key_stream((*rec).active, (*rec).keyboard_grab) {
             return false;
         }
+        // A zwp_input_method_keyboard_grab_v2 owns the hardware key stream
+        // for its whole resource lifetime, not only while a text-input field
+        // is active. In particular, focus changes publish deactivate/activate
+        // on a different client connection: a modifier may be pressed before
+        // that boundary and released during it. Bypassing the grab while
+        // inactive would strand the modifier in the input method's XKB state
+        // (Super+Tab window switching used to leave Super stuck, after which
+        // foot composition was swallowed). The input method forwards keys it
+        // does not consume through virtual-keyboard-v1.
         let serial = ffi::wl_display_next_serial((*state).display);
         ffi::wl_resource_post_event(
             (*rec).keyboard_grab,
@@ -1045,6 +1063,14 @@ mod tests {
         let truncated = truncate_utf8_bytes(&text, MAX_SURROUNDING_TEXT_BYTES);
         assert_eq!(truncated.len(), MAX_SURROUNDING_TEXT_BYTES - 1);
         assert!(truncated.is_char_boundary(truncated.len()));
+    }
+
+    #[test]
+    fn keyboard_grab_survives_text_input_deactivation() {
+        let grab = 1usize as *mut ffi::wl_resource;
+        assert!(keyboard_grab_owns_key_stream(true, grab));
+        assert!(keyboard_grab_owns_key_stream(false, grab));
+        assert!(!keyboard_grab_owns_key_stream(true, std::ptr::null_mut()));
     }
 
     #[test]
