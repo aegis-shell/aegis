@@ -538,6 +538,11 @@ unsafe extern "C" fn input_method_grab_keyboard(
         else {
             return;
         };
+        let modifiers = (*state)
+            .keyboard
+            .as_ref()
+            .map(crate::keyboard::Keyboard::modifiers)
+            .unwrap_or(((*state).depressed_mods.0, 0, 0, 0));
         if let Some(keyboard) = (*state).keyboard.as_ref()
             && let Ok(fd) = keyboard.dup_keymap_fd()
         {
@@ -554,6 +559,20 @@ unsafe extern "C" fn input_method_grab_keyboard(
             ffi::ZWP_INPUT_METHOD_KEYBOARD_GRAB_V2_REPEAT_INFO,
             25i32,
             600i32,
+        );
+        // A grab can be created while one or more modifiers are already
+        // physically held. input-method-v2 has no wl_keyboard.enter-style
+        // pressed-key array, so seed its xkb shadow with the authoritative
+        // modifier snapshot before the first key event.
+        let serial = ffi::wl_display_next_serial((*state).display);
+        ffi::wl_resource_post_event(
+            resource,
+            ffi::ZWP_INPUT_METHOD_KEYBOARD_GRAB_V2_MODIFIERS,
+            serial,
+            modifiers.0,
+            modifiers.1,
+            modifiers.2,
+            modifiers.3,
         );
     }
 }
@@ -612,6 +631,18 @@ pub(crate) unsafe fn input_method_grab_key(
         // foot composition was swallowed). The input method forwards keys it
         // does not consume through virtual-keyboard-v1.
         let serial = ffi::wl_display_next_serial((*state).display);
+        // The grab closely follows wl_keyboard v6. Preserve the core
+        // wl_keyboard ordering contract: key first, then the modifier state
+        // resulting from that key. Sending modifiers first made two-modifier
+        // chords order-dependent in input-method xkb shadows.
+        ffi::wl_resource_post_event(
+            (*rec).keyboard_grab,
+            ffi::ZWP_INPUT_METHOD_KEYBOARD_GRAB_V2_KEY,
+            serial,
+            time,
+            evdev_code,
+            u32::from(button_state.is_pressed()),
+        );
         ffi::wl_resource_post_event(
             (*rec).keyboard_grab,
             ffi::ZWP_INPUT_METHOD_KEYBOARD_GRAB_V2_MODIFIERS,
@@ -620,14 +651,6 @@ pub(crate) unsafe fn input_method_grab_key(
             outcome.latched,
             outcome.locked,
             outcome.group,
-        );
-        ffi::wl_resource_post_event(
-            (*rec).keyboard_grab,
-            ffi::ZWP_INPUT_METHOD_KEYBOARD_GRAB_V2_KEY,
-            serial,
-            time,
-            evdev_code,
-            u32::from(button_state.is_pressed()),
         );
         true
     }
@@ -735,6 +758,18 @@ unsafe extern "C" fn virtual_keyboard_key(
         let Some(_guard) = crate::ActiveSeatGuard::enter(&mut *state, (*rec).seat) else {
             return;
         };
+        // virtual-keyboard-v1 is a client-facing logical stream, not a raw
+        // evdev replay channel. Reject duplicate presses and orphan releases
+        // before posting wl_keyboard.key. This also collapses host-generated
+        // repeats: wl_keyboard clients repeat from repeat_info after the one
+        // legal press.
+        if !crate::keyboard::apply_logical_key_state(
+            &mut (*state).client_pressed_keys,
+            key,
+            key_state == 1,
+        ) {
+            return;
+        }
         if (*state).keyboard_focus.is_null() {
             return;
         }
@@ -976,16 +1011,28 @@ fn input_popup_position(
 }
 
 fn input_popup_anchor(
-    rect: (i32, i32, i32, i32),
+    rect: Option<(i32, i32, i32, i32)>,
     surface_origin: aegis_core::Point,
+    surface_size: aegis_core::Size,
 ) -> aegis_core::Rect {
-    let (x, y, width, height) = rect;
-    aegis_core::Rect::new(
-        x.saturating_add(surface_origin.x),
-        y.saturating_add(surface_origin.y),
-        width.max(1),
-        height.max(1),
-    )
+    match rect {
+        Some((x, y, width, height)) => aegis_core::Rect::new(
+            x.saturating_add(surface_origin.x),
+            y.saturating_add(surface_origin.y),
+            width.max(1),
+            height.max(1),
+        ),
+        // Match the established wlroots/Sway fallback: without cursor
+        // rectangle support, bind the popup to the current text surface's
+        // whole logical area. This is less precise than a caret but, crucially,
+        // can never retain the previous focus's coordinates.
+        None => aegis_core::Rect::new(
+            surface_origin.x,
+            surface_origin.y,
+            surface_size.w.max(1),
+            surface_size.h.max(1),
+        ),
+    }
 }
 
 unsafe fn update_input_popup_positions(state: *mut State, seat: SeatId, force_notify: bool) {
@@ -998,17 +1045,37 @@ unsafe fn update_input_popup_positions(state: *mut State, seat: SeatId, force_no
         if rec.is_null() || !(*rec).active {
             return;
         }
-        let anchor = if let Some(cursor_anchor) = (*rec).cursor_anchor {
+        let (anchor, cursor_rectangle) = if let Some(cursor_anchor) = (*rec).cursor_anchor {
             let surface = ffi::wl_resource_get_user_data(cursor_anchor.surface) as *mut SurfaceRec;
             if surface.is_null() {
                 return;
             }
-            input_popup_anchor(cursor_anchor.rect, crate::surface_draw_origin(&*surface))
+            let origin = crate::surface_draw_origin(&*surface);
+            let size = crate::surface_logical_size(&*surface);
+            let cursor_rectangle = cursor_anchor.rect.map(|(x, y, width, height)| {
+                (
+                    x.saturating_add(origin.x),
+                    y.saturating_add(origin.y),
+                    width,
+                    height,
+                )
+            });
+            (
+                input_popup_anchor(cursor_anchor.rect, origin, size),
+                cursor_rectangle,
+            )
         } else {
             let Some(rect) = (*rec).text_state.cursor_rect else {
                 return;
             };
-            input_popup_anchor(rect, aegis_core::Point { x: 0, y: 0 })
+            (
+                input_popup_anchor(
+                    Some(rect),
+                    aegis_core::Point { x: 0, y: 0 },
+                    aegis_core::Size { w: 1, h: 1 },
+                ),
+                Some(rect),
+            )
         };
         let output = (*state)
             .output_infos
@@ -1024,22 +1091,33 @@ unsafe fn update_input_popup_positions(state: *mut State, seat: SeatId, force_no
             let surface = (*popup).surface;
             let popup_size = crate::surface_logical_size(&*surface);
             (*surface).position = input_popup_position(anchor, popup_size, output);
-            let text_input_rectangle = (
-                anchor.origin.x - (*surface).position.x,
-                anchor.origin.y - (*surface).position.y,
-                anchor.size.w,
-                anchor.size.h,
-            );
-            if force_notify || (*popup).last_text_input_rectangle != Some(text_input_rectangle) {
-                ffi::wl_resource_post_event(
-                    popup_resource,
-                    ffi::ZWP_INPUT_POPUP_SURFACE_V2_TEXT_INPUT_RECTANGLE,
-                    text_input_rectangle.0,
-                    text_input_rectangle.1,
-                    text_input_rectangle.2,
-                    text_input_rectangle.3,
+            if let Some((x, y, width, height)) = cursor_rectangle {
+                // input-method-v2 wants the protected text area relative to
+                // the popup after compositor placement (the same convention
+                // used by Sway's constrain_popup).
+                let text_input_rectangle = (
+                    x.saturating_sub((*surface).position.x),
+                    y.saturating_sub((*surface).position.y),
+                    width,
+                    height,
                 );
-                (*popup).last_text_input_rectangle = Some(text_input_rectangle);
+                if force_notify || (*popup).last_text_input_rectangle != Some(text_input_rectangle)
+                {
+                    ffi::wl_resource_post_event(
+                        popup_resource,
+                        ffi::ZWP_INPUT_POPUP_SURFACE_V2_TEXT_INPUT_RECTANGLE,
+                        text_input_rectangle.0,
+                        text_input_rectangle.1,
+                        text_input_rectangle.2,
+                        text_input_rectangle.3,
+                    );
+                    (*popup).last_text_input_rectangle = Some(text_input_rectangle);
+                }
+            } else {
+                // No cursor feature in this activation. Forget the old wire
+                // rectangle so a later caret at identical coordinates is
+                // still announced as fresh.
+                (*popup).last_text_input_rectangle = None;
             }
         }
     }
@@ -1067,7 +1145,7 @@ mod tests {
 
     #[test]
     fn keyboard_grab_survives_text_input_deactivation() {
-        let grab = 1usize as *mut ffi::wl_resource;
+        let grab = std::ptr::dangling_mut::<ffi::wl_resource>();
         assert!(keyboard_grab_owns_key_stream(true, grab));
         assert!(keyboard_grab_owns_key_stream(false, grab));
         assert!(!keyboard_grab_owns_key_stream(true, std::ptr::null_mut()));
@@ -1099,12 +1177,33 @@ mod tests {
     fn popup_anchor_tracks_a_moved_text_input_surface() {
         let local = (72, 0, 9, 19);
         assert_eq!(
-            input_popup_anchor(local, aegis_core::Point { x: 17, y: 46 }),
+            input_popup_anchor(
+                Some(local),
+                aegis_core::Point { x: 17, y: 46 },
+                aegis_core::Size { w: 800, h: 600 }
+            ),
             aegis_core::Rect::new(89, 46, 9, 19)
         );
         assert_eq!(
-            input_popup_anchor(local, aegis_core::Point { x: 300, y: 220 }),
+            input_popup_anchor(
+                Some(local),
+                aegis_core::Point { x: 300, y: 220 },
+                aegis_core::Size { w: 800, h: 600 }
+            ),
             aegis_core::Rect::new(372, 220, 9, 19)
+        );
+    }
+
+    #[test]
+    fn popup_without_caret_rebinds_to_the_new_text_surface() {
+        let size = aegis_core::Size { w: 640, h: 480 };
+        assert_eq!(
+            input_popup_anchor(None, aegis_core::Point { x: 20, y: 30 }, size),
+            aegis_core::Rect::new(20, 30, 640, 480)
+        );
+        assert_eq!(
+            input_popup_anchor(None, aegis_core::Point { x: 900, y: 70 }, size),
+            aegis_core::Rect::new(900, 70, 640, 480)
         );
     }
 }

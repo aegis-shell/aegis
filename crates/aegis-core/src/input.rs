@@ -590,7 +590,7 @@ pub const KEY_RIGHTALT: u32 = 100;
 pub const KEY_RIGHTMETA: u32 = 126;
 
 /// Detects a "tap" of one or more modifier keys: the target was pressed and
-/// released with no other key pressed in between.
+/// released while no other key was held or pressed.
 ///
 /// Used by the main loop to recognize a bare Super tap as the global
 /// launcher hotkey. Feeding the modifier keys themselves to the client is
@@ -600,12 +600,13 @@ pub const KEY_RIGHTMETA: u32 = 126;
 /// machine over `(code, pressed)` pairs and has no I/O.
 ///
 /// Multiple target codes (e.g. left and right Super) are treated as one
-/// logical key: a tap fires when the depth of held targets returns to zero
-/// without any non-target key having been pressed.
+/// logical key: a tap fires when the held-target set becomes empty without
+/// any non-target key participating in the gesture.
 #[derive(Debug, Clone)]
 pub struct TapDetector {
     targets: Vec<u32>,
-    depth: u32,
+    held_targets: std::collections::HashSet<u32>,
+    held_non_targets: std::collections::HashSet<u32>,
     clean: bool,
 }
 
@@ -616,7 +617,8 @@ impl TapDetector {
         assert!(!targets.is_empty(), "TapDetector needs at least one target");
         TapDetector {
             targets: targets.to_vec(),
-            depth: 0,
+            held_targets: std::collections::HashSet::new(),
+            held_non_targets: std::collections::HashSet::new(),
             clean: false,
         }
     }
@@ -629,30 +631,32 @@ impl TapDetector {
     /// Feed one key event. Returns `true` when the target modifier was tapped
     /// (pressed and released with no other key pressed while held).
     ///
-    /// Order matters: a non-target key pressed while the target is held marks
-    /// the hold "dirty" and suppresses the tap on release. A non-target
-    /// *release* does not (only a press consumes the modifier).
+    /// A non-target already held when the target goes down, or pressed while
+    /// the target is held, marks the gesture "dirty" and suppresses the tap.
+    /// Tracking held sets also makes duplicate press events idempotent.
     pub fn on_key(&mut self, code: u32, pressed: bool) -> bool {
         let is_target = self.targets.contains(&code);
         if is_target {
             if pressed {
-                if self.depth == 0 {
-                    self.clean = true;
+                if self.held_targets.insert(code) && self.held_targets.len() == 1 {
+                    self.clean = self.held_non_targets.is_empty();
                 }
-                self.depth = self.depth.saturating_add(1);
-            } else if self.depth > 0 {
-                self.depth -= 1;
-                if self.depth == 0 && self.clean {
+            } else if self.held_targets.remove(&code) && self.held_targets.is_empty() {
+                if self.clean {
                     self.clean = false;
                     return true;
                 }
-            }
-        } else if pressed {
-            // Any non-target press while the target is held means the target
-            // is being used as a modifier, not tapped.
-            if self.depth > 0 {
                 self.clean = false;
             }
+        } else if pressed {
+            self.held_non_targets.insert(code);
+            // Any non-target press while a target is held means the target is
+            // being used as a modifier, not tapped.
+            if !self.held_targets.is_empty() {
+                self.clean = false;
+            }
+        } else {
+            self.held_non_targets.remove(&code);
         }
         false
     }
@@ -662,14 +666,15 @@ impl TapDetector {
     /// intact so its eventual release is consumed normally, but it will not
     /// be reported as a clean tap.
     pub fn cancel_current(&mut self) {
-        if self.depth > 0 {
+        if !self.held_targets.is_empty() {
             self.clean = false;
         }
     }
 
     /// Reset internal state (e.g. on focus change).
     pub fn reset(&mut self) {
-        self.depth = 0;
+        self.held_targets.clear();
+        self.held_non_targets.clear();
         self.clean = false;
     }
 }
@@ -802,6 +807,33 @@ mod tests {
         d.on_key(30, true); // 'a' down → super used as mod
         d.on_key(30, false); // 'a' up
         assert!(!d.on_key(super::KEY_LEFTMETA, false)); // super up → no tap
+    }
+
+    #[test]
+    fn tap_detector_ignores_modifier_held_before_target() {
+        let mut d = super::TapDetector::new(&[super::KEY_LEFTMETA]);
+        d.on_key(super::KEY_LEFTALT, true); // alt down first
+        d.on_key(super::KEY_LEFTMETA, true); // super joins an existing chord
+        assert!(!d.on_key(super::KEY_LEFTMETA, false));
+        d.on_key(super::KEY_LEFTALT, false);
+    }
+
+    #[test]
+    fn tap_detector_duplicate_target_press_is_idempotent() {
+        let mut d = super::TapDetector::new(&[super::KEY_LEFTMETA]);
+        assert!(!d.on_key(super::KEY_LEFTMETA, true));
+        assert!(!d.on_key(super::KEY_LEFTMETA, true));
+        assert!(d.on_key(super::KEY_LEFTMETA, false));
+        assert!(!d.on_key(super::KEY_LEFTMETA, false));
+    }
+
+    #[test]
+    fn tap_detector_reset_drops_held_key_snapshot() {
+        let mut d = super::TapDetector::new(&[super::KEY_LEFTMETA]);
+        d.on_key(super::KEY_LEFTALT, true);
+        d.reset();
+        assert!(!d.on_key(super::KEY_LEFTMETA, true));
+        assert!(d.on_key(super::KEY_LEFTMETA, false));
     }
 
     #[test]

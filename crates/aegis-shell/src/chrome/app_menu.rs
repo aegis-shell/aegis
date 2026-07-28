@@ -37,6 +37,7 @@ enum MenuAction {
     Spawn(Box<Entry>),
     Focus(WindowId),
     Minimize(Vec<WindowId>),
+    SetMaximized(WindowId, bool),
     Close(Vec<WindowId>),
     Page(usize),
     Pin(String),
@@ -57,10 +58,11 @@ pub struct AppMenu {
     owner: Rect,
     just_opened: bool,
     window_offset: usize,
+    maximize_controls: bool,
 }
 
 impl AppMenu {
-    pub fn new(layer_id: &'static str) -> Self {
+    pub fn new(layer_id: &'static str, maximize_controls: bool) -> Self {
         AppMenu {
             layer_id,
             target: None,
@@ -72,6 +74,7 @@ impl AppMenu {
             },
             just_opened: false,
             window_offset: 0,
+            maximize_controls,
         }
     }
 
@@ -130,7 +133,11 @@ impl AppMenu {
         };
         let app_row = usize::from(target.entry.is_some());
         let pin_row = usize::from(target.pin_action.is_some());
-        let window_actions = if target.windows.is_empty() { 0 } else { 2 };
+        let window_actions = if target.windows.is_empty() {
+            0
+        } else {
+            2 + usize::from(self.maximize_controls)
+        };
         let rows = window_rows + paging + app_row + pin_row + window_actions;
         let groups = usize::from(!target.windows.is_empty())
             + usize::from(target.entry.is_some())
@@ -256,6 +263,32 @@ impl AppMenu {
         }
 
         let mut lifecycle_rows = Vec::new();
+        if self.maximize_controls {
+            let maximize_target = live
+                .iter()
+                .copied()
+                .find(|window| {
+                    window.state.activated
+                        && !window.read_only
+                        && !window.minimized
+                        && !window.state.fullscreen
+                })
+                .or_else(|| {
+                    live.iter().rev().copied().find(|window| {
+                        !window.read_only && !window.minimized && !window.state.fullscreen
+                    })
+                });
+            if let Some(window) = maximize_target {
+                lifecycle_rows.push(Row {
+                    label: if window.state.maximized {
+                        i18n.text(Message::RestoreWindow).to_string()
+                    } else {
+                        i18n.text(Message::MaximizeWindow).to_string()
+                    },
+                    action: MenuAction::SetMaximized(window.id, !window.state.maximized),
+                });
+            }
+        }
         let visible: Vec<WindowId> = live
             .iter()
             .filter(|window| !window.read_only && !window.minimized)
@@ -351,6 +384,9 @@ impl AppMenu {
                 MenuAction::Minimize(ids) => out
                     .window_actions
                     .extend(ids.into_iter().map(WindowAction::Minimize)),
+                MenuAction::SetMaximized(id, maximized) => out
+                    .window_actions
+                    .push(WindowAction::SetMaximized(id, maximized)),
                 MenuAction::Close(ids) => out
                     .window_actions
                     .extend(ids.into_iter().map(WindowAction::Close)),

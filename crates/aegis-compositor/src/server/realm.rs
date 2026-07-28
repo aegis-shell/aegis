@@ -795,6 +795,7 @@ impl Server {
         runtime.pinch_gesture_client = std::ptr::null_mut();
         runtime.hold_gesture_client = std::ptr::null_mut();
         runtime.depressed_mods = aegis_core::input::Mods::NONE;
+        runtime.client_pressed_keys.clear();
         runtime.keyboard = None;
         runtime.cursor_surface = std::ptr::null_mut();
         runtime.cursor_hidden = false;

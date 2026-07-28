@@ -53,6 +53,7 @@ pub(super) fn physical_window_target(
     match cmd {
         Command::Focus { id }
         | Command::Minimize { id }
+        | Command::SetMaximized { id, .. }
         | Command::Close { id }
         | Command::Move { id }
         | Command::SetWindowGeometry { id, .. } => Some(*id),
@@ -80,6 +81,9 @@ pub(super) fn apply_command(
     match cmd {
         Command::Focus { id } => server.focus_surface_by_id(*id),
         Command::Minimize { id } => server.minimize_toplevel(*id),
+        Command::SetMaximized { id, maximized } => {
+            server.set_toplevel_maximized(*id, *maximized);
+        }
         Command::Close { id } => server.close_toplevel(*id),
         Command::Move { id } => server.start_interactive_move(*id),
         Command::SetWindowGeometry { id, rect } => {

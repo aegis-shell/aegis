@@ -658,6 +658,9 @@ impl CompositorRuntime {
                         aegis_shell::WindowAction::Minimize(id) => {
                             aegis_ipc::Command::Minimize { id }
                         }
+                        aegis_shell::WindowAction::SetMaximized(id, maximized) => {
+                            aegis_ipc::Command::SetMaximized { id, maximized }
+                        }
                         aegis_shell::WindowAction::Close(id) => aegis_ipc::Command::Close { id },
                     };
                     apply_chrome_window_command(

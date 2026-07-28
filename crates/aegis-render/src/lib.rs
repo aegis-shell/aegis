@@ -5,7 +5,7 @@
 //! z-order into the output's frame.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use aegis_core::{SurfaceDmabuf, SurfacePixels, Transform};
 
@@ -191,6 +191,15 @@ enum OrderedSurfaceSource {
     Dmabuf(usize),
 }
 
+type WindowMap<'a> =
+    dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect + 'a;
+
+#[derive(Default)]
+struct OrderedSurfaceOptions<'a> {
+    map: Option<&'a WindowMap<'a>>,
+    window_shadows: Option<&'a [aegis_core::window::Window]>,
+}
+
 fn ordered_surface_sources(
     order: &[usize],
     shm_ids: &[usize],
@@ -215,6 +224,46 @@ fn ordered_surface_sources(
     // in backing-type batches would silently invent a z-order and can expose
     // a lower window above a foreground window.
     sources
+}
+
+fn window_casts_resize_shadow(window: &aegis_core::window::Window) -> bool {
+    !window.read_only
+        && !window.minimized
+        && !window.state.maximized
+        && !window.state.fullscreen
+        && window.layout_role == aegis_core::layout::LayoutRole::Floating
+        && window.size.w > 0
+        && window.size.h > 0
+}
+
+/// Paint a four-logical-pixel compositor shadow immediately below a floating
+/// window. Each one-pixel ring occupies exactly the direct-resize margin; the
+/// stronger active-window ramp makes stack order legible without taking any
+/// client-content pixels.
+fn draw_window_resize_shadow(canvas: &flux::Canvas, window: &aegis_core::window::Window) {
+    let x = window.position.x as f32;
+    let y = window.position.y as f32;
+    let w = window.size.w as f32;
+    let h = window.size.h as f32;
+    let margin = aegis_core::window::RESIZE_OUTER_MARGIN as u32;
+    for extent in (1..=margin).rev() {
+        let inset = extent as f32 - 0.5;
+        let distance_from_outer = margin - extent;
+        let alpha = if window.state.activated {
+            20 + distance_from_outer * 15
+        } else {
+            13 + distance_from_outer * 11
+        };
+        canvas.stroke_rrect(
+            x - inset,
+            y - inset,
+            w + inset * 2.0,
+            h + inset * 2.0,
+            extent as f32 + 2.0,
+            flux::rgba(0, 0, 0, alpha as u8),
+            1.0,
+        );
+    }
 }
 
 impl Renderer {
@@ -307,7 +356,40 @@ impl Renderer {
         shm: &[SurfacePixels<'_>],
         dmabuf: &[SurfaceDmabuf],
     ) {
-        self.draw_surfaces_ordered_impl(device, canvas, order, shm, dmabuf, None);
+        self.draw_surfaces_ordered_impl(
+            device,
+            canvas,
+            order,
+            shm,
+            dmabuf,
+            OrderedSurfaceOptions::default(),
+        );
+    }
+
+    /// Ordered mixed-backing drawing with one compositor-owned resize shadow
+    /// inserted beneath each floating window tree. The first ordered surface
+    /// for a window may be a below-parent subsurface, so inserting here (not
+    /// in a separate global pass) preserves both subtree and window z-order.
+    pub fn draw_surfaces_ordered_with_window_shadows(
+        &mut self,
+        device: &flux::Device,
+        canvas: &flux::Canvas,
+        order: &[usize],
+        shm: &[SurfacePixels<'_>],
+        dmabuf: &[SurfaceDmabuf],
+        windows: &[aegis_core::window::Window],
+    ) {
+        self.draw_surfaces_ordered_impl(
+            device,
+            canvas,
+            order,
+            shm,
+            dmabuf,
+            OrderedSurfaceOptions {
+                window_shadows: Some(windows),
+                ..Default::default()
+            },
+        );
     }
 
     /// Ordered mixed-backing surface drawing with overview placement applied.
@@ -320,7 +402,17 @@ impl Renderer {
         dmabuf: &[SurfaceDmabuf],
         map: &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
     ) {
-        self.draw_surfaces_ordered_impl(device, canvas, order, shm, dmabuf, Some(map));
+        self.draw_surfaces_ordered_impl(
+            device,
+            canvas,
+            order,
+            shm,
+            dmabuf,
+            OrderedSurfaceOptions {
+                map: Some(map),
+                ..Default::default()
+            },
+        );
     }
 
     /// Compatibility entry point for callers that only supply xdg-role
@@ -357,13 +449,32 @@ impl Renderer {
         order: &[usize],
         shm: &[SurfacePixels<'_>],
         dmabuf: &[SurfaceDmabuf],
-        map: Option<
-            &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
-        >,
+        options: OrderedSurfaceOptions<'_>,
     ) {
+        let map = options.map;
         let shm_ids = shm.iter().map(|frame| frame.id).collect::<Vec<_>>();
         let dmabuf_ids = dmabuf.iter().map(|frame| frame.id).collect::<Vec<_>>();
+        let shadow_windows = options.window_shadows.map(|windows| {
+            windows
+                .iter()
+                .map(|window| (window.id, window))
+                .collect::<HashMap<_, _>>()
+        });
+        let mut shadowed = HashSet::new();
         for source in ordered_surface_sources(order, &shm_ids, &dmabuf_ids) {
+            let window_id = match source {
+                OrderedSurfaceSource::Shm(index) => shm[index].window,
+                OrderedSurfaceSource::Dmabuf(index) => dmabuf[index].window,
+            };
+            if let Some(window_id) = window_id
+                && shadowed.insert(window_id)
+                && let Some(window) = shadow_windows
+                    .as_ref()
+                    .and_then(|windows| windows.get(&window_id))
+                && window_casts_resize_shadow(window)
+            {
+                draw_window_resize_shadow(canvas, window);
+            }
             match source {
                 OrderedSurfaceSource::Shm(index) => {
                     self.draw_toplevels_impl(device, canvas, std::slice::from_ref(&shm[index]), map)
@@ -1054,5 +1165,22 @@ mod tests {
     fn a_frame_missing_from_the_authoritative_order_stays_hidden() {
         let sources = ordered_surface_sources(&[10], &[10, 20], &[]);
         assert_eq!(sources, vec![OrderedSurfaceSource::Shm(0)]);
+    }
+
+    #[test]
+    fn resize_shadow_follows_direct_resize_eligibility() {
+        let mut window = aegis_core::window::Window::new(aegis_core::window::WindowId(1));
+        window.size = aegis_core::Size { w: 640, h: 480 };
+        window.layout_role = aegis_core::layout::LayoutRole::Floating;
+        assert!(window_casts_resize_shadow(&window));
+
+        window.state.maximized = true;
+        assert!(!window_casts_resize_shadow(&window));
+        window.state.maximized = false;
+        window.read_only = true;
+        assert!(!window_casts_resize_shadow(&window));
+        window.read_only = false;
+        window.layout_role = aegis_core::layout::LayoutRole::Tiled;
+        assert!(!window_casts_resize_shadow(&window));
     }
 }

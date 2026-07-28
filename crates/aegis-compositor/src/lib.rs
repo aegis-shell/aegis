@@ -722,6 +722,20 @@ pub(crate) struct OutputGlobal {
     active: bool,
 }
 
+#[derive(Clone, Copy)]
+struct TopBorderClick {
+    window_id: aegis_core::window::WindowId,
+    released_at_ms: u64,
+    position: (f32, f32),
+}
+
+#[derive(Clone, Copy)]
+struct PendingTopBorderDoubleClick {
+    window_id: aegis_core::window::WindowId,
+    press_position: (f32, f32),
+    start_position: aegis_core::Point,
+}
+
 /// Runtime protocol and input state for one logical `wl_seat`.
 ///
 /// The authority model in `aegis-core` owns durable identities and policy.
@@ -779,9 +793,19 @@ pub(crate) struct SeatRuntime {
     /// consumed too so a newly focused client never receives a release for a
     /// key press it did not receive.
     suppressed_shortcut_keys: std::collections::HashSet<u32>,
+    /// Keys currently down in the client-facing logical keyboard stream.
+    ///
+    /// This is deliberately distinct from xkb's physical state: input-method
+    /// grabs and compositor shortcuts may consume physical keys. Focus enter
+    /// snapshots and virtual-keyboard forwarding must describe only keys
+    /// whose presses entered the client stream, so their later releases are
+    /// never orphaned.
+    client_pressed_keys: std::collections::BTreeSet<u32>,
     keyboard: Option<keyboard::Keyboard>,
     interactive: Option<aegis_core::window::Interactive>,
     compositor_pointer_grab: bool,
+    last_top_border_click: Option<TopBorderClick>,
+    pending_top_border_double_click: Option<PendingTopBorderDoubleClick>,
     /// Window-local automation pins hit-testing to one authorized root for
     /// the duration of an atomic input batch. This prevents overlapping
     /// surfaces in another workspace (or another virtual placement) from
@@ -844,9 +868,12 @@ impl SeatRuntime {
             implicit_grab_active: false,
             depressed_mods: aegis_core::input::Mods::NONE,
             suppressed_shortcut_keys: std::collections::HashSet::new(),
+            client_pressed_keys: std::collections::BTreeSet::new(),
             keyboard: None,
             interactive: None,
             compositor_pointer_grab: false,
+            last_top_border_click: None,
+            pending_top_border_double_click: None,
             synthetic_target: None,
         }
     }
@@ -1904,6 +1931,35 @@ pub struct Server {
     /// synthetic events that do not carry a backend timestamp. Axis frames
     /// retain their DRM/libinput or nested-host timestamps end to end.
     epoch: std::time::Instant,
+}
+
+/// One physical keyboard edge after it has advanced the seat's XKB state.
+///
+/// The runtime prepares every hardware key in arrival order before deciding
+/// whether compositor chrome or the focused client owns that sequence. The
+/// opaque snapshot prevents either route from advancing XKB a second time or
+/// reordering modifier transitions when one backend batch crosses a routing
+/// boundary.
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedKeyboardEvent {
+    evdev_code: u32,
+    state: aegis_core::input::ButtonState,
+    outcome: keyboard::KeyOutcome,
+    consumed_by_vt_switch: bool,
+}
+
+impl PreparedKeyboardEvent {
+    /// Character view used by compositor chrome for a prepared press.
+    ///
+    /// VT-switch keysyms are compositor control events rather than text and
+    /// therefore intentionally have no character view.
+    pub fn key_char(self) -> Option<aegis_core::input::KeyChar> {
+        (!self.consumed_by_vt_switch).then_some(aegis_core::input::KeyChar {
+            keysym: self.outcome.keysym,
+            ch: self.outcome.utf8,
+            mods: aegis_core::input::Mods(self.outcome.depressed),
+        })
+    }
 }
 
 /// Prepared capability endpoint for one sandboxed application instance.

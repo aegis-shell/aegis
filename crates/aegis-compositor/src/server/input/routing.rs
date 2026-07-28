@@ -18,6 +18,25 @@ impl Server {
         self.forward_input_active(events, Some(keymap))
     }
 
+    /// Forward a physical-input batch whose client-owned key events were
+    /// already prepared in the backend's original order.
+    ///
+    /// `prepared_keys` contains exactly one snapshot for each `Key` remaining
+    /// in `events`; a missing snapshot means XKB initialization failed and the
+    /// edge is safely dropped. Chrome-owned keys have already been removed
+    /// from both slices. Pointer/touch events are still processed in their
+    /// routed order.
+    pub fn forward_prepared_input(
+        &mut self,
+        events: &[aegis_core::input::InputEvent],
+        prepared_keys: &[Option<PreparedKeyboardEvent>],
+        keymap: &aegis_core::keybind::Keymap,
+    ) -> Vec<aegis_core::keybind::Action> {
+        let _guard = ActiveSeatGuard::enter(self.state.as_mut(), HUMAN_SEAT)
+            .expect("bootstrap human seat must remain enabled");
+        self.forward_input_active_with_prepared(events, Some(keymap), Some(prepared_keys))
+    }
+
     /// Route a synthetic batch through an agent's independent logical seat.
     /// Compositor-global key bindings and VT switching are deliberately
     /// disabled on this path; the batch can only become client protocol input.
@@ -63,8 +82,18 @@ impl Server {
         events: &[aegis_core::input::InputEvent],
         keymap: Option<&aegis_core::keybind::Keymap>,
     ) -> Vec<aegis_core::keybind::Action> {
+        self.forward_input_active_with_prepared(events, keymap, None)
+    }
+
+    fn forward_input_active_with_prepared(
+        &mut self,
+        events: &[aegis_core::input::InputEvent],
+        keymap: Option<&aegis_core::keybind::Keymap>,
+        prepared_keys: Option<&[Option<PreparedKeyboardEvent>]>,
+    ) -> Vec<aegis_core::keybind::Action> {
         let mut actions = Vec::new();
         let time = self.epoch.elapsed().as_millis() as u32;
+        let mut prepared_keys = prepared_keys.map(|keys| keys.iter().copied());
         for event in events {
             use aegis_core::input::InputEvent::*;
             match *event {
@@ -78,13 +107,33 @@ impl Server {
                 TouchFrame => self.touch_frame(),
                 TouchCancel => self.touch_cancel(),
                 Key { code, state } => {
-                    if let Some(a) = self.keyboard_key(code, state, keymap) {
+                    let action = if let Some(keys) = prepared_keys.as_mut() {
+                        let prepared = keys
+                            .next()
+                            .expect("every routed physical key must have a prepared snapshot");
+                        if let Some(prepared) = prepared {
+                            debug_assert_eq!(prepared.evdev_code, code);
+                            debug_assert_eq!(prepared.state, state);
+                            self.deliver_prepared_keyboard_event(prepared, keymap)
+                        } else {
+                            None
+                        }
+                    } else {
+                        self.keyboard_key(code, state, keymap)
+                    };
+                    if let Some(a) = action {
                         actions.push(a);
                     }
                 }
                 Tablet { event } => self.tablet_event(event),
             }
         }
+        debug_assert!(
+            prepared_keys
+                .as_mut()
+                .is_none_or(|prepared| prepared.next().is_none()),
+            "prepared key snapshots must match the routed key stream"
+        );
         unsafe { ffi::wl_display_flush_clients(self.state.display) };
         actions
     }
@@ -94,41 +143,6 @@ impl Server {
     /// session awake indefinitely.
     pub fn note_user_activity(&mut self) {
         unsafe { extensions::idle_user_activity(self.state.as_mut()) };
-    }
-
-    /// Advance the xkbcommon state with one key event and return the keysym
-    /// and printable character it produced, without forwarding anything to a
-    /// client.
-    ///
-    /// Used by the main loop for a key sequence owned by compositor chrome:
-    /// the event is consumed by chrome rather than delivered to the focused
-    /// client, but the server's xkb state still advances so modifier tracking
-    /// stays consistent. Returns `None` only when the server has no keyboard
-    /// compiled. See ADR-0065.
-    pub fn key_char(
-        &mut self,
-        evdev_code: u32,
-        pressed: bool,
-    ) -> Option<aegis_core::input::KeyChar> {
-        let o = self
-            .state
-            .keyboard
-            .as_mut()?
-            .update_key(evdev_code, pressed);
-        self.state.depressed_mods = aegis_core::input::Mods(o.depressed);
-        // VT switch keys stay compositor-owned even while chrome holds the
-        // keyboard (launcher/overview open); see `keyboard_key`.
-        const XF86_SWITCH_VT_1: u32 = 0x1008_FE01;
-        const XF86_SWITCH_VT_12: u32 = 0x1008_FE0C;
-        if pressed && (XF86_SWITCH_VT_1..=XF86_SWITCH_VT_12).contains(&o.keysym) {
-            self.state.pending_vt_switch = Some((o.keysym - XF86_SWITCH_VT_1 + 1) as i32);
-            return None;
-        }
-        Some(aegis_core::input::KeyChar {
-            keysym: o.keysym,
-            ch: o.utf8,
-            mods: self.state.depressed_mods,
-        })
     }
 
     /// Take a pending console VT switch request (Ctrl+Alt+Fn), if any.
@@ -461,6 +475,37 @@ impl Server {
         unsafe { minimize_toplevel_record(rec) };
     }
 
+    /// Set or clear compositor-managed maximization. The existing
+    /// `reconfigure_with_state` path owns work-area placement and restores the
+    /// saved floating rectangle when maximization is cleared.
+    pub fn set_toplevel_maximized(
+        &mut self,
+        surface_id: aegis_core::window::WindowId,
+        maximized: bool,
+    ) -> bool {
+        if !self.human_controls_window(surface_id) {
+            return false;
+        }
+        let rec = self.find_surface_by_window_id(surface_id);
+        if rec.is_null()
+            || unsafe {
+                (*rec).xdg_toplevel.is_null()
+                    || (*rec).window.minimized
+                    || (*rec).window.state.fullscreen
+                    || (*rec).window.state.maximized == maximized
+            }
+        {
+            return false;
+        }
+        self.change_keyboard_focus(unsafe { (*rec).resource });
+        unsafe {
+            (*rec).window.state.maximized = maximized;
+            reconfigure_with_state(rec);
+            ffi::wl_display_flush_clients(self.state.display);
+        }
+        true
+    }
+
     /// Mark a toplevel as activated (or not) and emit a configure so the
     /// client updates its focus state. The shell calls this when keyboard
     /// focus changes; M1's click-to-focus already posts keyboard enter/leave,
@@ -724,8 +769,8 @@ impl Server {
     }
 
     /// Cursor shape owned by compositor-side window manipulation. Active
-    /// grabs take precedence; otherwise a floating window's invisible resize
-    /// border advertises the edge/corner before the user presses it.
+    /// grabs take precedence; otherwise a floating window's outer resize
+    /// margin advertises the edge/corner before the user presses it.
     pub fn compositor_cursor_shape(&self) -> Option<u32> {
         match self.state.interactive {
             Some(aegis_core::window::Interactive::Move { .. }) => Some(17), // grabbing
@@ -733,7 +778,11 @@ impl Server {
                 Some(resize_cursor_shape(edges))
             }
             None => self
-                .resize_target_at(self.state.pointer_x, self.state.pointer_y, 8.0)
+                .resize_target_at(
+                    self.state.pointer_x,
+                    self.state.pointer_y,
+                    aegis_core::window::RESIZE_OUTER_MARGIN,
+                )
                 .map(|(_, edges)| resize_cursor_shape(edges)),
         }
     }

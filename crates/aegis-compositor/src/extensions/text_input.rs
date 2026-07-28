@@ -14,7 +14,11 @@ struct TextInputRec {
 #[derive(Clone, Copy)]
 pub(crate) struct TextInputCursorAnchor {
     pub(crate) surface: *mut ffi::wl_resource,
-    pub(crate) rect: (i32, i32, i32, i32),
+    /// Cursor rectangle in the focused text surface's local coordinates.
+    ///
+    /// `None` is still a useful context: the input popup must be rebound to
+    /// this surface instead of retaining the previous focus's coordinates.
+    pub(crate) rect: Option<(i32, i32, i32, i32)>,
 }
 
 static TEXT_INPUT_MANAGER_IMPL: ffi::zwp_text_input_manager_v3_interface_impl =
@@ -34,6 +38,20 @@ static TEXT_INPUT_IMPL: ffi::zwp_text_input_v3_interface_impl =
         set_cursor_rectangle: text_input_set_cursor_rectangle,
         commit: text_input_commit,
     };
+
+fn count_text_input_commit(serial: &mut u32) {
+    *serial = serial.wrapping_add(1);
+}
+
+fn apply_pending_text_input_state(
+    pending: &mut aegis_core::input::TextInputState,
+) -> aegis_core::input::TextInputState {
+    let current = pending.clone();
+    // change_cause is applied once and returns to input_method (zero) after
+    // every commit; the remaining fields persist until enable/disable.
+    pending.change_cause = 0;
+    current
+}
 
 pub(crate) unsafe extern "C" fn text_input_bind(
     client: *mut ffi::wl_client,
@@ -249,12 +267,46 @@ unsafe extern "C" fn text_input_commit(
 ) {
     unsafe {
         let rec = ffi::wl_resource_get_user_data(resource) as *mut TextInputRec;
-        if rec.is_null() || (*rec).current_surface.is_null() {
+        if rec.is_null() {
             return;
         }
-        (*rec).commit_serial = (*rec).commit_serial.wrapping_add(1);
-        (*rec).current = (*rec).pending.clone();
+        // The protocol serial is the number of commit requests received on
+        // this object, including requests ignored while it has no focused
+        // surface. Counting only focused commits desynchronizes clients after
+        // a leave/enter race: the next input-method transaction is then
+        // acknowledged with a serial the application considers stale.
+        count_text_input_commit(&mut (*rec).commit_serial);
+        if (*rec).current_surface.is_null() {
+            return;
+        }
+        if (*rec).pending.enabled && another_text_input_is_enabled(rec, resource) {
+            // text-input-v3 permits only one enabled object per seat. An
+            // enable racing with an already active sibling is ignored in its
+            // entirety and must not remain pending for a later commit.
+            (*rec).pending = Default::default();
+            return;
+        }
+        (*rec).current = apply_pending_text_input_state(&mut (*rec).pending);
         queue_text_input_state(rec);
+    }
+}
+
+unsafe fn another_text_input_is_enabled(
+    rec: *mut TextInputRec,
+    resource: *mut ffi::wl_resource,
+) -> bool {
+    unsafe {
+        let state = (*rec).state;
+        if state.is_null() {
+            return false;
+        }
+        (*state).text_inputs.iter().copied().any(|candidate| {
+            if candidate.is_null() || candidate == resource {
+                return false;
+            }
+            let other = ffi::wl_resource_get_user_data(candidate) as *mut TextInputRec;
+            !other.is_null() && (*other).seat == (*rec).seat && (*other).current.enabled
+        })
     }
 }
 
@@ -294,13 +346,10 @@ unsafe fn text_input_cursor_anchor(rec: *mut TextInputRec) -> Option<TextInputCu
         if rec.is_null() || !(*rec).current.enabled || (*rec).current_surface.is_null() {
             return None;
         }
-        (*rec)
-            .current
-            .cursor_rect
-            .map(|rect| TextInputCursorAnchor {
-                surface: (*rec).current_surface,
-                rect,
-            })
+        Some(TextInputCursorAnchor {
+            surface: (*rec).current_surface,
+            rect: (*rec).current.cursor_rect,
+        })
     }
 }
 
@@ -372,35 +421,52 @@ pub(crate) unsafe fn text_input_focus_changed(
         if state.is_null() {
             return;
         }
-        // Collect the active text_input resource pointers (cloning the slice to
-        // avoid borrowing across libwayland calls).
+        let seat = (*state).active_seat;
+        // Clone resource pointers to avoid borrowing State across libwayland
+        // calls. Leave is deliberately a separate phase from enter: when one
+        // client owns multiple text-input objects, the protocol requires all
+        // old-focus leave notifications to precede the new-focus enters.
         let entries: Vec<*mut ffi::wl_resource> = (*state).text_inputs.clone();
+        let mut deactivate = false;
+        for ti in entries.iter().copied() {
+            if ti.is_null() {
+                continue;
+            }
+            let ti_client = ffi::wl_resource_get_client(ti);
+            let rec = ffi::wl_resource_get_user_data(ti) as *mut TextInputRec;
+            if rec.is_null() || (*rec).seat != seat {
+                continue;
+            }
+            if !old_focus.is_null() && ffi::wl_resource_get_client(old_focus) == ti_client {
+                ffi::wl_resource_post_event(ti, ffi::ZWP_TEXT_INPUT_V3_LEAVE, old_focus);
+                deactivate |= (*rec).current.enabled;
+                (*rec).current_surface = std::ptr::null_mut();
+                (*rec).pending = Default::default();
+                (*rec).current = Default::default();
+            }
+        }
+        if deactivate {
+            route_or_queue_text_input_state(
+                state,
+                seat,
+                aegis_core::input::TextInputState::default(),
+                None,
+            );
+        }
         for ti in entries {
             if ti.is_null() {
                 continue;
             }
             let ti_client = ffi::wl_resource_get_client(ti);
             let rec = ffi::wl_resource_get_user_data(ti) as *mut TextInputRec;
-            if rec.is_null() {
+            if rec.is_null() || (*rec).seat != seat {
                 continue;
             }
-            // Leave: text_inputs of the old-focus client.
-            if !old_focus.is_null() && ffi::wl_resource_get_client(old_focus) == ti_client {
-                ffi::wl_resource_post_event(ti, ffi::ZWP_TEXT_INPUT_V3_LEAVE, old_focus);
-                if (*rec).current.enabled {
-                    route_or_queue_text_input_state(
-                        state,
-                        (*rec).seat,
-                        aegis_core::input::TextInputState::default(),
-                        None,
-                    );
-                }
-                (*rec).current_surface = std::ptr::null_mut();
+            if !new_focus.is_null() && ffi::wl_resource_get_client(new_focus) == ti_client {
+                // Enter invalidates every state field even when this client
+                // was not the immediately preceding focus owner.
                 (*rec).pending = Default::default();
                 (*rec).current = Default::default();
-            }
-            // Enter: text_inputs of the new-focus client.
-            if !new_focus.is_null() && ffi::wl_resource_get_client(new_focus) == ti_client {
                 (*rec).current_surface = new_focus;
                 ffi::wl_resource_post_event(ti, ffi::ZWP_TEXT_INPUT_V3_ENTER, new_focus);
             }
@@ -469,5 +535,40 @@ pub(crate) unsafe fn forward_text_input_event(
                 ),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commit_counter_advances_even_when_request_will_be_ignored() {
+        let mut serial = 41;
+        count_text_input_commit(&mut serial);
+        assert_eq!(serial, 42);
+        serial = u32::MAX;
+        count_text_input_commit(&mut serial);
+        assert_eq!(serial, 0);
+    }
+
+    #[test]
+    fn committed_change_cause_is_one_shot_but_context_persists() {
+        let mut pending = aegis_core::input::TextInputState {
+            enabled: true,
+            surrounding_text: Some("context".to_owned()),
+            cursor: 7,
+            anchor: 7,
+            change_cause: 1,
+            content_hint: 3,
+            content_purpose: 13,
+            cursor_rect: Some((10, 20, 2, 18)),
+        };
+        let current = apply_pending_text_input_state(&mut pending);
+        assert_eq!(current.change_cause, 1);
+        assert_eq!(pending.change_cause, 0);
+        assert!(pending.enabled);
+        assert_eq!(pending.surrounding_text.as_deref(), Some("context"));
+        assert_eq!(pending.cursor_rect, Some((10, 20, 2, 18)));
     }
 }

@@ -1,5 +1,57 @@
 use crate::*;
 
+const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
+const TOP_BORDER_DOUBLE_CLICK_MS: u64 = 450;
+const TOP_BORDER_CLICK_DISTANCE: f32 = 4.0;
+const TOP_BORDER_DRAG_THRESHOLD: f32 = 3.0;
+
+fn pointer_distance_squared(a: (f32, f32), b: (f32, f32)) -> f32 {
+    let dx = a.0 - b.0;
+    let dy = a.1 - b.1;
+    dx * dx + dy * dy
+}
+
+fn is_top_edge_only(edges: aegis_core::window::ResizeEdges) -> bool {
+    edges.has_top() && !edges.has_bottom() && !edges.has_left() && !edges.has_right()
+}
+
+fn is_matching_top_border_double_click(
+    first: TopBorderClick,
+    window_id: aegis_core::window::WindowId,
+    pressed_at_ms: u64,
+    position: (f32, f32),
+) -> bool {
+    first.window_id == window_id
+        && pressed_at_ms.saturating_sub(first.released_at_ms) <= TOP_BORDER_DOUBLE_CLICK_MS
+        && pointer_distance_squared(first.position, position)
+            <= TOP_BORDER_CLICK_DISTANCE * TOP_BORDER_CLICK_DISTANCE
+}
+
+/// Resolve direct resize in bottom-to-top stacking order. Every visible
+/// window rectangle is an input barrier: when a foreground window contains
+/// the point, it clears any resize candidate contributed by a lower window.
+/// A resizable window additionally owns its outer logical-pixel margin.
+fn stacked_resize_target<T: Copy>(
+    layers: impl IntoIterator<Item = (T, aegis_core::window::Window, bool)>,
+    x: f32,
+    y: f32,
+    margin: f32,
+) -> Option<(T, aegis_core::window::ResizeEdges)> {
+    let mut target = None;
+    for (id, window, resizable) in layers {
+        let edges = if resizable {
+            window.resize_edges_at(x, y, margin)
+        } else {
+            aegis_core::window::ResizeEdges::NONE
+        };
+        if window.contains_point(x, y) || !edges.is_none() {
+            target = (!edges.is_none()).then_some((id, edges));
+        }
+    }
+    target
+}
+
 impl Server {
     pub(crate) fn pointer_motion(&mut self, x: f32, y: f32) {
         // Relative delta from the previous motion event (for relative-pointer
@@ -26,6 +78,28 @@ impl Server {
         // Push relative motion to bound zwp_relative_pointer_v1 resources of
         // the focused client (games, etc.).
         self.post_relative_motion(dx, dy);
+        // A second top-border click stays pending until intent is clear:
+        // release maximizes, while movement beyond the jitter threshold turns
+        // the same held click into a move grab from its original press point.
+        if self.state.active_seat == HUMAN_SEAT
+            && let Some(pending) = self.state.pending_top_border_double_click
+            && pointer_distance_squared(pending.press_position, (x, y))
+                >= TOP_BORDER_DRAG_THRESHOLD * TOP_BORDER_DRAG_THRESHOLD
+        {
+            self.state.pending_top_border_double_click = None;
+            self.state.compositor_pointer_grab = false;
+            self.start_interactive_move(pending.window_id);
+            if let Some(aegis_core::window::Interactive::Move {
+                origin,
+                start_position,
+                ..
+            }) = self.state.interactive.as_mut()
+            {
+                *origin = pending.press_position;
+                *start_position = pending.start_position;
+                self.state.compositor_pointer_grab = true;
+            }
+        }
         // If an interactive grab is active, update the window's geometry
         // before any hit-testing — motion goes to the grabbed surface, not
         // whatever is under the pointer.
@@ -37,7 +111,18 @@ impl Server {
             self.post_motion_to_focus(time);
             return;
         }
-        let focus = self.hit_test_focus(x, y);
+        // The direct-resize halo is compositor-owned. Suppress client focus
+        // there so a lower window cannot receive hover or button preparation
+        // through the foreground window's resize affordance.
+        let focus = if self.state.active_seat == HUMAN_SEAT
+            && self
+                .resize_target_at(x, y, aegis_core::window::RESIZE_OUTER_MARGIN)
+                .is_some()
+        {
+            std::ptr::null_mut()
+        } else {
+            self.hit_test_focus(x, y)
+        };
         if focus != self.state.pointer_focus {
             self.change_pointer_focus(focus);
         }
@@ -83,13 +168,50 @@ impl Server {
                 return;
             }
         }
+        if !state.is_pressed()
+            && button == BTN_LEFT
+            && let Some(pending) = self.state.pending_top_border_double_click.take()
+        {
+            self.state.compositor_pointer_grab = false;
+            self.state.last_top_border_click = None;
+            self.set_toplevel_maximized(pending.window_id, true);
+            return;
+        }
         // Button release ends any active interactive grab. A compositor-side
         // border grab consumed its press, so consume the paired release too;
         // client-initiated grabs still receive the release as required.
         if !state.is_pressed() && self.state.interactive.is_some() {
             let consume = self.state.compositor_pointer_grab;
+            let top_border_click = match self.state.interactive {
+                Some(aegis_core::window::Interactive::Resize {
+                    window_id,
+                    edges,
+                    origin,
+                    start_position,
+                    start_size,
+                }) if consume
+                    && button == BTN_LEFT
+                    && is_top_edge_only(edges)
+                    && pointer_distance_squared(
+                        origin,
+                        (self.state.pointer_x, self.state.pointer_y),
+                    ) <= TOP_BORDER_DRAG_THRESHOLD * TOP_BORDER_DRAG_THRESHOLD =>
+                {
+                    let started_inside = origin.0 >= start_position.x as f32
+                        && origin.0 < (start_position.x + start_size.w) as f32
+                        && origin.1 >= start_position.y as f32
+                        && origin.1 < (start_position.y + start_size.h) as f32;
+                    (!started_inside).then_some(TopBorderClick {
+                        window_id,
+                        released_at_ms: self.state.now_ms(),
+                        position: (self.state.pointer_x, self.state.pointer_y),
+                    })
+                }
+                _ => None,
+            };
             self.finish_interactive();
             if consume {
+                self.state.last_top_border_click = top_border_click;
                 return;
             }
         }
@@ -116,13 +238,10 @@ impl Server {
             }
         }
 
-        // Floating windows expose an invisible inside border for direct
-        // resize. This runs before client button delivery so dragging a border
-        // never activates a widget under the same pixels. Tiled, maximized,
-        // and fullscreen windows keep their layout-owned geometry.
-        const BORDER: f32 = 8.0;
-        const BTN_LEFT: u32 = 0x110;
-        const BTN_RIGHT: u32 = 0x111;
+        // Floating windows expose a compositor-owned outer margin for direct
+        // resize. This runs before client button delivery, so the resize halo
+        // never activates content in this window or one behind it. Tiled,
+        // maximized, and fullscreen windows keep layout-owned geometry.
         // Borderless windows still need compositor-owned gestures that start
         // anywhere in their content. Super+left moves; Super+right resizes
         // from the nearest edge/corner. Both detach a layout-owned window so
@@ -180,12 +299,35 @@ impl Server {
             && state.is_pressed()
             && button == BTN_LEFT
             && self.state.interactive.is_none()
-            && let Some((rec, edges)) =
-                self.resize_target_at(self.state.pointer_x, self.state.pointer_y, BORDER)
+            && let Some((rec, edges)) = self.resize_target_at(
+                self.state.pointer_x,
+                self.state.pointer_y,
+                aegis_core::window::RESIZE_OUTER_MARGIN,
+            )
         {
             let resource = unsafe { (*rec).resource };
             let id = unsafe { (*rec).window.id };
             self.change_keyboard_focus(resource);
+            let position = (self.state.pointer_x, self.state.pointer_y);
+            let now_ms = self.state.now_ms();
+            let double_click = is_top_edge_only(edges)
+                && self
+                    .state
+                    .last_top_border_click
+                    .take()
+                    .is_some_and(|first| {
+                        is_matching_top_border_double_click(first, id, now_ms, position)
+                    });
+            if double_click {
+                self.state.pending_top_border_double_click = Some(PendingTopBorderDoubleClick {
+                    window_id: id,
+                    press_position: position,
+                    start_position: unsafe { (*rec).position },
+                });
+                self.state.compositor_pointer_grab = true;
+                return;
+            }
+            self.state.last_top_border_click = None;
             unsafe {
                 (*rec).window.state.resizing = true;
                 reconfigure_with_state(rec);
@@ -204,6 +346,9 @@ impl Server {
             });
             self.state.compositor_pointer_grab = true;
             return;
+        }
+        if state.is_pressed() && button == BTN_LEFT {
+            self.state.last_top_border_click = None;
         }
         // Click-to-focus: when a button is pressed over a surface, that
         // surface also gains keyboard focus. Released edges do not change
@@ -247,6 +392,10 @@ impl Server {
     /// Synthesized leave: e.g. when the host pointer leaves the nested window.
     pub(crate) fn pointer_leave_all(&mut self) {
         self.state.implicit_grab_active = false;
+        self.state.last_top_border_click = None;
+        if self.state.pending_top_border_double_click.take().is_some() {
+            self.state.compositor_pointer_grab = false;
+        }
         if self.state.drag.is_some() {
             unsafe { cancel_drag(self.state.as_mut(), true) };
         }
@@ -259,6 +408,21 @@ impl Server {
         state: aegis_core::input::ButtonState,
         keymap: Option<&aegis_core::keybind::Keymap>,
     ) -> Option<aegis_core::keybind::Action> {
+        let prepared = self.prepare_keyboard_event(evdev_code, state)?;
+        self.deliver_prepared_keyboard_event(prepared, keymap)
+    }
+
+    /// Advance the active seat's physical XKB state exactly once.
+    ///
+    /// Preparation is deliberately separate from delivery. The compositor
+    /// runtime can prepare a complete libinput batch in hardware order, then
+    /// route individual key sequences to chrome or clients without either
+    /// path mutating XKB again.
+    pub fn prepare_keyboard_event(
+        &mut self,
+        evdev_code: u32,
+        state: aegis_core::input::ButtonState,
+    ) -> Option<PreparedKeyboardEvent> {
         // Always advance xkbcommon state so modifier tracking and global
         // bindings work even with no focused client (e.g. an empty desktop).
         // Always posting modifiers (even when unchanged) is simpler; the
@@ -282,6 +446,34 @@ impl Server {
             && (XF86_SWITCH_VT_1..=XF86_SWITCH_VT_12).contains(&outcome.keysym)
         {
             self.state.pending_vt_switch = Some((outcome.keysym - XF86_SWITCH_VT_1 + 1) as i32);
+            return Some(PreparedKeyboardEvent {
+                evdev_code,
+                state,
+                outcome,
+                consumed_by_vt_switch: true,
+            });
+        }
+        Some(PreparedKeyboardEvent {
+            evdev_code,
+            state,
+            outcome,
+            consumed_by_vt_switch: false,
+        })
+    }
+
+    /// Route a key whose physical XKB transition has already been applied.
+    pub(crate) fn deliver_prepared_keyboard_event(
+        &mut self,
+        prepared: PreparedKeyboardEvent,
+        keymap: Option<&aegis_core::keybind::Keymap>,
+    ) -> Option<aegis_core::keybind::Action> {
+        let PreparedKeyboardEvent {
+            evdev_code,
+            state,
+            outcome,
+            consumed_by_vt_switch,
+        } = prepared;
+        if consumed_by_vt_switch {
             return None;
         }
         if !state.is_pressed() && self.state.suppressed_shortcut_keys.remove(&evdev_code) {
@@ -309,6 +501,17 @@ impl Server {
         } {
             return None;
         }
+        // Maintain the client-facing logical key stream independently from
+        // physical xkb state. A compositor shortcut or input-method-consumed
+        // key never enters this set; valid presses survive focus changes via
+        // wl_keyboard.enter and pair with the later release in the new
+        // client. Duplicate presses/releases are not legal wl_keyboard
+        // transitions and are dropped.
+        let valid_transition = keyboard::apply_logical_key_state(
+            &mut self.state.client_pressed_keys,
+            evdev_code,
+            state.is_pressed(),
+        );
         if self.state.keyboard_focus.is_null() {
             return None;
         }
@@ -322,6 +525,20 @@ impl Server {
         let focus_client = unsafe { ffi::wl_resource_get_client(focus) };
         for k in self.iter_focus_keyboards(focus_client) {
             unsafe {
+                if valid_transition {
+                    ffi::wl_resource_post_event(
+                        k,
+                        ffi::WL_KEYBOARD_KEY,
+                        serial,
+                        time,
+                        evdev_code,
+                        state_u32,
+                    );
+                }
+                // Core Wayland requires the modifier state resulting from a
+                // key transition to follow wl_keyboard.key. Sending the
+                // authoritative snapshot even when unchanged also repairs a
+                // client joining the stream at a routing boundary.
                 ffi::wl_resource_post_event(
                     k,
                     ffi::WL_KEYBOARD_MODIFIERS,
@@ -330,14 +547,6 @@ impl Server {
                     latched,
                     locked,
                     group,
-                );
-                ffi::wl_resource_post_event(
-                    k,
-                    ffi::WL_KEYBOARD_KEY,
-                    serial,
-                    time,
-                    evdev_code,
-                    state_u32,
                 );
             }
         }
@@ -457,29 +666,43 @@ impl Server {
         }
     }
 
-    /// Topmost floating toplevel whose inside border contains `(x, y)`.
+    /// Topmost floating toplevel whose outer resize margin contains `(x, y)`.
+    ///
+    /// All visible foreground window rectangles act as barriers, including
+    /// non-resizable and observation-only windows. This prevents an edge on a
+    /// lower window from being selected through pixels occupied by a higher
+    /// window.
     pub(crate) fn resize_target_at(
         &self,
         x: f32,
         y: f32,
-        border: f32,
+        margin: f32,
     ) -> Option<(*mut SurfaceRec, aegis_core::window::ResizeEdges)> {
         let visible = self.visible();
-        let mut hit = None;
+        let mut layers = Vec::new();
         for p in self.state.live_surfaces() {
             let s = unsafe { &*p };
             if !s.mapped
                 || s.xdg_toplevel.is_null()
                 || s.window.minimized
-                || s.window.state.maximized
-                || s.window.state.fullscreen
-                || s.window.layout_role != aegis_core::layout::LayoutRole::Floating
                 || !visible.contains(&s.window.id)
-                || !self
-                    .state
-                    .authority
-                    .seat_controls_window(self.state.active_seat, s.window.id)
             {
+                continue;
+            }
+            let controls = self
+                .state
+                .authority
+                .seat_controls_window(self.state.active_seat, s.window.id);
+            let observes = self
+                .state
+                .authority
+                .seat(self.state.active_seat)
+                .is_some_and(|seat| {
+                    self.state
+                        .authority
+                        .realm_observes_window(seat.realm, s.window.id)
+                });
+            if !controls && !observes {
                 continue;
             }
             let mut window = s.window.clone();
@@ -488,12 +711,13 @@ impl Server {
                 .window_geometry
                 .map(|geometry| geometry.size)
                 .unwrap_or_else(|| surface_logical_size(s));
-            let edges = window.resize_edges_at(x, y, border);
-            if !edges.is_none() {
-                hit = Some((p, edges));
-            }
+            let resizable = controls
+                && !window.state.maximized
+                && !window.state.fullscreen
+                && window.layout_role == aegis_core::layout::LayoutRole::Floating;
+            layers.push((p, window, resizable));
         }
-        hit
+        stacked_resize_target(layers, x, y, margin)
     }
 
     /// End an interactive move/resize, clearing the protocol resizing state
@@ -795,5 +1019,102 @@ impl Server {
             .filter(|p| !p.is_null())
             .filter(|p| unsafe { ffi::wl_resource_get_client(*p) == client })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod resize_tests {
+    use super::*;
+
+    fn window(id: u64, x: i32, y: i32, w: i32, h: i32) -> aegis_core::window::Window {
+        let mut window = aegis_core::window::Window::new(aegis_core::window::WindowId(id));
+        window.position = aegis_core::Point { x, y };
+        window.size = aegis_core::Size { w, h };
+        window
+    }
+
+    #[test]
+    fn foreground_window_blocks_resize_of_a_lower_window() {
+        // The pointer is in the lower window's right resize margin, but the
+        // foreground window covers that location.
+        let lower = window(1, 100, 100, 200, 200);
+        let foreground = window(2, 290, 150, 120, 100);
+        let target = stacked_resize_target(
+            [(1usize, lower, true), (2usize, foreground, true)],
+            301.0,
+            200.0,
+            aegis_core::window::RESIZE_OUTER_MARGIN,
+        );
+        assert_eq!(target, None);
+    }
+
+    #[test]
+    fn topmost_outer_margin_wins_over_lower_content() {
+        let lower = window(1, 100, 100, 300, 200);
+        let foreground = window(2, 150, 150, 150, 100);
+        let target = stacked_resize_target(
+            [(1usize, lower, true), (2usize, foreground, true)],
+            301.0,
+            200.0,
+            aegis_core::window::RESIZE_OUTER_MARGIN,
+        );
+        assert_eq!(target, Some((2, aegis_core::window::ResizeEdges::RIGHT)));
+    }
+
+    #[test]
+    fn non_resizable_foreground_is_still_an_input_barrier() {
+        let lower = window(1, 100, 100, 200, 200);
+        let foreground = window(2, 290, 150, 120, 100);
+        let target = stacked_resize_target(
+            [(1usize, lower, true), (2usize, foreground, false)],
+            301.0,
+            200.0,
+            aegis_core::window::RESIZE_OUTER_MARGIN,
+        );
+        assert_eq!(target, None);
+    }
+
+    #[test]
+    fn only_the_plain_top_edge_owns_the_double_click_gesture() {
+        use aegis_core::window::ResizeEdges;
+
+        assert!(is_top_edge_only(ResizeEdges::TOP));
+        assert!(!is_top_edge_only(ResizeEdges::LEFT));
+        assert!(!is_top_edge_only(ResizeEdges(
+            ResizeEdges::TOP.0 | ResizeEdges::LEFT.0
+        )));
+    }
+
+    #[test]
+    fn top_border_double_click_requires_same_window_time_and_position() {
+        let first = TopBorderClick {
+            window_id: aegis_core::window::WindowId(7),
+            released_at_ms: 1_000,
+            position: (120.0, 40.0),
+        };
+        assert!(is_matching_top_border_double_click(
+            first,
+            aegis_core::window::WindowId(7),
+            1_400,
+            (123.0, 42.0),
+        ));
+        assert!(!is_matching_top_border_double_click(
+            first,
+            aegis_core::window::WindowId(8),
+            1_400,
+            (123.0, 42.0),
+        ));
+        assert!(!is_matching_top_border_double_click(
+            first,
+            aegis_core::window::WindowId(7),
+            1_451,
+            (123.0, 42.0),
+        ));
+        assert!(!is_matching_top_border_double_click(
+            first,
+            aegis_core::window::WindowId(7),
+            1_400,
+            (125.0, 40.0),
+        ));
     }
 }

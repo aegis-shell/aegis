@@ -96,7 +96,11 @@ impl CompositorRuntime {
             }
         }
         if session_locked {
-            self.super_tap.cancel_current();
+            // The lock client owns keyboard routing, so the detector cannot
+            // observe a complete held-key stream while locked. Drop the whole
+            // snapshot; retaining only a cancellation flag would leave keys
+            // released during the lock permanently marked as held.
+            self.super_tap.reset();
         }
         for state in self.server.take_text_input_states() {
             self.host.set_text_input_state(state);
@@ -175,6 +179,7 @@ impl CompositorRuntime {
         let keyboard_captured = !session_locked && self.shell.captures_keyboard();
         let mut captured_actions = Vec::new();
         let mut chrome_owned_key_events = vec![false; events.len()];
+        let mut prepared_key_events = vec![None; events.len()];
         if !events.is_empty() {
             for (event_index, ev) in events.iter().enumerate() {
                 use aegis_core::input::InputEvent::*;
@@ -215,6 +220,11 @@ impl CompositorRuntime {
                         self.input_acc.cursor = (-1.0, -1.0);
                     }
                     Key { code, state } => {
+                        // Advance the physical XKB state here, in backend
+                        // arrival order, before shell/client ownership can
+                        // split this batch into separate delivery paths.
+                        let prepared = self.server.prepare_keyboard_event(code, state);
+                        prepared_key_events[event_index] = prepared;
                         let route = self.keyboard_capture.route(code, state, keyboard_captured);
                         let chrome_owned = route == aegis_core::input::KeyRoute::Chrome;
                         chrome_owned_key_events[event_index] = chrome_owned;
@@ -225,9 +235,10 @@ impl CompositorRuntime {
                             self.shell.toggle();
                         }
                         if chrome_owned {
-                            // Advance xkb on both edges, but only feed presses
-                            // to chrome so printable input is not duplicated.
-                            if let Some(kc) = self.server.key_char(code, state.is_pressed())
+                            // XKB was already advanced above on both edges;
+                            // only feed prepared presses to chrome so text is
+                            // not duplicated and no route can reorder state.
+                            if let Some(kc) = prepared.and_then(|event| event.key_char())
                                 && state.is_pressed()
                             {
                                 // A small explicit set of compositor controls
@@ -281,10 +292,15 @@ impl CompositorRuntime {
             let display = self.input_acc.display_size;
             let mut route_cursor = pointer_before;
             let mut forwarded = Vec::with_capacity(events.len() + 1);
+            let mut forwarded_keys = Vec::new();
             for (event_index, ev) in events.iter().copied().enumerate() {
                 use aegis_core::input::InputEvent::*;
                 match ev {
                     Key { .. } if chrome_owned_key_events[event_index] => {}
+                    Key { .. } => {
+                        forwarded.push(ev);
+                        forwarded_keys.push(prepared_key_events[event_index]);
+                    }
                     PointerMotion { x, y } => {
                         self.synthetic_pointer_active = false;
                         route_cursor = (x, y);
@@ -399,7 +415,11 @@ impl CompositorRuntime {
                 }
             }
             let mut actions = captured_actions;
-            actions.extend(self.server.forward_input(&forwarded, &self.keymap));
+            actions.extend(self.server.forward_prepared_input(
+                &forwarded,
+                &forwarded_keys,
+                &self.keymap,
+            ));
             let super_held = self
                 .server
                 .depressed_modifiers()

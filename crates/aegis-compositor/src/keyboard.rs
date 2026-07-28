@@ -85,6 +85,40 @@ pub struct KeyOutcome {
     pub utf8: Option<char>,
 }
 
+/// Apply one press/release to a client-facing logical key set.
+///
+/// Returns `true` only for a valid state transition. This enforces the
+/// `wl_keyboard` rule that a pressed key cannot be pressed again and a key
+/// that is not down cannot be released. In particular, it collapses repeat
+/// presses submitted through virtual-keyboard-v1; focused clients perform
+/// repetition from `repeat_info` themselves.
+pub(crate) fn apply_logical_key_state(
+    pressed_keys: &mut std::collections::BTreeSet<u32>,
+    key: u32,
+    pressed: bool,
+) -> bool {
+    if pressed {
+        pressed_keys.insert(key)
+    } else {
+        pressed_keys.remove(&key)
+    }
+}
+
+/// Borrow keycode storage as the wire representation required by
+/// `wl_keyboard.enter`. The caller keeps `keys` alive until
+/// `wl_resource_post_event` returns.
+pub(crate) fn keycodes_wl_array(keys: &[u32]) -> crate::ffi::wl_array {
+    crate::ffi::wl_array {
+        size: std::mem::size_of_val(keys),
+        alloc: std::mem::size_of_val(keys),
+        data: if keys.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            keys.as_ptr().cast_mut().cast()
+        },
+    }
+}
+
 impl Keyboard {
     /// Compile the default keymap and back it with a sealed memfd.
     pub fn new() -> std::io::Result<Keyboard> {
@@ -240,5 +274,64 @@ impl Keyboard {
 impl Drop for Keyboard {
     fn drop(&mut self) {
         unsafe { close(self.keymap_fd) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logical_key_state_accepts_exactly_one_press_release_pair() {
+        let mut keys = std::collections::BTreeSet::new();
+        assert!(apply_logical_key_state(&mut keys, 125, true));
+        assert!(!apply_logical_key_state(&mut keys, 125, true));
+        assert_eq!(keys.iter().copied().collect::<Vec<_>>(), vec![125]);
+        assert!(apply_logical_key_state(&mut keys, 125, false));
+        assert!(!apply_logical_key_state(&mut keys, 125, false));
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn keycode_array_borrows_all_u32_bytes() {
+        let keys = [56, 125];
+        let array = keycodes_wl_array(&keys);
+        assert_eq!(array.size, 2 * std::mem::size_of::<u32>());
+        assert_eq!(array.alloc, array.size);
+        assert_eq!(array.data.cast_const(), keys.as_ptr().cast());
+    }
+
+    #[test]
+    fn super_alt_logical_snapshot_survives_focus_handoff() {
+        let mut keys = std::collections::BTreeSet::new();
+        assert!(apply_logical_key_state(
+            &mut keys,
+            aegis_core::input::KEY_LEFTALT,
+            true
+        ));
+        assert!(apply_logical_key_state(
+            &mut keys,
+            aegis_core::input::KEY_LEFTMETA,
+            true
+        ));
+        let focus_enter_snapshot = keys.iter().copied().collect::<Vec<_>>();
+        assert_eq!(
+            focus_enter_snapshot,
+            vec![
+                aegis_core::input::KEY_LEFTALT,
+                aegis_core::input::KEY_LEFTMETA
+            ]
+        );
+        assert!(apply_logical_key_state(
+            &mut keys,
+            aegis_core::input::KEY_LEFTMETA,
+            false
+        ));
+        assert!(apply_logical_key_state(
+            &mut keys,
+            aegis_core::input::KEY_LEFTALT,
+            false
+        ));
+        assert!(keys.is_empty());
     }
 }

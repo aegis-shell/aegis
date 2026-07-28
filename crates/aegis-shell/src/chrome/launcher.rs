@@ -179,7 +179,7 @@ impl Launcher {
             prev_down: false,
             search_focused: false,
             modal_reserved: Reserved::default(),
-            app_menu: AppMenu::new("aegis-launcher-context-menu"),
+            app_menu: AppMenu::new("aegis-launcher-context-menu", false),
             reduced_motion: false,
         }
     }

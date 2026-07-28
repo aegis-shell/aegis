@@ -181,6 +181,8 @@ pub enum WindowAction {
     Focus(aegis_core::window::WindowId),
     /// Hide a window while keeping its client and buffers alive.
     Minimize(aegis_core::window::WindowId),
+    /// Set or clear compositor-managed maximization.
+    SetMaximized(aegis_core::window::WindowId, bool),
     /// Ask a client to close one of its toplevels gracefully.
     Close(aegis_core::window::WindowId),
 }

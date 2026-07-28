@@ -22,8 +22,9 @@ use aegis_core::workspace::{OutputId, Switch, WorkspaceId, WorkspaceSnapshot};
 use crate::journal::{JournalEntry, JournalSnapshot};
 
 /// The protocol major version this build speaks. A client must offer the
-/// same major version at the [`Request::Hello`] handshake. Version 8 adds
-/// explicit output-space-use transition events. Version 7 adds
+/// same major version at the [`Request::Hello`] handshake. Version 9 adds
+/// compositor maximize/restore commands. Version 8 adds explicit
+/// output-space-use transition events. Version 7 adds
 /// live system-status queries and immediate system-control commands. Version
 /// 6 adds user-consent interactive picking (`PickTarget` → `Picked`, ADR-0054)
 /// and the window target on `StreamOutputStart`. Version 5 adds continuous
@@ -31,7 +32,7 @@ use crate::journal::{JournalEntry, JournalSnapshot};
 /// `Event::StreamFrame`, `Event::StreamEnded`, `StreamOutputStop`,
 /// ADR-0052). Version 4 adds revisioned desktop-settings snapshots,
 /// subscriptions, and confirmed settings transactions.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 /// Built-in owner-only scope used by the compositor's reference CLI for
 /// Realm recovery and administration. The Unix socket remains user-private;
 /// naming this scope opts the connection into the high-risk Realm operation
@@ -278,6 +279,7 @@ impl Scope {
         match cmd {
             Command::Focus { id }
             | Command::Minimize { id }
+            | Command::SetMaximized { id, .. }
             | Command::Close { id }
             | Command::Move { id }
             | Command::SetWindowGeometry { id, .. }
@@ -390,6 +392,8 @@ pub enum Command {
     Focus { id: WindowId },
     /// Minimize a toplevel by id while keeping it mapped. `control`.
     Minimize { id: WindowId },
+    /// Set or clear compositor-managed maximization for a toplevel. `control`.
+    SetMaximized { id: WindowId, maximized: bool },
     /// Close a toplevel by id. `control`.
     Close { id: WindowId },
     /// Begin an interactive move of a toplevel by id. `control`.
@@ -551,6 +555,7 @@ impl Command {
         match self {
             Command::Focus { .. } => OpClass::Focus,
             Command::Minimize { .. } => OpClass::Minimize,
+            Command::SetMaximized { .. } => OpClass::SetWindowGeometry,
             Command::Close { .. } => OpClass::Close,
             Command::Move { .. } => OpClass::Move,
             Command::SetWindowGeometry { .. } => OpClass::SetWindowGeometry,
@@ -1158,6 +1163,18 @@ mod tests {
             serde_json::from_str::<Event>(&fullscreen_json).unwrap(),
             fullscreen
         );
+    }
+
+    #[test]
+    fn set_maximized_command_round_trips_and_uses_geometry_authority() {
+        let command = Command::SetMaximized {
+            id: WindowId(42),
+            maximized: true,
+        };
+        let json = serde_json::to_string(&command).unwrap();
+        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), command);
+        assert_eq!(command.op_class(), OpClass::SetWindowGeometry);
+        assert!(command.required_cap().control);
     }
 
     #[test]

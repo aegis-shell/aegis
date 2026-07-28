@@ -2,11 +2,12 @@ use crate::*;
 
 impl Server {
     /// Transition keyboard focus: post leave to the old client's keyboard
-    /// resources and enter to the new client's. The "keys" array passed to
-    /// `enter` is empty — M1 does not track currently-held keys for resend on
-    /// refocus; that's a polish item once the keyboard pipeline stabilizes.
-    /// Also flips the `activated` toplevel state bit on the old and new
-    /// surfaces so clients update their title-bar chrome to match focus.
+    /// resources and enter to the new client's. The `enter` snapshot carries
+    /// every key currently down in the client-facing logical stream. This is
+    /// required when focus changes while a modifier is held: the new client
+    /// must learn about the press before its eventual release. Also flips the
+    /// `activated` toplevel state bit on the old and new surfaces so clients
+    /// update their title-bar chrome to match focus.
     pub(crate) fn change_keyboard_focus(&mut self, mut new_focus: *mut ffi::wl_resource) {
         let allowed = if self.state.session_locked {
             self.is_lock_resource(new_focus)
@@ -31,7 +32,6 @@ impl Server {
         }
         let serial = unsafe { ffi::wl_display_next_serial(self.state.display) };
         let old = self.state.keyboard_focus;
-        let empty = ffi::wl_array::empty();
 
         if !old.is_null() {
             let old_client = unsafe { ffi::wl_resource_get_client(old) };
@@ -49,6 +49,13 @@ impl Server {
         }
         if !new_focus.is_null() {
             let new_client = unsafe { ffi::wl_resource_get_client(new_focus) };
+            let pressed_keys = self
+                .state
+                .client_pressed_keys
+                .iter()
+                .copied()
+                .collect::<Vec<_>>();
+            let keys = keyboard::keycodes_wl_array(&pressed_keys);
             let modifiers = self
                 .state
                 .keyboard
@@ -62,7 +69,7 @@ impl Server {
                         ffi::WL_KEYBOARD_ENTER,
                         serial,
                         new_focus,
-                        &empty as *const ffi::wl_array as *mut ffi::wl_array,
+                        &keys as *const ffi::wl_array as *mut ffi::wl_array,
                     );
                     ffi::wl_resource_post_event(
                         k,

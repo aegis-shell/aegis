@@ -267,7 +267,7 @@ impl Dock {
             sizes: HashMap::new(),
             anim_active: false,
             prev_down: false,
-            app_menu: AppMenu::new("aegis-dock-context-menu"),
+            app_menu: AppMenu::new("aegis-dock-context-menu", true),
             menu_tile: None,
             hovered_tile: None,
             hover_elapsed: 0.0,

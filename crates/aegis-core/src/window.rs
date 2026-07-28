@@ -170,6 +170,11 @@ pub struct Window {
     pub transition: Option<crate::transition::WindowTransition>,
 }
 
+/// Compositor-owned direct-resize area outside a floating window, in logical
+/// pixels. Pointer coordinates and window geometry are both expressed in
+/// compositor-logical space, so the physical reach scales with the output.
+pub const RESIZE_OUTER_MARGIN: f32 = 4.0;
+
 impl Window {
     pub fn new(id: WindowId) -> Window {
         Window {
@@ -178,34 +183,48 @@ impl Window {
         }
     }
 
-    /// Resolve an inside-border pointer position to xdg-shell resize edge
-    /// bits. Returns [`ResizeEdges::NONE`] away from the border or outside the
-    /// window. When a tiny window puts both opposing borders within reach,
-    /// the nearest edge wins so an axis is never contradictory.
-    pub fn resize_edges_at(&self, x: f32, y: f32, border: f32) -> ResizeEdges {
-        if border <= 0.0 || self.size.w <= 0 || self.size.h <= 0 {
+    /// Whether a compositor-logical point is inside the window rectangle.
+    pub fn contains_point(&self, x: f32, y: f32) -> bool {
+        if self.size.w <= 0 || self.size.h <= 0 {
+            return false;
+        }
+        let left = self.position.x as f32;
+        let top = self.position.y as f32;
+        let right = left + self.size.w as f32;
+        let bottom = top + self.size.h as f32;
+        x >= left && x < right && y >= top && y < bottom
+    }
+
+    /// Resolve a pointer position in the outer resize margin to xdg-shell
+    /// edge bits. The client-content rectangle is deliberately excluded, so
+    /// compositor resize never consumes pixels belonging to an application.
+    /// The margin is expressed in logical pixels and therefore follows output
+    /// scale.
+    pub fn resize_edges_at(&self, x: f32, y: f32, margin: f32) -> ResizeEdges {
+        if margin <= 0.0 || self.size.w <= 0 || self.size.h <= 0 {
             return ResizeEdges::NONE;
         }
         let left = self.position.x as f32;
         let top = self.position.y as f32;
         let right = left + self.size.w as f32;
         let bottom = top + self.size.h as f32;
-        if x < left || x >= right || y < top || y >= bottom {
+        if x < left - margin
+            || x >= right + margin
+            || y < top - margin
+            || y >= bottom + margin
+            || self.contains_point(x, y)
+        {
             return ResizeEdges::NONE;
         }
-        let dl = x - left;
-        let dr = right - x;
-        let dt = y - top;
-        let db = bottom - y;
         let mut bits = 0;
-        if dl <= border && dl <= dr {
+        if x < left {
             bits |= ResizeEdges::LEFT.0;
-        } else if dr <= border {
+        } else if x >= right {
             bits |= ResizeEdges::RIGHT.0;
         }
-        if dt <= border && dt <= db {
+        if y < top {
             bits |= ResizeEdges::TOP.0;
-        } else if db <= border {
+        } else if y >= bottom {
             bits |= ResizeEdges::BOTTOM.0;
         }
         ResizeEdges(bits)
@@ -456,15 +475,24 @@ mod tests {
     }
 
     #[test]
-    fn resize_hit_test_resolves_edges_corners_and_center() {
+    fn resize_hit_test_uses_only_the_outer_logical_margin() {
         let mut w = Window::new(WindowId(1));
         w.position = crate::Point { x: 100, y: 50 };
         w.size = crate::Size { w: 400, h: 300 };
-        assert_eq!(w.resize_edges_at(101.0, 200.0, 8.0), ResizeEdges::LEFT);
-        assert_eq!(w.resize_edges_at(498.0, 200.0, 8.0), ResizeEdges::RIGHT);
-        assert_eq!(w.resize_edges_at(102.0, 52.0, 8.0).0, 5); // top-left
-        assert_eq!(w.resize_edges_at(300.0, 200.0, 8.0), ResizeEdges::NONE);
-        assert_eq!(w.resize_edges_at(99.0, 200.0, 8.0), ResizeEdges::NONE);
+        let margin = RESIZE_OUTER_MARGIN;
+
+        assert_eq!(w.resize_edges_at(99.0, 200.0, margin), ResizeEdges::LEFT);
+        assert_eq!(w.resize_edges_at(500.0, 200.0, margin), ResizeEdges::RIGHT);
+        assert_eq!(w.resize_edges_at(99.0, 49.0, margin).0, 5); // top-left
+        assert_eq!(w.resize_edges_at(300.0, 49.0, margin), ResizeEdges::TOP);
+        assert_eq!(w.resize_edges_at(300.0, 350.0, margin), ResizeEdges::BOTTOM);
+
+        // Content pixels, including the inner edge, belong to the client.
+        assert_eq!(w.resize_edges_at(100.0, 200.0, margin), ResizeEdges::NONE);
+        assert_eq!(w.resize_edges_at(499.0, 200.0, margin), ResizeEdges::NONE);
+        // The half-open margin is exactly four logical pixels wide.
+        assert_eq!(w.resize_edges_at(95.99, 200.0, margin), ResizeEdges::NONE);
+        assert_eq!(w.resize_edges_at(504.0, 200.0, margin), ResizeEdges::NONE);
     }
 
     #[test]

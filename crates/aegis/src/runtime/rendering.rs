@@ -414,13 +414,21 @@ pub(super) fn draw_client_scene(
     let surface_order = server.client_surface_frame_order();
     let overlay_shm = server.overlay_frames();
     let overlay_dmabuf = server.overlay_dmabuf_frames();
+    let windows = server.windows();
     renderer.gc(shm
         .iter()
         .map(|frame| frame.id)
         .chain(dmabuf.iter().map(|frame| frame.id))
         .chain(overlay_shm.iter().map(|frame| frame.id))
         .chain(overlay_dmabuf.iter().map(|frame| frame.id)));
-    renderer.draw_surfaces_ordered(device, canvas, &surface_order, &shm, &dmabuf);
+    renderer.draw_surfaces_ordered_with_window_shadows(
+        device,
+        canvas,
+        &surface_order,
+        &shm,
+        &dmabuf,
+        &windows,
+    );
     canvas.restore();
 }
 

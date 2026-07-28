@@ -311,13 +311,18 @@ unsafe extern "C" fn seat_get_keyboard(
                 // logical focus. Announce that state immediately; destroying a
                 // sibling wl_keyboard resource never changes surface focus.
                 let serial = ffi::wl_display_next_serial((*state).display);
-                let empty = ffi::wl_array::empty();
+                let pressed_keys = runtime
+                    .client_pressed_keys
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>();
+                let keys = keyboard::keycodes_wl_array(&pressed_keys);
                 ffi::wl_resource_post_event(
                     k,
                     ffi::WL_KEYBOARD_ENTER,
                     serial,
                     runtime.keyboard_focus,
-                    &empty as *const ffi::wl_array as *mut ffi::wl_array,
+                    &keys as *const ffi::wl_array as *mut ffi::wl_array,
                 );
                 let modifiers = runtime
                     .keyboard

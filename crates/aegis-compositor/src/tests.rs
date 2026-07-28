@@ -413,6 +413,59 @@ fn server_new_creates_socket() {
     );
 }
 
+#[test]
+fn prepared_keyboard_edges_keep_physical_order_across_route_boundary() {
+    let mut state = State::new(std::ptr::null_mut());
+    state.keyboard = Some(keyboard::Keyboard::new().expect("compile test keymap"));
+    // Avoid Server::drop: this fixture has no wl_display to destroy.
+    let mut server = std::mem::ManuallyDrop::new(Server {
+        state: Box::new(state),
+        socket: String::new(),
+        realm_portals: Vec::new(),
+        epoch: std::time::Instant::now(),
+    });
+
+    // Super began on the client route in the previous backend batch.
+    let super_down = server
+        .prepare_keyboard_event(
+            aegis_core::input::KEY_LEFTMETA,
+            aegis_core::input::ButtonState::Pressed,
+        )
+        .expect("keyboard");
+    assert!(
+        super_down
+            .key_char()
+            .expect("ordinary modifier")
+            .mods
+            .has(aegis_core::input::Mods::SUPER)
+    );
+
+    // The next batch crosses ownership: Super's release still belongs to the
+    // client, while a new Alt press belongs to compositor chrome. Both must
+    // retain the XKB state at their physical position in that one batch.
+    let super_up = server
+        .prepare_keyboard_event(
+            aegis_core::input::KEY_LEFTMETA,
+            aegis_core::input::ButtonState::Released,
+        )
+        .expect("keyboard")
+        .key_char()
+        .expect("ordinary modifier");
+    let alt_down = server
+        .prepare_keyboard_event(
+            aegis_core::input::KEY_LEFTALT,
+            aegis_core::input::ButtonState::Pressed,
+        )
+        .expect("keyboard")
+        .key_char()
+        .expect("ordinary modifier");
+
+    assert!(!super_up.mods.has(aegis_core::input::Mods::SUPER));
+    assert!(alt_down.mods.has(aegis_core::input::Mods::ALT));
+    assert!(!alt_down.mods.has(aegis_core::input::Mods::SUPER));
+    assert_eq!(server.depressed_modifiers(), aegis_core::input::Mods::ALT);
+}
+
 /// Registry absence is the intentional capability signal for Primary
 /// Selection. Keep the standard clipboard and host IME protocols visible
 /// while guarding against an accidental reintroduction of either
