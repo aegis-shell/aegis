@@ -7,6 +7,39 @@ project cuts a tagged release.
 
 ## Unreleased
 
+## [0.0.4] - 2026-07-28
+
+### Input-method keyboard grab
+
+- The input-method keyboard grab now owns the hardware key stream for its
+  whole resource lifetime, not only while a `zwp_text_input_v3` field is
+  active. A modifier pressed before a focus-change boundary (Super while
+  Super+Tab window switching) is no longer stranded in the input method's
+  XKB state, which previously caused foot to swallow subsequent
+  composition. The grab forwards unconsumed keys through
+  `zwp_virtual_keyboard_v1`.
+
+### Cursor theming
+
+- `wp_cursor_shape` name resolution now prefers the protocol/CSS name
+  (`default`, `text`, `e-resize`, ...) with legacy Xcursor aliases
+  (`left_ptr`, `xterm`, ...) as fallback, matching what modern themes
+  ship.
+- `$XCURSOR_PATH` is honored for theme search roots when set.
+- The software cursor is sourced exclusively from the XDG cursor theme.
+  When a theme ships no image (or no theme is installed), the compositor
+  no longer falls back to hand-drawn glyphs; a missing theme is logged as
+  an error.
+
+### Overlay compositing
+
+- Input-method popups, drag icons, and client cursor surfaces are now
+  drawn above ordinary shell chrome, so a Dock or status bar can no
+  longer cover the candidate panel or cursor.
+- The screenshot freeze snapshot now includes protocol overlays, so the
+  frozen trigger frame matches what was on screen when the selector
+  opened.
+
 ## [0.0.3] - 2026-07-28
 
 ### Canonical Aegis namespace
