@@ -1,7 +1,7 @@
 //! The launcher's pure state machine — query, filtering, and selection.
 //!
 //! No flux, lens, or Wayland dependency. The chrome component in
-//! `ass-shell` owns one of these and delegates key handling and rendering to
+//! `aegis-shell` owns one of these and delegates key handling and rendering to
 //! it; this module is unit-tested in isolation. See ADR-0022.
 
 use std::cell::{Ref, RefCell};

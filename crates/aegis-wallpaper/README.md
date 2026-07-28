@@ -35,7 +35,7 @@ or other image effects. Video support requires `ffmpeg` on the host.
 
 ```rust
 let mut wallpaper =
-    ass_wallpaper::Wallpaper::from_path("background.webp", 1920, 1080)?;
+    aegis_wallpaper::Wallpaper::from_path("background.webp", 1920, 1080)?;
 wallpaper.set_model_from_gltf(&device, &surface, "sculpture.glb")?;
 
 wallpaper.draw(&device, &canvas, 1920.0, 1080.0);

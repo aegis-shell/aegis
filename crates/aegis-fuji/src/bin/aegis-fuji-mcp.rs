@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "aegis-fuji-mcp",
     version,
-    about = "Scoped ASS desktop and Agent Realm MCP bridge for fuji"
+    about = "Scoped Aegis desktop and Agent Realm MCP bridge for fuji"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -19,7 +19,7 @@ struct Cli {
 enum Command {
     /// Serve MCP over newline-delimited JSON-RPC on stdin/stdout (default).
     Serve,
-    /// Probe the configured ASS scope and print the effective tool grant.
+    /// Probe the configured Aegis scope and print the effective tool grant.
     Check,
     /// Run a live, reversible notification and Agent Realm smoke test.
     Smoke {
@@ -102,6 +102,6 @@ fn print_config() -> ExitCode {
         }
     };
     let command = serde_json::to_string(&executable.to_string_lossy()).expect("string JSON");
-    println!("[mcp.ass]\ncommand = [{command}]\nenabled = true\nread_only = false");
+    println!("[mcp.aegis]\ncommand = [{command}]\nenabled = true\nread_only = false");
     ExitCode::SUCCESS
 }

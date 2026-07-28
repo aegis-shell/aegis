@@ -1,7 +1,7 @@
 # Nested Backend Development
 
 Use the nested backend for the default compositor development workflow. It runs
-ass inside an existing Wayland desktop, so crashes and restarts affect one
+aegis inside an existing Wayland desktop, so crashes and restarts affect one
 host window instead of the active VT. Use the DRM/KMS backend only for
 behavior that depends on direct hardware or session ownership.
 
@@ -15,16 +15,16 @@ The nested process is both a Wayland client and a Wayland compositor:
 
 ```text
 outer Wayland compositor
-└── ass xdg-toplevel window (outer Wayland client)
-    ├── Vulkan swapchain and ass chrome
-    ├── ass Wayland server socket (wayland-N)
+└── aegis xdg-toplevel window (outer Wayland client)
+    ├── Vulkan swapchain and aegis chrome
+    ├── aegis Wayland server socket (wayland-N)
     └── inner Wayland clients
 ```
 
-At startup, ass connects to the inherited `$WAYLAND_DISPLAY`, creates an
+At startup, aegis connects to the inherited `$WAYLAND_DISPLAY`, creates an
 `xdg_toplevel`, and presents Flux frames through a Wayland Vulkan surface. It
 also creates a separate, auto-named Wayland server socket for applications
-managed inside ass, then points its own process environment at that socket.
+managed inside aegis, then points its own process environment at that socket.
 The D-Bus and systemd activation environments are left to the host session:
 exporting the inner socket there would send the host's activated services to
 the nested compositor.
@@ -52,7 +52,7 @@ The runner defaults to `--backend nested`; it never selects DRM implicitly.
 It builds and stages the compositor and first-party applications, creates an
 isolated runtime directory, and exits when that compositor instance exits.
 
-A successful start opens an `ass` window and logs both roles:
+A successful start opens an `aegis` window and logs both roles:
 
 ```text
 flux: device created for nested backend; ...
@@ -66,7 +66,7 @@ A direct `cargo run -p aegis -- --backend nested` starts only the compositor.
 It does not stage first-party external applications. Use the runner when the
 test includes System Settings discovery or launch.
 
-## Run Applications Inside ass
+## Run Applications Inside aegis
 
 Prefer the built-in launcher. It passes the inner socket to the child process
 explicitly, so launched applications reach the nested compositor regardless of
@@ -102,7 +102,7 @@ XDG_RUNTIME_DIR=/run/user/1000/aegis-dev.ABC123 \
     cargo run -p aegis-ctl -- outputs
 ```
 
-Only one ass IPC server can own an `aegis.sock` path. A manually started
+Only one aegis IPC server can own an `aegis.sock` path. A manually started
 nested process continues without IPC and logs an address-in-use warning when
 the outer compositor already owns that path. Prefer `scripts/dev.sh`, which
 creates and cleans a private nested runtime while preserving access to common
@@ -147,7 +147,7 @@ critical path.
 
 ### Configuration Changes
 
-Edit `$XDG_CONFIG_HOME/ass/config.toml`, defaulting to
+Edit `$XDG_CONFIG_HOME/aegis/config.toml`, defaulting to
 `~/.config/aegis/config.toml`, while the nested session runs. The compositor
 checks the file each frame and applies a valid change without restarting.
 Invalid configuration leaves the previous configuration active and writes a
@@ -204,11 +204,11 @@ printf '%s\n' "$WAYLAND_DISPLAY" "$XDG_RUNTIME_DIR"
 ```
 
 Do not replace the shell's `$WAYLAND_DISPLAY` with the inner `wayland-N`
-before starting ass. The nested backend needs the outer display first.
+before starting aegis. The nested backend needs the outer display first.
 
 ### A Test Client Opens on the Outer Desktop
 
-Start it with the inner socket logged by ass, or start it through the built-in
+Start it with the inner socket logged by aegis, or start it through the built-in
 launcher. The parent shell continues to point at the outer compositor by
 design.
 

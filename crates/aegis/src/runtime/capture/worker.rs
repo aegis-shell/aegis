@@ -127,7 +127,7 @@ impl CaptureWorker {
         let security_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1));
         let worker_security_generation = std::sync::Arc::clone(&security_generation);
         std::thread::Builder::new()
-            .name("ass-capture".into())
+            .name("aegis-capture".into())
             .spawn(move || {
                 while let Ok(job) = job_rx.recv() {
                     match job {

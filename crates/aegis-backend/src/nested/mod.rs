@@ -1,4 +1,4 @@
-//! Nested backend: ass as a client of a host Wayland session.
+//! Nested backend: aegis as a client of a host Wayland session.
 //!
 //! Brings up an xdg-shell toplevel over raw libwayland-client and creates a
 //! `VkSurfaceKHR` on flux's Vulkan instance via `ash`, so flux can present into

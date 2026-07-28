@@ -227,7 +227,7 @@ impl ScreenshotSelector {
 
         // Selection fill and border.
         frame.layer(
-            "ass-screenshot-selection",
+            "aegis-screenshot-selection",
             lens_rect,
             &OverlayOpts {
                 bg: Color::rgba(100, 160, 255, 40),
@@ -246,7 +246,7 @@ impl ScreenshotSelector {
             let label_x = lens_rect.x.clamp(0.0, display.0 - label_w);
             let label_y = (lens_rect.y - label_h - 6.0).clamp(0.0, display.1 - label_h);
             frame.layer(
-                "ass-screenshot-label",
+                "aegis-screenshot-label",
                 LensRect {
                     x: label_x,
                     y: label_y,
@@ -287,7 +287,7 @@ impl ScreenshotSelector {
                 (lens_rect.y - hint_h - 6.0).max(0.0)
             };
             frame.layer(
-                "ass-screenshot-hint",
+                "aegis-screenshot-hint",
                 LensRect {
                     x: hint_x,
                     y: hint_y,
@@ -320,7 +320,7 @@ impl ScreenshotSelector {
     fn render_crosshair(&self, frame: &mut Frame, display: (f32, f32)) {
         let crosshair = Color::rgba(100, 160, 255, 220);
         frame.layer(
-            "ass-picker-crosshair-v",
+            "aegis-picker-crosshair-v",
             LensRect {
                 x: self.current.x.round() - 0.5,
                 y: 0.0,
@@ -334,7 +334,7 @@ impl ScreenshotSelector {
             |_| {},
         );
         frame.layer(
-            "ass-picker-crosshair-h",
+            "aegis-picker-crosshair-h",
             LensRect {
                 x: 0.0,
                 y: self.current.y.round() - 0.5,
@@ -377,7 +377,7 @@ impl ScreenshotSelector {
             ),
         };
         frame.layer(
-            "ass-picker-window",
+            "aegis-picker-window",
             rect,
             &OverlayOpts {
                 bg: Color::rgba(100, 160, 255, 40),
@@ -393,7 +393,7 @@ impl ScreenshotSelector {
             let label_x = rect.x.clamp(0.0, display.0 - label_w);
             let label_y = (rect.y - label_h - 6.0).clamp(0.0, display.1 - label_h);
             frame.layer(
-                "ass-picker-window-label",
+                "aegis-picker-window-label",
                 LensRect {
                     x: label_x,
                     y: label_y,
@@ -476,7 +476,7 @@ impl Chrome for ScreenshotSelector {
 
         // Full-screen dimmed scrim.
         frame.layer(
-            "ass-screenshot-scrim",
+            "aegis-screenshot-scrim",
             LensRect {
                 x: 0.0,
                 y: 0.0,
@@ -685,6 +685,7 @@ mod tests {
         let workspaces = WorkspaceSnapshot {
             outputs: Vec::new(),
         };
+        assert!(s.captures_keyboard());
         assert!(s.captures_pointer(0.0, 0.0, (100.0, 100.0), &[], &workspaces));
         assert_eq!(
             s.cursor_shape_at(0.0, 0.0, (100.0, 100.0), &[], &workspaces),

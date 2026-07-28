@@ -1,6 +1,6 @@
 # Contributor Documentation
 
-Contributor-only documentation for ass. User-facing material lives under
+Contributor-only documentation for aegis. User-facing material lives under
 the other `docs/` sections; see the [documentation index](../index.md).
 
 ## Pages

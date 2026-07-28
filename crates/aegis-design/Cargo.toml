@@ -1,6 +1,6 @@
 [package]
 name = "aegis-design"
-description = "Product design tokens, themes, and materials for ass chrome"
+description = "Product design tokens, themes, and materials for aegis chrome"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true

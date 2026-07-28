@@ -867,7 +867,7 @@ impl CompositorRuntime {
                 // Launch the application the launcher's clicked row asked for.
                 // The child is detached (setsid) and inherits the Wayland/XDG
                 // environment, so it connects back to this compositor and
-                // survives it exiting. See ass-launch / ADR-0022.
+                // survives it exiting. See aegis-launch / ADR-0022.
                 if let Some(entry) = self.shell.take_spawn() {
                     let opts = aegis_launcher::LaunchOpts {
                         wayland_display: Some(self.server.socket().to_owned()),
@@ -880,21 +880,6 @@ impl CompositorRuntime {
                         Err(e) => log::warn!("launcher: failed to spawn {}: {e}", entry.id),
                     }
                 }
-                // Apply keyboard-grab transitions the chrome requested this
-                // frame (launcher opened or closed). Done after the intent
-                // drains so a launcher "focus running app" action (which sets
-                // a new keyboard focus) takes precedence over restoring the
-                // pre-grab focus. The grab sends `wl_keyboard.leave` to the
-                // focused client and the release sends `wl_keyboard.enter`
-                // back, keeping the focused client's state consistent with the
-                // capture decision. See ADR-0022.
-                let captured = !session_locked && self.shell.captures_keyboard();
-                if captured && !self.prev_captured {
-                    self.server.grab_keyboard_focus();
-                } else if !captured && self.prev_captured {
-                    self.server.release_keyboard_focus();
-                }
-                self.prev_captured = captured;
                 if self.host.uses_software_cursor() && !cursor_hidden {
                     draw_software_cursor(
                         &self.canvas,

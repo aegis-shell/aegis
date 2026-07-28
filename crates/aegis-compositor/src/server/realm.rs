@@ -375,7 +375,7 @@ impl Server {
     }
 
     /// Atomically move control of the target window's complete client
-    /// interaction group to another realm. ass intentionally groups every
+    /// interaction group to another realm. aegis intentionally groups every
     /// toplevel on one Wayland client connection; a single-instance
     /// application therefore needs no app-side changes, while split authority
     /// can never create an ambiguous seat stream. Native multi-seat detection
@@ -786,7 +786,6 @@ impl Server {
         }
         runtime.pointer_focus = std::ptr::null_mut();
         runtime.keyboard_focus = std::ptr::null_mut();
-        runtime.saved_keyboard_focus = std::ptr::null_mut();
         runtime.tablet_focus = std::ptr::null_mut();
         runtime.implicit_grab_active = false;
         runtime.interactive = None;

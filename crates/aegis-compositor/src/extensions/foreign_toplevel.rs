@@ -123,7 +123,7 @@ unsafe fn create_foreign_handle(
                 c.as_ptr(),
             );
         }
-        if let Ok(c) = CString::new(format!("ass:{wid}")) {
+        if let Ok(c) = CString::new(format!("aegis:{wid}")) {
             ffi::wl_resource_post_event(
                 handle,
                 ffi::EXT_FOREIGN_TOPLEVEL_HANDLE_V1_IDENTIFIER,

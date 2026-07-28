@@ -2,8 +2,8 @@
 //!
 //! Backends (nested-host, libinput, DRM/KMS) emit these; the main loop drains
 //! and routes them — to the focused client via `wl_seat`, to the chrome via
-//! `lens::Input`, or both. Keeping the types in `ass-core` (rather than in
-//! `ass-backend`) means the server and shell never need to depend on a backend
+//! `lens::Input`, or both. Keeping the types in `aegis-core` (rather than in
+//! `aegis-backend`) means the server and shell never need to depend on a backend
 //! crate to consume input.
 
 // The XKB keysym constants below mirror the C macros in X11/keysymdef.h
@@ -404,7 +404,7 @@ pub enum PointerGestureEvent {
 
 // XKB keysym values for the few control keys the compositor chrome cares
 // about. These are stable, public constants from X11/keysymdef.h; defining
-// them here keeps `ass-core` free of an `xkbcommon` dependency while letting
+// them here keeps `aegis-core` free of an `xkbcommon` dependency while letting
 // the launcher interpret keysym output it receives from the server. The names
 // intentionally match the C macros verbatim (greppable against keysymdef.h),
 // so they do not follow Rust's UPPER_CASE globals convention; the file-level
@@ -478,6 +478,51 @@ pub struct KeyChar {
     pub ch: Option<char>,
     /// Active modifier mask at press time, for global key-bindings.
     pub mods: Mods,
+}
+
+/// Destination that owns one physical key sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyRoute {
+    /// Deliver the event through the focused Wayland seat.
+    Client,
+    /// Resolve the event for compositor chrome and withhold it from clients.
+    Chrome,
+}
+
+/// Keeps a key press and its matching release on the same routing path.
+///
+/// Opening or closing compositor chrome may change where *new* presses go,
+/// but it must not split an already-started sequence. The state only needs to
+/// remember chrome-owned presses: every other key belongs to the client path.
+#[derive(Debug, Clone, Default)]
+pub struct KeyboardCaptureState {
+    chrome_owned: std::collections::HashSet<u32>,
+}
+
+impl KeyboardCaptureState {
+    /// Select the destination for one physical key event.
+    ///
+    /// `chrome_captures_new_presses` applies only when a sequence starts.
+    /// Repeated presses and the final release retain the original owner.
+    pub fn route(
+        &mut self,
+        code: u32,
+        state: ButtonState,
+        chrome_captures_new_presses: bool,
+    ) -> KeyRoute {
+        if state.is_pressed() {
+            if self.chrome_owned.contains(&code) || chrome_captures_new_presses {
+                self.chrome_owned.insert(code);
+                KeyRoute::Chrome
+            } else {
+                KeyRoute::Client
+            }
+        } else if self.chrome_owned.remove(&code) {
+            KeyRoute::Chrome
+        } else {
+            KeyRoute::Client
+        }
+    }
 }
 
 /// A chrome-facing classification of a key event. Built from a [`KeyChar`]
@@ -698,6 +743,49 @@ mod tests {
         );
         // Unknown keysym with no char is ignored.
         assert_eq!(key_action(0x1234, None), KeyAction::Ignore);
+    }
+
+    #[test]
+    fn chrome_owned_press_keeps_its_release_after_capture_closes() {
+        let mut capture = KeyboardCaptureState::default();
+        assert_eq!(
+            capture.route(30, ButtonState::Pressed, true),
+            KeyRoute::Chrome
+        );
+        assert_eq!(
+            capture.route(30, ButtonState::Released, false),
+            KeyRoute::Chrome
+        );
+    }
+
+    #[test]
+    fn client_owned_press_keeps_its_release_after_capture_opens() {
+        let mut capture = KeyboardCaptureState::default();
+        assert_eq!(
+            capture.route(30, ButtonState::Pressed, false),
+            KeyRoute::Client
+        );
+        assert_eq!(
+            capture.route(30, ButtonState::Released, true),
+            KeyRoute::Client
+        );
+    }
+
+    #[test]
+    fn repeated_press_keeps_the_sequence_owner() {
+        let mut capture = KeyboardCaptureState::default();
+        assert_eq!(
+            capture.route(30, ButtonState::Pressed, true),
+            KeyRoute::Chrome
+        );
+        assert_eq!(
+            capture.route(30, ButtonState::Pressed, false),
+            KeyRoute::Chrome
+        );
+        assert_eq!(
+            capture.route(30, ButtonState::Released, false),
+            KeyRoute::Chrome
+        );
     }
 
     #[test]

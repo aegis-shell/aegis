@@ -5,13 +5,13 @@
 //! decision computed on a dedicated worker, then `Response` with
 //! `{background, autostart}` results and the object removed.
 //!
-//! ass has no PermissionStore, so the authorization decision is persisted
+//! aegis has no PermissionStore, so the authorization decision is persisted
 //! by the backend itself as `$XDG_DATA_HOME/aegis-portal/background.json`
 //! (ADR-0053) and repeated requests from the same app_id are answered from
 //! the recorded decision. The policy is deliberately simple: there is no
 //! running-application tracking, so a requested `background = true` is
 //! granted by default and recorded (the grant is a bookkeeping answer, not
-//! an enforced sandbox property — ass does not confine background
+//! an enforced sandbox property — aegis does not confine background
 //! execution). `autostart = true` is materialized the standard way, by
 //! copying the application's desktop file into
 //! `$XDG_CONFIG_HOME/autostart/`; it is reported `false` when no source

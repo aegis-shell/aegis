@@ -131,12 +131,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_the_shipped_ass_desktop_realm_skill() {
-        let text = "---\nname: ass-desktop-realm\ndescription: Use when operating windows\nshort-description: short\npolicy:\n  allow_implicit_invocation: true\ndependencies:\n  - type: mcp\n    value: ass\n---\n# Title\n";
+    fn parses_the_shipped_aegis_desktop_realm_skill() {
+        let text = "---\nname: aegis-desktop-realm\ndescription: Use when operating windows\nshort-description: short\npolicy:\n  allow_implicit_invocation: true\ndependencies:\n  - type: mcp\n    value: aegis\n---\n# Title\n";
         let (frontmatter, _) = split_frontmatter(text).expect("frontmatter");
         let skill = parse(text, "fallback", Path::new("SKILL.md")).expect("skill");
         assert!(frontmatter.contains("policy:"));
-        assert_eq!(skill.name, "ass-desktop-realm");
+        assert_eq!(skill.name, "aegis-desktop-realm");
         assert_eq!(skill.description, "Use when operating windows");
         assert_eq!(skill.body, "# Title");
     }

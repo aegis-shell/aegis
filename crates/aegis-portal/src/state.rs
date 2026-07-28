@@ -1,6 +1,6 @@
 //! Portal-owned persistent state (ADR-0053).
 //!
-//! ass has no PermissionStore, so the backend persists its own authorization
+//! aegis has no PermissionStore, so the backend persists its own authorization
 //! decisions — Background grants and ScreenCast restore tokens — as JSON
 //! documents under `$XDG_DATA_HOME/aegis-portal` (falling back to
 //! `$HOME/.local/share/aegis-portal`). Writes are mode `0600` via

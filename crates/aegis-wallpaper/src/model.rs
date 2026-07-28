@@ -223,7 +223,7 @@ fn procedural_knot_glb() -> Vec<u8> {
     let binary_len = position_bytes + normal_bytes + index_bytes;
     let json = format!(
         concat!(
-            "{{\"asset\":{{\"version\":\"2.0\",\"generator\":\"ass procedural knot\"}},",
+            "{{\"asset\":{{\"version\":\"2.0\",\"generator\":\"aegis procedural knot\"}},",
             "\"buffers\":[{{\"byteLength\":{}}}],",
             "\"bufferViews\":[",
             "{{\"buffer\":0,\"byteOffset\":0,\"byteLength\":{},\"target\":34962}},",

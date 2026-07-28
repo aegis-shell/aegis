@@ -1,6 +1,6 @@
 # Reference
 
-Exact lookup for ass: configuration keys, schemas, and option tables. For
+Exact lookup for aegis: configuration keys, schemas, and option tables. For
 the design behind these options, see the
 [Architecture Decision Records](../adr/index.md); for narrative background,
 see [Explanation](../explanation/index.md).

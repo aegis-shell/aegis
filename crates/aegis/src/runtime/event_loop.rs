@@ -75,7 +75,7 @@ impl CompositorRuntime {
         }
 
         log::info!(
-            "ass: {} session ended after {} frames",
+            "aegis: {} session ended after {} frames",
             self.host.name(),
             self.frame_count
         );

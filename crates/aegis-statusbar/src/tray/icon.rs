@@ -4,7 +4,7 @@
 //! SVG through `rsvg-convert`) — far too slow for the render thread. The
 //! watcher resolves names into BGRA8 pixmaps before publishing them in the
 //! shared snapshot, so the bar only ever uploads ready pixels. Mirrors the
-//! compositor's app-icon path (`ass::runtime::apps`).
+//! compositor's app-icon path (`aegis::runtime::apps`).
 
 use std::path::Path;
 use std::process::Command;
@@ -62,7 +62,7 @@ pub(super) fn resolve_theme_icon(name: &str) -> Option<TrayPixmap> {
 /// Decode a resolved theme icon. Raster formats stay in-process; SVG is
 /// converted to a bounded PNG on stdout so malformed or enormous vector
 /// sources cannot dictate an unbounded GPU texture. Copied from the
-/// compositor's app icon cache (`ass::runtime::apps::decode_icon`).
+/// compositor's app icon cache (`aegis::runtime::apps::decode_icon`).
 fn decode_icon(path: &Path, ext: &str, scale: u32) -> Option<image::DynamicImage> {
     if RASTER_ICON_EXTS.contains(&ext) {
         return image::open(path).ok();

@@ -1,4 +1,4 @@
-//! Detached application launching for ass.
+//! Detached application launching for aegis.
 //!
 //! Turns a parsed desktop [`Entry`] (or anything implementing
 //! [`LaunchSource`]) into a child process that:
@@ -12,7 +12,7 @@
 //! - honours the entry's `Terminal=true` by wrapping the command in a
 //!   terminal emulator.
 //!
-//! Field codes in the entry's `Exec` are expanded first via `ass-apps`. The
+//! Field codes in the entry's `Exec` are expanded first via `aegis-apps`. The
 //! final command line is handed to `sh -c` after each token is POSIX
 //! single-quote-escaped by `aegis_desktop_entries::expand_exec`, so shell metacharacters in
 //! file names are safe. Ordinary process detachment is delegated to the
@@ -201,7 +201,7 @@ static REALM_CGROUP_ROOT: std::sync::OnceLock<Result<PathBuf, String>> = std::sy
 ///
 /// systemd delegates controller authority at the service cgroup, but cgroup v2
 /// forbids enabling domain controllers while that same node contains a
-/// process. ASS therefore moves itself into an `ass-host-*` leaf and keeps
+/// process. Aegis therefore moves itself into an `aegis-host-*` leaf and keeps
 /// Realm sandboxes as sibling children of the delegated service root.
 pub fn prepare_realm_host() -> Result<PathBuf, LaunchError> {
     REALM_CGROUP_ROOT
@@ -234,7 +234,7 @@ fn initialize_realm_cgroup_root() -> Result<PathBuf, String> {
         .any(|controller| !available.split_whitespace().any(|item| item == *controller))
     {
         return Err(
-            "systemd must delegate cpu, memory, and pids controllers to the ASS service".into(),
+            "systemd must delegate cpu, memory, and pids controllers to the Aegis service".into(),
         );
     }
     let enabled = std::fs::read_to_string(root.join("cgroup.subtree_control"))
@@ -251,13 +251,13 @@ fn initialize_realm_cgroup_root() -> Result<PathBuf, String> {
         .map_err(|error| format!("read cgroup.procs: {error}"))?;
     if members.lines().any(|member| member != pid) {
         return Err(
-            "ASS must run in its own delegated systemd service before Realm controllers can be enabled"
+            "Aegis must run in its own delegated systemd service before Realm controllers can be enabled"
                 .into(),
         );
     }
 
-    let host = root.join(format!("ass-host-{}", std::process::id()));
-    std::fs::create_dir(&host).map_err(|error| format!("create ASS host cgroup: {error}"))?;
+    let host = root.join(format!("aegis-host-{}", std::process::id()));
+    std::fs::create_dir(&host).map_err(|error| format!("create Aegis host cgroup: {error}"))?;
     if let Err(error) = std::fs::write(host.join("cgroup.procs"), b"0") {
         let _ = std::fs::remove_dir(&host);
         return Err(format!("move compositor into host cgroup: {error}"));
@@ -277,7 +277,10 @@ impl ProcessCgroup {
         static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let root = prepare_realm_host()?;
         let nonce = NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = root.join(format!("ass-realm-{realm}-{}-{nonce}", std::process::id()));
+        let path = root.join(format!(
+            "aegis-realm-{realm}-{}-{nonce}",
+            std::process::id()
+        ));
         std::fs::create_dir(&path).map_err(cgroup_error)?;
         let setup = (|| -> std::io::Result<std::fs::File> {
             // Lifecycle and resource controls are all security boundaries.
@@ -609,7 +612,7 @@ fn append_bubblewrap_args(
             "{BWRAP} is not installed"
         )));
     }
-    let runtime = "/run/ass";
+    let runtime = "/run/aegis";
     let home = format!("/tmp/aegis-home-{}", sandbox.realm_id);
 
     command.args([
@@ -649,10 +652,10 @@ fn append_bubblewrap_args(
         .arg("XDG_SESSION_TYPE")
         .arg("wayland")
         .arg("--setenv")
-        .arg("ASS_REALM_ID")
+        .arg("AEGIS_REALM_ID")
         .arg(sandbox.realm_id.to_string())
         .arg("--setenv")
-        .arg("ASS_SANDBOX_APP_ID")
+        .arg("AEGIS_SANDBOX_APP_ID")
         .arg(&sandbox.app_id)
         .arg("--setenv")
         .arg("PATH")
@@ -664,7 +667,7 @@ fn append_bubblewrap_args(
     command
         .arg("--bind")
         .arg(&sandbox.wayland_socket_path)
-        .arg("/run/ass/wayland-0");
+        .arg("/run/aegis/wayland-0");
 
     for variable in ["LANG", "LC_ALL", "LC_MESSAGES", "TERM"] {
         if let Ok(value) = std::env::var(variable) {
@@ -736,7 +739,7 @@ fn append_bubblewrap_args(
         .arg("sh")
         .arg("-c")
         .arg("printf '\\036'; exec >/dev/null 2>&1; IFS= read -r _; exec sh -c \"$1\"")
-        .arg("ass-realm-launch")
+        .arg("aegis-realm-launch")
         .arg(effective);
     Ok(())
 }

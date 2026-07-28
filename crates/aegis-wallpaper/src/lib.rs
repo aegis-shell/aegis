@@ -1,4 +1,4 @@
-//! Compositor wallpaper for ass.
+//! Compositor wallpaper for aegis.
 //!
 //! Loads an image (PNG, JPEG, GIF, WebP, BMP, TIFF, …) or a short video
 //! (anything `ffmpeg` can decode) and renders it as the bottom-most layer

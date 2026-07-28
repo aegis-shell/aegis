@@ -332,7 +332,7 @@ impl Server {
         let lease_for_accept = Arc::clone(&next_lease);
         let conn_for_accept = Arc::clone(&next_conn);
         let accept = match thread::Builder::new()
-            .name("ass-ipc-accept".into())
+            .name("aegis-ipc-accept".into())
             .spawn(move || {
                 accept_loop(
                     listener,
@@ -465,7 +465,7 @@ fn accept_loop<H: Handler + 'static>(
         let l = Arc::clone(&next_lease);
         let conn_id = next_conn.fetch_add(1, Ordering::Relaxed);
         let _ = thread::Builder::new()
-            .name("ass-ipc-conn".into())
+            .name("aegis-ipc-conn".into())
             .spawn(move || serve_connection(stream, h, s, js, st, n, l, conn_id));
     }
 }
@@ -496,7 +496,7 @@ fn serve_connection<H: Handler + 'static>(
     let writer_streams = Arc::clone(&streams);
 
     let writer = thread::Builder::new()
-        .name("ass-ipc-writer".into())
+        .name("aegis-ipc-writer".into())
         .spawn(move || {
             let mut w = stream;
             while let Ok(out) = rx.recv() {

@@ -193,7 +193,7 @@ pub(crate) unsafe fn announce_tablet(state: *mut State, seat: *mut ffi::wl_resou
         (*state).track_seat_resource(res, (*state).active_seat);
         (*state).tablet_devices.push(res);
         ffi::wl_resource_post_event(seat, ffi::ZWP_TABLET_SEAT_V2_TABLET_ADDED, res);
-        ffi::wl_resource_post_event(res, ffi::ZWP_TABLET_V2_NAME, c"ass tablet".as_ptr());
+        ffi::wl_resource_post_event(res, ffi::ZWP_TABLET_V2_NAME, c"aegis tablet".as_ptr());
         // No real hardware: vid/pid are 0/0.
         ffi::wl_resource_post_event(res, ffi::ZWP_TABLET_V2_ID, 0u32, 0u32);
         ffi::wl_resource_post_event(res, ffi::ZWP_TABLET_V2_DONE);

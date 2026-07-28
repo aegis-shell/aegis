@@ -1,7 +1,7 @@
 //! fuji's agent runtime: providers, the agent loop, tools, MCP client,
 //! sessions, skills, and permissions.
 //!
-//! This module tree deliberately never imports `ass_*` crates: fuji reaches
+//! This module tree deliberately never imports `aegis_*` crates: fuji reaches
 //! the desktop only as an MCP client of the bridge in [`crate::bridge`].
 //! Both halves share one crate now, so this rule stands by discipline —
 //! it preserves the ADR-0031/0047 seam that every agent is an ordinary

@@ -1,6 +1,6 @@
 [package]
 name = "aegis-statusbar"
-description = "Status bar chrome component for the ass compositor: workspaces, live controls, notifications, tray, and clock"
+description = "Status bar chrome component for the aegis compositor: workspaces, live controls, notifications, tray, and clock"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
@@ -13,7 +13,7 @@ aegis-core = { workspace = true }
 aegis-design = { workspace = true }
 aegis-shell = { workspace = true }
 # SNI IconName resolution through the freedesktop icon theme: the same
-# lookup (ass-apps) and decode (image + rsvg-convert) path as the
+# lookup (aegis-apps) and decode (image + rsvg-convert) path as the
 # compositor's app icon cache.
 aegis-desktop-entries = { workspace = true }
 image = { workspace = true }

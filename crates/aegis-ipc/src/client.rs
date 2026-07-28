@@ -1,4 +1,4 @@
-//! The reference client for the ass IPC.
+//! The reference client for the aegis IPC.
 //!
 //! A thin synchronous client over a blocking unix stream. Power tools and
 //! the agent layer build on the same schema; this is the canonical path for

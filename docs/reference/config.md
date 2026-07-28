@@ -1,7 +1,7 @@
 # Configuration Reference
 
-Exact reference for the ass configuration file at
-`$XDG_CONFIG_HOME/ass/config.toml` (defaulting to `~/.config/aegis/config.toml`).
+Exact reference for the aegis configuration file at
+`$XDG_CONFIG_HOME/aegis/config.toml` (defaulting to `~/.config/aegis/config.toml`).
 For the design behind it, the loader, and the live-reload contract, see
 [ADR-0026](../adr/0026-configuration-system.md).
 
@@ -47,9 +47,9 @@ The icon-theme override is checked during each application-catalog refresh.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ASS_ICON_THEME` | GTK `org.gnome.desktop.interface icon-theme`, then `hicolor` | Icon theme used by the dock and launcher. Theme inheritance and `hicolor` fallback still apply. |
-| `ASS_WALLPAPER` | bundled `procedural-generation.png` | Image, animated image, short-video, or model-only `.glb` source. An image or video is shown without a 3D overlay unless `ASS_WALLPAPER_MODEL` is also set. |
-| `ASS_WALLPAPER_MODEL` | unset | Optional 3D model drawn over an image or video with an orbiting camera and animated directional light. Set to `builtin` for the bundled procedural knot or to a `.glb` path for a custom model. Ignored when `ASS_WALLPAPER` is itself a `.glb`. |
+| `AEGIS_ICON_THEME` | GTK `org.gnome.desktop.interface icon-theme`, then `hicolor` | Icon theme used by the dock and launcher. Theme inheritance and `hicolor` fallback still apply. |
+| `AEGIS_WALLPAPER` | bundled `procedural-generation.png` | Image, animated image, short-video, or model-only `.glb` source. An image or video is shown without a 3D overlay unless `AEGIS_WALLPAPER_MODEL` is also set. |
+| `AEGIS_WALLPAPER_MODEL` | unset | Optional 3D model drawn over an image or video with an orbiting camera and animated directional light. Set to `builtin` for the bundled procedural knot or to a `.glb` path for a custom model. Ignored when `AEGIS_WALLPAPER` is itself a `.glb`. |
 
 The launcher captures image/video, 3D, and client layers into one quarter-scale
 RGBA8 offscreen scene and updates a fixed-cost Dual-Kawase backdrop every
@@ -247,7 +247,7 @@ applies the requested change, and returns to explicit user-owned pins.
 
 The application catalog is rescanned every five seconds. Installed, removed,
 or edited desktop entries, including Flatpak exports, appear without
-restarting ass. The same refresh detects icon-theme, output-scale, and icon
+restarting aegis. The same refresh detects icon-theme, output-scale, and icon
 file changes. Raster icons decode in process; SVG icons use `rsvg-convert`
 when it is installed and otherwise fall back to the generic application
 glyph.
@@ -344,7 +344,7 @@ memory_max_mib = 4096
 Every path must be absolute and must exist when the application launches.
 The launcher resolves symlinks before mounting and rejects protected or
 non-file/non-directory targets. Realm launch also requires `/usr/bin/bwrap`,
-cgroup v2, and an ASS systemd user service with delegated `cpu`, `memory`,
+cgroup v2, and an Aegis systemd user service with delegated `cpu`, `memory`,
 and `pids` controllers. Missing isolation or controller support rejects the
 launch.
 
@@ -498,9 +498,9 @@ key = "right"
 action = "workspace_next"
 ```
 
-## Migration from `$ASS_KEYBINDS`
+## Migration from `$AEGIS_KEYBINDS`
 
-The `$ASS_KEYBINDS` environment variable (`mods+key=action;...`) is
+The `$AEGIS_KEYBINDS` environment variable (`mods+key=action;...`) is
 deprecated and remains honored as a transitional override that takes
 precedence over the file. To migrate, move each entry into a `[[keybind]]`
 table. The variable will be removed before the desktop phase closes.

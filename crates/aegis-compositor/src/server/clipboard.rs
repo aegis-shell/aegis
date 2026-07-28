@@ -110,7 +110,7 @@ fn clipboard_writer() -> &'static ClipboardWriter {
         let (tx, rx) =
             std::sync::mpsc::sync_channel::<ClipboardWriteJob>(CLIPBOARD_WRITE_QUEUE_DEPTH);
         match std::thread::Builder::new()
-            .name("ass-clipboard".into())
+            .name("aegis-clipboard".into())
             .spawn(move || {
                 while let Ok(job) = rx.recv() {
                     use std::io::Write;

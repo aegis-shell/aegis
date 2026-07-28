@@ -11,10 +11,10 @@ backend for the session-level interfaces sandboxed applications expect:
 session events), and ScreenCast persistence (`persist_mode` /
 `restore_token`). Three forces shape each:
 
-- ass has no session manager and no running-application tracking, so the
+- aegis has no session manager and no running-application tracking, so the
   logout / user-switch / suspend Inhibit flags have nothing to land on, and
   "run in the background" has no enforcement mechanism behind it.
-- ass has no PermissionStore and no portal confirmation UI. Persisted
+- aegis has no PermissionStore and no portal confirmation UI. Persisted
   grants therefore have no canonical home, and a restore token cannot be a
   shortcut past a dialog — there is no dialog.
 - The idle machinery the Inhibit portal must drive lives in the
@@ -114,7 +114,7 @@ dependency (`notify`) is pulled for one file.
   The built-in `aegis-portal` scope now grants exactly three operations.
 - The backend serves five interfaces: Settings v1 (now emitting
   `SettingChanged`), Screenshot v1, ScreenCast v2, Background v1, Inhibit
-  v1; `ass.portal` lists Background and Inhibit.
+  v1; `aegis.portal` lists Background and Inhibit.
 - `$XDG_DATA_HOME/aegis-portal` becomes session state the user may want to
   clear to revoke grants; revocation is documented in the portal how-to.
   Deleting `screencast-tokens.json` revokes every persisted cast grant.

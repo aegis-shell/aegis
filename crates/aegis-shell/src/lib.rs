@@ -1,4 +1,4 @@
-//! Compositor chrome for ass, built on lens.
+//! Compositor chrome for aegis, built on lens.
 //!
 //! The shell is split into a **core host** and pluggable **chrome components**.
 //! The core ([`Shell`]) owns the lens context, the per-frame snapshot of
@@ -35,7 +35,7 @@ pub use system::{
     detect_system_status,
 };
 
-/// Logical height of the top status bar (the `ass-statusbar` component).
+/// Logical height of the top status bar (the `aegis-statusbar` component).
 /// Defined here, at the shell seam, so shell-resident chrome that must align
 /// with the bar (the notification toast stack) can share the value without
 /// depending on the component crate.
@@ -214,7 +214,7 @@ pub enum RealmIntent {
 
 /// Interaction intents chrome components emit during a frame. The core
 /// collects these and the main loop drains them into server window-management
-/// actions or, for [`ChromeEvents::spawn`], into `ass-launch`. Scalar intents
+/// actions or, for [`ChromeEvents::spawn`], into `aegis-launch`. Scalar intents
 /// keep the latest value; application menus use an ordered queue for
 /// multi-window actions.
 #[derive(Debug, Default)]
@@ -228,8 +228,8 @@ pub struct ChromeEvents {
     /// journal entry per affected toplevel.
     pub window_actions: Vec<WindowAction>,
     /// A desktop entry the chrome asked to launch (e.g. the launcher's
-    /// clicked row). Drained into `ass-launch` by the main loop; carrying the
-    /// full [`Entry`] keeps `ass-shell` free of any `ass-apps` dependency
+    /// clicked row). Drained into `aegis-launch` by the main loop; carrying the
+    /// full [`Entry`] keeps `aegis-shell` free of any `aegis-apps` dependency
     /// (ADR-0022).
     pub spawn: Option<Entry>,
     /// A trusted compositor-owned application to present. Built-ins share the
@@ -312,11 +312,12 @@ pub trait Chrome {
         out: &mut ChromeEvents,
     );
 
-    /// Whether this component currently owns the keyboard (e.g. an open
-    /// launcher). When any registered component returns true, the main loop
-    /// routes resolved key events to [`Chrome::key_char`] and withholds them
-    /// from the focused client. Default `false`; override in components that
-    /// capture text input.
+    /// Whether this component currently captures new key sequences (e.g. an
+    /// open launcher). When any registered component returns true, the main
+    /// loop routes each new press and its matching release through chrome
+    /// instead of the focused client. This routing policy does not change the
+    /// Wayland keyboard or text-input focus. Default `false`; override in
+    /// components that capture text input.
     fn captures_keyboard(&self) -> bool {
         false
     }
@@ -642,7 +643,7 @@ impl Shell {
     }
 
     /// Drain the desktop entry the chrome asked to launch this frame, if any.
-    /// The main loop hands it to `ass-launch`.
+    /// The main loop hands it to `aegis-launch`.
     pub fn take_spawn(&mut self) -> Option<Entry> {
         self.events.spawn.take()
     }

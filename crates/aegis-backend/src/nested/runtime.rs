@@ -150,7 +150,7 @@ impl NestedHost {
                 data,
             );
             set_string(toplevel, ffi::XDG_TOPLEVEL_SET_TITLE, title);
-            set_string(toplevel, ffi::XDG_TOPLEVEL_SET_APP_ID, "ass");
+            set_string(toplevel, ffi::XDG_TOPLEVEL_SET_APP_ID, "aegis");
 
             // Initial buffer-less commit to provoke the first configure, then
             // wait for it (Vulkan WSI provides the buffer on first present).

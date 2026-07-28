@@ -9,8 +9,8 @@
 //! D-Bus activation environment and the systemd --user manager.
 
 /// Desktop name advertised through `XDG_CURRENT_DESKTOP`. The lowercase
-/// project name, matching what `ass-apps` compares `OnlyShowIn=` against.
-const DESKTOP_NAME: &str = "ass";
+/// project name, matching what `aegis-apps` compares `OnlyShowIn=` against.
+const DESKTOP_NAME: &str = "aegis";
 
 /// Session variables every Wayland client of this compositor needs.
 const SESSION_VARS: [&str; 3] = ["WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP"];

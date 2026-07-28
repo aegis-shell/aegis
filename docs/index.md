@@ -1,6 +1,6 @@
-# ass Documentation
+# aegis Documentation
 
-ass is a Wayland compositor for Linux, written in Rust on
+aegis is a Wayland compositor for Linux, written in Rust on
 [flux](../../optics/libs/flux) and [lens](../../optics/libs/lens). Start with
 the [README](../README.md) for the project pitch and the shortest run path.
 
@@ -20,8 +20,8 @@ the [README](../README.md) for the project pitch and the shortest run path.
 - First-time walkthrough: read [Getting Started Tutorial](tutorials/01-getting-started.md).
 - New to the project: read [Architecture](explanation/architecture.md), then
   [Vision and Scope](explanation/vision.md).
-- Looking for where ass is headed: read [Roadmap](explanation/roadmap.md).
-- Looking for how ass compares to GNOME, KDE, sway, river, niri, macOS, and
+- Looking for where aegis is headed: read [Roadmap](explanation/roadmap.md).
+- Looking for how aegis compares to GNOME, KDE, sway, river, niri, macOS, and
   Xfce: read [Comparative Survey](explanation/comparative-survey.md).
 - Looking for a config key or option: read the
   [Configuration Reference](reference/config.md).
@@ -34,9 +34,9 @@ the [README](../README.md) for the project pitch and the shortest run path.
 - Isolating agent input and applications: read
   [How to Use AI Workspaces](how-to/ai-workspaces.md).
 - Connecting the fuji agent to scoped desktop and Realm tools: read
-  [Connect fuji to ASS](how-to/fuji.md).
+  [Connect fuji to Aegis](how-to/fuji.md).
 - Booting from a TTY and smoke-testing real hardware: read
-  [How to Run ass on Bare Metal (DRM/KMS)](how-to/bare-metal-drm.md).
+  [How to Run aegis on Bare Metal (DRM/KMS)](how-to/bare-metal-drm.md).
 - Enabling portal-aware and Flatpak apps (settings, screenshots): read
   [How to Install and Verify the Portal Backend](how-to/portals.md).
 - Setting up a build: read [Setup](dev/setup.md).

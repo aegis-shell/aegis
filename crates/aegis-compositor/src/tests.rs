@@ -8,7 +8,7 @@ fn realm_registry_filter_isolates_outputs_and_physical_authority_globals() {
         .create_agent_realm("filter-agent", SeatCapabilities::POINTER_KEYBOARD);
     let client_id = state
         .authority
-        .register_client(Some(format!("ass.realm.{}", bundle.realm.0)));
+        .register_client(Some(format!("aegis.realm.{}", bundle.realm.0)));
     let realm_client = 0x10usize as *mut ffi::wl_client;
     let human_client = 0x20usize as *mut ffi::wl_client;
     state.clients.insert(realm_client as usize, client_id);
@@ -516,7 +516,7 @@ fn agent_seat_lifecycle_is_fail_closed() {
     assert!(server.realm_snapshot().clients.iter().any(|client| {
         client.connected
             && client.security_context.as_deref()
-                == Some(format!("ass.realm.{}", bundle.realm.0).as_str())
+                == Some(format!("aegis.realm.{}", bundle.realm.0).as_str())
     }));
     assert!(
         server
@@ -542,7 +542,8 @@ fn agent_seat_lifecycle_is_fail_closed() {
         .expect("revoke");
     assert_eq!(server.realm_portal_count(), 0);
     assert!(server.realm_snapshot().clients.iter().all(|client| {
-        client.security_context.as_deref() != Some(format!("ass.realm.{}", bundle.realm.0).as_str())
+        client.security_context.as_deref()
+            != Some(format!("aegis.realm.{}", bundle.realm.0).as_str())
             || !client.connected
     }));
     assert!(matches!(
@@ -570,7 +571,7 @@ fn realm_window_registration_schedules_layout_and_damage_observation() {
     let client = server
         .state
         .authority
-        .register_client(Some(format!("ass.realm.{}", bundle.realm.0)));
+        .register_client(Some(format!("aegis.realm.{}", bundle.realm.0)));
     server
         .state
         .client_initial_realms

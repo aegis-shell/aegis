@@ -232,7 +232,7 @@ fn render_pointer_feedback(
             let size = 4.0 + index as f32 * 1.5;
             render_shape(
                 f,
-                &format!("ass-agent-trail-{}-{index}", realm.0),
+                &format!("aegis-agent-trail-{}-{index}", realm.0),
                 Rect {
                     x: x - size * 0.5,
                     y: y - size * 0.5,
@@ -255,7 +255,7 @@ fn render_pointer_feedback(
             let pulse_alpha = ((1.0 - progress) * f32::from(alpha)).round() as u8;
             render_shape(
                 f,
-                &format!("ass-agent-click-pulse-{}", realm.0),
+                &format!("aegis-agent-click-pulse-{}", realm.0),
                 centered_rect(position, diameter),
                 Color::TRANSPARENT,
                 realm_color(realm).with_alpha(pulse_alpha),
@@ -267,7 +267,7 @@ fn render_pointer_feedback(
 
     render_shape(
         f,
-        &format!("ass-agent-marker-{}", realm.0),
+        &format!("aegis-agent-marker-{}", realm.0),
         centered_rect(position, MARKER_DIAMETER),
         Color::rgba(12, 15, 24, scaled_alpha(alpha, 3, 4)),
         accent,
@@ -276,7 +276,7 @@ fn render_pointer_feedback(
     );
     render_shape(
         f,
-        &format!("ass-agent-marker-center-{}", realm.0),
+        &format!("aegis-agent-marker-center-{}", realm.0),
         centered_rect(position, 6.0),
         accent,
         Color::TRANSPARENT,
@@ -286,7 +286,7 @@ fn render_pointer_feedback(
     for (suffix, rect) in marker_ticks(position).into_iter() {
         render_shape(
             f,
-            &format!("ass-agent-marker-{suffix}-{}", realm.0),
+            &format!("aegis-agent-marker-{suffix}-{}", realm.0),
             rect,
             accent,
             Color::TRANSPARENT,
@@ -302,7 +302,7 @@ fn render_pointer_feedback(
         .min((display.0 - 16.0).max(1.0));
     let label_rect = marker_label_rect(position, width, display);
     f.layer(
-        &format!("ass-agent-label-{}", realm.0),
+        &format!("aegis-agent-label-{}", realm.0),
         label_rect,
         &OverlayOpts {
             bg: Color::rgba(18, 21, 32, scaled_alpha(alpha, 9, 10)),
@@ -350,7 +350,7 @@ fn render_background_activity(
     };
     let accent = realm_color(realm).with_alpha(alpha);
     f.layer(
-        &format!("ass-agent-background-{}", realm.0),
+        &format!("aegis-agent-background-{}", realm.0),
         rect,
         &OverlayOpts {
             bg: Color::rgba(18, 21, 32, scaled_alpha(alpha, 9, 10)),

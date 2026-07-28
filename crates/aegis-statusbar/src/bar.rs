@@ -41,9 +41,9 @@ const FUJI_PANEL_GAP: f32 = 7.0;
 const FUJI_PANEL_W: f32 = 372.0;
 const FUJI_PANEL_H: f32 = 224.0;
 
-// dbusmenu popover geometry (mirrors ass-shell's app_menu.rs — kept private
-// here so ass-statusbar does not reach into ass-shell's chrome internals).
-// TODO: share with ass-shell::chrome::app_menu
+// dbusmenu popover geometry (mirrors aegis-shell's app_menu.rs — kept private
+// here so aegis-statusbar does not reach into aegis-shell's chrome internals).
+// TODO: share with aegis-shell::chrome::app_menu
 const MENU_WIDTH: f32 = 236.0;
 const MENU_MARGIN: f32 = 8.0;
 const MENU_GAP: f32 = 8.0;
@@ -305,7 +305,7 @@ impl StatusBar {
         let reveal = self.fuji_reveal.clamp(0.0, 1.0);
         let content = ((reveal - 0.24) / 0.76).clamp(0.0, 1.0);
         frame.layer(
-            "ass-hud-fuji-panel",
+            "aegis-hud-fuji-panel",
             panel,
             &OverlayOpts {
                 bg: Color::rgba(15, 19, 34, fade_alpha(220, reveal)),
@@ -343,7 +343,7 @@ impl StatusBar {
         let copy_w = (panel.w - split - 15.0).max(1.0);
         render_text_left(
             frame,
-            "ass-hud-fuji-title",
+            "aegis-hud-fuji-title",
             Rect {
                 x: copy_x,
                 y: panel.y + 20.0,
@@ -355,7 +355,7 @@ impl StatusBar {
         );
         render_text_left(
             frame,
-            "ass-hud-fuji-subtitle",
+            "aegis-hud-fuji-subtitle",
             Rect {
                 x: copy_x,
                 y: panel.y + 52.0,
@@ -382,7 +382,7 @@ impl StatusBar {
         };
         let state_accent = indicator_accent(indicator.state);
         frame.layer(
-            "ass-hud-fuji-state",
+            "aegis-hud-fuji-state",
             state,
             &OverlayOpts {
                 bg: state_accent.with_alpha(fade_alpha(34, content)),
@@ -393,12 +393,18 @@ impl StatusBar {
             },
             |_| {},
         );
-        render_text(frame, "ass-hud-fuji-state-label", state, state_label, 10.5);
+        render_text(
+            frame,
+            "aegis-hud-fuji-state-label",
+            state,
+            state_label,
+            10.5,
+        );
 
         let action = self.fuji_action_bounds(display);
         let hovered = contains(action, cursor.0, cursor.1);
         frame.layer(
-            "ass-hud-fuji-open",
+            "aegis-hud-fuji-open",
             action,
             &OverlayOpts {
                 bg: if hovered {
@@ -473,7 +479,7 @@ impl StatusBar {
     }
 
     fn themed_icon(&self, name: &str) -> Option<*mut c_void> {
-        self.icons.get(&format!("ass-hud:{name}"))
+        self.icons.get(&format!("aegis-hud:{name}"))
     }
 
     /// Read the shared menu snapshot, memoized on the worker's
@@ -576,13 +582,13 @@ impl StatusBar {
         out: &mut ChromeEvents,
     ) {
         let panel = Self::panel_bounds(display);
-        f.layer("ass-hud-panel", panel, &panel_opts(), |f| {
+        f.layer("aegis-hud-panel", panel, &panel_opts(), |f| {
             f.column_ex(&sized(panel.w, panel.h), |_| {});
         });
 
         render_text_left(
             f,
-            "ass-hud-panel-title",
+            "aegis-hud-panel-title",
             Rect {
                 x: panel.x + 18.0,
                 y: panel.y + 12.0,
@@ -600,7 +606,7 @@ impl StatusBar {
         };
         render_icon_button(
             f,
-            "ass-hud-panel-close",
+            "aegis-hud-panel-close",
             close,
             self.themed_icon("window-close-symbolic"),
             Icon::X,
@@ -634,7 +640,7 @@ impl StatusBar {
         let themed_volume_icon = self.themed_icon(volume_icon_name(&self.status));
         let mut volume = self.status.volume.unwrap_or(0) as f32;
         let mut muted = self.status.muted;
-        f.layer("ass-hud-audio-card", audio, &card_opts(false), |f| {
+        f.layer("aegis-hud-audio-card", audio, &card_opts(false), |f| {
             f.column_ex(
                 &LayoutOpts {
                     width: audio.w,
@@ -690,7 +696,7 @@ impl StatusBar {
 
         let mut brightness_level = self.status.brightness.unwrap_or(1) as f32;
         f.layer(
-            "ass-hud-brightness-card",
+            "aegis-hud-brightness-card",
             brightness,
             &card_opts(false),
             |f| {
@@ -750,7 +756,7 @@ impl StatusBar {
         let mut wifi = self.status.wifi_enabled.unwrap_or(false);
         let mut bluetooth = self.status.bluetooth_enabled.unwrap_or(false);
         f.layer(
-            "ass-hud-connectivity-card",
+            "aegis-hud-connectivity-card",
             connectivity,
             &card_opts(false),
             |f| {
@@ -807,7 +813,7 @@ impl StatusBar {
 
         let mut do_not_disturb = self.status.do_not_disturb;
         let mut tiled = self.status.tiled;
-        f.layer("ass-hud-desktop-card", desktop, &card_opts(false), |f| {
+        f.layer("aegis-hud-desktop-card", desktop, &card_opts(false), |f| {
             f.column_ex(
                 &LayoutOpts {
                     width: desktop.w,
@@ -846,7 +852,7 @@ impl StatusBar {
         let heading_y = panel.y + 264.0;
         render_text_left(
             f,
-            "ass-hud-notification-heading",
+            "aegis-hud-notification-heading",
             Rect {
                 x: panel.x + 18.0,
                 y: heading_y,
@@ -860,7 +866,7 @@ impl StatusBar {
         if notifications.is_empty() {
             render_text_left(
                 f,
-                "ass-hud-notification-empty",
+                "aegis-hud-notification-empty",
                 Rect {
                     x: panel.x + 18.0,
                     y: list_y,
@@ -878,7 +884,7 @@ impl StatusBar {
                     w: panel.w - 26.0,
                     h: 36.0,
                 };
-                let id = format!("ass-hud-notification-{}", notification.id);
+                let id = format!("aegis-hud-notification-{}", notification.id);
                 f.layer(
                     &id,
                     row,
@@ -949,7 +955,7 @@ impl StatusBar {
         let mut action: Option<MenuRowAction> = None;
         f.set_theme(menu_theme);
         f.layer(
-            "ass-hud-sni-menu",
+            "aegis-hud-sni-menu",
             popover_bounds,
             &materials::popover(&design),
             |f| {
@@ -1097,7 +1103,7 @@ fn render_agent_indicator(
 ) {
     let accent = indicator_accent(indicator.state);
     frame.layer(
-        "ass-hud-agent-indicator",
+        "aegis-hud-agent-indicator",
         rect,
         &OverlayOpts {
             bg: if hovered {
@@ -1119,7 +1125,7 @@ fn render_agent_indicator(
         h: 10.0,
     };
     frame.layer(
-        "ass-hud-fuji-entry-orb",
+        "aegis-hud-fuji-entry-orb",
         dot,
         &OverlayOpts {
             bg: accent.with_alpha(66),
@@ -1132,7 +1138,7 @@ fn render_agent_indicator(
     );
     render_text_left(
         frame,
-        "ass-hud-fuji-entry-label",
+        "aegis-hud-fuji-entry-label",
         Rect {
             x: rect.x + 24.0,
             y: rect.y,
@@ -1175,14 +1181,14 @@ fn render_fuji_algorithm(
 
     render_disc(
         frame,
-        "ass-hud-fuji-glow",
+        "aegis-hud-fuji-glow",
         center,
         diameter * 1.48 * breathe,
         Color::rgba(78, 83, 255, fade_alpha(34, progress)),
     );
     render_ring(
         frame,
-        "ass-hud-fuji-orbit-outer",
+        "aegis-hud-fuji-orbit-outer",
         center,
         diameter * 1.18,
         Color::rgba(101, 220, 255, fade_alpha(78, progress)),
@@ -1190,7 +1196,7 @@ fn render_fuji_algorithm(
     );
     render_ring(
         frame,
-        "ass-hud-fuji-orbit-inner",
+        "aegis-hud-fuji-orbit-inner",
         center,
         diameter * 0.86,
         Color::rgba(215, 111, 255, fade_alpha(96, progress)),
@@ -1227,7 +1233,7 @@ fn render_fuji_algorithm(
         );
         render_disc(
             frame,
-            &format!("ass-hud-fuji-core-{index}"),
+            &format!("aegis-hud-fuji-core-{index}"),
             layer_center,
             size * breathe,
             color,
@@ -1250,7 +1256,7 @@ fn render_fuji_algorithm(
         };
         render_disc(
             frame,
-            &format!("ass-hud-fuji-node-{index}"),
+            &format!("aegis-hud-fuji-node-{index}"),
             node_center,
             node_size,
             color,
@@ -1273,7 +1279,7 @@ fn render_fuji_algorithm(
             h: height,
         };
         frame.layer(
-            &format!("ass-hud-fuji-signal-{index}"),
+            &format!("aegis-hud-fuji-signal-{index}"),
             bar,
             &OverlayOpts {
                 bg: Color::rgba(
@@ -1381,7 +1387,7 @@ impl Chrome for StatusBar {
         sni.truncate(fold.visible);
 
         let bar = Self::bar_bounds(display.0);
-        f.layer("ass-hud-bar", bar, &bar_opts(), |f| {
+        f.layer("aegis-hud-bar", bar, &bar_opts(), |f| {
             f.column_ex(&sized(bar.w, bar.h), |_| {});
         });
 
@@ -1404,7 +1410,7 @@ impl Chrome for StatusBar {
                     h: diameter,
                 };
                 f.layer(
-                    &format!("ass-hud-workspace-dot-{}", workspace.id.0),
+                    &format!("aegis-hud-workspace-dot-{}", workspace.id.0),
                     dot,
                     &OverlayOpts::default(),
                     |f| {
@@ -1428,7 +1434,7 @@ impl Chrome for StatusBar {
 
         render_text(
             f,
-            "ass-hud-clock",
+            "aegis-hud-clock",
             Rect {
                 x: display.0 * 0.5 - 42.0,
                 y: 0.0,
@@ -1451,7 +1457,7 @@ impl Chrome for StatusBar {
         };
         render_icon_button(
             f,
-            "ass-hud-bell",
+            "aegis-hud-bell",
             bell,
             self.themed_icon("preferences-system-notifications-symbolic"),
             Icon::Bell,
@@ -1471,7 +1477,7 @@ impl Chrome for StatusBar {
             let rect = take_right(&mut right_x, 62.0);
             render_icon_button(
                 f,
-                "ass-hud-battery",
+                "aegis-hud-battery",
                 rect,
                 self.themed_icon(&battery_icon_name(battery)),
                 Icon::Zap,
@@ -1482,7 +1488,7 @@ impl Chrome for StatusBar {
         let network = take_right(&mut right_x, 34.0);
         render_icon_button(
             f,
-            "ass-hud-network",
+            "aegis-hud-network",
             network,
             self.themed_icon(network_icon_name(self.status.network)),
             Icon::Globe,
@@ -1497,7 +1503,7 @@ impl Chrome for StatusBar {
         };
         render_icon_button(
             f,
-            "ass-hud-audio",
+            "aegis-hud-audio",
             audio,
             self.themed_icon(volume_icon_name(&self.status)),
             volume_icon(&self.status),
@@ -1510,7 +1516,7 @@ impl Chrome for StatusBar {
             let rect = take_right(&mut right_x, TRAY_CELL_W);
             sni_cell.rect = rect;
             let hovered = contains(rect, cursor.0, cursor.1);
-            let id = format!("ass-hud-sni-{}", sni_cell.key);
+            let id = format!("aegis-hud-sni-{}", sni_cell.key);
             let texture = if sni_cell.textured {
                 self.tray
                     .as_ref()
@@ -1575,7 +1581,7 @@ impl Chrome for StatusBar {
             let rect = take_right(&mut right_x, TRAY_CELL_W);
             render_text(
                 f,
-                "ass-hud-tray-overflow",
+                "aegis-hud-tray-overflow",
                 rect,
                 &format!("+{}", fold.hidden.min(99)),
                 11.0,
@@ -1920,7 +1926,7 @@ fn menu_bounds(owner: Rect, visible: &[MenuNode], display: (f32, f32)) -> Rect {
 /// Anchor a popover of `size` against `owner`, preferring above for bottom
 /// tiles and below for top tiles, clamped to the display. Mirrors
 /// `aegis_shell::chrome::app_menu::place_popup` verbatim.
-// TODO: share with ass-shell::chrome::app_menu
+// TODO: share with aegis-shell::chrome::app_menu
 fn place_popup(owner: Rect, size: (f32, f32), display: (f32, f32)) -> Rect {
     let w = size.0.min((display.0 - MENU_MARGIN * 2.0).max(1.0));
     let h = size.1.min((display.1 - MENU_MARGIN * 2.0).max(1.0));

@@ -2,7 +2,7 @@
 //!
 //! Capture remains a runtime mechanism rather than an AI-specific crate:
 //! geometry, encoding, filesystem publication, and bounded background work
-//! have separate internal owners, while IPC policy stays in `ass-ipc`.
+//! have separate internal owners, while IPC policy stays in `aegis-ipc`.
 
 mod encoding;
 mod geometry;

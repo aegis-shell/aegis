@@ -128,7 +128,7 @@ impl DrmBackend {
 }
 
 pub(super) fn candidate_cards() -> Vec<PathBuf> {
-    candidate_cards_with_override(std::env::var_os("ASS_DRM_DEVICE"))
+    candidate_cards_with_override(std::env::var_os("AEGIS_DRM_DEVICE"))
 }
 
 pub(super) fn candidate_cards_with_override(

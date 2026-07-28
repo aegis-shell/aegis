@@ -49,6 +49,12 @@ impl Server {
         }
         if !new_focus.is_null() {
             let new_client = unsafe { ffi::wl_resource_get_client(new_focus) };
+            let modifiers = self
+                .state
+                .keyboard
+                .as_ref()
+                .map(keyboard::Keyboard::modifiers)
+                .unwrap_or((self.state.depressed_mods.0, 0, 0, 0));
             for k in self.iter_focus_keyboards(new_client) {
                 unsafe {
                     ffi::wl_resource_post_event(
@@ -57,6 +63,15 @@ impl Server {
                         serial,
                         new_focus,
                         &empty as *const ffi::wl_array as *mut ffi::wl_array,
+                    );
+                    ffi::wl_resource_post_event(
+                        k,
+                        ffi::WL_KEYBOARD_MODIFIERS,
+                        serial,
+                        modifiers.0,
+                        modifiers.1,
+                        modifiers.2,
+                        modifiers.3,
                     );
                 }
             }
@@ -68,21 +83,12 @@ impl Server {
         // corresponding wl_keyboard leave/enter events so clients never
         // observe an IME enter for a surface their keyboard has not entered.
         unsafe {
-            extensions::text_input_focus_changed(
+            keyboard_focus_dependencies_changed(
                 self.state.as_ref() as *const State as *mut State,
                 old,
                 new_focus,
             );
-            data_device_focus_changed(
-                self.state.as_ref() as *const State as *mut State,
-                old,
-                new_focus,
-            );
-            extensions::keyboard_shortcuts_focus_changed(
-                self.state.as_ref() as *const State as *mut State,
-                new_focus,
-            );
-        };
+        }
     }
 
     /// Move a focused toplevel and its whole surface tree to the top of the

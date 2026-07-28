@@ -142,6 +142,17 @@ impl Keyboard {
         }
     }
 
+    /// Current xkb modifier and effective-layout state for
+    /// `wl_keyboard.modifiers`.
+    pub fn modifiers(&self) -> (u32, u32, u32, u32) {
+        (
+            self.state.serialize_mods(xkb::STATE_MODS_DEPRESSED),
+            self.state.serialize_mods(xkb::STATE_MODS_LATCHED),
+            self.state.serialize_mods(xkb::STATE_MODS_LOCKED),
+            self.state.serialize_layout(xkb::STATE_LAYOUT_EFFECTIVE),
+        )
+    }
+
     /// Advance the xkbcommon state with a key event and report the resulting
     /// modifier mask tuple plus the keysym and printable character the key
     /// produced. The server posts `wl_keyboard.modifiers` unconditionally
@@ -178,7 +189,7 @@ impl Keyboard {
     }
 
     fn create_keymap_fd(s: &CString, size: usize) -> std::io::Result<RawFd> {
-        let name = c"ass-keymap";
+        let name = c"aegis-keymap";
         // Safety: the memfd name is a CStr literal; flags are well-defined.
         let fd = unsafe { memfd_create(name.as_ptr(), MEMFD_FLAGS) };
         if fd < 0 {

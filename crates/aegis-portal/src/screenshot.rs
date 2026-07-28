@@ -152,7 +152,7 @@ impl ScreenshotIface {
                     static COUNTER: std::sync::atomic::AtomicU64 =
                         std::sync::atomic::AtomicU64::new(0);
                     format!(
-                        "ass{}",
+                        "aegis{}",
                         COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                     )
                 }),

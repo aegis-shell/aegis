@@ -29,12 +29,12 @@ pub(super) const HUD_SYMBOLIC_ICON_NAMES: &[&str] = &[
     "application-x-executable-symbolic",
 ];
 
-/// Resolve the host's selected application icon theme. An explicit ass
+/// Resolve the host's selected application icon theme. An explicit aegis
 /// override wins; otherwise query the GTK/GSettings desktop preference used
 /// by niri and other toolkit-neutral Wayland sessions. `hicolor` remains the
 /// portable fallback when GSettings is unavailable.
 pub(super) fn selected_icon_theme() -> String {
-    if let Some(theme) = std::env::var("ASS_ICON_THEME")
+    if let Some(theme) = std::env::var("AEGIS_ICON_THEME")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -220,7 +220,7 @@ pub(super) struct DecodedIcon {
     /// Every map key the texture is inserted under. For applications these
     /// are the ids a window might report as `app_id` (StartupWMClass, the
     /// desktop-id stem, and the icon name, all lowercased); for HUD symbols
-    /// the `ass-hud:*` keys.
+    /// the `aegis-hud:*` keys.
     pub(super) keys: Vec<String>,
     pub(super) width: u32,
     pub(super) height: u32,
@@ -314,7 +314,7 @@ pub(super) fn decode_icons(
         for chunk in bgra.chunks_exact_mut(4) {
             chunk.swap(0, 2);
         }
-        let mut keys = vec![format!("ass-hud:{name}")];
+        let mut keys = vec![format!("aegis-hud:{name}")];
         if name == "preferences-system-symbolic" {
             // Stable keys for the external System Settings fallback and the
             // compositor-owned AI Workspaces surface.

@@ -1,4 +1,4 @@
-//! The schema for the ass IPC.
+//! The schema for the aegis IPC.
 //!
 //! One major version ([`PROTOCOL_VERSION`]); a client offering any other
 //! major version is refused at the handshake. Messages are internally

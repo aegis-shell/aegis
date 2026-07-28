@@ -1,6 +1,6 @@
 [package]
 name = "aegis-ctl"
-description = "Command-line driver for the ass IPC (the reference external tool)"
+description = "Command-line driver for the aegis IPC (the reference external tool)"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true

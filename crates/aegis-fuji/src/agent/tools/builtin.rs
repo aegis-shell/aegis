@@ -802,16 +802,16 @@ mod tests {
     #[tokio::test]
     async fn skill_read_returns_body_or_lists_available() {
         let skills = vec![Skill {
-            name: "ass-desktop-realm".into(),
+            name: "aegis-desktop-realm".into(),
             description: "realm ops".into(),
             body: "# Body".into(),
             path: PathBuf::from("/tmp/SKILL.md"),
         }];
         let tool = SkillRead::new(skills);
-        let out = tool.call(json!({"name": "ass-desktop-realm"})).await;
+        let out = tool.call(json!({"name": "aegis-desktop-realm"})).await;
         assert_eq!(out.text, "# Body");
         let missing = tool.call(json!({"name": "nope"})).await;
         assert!(missing.is_error);
-        assert!(missing.text.contains("ass-desktop-realm"));
+        assert!(missing.text.contains("aegis-desktop-realm"));
     }
 }

@@ -267,7 +267,7 @@ impl Dock {
             sizes: HashMap::new(),
             anim_active: false,
             prev_down: false,
-            app_menu: AppMenu::new("ass-dock-context-menu"),
+            app_menu: AppMenu::new("aegis-dock-context-menu"),
             menu_tile: None,
             hovered_tile: None,
             hover_elapsed: 0.0,
@@ -850,7 +850,7 @@ impl Chrome for Dock {
         // A layer with an empty body collapses to ~0 (the rect is only an
         // anchor, not a size); a fixed-size child forces it to the bar size.
         f.layer(
-            "ass-dock",
+            "aegis-dock",
             panel_rect,
             &materials::dock(&Design::dark()),
             |f| {
@@ -872,7 +872,7 @@ impl Chrome for Dock {
             let alpha_factor = (1.0 - self.autohide_reveal).clamp(0.0, 1.0);
             let color = Color::rgba(240, 243, 252, (150.0 * alpha_factor) as u8);
             f.layer(
-                "ass-dock-autohide-stadium-handle",
+                "aegis-dock-autohide-stadium-handle",
                 handle_rect,
                 &tile_opts(),
                 |f| {
@@ -908,7 +908,7 @@ impl Chrome for Dock {
             let s = eased[i].max(1.0);
             let cx = centre(i);
             let rect = icon_rects[i];
-            let icon_id = format!("ass-dock-icon-{}", t.key);
+            let icon_id = format!("aegis-dock-icon-{}", t.key);
             if t.launchpad {
                 // A rounded "app tile" with a 3×3 grid, so it reads as macOS's
                 // Launchpad button. The grid (real content) sizes the layer;
@@ -970,7 +970,7 @@ impl Chrome for Dock {
                 } else {
                     Color::rgba(200, 204, 220, 170)
                 };
-                let dot_id = format!("ass-dock-dot-{}", t.key);
+                let dot_id = format!("aegis-dock-dot-{}", t.key);
                 f.layer(&dot_id, dot_rect, &tile_opts(), |f| {
                     f.column_ex(&sized_fill(dot_w, DOCK_DOT, color, DOCK_DOT * 0.5), |_| {});
                 });
@@ -989,7 +989,7 @@ impl Chrome for Dock {
                 h: divider_h,
             };
             f.layer(
-                "ass-dock-section-divider",
+                "aegis-dock-section-divider",
                 divider_rect,
                 &OverlayOpts::default(),
                 |f| {
@@ -1372,7 +1372,7 @@ fn render_tooltip(frame: &mut Frame, label: &str, owner: Rect, display: (f32, f3
     let original = frame.theme();
     frame.set_theme(original.with_fg(Color::rgba(242, 244, 250, opacity(255))));
     frame.layer(
-        "ass-dock-app-name",
+        "aegis-dock-app-name",
         rect,
         &OverlayOpts {
             // Frosted glass over the dock's backdrop-blur band: a light tint

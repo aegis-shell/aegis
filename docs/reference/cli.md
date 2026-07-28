@@ -1,6 +1,6 @@
 # Command-Line Reference
 
-`aegis-ctl` queries and controls a running ass session through
+`aegis-ctl` queries and controls a running aegis session through
 `$XDG_RUNTIME_DIR/aegis.sock`. `help`, `--help`, `-h`, and `--version` work
 without a running compositor or an `XDG_RUNTIME_DIR` value.
 

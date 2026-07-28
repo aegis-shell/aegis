@@ -23,7 +23,7 @@ fn staged_settings_is_discovered_through_xdg() {
         .env(CHILD_ROOT, temp.path())
         .env("HOME", temp.path().join("home"))
         .env("PATH", temp.path().join("bin"))
-        .env("XDG_CURRENT_DESKTOP", "ass")
+        .env("XDG_CURRENT_DESKTOP", "aegis")
         .env("XDG_DATA_HOME", temp.path().join("share"))
         .env("XDG_DATA_DIRS", temp.path().join("share"))
         .status()

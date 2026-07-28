@@ -17,7 +17,7 @@ use crate::agent::skills::{self, Skill};
 use crate::agent::tools::{ToolOutput, ToolRegistry, parse_mcp_name};
 
 const SYSTEM_PROMPT: &str = "\
-You are fuji (宓姬), the agent software of the ASS desktop. You run in a terminal and help with \
+You are fuji (宓姬), the agent software of the Aegis desktop. You run in a terminal and help with \
 whatever the user asks: explanation, writing, and code work through your tools, plus operating \
 the desktop itself when desktop tools are connected.
 
@@ -25,7 +25,7 @@ Rules that always apply:
 - Use tools to act on the world; never claim you changed something you did not verify.
 - A `status: queued` style result means intent accepted, not effect applied. Verify with a fresh \
 observation (snapshot, journal, or capture) before reporting success.
-- When `mcp__ass__*` desktop tools are present, read the `ass-desktop-realm` skill with \
+- When `mcp__aegis__*` desktop tools are present, read the `aegis-desktop-realm` skill with \
 skill_read before operating windows, applications, or Realms.
 - Never use destructive operations (close_window, realm_reset, file deletion) without explicit \
 user intent.";
@@ -97,8 +97,8 @@ impl Agent<AnyProvider> {
                 }
             }
         }
-        let has_ass = mcp.keys().any(|name| name == "ass");
-        let system = system_prompt(&config.agent, &skills, has_ass);
+        let has_aegis = mcp.keys().any(|name| name == "aegis");
+        let system = system_prompt(&config.agent, &skills, has_aegis);
         Ok(Self::assemble(
             provider,
             registry,
@@ -274,12 +274,12 @@ impl<P: Provider> Agent<P> {
 
 /// Product prompt: identity and safety rules, skill summaries, today's date,
 /// and the operator's configured appendix.
-fn system_prompt(agent: &AgentConfig, skills: &[Skill], has_ass_mcp: bool) -> String {
+fn system_prompt(agent: &AgentConfig, skills: &[Skill], has_aegis_mcp: bool) -> String {
     let mut prompt = String::from(SYSTEM_PROMPT);
-    if has_ass_mcp {
+    if has_aegis_mcp {
         prompt.push_str(
-            "\n\nThe `ass` MCP server is connected: its tools observe and operate the live \
-             ASS compositor. Treat window, workspace, and Realm ids as opaque and short-lived.",
+            "\n\nThe `aegis` MCP server is connected: its tools observe and operate the live \
+             Aegis compositor. Treat window, workspace, and Realm ids as opaque and short-lived.",
         );
     }
     if !skills.is_empty() {

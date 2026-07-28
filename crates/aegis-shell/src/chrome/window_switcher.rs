@@ -82,7 +82,7 @@ impl Chrome for WindowSwitcher {
         let layout = aegis_core::window_switcher::layout(display, windows.len());
         let panel = to_lens(layout.panel);
         frame.layer(
-            "ass-window-switcher-panel",
+            "aegis-window-switcher-panel",
             panel,
             &OverlayOpts {
                 bg: Color::rgba(18, 21, 30, self.alpha(110)),
@@ -107,7 +107,7 @@ impl Chrome for WindowSwitcher {
             let selected = window.state.activated;
             let outer = to_lens(card.outer);
             frame.layer(
-                &format!("ass-window-switcher-card-{index}"),
+                &format!("aegis-window-switcher-card-{index}"),
                 outer,
                 &OverlayOpts {
                     bg: Color::rgba(8, 10, 16, self.alpha(if selected { 36 } else { 18 })),
@@ -135,7 +135,7 @@ impl Chrome for WindowSwitcher {
                 .as_deref()
                 .and_then(|app_id| self.icons.get(&app_id.to_ascii_lowercase()));
             frame.layer(
-                &format!("ass-window-switcher-label-{index}"),
+                &format!("aegis-window-switcher-label-{index}"),
                 label_rect,
                 &OverlayOpts {
                     bg: Color::rgba(12, 14, 21, self.alpha(218)),

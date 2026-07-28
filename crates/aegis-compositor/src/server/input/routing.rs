@@ -100,12 +100,11 @@ impl Server {
     /// and printable character it produced, without forwarding anything to a
     /// client.
     ///
-    /// Used by the main loop when compositor chrome owns the keyboard (the
-    /// launcher overlay is open): the key event is consumed by the chrome
-    /// rather than delivered to the focused client, but the server's xkb
-    /// state still advances so modifier tracking stays consistent when the
-    /// client resumes ownership. Returns `None` only when the server has no
-    /// keyboard compiled. See ADR-0022.
+    /// Used by the main loop for a key sequence owned by compositor chrome:
+    /// the event is consumed by chrome rather than delivered to the focused
+    /// client, but the server's xkb state still advances so modifier tracking
+    /// stays consistent. Returns `None` only when the server has no keyboard
+    /// compiled. See ADR-0065.
     pub fn key_char(
         &mut self,
         evdev_code: u32,
@@ -137,42 +136,6 @@ impl Server {
     /// nested).
     pub fn take_vt_switch(&mut self) -> Option<i32> {
         self.state.pending_vt_switch.take()
-    }
-
-    /// Grab the keyboard away from the focused client for compositor-side use
-    /// (the launcher overlay): sends `wl_keyboard.leave` to the current focus
-    /// and clears focus so no client receives keys while the grab is active.
-    /// Idempotent: a second call while grabbed is a no-op. Pair with
-    /// [`Server::release_keyboard_focus`]. See ADR-0022.
-    pub fn grab_keyboard_focus(&mut self) {
-        // Don't clobber the saved focus if already grabbed.
-        if !self.state.saved_keyboard_focus.is_null() {
-            return;
-        }
-        self.state.saved_keyboard_focus = self.state.keyboard_focus;
-        if !self.state.keyboard_focus.is_null() {
-            // change_keyboard_focus posts the leave and clears focus.
-            self.change_keyboard_focus(std::ptr::null_mut());
-        }
-    }
-
-    /// Release a keyboard grab taken by [`Server::grab_keyboard_focus`]:
-    /// restores `wl_keyboard.enter` to the surface that had focus before the
-    /// grab, but only if nothing else has since taken focus (e.g. the
-    /// launcher focusing a running app, or a pointer click-to-focus). If focus
-    /// moved during the grab, the current focus is left alone. No-op when no
-    /// grab is active.
-    pub fn release_keyboard_focus(&mut self) {
-        let saved = self.state.saved_keyboard_focus;
-        if saved.is_null() {
-            return;
-        }
-        self.state.saved_keyboard_focus = std::ptr::null_mut();
-        // Only restore if focus is still vacant; otherwise another path already
-        // established a new focus and we must not override it.
-        if self.state.keyboard_focus.is_null() {
-            self.change_keyboard_focus(saved);
-        }
     }
 
     /// Current pointer focus, as the surface resource pointer. For the

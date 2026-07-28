@@ -1,6 +1,6 @@
 # fuji Bridge Reference
 
-`aegis-fuji-mcp` is the scoped ASS platform connector for the fuji agent.
+`aegis-fuji-mcp` is the scoped Aegis platform connector for the fuji agent.
 It is an MCP stdio server, not a model runtime: the agent half of the same
 `aegis-fuji` crate owns providers, credentials, sessions, and user
 interaction.
@@ -26,7 +26,7 @@ diagnostics go to stderr.
 
 `check` probes the compositor, prints the effective scope and advertised tool
 names as JSON, and does not create a Realm. `print-config` prints a fuji
-`[mcp.ass]` entry using the current executable path.
+`[mcp.aegis]` entry using the current executable path.
 
 `smoke` performs a live start-notification mutation and reads the notification
 back from compositor state. With no existing managed Realm, it creates a
@@ -63,11 +63,11 @@ toast or a queued response alone is not proof that an operation was applied.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ASS_FUJI_SOCKET` | `$XDG_RUNTIME_DIR/aegis.sock` | ASS IPC socket. |
-| `ASS_FUJI_SCOPE` | `fuji` | Named `[[agent.scope]]` presented during the IPC handshake. |
-| `ASS_FUJI_REALM_LABEL` | `Fuji` | Unique label used to create and recover this bridge's Agent Realm; 1–128 bytes. |
-| `ASS_FUJI_IPC_TIMEOUT_SECS` | `5` | Per-connection handshake and I/O timeout; valid range `1..=60`. |
-| `ASS_FUJI_REVOKE_ON_EXIT` | `true` | Revoke the managed Realm after a graceful MCP EOF or shutdown request. |
+| `AEGIS_FUJI_SOCKET` | `$XDG_RUNTIME_DIR/aegis.sock` | Aegis IPC socket. |
+| `AEGIS_FUJI_SCOPE` | `fuji` | Named `[[agent.scope]]` presented during the IPC handshake. |
+| `AEGIS_FUJI_REALM_LABEL` | `Fuji` | Unique label used to create and recover this bridge's Agent Realm; 1–128 bytes. |
+| `AEGIS_FUJI_IPC_TIMEOUT_SECS` | `5` | Per-connection handshake and I/O timeout; valid range `1..=60`. |
+| `AEGIS_FUJI_REVOKE_ON_EXIT` | `true` | Revoke the managed Realm after a graceful MCP EOF or shutdown request. |
 
 The connector has no provider or credential variables. Realm recovery files
 and the per-scope process lock live in the owner-only
@@ -122,17 +122,17 @@ fuji loads the connector as a write-capable server because one catalog
 contains both observation and mutation tools:
 
 ```toml
-[mcp.ass]
+[mcp.aegis]
 command = ["/absolute/path/to/aegis-fuji-mcp"]
 enabled = true
 read_only = false
-environment = { ASS_FUJI_SCOPE = "fuji" }
+environment = { AEGIS_FUJI_SCOPE = "fuji" }
 
 [skills]
-paths = ["/absolute/path/to/ass/integrations/fuji/skills"]
+paths = ["/absolute/path/to/aegis/integrations/fuji/skills"]
 ```
 
-The MCP public names are prefixed by fuji as `mcp__ass__<tool>`.
+The MCP public names are prefixed by fuji as `mcp__aegis__<tool>`.
 
 ## Tools
 

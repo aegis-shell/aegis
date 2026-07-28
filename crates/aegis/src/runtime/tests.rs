@@ -96,7 +96,7 @@ fn capture_security_generation_invalidates_pre_lock_frames() {
 #[test]
 fn screenshot_file_uri_list_percent_encodes_path_bytes() {
     let dir = std::env::temp_dir().join(format!(
-        "ass-screenshot-uri-{}-{}",
+        "aegis-screenshot-uri-{}-{}",
         std::process::id(),
         std::thread::current().name().unwrap_or("test")
     ));

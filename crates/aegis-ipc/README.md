@@ -1,7 +1,7 @@
 # aegis-ipc
 
 `aegis-ipc` is the versioned query, control, event, and introspection protocol
-for ass.
+for aegis.
 
 ## Responsibilities
 
@@ -40,7 +40,7 @@ let socket = PathBuf::from(
     std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR is set"),
 )
 .join("aegis.sock");
-let mut client = ass_ipc::Client::connect(&socket)?;
+let mut client = aegis_ipc::Client::connect(&socket)?;
 let windows = client.windows()?;
 ```
 

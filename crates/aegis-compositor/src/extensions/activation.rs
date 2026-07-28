@@ -163,7 +163,7 @@ unsafe extern "C" fn activation_token_commit(
         } else {
             ffi::wl_display_next_serial((*state).display)
         };
-        let token = format!("ass-activation-{serial:08x}");
+        let token = format!("aegis-activation-{serial:08x}");
         if !state.is_null()
             && let Some(seat) = (*rec).seat
             && let Some(_guard) = crate::ActiveSeatGuard::enter(&mut *state, seat)

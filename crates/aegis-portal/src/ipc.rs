@@ -1,4 +1,4 @@
-//! The inward half of the bridge: a scoped ass-IPC capture client.
+//! The inward half of the bridge: a scoped aegis-IPC capture client.
 //!
 //! The portal connects under the built-in owner-only `aegis-portal` scope
 //! (`aegis_ipc::LOCAL_PORTAL_SCOPE`), which the compositor resolves to exactly

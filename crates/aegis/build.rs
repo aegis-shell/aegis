@@ -1,5 +1,5 @@
 //! Re-emit the rpaths published by the flux / lens `-sys` crates (via their
-//! `links` metadata) so the final `ass` binary resolves libflux.so and
+//! `links` metadata) so the final `aegis` binary resolves libflux.so and
 //! liblens.so from the sibling meson build trees at runtime without
 //! `LD_LIBRARY_PATH`. `rustc-link-arg` does not propagate across crates, so the
 //! terminal binary must re-emit them itself.

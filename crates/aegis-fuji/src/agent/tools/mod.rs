@@ -139,10 +139,10 @@ mod tests {
     #[test]
     fn mcp_names_split_on_the_double_underscore_boundary() {
         assert_eq!(
-            parse_mcp_name("mcp__ass__realm_capture"),
-            Some(("ass", "realm_capture"))
+            parse_mcp_name("mcp__aegis__realm_capture"),
+            Some(("aegis", "realm_capture"))
         );
-        assert_eq!(parse_mcp_name("mcp__ass__a__b"), Some(("ass", "a__b")));
+        assert_eq!(parse_mcp_name("mcp__aegis__a__b"), Some(("aegis", "a__b")));
         assert_eq!(parse_mcp_name("bash"), None);
         assert_eq!(parse_mcp_name("mcp__lonely"), None);
     }

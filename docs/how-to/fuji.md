@@ -1,12 +1,12 @@
-# How to Connect fuji to ASS
+# How to Connect fuji to Aegis
 
-Use the fuji agent and its MCP bridge to operate the ASS desktop with scoped
+Use the fuji agent and its MCP bridge to operate the Aegis desktop with scoped
 desktop and Agent Realm tools. fuji owns its provider and session
-configuration; ASS remains the authority for every desktop action.
+configuration; Aegis remains the authority for every desktop action.
 
 ## Build the Bridge and the Agent
 
-From the ASS repository:
+From the Aegis repository:
 
 ```bash
 cargo build --release -p aegis-fuji
@@ -14,9 +14,9 @@ cargo build --release -p aegis-fuji
 
 The binaries are `target/release/aegis-fuji-mcp` and `target/release/fuji`.
 
-## Configure the ASS Scope
+## Configure the Aegis Scope
 
-Add a named scope to the ASS configuration:
+Add a named scope to the Aegis configuration:
 
 ```toml
 [[agent.scope]]
@@ -42,13 +42,13 @@ Add `Close` only if fuji should be allowed to close windows. Omit
 `InjectRealmInput` for observation-only use. Leave `realms` unset because the
 managed Realm id is allocated at runtime.
 
-Restart ASS after introducing the scope. Later scope edits reload live;
+Restart Aegis after introducing the scope. Later scope edits reload live;
 narrowing applies immediately, while broader grants require reconnecting the
 MCP server so fuji discovers the additional tools.
 
 ## Check the Grant
 
-With ASS running:
+With Aegis running:
 
 ```bash
 target/release/aegis-fuji-mcp check
@@ -118,13 +118,13 @@ shipped skills:
 kind = "anthropic"
 model = "claude-sonnet-4-5"
 
-[mcp.ass]
-command = ["/absolute/path/to/ass/target/release/aegis-fuji-mcp"]
+[mcp.aegis]
+command = ["/absolute/path/to/aegis/target/release/aegis-fuji-mcp"]
 enabled = true
 read_only = false
 
 [skills]
-paths = ["/absolute/path/to/ass/integrations/fuji/skills"]
+paths = ["/absolute/path/to/aegis/integrations/fuji/skills"]
 ```
 
 Validate the setup:
@@ -168,7 +168,7 @@ for the same scope recovers that Realm.
 
 Ask fuji to call `realm_reset` only when you want to end the Realm and return
 its controlled windows to the human Realm. Normal graceful EOF also revokes by
-default. Use `ASS_FUJI_REVOKE_ON_EXIT=false` only when Realm continuity
+default. Use `AEGIS_FUJI_REVOKE_ON_EXIT=false` only when Realm continuity
 across graceful bridge restarts is intentional.
 
 For the complete scope, environment, tool, and exit-status contract, see the

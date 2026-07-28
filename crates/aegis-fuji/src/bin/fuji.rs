@@ -27,21 +27,25 @@ max_turns = 32
 [permissions]
 default = \"ask\"                    # allow | ask | deny
 # bash = \"ask\"
-# \"mcp__ass__realm_input\" = \"allow\"
+# \"mcp__aegis__realm_input\" = \"allow\"
 
-# ASS desktop bridge — build with: cargo build --release -p aegis-fuji
-# [mcp.ass]
+# Aegis desktop bridge — build with: cargo build --release -p aegis-fuji
+# [mcp.aegis]
 # command = [\"/absolute/path/to/aegis-fuji-mcp\"]
 # enabled = true
 # read_only = false
-# environment = { ASS_FUJI_SCOPE = \"fuji\" }
+# environment = { AEGIS_FUJI_SCOPE = \"fuji\" }
 
 # [skills]
-# paths = [\"/absolute/path/to/ass/integrations/fuji/skills\"]
+# paths = [\"/absolute/path/to/aegis/integrations/fuji/skills\"]
 ";
 
 #[derive(Debug, Parser)]
-#[command(name = "fuji", version, about = "fuji (宓姬) — the ASS desktop agent")]
+#[command(
+    name = "fuji",
+    version,
+    about = "fuji (宓姬) — the Aegis desktop agent"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,

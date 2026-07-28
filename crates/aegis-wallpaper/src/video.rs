@@ -72,7 +72,7 @@ impl VideoSource {
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let reader = thread::Builder::new()
-            .name("ass-wallpaper-video".into())
+            .name("aegis-wallpaper-video".into())
             .spawn({
                 let path = path.to_path_buf();
                 let slot = slot.clone();

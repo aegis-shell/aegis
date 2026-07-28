@@ -304,6 +304,36 @@ unsafe extern "C" fn seat_get_keyboard(
                     ffi::wl_resource_post_event(k, ffi::WL_KEYBOARD_REPEAT_INFO, 25u32, 250u32);
                 }
             }
+            if !runtime.keyboard_focus.is_null()
+                && ffi::wl_resource_get_client(runtime.keyboard_focus) == client
+            {
+                // A newly bound keyboard object joins the seat's existing
+                // logical focus. Announce that state immediately; destroying a
+                // sibling wl_keyboard resource never changes surface focus.
+                let serial = ffi::wl_display_next_serial((*state).display);
+                let empty = ffi::wl_array::empty();
+                ffi::wl_resource_post_event(
+                    k,
+                    ffi::WL_KEYBOARD_ENTER,
+                    serial,
+                    runtime.keyboard_focus,
+                    &empty as *const ffi::wl_array as *mut ffi::wl_array,
+                );
+                let modifiers = runtime
+                    .keyboard
+                    .as_ref()
+                    .map(keyboard::Keyboard::modifiers)
+                    .unwrap_or((runtime.depressed_mods.0, 0, 0, 0));
+                ffi::wl_resource_post_event(
+                    k,
+                    ffi::WL_KEYBOARD_MODIFIERS,
+                    serial,
+                    modifiers.0,
+                    modifiers.1,
+                    modifiers.2,
+                    modifiers.3,
+                );
+            }
             runtime.keyboard_resources.push(k);
         }
         (*state).track_routed_seat_resource(k, advertised_seat, seat_id);
@@ -326,18 +356,6 @@ unsafe extern "C" fn keyboard_resource_destroy(resource: *mut ffi::wl_resource) 
             if *slot == resource {
                 *slot = std::ptr::null_mut();
                 break;
-            }
-        }
-        if !runtime.keyboard_focus.is_null() {
-            let focus_client = ffi::wl_resource_get_client(runtime.keyboard_focus);
-            let orphaned = runtime
-                .keyboard_resources
-                .iter()
-                .copied()
-                .filter(|p| !p.is_null())
-                .all(|p| ffi::wl_resource_get_client(p) != focus_client);
-            if orphaned {
-                runtime.keyboard_focus = std::ptr::null_mut();
             }
         }
     }

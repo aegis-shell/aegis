@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-Durable technical decisions for ass. Records are numbered, immutable, and
+Durable technical decisions for Aegis. Records are numbered, immutable, and
 append-only: supersede an accepted record with a new one rather than
 editing it. New records start from [the template](template.md). For
 background and how the decisions fit together, see
@@ -71,3 +71,5 @@ background and how the decisions fit together, see
 | [0062](0062-wayland-input-method-v2-host-integration.md) | Wayland input-method-v2 host integration | Accepted |
 | [0063](0063-compositor-owned-borderless-decoration-policy.md) | Compositor-owned borderless decoration policy | Accepted |
 | [0064](0064-output-space-use-and-chrome-policy.md) | Output space-use state and chrome policy | Accepted |
+| [0065](0065-compositor-chrome-key-routing-without-focus-churn.md) | Compositor chrome key routing without focus churn | Accepted |
+| [0066](0066-canonical-aegis-namespace.md) | Canonical Aegis namespace | Accepted |

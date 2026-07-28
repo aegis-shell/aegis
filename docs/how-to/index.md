@@ -1,6 +1,6 @@
-# How to Use ass
+# How to Use aegis
 
-Task-oriented instructions for operating an ass session.
+Task-oriented instructions for operating an aegis session.
 
 ## Guides
 
@@ -8,6 +8,6 @@ Task-oriented instructions for operating an ass session.
 - [How to Manage Borderless Windows](window-management.md)
 - [How to Run a Wayland Input Method](wayland-input-method.md)
 - [How to Use AI Workspaces](ai-workspaces.md)
-- [Connect fuji to ASS](fuji.md)
-- [How to Run ass on Bare Metal (DRM/KMS)](bare-metal-drm.md)
+- [Connect fuji to Aegis](fuji.md)
+- [How to Run aegis on Bare Metal (DRM/KMS)](bare-metal-drm.md)
 - [How to Install and Verify the Portal Backend](portals.md)

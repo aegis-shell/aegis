@@ -1,7 +1,7 @@
 //! Continuous output frame streaming (ADR-0052).
 //!
 //! The registry lives on the compositor main loop. A stream is registered by
-//! an IPC `StreamOutputStart` (authorization happens in `ass-ipc` before the
+//! an IPC `StreamOutputStart` (authorization happens in `aegis-ipc` before the
 //! request reaches this loop), is throttled to its `max_fps`, and fans one
 //! shared GPU readback out to every due stream. Delivery goes through
 //! `aegis_ipc::Server::push_stream_frame`, whose bounded lane reports drops

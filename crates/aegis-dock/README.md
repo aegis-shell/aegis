@@ -1,6 +1,6 @@
 # aegis-dock
 
-`aegis-dock` is the macOS-style dock chrome component for the ass compositor,
+`aegis-dock` is the macOS-style dock chrome component for the aegis compositor,
 built on the `Chrome` contract from `aegis-shell` and the shared materials from
 `aegis-design`.
 
@@ -17,7 +17,7 @@ built on the `Chrome` contract from `aegis-shell` and the shared materials from
 ## Boundaries
 
 The dock owns presentation and interaction state only. The composition root
-(the `ass` binary) resolves the pinned entries and owns the decoded icon
+(the `aegis` binary) resolves the pinned entries and owns the decoded icon
 textures; the dock receives both as borrowed snapshots pushed through
 `Chrome::update_app_catalog`. It never mutates Wayland state, spawns
 processes, or writes configuration.
@@ -35,7 +35,7 @@ Push the application catalog, then register one dock with the shell:
 
 ```rust
 shell.set_app_catalog(catalog);
-shell.add(Box::new(ass_dock::Dock::new()));
+shell.add(Box::new(aegis_dock::Dock::new()));
 ```
 
 `Shell::add` seeds newly registered components with the current catalog, and

@@ -4,7 +4,7 @@
 //!
 //! The component owns presentation state only: responsive grid geometry,
 //! paging, hover/click hit-testing, and the opening/closing spring. Search,
-//! running-app matching, selection, and launch outcomes stay in `ass-core`.
+//! running-app matching, selection, and launch outcomes stay in `aegis-core`.
 //! The compositor host captures and multi-resolution-blurs the desktop when
 //! [`Chrome::backdrop_blur_sigma`] is non-zero, so the overlay remains legible
 //! without replacing the user's spatial context with an opaque panel.
@@ -179,7 +179,7 @@ impl Launcher {
             prev_down: false,
             search_focused: false,
             modal_reserved: Reserved::default(),
-            app_menu: AppMenu::new("ass-launcher-context-menu"),
+            app_menu: AppMenu::new("aegis-launcher-context-menu"),
             reduced_motion: false,
         }
     }
@@ -409,7 +409,7 @@ impl Chrome for Launcher {
             h: display.y,
         };
         frame.layer(
-            "ass-launcher-backdrop",
+            "aegis-launcher-backdrop",
             full,
             &backdrop_layer(progress),
             |_| {},
@@ -425,7 +425,7 @@ impl Chrome for Launcher {
             self.search_focused = contains(search_rect, cursor.x, cursor.y);
         }
         frame.layer(
-            "ass-launcher-search",
+            "aegis-launcher-search",
             search_rect,
             &glass_panel(progress, SEARCH_H * 0.5, self.search_focused),
             |frame| {
@@ -464,7 +464,7 @@ impl Chrome for Launcher {
         );
         if self.search_focused {
             frame.layer(
-                "ass-launcher-search-caret",
+                "aegis-launcher-search-caret",
                 caret_rect,
                 &search_caret_layer(progress),
                 |_| {},
@@ -479,7 +479,7 @@ impl Chrome for Launcher {
             h: 20.0,
         };
         frame.layer(
-            "ass-launcher-result-count",
+            "aegis-launcher-result-count",
             result_rect,
             &centered_layer(),
             |frame| {
@@ -496,7 +496,7 @@ impl Chrome for Launcher {
                 w: display.x,
                 h: 32.0,
             };
-            frame.layer("ass-launcher-empty", empty, &centered_layer(), |frame| {
+            frame.layer("aegis-launcher-empty", empty, &centered_layer(), |frame| {
                 frame.column_ex(&sized(display.x, 32.0), |frame| {
                     frame.label_sized(i18n.text(Message::TryAnotherSearch), 16.0);
                 });
@@ -524,7 +524,7 @@ impl Chrome for Launcher {
             } else {
                 Color::TRANSPARENT
             };
-            let id = format!("ass-launcher-cell-{}", cell.filtered_position);
+            let id = format!("aegis-launcher-cell-{}", cell.filtered_position);
             frame.layer(
                 &id,
                 rect,
@@ -587,7 +587,7 @@ impl Chrome for Launcher {
                     w: diameter,
                     h: diameter,
                 };
-                let id = format!("ass-launcher-page-{page}");
+                let id = format!("aegis-launcher-page-{page}");
                 frame.layer(&id, dot, &OverlayOpts::default(), |frame| {
                     frame.column_ex(
                         &sized_fill(
@@ -623,7 +623,7 @@ impl Chrome for Launcher {
                 clicked_page = Some(self.page + 1);
             }
             frame.layer(
-                "ass-launcher-page-previous",
+                "aegis-launcher-page-previous",
                 previous,
                 &centered_layer(),
                 |frame| {
@@ -633,7 +633,7 @@ impl Chrome for Launcher {
                 },
             );
             frame.layer(
-                "ass-launcher-page-label",
+                "aegis-launcher-page-label",
                 Rect {
                     x: display.x * 0.5 - 54.0,
                     y: footer_y,
@@ -647,11 +647,16 @@ impl Chrome for Launcher {
                     });
                 },
             );
-            frame.layer("ass-launcher-page-next", next, &centered_layer(), |frame| {
-                frame.column_ex(&sized(next.w, next.h), |frame| {
-                    frame.icon(Icon::ChevronRight, 16.0);
-                });
-            });
+            frame.layer(
+                "aegis-launcher-page-next",
+                next,
+                &centered_layer(),
+                |frame| {
+                    frame.column_ex(&sized(next.w, next.h), |frame| {
+                        frame.icon(Icon::ChevronRight, 16.0);
+                    });
+                },
+            );
         }
 
         // The shell shares one lens frame across every chrome component.

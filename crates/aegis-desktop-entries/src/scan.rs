@@ -70,7 +70,7 @@ pub fn enumerate_in_with_theme_and_scale(
             match parse_path(&path, &id, &context) {
                 Ok(Some(e)) => out.push(e),
                 Ok(None) => {}
-                Err(e) => log::warn!("ass-apps: skip {path:?}: {e}"),
+                Err(e) => log::warn!("aegis-apps: skip {path:?}: {e}"),
             }
         }
     }

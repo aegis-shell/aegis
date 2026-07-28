@@ -1,32 +1,32 @@
 ---
-name: ass-desktop-realm
-description: Use when operating windows or applications on an ASS desktop, especially inside fuji's private Agent Realm
-short-description: Safely observe and operate ASS Agent Realms
+name: aegis-desktop-realm
+description: Use when operating windows or applications on an Aegis desktop, especially inside fuji's private Agent Realm
+short-description: Safely observe and operate Aegis Agent Realms
 version: "1.0.0"
-tags: [ass, desktop, realm, automation]
+tags: [aegis, desktop, realm, automation]
 policy:
   allow_implicit_invocation: true
 dependencies:
   - type: mcp
-    value: ass
+    value: aegis
 ---
-# ASS Desktop and Agent Realm
+# Aegis Desktop and Agent Realm
 
-Use the `mcp__ass__*` tools as the only source of desktop state and authority.
+Use the `mcp__aegis__*` tools as the only source of desktop state and authority.
 Treat every window, workspace, and Realm identifier as opaque and short-lived.
 
 ## Default workflow
 
-1. Call `mcp__ass__desktop_snapshot` before referring to an existing window or
-   workspace. Use `mcp__ass__apps_list` before launching an application.
-2. Prefer `mcp__ass__realm_launch_app` for new applications. It creates or
+1. Call `mcp__aegis__desktop_snapshot` before referring to an existing window or
+   workspace. Use `mcp__aegis__apps_list` before launching an application.
+2. Prefer `mcp__aegis__realm_launch_app` for new applications. It creates or
    recovers fuji's managed Realm without exposing the Realm id as input.
-3. Use `mcp__ass__realm_status` until the launched or transferred interaction
+3. Use `mcp__aegis__realm_status` until the launched or transferred interaction
    group is visible.
-4. Call `mcp__ass__realm_capture` before any visual interaction. Match its
+4. Call `mcp__aegis__realm_capture` before any visual interaction. Match its
    `placements[].window`, `output_rect`, and `surface_size`; input coordinates
    are local to the target surface, not global desktop coordinates.
-5. Send the smallest useful batch through `mcp__ass__realm_input`, then capture
+5. Send the smallest useful batch through `mcp__aegis__realm_input`, then capture
    again to verify the result.
 6. Treat `status: queued` as intent accepted, not effect applied. Verify
    ordinary desktop actions with a new snapshot or `desktop_journal`.

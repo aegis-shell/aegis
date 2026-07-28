@@ -11,7 +11,7 @@ using freedesktop.org desktop-entry and icon-theme conventions.
   `Exec` fields.
 - Resolve icons through scale-aware theme metadata, recursive inheritance,
   the `hicolor` theme, and unthemed pixmap fallback.
-- Produce the shared `ass_core::app::Entry` model.
+- Produce the shared `aegis_core::app::Entry` model.
 
 ## Boundaries
 
@@ -28,7 +28,7 @@ unusable entries are excluded from the result.
 ## Use
 
 ```rust
-let applications = ass_apps::enumerate();
+let applications = aegis_apps::enumerate();
 
 for application in applications {
     println!("{}: {}", application.id, application.name);

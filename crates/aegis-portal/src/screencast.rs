@@ -16,7 +16,7 @@
 //! cancel. A window stream crops the window's visible region from the
 //! output frame — occluded parts show the occluder, and the stream ends if
 //! the window closes or its size changes. Version 2 adds `persist_mode` 1
-//! (token kept in memory — ass has no application-exit tracking, so "until
+//! (token kept in memory — aegis has no application-exit tracking, so "until
 //! the application exits" degrades to "until the portal restarts") and 2
 //! (token persisted as `$XDG_DATA_HOME/aegis-portal/screencast-tokens.json`,
 //! ADR-0053). A valid `restore_token` skips confirmation — the unguessable
@@ -148,7 +148,7 @@ pub(crate) fn fallback_token(handle: &ObjectPath<'_>) -> String {
         .unwrap_or_else(|| {
             static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             format!(
-                "ass{}",
+                "aegis{}",
                 COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             )
         })
@@ -771,7 +771,7 @@ struct TokenDoc {
 
 /// Restore-token store, owned by the screencast worker. Mode 2 tokens live
 /// in `persistent` and are written through to the state directory on every
-/// change; mode 1 tokens live in `transient` and die with the process (ass
+/// change; mode 1 tokens live in `transient` and die with the process (aegis
 /// has no application-exit tracking, so "until the application exits"
 /// degrades to "until the portal restarts").
 pub(crate) struct TokenStore {

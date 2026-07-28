@@ -917,26 +917,48 @@ pub(crate) unsafe fn minimize_toplevel_record(rec: *mut SurfaceRec) {
             (*rec).window.size = target_size;
         }
         (*rec).window.minimized = true;
-        if state.is_null() || (*state).keyboard_focus != (*rec).resource {
+        if state.is_null() {
             return;
         }
-        // The minimized toplevel held keyboard focus: mirror
-        // `change_keyboard_focus(null)` + `set_activated_for_surface(old, false)`
-        // inline, since the handler is a free function without a `Server` ref.
-        let serial = ffi::wl_display_next_serial((*state).display);
-        let old_client = ffi::wl_resource_get_client((*rec).resource);
-        for k in (*state)
-            .keyboard_resources
-            .iter()
-            .copied()
-            .filter(|p| !p.is_null())
-            .filter(|p| ffi::wl_resource_get_client(*p) == old_client)
-        {
-            ffi::wl_resource_post_event(k, ffi::WL_KEYBOARD_LEAVE, serial, (*rec).resource);
+        // A minimized toplevel is no longer a valid focus target on any seat.
+        // This free protocol handler mirrors the complete dependency set in
+        // `Server::change_keyboard_focus`, not just wl_keyboard.
+        let root = surface_root_toplevel(rec);
+        let seats = (*state).seats.keys().copied().collect::<Vec<_>>();
+        let mut focus_dropped = false;
+        for seat in seats {
+            let Some(_guard) = ActiveSeatGuard::enter_existing(&mut *state, seat) else {
+                continue;
+            };
+            let old_focus = (*state).keyboard_focus;
+            if old_focus.is_null() {
+                continue;
+            }
+            let focused_rec = ffi::wl_resource_get_user_data(old_focus) as *mut SurfaceRec;
+            if focused_rec.is_null() || surface_root_toplevel(focused_rec) != root {
+                continue;
+            }
+            let serial = ffi::wl_display_next_serial((*state).display);
+            let old_client = ffi::wl_resource_get_client(old_focus);
+            let keyboards = (*state)
+                .keyboard_resources
+                .iter()
+                .copied()
+                .filter(|keyboard| {
+                    !keyboard.is_null() && ffi::wl_resource_get_client(*keyboard) == old_client
+                })
+                .collect::<Vec<_>>();
+            for keyboard in keyboards {
+                ffi::wl_resource_post_event(keyboard, ffi::WL_KEYBOARD_LEAVE, serial, old_focus);
+            }
+            (*state).keyboard_focus = std::ptr::null_mut();
+            keyboard_focus_dependencies_changed(state, old_focus, std::ptr::null_mut());
+            focus_dropped = true;
         }
-        (*state).keyboard_focus = std::ptr::null_mut();
-        (*rec).window.state.activated = false;
-        reconfigure_with_state(rec);
+        if focus_dropped {
+            (*rec).window.state.activated = false;
+            reconfigure_with_state(rec);
+        }
         ffi::wl_display_flush_clients((*state).display);
     }
 }

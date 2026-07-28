@@ -53,28 +53,28 @@ impl BridgeConfig {
         Ok(config)
     }
 
-    /// Load the bridge configuration from `ASS_FUJI_*` variables.
+    /// Load the bridge configuration from `AEGIS_FUJI_*` variables.
     pub fn from_env() -> Result<Self, ConfigError> {
         Self::from_lookup(|name| std::env::var_os(name))
     }
 
     fn from_lookup(mut get: impl FnMut(&str) -> Option<OsString>) -> Result<Self, ConfigError> {
         let runtime_dir = PathBuf::from(required_os(&mut get, "XDG_RUNTIME_DIR")?);
-        let socket_path = get("ASS_FUJI_SOCKET")
+        let socket_path = get("AEGIS_FUJI_SOCKET")
             .map(PathBuf::from)
             .unwrap_or_else(|| runtime_dir.join("aegis.sock"));
-        let scope = optional_string(&mut get, "ASS_FUJI_SCOPE")?
+        let scope = optional_string(&mut get, "AEGIS_FUJI_SCOPE")?
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
-        let realm_label = optional_string(&mut get, "ASS_FUJI_REALM_LABEL")?
+        let realm_label = optional_string(&mut get, "AEGIS_FUJI_REALM_LABEL")?
             .unwrap_or_else(|| DEFAULT_REALM_LABEL.to_string());
         let io_timeout = Duration::from_secs(parse_number(
             &mut get,
-            "ASS_FUJI_IPC_TIMEOUT_SECS",
+            "AEGIS_FUJI_IPC_TIMEOUT_SECS",
             DEFAULT_IPC_TIMEOUT_SECS,
             1,
             60,
         )?);
-        let revoke_on_exit = parse_bool(&mut get, "ASS_FUJI_REVOKE_ON_EXIT", true)?;
+        let revoke_on_exit = parse_bool(&mut get, "AEGIS_FUJI_REVOKE_ON_EXIT", true)?;
         let config = Self {
             socket_path,
             runtime_dir,
@@ -89,7 +89,7 @@ impl BridgeConfig {
 
     pub(crate) fn validate(&self) -> Result<(), ConfigError> {
         if self.socket_path.as_os_str().is_empty() {
-            return Err(invalid("ASS_FUJI_SOCKET", "path must not be empty"));
+            return Err(invalid("AEGIS_FUJI_SOCKET", "path must not be empty"));
         }
         if !self.runtime_dir.is_absolute() {
             return Err(invalid(
@@ -99,20 +99,20 @@ impl BridgeConfig {
         }
         if self.scope.trim().is_empty() || self.scope.len() > 128 {
             return Err(invalid(
-                "ASS_FUJI_SCOPE",
+                "AEGIS_FUJI_SCOPE",
                 "length must be from 1 through 128 bytes",
             ));
         }
         let label = self.realm_label.trim();
         if label.is_empty() || label.len() > 128 {
             return Err(invalid(
-                "ASS_FUJI_REALM_LABEL",
+                "AEGIS_FUJI_REALM_LABEL",
                 "length must be from 1 through 128 bytes",
             ));
         }
         if !(Duration::from_secs(1)..=Duration::from_secs(60)).contains(&self.io_timeout) {
             return Err(invalid(
-                "ASS_FUJI_IPC_TIMEOUT_SECS",
+                "AEGIS_FUJI_IPC_TIMEOUT_SECS",
                 "expected a duration from 1 through 60 seconds",
             ));
         }
@@ -242,7 +242,7 @@ mod tests {
     fn parses_explicit_shutdown_policy() {
         let config = load(&[
             ("XDG_RUNTIME_DIR", "/tmp/runtime"),
-            ("ASS_FUJI_REVOKE_ON_EXIT", "off"),
+            ("AEGIS_FUJI_REVOKE_ON_EXIT", "off"),
         ])
         .expect("config");
         assert!(!config.revoke_on_exit);
@@ -256,14 +256,14 @@ mod tests {
                 "XDG_RUNTIME_DIR".to_string(),
                 OsString::from("/tmp/runtime"),
             ),
-            ("ASS_FUJI_SCOPE".to_string(), OsString::from(long)),
+            ("AEGIS_FUJI_SCOPE".to_string(), OsString::from(long)),
         ]);
         let error =
             BridgeConfig::from_lookup(|name| values.get(name).cloned()).expect_err("long scope");
         assert!(matches!(
             error,
             ConfigError::Invalid {
-                name: "ASS_FUJI_SCOPE",
+                name: "AEGIS_FUJI_SCOPE",
                 ..
             }
         ));

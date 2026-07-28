@@ -1,6 +1,6 @@
 [package]
 name = "aegis-portal"
-description = "xdg-desktop-portal backend for the ass compositor: D-Bus bridge over the scoped ass IPC"
+description = "xdg-desktop-portal backend for the aegis compositor: D-Bus bridge over the scoped aegis IPC"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,12 +9,12 @@ rust-version.workspace = true
 [dependencies]
 aegis-ipc = { workspace = true }
 aegis-config = { workspace = true }
-# ass-ipc's pick results and window snapshots carry ass-core types (Rect,
+# aegis-ipc's pick results and window snapshots carry aegis-core types (Rect,
 # WindowId, Window); a workspace-internal crate, no new external dependency.
 aegis-core = { workspace = true }
 # Session D-Bus bridge (ADR-0051): pure-Rust zbus with the blocking API so the
 # service stays a plain `std::thread` model — same red line as the SNI tray
-# (crates/ass-statusbar), no tokio.
+# (crates/aegis-statusbar), no tokio.
 zbus = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
@@ -25,7 +25,7 @@ thiserror = { workspace = true }
 pipewire = "0.10"
 # Portal-owned persistent state (Background decisions, ScreenCast restore
 # tokens, ADR-0053): JSON documents written atomically under
-# $XDG_DATA_HOME/ass-portal. Both crates already carry the workspace IPC and
+# $XDG_DATA_HOME/aegis-portal. Both crates already carry the workspace IPC and
 # config, so this adds no new external dependency.
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

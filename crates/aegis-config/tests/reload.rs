@@ -1,4 +1,4 @@
-//! Filesystem-level integration for `ass-config`: loading from a path and
+//! Filesystem-level integration for `aegis-config`: loading from a path and
 //! mtime-based reload transitions. Uses a process-unique path under the
 //! system temp dir so no external `tempfile` dependency is needed.
 
@@ -17,7 +17,7 @@ fn scratch(name: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
     let mut p = std::env::temp_dir();
-    p.push(format!("ass-config-{pid}-{n}-{name}.toml"));
+    p.push(format!("aegis-config-{pid}-{n}-{name}.toml"));
     p
 }
 
@@ -102,9 +102,9 @@ fn default_path_points_at_aegis_config_toml() {
         // No home dir on this host; nothing to assert.
         return;
     };
-    // .../ass/config.toml: parent dir ends in `ass`, file is `config.toml`.
+    // .../aegis/config.toml: parent dir ends in `aegis`, file is `config.toml`.
     assert!(
-        p.parent().is_some_and(|par| par.ends_with("ass")),
+        p.parent().is_some_and(|par| par.ends_with("aegis")),
         "{}",
         p.display()
     );

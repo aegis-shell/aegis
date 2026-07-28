@@ -32,9 +32,9 @@ discovers System Settings through the installed XDG metadata.
 
 | Route | Category | Apply behavior | Backend |
 |-------|----------|----------------|---------|
-| `display` | Hardware | Explicit Apply button | Available; ass output model and direct DRM backend |
+| `display` | Hardware | Explicit Apply button | Available; aegis output model and direct DRM backend |
 | `mouse` | Hardware | Instant | Not available yet; libinput mouse policy required |
-| `touchpad` | Hardware | Instant | Available; ass input policy and libinput backend |
+| `touchpad` | Hardware | Instant | Available; aegis input policy and libinput backend |
 | `keyboard` | Hardware | Explicit | Not available yet; keymap, repeat, compose, and shortcut backend required |
 | `appearance` | Personalization | Explicit | Not available yet; UI policy and desktop theme service required |
 | `power` | System | Instant | Not available yet; logind, UPower, and power-profile service adapters required |

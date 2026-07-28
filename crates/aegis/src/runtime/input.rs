@@ -168,14 +168,15 @@ impl CompositorRuntime {
                 }
             }
         }
-        // When chrome (the launcher or a context menu) captures the keyboard,
-        // key events go to chrome rather than the focused client. The shell
-        // reports capture state from the previous frame's render / key
-        // handling, so this is stable for the whole batch.
+        // Chrome capture chooses the owner of each new key press without
+        // changing the focused Wayland surface. Ownership remains fixed until
+        // the matching release, even when the overlay opens or closes between
+        // those two events.
         let keyboard_captured = !session_locked && self.shell.captures_keyboard();
         let mut captured_actions = Vec::new();
+        let mut chrome_owned_key_events = vec![false; events.len()];
         if !events.is_empty() {
-            for ev in &events {
+            for (event_index, ev) in events.iter().enumerate() {
                 use aegis_core::input::InputEvent::*;
                 match *ev {
                     PointerMotion { x, y } => {
@@ -213,45 +214,40 @@ impl CompositorRuntime {
                         input.set_cursor(-1.0, -1.0);
                         self.input_acc.cursor = (-1.0, -1.0);
                     }
-                    Key { code, state } if keyboard_captured => {
-                        // Capture: advance the server's xkb state on every key
-                        // event (press and release both keep modifier tracking
-                        // consistent), and feed the launcher brain only on
-                        // press so typed characters are not double-counted.
-                        // Captured keys are withheld from clients below.
-                        if !session_locked && self.super_tap.on_key(code, state.is_pressed()) {
-                            self.shell.toggle();
-                        }
-                        if let Some(kc) = self.server.key_char(code, state.is_pressed())
-                            && state.is_pressed()
-                        {
-                            // Modal chrome owns ordinary keys, but a small,
-                            // explicit set of compositor controls remains
-                            // reachable. Match after advancing xkb so layouts
-                            // and modifiers use the same resolved KeyChar as
-                            // the ordinary global-binding path.
-                            if let Some(action) = self
-                                .keymap
-                                .match_key_during_keyboard_capture(kc.mods, kc.keysym)
-                            {
-                                captured_actions.push(action);
-                            } else {
-                                self.shell.key_char(kc);
-                            }
-                        }
-                        // VT switch keys stay compositor-owned while chrome
-                        // holds the keyboard too.
-                        if let Some(vt) = self.server.take_vt_switch() {
-                            log::info!("{}: VT switch requested to tty{vt}", self.host.name());
-                            self.host.switch_vt(vt);
-                        }
-                    }
                     Key { code, state } => {
-                        // Not capturing: keys forward to the client normally
-                        // (below). The Super-tap detector still observes every
-                        // key so a clean tap can open the launcher.
+                        let route = self.keyboard_capture.route(code, state, keyboard_captured);
+                        let chrome_owned = route == aegis_core::input::KeyRoute::Chrome;
+                        chrome_owned_key_events[event_index] = chrome_owned;
+
+                        // The Super-tap detector observes both routes. It never
+                        // changes which owner receives the matching release.
                         if !session_locked && self.super_tap.on_key(code, state.is_pressed()) {
                             self.shell.toggle();
+                        }
+                        if chrome_owned {
+                            // Advance xkb on both edges, but only feed presses
+                            // to chrome so printable input is not duplicated.
+                            if let Some(kc) = self.server.key_char(code, state.is_pressed())
+                                && state.is_pressed()
+                            {
+                                // A small explicit set of compositor controls
+                                // remains reachable while modal chrome owns
+                                // new key sequences.
+                                if let Some(action) = self
+                                    .keymap
+                                    .match_key_during_keyboard_capture(kc.mods, kc.keysym)
+                                {
+                                    captured_actions.push(action);
+                                } else {
+                                    self.shell.key_char(kc);
+                                }
+                            }
+                            // VT switch keys stay compositor-owned while
+                            // chrome owns their sequence.
+                            if let Some(vt) = self.server.take_vt_switch() {
+                                log::info!("{}: VT switch requested to tty{vt}", self.host.name());
+                                self.host.switch_vt(vt);
+                            }
                         }
                     }
                     PointerAxis(frame) => {
@@ -285,10 +281,10 @@ impl CompositorRuntime {
             let display = self.input_acc.display_size;
             let mut route_cursor = pointer_before;
             let mut forwarded = Vec::with_capacity(events.len() + 1);
-            for ev in events.iter().copied() {
+            for (event_index, ev) in events.iter().copied().enumerate() {
                 use aegis_core::input::InputEvent::*;
                 match ev {
-                    Key { .. } if keyboard_captured => {}
+                    Key { .. } if chrome_owned_key_events[event_index] => {}
                     PointerMotion { x, y } => {
                         self.synthetic_pointer_active = false;
                         route_cursor = (x, y);

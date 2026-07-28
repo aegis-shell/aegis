@@ -25,7 +25,7 @@ aegis-ctl realm list
 2. Drag a window thumbnail to an active Realm on the right shelf.
 3. Release the pointer over the Realm.
 
-ass transfers the window's complete interaction group in one transaction.
+aegis transfers the window's complete interaction group in one transaction.
 The agent Realm becomes the only input authority. The physical desktop keeps
 a read-only mirror by default, so the window stays visible but does not
 receive physical clicks or keystrokes. The mirror is also an input barrier:
@@ -44,14 +44,14 @@ Add `--no-mirror` to remove the source presentation after transfer.
 
 ## Launch an Isolated Application
 
-Run ass through the packaged systemd user service. Realm launches require
-delegated `cpu`, `memory`, and `pids` cgroup v2 controllers; starting ass
+Run aegis through the packaged systemd user service. Realm launches require
+delegated `cpu`, `memory`, and `pids` cgroup v2 controllers; starting aegis
 directly from a shared terminal scope keeps desktop use available but makes
 Realm application launch fail closed.
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user start ass.service
+systemctl --user start aegis.service
 ```
 
 Launch a desktop entry directly inside a Realm when the application process
@@ -134,15 +134,15 @@ invalidates captures, and kills and reaps managed sandbox process trees.
 ## Interaction-Group Behavior
 
 A single application connection may own several toplevels, popups, and
-transient dialogs. ass moves the complete interaction group when separating
+transient dialogs. aegis moves the complete interaction group when separating
 those windows would make seat focus or protocol serials contradictory.
 This is observable as several windows moving after one drag; it does not
 create a second application instance.
 
-An application does not need multi-seat support: ass conservatively places
+An application does not need multi-seat support: aegis conservatively places
 all toplevels owned by one Wayland client connection in one interaction group,
 and that complete group has one controlling Realm at a time. Native multi-seat
-behavior is detected only so seat resources can be routed correctly; ass does
+behavior is detected only so seat resources can be routed correctly; aegis does
 not automatically split one client connection across Realms. A sandbox portal
 supports multiple Wayland connections made by one multi-process application
 instance; that transport behavior is separate from multi-seat input.

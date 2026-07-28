@@ -1,6 +1,6 @@
 [package]
 name = "aegis-dock"
-description = "macOS-style dock chrome component for the ass compositor"
+description = "macOS-style dock chrome component for the aegis compositor"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true

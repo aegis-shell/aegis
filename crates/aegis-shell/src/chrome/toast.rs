@@ -98,7 +98,7 @@ impl Chrome for Toast {
                 ..Default::default()
             };
             let id: usize = n.id as usize;
-            let overlay_id = format!("ass-toast-{id}");
+            let overlay_id = format!("aegis-toast-{id}");
             f.layer(&overlay_id, rect, &opts, |f| {
                 let title = match &n.app_id {
                     Some(app) => format!("{} · {app}", n.summary),

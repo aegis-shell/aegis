@@ -1,6 +1,6 @@
 # Roadmap
 
-The milestone sequence ass follows from its current state to a desktop a
+The milestone sequence aegis follows from its current state to a desktop a
 human uses daily, and onward to the agent phase described in
 [Vision and Scope](vision.md). Each milestone is verifiable before the next
 begins. This page replaces the inline roadmap that used to live in
@@ -35,7 +35,7 @@ committed; the verification criteria are.
 
 ## M0: Nested Bring-up
 
-**Outcome.** ass runs as a client of an existing Wayland session and flux
+**Outcome.** aegis runs as a client of an existing Wayland session and flux
 presents cleared frames into the host window, with lens chrome visible.
 
 **Status.** Complete. See [ADR-0003](../adr/0003-nested-first-bring-up.md).
@@ -74,7 +74,7 @@ it, and receive pointer input directly when topmost.
 **Outcome.** Multiple toplevels with focus, interactive move and resize,
 minimization, borderless compositor-owned controls, a window list, a
 macOS-style dock, and an application launcher. Shell surfaces remain behind
-the `Chrome` trait. Key bindings are configurable through `$ASS_KEYBINDS`.
+the `Chrome` trait. Key bindings are configurable through `$AEGIS_KEYBINDS`.
 Real application icons render in the dock.
 
 **Status.** Complete. Shipped: toplevel metadata and state machine
@@ -97,7 +97,7 @@ window rect, excluding shadow margins.
 
 ## M4: DRM/KMS Backend
 
-**Outcome.** ass drives display hardware directly from a bare TTY through a
+**Outcome.** aegis drives display hardware directly from a bare TTY through a
 DRM/KMS backend, with libinput for input and libseat for session and device
 ownership. The nested backend remains for development. Both implement the
 `Backend` trait, so the server, renderer, and shell are unchanged.
@@ -112,10 +112,10 @@ dma-bufs (GBM-less) through a two-slot page-flip ring with explicit-sync
 (pointer, keyboard, touch, touchpad gestures, tablet tools), owns the session
 through libseat with VT switch suspend/resume, and handles udev hotplug with
 per-connector workspace restore (ADR-0025) and surface recreation when the
-modifier set changes. `--backend auto|drm|nested` (or `ASS_BACKEND`) selects
+modifier set changes. `--backend auto|drm|nested` (or `AEGIS_BACKEND`) selects
 the target at startup.
 
-**Verification.** ass starts from a TTY on a single monitor, lights the
+**Verification.** aegis starts from a TTY on a single monitor, lights the
 display, and runs M3's chrome against real clients without a host session.
 The known-risk paths to exercise first are the flip-wait under input load,
 VT round-trip with a flip in flight, and monitor unplug/replug during
@@ -123,15 +123,15 @@ presentation.
 
 ## M5: Configuration and IPC
 
-**Outcome.** The placeholder `$ASS_KEYBINDS` environment variable is
+**Outcome.** The placeholder `$AEGIS_KEYBINDS` environment variable is
 replaced by a single declarative TOML file with a versioned schema and full
 live reload. A versioned IPC over a unix socket exposes the same model the
 shell reads, so external programs can query and mutate windows, workspaces,
 outputs, and inputs.
 
 **Status.** Complete. The configuration system shipped
-(ADR-0026): one TOML file at `$XDG_CONFIG_HOME/ass/config.toml`, schema
-version 1, mtime live reload, structured diagnostics, with `$ASS_KEYBINDS`
+(ADR-0026): one TOML file at `$XDG_CONFIG_HOME/aegis/config.toml`, schema
+version 1, mtime live reload, structured diagnostics, with `$AEGIS_KEYBINDS`
 retained as a deprecated transitional override. The IPC shipped its full
 seed surface (ADR-0027): versioned length-framed JSON over
 `$XDG_RUNTIME_DIR/aegis.sock`, capability-gated handshake, `query`

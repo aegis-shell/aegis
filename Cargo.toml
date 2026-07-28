@@ -29,12 +29,12 @@ iris = { path = "../optics/bindings/iris-rs/crates/iris" }
 log = "0.4"
 env_logger = "0.11"
 
-# fuji (宓姬) is the in-tree agent product. ass exposes a narrow MCP platform
+# fuji (宓姬) is the in-tree agent product. aegis exposes a narrow MCP platform
 # bridge so the agent can discover scoped desktop and Realm tools without
 # linking the agent stack into the compositor (ADR-0047, ADR-0050).
 base64 = "0.22"
 
-# Session D-Bus for the StatusNotifierItem system tray (ass-statusbar).
+# Session D-Bus for the StatusNotifierItem system tray (aegis-statusbar).
 # Pure-Rust zbus (no libdbus system dep) with the blocking API so the tray
 # worker stays a plain `std::thread`; `async-io` is zbus's smol-based
 # internal executor — tokio stays out of the dependency graph.

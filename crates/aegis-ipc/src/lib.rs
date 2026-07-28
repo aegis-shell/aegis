@@ -1,4 +1,4 @@
-//! Versioned IPC and introspection surface for ass.
+//! Versioned IPC and introspection surface for aegis.
 //!
 //! A unix-domain socket at `$XDG_RUNTIME_DIR/aegis.sock` speaks a length-
 //! framed, schema-versioned JSON protocol. It is the sole extension and

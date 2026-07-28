@@ -1,4 +1,4 @@
-//! aegis-portal: the `xdg-desktop-portal` backend for the ass compositor.
+//! aegis-portal: the `xdg-desktop-portal` backend for the aegis compositor.
 //!
 //! A standalone D-Bus-activated process that bridges the freedesktop portal
 //! backend interfaces to the compositor's own IPC (ADR-0051). Outward it
@@ -8,7 +8,7 @@
 //! `org.freedesktop.impl.portal.Background` v1, and
 //! `org.freedesktop.impl.portal.Inhibit` v1 at
 //! `/org/freedesktop/portal/desktop` under the well-known name
-//! `org.freedesktop.impl.portal.desktop.ass`. Inward it is an ordinary scoped
+//! `org.freedesktop.impl.portal.desktop.aegis`. Inward it is an ordinary scoped
 //! IPC client: pixels come from `Request::CaptureOutput` under the built-in
 //! `aegis-portal` named scope with a sealed-memfd blob transfer
 //! ([ADR-0037](../../docs/adr/0037-scoped-pixel-capture-over-ipc.md),
@@ -21,7 +21,7 @@
 //! No Wayland capture protocol is added anywhere.
 //!
 //! The process model follows the SNI tray precedent
-//! (`crates/ass-statusbar`): zbus's blocking API on the session bus, plain
+//! (`crates/aegis-statusbar`): zbus's blocking API on the session bus, plain
 //! `std::thread` workers, no tokio. Method dispatch runs on zbus's internal
 //! executor; the compositor IPC round-trip (which blocks for up to one frame)
 //! happens on a dedicated capture worker so a slow capture never stalls the
@@ -30,7 +30,7 @@
 //!
 //! Portal-owned authorization state (Background decisions, ScreenCast
 //! restore tokens) persists as JSON under `$XDG_DATA_HOME/aegis-portal`
-//! (ADR-0053) — ass has no PermissionStore.
+//! (ADR-0053) — aegis has no PermissionStore.
 
 mod background;
 mod cast;

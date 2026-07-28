@@ -33,7 +33,7 @@ impl SealedBlob {
         // are the Linux memfd API's documented bitset.
         let fd = unsafe {
             libc::memfd_create(
-                c"ass-ipc-capture".as_ptr(),
+                c"aegis-ipc-capture".as_ptr(),
                 libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
             )
         };

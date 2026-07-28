@@ -269,7 +269,7 @@ impl Chrome for Overview {
                 };
                 let tid = id;
                 frame.layer(
-                    &format!("ass-overview-ws-{i}"),
+                    &format!("aegis-overview-ws-{i}"),
                     to_lens(*tile),
                     &OverlayOpts {
                         bg,
@@ -322,7 +322,7 @@ impl Chrome for Overview {
                     i18n.text(Message::RealmPaused)
                 };
                 frame.layer(
-                    &format!("ass-overview-realm-{i}"),
+                    &format!("aegis-overview-realm-{i}"),
                     to_lens(*tile),
                     &OverlayOpts {
                         bg,
@@ -368,7 +368,7 @@ impl Chrome for Overview {
                 Color::rgba(90, 96, 120, self.alpha(160))
             };
             frame.layer(
-                &format!("ass-overview-cell-{i}"),
+                &format!("aegis-overview-cell-{i}"),
                 to_lens(cell),
                 &OverlayOpts {
                     border,
@@ -397,7 +397,7 @@ impl Chrome for Overview {
                     h: LABEL_H as f32,
                 };
                 frame.layer(
-                    &format!("ass-overview-label-{i}"),
+                    &format!("aegis-overview-label-{i}"),
                     label_rect,
                     &OverlayOpts::default(),
                     move |frame| {
@@ -425,7 +425,7 @@ impl Chrome for Overview {
                 h: 48.0,
             };
             frame.layer(
-                "ass-overview-realm-drag-ghost",
+                "aegis-overview-realm-drag-ghost",
                 ghost,
                 &OverlayOpts {
                     bg: Color::rgba(45, 88, 166, self.alpha(230)),

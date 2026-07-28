@@ -21,8 +21,8 @@ failures out of the hardware test.
 1. Keep another VT or an SSH connection available in case the display becomes
    unusable.
 2. Switch to a free VT, such as `Ctrl+Alt+F3`, and log in as the normal user.
-3. Change to the ass repository root.
-4. Confirm that another ass process is not running with
+3. Change to the aegis repository root.
+4. Confirm that another aegis process is not running with
    `pgrep -a -x aegis`.
 5. Start the DRM backend:
 
@@ -34,7 +34,7 @@ RUST_BACKTRACE=1 RUST_LOG=info \
 On a multi-GPU machine, select the intended DRM card explicitly:
 
 ```bash
-ASS_DRM_DEVICE=/dev/dri/card1 \
+AEGIS_DRM_DEVICE=/dev/dri/card1 \
 RUST_BACKTRACE=1 RUST_LOG=info \
   scripts/dev.sh --backend drm --release --no-build
 ```
@@ -58,40 +58,40 @@ Check the areas affected by the change. A useful general pass is:
 3. Open a terminal with `Super+Return`, launch and close applications, and try
    the dock, launcher, overview, status bar controls, and AI Workspaces.
 4. Switch to another VT, wait a few seconds, and switch back. Rendering and
-   input should resume without restarting ass.
+   input should resume without restarting aegis.
 5. If the change affects outputs, test display settings, multiple monitors,
    or hotplug as appropriate. Do not unplug the only recovery display.
 
-From a terminal running inside ass, inspect the live state and take a
+From a terminal running inside aegis, inspect the live state and take a
 screenshot:
 
 ```bash
 ./target/release/aegis-ctl outputs
 ./target/release/aegis-ctl windows
-./target/release/aegis-ctl screenshot /tmp/ass-vt.png
+./target/release/aegis-ctl screenshot /tmp/aegis-vt.png
 ```
 
-Open `/tmp/ass-vt.png` after leaving the session and confirm that it matches
+Open `/tmp/aegis-vt.png` after leaving the session and confirm that it matches
 the visible output.
 
 ## Quit
 
-Request a normal shutdown from a terminal inside ass:
+Request a normal shutdown from a terminal inside aegis:
 
 ```bash
 ./target/release/aegis-ctl quit
 ```
 
-You can also press the default `Super+Shift+Return` binding. ass disables its
+You can also press the default `Super+Shift+Return` binding. aegis disables its
 outputs and releases the seat and DRM device before returning to the TTY.
 
 ## Notes
 
-- Run ass as the normal user through `seatd` or `logind`; do not use root to
+- Run aegis as the normal user through `seatd` or `logind`; do not use root to
   bypass device permissions.
-- Only one ass process under the same `$XDG_RUNTIME_DIR` can provide the IPC
-  socket. Stop an existing ass session before this test.
-- When running ass on a separate VT while another compositor (e.g. Niri or Sway)
+- Only one aegis process under the same `$XDG_RUNTIME_DIR` can provide the IPC
+  socket. Stop an existing aegis session before this test.
+- When running aegis on a separate VT while another compositor (e.g. Niri or Sway)
   is actively running under the same user account, wrap the command in
   `dbus-run-session` (e.g.
   `dbus-run-session scripts/dev.sh --backend drm --release --no-build`).

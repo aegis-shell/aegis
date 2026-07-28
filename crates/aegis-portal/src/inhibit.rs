@@ -2,7 +2,7 @@
 //!
 //! Of the spec's four flags — 1 logout, 2 user switch, 4 idle, 8 suspend —
 //! only 4 (idle) is servable: the other three belong to a session manager
-//! ass does not have, so they are logged and ignored. Flag 4 lands on the
+//! aegis does not have, so they are logged and ignored. Flag 4 lands on the
 //! compositor's surfaceless global idle inhibitor over the scoped IPC
 //! (`SetIdleInhibit`, ADR-0053): the portal has no Wayland surface to hang
 //! a `zwp_idle_inhibit_v1` object on.
@@ -134,7 +134,7 @@ impl InhibitIface {
     }
 
     /// Declared so introspection advertises the signal; never emitted — it
-    /// notifies applications of an impending session end, and ass has no
+    /// notifies applications of an impending session end, and aegis has no
     /// session manager to end the session.
     #[zbus(signal)]
     async fn query_end_response(

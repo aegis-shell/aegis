@@ -1,4 +1,4 @@
-//! Shared compositor model for ass.
+//! Shared compositor model for aegis.
 //!
 //! This crate holds the backend- and renderer-agnostic state: geometry, the
 //! surface tree, output and focus models, and the input-event types backends

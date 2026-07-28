@@ -623,7 +623,7 @@ pub(super) unsafe extern "C" fn on_hold_end(
 }
 
 // Host keyboard listeners. The keymap event from the host is consumed only to
-// close the file descriptor the host sent us; ass runs its own xkbcommon
+// close the file descriptor the host sent us; aegis runs its own xkbcommon
 // compile and ships that keymap to clients (the host's keymap and ours match
 // in practice since both use the default evdev/pc104/us RMLVO, but we do not
 // depend on it). Key events are forwarded as `InputEvent::Key` with their

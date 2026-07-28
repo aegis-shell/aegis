@@ -1,6 +1,6 @@
-//! Declarative configuration for ass.
+//! Declarative configuration for aegis.
 //!
-//! A single TOML file at `$XDG_CONFIG_HOME/ass/config.toml` (defaulting to
+//! A single TOML file at `$XDG_CONFIG_HOME/aegis/config.toml` (defaulting to
 //! `~/.config/aegis/config.toml`) is the source of truth for user-tunable
 //! behavior. The file carries an explicit [`SUPPORTED_SCHEMA_VERSION`]; a
 //! future-incompatible change bumps it and ships a migration note in the
@@ -1126,7 +1126,7 @@ fn write_document_atomic(path: &Path, contents: &str) -> Result<(), LoadError> {
     let mut temporary = None;
     for attempt in 0..32_u32 {
         let candidate = parent.join(format!(
-            ".{file_name}.ass-{}-{attempt}.tmp",
+            ".{file_name}.aegis-{}-{attempt}.tmp",
             std::process::id()
         ));
         match std::fs::OpenOptions::new()
@@ -1176,11 +1176,11 @@ fn write_document_atomic(path: &Path, contents: &str) -> Result<(), LoadError> {
     Ok(())
 }
 
-/// The default config path: `$XDG_CONFIG_HOME/ass/config.toml`, falling back
+/// The default config path: `$XDG_CONFIG_HOME/aegis/config.toml`, falling back
 /// to `~/.config/aegis/config.toml` per the `dirs` crate. `None` when the home
 /// directory cannot be determined.
 pub fn default_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("ass").join("config.toml"))
+    dirs::config_dir().map(|d| d.join("aegis").join("config.toml"))
 }
 
 /// Convert a byte offset into a 1-based source line by counting newlines
@@ -1300,7 +1300,10 @@ mod tests {
     }
 
     fn temp_config_path(tag: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("ass-config-test-{}-{tag}.toml", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "aegis-config-test-{}-{tag}.toml",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -1976,7 +1979,7 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
-            "ass-config-output-{}-{}",
+            "aegis-config-output-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));

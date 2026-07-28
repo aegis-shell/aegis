@@ -3,7 +3,7 @@
 //! A `Window` is the renderer-agnostic, protocol-agnostic view of a mapped
 //! xdg toplevel. The server populates it from `xdg_toplevel` requests; the
 //! shell and the future AI-adaptation layer read it for chrome and
-//! introspection. Keeping this in `ass-core` (rather than in `ass-server`)
+//! introspection. Keeping this in `aegis-core` (rather than in `aegis-server`)
 //! means the shell never needs a server dependency to display window state.
 
 /// Desktop-wide ownership policy for Wayland toplevel decorations.

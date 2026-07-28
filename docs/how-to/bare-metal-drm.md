@@ -1,4 +1,4 @@
-# How to Run ass on Bare Metal (DRM/KMS)
+# How to Run aegis on Bare Metal (DRM/KMS)
 
 The DRM/KMS backend drives display hardware directly from a TTY, with no
 host session. The nested backend stays the development default; this guide
@@ -31,7 +31,7 @@ RUST_LOG=info \
   scripts/dev.sh --backend drm --release --no-build
 ```
 
-`ASS_DRM_DEVICE=/dev/dri/card1` overrides the GPU when there is more than one.
+`AEGIS_DRM_DEVICE=/dev/dri/card1` overrides the GPU when there is more than one.
 The log shows the device, seat, connector, and modifier choices as they happen.
 The runner stages System Settings under `target/aegis-dev`, clears
 `WAYLAND_DISPLAY`, and starts exactly one DRM session. It does not install
@@ -47,7 +47,7 @@ xdg-desktop-portal start and stop with the compositor.
 ## Session environment
 
 At startup the compositor sets `WAYLAND_DISPLAY`, `XDG_SESSION_TYPE=wayland`,
-and `XDG_CURRENT_DESKTOP=ass`, then exports them to the D-Bus activation
+and `XDG_CURRENT_DESKTOP=aegis`, then exports them to the D-Bus activation
 environment and the systemd --user manager with
 `dbus-update-activation-environment --systemd`. Services activated later —
 xdg-desktop-portal, `flatpak-spawn` helpers — inherit this environment, so
@@ -87,7 +87,7 @@ First bare-metal run, in order:
 3. **Clients.** Launch a terminal from the launcher (`Super+Return`) and
    confirm keyboard focus, typing, and window move (`Super+drag`).
 4. **VT switch.** `Ctrl+Alt+F2` away, then back (`Ctrl+Alt+F3` returns to
-   ass — the compositor forwards these keys to libseat itself). The session
+   aegis — the compositor forwards these keys to libseat itself). The session
    resumes with a fresh modeset; at most one skipped frame is logged at
    warn level.
 5. **Hotplug.** Unplug and replug the monitor (or dock). The display set
@@ -102,7 +102,7 @@ First bare-metal run, in order:
 
 Request a graceful compositor shutdown with one of these methods:
 
-- Run `aegis-ctl quit` from a terminal inside ass.
+- Run `aegis-ctl quit` from a terminal inside aegis.
 - Press the default `Super+Shift+Return` binding.
 
 The compositor disables its outputs, releases the seat and DRM device, and
@@ -115,4 +115,4 @@ returns to the TTY. Switch back to the original graphical VT afterward.
 - Immediate exit after the first frame — report the log; the flip-wait
   path is the first suspect.
 - Black screen with a running log — check the modifier intersection in the
-  log; set `ASS_DRM_DEVICE` to the other card on hybrid-GPU machines.
+  log; set `AEGIS_DRM_DEVICE` to the other card on hybrid-GPU machines.

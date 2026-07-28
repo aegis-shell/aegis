@@ -1,11 +1,22 @@
 # Changelog
 
-Notable user-visible and contributor-visible changes to ass. The format
+Notable user-visible and contributor-visible changes to Aegis. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once the
 project cuts a tagged release.
 
 ## Unreleased
+
+### Canonical Aegis namespace
+
+- Standardized the compositor, desktop identity, Realm isolation, portal,
+  internal runtime identifiers, and diagnostics on the `aegis` namespace.
+- Renamed compositor environment variables to the `AEGIS_*` prefix and moved
+  the default configuration path to `$XDG_CONFIG_HOME/aegis/config.toml`.
+- Renamed the fuji MCP server to `aegis`, its public tools to
+  `mcp__aegis__*`, and its desktop skill to `aegis-desktop-realm`.
+- Removed legacy namespace aliases. Existing environment, MCP, permission,
+  and skill configurations must use the canonical Aegis names.
 
 ### Borderless window decoration policy
 
@@ -28,6 +39,14 @@ project cuts a tagged release.
   application when their serial references an older text-input state, as
   required by `zwp_input_method_v2`; this prevents intermittent missing
   preedit in clients such as foot.
+- Compositor-owned overlays, including the launcher, overview, and screenshot
+  selector, now intercept key sequences without faking a Wayland keyboard
+  focus change. Input-method preedit and commits therefore remain active in
+  focused applications such as foot, and each key release follows the route
+  that received its matching press.
+- Minimizing a focused window now updates keyboard, text-input, selection, and
+  shortcut-inhibition focus together; rebinding a `wl_keyboard` resource also
+  restores the seat's existing focus and modifier state.
 - Fixed a compositor crash when an input method destroyed a keyboard resource
   while virtual-keyboard modifiers were being forwarded.
 - Chromium-based Wayland clients now fall back to the compositor's working
@@ -47,7 +66,7 @@ project cuts a tagged release.
 - Animated rendering remains capped at 60 frames per second on high-refresh
   outputs to avoid unnecessary full-resolution wallpaper GPU work.
 - The built-in 3D wallpaper model is now opt-in. Set
-  `ASS_WALLPAPER_MODEL=builtin` to enable it, or set the variable to a `.glb`
+  `AEGIS_WALLPAPER_MODEL=builtin` to enable it, or set the variable to a `.glb`
   path to use a custom model.
 
 ### Smart Dock visibility

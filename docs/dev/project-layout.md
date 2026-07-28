@@ -32,7 +32,7 @@ aegis/
 
 flux and lens live in the sibling `../optics` Meson project under
 `libs/flux` and `libs/lens`. Their Rust bindings live under
-`../optics/bindings/`; ass consumes them as path dependencies.
+`../optics/bindings/`; aegis consumes them as path dependencies.
 
 ## Modules
 
@@ -77,10 +77,10 @@ flux and lens live in the sibling `../optics` Meson project under
   replacement belong in `aegis-config`. Authorization, live application, and
   serialization of concurrent edits belong in the compositor runtime.
 - A rendering or texture capability missing from flux is added to flux, not
-  worked around in ass; see
+  worked around in aegis; see
   [ADR-0001](../adr/0001-scope-and-responsibility-boundary.md).
 - Generic agent execution and product policy belong in the agent half of
-  `aegis-fuji`, fuji's self-contained runtime. ASS-specific named-scope and
+  `aegis-fuji`, fuji's self-contained runtime. Aegis-specific named-scope and
   Realm adaptation belongs in the separately launched `aegis-fuji-mcp`
   process, never in the compositor binary or the `fuji` binary.
 - Cross-binding pointer casts (between the `flux` and `lens` `flux_*`

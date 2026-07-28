@@ -18,7 +18,7 @@ aegis-compositor = { workspace = true }
 aegis-backend = { workspace = true }
 aegis-render = { workspace = true }
 aegis-shell = { workspace = true }
-# Chrome components split out of ass-shell (ADR-0044); only the binary
+# Chrome components split out of aegis-shell (ADR-0044); only the binary
 # composes them into the shell.
 aegis-dock = { workspace = true }
 aegis-ai-workspaces = { workspace = true }
@@ -29,7 +29,7 @@ aegis-config = { workspace = true }
 # IPC and introspection surface (ADR-0027).
 aegis-ipc = { workspace = true }
 # Launcher: enumerate `.desktop` entries and spawn them detached (ADR-0022).
-# Only the binary wires these; ass-shell and ass-render stay free of them.
+# Only the binary wires these; aegis-shell and aegis-render stay free of them.
 aegis-desktop-entries = { workspace = true }
 aegis-launcher = { workspace = true }
 flux = { workspace = true }

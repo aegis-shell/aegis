@@ -268,7 +268,7 @@ pub(crate) unsafe fn send_output_geometry(res: *mut ffi::wl_resource) {
         let global = ffi::wl_resource_get_user_data(res) as *mut OutputGlobal;
         let (mode, scale_i, transform) = output_params(global);
         let version = ffi::wl_resource_get_version(res);
-        let make = CString::new("ass").unwrap();
+        let make = CString::new("aegis").unwrap();
         let (origin, model_name) = if global.is_null() {
             (aegis_core::Point::default(), "unknown")
         } else {
@@ -304,8 +304,8 @@ pub(crate) unsafe fn send_output_geometry(res: *mut ffi::wl_resource) {
         if version >= 4 {
             let name = CString::new((*global).info.connector.as_str())
                 .unwrap_or_else(|_| CString::new("unknown").unwrap());
-            let description = CString::new(format!("ass output {}", (*global).info.connector))
-                .unwrap_or_else(|_| CString::new("ass output").unwrap());
+            let description = CString::new(format!("aegis output {}", (*global).info.connector))
+                .unwrap_or_else(|_| CString::new("aegis output").unwrap());
             ffi::wl_resource_post_event(res, ffi::WL_OUTPUT_NAME, name.as_ptr());
             ffi::wl_resource_post_event(res, ffi::WL_OUTPUT_DESCRIPTION, description.as_ptr());
         }

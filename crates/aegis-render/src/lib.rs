@@ -1,4 +1,4 @@
-//! Compositing for ass, built on flux.
+//! Compositing for aegis, built on flux.
 //!
 //! Turns the surface tree into draw calls: each client buffer becomes a flux
 //! texture (shm via CPU upload, dmabuf via zero-copy import), composited in

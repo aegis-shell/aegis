@@ -1,9 +1,9 @@
 # aegis-fuji
 
 `aegis-fuji` is the fuji (宓姬, named after Lady Fu of the *Luoshen Fu*) agent
-product for ASS: one crate, two binaries.
+product for Aegis: one crate, two binaries.
 
-- `aegis-fuji-mcp` — the scoped ASS platform bridge. It exposes desktop and
+- `aegis-fuji-mcp` — the scoped Aegis platform bridge. It exposes desktop and
   Agent Realm tools over stdio MCP for fuji and any other MCP client.
 - `fuji` — fuji's own agent runtime: streaming providers, the agent loop,
   built-in tools, an stdio MCP client, sessions, skills, and permissions.
@@ -17,8 +17,8 @@ target/release/fuji check          # validate config, credentials, MCP
 target/release/aegis-fuji-mcp check  # probe the compositor-granted scope
 ```
 
-The default IPC scope is `fuji`. It must exist in ASS configuration before
+The default IPC scope is `fuji`. It must exist in Aegis configuration before
 the MCP process starts. See [Connect fuji to
-ASS](../../docs/how-to/fuji.md), the [bridge
+Aegis](../../docs/how-to/fuji.md), the [bridge
 reference](../../docs/reference/fuji.md), and the [agent
 reference](../../docs/reference/fuji-agent.md).

@@ -2,8 +2,8 @@
 //!
 //! Pure: a [`Keymap`] is an ordered list of [`Keybind`]s — (modifier mask,
 //! keysym) → [`Action`]. The binary builds one from the built-in defaults
-//! plus an optional `ASS_KEYBINDS` env var, and matches each non-captured
-//! key press against it. Keeping this module in `ass-core` (no flux, lens, or
+//! plus an optional `AEGIS_KEYBINDS` env var, and matches each non-captured
+//! key press against it. Keeping this module in `aegis-core` (no flux, lens, or
 //! Wayland dependency) lets the binding table and its parser be unit-tested
 //! in isolation.
 //!
@@ -74,7 +74,7 @@ pub struct Keymap {
 }
 
 impl Keymap {
-    /// Built-in defaults, used when `ASS_KEYBINDS` is unset or empty. A bare
+    /// Built-in defaults, used when `AEGIS_KEYBINDS` is unset or empty. A bare
     /// Super tap (handled by `TapDetector` in the binary, not a binding) also
     /// toggles the launcher, so these are additive.
     pub fn defaults() -> Keymap {
@@ -98,7 +98,7 @@ impl Keymap {
         }
     }
 
-    /// Parse `ASS_KEYBINDS`-style overrides: `Mod+Mod+key=action;...`
+    /// Parse `AEGIS_KEYBINDS`-style overrides: `Mod+Mod+key=action;...`
     /// (e.g. `super+space=launcher;super+q=close`). Returns the parsed
     /// bindings plus one error string per malformed entry, so the caller can
     /// log the rejects without aborting the good ones. Empty / whitespace-only

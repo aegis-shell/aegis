@@ -1,6 +1,6 @@
 # IPC Reference
 
-The ass IPC is protocol version 8, carried as length-framed JSON over the
+The aegis IPC is protocol version 8, carried as length-framed JSON over the
 owner-only Unix socket at `$XDG_RUNTIME_DIR/aegis.sock`. Every connection starts
 with `Hello`; commands are accepted only after capability and scope checks.
 JSON messages are limited to 16 MiB. Large immutable capture and frame
@@ -317,7 +317,7 @@ after queuing appears as `Effect::Refused` in the mutation journal.
 
 ## Capture
 
-ass exposes pixel capture through two fail-closed operations that share one
+aegis exposes pixel capture through two fail-closed operations that share one
 same-frame presentation readback path (ADR-0037). Both are refused while the
 session is locked or the seat is inactive. The request copies the exact frame
 being submitted; later client commits, animations, or wallpaper frames cannot

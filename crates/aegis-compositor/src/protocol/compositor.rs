@@ -702,7 +702,7 @@ unsafe extern "C" fn surface_set_input_region(
 
 /// `wl_surface.set_buffer_transform` (v2+): records how the client has
 /// pre-rotated the buffer. The renderer applies the inverse at composite
-/// time via CPU staging (ass-render) — a GPU-side transform in flux's image
+/// time via CPU staging (aegis-render) — a GPU-side transform in flux's image
 /// shader is the long-term path.
 unsafe extern "C" fn surface_set_buffer_transform(
     _c: *mut ffi::wl_client,
@@ -757,7 +757,7 @@ unsafe extern "C" fn surface_noop_i32(_c: *mut ffi::wl_client, _r: *mut ffi::wl_
 /// `wl_surface.damage` (v1): damage in surface-local coords. The renderer's
 /// texture is in buffer pixel coords, so under buffer_scale > 1 these rects
 /// cover only a fraction of the buffer. The renderer bypasses the
-/// incremental-upload path when `buffer_scale != 1` (see ass-render); a
+/// incremental-upload path when `buffer_scale != 1` (see aegis-render); a
 /// generation change still triggers a correct full upload.
 unsafe extern "C" fn surface_damage(
     _c: *mut ffi::wl_client,
@@ -871,9 +871,7 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
                     );
                 }
                 if state.keyboard_focus == resource {
-                    extensions::text_input_focus_changed(state, resource, std::ptr::null_mut());
-                    data_device_focus_changed(state, resource, std::ptr::null_mut());
-                    extensions::keyboard_shortcuts_focus_changed(state, std::ptr::null_mut());
+                    keyboard_focus_dependencies_changed(state, resource, std::ptr::null_mut());
                 }
             }
             for runtime in state.seats.values_mut().map(Box::as_mut) {

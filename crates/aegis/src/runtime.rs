@@ -100,7 +100,7 @@ impl ConfigWriter {
 
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     log::info!(
-        "ass {} — autonomous surface shell",
+        "aegis {} — autonomous surface shell",
         env!("CARGO_PKG_VERSION")
     );
     match aegis_launcher::prepare_realm_host() {
@@ -109,7 +109,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
             root.display()
         ),
         Err(error) => log::warn!(
-            "Realm application launch disabled until ASS runs in its own \
+            "Realm application launch disabled until Aegis runs in its own \
              cpu/memory/pids-delegated systemd service: {error}"
         ),
     }
@@ -124,7 +124,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         ));
 
     // Declarative configuration (ADR-0026). One TOML file at
-    // `$XDG_CONFIG_HOME/ass/config.toml` is the source of truth; absence is
+    // `$XDG_CONFIG_HOME/aegis/config.toml` is the source of truth; absence is
     // not an error (built-in defaults apply). A malformed or
     // schema-incompatible file is logged and skipped, not fatal. Loaded
     // before the backend so configured display modes are known at the very
@@ -138,7 +138,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let backend_kind = requested_backend()?;
     let host_bootstrap = Host::open(
         backend_kind,
-        "ass",
+        "aegis",
         1280,
         720,
         configured_output_modes(config.as_ref()),
@@ -276,7 +276,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         &notif_queue,
     ))));
     // Only the binary wires discovery to chrome (ADR-0022); the shell stays
-    // free of `ass-apps`. Register the launcher after ordinary overlays so its
+    // free of `aegis-apps`. Register the launcher after ordinary overlays so its
     // full-screen surface covers workspace/toast chrome, while the dock (added
     // last below) remains available like macOS Launchpad. Components start
     // empty; the application catalog is pushed below and fanned out to every
@@ -323,7 +323,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let start = std::time::Instant::now();
 
     // Wallpaper: a still image (png/jpg/webp/gif/…) or a short video decoded by
-    // an external ffmpeg. `$ASS_WALLPAPER` selects the image; with it unset we
+    // an external ffmpeg. `$AEGIS_WALLPAPER` selects the image; with it unset we
     // fall back to a bundled demo wallpaper so a bare `cargo run` shows a
     // desktop rather than the bare clear colour. The default is resolved at
     // compile time relative to the crate, so it works straight from
@@ -338,7 +338,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         "/../../assets/wallpapers/procedural-generation.png"
     );
     let (init_w, init_h) = host.physical_size();
-    let wallpaper_override = std::env::var("ASS_WALLPAPER")
+    let wallpaper_override = std::env::var("AEGIS_WALLPAPER")
         .ok()
         .filter(|value| !value.is_empty());
     let wallpaper_path = wallpaper_override
@@ -356,7 +356,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let wallpaper = match loaded {
         Ok(mut wallpaper) => {
             if !is_gltf {
-                let model_override = std::env::var("ASS_WALLPAPER_MODEL")
+                let model_override = std::env::var("AEGIS_WALLPAPER_MODEL")
                     .ok()
                     .filter(|value| !value.is_empty());
                 let model_result = match model_override.as_deref() {
@@ -389,12 +389,13 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // other key in between) toggles the launcher. Super still works as a
     // modifier for every other combo — only a clean tap fires. See ADR-0022.
     let super_tap = aegis_core::input::TapDetector::super_tap();
-    // Tracks the previous frame's keyboard-capture state so the main loop can
-    // grab/release the keyboard on edges (launcher open/close).
-    let prev_captured = false;
+    // A compositor overlay changes the owner of new key presses, not the
+    // Wayland keyboard focus. Preserve that owner until the matching release
+    // so opening or closing chrome cannot split one physical key sequence.
+    let keyboard_capture = aegis_core::input::KeyboardCaptureState::default();
 
     // Global key bindings: built-in defaults overridden by the config file's
-    // `[[keybind]]` entries. The deprecated `$ASS_KEYBINDS` env var is still
+    // `[[keybind]]` entries. The deprecated `$AEGIS_KEYBINDS` env var is still
     // honored as a transitional override (logged) and takes precedence over
     // the file; it is removed before the desktop phase closes. `forward_input`
     // consumes a matched key before delivering it to the focused client.
@@ -479,7 +480,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // waits on a probe subprocess.
     let (status_refresh_tx, status_refresh_rx) = std::sync::mpsc::channel::<()>();
     std::thread::Builder::new()
-        .name("ass-status".into())
+        .name("aegis-status".into())
         .spawn(move || {
             while status_tx.send(aegis_shell::detect_system_status()).is_ok() {
                 // A queued refresh request re-probes out of cycle instead of
@@ -506,7 +507,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // file write itself (settings commits block only on the receipt).
     let (config_write_tx, config_write_rx) = std::sync::mpsc::channel::<ConfigWriteJob>();
     std::thread::Builder::new()
-        .name("ass-config-write".into())
+        .name("aegis-config-write".into())
         .spawn(move || {
             while let Ok(job) = config_write_rx.recv() {
                 let result = job.store.apply(job.edit).map_err(|error| error.to_string());
@@ -631,7 +632,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (scan_req_tx, scan_req_rx) = std::sync::mpsc::channel::<u32>();
     let (scan_result_tx, scan_result_rx) = std::sync::mpsc::channel::<AppScanResult>();
     std::thread::Builder::new()
-        .name("ass-app-scan".into())
+        .name("aegis-app-scan".into())
         .spawn(move || {
             while let Ok(scale) = scan_req_rx.recv() {
                 let theme = selected_icon_theme();
@@ -687,7 +688,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         frame_count,
         retired_defer,
         super_tap,
-        prev_captured,
+        keyboard_capture,
         keymap,
         system_status,
         status_rx,

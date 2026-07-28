@@ -1,6 +1,6 @@
 # Architecture
 
-ass is a Wayland compositor for Linux, written in Rust. It composites
+aegis is a Wayland compositor for Linux, written in Rust. It composites
 client windows and draws its own shell chrome through
 [flux](../../../optics/libs/flux), a Vulkan-first rendering engine, and
 [lens](../../../optics/libs/lens), an immediate-mode UI engine that draws through
@@ -13,26 +13,26 @@ the structure, see the [Architecture Decision Records](../adr/index.md).
 
 ## Responsibility Boundary
 
-ass owns the server and platform halves of a compositor; flux and lens
+aegis owns the server and platform halves of a compositor; flux and lens
 own rendering and UI. The split is fixed in
 [ADR-0001](../adr/0001-scope-and-responsibility-boundary.md).
 
 | Concern | Owner |
 |---------|-------|
-| Wayland server protocol, globals, object lifecycle | ass |
-| Input, output, session and seat management | ass |
-| Window management, surface and scene model, focus | ass |
+| Wayland server protocol, globals, object lifecycle | aegis |
+| Input, output, session and seat management | aegis |
+| Window management, surface and scene model, focus | aegis |
 | GPU rendering, client buffer import as textures | flux |
 | Compositor chrome (panels, overview, notifications) | lens |
 
 flux is a client-side renderer: it presents into a caller-supplied
 `VkSurfaceKHR` and has no windowing code. lens consumes input as a data
-snapshot and emits draw calls. ass supplies both the surface and the
+snapshot and emits draw calls. aegis supplies both the surface and the
 input.
 
 ## Crate Layout
 
-ass is a Cargo workspace under `crates/`. The split keeps the server,
+aegis is a Cargo workspace under `crates/`. The split keeps the server,
 backend, renderer, and shell behind clear seams so the
 [AI-adaptation phase](#roadmap) can grow a semantic model from
 `aegis-core`. The crates group by responsibility:
@@ -55,9 +55,9 @@ backend, renderer, and shell behind clear seams so the
 | **Convenience channels** | `aegis-desktop-entries` | freedesktop.org desktop-entry enumeration and icon-theme lookup |
 | | `aegis-launcher` | Ordinary app detachment and fail-closed Realm namespace/cgroup launch |
 | | `aegis-ipc` | Versioned scoped IPC, sealed capture transport, and introspection over a Unix socket |
-| | `aegis-ctl` | Command-line driver for the ass IPC (the reference external tool) |
+| | `aegis-ctl` | Command-line driver for the aegis IPC (the reference external tool) |
 | **AI integration** | `aegis-fuji` | fuji in one crate: the out-of-process MCP adapter plus its own agent runtime, scoped desktop tools and one bridge-managed Agent Realm |
-| **Binary** | `ass` | The binary: wires the parts together and runs the event loop |
+| **Binary** | `aegis` | The binary: wires the parts together and runs the event loop |
 
 flux and lens are consumed through Rust bindings kept in separate
 repositories from their C libraries, following the openssl-sys /
@@ -102,7 +102,7 @@ not own the configuration file or the host service. This distinction keeps
 the module catalog broad without pretending all settings belong to the
 compositor: account modules use system account and authorization services,
 power modules use power services, and compositor-owned display/input policy
-uses the ass settings IPC.
+uses the aegis settings IPC.
 
 Volume, brightness, radios, Do Not Disturb, and current-workspace layout are
 immediate service or session controls rather than persistent settings. The
@@ -117,7 +117,7 @@ the [System Settings Reference](../reference/settings.md).
 ## Backend Abstraction
 
 A backend owns the presentation target and the raw input stream. The
-nested backend runs ass as a client of an existing Wayland session and
+nested backend runs aegis as a client of an existing Wayland session and
 presents into a host window; the DRM/KMS backend drives the display
 hardware directly with libinput input and libseat session ownership. Both
 implement one `Backend` trait so the server, renderer, and shell are written
@@ -171,7 +171,7 @@ compositor-owned payloads use the standard Wayland data-device path; an
 interactive screenshot may publish PNG and file-URI representations to the
 physical seat without affecting an agent Realm.
 
-ass deliberately does not advertise the X11-style Primary Selection. In this
+aegis deliberately does not advertise the X11-style Primary Selection. In this
 interaction model, publishing text merely because it was highlighted is an
 implicit global side effect and a duplicate clipboard channel. Capability
 absence is reported honestly through the Wayland registry rather than through
@@ -212,8 +212,8 @@ dependencies. Each is placed by responsibility per
 | Import client dmabuf as a texture | flux | dmabuf import API ([ADR-0004](../adr/0004-client-buffers-via-flux-dmabuf-import.md)) |
 | Render target not tied to `VkSurfaceKHR` presentation (for DRM/KMS) | flux | Offscreen dma-buf render path (`flux::Surface::offscreen_dmabuf` + export) |
 | Rust bindings to flux and lens | bindings | `flux-rs` / `lens-rs` crates ([ADR-0023](../adr/0023-split-flux-lens-stack.md)) |
-| Explicit synchronization for buffer release | flux and ass | `zwp_linux_explicit_synchronization_v1` with acquire fences through flux import and KMS `IN_FENCE_FD` |
-| Wayland server, DRM/KMS, libinput, seat and session | ass | Implemented in ass ([ADR-0002](../adr/0002-hand-rolled-wayland-server.md)) |
+| Explicit synchronization for buffer release | flux and aegis | `zwp_linux_explicit_synchronization_v1` with acquire fences through flux import and KMS `IN_FENCE_FD` |
+| Wayland server, DRM/KMS, libinput, seat and session | aegis | Implemented in aegis ([ADR-0002](../adr/0002-hand-rolled-wayland-server.md)) |
 
 flux does not auto-enable `VK_KHR_swapchain`; the nested backend requests it
 explicitly, with the `VK_KHR_surface` and `VK_KHR_wayland_surface` instance
@@ -226,7 +226,7 @@ DRM/KMS backend, configuration and IPC, workspaces and layout, multi-output,
 polish, and the agent phase — lives in
 [Roadmap](roadmap.md). XWayland is descoped from the supported
 configuration. The product direction behind it is
-[Vision and Scope](vision.md), and the systems ass borrows from are surveyed
+[Vision and Scope](vision.md), and the systems aegis borrows from are surveyed
 in [Comparative Survey](comparative-survey.md).
 
 The summary table has been retired: it duplicated the

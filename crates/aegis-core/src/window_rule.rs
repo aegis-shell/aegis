@@ -4,7 +4,7 @@
 //! and prescribes a placement action: move it to a workspace, force a layout
 //! role. The compositor evaluates rules on first map and applies the first
 //! match. The matching logic is pure so it is unit-tested in isolation; the
-//! `ass-config` crate deserializes the same type from TOML, and `ass-server`
+//! `aegis-config` crate deserializes the same type from TOML, and `aegis-server`
 //! applies it.
 
 /// A rule prescribing placement for toplevels it matches. Every set matcher

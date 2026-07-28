@@ -1,8 +1,8 @@
 # Comparative Survey of Compositors and Shells
 
-ass targets the feature richness of a full graphical shell while keeping the
-compositor small and the chrome pluggable. This page surveys the systems ass
-borrows from, isolates the ideas worth carrying over, and names the ones ass
+aegis targets the feature richness of a full graphical shell while keeping the
+compositor small and the chrome pluggable. This page surveys the systems aegis
+borrows from, isolates the ideas worth carrying over, and names the ones aegis
 deliberately leaves behind. It grounds the product direction in
 [Vision and Scope](vision.md) and the concrete milestones in
 [Roadmap](roadmap.md); specific decisions are recorded in the
@@ -25,7 +25,7 @@ extension and automation, chrome, and input/output.
 | macOS (WindowServer / Quartz Compositor) | Proprietary | Floating; Spaces; Stage Manager; window tabs | `defaults` / plist | AppleScript, Shortcuts, Accessibility API | The window server is the only process that touches the framebuffer; chrome is global and per-screen |
 | Xfce | GTK (C), traditional | Floating (Xfwm4) | `xfconf` channels; GUI dialogs | Panel plugins; external helper processes | Traditional desktop metaphor at low resource cost; strict modularity across processes |
 
-The next sections walk through each concern and record what ass borrows and
+The next sections walk through each concern and record what aegis borrows and
 what it rejects.
 
 ## Architecture: Where the Seams Are
@@ -53,13 +53,13 @@ out-of-the-box experience is bare.
 **Library core with a co-developed renderer.** niri is written in Rust on
 wlroots and draws its own animations, overview, and screenshot UI inside the
 compositor, but leaves the bar and launcher to external tools. It is the
-closest precedent to ass's shape: a Rust compositor that owns more than sway
+closest precedent to aegis's shape: a Rust compositor that owns more than sway
 but less than GNOME.
 
-ass adopts the library-core shape. The compositor, renderer, and shell split
+aegis adopts the library-core shape. The compositor, renderer, and shell split
 is fixed in [ADR-0001](../adr/0001-scope-and-responsibility-boundary.md);
 the chrome is already a pluggable `Chrome` trait
-([ADR-0021](../adr/0021-chrome-component-trait.md)). From GNOME and KDE ass
+([ADR-0021](../adr/0021-chrome-component-trait.md)). From GNOME and KDE aegis
 keeps the ambition of a coherent first-party shell; from sway and river it
 keeps the discipline that chrome is a component, not a privilege.
 
@@ -90,7 +90,7 @@ GNOME and KDE both layer window snapping (edge-halves, quarters, maximize)
 on top of floating. macOS layers Spaces, Stage Manager, and window tabbing
 on top of floating. Xfwm4 is floating only.
 
-ass takes **floating as the universal base**, with window snapping and an
+aegis takes **floating as the universal base**, with window snapping and an
 optional, policy-driven tiling layer applied on top, never as a replacement.
 The reasoning and the rejection of tiling-only are recorded in
 [ADR-0024](../adr/0024-layout-model.md). The tiling policy will be a
@@ -121,9 +121,9 @@ Workspaces are the second axis where the field diverges sharply.
 - **macOS** Spaces are per-display virtual desktops managed through Mission
   Control, with drag-to-reorder and full-screen apps each becoming a Space.
 
-ass takes **dynamic, per-output workspaces** in the niri lineage, without
+aegis takes **dynamic, per-output workspaces** in the niri lineage, without
 niri's scrollable-tiling coupling. The model is recorded in
-[ADR-0025](../adr/0025-workspace-model.md). ass rejects KDE's Activities as a
+[ADR-0025](../adr/0025-workspace-model.md). aegis rejects KDE's Activities as a
 separate axis (the same effect is reachable with more workspaces and window
 rules) and river's tag bits (dynamic workspaces are easier to reason about
 and to expose to the AI-adaptation phase).
@@ -156,12 +156,12 @@ Configuration is where the field is least disciplined.
 - **Xfce** uses `xfconf` channels, editable through GUI dialogs, with hidden
   settings reachable only by direct channel edits.
 
-ass standardizes on a **single declarative TOML file** with a versioned
+aegis standardizes on a **single declarative TOML file** with a versioned
 schema, full live reload, and validation errors reported back to the user
 rather than silently ignored. The decision, and the rejection of an embedded
 scripting language and of ad hoc INI, is in
 [ADR-0026](../adr/0026-configuration-system.md). TOML is chosen over KDL for
-tooling maturity and over YAML for explicitness. The current `$ASS_KEYBINDS`
+tooling maturity and over YAML for explicitness. The current `$AEGIS_KEYBINDS`
 environment variable (see [CHANGELOG](../../CHANGELOG.md)) is a placeholder
 that the config file subsumes.
 
@@ -189,7 +189,7 @@ seam sits and how much it can do.
   so a crashing plugin does not bring down the session.
 
 The pattern is clear: out-of-process IPC is the durable, versionable
-extension surface; in-process scripting is powerful but brittle. ass chooses
+extension surface; in-process scripting is powerful but brittle. aegis chooses
 the IPC-first path and rejects in-process scripting for the core. The seam
 is recorded in [ADR-0027](../adr/0027-ipc-and-introspection.md): a versioned,
 schema-driven protocol over a unix socket that exposes the same model the
@@ -200,9 +200,9 @@ needs.
 
 ## Chrome
 
-Chrome is where ass is most explicit about borrowing.
+Chrome is where aegis is most explicit about borrowing.
 
-| Chrome surface | ass borrows from | Notes |
+| Chrome surface | aegis borrows from | Notes |
 |----------------|------------------|-------|
 | Top bar / panel | GNOME, macOS | A single status area, not a forest of panels |
 | Dock | macOS, GNOME Dash | Bottom-center overlay, already shipped ([ADR-0019](../adr/0019-dock-as-bottom-center-overlay.md)) |
@@ -213,9 +213,9 @@ Chrome is where ass is most explicit about borrowing.
 | Notifications | freedesktop.org spec | Planned, served by the same `Chrome` trait |
 | Wallpaper | sway (`swaybg`), Xfce | Already shipped as its own crate ([ADR-0018](../adr/0018-wallpaper-crate.md)) |
 
-ass rejects GNOME's tight binding between the shell and the compositor: the
+aegis rejects GNOME's tight binding between the shell and the compositor: the
 chrome is registered into the core at startup and can be replaced or omitted.
-ass also rejects sway's "no chrome at all" default: a coherent first-run
+aegis also rejects sway's "no chrome at all" default: a coherent first-run
 experience is part of the product, not an integration exercise. The
 mechanism that makes both positions hold is the `Chrome` trait
 ([ADR-0021](../adr/0021-chrome-component-trait.md)).
@@ -234,27 +234,27 @@ mechanism that makes both positions hold is the `Chrome` trait
 - **macOS** owns input routing in WindowServer and runs all final
   composition on the GPU through Metal.
 
-ass builds on Vulkan through flux rather than OpenGL/GLES, so HDR, color
+aegis builds on Vulkan through flux rather than OpenGL/GLES, so HDR, color
 management, and explicit sync land as flux capabilities rather than
 compositor workarounds, following [ADR-0001](../adr/0001-scope-and-responsibility-boundary.md).
 HiDPI and fractional scale are output-model concerns
 ([ADR-0028](../adr/0028-output-and-monitor-model.md)); touchpad gestures and
 tablet support arrive with the libinput backend in the DRM/KMS milestone.
 
-## What ass Rejects
+## What aegis Rejects
 
-To stay small, ass deliberately leaves the following to other layers or to
+To stay small, aegis deliberately leaves the following to other layers or to
 later phases:
 
-- **An X11 server.** ass is Wayland-only; X11 applications are unsupported
+- **An X11 server.** aegis is Wayland-only; X11 applications are unsupported
   (XWayland descoped; the strategy remains in
-  [ADR-0030](../adr/0030-xwayland-strategy.md) should it be revisited). ass
+  [ADR-0030](../adr/0030-xwayland-strategy.md) should it be revisited). aegis
   will not grow an X11 session like the KDE `kwin_x11` split.
 - **In-process shell scripting.** No JavaScript, no QML, no Lua inside the
   compositor. Power and automation go through the IPC
   ([ADR-0027](../adr/0027-ipc-and-introspection.md)).
 - **A bundled application suite.** No file manager, terminal, text editor,
-  or image viewer. Xfce and KDE ship these; ass does not, and the launcher
+  or image viewer. Xfce and KDE ship these; aegis does not, and the launcher
   discovers whatever the host installed.
 - **Fragmented configuration stores.** One TOML file, one schema
   ([ADR-0026](../adr/0026-configuration-system.md)).

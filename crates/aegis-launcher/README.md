@@ -47,10 +47,10 @@ weight. Missing isolation or delegation rejects the launch.
 ## Use
 
 ```rust
-let applications = ass_apps::enumerate();
+let applications = aegis_apps::enumerate();
 
 if let Some(application) = applications.first() {
-    let report = ass_launch::launch(application, &Default::default())?;
+    let report = aegis_launch::launch(application, &Default::default())?;
     println!("spawned {}", report.pid);
 }
 ```
@@ -61,7 +61,7 @@ desktop-entry scan.
 Use `launch_managed` for Realm lifecycle ownership:
 
 ```rust
-let mut process = ass_launch::launch_managed(application, &realm_options)?;
+let mut process = aegis_launch::launch_managed(application, &realm_options)?;
 process.pause()?;
 process.resume()?;
 process.terminate()?;

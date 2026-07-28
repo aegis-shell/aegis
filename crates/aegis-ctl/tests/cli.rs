@@ -1,4 +1,4 @@
-//! End-to-end exercise of ass-ctl against a loopback ass-ipc server. Each
+//! End-to-end exercise of aegis-ctl against a loopback aegis-ipc server. Each
 //! test starts a server with a fixed handler, invokes `aegis_ctl::run` with a
 //! command, and asserts on the output or the recorded command.
 

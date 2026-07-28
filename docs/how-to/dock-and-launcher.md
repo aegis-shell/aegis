@@ -48,9 +48,9 @@ separate built-in gesture.
 ## Start or Focus an Application
 
 1. Left-click an application in the Dock or launcher.
-2. If the application has a running window, wait for ass to focus and raise
+2. If the application has a running window, wait for aegis to focus and raise
    that window.
-3. If the application is not running, wait for ass to start it.
+3. If the application is not running, wait for aegis to start it.
 
 Use the application menu when an application has several windows and you
 need to choose one explicitly.

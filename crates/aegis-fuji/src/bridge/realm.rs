@@ -314,12 +314,12 @@ pub(crate) enum RealmSessionError {
     #[error("another aegis-fuji bridge already owns scope {0:?}")]
     AlreadyRunning(String),
     #[error(
-        "multiple live Agent Realms use label {label:?}: {realms:?}; choose a unique ASS_FUJI_REALM_LABEL or revoke the stale Realms"
+        "multiple live Agent Realms use label {label:?}: {realms:?}; choose a unique AEGIS_FUJI_REALM_LABEL or revoke the stale Realms"
     )]
     Ambiguous { label: String, realms: Vec<u64> },
     #[error("Realm recovery record is invalid or from an unsupported schema")]
     InvalidState,
-    #[error("ASS returned an unexpected Realm action response")]
+    #[error("Aegis returned an unexpected Realm action response")]
     UnexpectedResponse,
     #[error("Realm recovery I/O failed: {0}")]
     Io(#[from] io::Error),

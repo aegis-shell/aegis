@@ -23,7 +23,7 @@ fn scratch() -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
     let mut p = std::env::temp_dir();
-    p.push(format!("ass-ipc-{pid}-{n}.sock"));
+    p.push(format!("aegis-ipc-{pid}-{n}.sock"));
     p
 }
 
@@ -137,7 +137,7 @@ impl Handler for TestHandler {
     }
     fn workspaces(&self) -> aegis_core::workspace::WorkspaceSnapshot {
         // A minimal snapshot: one output, one empty workspace. Sufficient for
-        // the IPC plumbing tests; the model itself is exercised in ass-core.
+        // the IPC plumbing tests; the model itself is exercised in aegis-core.
         use aegis_core::workspace::{OutputSnapshot, WorkspaceEntry, WorkspaceId};
         aegis_core::workspace::WorkspaceSnapshot {
             outputs: vec![OutputSnapshot {

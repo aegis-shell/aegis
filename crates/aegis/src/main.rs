@@ -1,4 +1,4 @@
-//! ass — autonomous surface shell.
+//! aegis — autonomous surface shell.
 //!
 //! The process composition root: selects a presentation host, creates the Wayland server,
 //! renderer, shell, wallpaper, configuration, and IPC surfaces, then runs the
@@ -20,7 +20,7 @@ fn main() {
         .try_init();
 
     if let Err(e) = runtime::run() {
-        log::error!("ass: {e}");
+        log::error!("aegis: {e}");
         std::process::exit(1);
     }
 }

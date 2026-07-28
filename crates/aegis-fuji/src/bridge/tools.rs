@@ -117,7 +117,7 @@ impl ToolCallResult {
     }
 }
 
-/// Scoped ASS platform service consumed by the MCP transport.
+/// Scoped Aegis platform service consumed by the MCP transport.
 pub struct AssPlatform {
     config: BridgeConfig,
     grant: ToolGrant,
@@ -197,7 +197,7 @@ impl AssPlatform {
             .unwrap_or_default()
             .as_nanos();
         let tag = format!("{:06x}", marker & 0xff_ffff);
-        let started_summary = format!("Fuji ↔ ASS · {tag}");
+        let started_summary = format!("Fuji ↔ Aegis · {tag}");
         client.command(Command::Notify {
             summary: started_summary.clone(),
             body: "Live notification verified. Agent Realm smoke is running.".into(),
@@ -316,7 +316,7 @@ impl AssPlatform {
             "preserved_existing_realm"
         };
 
-        let summary = format!("Fuji ↔ ASS · passed · {tag}");
+        let summary = format!("Fuji ↔ Aegis · passed · {tag}");
         client.command(Command::Notify {
             summary: summary.clone(),
             body: "Notification and Agent Realm controls were applied and verified.".into(),
@@ -1114,7 +1114,7 @@ impl ToolKind {
         match self {
             Self::DesktopSnapshot => definition(
                 "desktop_snapshot",
-                "Read current ASS windows, workspaces, outputs, all Realms, and this connector's granted scope. Call before addressing desktop objects by id.",
+                "Read current Aegis windows, workspaces, outputs, all Realms, and this connector's granted scope. Call before addressing desktop objects by id.",
                 empty(),
                 true,
                 false,
@@ -1191,7 +1191,7 @@ impl ToolKind {
             ),
             Self::ToggleOverview => definition(
                 "toggle_overview",
-                "Toggle the ASS workspace overview.",
+                "Toggle the Aegis workspace overview.",
                 empty(),
                 false,
                 false,
@@ -1533,14 +1533,14 @@ impl TryFrom<InputActionArgs> for SyntheticInputAction {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {
-    #[error("cannot connect to ASS IPC socket {socket:?} with named scope {scope:?}: {source}")]
+    #[error("cannot connect to Aegis IPC socket {socket:?} with named scope {scope:?}: {source}")]
     Connect {
         socket: PathBuf,
         scope: String,
         #[source]
         source: std::io::Error,
     },
-    #[error("ASS IPC operation failed: {0}")]
+    #[error("Aegis IPC operation failed: {0}")]
     Ipc(#[from] std::io::Error),
     #[error("invalid tool arguments: {0}")]
     InvalidArguments(String),
@@ -1554,7 +1554,7 @@ pub enum PlatformError {
     RealmCreationNotGranted,
     #[error("graceful Realm cleanup requires RevokeRealm in the named scope")]
     RealmCleanupNotGranted,
-    #[error("ASS returned an unexpected Realm action response")]
+    #[error("Aegis returned an unexpected Realm action response")]
     UnexpectedResponse,
     #[error("live smoke verification failed: {0}")]
     SmokeVerification(String),

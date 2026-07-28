@@ -1,6 +1,6 @@
 # Setup
 
-How to build and run ass for development.
+How to build and run aegis for development.
 
 ## Prerequisites
 
@@ -131,7 +131,7 @@ its process group.
 | Missing a `flux`, `flux-scene-graph`, `lens`, or `iris` uninstalled pkg-config file | The Meson build tree is not built with the required components; build the dependencies first |
 | `vkCreateSwapchainKHR: function pointer was NULL` | `VK_KHR_swapchain` not enabled; the backend requests it, so check the flux device extensions |
 | `error while loading shared libraries: libflux*.so` / `liblens*.so` / `libiris*.so` | Run through `cargo run` so the rpath relay applies, or rebuild after moving the Meson tree |
-| `Realm cgroup isolation is unavailable` | Run ASS in the packaged systemd user service; a shared terminal scope cannot satisfy controller delegation |
+| `Realm cgroup isolation is unavailable` | Run Aegis in the packaged systemd user service; a shared terminal scope cannot satisfy controller delegation |
 
 ## See Also
 

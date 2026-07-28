@@ -622,7 +622,7 @@ pub(super) fn draw_window_switcher_scene(
 /// (`$XCURSOR_THEME`/`$XCURSOR_SIZE`, inheritance included) via
 /// [`cursor::CursorCache`]; the hand-drawn glyph set below remains as the
 /// fallback when the theme ships no image for the requested shape.
-/// Client-provided cursor surfaces are already composited by `ass-server`;
+/// Client-provided cursor surfaces are already composited by `aegis-server`;
 /// this covers the cursor-shape protocol and compositor-owned cursors.
 pub(super) fn draw_software_cursor(
     canvas: &flux::Canvas,

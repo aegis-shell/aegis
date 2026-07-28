@@ -30,7 +30,7 @@ testable without a compositor process or graphics stack.
 ## Use
 
 ```rust
-use ass_core::{Point, Rect};
+use aegis_core::{Point, Rect};
 
 let work_area = Rect::new(0, 0, 1920, 1080);
 assert!(work_area.contains(Point { x: 100, y: 100 }));

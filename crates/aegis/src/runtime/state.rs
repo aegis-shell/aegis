@@ -64,7 +64,7 @@ pub(super) struct CompositorRuntime {
     pub(super) frame_count: u64,
     pub(super) retired_defer: Option<u64>,
     pub(super) super_tap: aegis_core::input::TapDetector,
-    pub(super) prev_captured: bool,
+    pub(super) keyboard_capture: aegis_core::input::KeyboardCaptureState,
     pub(super) keymap: aegis_core::keybind::Keymap,
     pub(super) system_status: aegis_shell::SystemStatus,
     pub(super) status_rx: std::sync::mpsc::Receiver<aegis_shell::SystemStatus>,

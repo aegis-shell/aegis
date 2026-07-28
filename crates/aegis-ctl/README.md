@@ -1,7 +1,7 @@
 # aegis-ctl
 
 `aegis-ctl` is the reference command-line client for querying and
-controlling a running ass session through `aegis-ipc`.
+controlling a running aegis session through `aegis-ipc`.
 
 ## Responsibilities
 

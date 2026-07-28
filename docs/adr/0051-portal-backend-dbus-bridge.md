@@ -7,13 +7,13 @@
 
 Sandboxed (Flatpak) and portal-aware applications resolve desktop services
 through `xdg-desktop-portal`, which delegates to a per-desktop backend
-selected by `XDG_CURRENT_DESKTOP`. ass now exports `XDG_CURRENT_DESKTOP=ass`
-into the D-Bus activation environment, so the frontend looks for an ass
+selected by `XDG_CURRENT_DESKTOP`. aegis now exports `XDG_CURRENT_DESKTOP=aegis`
+into the D-Bus activation environment, so the frontend looks for an aegis
 backend and, finding none, either fails the call or misroutes it to another
 desktop's backend.
 
 The pixels a Screenshot portal needs already exist behind a security
-boundary ass deliberately designed: scoped `CaptureOutput` over the IPC with
+boundary aegis deliberately designed: scoped `CaptureOutput` over the IPC with
 sealed-memfd transport
 ([ADR-0037](0037-scoped-pixel-capture-over-ipc.md),
 [ADR-0041](0041-sealed-file-descriptor-pixel-transport.md)). That boundary
@@ -29,7 +29,7 @@ not pull an async runtime into the compositor's process.
 
 ## Decision
 
-ass ships a portal backend as a **standalone process, `aegis-portal`** (new
+aegis ships a portal backend as a **standalone process, `aegis-portal`** (new
 `crates/aegis-portal` crate), that is a pure bridge: outward it speaks D-Bus
 (zbus blocking API on the session bus, plain `std::thread` workers, no
 tokio — the same dependency red line as the SNI tray); inward it is an
@@ -37,7 +37,7 @@ ordinary scoped IPC client of the compositor. No Wayland capture protocol is
 added anywhere.
 
 The backend serves at `/org/freedesktop/portal/desktop` under
-`org.freedesktop.impl.portal.desktop.ass`, D-Bus-activated:
+`org.freedesktop.impl.portal.desktop.aegis`, D-Bus-activated:
 
 - **`org.freedesktop.impl.portal.Settings` v1.** `Read`/`ReadAll` answer
   `org.freedesktop.appearance` `color-scheme` from the compositor
@@ -55,15 +55,15 @@ The backend serves at `/org/freedesktop/portal/desktop` under
   capture into response code 1.
 
 The IPC grant uses a **built-in owner-only named scope** `aegis-portal`
-(`ass_ipc::LOCAL_PORTAL_SCOPE`) resolved by the compositor to exactly one
+(`aegis_ipc::LOCAL_PORTAL_SCOPE`) resolved by the compositor to exactly one
 operation, `CaptureOutput` — mirroring the `aegis-ctl-realm-admin`
 precedent. The user configures nothing; the socket's owner-only `0600`
 boundary stays the real perimeter, and the fail-closed rule (explicit op,
 never `None`-means-all) is preserved.
 
-Distribution ships the standard three files: `ass.portal` under
+Distribution ships the standard three files: `aegis.portal` under
 `/usr/share/xdg-desktop-portal/portals/`, `aegis-portals.conf` (preferring
-`ass;gtk` so UI-driven portals fall back to the GTK backend) under
+`aegis;gtk` so UI-driven portals fall back to the GTK backend) under
 `/usr/share/xdg-desktop-portal/`, and a D-Bus activation file under
 `/usr/share/dbus-1/services/`.
 

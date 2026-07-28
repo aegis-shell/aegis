@@ -1,9 +1,9 @@
-//! Hand-rolled Wayland server for ass.
+//! Hand-rolled Wayland server for aegis.
 //!
 //! Drives libwayland-server directly over FFI: it creates the display and
 //! socket, advertises the core globals, and owns protocol object lifecycle. The
 //! shm implementation and the core `wl_*` interface tables come from
-//! libwayland-server; ass implements the request handlers.
+//! libwayland-server; aegis implements the request handlers.
 //!
 //! libwayland callbacks receive the stable boxed `State` as a raw pointer.
 //! Accessing human-seat fields through `State`'s `Deref<SeatRuntime>` creates
@@ -694,6 +694,21 @@ unsafe fn surface_root_toplevel(mut surface: *mut SurfaceRec) -> *mut SurfaceRec
     }
 }
 
+/// Keep every protocol whose target follows keyboard focus on the same
+/// transition. Call this only after the corresponding `wl_keyboard` events and
+/// authoritative `SeatRuntime::keyboard_focus` update.
+pub(crate) unsafe fn keyboard_focus_dependencies_changed(
+    state: *mut State,
+    old_focus: *mut ffi::wl_resource,
+    new_focus: *mut ffi::wl_resource,
+) {
+    unsafe {
+        extensions::text_input_focus_changed(state, old_focus, new_focus);
+        data_device_focus_changed(state, old_focus, new_focus);
+        extensions::keyboard_shortcuts_focus_changed(state, new_focus);
+    }
+}
+
 /// One dynamically advertised wl_output global. Boxes remain allocated after
 /// hot-unplug until server teardown because clients may retain resources whose
 /// user-data points here even after the registry global is removed.
@@ -709,7 +724,7 @@ pub(crate) struct OutputGlobal {
 
 /// Runtime protocol and input state for one logical `wl_seat`.
 ///
-/// The authority model in `ass-core` owns durable identities and policy.
+/// The authority model in `aegis-core` owns durable identities and policy.
 /// This structure owns the libwayland resources and ephemeral protocol state
 /// for exactly one seat. Keeping these records separate is what prevents
 /// agent input, focus, grabs, clipboard, and cursor state from contending
@@ -753,7 +768,6 @@ pub(crate) struct SeatRuntime {
     last_pointer_enter_serial: u32,
     pointer_focus: *mut ffi::wl_resource,
     keyboard_focus: *mut ffi::wl_resource,
-    saved_keyboard_focus: *mut ffi::wl_resource,
     pointer_x: f32,
     pointer_y: f32,
     raw_pointer_x: f32,
@@ -822,7 +836,6 @@ impl SeatRuntime {
             last_pointer_enter_serial: 0,
             pointer_focus: std::ptr::null_mut(),
             keyboard_focus: std::ptr::null_mut(),
-            saved_keyboard_focus: std::ptr::null_mut(),
             pointer_x: 0.0,
             pointer_y: 0.0,
             raw_pointer_x: 0.0,
@@ -1189,7 +1202,7 @@ impl State {
             if let Some(id) = self.clients.get(&(client as usize)).copied() {
                 return id;
             }
-            let security_context = realm.map(|realm| format!("ass.realm.{}", realm.0));
+            let security_context = realm.map(|realm| format!("aegis.realm.{}", realm.0));
             let id = self.authority.register_client(security_context);
             self.clients.insert(client as usize, id);
             if let Some(realm) = realm {

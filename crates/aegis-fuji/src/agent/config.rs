@@ -255,11 +255,11 @@ system_prompt_append = "Be terse."
 [permissions]
 default = "deny"
 bash = "ask"
-"mcp__ass__realm_input" = "allow"
+"mcp__aegis__realm_input" = "allow"
 
-[mcp.ass]
+[mcp.aegis]
 command = ["aegis-fuji-mcp"]
-environment = { ASS_FUJI_SCOPE = "fuji" }
+environment = { AEGIS_FUJI_SCOPE = "fuji" }
 
 [skills]
 paths = ["/opt/skills"]
@@ -270,16 +270,19 @@ paths = ["/opt/skills"]
         assert_eq!(config.agent.max_turns, 12);
         assert_eq!(config.permissions.mode_for("bash"), PermissionMode::Ask);
         assert_eq!(
-            config.permissions.mode_for("mcp__ass__realm_input"),
+            config.permissions.mode_for("mcp__aegis__realm_input"),
             PermissionMode::Allow
         );
         assert_eq!(config.permissions.mode_for("unknown"), PermissionMode::Deny);
-        let ass = config.mcp.get("ass").expect("ass server");
-        assert!(ass.enabled);
-        assert!(!ass.read_only);
-        assert_eq!(ass.command, vec!["aegis-fuji-mcp".to_string()]);
+        let aegis = config.mcp.get("aegis").expect("aegis server");
+        assert!(aegis.enabled);
+        assert!(!aegis.read_only);
+        assert_eq!(aegis.command, vec!["aegis-fuji-mcp".to_string()]);
         assert_eq!(
-            ass.environment.get("ASS_FUJI_SCOPE").map(String::as_str),
+            aegis
+                .environment
+                .get("AEGIS_FUJI_SCOPE")
+                .map(String::as_str),
             Some("fuji")
         );
     }

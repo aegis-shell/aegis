@@ -1,6 +1,6 @@
 # The Agent Phase
 
-ass is built in two phases. The first is a desktop for human users. The
+aegis is built in two phases. The first is a desktop for human users. The
 second adapts the same compositor so an agent can understand and operate
 the machine through it. This page is the blueprint for the second phase:
 how the pieces fit, why the shape is what it is, and how the result meets
@@ -30,7 +30,7 @@ The stack, from the rendering layer up:
 | The compositor | `aegis-compositor`, `aegis-backend`, `aegis-render`, `aegis-shell` | Wayland, per-Realm input and output, the chrome host |
 | The seam | `aegis-ipc` | Versioned JSON and sealed descriptors over a Unix socket; leases, scope, capture, and the journal |
 | IPC clients | any number, all equal | Status bars, `aegis-ctl`, the agent, future bridges |
-| Platform adapter | `aegis-fuji-mcp` (separate process) | Named-scope ASS tools and one bridge-managed Agent Realm over MCP |
+| Platform adapter | `aegis-fuji-mcp` (separate process) | Named-scope Aegis tools and one bridge-managed Agent Realm over MCP |
 | Agent product | fuji (in-tree `aegis-fuji`) | Providers, credentials, sessions, skills, permissions, and the CLI |
 | Other skill and tool layers | external projects | Other model-specific adapters, prompts, and schemas |
 
@@ -42,7 +42,7 @@ is indistinguishable from any other client except by the capabilities and
 scope it negotiated at the handshake.
 
 This is the deliberate inversion of most "AI desktop" projects, which bake
-the model into the shell. ass bets the other way: the compositor is the
+the model into the shell. aegis bets the other way: the compositor is the
 slowest-moving, most stability-critical layer; models and tool protocols
 are the fastest-moving; coupling them either freezes the agent or
 destabilizes the compositor.
@@ -95,14 +95,14 @@ pattern, not a reimplementation per pattern. The compositor stays put.
 
 | Current pattern | Representatives | Bridge shape |
 |-----------------|-----------------|--------------|
-| Function calling / tool use | Claude, GPT, Gemini, Qwen, Mistral | Each IPC request becomes a tool; the adapter translates between the model's tool-call schema and ass's JSON. |
+| Function calling / tool use | Claude, GPT, Gemini, Qwen, Mistral | Each IPC request becomes a tool; the adapter translates between the model's tool-call schema and aegis's JSON. |
 | Model Context Protocol | fuji, Claude Desktop, Cline, Cursor | `aegis-fuji-mcp` exposes snapshots, journals, and operations as scoped tools, with Realm pixels as MCP image content. |
 | Vision-based computer use | Claude Computer Use, OpenAI Operator | Damage-driven Realm capture supplies correlated pixels and window-to-input mappings; bounded target-local actions enter the Realm's independent seat. |
 | Agent SDKs | Claude Agent SDK, LangGraph, custom | The agent process uses an SDK; tools call through the IPC. The SDK is indifferent to the transport. |
 | Local models | Ollama, llama.cpp, MLX | Same tool-calling interface, routed to a local endpoint. Smaller models benefit most from the structured path. |
 | Multi-agent orchestration | CrewAI, AutoGen, sub-agents | Each agent is a separate connection with its own scope; the journal lets them observe each other. Scoped capabilities are what make this safe. |
 
-The fit with the Model Context Protocol is unusually clean. ass's
+The fit with the Model Context Protocol is unusually clean. aegis's
 introspection surface and MCP converged independently on the same shape:
 the versioned schema against tool schemas; capabilities and scope against
 authorization; and the typed model and journal against structured tool
@@ -138,7 +138,7 @@ models and tool protocols churn above it.**
 
 This is the same bet Wayland made against X11 — stable protocol, competing
 compositors — applied to agents. If the Model Context Protocol becomes the
-standard, ass is already the right shape. If something replaces it, the
+standard, aegis is already the right shape. If something replaces it, the
 adapter changes; the compositor does not. If vision models become good
 enough that structured APIs look obsolete, the journal, the scope, and the
 durable identifiers still matter: a vision model also needs to know what
@@ -150,14 +150,14 @@ its surface bounded — is most of what an agent needs. Model adapters,
 semantic element bridges, and streaming integrations remain on the other side
 of the seam.
 
-## What ass Does Not Do
+## What aegis Does Not Do
 
 The shape is defined as much by what it refuses as by what it adds.
 
 - **No model inside the compositor.** The compositor never calls a model.
   Inference, prompt assembly, and tool selection live out of process.
 - **No prompt storage in the compositor.** Product prompts live in fuji or
-  another out-of-process skill layer. ASS ships only the platform tool
+  another out-of-process skill layer. Aegis ships only the platform tool
   contract and an optional fuji skill.
 - **No retrieval index inside the compositor.** If the agent needs semantic
   search over its history, the agent indexes the journal; the compositor
@@ -196,4 +196,4 @@ without committing to.
   [ADR-0042](../adr/0042-mount-scoped-realm-portals-and-cgroup-sandboxes.md)
   — the authority, observation, and isolation follow-ons.
 - [Comparative Survey — Extension and Automation](comparative-survey.md#extension-and-automation)
-  — the systems whose patterns ass borrows from and rejects.
+  — the systems whose patterns aegis borrows from and rejects.

@@ -1,9 +1,9 @@
 use super::*;
 
-/// Resolve `--backend auto|drm|nested`, falling back to `$ASS_BACKEND` and
+/// Resolve `--backend auto|drm|nested`, falling back to `$AEGIS_BACKEND` and
 /// then `auto`. X11/XWayland are intentionally not accepted backends.
 pub(super) fn requested_backend() -> Result<BackendKind, Box<dyn std::error::Error>> {
-    let mut selected = std::env::var("ASS_BACKEND").unwrap_or_else(|_| "auto".to_owned());
+    let mut selected = std::env::var("AEGIS_BACKEND").unwrap_or_else(|_| "auto".to_owned());
     let mut args = std::env::args().skip(1);
     while let Some(argument) = args.next() {
         if let Some(value) = argument.strip_prefix("--backend=") {
@@ -16,7 +16,7 @@ pub(super) fn requested_backend() -> Result<BackendKind, Box<dyn std::error::Err
                 )
             })?;
         } else if argument == "--help" || argument == "-h" {
-            println!("Usage: ass [--backend auto|drm|nested]");
+            println!("Usage: aegis [--backend auto|drm|nested]");
             std::process::exit(0);
         } else {
             return Err(std::io::Error::new(
@@ -51,7 +51,7 @@ pub(super) fn screenshot_path(dir: &std::path::Path) -> String {
         .map(|d| d.as_millis())
         .unwrap_or(0);
     let _ = std::fs::create_dir_all(dir);
-    dir.join(format!("ass-{ms}.png"))
+    dir.join(format!("aegis-{ms}.png"))
         .to_string_lossy()
         .into_owned()
 }
@@ -233,7 +233,7 @@ pub(super) fn output_geometry_from_host(
 }
 
 /// Build the active keymap from the config file's `[[keybind]]` entries,
-/// layered over the built-in defaults. The deprecated `$ASS_KEYBINDS` env
+/// layered over the built-in defaults. The deprecated `$AEGIS_KEYBINDS` env
 /// var is honored as a transitional override that takes precedence over the
 /// file (ADR-0026); it is logged and removed before the desktop phase
 /// closes.
@@ -242,11 +242,11 @@ pub(super) fn build_keymap(config: Option<&aegis_config::Config>) -> aegis_core:
 
     // Deprecated env override — highest precedence so existing setups keep
     // working during the transition.
-    if let Ok(s) = std::env::var("ASS_KEYBINDS")
+    if let Ok(s) = std::env::var("AEGIS_KEYBINDS")
         && !s.trim().is_empty()
     {
         log::warn!(
-            "keybind: $ASS_KEYBINDS is deprecated; move it to the \
+            "keybind: $AEGIS_KEYBINDS is deprecated; move it to the \
                  `[[keybind]]` section of the config file"
         );
         let (env_binds, errs) = aegis_core::keybind::Keymap::parse_overrides(&s);

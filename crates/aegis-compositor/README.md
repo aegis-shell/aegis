@@ -1,7 +1,7 @@
 # aegis-compositor
 
 `aegis-compositor` is the hand-rolled Wayland server and window-management mechanism
-for ass.
+for aegis.
 
 ## Responsibilities
 

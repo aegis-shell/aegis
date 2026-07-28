@@ -1,6 +1,6 @@
 # aegis-statusbar
 
-`aegis-statusbar` is the top status bar chrome component for the ass
+`aegis-statusbar` is the top status bar chrome component for the aegis
 compositor, built on the `Chrome` contract from `aegis-shell` and shared
 materials from `aegis-design`. It hosts the session HUD (workspace state,
 active-window title, clock, live system controls, and notifications) and the
@@ -61,7 +61,7 @@ shows no SNI icons and startup is unaffected.
 ## Runtime Effect
 
 Each frame the status bar reports its reserved top edge
-(`ass_shell::HUD_HEIGHT`), its backdrop-blur regions (the bar plus the
+(`aegis_shell::HUD_HEIGHT`), its backdrop-blur regions (the bar plus the
 open panel or dbusmenu popover), and captures pointer input over its
 own surfaces. The composition root registers it conditionally from the
 `[statusbar] enabled` configuration; the default is `true`.

@@ -15,7 +15,7 @@ use aegis_core::Rect;
 #[command(
     name = "aegis-ctl",
     version,
-    about = "Query and control a running ass compositor through its IPC socket"
+    about = "Query and control a running aegis compositor through its IPC socket"
 )]
 pub struct Cli {
     /// Emit query results and receipts as JSON instead of human-readable text.

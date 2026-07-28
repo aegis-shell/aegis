@@ -1,4 +1,4 @@
-//! Pure lens option factories for ass surface materials.
+//! Pure lens option factories for aegis surface materials.
 
 use lens::{Align, LayoutOpts, OverlayOpts};
 

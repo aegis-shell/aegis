@@ -1,4 +1,4 @@
-//! aegis-ctl: the command-line driver for the ass IPC.
+//! aegis-ctl: the command-line driver for the aegis IPC.
 //!
 //! The reference external tool (ADR-0027): it connects to a running
 //! compositor's IPC socket and drives it — list windows/workspaces, focus,
@@ -515,7 +515,7 @@ fn realm_capture_path(dir: &Path, realm: RealmId) -> Result<std::path::PathBuf, 
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    Ok(dir.join(format!("ass-realm-{}-{ms}.png", realm.0)))
+    Ok(dir.join(format!("aegis-realm-{}-{ms}.png", realm.0)))
 }
 
 /// Generate a timestamped screenshot path and ensure its parent exists.
@@ -531,7 +531,7 @@ fn screenshot_path(dir: &Path) -> Result<String, CliError> {
         .map(|d| d.as_millis())
         .unwrap_or(0);
     Ok(dir
-        .join(format!("ass-screenshot-{ms}.png"))
+        .join(format!("aegis-screenshot-{ms}.png"))
         .to_string_lossy()
         .into_owned())
 }

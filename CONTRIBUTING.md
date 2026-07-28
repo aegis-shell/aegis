@@ -1,6 +1,6 @@
-# Contributing to ASS
+# Contributing to Aegis
 
-Thank you for your interest in contributing to **ass** (*autonomous surface shell*)!
+Thank you for your interest in contributing to **aegis** (*autonomous surface shell*)!
 
 ## Quick Orientation
 

@@ -2,11 +2,11 @@
 
 `aegis-config` owns the versioned TOML configuration schema, loader,
 diagnostics, typed document edits, atomic persistence, and caller-driven
-live-reload detection for ass.
+live-reload detection for aegis.
 
 ## Responsibilities
 
-- Parse `$XDG_CONFIG_HOME/ass/config.toml` and validate its schema version.
+- Parse `$XDG_CONFIG_HOME/aegis/config.toml` and validate its schema version.
 - Reject unknown or malformed values with structured diagnostics.
 - Resolve configuration entries into shared `aegis-core` models.
 - Apply typed dock, touchpad, and output edits while preserving comments and

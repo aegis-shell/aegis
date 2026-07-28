@@ -30,14 +30,14 @@ ignores the direct-display-only calls (VT switch, surface recreation).
 ## Use
 
 The executable selects a target through `host::Host` (`--backend
-auto|drm|nested` or `ASS_BACKEND`; `auto` nests when `$WAYLAND_DISPLAY` is
+auto|drm|nested` or `AEGIS_BACKEND`; `auto` nests when `$WAYLAND_DISPLAY` is
 set and drives KMS on a TTY), then drives it through the `Backend` trait:
 
 ```rust
-use ass_backend::host::{BackendKind, Host};
-use ass_backend::Backend;
+use aegis_backend::host::{BackendKind, Host};
+use aegis_backend::Backend;
 
-let mut host = Host::open(BackendKind::Auto, "ass", 1280, 720, Default::default())?;
+let mut host = Host::open(BackendKind::Auto, "aegis", 1280, 720, Default::default())?;
 let device = host.create_device()?;
 let mut surface = host.create_surface(&device)?;
 while host.dispatch_timeout(std::time::Duration::from_secs(1)) {

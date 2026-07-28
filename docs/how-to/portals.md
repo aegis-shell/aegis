@@ -1,6 +1,6 @@
 # How to Install and Verify the Portal Backend
 
-`aegis-portal` is the xdg-desktop-portal backend for ass
+`aegis-portal` is the xdg-desktop-portal backend for aegis
 ([ADR-0051](../adr/0051-portal-backend-dbus-bridge.md)). It lets
 portal-aware and sandboxed (Flatpak) applications read the desktop
 appearance preference, take screenshots, and cast the screen. This guide
@@ -135,7 +135,7 @@ gdbus call --session \
 ```
 
 The response carries `background: true` once the frontend resolves it
-through the ass backend; with `autostart: <true>` the application's desktop
+through the aegis backend; with `autostart: <true>` the application's desktop
 file appears under `$XDG_CONFIG_HOME/autostart/`.
 
 Exercise the Inhibit path by requesting idle inhibition from a test client
@@ -148,7 +148,7 @@ exits.
 
 ## Persisted Grants
 
-ass has no PermissionStore; the backend records its own authorization
+aegis has no PermissionStore; the backend records its own authorization
 decisions as JSON under `$XDG_DATA_HOME/aegis-portal/`
 ([ADR-0053](../adr/0053-portal-session-services-and-grants.md)):
 
@@ -162,4 +162,4 @@ Both files are mode `0600` and written atomically.
 
 If the name does not activate, check that the `.service` file's `Exec=`
 path exists and that the compositor is running: the backend captures through
-the ass IPC socket at `$XDG_RUNTIME_DIR/aegis.sock`.
+the aegis IPC socket at `$XDG_RUNTIME_DIR/aegis.sock`.

@@ -1,6 +1,6 @@
-# Tutorial: Getting Started with ASS
+# Tutorial: Getting Started with Aegis
 
-Welcome to the **ass** (*autonomous surface shell*) getting started tutorial. This walkthrough will guide you through setting up your development environment, building the compositor, running your first nested session, launching standalone components, and testing IPC interaction.
+Welcome to the **aegis** (*autonomous surface shell*) getting started tutorial. This walkthrough will guide you through setting up your development environment, building the compositor, running your first nested session, launching standalone components, and testing IPC interaction.
 
 ---
 
@@ -18,7 +18,7 @@ Before starting, ensure your Linux system has the following build tools installe
 
 ## Step 1: Building the Optics C Libraries
 
-`ass` depends on the `flux` rendering engine and `lens` UI library located in the sibling `../optics` directory.
+`aegis` depends on the `flux` rendering engine and `lens` UI library located in the sibling `../optics` directory.
 
 Compile the optics C libraries first:
 
@@ -74,4 +74,4 @@ Replace the example value with the directory printed by
 ## Next Steps
 
 - Check out the [Daily-use How-To Guides](../how-to/index.md) for keybindings, window management, and display configuration.
-- Read the [Architecture Overview](../explanation/architecture.md) to learn about the internal design of `ass`.
+- Read the [Architecture Overview](../explanation/architecture.md) to learn about the internal design of `aegis`.

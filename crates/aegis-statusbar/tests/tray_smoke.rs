@@ -3,7 +3,7 @@
 //! own StatusNotifierWatcher:
 //!
 //! ```sh
-//! dbus-run-session -- cargo test -p ass-statusbar --test tray_smoke -- --ignored --nocapture
+//! dbus-run-session -- cargo test -p aegis-statusbar --test tray_smoke -- --ignored --nocapture
 //! ```
 //!
 //! Exercises the full loop: watcher name ownership, item registration,

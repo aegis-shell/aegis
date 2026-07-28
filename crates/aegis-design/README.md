@@ -1,6 +1,6 @@
 # aegis-design
 
-`aegis-design` defines the product-specific visual language shared by ass
+`aegis-design` defines the product-specific visual language shared by aegis
 chrome components on top of lens.
 
 ## Responsibilities
@@ -23,9 +23,9 @@ behavior stay in the owning chrome crate.
 Construct a design snapshot and pass it to a theme or material factory:
 
 ```rust
-let design = ass_design::Design::dark();
-let theme = ass_design::themes::menu(frame.theme(), &design);
-let popover = ass_design::materials::popover(&design);
+let design = aegis_design::Design::dark();
+let theme = aegis_design::themes::menu(frame.theme(), &design);
+let popover = aegis_design::materials::popover(&design);
 ```
 
 ## Related Documentation

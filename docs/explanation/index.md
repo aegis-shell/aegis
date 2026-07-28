@@ -1,6 +1,6 @@
 # Explanation
 
-Conceptual background and design discussion for ass. These pages explain
+Conceptual background and design discussion for aegis. These pages explain
 how the system works and why; they link to
 [Architecture Decision Records](../adr/index.md) for specific decision
 history.
@@ -13,4 +13,4 @@ history.
 | [Vision and Scope](vision.md) | Product direction, principles, and non-goals |
 | [Roadmap](roadmap.md) | The milestone sequence from nested bring-up to the agent phase |
 | [The Agent Phase](agent-phase.md) | The M10 blueprint: where the compositor stops and how the AI ecosystem attaches |
-| [Comparative Survey](comparative-survey.md) | What ass borrows from GNOME, KDE, sway, river, niri, macOS, and Xfce, and what it rejects |
+| [Comparative Survey](comparative-survey.md) | What aegis borrows from GNOME, KDE, sway, river, niri, macOS, and Xfce, and what it rejects |
