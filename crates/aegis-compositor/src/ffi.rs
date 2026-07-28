@@ -41,13 +41,16 @@ pub use aegis_protocols::{
     wp_fractional_scale_v1_interface, wp_presentation_feedback_interface,
     wp_presentation_interface, xdg_activation_token_v1_interface, xdg_activation_v1_interface,
     zwp_confined_pointer_v1_interface, zwp_idle_inhibit_manager_v1_interface,
-    zwp_idle_inhibitor_v1_interface, zwp_keyboard_shortcuts_inhibit_manager_v1_interface,
+    zwp_idle_inhibitor_v1_interface, zwp_input_method_keyboard_grab_v2_interface,
+    zwp_input_method_manager_v2_interface, zwp_input_method_v2_interface,
+    zwp_input_popup_surface_v2_interface, zwp_keyboard_shortcuts_inhibit_manager_v1_interface,
     zwp_keyboard_shortcuts_inhibitor_v1_interface, zwp_locked_pointer_v1_interface,
     zwp_pointer_constraints_v1_interface, zwp_pointer_gesture_hold_v1_interface,
     zwp_pointer_gesture_pinch_v1_interface, zwp_pointer_gesture_swipe_v1_interface,
     zwp_pointer_gestures_v1_interface, zwp_relative_pointer_manager_v1_interface,
     zwp_relative_pointer_v1_interface, zwp_text_input_manager_v3_interface,
-    zwp_text_input_v3_interface, zxdg_decoration_manager_v1_interface,
+    zwp_text_input_v3_interface, zwp_virtual_keyboard_manager_v1_interface,
+    zwp_virtual_keyboard_v1_interface, zxdg_decoration_manager_v1_interface,
     zxdg_output_manager_v1_interface, zxdg_output_v1_interface,
     zxdg_toplevel_decoration_v1_interface,
 };
@@ -283,6 +286,24 @@ pub const ZWP_TEXT_INPUT_V3_PREEDIT_STRING: u32 = 2;
 pub const ZWP_TEXT_INPUT_V3_COMMIT_STRING: u32 = 3;
 pub const ZWP_TEXT_INPUT_V3_DELETE_SURROUNDING_TEXT: u32 = 4;
 pub const ZWP_TEXT_INPUT_V3_DONE: u32 = 5;
+
+// input-method-unstable-v2
+pub const ZWP_INPUT_METHOD_V2_ACTIVATE: u32 = 0;
+pub const ZWP_INPUT_METHOD_V2_DEACTIVATE: u32 = 1;
+pub const ZWP_INPUT_METHOD_V2_SURROUNDING_TEXT: u32 = 2;
+pub const ZWP_INPUT_METHOD_V2_TEXT_CHANGE_CAUSE: u32 = 3;
+pub const ZWP_INPUT_METHOD_V2_CONTENT_TYPE: u32 = 4;
+pub const ZWP_INPUT_METHOD_V2_DONE: u32 = 5;
+pub const ZWP_INPUT_METHOD_V2_UNAVAILABLE: u32 = 6;
+pub const ZWP_INPUT_METHOD_V2_ERROR_ROLE: u32 = 0;
+pub const ZWP_INPUT_POPUP_SURFACE_V2_TEXT_INPUT_RECTANGLE: u32 = 0;
+pub const ZWP_INPUT_METHOD_KEYBOARD_GRAB_V2_KEYMAP: u32 = 0;
+pub const ZWP_INPUT_METHOD_KEYBOARD_GRAB_V2_KEY: u32 = 1;
+pub const ZWP_INPUT_METHOD_KEYBOARD_GRAB_V2_MODIFIERS: u32 = 2;
+pub const ZWP_INPUT_METHOD_KEYBOARD_GRAB_V2_REPEAT_INFO: u32 = 3;
+
+// virtual-keyboard-unstable-v1
+pub const ZWP_VIRTUAL_KEYBOARD_V1_ERROR_NO_KEYMAP: u32 = 0;
 
 /// Convert a compositor-space `f32` to a `wl_fixed_t` (24.8) for event posting.
 pub fn wl_fixed_from_f32(v: f32) -> i32 {
@@ -1042,6 +1063,58 @@ pub struct zwp_text_input_v3_interface_impl {
     pub commit: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
 }
 
+/// `zwp_input_method_manager_v2`: get_input_method, destroy.
+#[repr(C)]
+pub struct zwp_input_method_manager_v2_interface_impl {
+    pub get_input_method:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource, u32),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `zwp_input_method_v2`: commit_string, set_preedit_string,
+/// delete_surrounding_text, commit, get_input_popup_surface, grab_keyboard,
+/// destroy.
+#[repr(C)]
+pub struct zwp_input_method_v2_interface_impl {
+    pub commit_string: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char),
+    pub set_preedit_string:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *const c_char, i32, i32),
+    pub delete_surrounding_text: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, u32),
+    pub commit: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub get_input_popup_surface:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+    pub grab_keyboard: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `zwp_input_popup_surface_v2`: destroy.
+#[repr(C)]
+pub struct zwp_input_popup_surface_v2_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `zwp_input_method_keyboard_grab_v2`: release.
+#[repr(C)]
+pub struct zwp_input_method_keyboard_grab_v2_interface_impl {
+    pub release: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `zwp_virtual_keyboard_manager_v1`: create_virtual_keyboard.
+#[repr(C)]
+pub struct zwp_virtual_keyboard_manager_v1_interface_impl {
+    pub create_virtual_keyboard:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource, u32),
+}
+
+/// `zwp_virtual_keyboard_v1`: keymap, key, modifiers, destroy.
+#[repr(C)]
+pub struct zwp_virtual_keyboard_v1_interface_impl {
+    pub keymap: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, i32, u32),
+    pub key: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, u32, u32),
+    pub modifiers: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, u32, u32, u32),
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
 assert_impl_opcode_count!(zxdg_output_manager_v1_interface_impl, 2);
 assert_impl_opcode_count!(zxdg_output_v1_interface_impl, 1);
 assert_impl_opcode_count!(zxdg_decoration_manager_v1_interface_impl, 2);
@@ -1075,3 +1148,9 @@ assert_impl_opcode_count!(wp_cursor_shape_manager_v1_interface_impl, 3);
 assert_impl_opcode_count!(wp_cursor_shape_device_v1_interface_impl, 2);
 assert_impl_opcode_count!(zwp_text_input_manager_v3_interface_impl, 2);
 assert_impl_opcode_count!(zwp_text_input_v3_interface_impl, 8);
+assert_impl_opcode_count!(zwp_input_method_manager_v2_interface_impl, 2);
+assert_impl_opcode_count!(zwp_input_method_v2_interface_impl, 7);
+assert_impl_opcode_count!(zwp_input_popup_surface_v2_interface_impl, 1);
+assert_impl_opcode_count!(zwp_input_method_keyboard_grab_v2_interface_impl, 1);
+assert_impl_opcode_count!(zwp_virtual_keyboard_manager_v1_interface_impl, 1);
+assert_impl_opcode_count!(zwp_virtual_keyboard_v1_interface_impl, 4);

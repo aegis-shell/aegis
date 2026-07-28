@@ -211,19 +211,9 @@ fn ordered_surface_sources(
         }
     }
 
-    // Keep a frame visible if future filtering changes ever make it absent
-    // from the supplied order, while preserving deterministic relative order
-    // within each backing type.
-    for (index, id) in shm_ids.iter().enumerate() {
-        if by_id.remove(id).is_some() {
-            sources.push(OrderedSurfaceSource::Shm(index));
-        }
-    }
-    for (index, id) in dmabuf_ids.iter().enumerate() {
-        if by_id.remove(id).is_some() {
-            sources.push(OrderedSurfaceSource::Dmabuf(index));
-        }
-    }
+    // Frames absent from the authoritative order stay hidden. Appending them
+    // in backing-type batches would silently invent a z-order and can expose
+    // a lower window above a foreground window.
     sources
 }
 
@@ -305,9 +295,37 @@ impl Renderer {
         self.draw_toplevels_impl(device, canvas, frames, Some(map));
     }
 
-    /// Composite shm and dma-buf toplevels in one compositor-provided
-    /// stacking order. Painting the two backing types in separate batches
-    /// would incorrectly force every dma-buf window above every shm window.
+    /// Composite shm and dma-buf surfaces in one compositor-provided stacking
+    /// order. The order may interleave toplevels, popups, and subsurfaces;
+    /// painting any surface class or backing type in a separate global batch
+    /// can violate window-tree occlusion.
+    pub fn draw_surfaces_ordered(
+        &mut self,
+        device: &flux::Device,
+        canvas: &flux::Canvas,
+        order: &[usize],
+        shm: &[SurfacePixels<'_>],
+        dmabuf: &[SurfaceDmabuf],
+    ) {
+        self.draw_surfaces_ordered_impl(device, canvas, order, shm, dmabuf, None);
+    }
+
+    /// Ordered mixed-backing surface drawing with overview placement applied.
+    pub fn draw_surfaces_ordered_mapped(
+        &mut self,
+        device: &flux::Device,
+        canvas: &flux::Canvas,
+        order: &[usize],
+        shm: &[SurfacePixels<'_>],
+        dmabuf: &[SurfaceDmabuf],
+        map: &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
+    ) {
+        self.draw_surfaces_ordered_impl(device, canvas, order, shm, dmabuf, Some(map));
+    }
+
+    /// Compatibility entry point for callers that only supply xdg-role
+    /// surfaces. New scene composition should use
+    /// [`draw_surfaces_ordered`](Self::draw_surfaces_ordered).
     pub fn draw_toplevels_ordered(
         &mut self,
         device: &flux::Device,
@@ -316,10 +334,10 @@ impl Renderer {
         shm: &[SurfacePixels<'_>],
         dmabuf: &[SurfaceDmabuf],
     ) {
-        self.draw_toplevels_ordered_impl(device, canvas, order, shm, dmabuf, None);
+        self.draw_surfaces_ordered(device, canvas, order, shm, dmabuf);
     }
 
-    /// Ordered mixed-backing drawing with overview placement applied.
+    /// Compatibility entry point for mapped xdg-role-only drawing.
     pub fn draw_toplevels_ordered_mapped(
         &mut self,
         device: &flux::Device,
@@ -329,10 +347,10 @@ impl Renderer {
         dmabuf: &[SurfaceDmabuf],
         map: &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
     ) {
-        self.draw_toplevels_ordered_impl(device, canvas, order, shm, dmabuf, Some(map));
+        self.draw_surfaces_ordered_mapped(device, canvas, order, shm, dmabuf, map);
     }
 
-    fn draw_toplevels_ordered_impl(
+    fn draw_surfaces_ordered_impl(
         &mut self,
         device: &flux::Device,
         canvas: &flux::Canvas,
@@ -1014,5 +1032,27 @@ mod tests {
                 OrderedSurfaceSource::Shm(1),
             ]
         );
+    }
+
+    #[test]
+    fn mixed_backing_window_chrome_does_not_escape_its_tree_order() {
+        // Window A's dma-buf chrome must be drawn before the shm root of
+        // foreground window B. A global dma-buf pass would reverse them.
+        let sources = ordered_surface_sources(&[10, 11, 20, 21], &[10, 20], &[11, 21]);
+        assert_eq!(
+            sources,
+            vec![
+                OrderedSurfaceSource::Shm(0),
+                OrderedSurfaceSource::Dmabuf(0),
+                OrderedSurfaceSource::Shm(1),
+                OrderedSurfaceSource::Dmabuf(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_frame_missing_from_the_authoritative_order_stays_hidden() {
+        let sources = ordered_surface_sources(&[10], &[10, 20], &[]);
+        assert_eq!(sources, vec![OrderedSurfaceSource::Shm(0)]);
     }
 }

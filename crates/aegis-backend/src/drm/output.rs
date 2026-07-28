@@ -272,7 +272,7 @@ pub(super) fn select_outputs(
                     // Only reachable with a spec that matched nothing.
                     if let Some(spec) = spec {
                         log::warn!(
-                            "drm: {name}: configured mode {spec:?} matches no advertised mode; using the preferred mode"
+                            "drm: {name}: configured mode {spec:?} matches no advertised mode; using the best available mode"
                         );
                     }
                     pick_mode(&tuples, None).unwrap_or(0)
@@ -536,33 +536,34 @@ pub(super) fn advertised_modes(info: &connector::Info) -> Vec<OutputMode> {
 
 /// Choose a mode index out of `modes` — `(width, height, refresh_mhz,
 /// preferred)` tuples in connector order — honoring an optional configured
-/// spec (ADR-0028). Without a spec the DRM PREFERRED mode wins, falling back
-/// to the first advertised mode. With a spec, matches require exact
-/// width/height (plus a whole-Hz refresh match when the spec names one);
-/// among matches the PREFERRED flag wins, then the highest refresh, then the
-/// lowest index. `None` means nothing matched (or `modes` is empty); the
-/// caller falls back to the no-spec rule.
+/// spec (ADR-0028). Without a spec, the highest pixel count wins, then the
+/// highest refresh rate. With a spec, matches require exact width/height
+/// (plus a whole-Hz refresh match when the spec names one), then the highest
+/// refresh rate wins. The PREFERRED flag and connector order break otherwise
+/// equal ties. `None` means nothing matched (or `modes` is empty); the caller
+/// falls back to the no-spec rule.
 pub(super) fn pick_mode(modes: &[(i32, i32, u32, bool)], spec: Option<&ModeSpec>) -> Option<usize> {
-    match spec {
-        None => modes
-            .iter()
-            .position(|&(.., preferred)| preferred)
-            .or((!modes.is_empty()).then_some(0)),
-        Some(spec) => modes
-            .iter()
-            .enumerate()
-            .filter(|&(_, &(width, height, refresh_mhz, _))| {
+    modes
+        .iter()
+        .enumerate()
+        .filter(|&(_, &(width, height, refresh_mhz, _))| {
+            spec.is_none_or(|spec| {
                 spec.matches(&OutputMode {
                     width,
                     height,
                     refresh_mhz,
                 })
             })
-            .max_by_key(|&(index, &(.., refresh_mhz, preferred))| {
-                (preferred, refresh_mhz, std::cmp::Reverse(index))
-            })
-            .map(|(index, _)| index),
-    }
+        })
+        .max_by_key(|&(index, &(width, height, refresh_mhz, preferred))| {
+            let pixels = if spec.is_none() {
+                i64::from(width) * i64::from(height)
+            } else {
+                0
+            };
+            (pixels, refresh_mhz, preferred, std::cmp::Reverse(index))
+        })
+        .map(|(index, _)| index)
 }
 
 pub(super) fn display_signature(displays: &DisplaySet) -> DisplaySignature {

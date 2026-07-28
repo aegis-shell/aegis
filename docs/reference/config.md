@@ -113,7 +113,7 @@ saved for the next direct session.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `natural_scroll` | boolean | `false` | Move content in the same direction as the fingers. |
+| `natural_scroll` | boolean | `true` | Move content in the same direction as the fingers. |
 | `tap_to_click` | boolean | `true` | Map a light tap to a primary-button click. |
 | `tap_and_drag` | boolean | `true` | Start dragging when a finger stays down after a tap. |
 | `drag_lock` | boolean | `false` | Keep a tap-drag active briefly after the finger lifts. |
@@ -185,7 +185,7 @@ last-wins.
 |-------|------|---------|-------------|
 | `connector` | string | required | The backend's connector name, as shown by `aegis-ctl outputs` (e.g. `"DP-1"`, `"HDMI-A-1"`, `"nested"`). |
 | `scale` | float | backend-reported | Output scale factor, 0.25–4.0. Integer scales advertise through `wl_output`; fractional scales through `wp_fractional_scale_v1`. Applied live on reload. |
-| `mode` | string | connector's preferred mode | Requested display mode, `"WxH"` or `"WxH@Hz"` (e.g. `"2560x1440@144"`). Without `@Hz` the preferred or highest-refresh mode of that size is used. A mode the connector does not advertise falls back to its preferred mode with a log warning. Direct DRM sessions apply changes live after the current page flip retires; nested sessions remain host-managed. |
+| `mode` | string | highest pixel count and refresh rate | Requested display mode, `"WxH"` or `"WxH@Hz"` (e.g. `"2560x1440@144"`). Without `@Hz` the highest-refresh mode of that size is used. A mode the connector does not advertise falls back to the highest-pixel mode at its highest refresh rate with a log warning. Direct DRM sessions apply changes live after the current page flip retires; nested sessions remain host-managed. |
 | `position` | table | backend arrangement | Top-left of the output in the global logical layout, written `position = { x = 1920, y = 0 }`. Applied live on reload. |
 | `transform` | string | `normal` | Output transform: `normal`, `90`, `180`, `270`, `flipped`, `flipped-90`, `flipped-180`, `flipped-270` (the `wl_output` underscore spellings are also accepted). Parsed and validated now, but not yet applied: until renderer output-transform support lands, a configured transform logs a warning and the output renders untransformed. |
 | `primary` | boolean | `false` | Whether this output is the primary (focused) one. When several entries claim primary, the first in the backend's output order wins. Applied live on reload. |

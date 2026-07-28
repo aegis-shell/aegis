@@ -262,6 +262,11 @@ pub struct SurfaceRec {
     popup_grabbed: bool,
     cursor_role: bool,
     drag_icon_role: bool,
+    /// The permanent input-popup role. The protocol object may be destroyed,
+    /// but a Wayland surface role remains assigned for the surface lifetime.
+    input_popup_role: bool,
+    /// Active `InputPopupRec`, owned by its protocol resource.
+    input_popup_surface: *mut c_void,
     /// ext-session-lock role record, owned by the protocol resource.
     session_lock_surface: *mut c_void,
     xdg_configured: bool,
@@ -390,6 +395,8 @@ impl SurfaceRec {
             popup_grabbed: false,
             cursor_role: false,
             drag_icon_role: false,
+            input_popup_role: false,
+            input_popup_surface: std::ptr::null_mut(),
             session_lock_surface: std::ptr::null_mut(),
             xdg_configured: false,
             xdg_configure_acked: false,
@@ -593,6 +600,7 @@ fn surface_has_role(surface: &SurfaceRec) -> bool {
         || !surface.parent.is_null()
         || surface.cursor_role
         || surface.drag_icon_role
+        || surface.input_popup_role
         || !surface.session_lock_surface.is_null()
 }
 
@@ -736,6 +744,8 @@ pub(crate) struct SeatRuntime {
     pub(crate) tablet_focus: *mut ffi::wl_resource,
     text_inputs: Vec<*mut ffi::wl_resource>,
     pending_text_input_states: Vec<aegis_core::input::TextInputState>,
+    input_methods: Vec<*mut ffi::wl_resource>,
+    virtual_keyboards: Vec<*mut ffi::wl_resource>,
     cursor_shape: u32,
     cursor_surface: *mut ffi::wl_resource,
     cursor_hotspot: aegis_core::Point,
@@ -799,6 +809,8 @@ impl SeatRuntime {
             tablet_focus: std::ptr::null_mut(),
             text_inputs: Vec::new(),
             pending_text_input_states: Vec::new(),
+            input_methods: Vec::new(),
+            virtual_keyboards: Vec::new(),
             cursor_shape: 0,
             cursor_surface: std::ptr::null_mut(),
             cursor_hotspot: aegis_core::Point::default(),

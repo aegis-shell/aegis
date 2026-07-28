@@ -644,6 +644,7 @@ pub(crate) unsafe extern "C" fn surface_commit(
         if !(*rec).state.is_null() && ((*rec).cursor_role || (*rec).drag_icon_role) {
             update_overlay_positions((*rec).state);
         }
+        extensions::input_popup_surface_committed(rec);
         if scene_changed && (was_mapped || (*rec).mapped) && !(*rec).state.is_null() {
             let root = surface_root_toplevel(rec);
             if !root.is_null() && (*root).window.id.0 != 0 {
@@ -818,6 +819,7 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
         extensions::session_lock_surface_destroyed(rec);
         extensions::idle_inhibit_surface_destroyed(rec);
         extensions::explicit_sync_surface_destroyed(rec);
+        extensions::input_popup_surface_destroyed(rec);
         retire_surface_buffer(rec);
         if (*rec).committed_acquire_fence >= 0 {
             libc_close((*rec).committed_acquire_fence);

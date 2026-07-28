@@ -228,9 +228,7 @@ impl CompositorRuntime {
 
         let server = &self.server;
         for frames in [
-            server.toplevel_frames(),
-            server.subsurface_frames_below(),
-            server.subsurface_frames_above(),
+            server.client_surface_frames(),
             server.overlay_frames(),
             server.lock_frames(),
         ] {
@@ -253,9 +251,7 @@ impl CompositorRuntime {
         // dma-buf surfaces carry no committed damage rects; a generation
         // change conservatively damages the whole surface.
         for frames in [
-            server.toplevel_dmabuf_frames(),
-            server.subsurface_dmabuf_frames_below(),
-            server.subsurface_dmabuf_frames_above(),
+            server.client_surface_dmabuf_frames(),
             server.overlay_dmabuf_frames(),
             server.lock_dmabuf_frames(),
         ] {

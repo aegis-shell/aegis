@@ -30,7 +30,8 @@ pub(super) fn requested_backend() -> Result<BackendKind, Box<dyn std::error::Err
 }
 
 /// `[[output]]` mode requests as the backend's connector → `ModeSpec` map
-/// (ADR-0028). Entries without a `mode` keep the connector's preferred mode.
+/// (ADR-0028). Entries without a `mode` use the connector's highest-pixel
+/// mode at its highest refresh rate.
 pub(super) fn configured_output_modes(
     config: Option<&aegis_config::Config>,
 ) -> std::collections::HashMap<String, aegis_core::output::ModeSpec> {

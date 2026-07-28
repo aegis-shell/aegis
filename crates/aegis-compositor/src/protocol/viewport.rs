@@ -127,6 +127,31 @@ fn fixed_to_f32(v: i32) -> f32 {
     (v as f32) / 256.0
 }
 
+const WL_FIXED_NEGATIVE_ONE: i32 = -256;
+
+pub(crate) fn decode_viewport_source(
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) -> Result<Option<aegis_core::Rect>, ()> {
+    if [x, y, w, h]
+        .into_iter()
+        .all(|value| value == WL_FIXED_NEGATIVE_ONE)
+    {
+        return Ok(None);
+    }
+    if x < 0 || y < 0 || w <= 0 || h <= 0 {
+        return Err(());
+    }
+    Ok(Some(aegis_core::Rect::new(
+        fixed_to_f32(x).round() as i32,
+        fixed_to_f32(y).round() as i32,
+        fixed_to_f32(w).round().max(1.0) as i32,
+        fixed_to_f32(h).round().max(1.0) as i32,
+    )))
+}
+
 /// `wp_viewport.set_source`: sets the source rectangle in surface-local
 /// pixel coords (24.8 fixed-point). A value of -1 for every field resets the
 /// source to "whole buffer".
@@ -143,20 +168,16 @@ unsafe extern "C" fn viewport_set_source(
         if rec.is_null() {
             return;
         }
-        if x == -1 && y == -1 && w == -1 && h == -1 {
-            (*rec).pending_viewport_src = Some(None);
-            return;
+        match decode_viewport_source(x, y, w, h) {
+            Ok(source) => (*rec).pending_viewport_src = Some(source),
+            Err(()) => {
+                ffi::wl_resource_post_error(
+                    resource,
+                    0,
+                    c"invalid viewport source rectangle".as_ptr(),
+                );
+            }
         }
-        if x < 0 || y < 0 || w <= 0 || h <= 0 {
-            ffi::wl_resource_post_error(resource, 0, c"invalid viewport source rectangle".as_ptr());
-            return;
-        }
-        (*rec).pending_viewport_src = Some(Some(aegis_core::Rect::new(
-            fixed_to_f32(x).round() as i32,
-            fixed_to_f32(y).round() as i32,
-            fixed_to_f32(w).round() as i32,
-            fixed_to_f32(h).round() as i32,
-        )));
     }
 }
 

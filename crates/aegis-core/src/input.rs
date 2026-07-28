@@ -205,7 +205,7 @@ pub struct TouchpadConfig {
 impl Default for TouchpadConfig {
     fn default() -> Self {
         Self {
-            natural_scroll: false,
+            natural_scroll: true,
             tap_to_click: true,
             tap_and_drag: true,
             drag_lock: false,
@@ -646,6 +646,11 @@ mod tests {
         assert_eq!(ButtonState::default(), ButtonState::Released);
         assert!(!ButtonState::default().is_pressed());
         assert!(ButtonState::Pressed.is_pressed());
+    }
+
+    #[test]
+    fn touchpad_defaults_to_natural_scrolling() {
+        assert!(TouchpadConfig::default().natural_scroll);
     }
 
     #[test]

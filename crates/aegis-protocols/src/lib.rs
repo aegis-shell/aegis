@@ -116,6 +116,16 @@ unsafe extern "C" {
     pub static zwp_text_input_manager_v3_interface: wl_interface;
     pub static zwp_text_input_v3_interface: wl_interface;
 
+    // input-method-unstable-v2
+    pub static zwp_input_method_manager_v2_interface: wl_interface;
+    pub static zwp_input_method_v2_interface: wl_interface;
+    pub static zwp_input_popup_surface_v2_interface: wl_interface;
+    pub static zwp_input_method_keyboard_grab_v2_interface: wl_interface;
+
+    // virtual-keyboard-unstable-v1
+    pub static zwp_virtual_keyboard_manager_v1_interface: wl_interface;
+    pub static zwp_virtual_keyboard_v1_interface: wl_interface;
+
     // fractional-scale-v1
     pub static wp_fractional_scale_manager_v1_interface: wl_interface;
     pub static wp_fractional_scale_v1_interface: wl_interface;

@@ -299,6 +299,12 @@ impl Server {
         if matched.is_some() {
             return matched;
         }
+        let time = self.epoch.elapsed().as_millis() as u32;
+        if unsafe {
+            extensions::input_method_grab_key(self.state.as_mut(), evdev_code, state, outcome, time)
+        } {
+            return None;
+        }
         if self.state.keyboard_focus.is_null() {
             return None;
         }
@@ -325,7 +331,7 @@ impl Server {
                     k,
                     ffi::WL_KEYBOARD_KEY,
                     serial,
-                    0u32,
+                    time,
                     evdev_code,
                     state_u32,
                 );

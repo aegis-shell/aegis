@@ -220,6 +220,26 @@ impl Server {
                 data,
                 extensions::text_input_bind,
             );
+            let input_method_global = ffi::wl_global_create(
+                display,
+                &ffi::zwp_input_method_manager_v2_interface,
+                1,
+                data,
+                extensions::input_method_manager_bind,
+            );
+            state
+                .realm_hidden_globals
+                .insert(input_method_global as usize);
+            let virtual_keyboard_global = ffi::wl_global_create(
+                display,
+                &ffi::zwp_virtual_keyboard_manager_v1_interface,
+                1,
+                data,
+                extensions::virtual_keyboard_manager_bind,
+            );
+            state
+                .realm_hidden_globals
+                .insert(virtual_keyboard_global as usize);
             ffi::wl_global_create(
                 display,
                 &ffi::xdg_activation_v1_interface,

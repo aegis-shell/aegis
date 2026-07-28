@@ -35,7 +35,7 @@ pub struct ModeSpec {
     /// Requested physical height in device pixels.
     pub height: i32,
     /// Requested refresh in whole Hertz. `None` leaves the rate open: the
-    /// backend picks the preferred / highest-refresh mode of that size.
+    /// backend picks the highest-refresh mode of that size.
     pub refresh_hz: Option<u32>,
 }
 
@@ -90,7 +90,8 @@ impl std::str::FromStr for ModeSpec {
 pub struct OutputPolicy {
     /// Scale override; `None` keeps the backend-reported scale.
     pub scale: Option<f64>,
-    /// Requested display mode; `None` keeps the connector's preferred mode.
+    /// Requested display mode; `None` selects the connector's highest-pixel
+    /// mode at its highest refresh rate.
     pub mode: Option<ModeSpec>,
     /// Top-left in the global logical layout; `None` keeps the
     /// backend-assigned position.

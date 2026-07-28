@@ -17,7 +17,7 @@ background and how the decisions fit together, see
 | [0007](0007-logging-and-backend-input-contract.md) | Logging facade and the `Backend` input contract | Accepted |
 | [0009](0009-input-pipeline-and-pointer-focus.md) | Input pipeline and pointer focus model | Superseded by [0040](0040-realms-seats-and-transferable-interaction-authority.md) |
 | [0010](0010-keyboard-pipeline-and-xkbcommon-ownership.md) | Keyboard pipeline and xkbcommon ownership | Superseded by [0040](0040-realms-seats-and-transferable-interaction-authority.md) |
-| [0011](0011-subsurface-tree-and-z-split-rendering.md) | Subsurface tree model and z-split rendering | Accepted |
+| [0011](0011-subsurface-tree-and-z-split-rendering.md) | Subsurface tree model and z-split rendering | Superseded by [0061](0061-window-tree-atomic-client-surface-compositing.md) |
 | [0012](0012-toplevel-metadata-and-state-machine.md) | Toplevel metadata and state machine (M3 partial) | Accepted |
 | [0013](0013-interactive-move-and-resize.md) | Interactive move and resize | Accepted |
 | [0014](0014-buffer-transform-and-viewport-crop.md) | Buffer transform (CPU staging) and viewport crop | Accepted |
@@ -67,3 +67,5 @@ background and how the decisions fit together, see
 | [0058](0058-independent-quick-settings-and-ai-workspaces.md) | Independent Quick Settings and AI Workspaces applications (amends [0044](0044-dock-and-control-center-crates.md)) | Superseded by [0060](0060-statusbar-system-controls-and-live-system-ipc.md) |
 | [0059](0059-first-party-application-installation-and-development-staging.md) | First-party application installation and development staging (supersedes [0057](0057-system-settings-canonical-namespace.md)) | Accepted |
 | [0060](0060-statusbar-system-controls-and-live-system-ipc.md) | Status bar system controls and live-system IPC (supersedes [0058](0058-independent-quick-settings-and-ai-workspaces.md)) | Accepted |
+| [0061](0061-window-tree-atomic-client-surface-compositing.md) | Window-tree-atomic client surface compositing (supersedes [0011](0011-subsurface-tree-and-z-split-rendering.md)) | Accepted |
+| [0062](0062-wayland-input-method-v2-host-integration.md) | Wayland input-method-v2 host integration | Accepted |

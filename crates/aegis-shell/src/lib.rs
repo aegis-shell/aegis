@@ -444,6 +444,13 @@ pub trait Chrome {
     /// [`Shell::add`].
     fn update_app_catalog(&mut self, _catalog: &AppCatalog) {}
 
+    /// Receive the current visible-window snapshot outside the render pass.
+    /// Components normally read `windows` directly from [`Chrome::render`],
+    /// but presentation policy that also affects reserved edges or backdrop
+    /// capture must be available before rendering begins. Fanned out by
+    /// [`Shell::set_windows`] and seeded by [`Shell::add`].
+    fn update_windows(&mut self, _windows: &[Window]) {}
+
     /// Edge space this component reserves; tiled windows avoid it (ADR-0024).
     /// Default none; overridden by chrome that should not be covered (the
     /// dock reserves the bottom edge). Summed by [`Shell::reserved`].
@@ -556,6 +563,7 @@ impl Shell {
         component.update_realms(&self.realms);
         component.set_reduced_motion(self.reduced_motion);
         component.update_app_catalog(&self.catalog);
+        component.update_windows(&self.windows);
         self.components.push(component);
     }
 
@@ -603,6 +611,9 @@ impl Shell {
     /// by the main loop with `server.windows()`.
     pub fn set_windows(&mut self, windows: Vec<Window>) {
         self.windows = windows;
+        for component in self.components.iter_mut() {
+            component.update_windows(&self.windows);
+        }
     }
 
     /// Replace the host's workspace snapshot. Called once per frame by the

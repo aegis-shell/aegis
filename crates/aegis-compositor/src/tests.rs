@@ -241,6 +241,21 @@ fn logical_surface_size_applies_transform_scale_and_viewport_in_order() {
 }
 
 #[test]
+fn viewport_source_unset_uses_wire_encoded_fixed_negative_one() {
+    assert_eq!(decode_viewport_source(-256, -256, -256, -256), Ok(None));
+    assert!(decode_viewport_source(-1, -1, -1, -1).is_err());
+    assert!(decode_viewport_source(-256, -256, 256, 256).is_err());
+}
+
+#[test]
+fn viewport_source_decodes_positive_fixed_coordinates() {
+    assert_eq!(
+        decode_viewport_source(384, 576, 2_560, 5_120),
+        Ok(Some(aegis_core::Rect::new(2, 2, 10, 20)))
+    );
+}
+
+#[test]
 fn draw_origin_subtracts_window_geometry_insets() {
     let mut surface = SurfaceRec::new(std::ptr::null_mut());
     surface.position = aegis_core::Point { x: 100, y: 60 };
@@ -399,10 +414,11 @@ fn server_new_creates_socket() {
 }
 
 /// Registry absence is the intentional capability signal for Primary
-/// Selection. Keep the standard clipboard visible while guarding against an
-/// accidental reintroduction of either primary-capable global.
+/// Selection. Keep the standard clipboard and host IME protocols visible
+/// while guarding against an accidental reintroduction of either
+/// primary-capable global.
 #[test]
-fn registry_exposes_only_the_standard_clipboard() {
+fn registry_exposes_clipboard_and_host_ime_protocols() {
     if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
         eprintln!("skipping: XDG_RUNTIME_DIR not set");
         return;
@@ -448,6 +464,18 @@ fn registry_exposes_only_the_standard_clipboard() {
     assert!(
         stdout.contains("interface: 'wl_data_device_manager'"),
         "standard clipboard global missing:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("interface: 'zwp_text_input_manager_v3'"),
+        "application text-input global missing:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("interface: 'zwp_input_method_manager_v2'"),
+        "host input-method global missing:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("interface: 'zwp_virtual_keyboard_manager_v1'"),
+        "host virtual-keyboard global missing:\n{stdout}"
     );
     assert!(
         !stdout.contains("zwp_primary_selection_device_manager_v1"),
@@ -810,6 +838,105 @@ fn raising_a_toplevel_keeps_its_surface_tree_together() {
     assert_eq!(terminal.index, 0);
     assert_eq!(popup.index, 1);
     assert_eq!(settings.index, 2);
+}
+
+#[test]
+fn client_surface_order_keeps_each_window_tree_occluded_as_a_unit() {
+    let mut state = State::new(std::ptr::null_mut());
+    let background_window = aegis_core::window::WindowId(10);
+    let foreground_window = aegis_core::window::WindowId(20);
+    let client = state.authority.register_client(None);
+    state
+        .authority
+        .create_interaction_group(client, &[background_window, foreground_window], HUMAN_REALM)
+        .unwrap();
+    let workspace = state
+        .workspaces
+        .current_workspace(state.output)
+        .expect("bootstrap workspace");
+    state
+        .workspaces
+        .place_toplevel(workspace, background_window);
+    state
+        .workspaces
+        .place_toplevel(workspace, foreground_window);
+
+    let mut background = Box::new(SurfaceRec::new(0x100usize as *mut ffi::wl_resource));
+    background.mapped = true;
+    background.xdg_toplevel = background.resource;
+    background.window.id = background_window;
+    let mut background_below = Box::new(SurfaceRec::new(0x110usize as *mut ffi::wl_resource));
+    background_below.mapped = true;
+    background_below.parent = background.as_mut();
+    background_below.subsurface_above_parent = false;
+    let mut background_chrome = Box::new(SurfaceRec::new(0x120usize as *mut ffi::wl_resource));
+    background_chrome.mapped = true;
+    background_chrome.parent = background.as_mut();
+    background.children = vec![background_below.as_mut(), background_chrome.as_mut()];
+
+    let mut foreground = Box::new(SurfaceRec::new(0x200usize as *mut ffi::wl_resource));
+    foreground.mapped = true;
+    foreground.xdg_toplevel = foreground.resource;
+    foreground.window.id = foreground_window;
+    let mut foreground_chrome = Box::new(SurfaceRec::new(0x220usize as *mut ffi::wl_resource));
+    foreground_chrome.mapped = true;
+    foreground_chrome.parent = foreground.as_mut();
+    foreground.children = vec![foreground_chrome.as_mut()];
+
+    // A popup allocated after the foreground surface still belongs to the
+    // background stacking unit and must not escape above the foreground.
+    let mut background_popup = Box::new(SurfaceRec::new(0x130usize as *mut ffi::wl_resource));
+    background_popup.mapped = true;
+    background_popup.xdg_popup = background_popup.resource;
+    background_popup.popup_parent = background.as_mut();
+    let mut background_popup_child = Box::new(SurfaceRec::new(0x131usize as *mut ffi::wl_resource));
+    background_popup_child.mapped = true;
+    background_popup_child.parent = background_popup.as_mut();
+    background_popup_child.width = 1;
+    background_popup_child.height = 1;
+    background_popup_child.pixels = vec![0, 0, 0, 0xff];
+    background_popup.children = vec![background_popup_child.as_mut()];
+
+    state.surfaces = vec![
+        background.as_mut(),
+        background_below.as_mut(),
+        background_chrome.as_mut(),
+        foreground.as_mut(),
+        foreground_chrome.as_mut(),
+        background_popup.as_mut(),
+        background_popup_child.as_mut(),
+    ];
+    let server = std::mem::ManuallyDrop::new(Server {
+        state: Box::new(state),
+        socket: String::new(),
+        realm_portals: Vec::new(),
+        epoch: std::time::Instant::now(),
+    });
+
+    let expected_order = vec![
+        background_below.resource as usize,
+        background.resource as usize,
+        background_chrome.resource as usize,
+        background_popup.resource as usize,
+        background_popup_child.resource as usize,
+        foreground.resource as usize,
+        foreground_chrome.resource as usize,
+    ];
+    assert_eq!(server.client_surface_frame_order(), expected_order);
+    assert_eq!(
+        server.toplevel_frame_order(),
+        expected_order,
+        "the compatibility API must not expose the old global role order"
+    );
+    assert_eq!(
+        server
+            .client_surface_frames()
+            .iter()
+            .map(|frame| frame.id)
+            .collect::<Vec<_>>(),
+        vec![background_popup_child.resource as usize],
+        "subsurfaces attached to xdg-popups must be included in the scene"
+    );
 }
 
 #[test]

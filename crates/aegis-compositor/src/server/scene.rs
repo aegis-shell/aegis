@@ -1,8 +1,6 @@
 use crate::*;
 
 impl Server {
-    /// Mapped xdg-toplevel surfaces backed by shm (CPU pixels), for the renderer
-    /// to upload. Subsurfaces are skipped until subsurface placement is modeled.
     /// The set of toplevel ids on the current workspace of each output — the
     /// only surfaces the renderer, chrome, and input may touch (ADR-0025).
     pub(crate) fn visible(&self) -> std::collections::HashSet<aegis_core::window::WindowId> {
@@ -13,47 +11,90 @@ impl Server {
             .collect()
     }
 
-    /// Surface resource ids in physical-desktop paint order. This order is
-    /// shared by shm and dma-buf frames; consumers must interleave both
-    /// backing types against it instead of painting one entire type last.
+    /// Compatibility alias for
+    /// [`client_surface_frame_order`](Self::client_surface_frame_order).
+    ///
+    /// Callers that only provide xdg-role frame payloads safely ignore the
+    /// subsurface ids in the returned order.
     pub fn toplevel_frame_order(&self) -> Vec<usize> {
-        let visible = self.visible();
-        self.toplevel_frame_order_for_realm(HUMAN_REALM, Some(&visible))
+        self.client_surface_frame_order()
     }
 
-    /// Surface resource ids in paint order for a directed Realm output.
+    /// Compatibility alias for
+    /// [`realm_client_surface_frame_order`](Self::realm_client_surface_frame_order).
     pub fn realm_toplevel_frame_order(&self, realm: RealmId) -> Vec<usize> {
+        self.realm_client_surface_frame_order(realm)
+    }
+
+    /// Every mapped client surface id in physical-desktop paint order.
+    ///
+    /// Each toplevel is emitted as an indivisible stacking unit: its
+    /// below-parent subsurface trees, the toplevel, its above-parent trees,
+    /// then its popup surface trees. Toplevel units remain in desktop z-order.
+    /// Consumers must use this order to interleave both shm and dma-buf
+    /// frames; global backing-type or subsurface passes break window
+    /// occlusion.
+    pub fn client_surface_frame_order(&self) -> Vec<usize> {
+        let visible = self.visible();
+        self.client_surface_frame_order_for_realm(HUMAN_REALM, Some(&visible))
+    }
+
+    /// Every mapped client surface id in paint order for a directed Realm.
+    pub fn realm_client_surface_frame_order(&self, realm: RealmId) -> Vec<usize> {
         if self.state.session_locked || self.realm_output(realm).is_none() {
             return Vec::new();
         }
-        self.toplevel_frame_order_for_realm(realm, None)
+        self.client_surface_frame_order_for_realm(realm, None)
     }
 
-    fn toplevel_frame_order_for_realm(
+    fn client_surface_frame_order_for_realm(
         &self,
         realm: RealmId,
         visible: Option<&std::collections::HashSet<aegis_core::window::WindowId>>,
     ) -> Vec<usize> {
-        self.state
+        let roots = self
+            .state
             .live_surfaces()
-            .map(|pointer| unsafe { &*pointer })
-            .filter(|surface| {
-                let root = unsafe {
-                    surface_root_toplevel(*surface as *const SurfaceRec as *mut SurfaceRec)
-                };
+            .filter(|pointer| unsafe {
+                let surface = &**pointer;
                 surface.mapped
-                    && (!surface.xdg_toplevel.is_null() || !surface.xdg_popup.is_null())
-                    && !root.is_null()
-                    && visible.is_none_or(|visible| visible.contains(unsafe { &(*root).window.id }))
+                    && !surface.xdg_toplevel.is_null()
+                    && visible.is_none_or(|visible| visible.contains(&surface.window.id))
                     && self
                         .state
                         .authority
-                        .realm_observes_window(realm, unsafe { (*root).window.id })
+                        .realm_observes_window(realm, surface.window.id)
             })
-            .map(|surface| surface.resource as usize)
-            .collect()
+            .collect::<Vec<_>>();
+        let popups = self
+            .state
+            .live_surfaces()
+            .filter(|pointer| unsafe {
+                let surface = &**pointer;
+                surface.mapped && !surface.xdg_popup.is_null()
+            })
+            .collect::<Vec<_>>();
+
+        let mut order = Vec::new();
+        for root in roots {
+            unsafe {
+                append_surface_tree_frame_order(root, &mut order, 0);
+            }
+            // xdg-popups are separate xdg surface trees rather than
+            // wl_subsurfaces. Keep every popup with its owning toplevel so a
+            // popup from a lower window cannot escape above a higher window.
+            for popup in &popups {
+                if unsafe { surface_root_toplevel(*popup) == root } {
+                    unsafe {
+                        append_surface_tree_frame_order(*popup, &mut order, 0);
+                    }
+                }
+            }
+        }
+        order
     }
 
+    /// Mapped xdg-toplevel and xdg-popup surfaces backed by shm (CPU pixels).
     pub fn toplevel_frames(&self) -> Vec<SurfacePixels<'_>> {
         let visible = self.visible();
         self.state
@@ -190,6 +231,28 @@ impl Server {
             .collect()
     }
 
+    /// All mapped physical-desktop client surfaces backed by shm.
+    ///
+    /// The returned vector is an unordered backing store. Composite it
+    /// against [`client_surface_frame_order`](Self::client_surface_frame_order).
+    pub fn client_surface_frames(&self) -> Vec<SurfacePixels<'_>> {
+        let mut frames = self.toplevel_frames();
+        frames.extend(self.subsurface_frames_below());
+        frames.extend(self.subsurface_frames_above());
+        frames
+    }
+
+    /// All mapped physical-desktop client surfaces backed by dma-buf.
+    ///
+    /// The returned vector is an unordered backing store. Composite it
+    /// against [`client_surface_frame_order`](Self::client_surface_frame_order).
+    pub fn client_surface_dmabuf_frames(&self) -> Vec<SurfaceDmabuf> {
+        let mut frames = self.toplevel_dmabuf_frames();
+        frames.extend(self.subsurface_dmabuf_frames_below());
+        frames.extend(self.subsurface_dmabuf_frames_above());
+        frames
+    }
+
     /// Directed offscreen scene for one realm. Unlike the physical desktop,
     /// virtual realms are independent of the user's currently visible
     /// workspace and use realm-local placements on their virtual output.
@@ -229,6 +292,22 @@ impl Server {
                 })
             })
             .collect()
+    }
+
+    /// All mapped client surfaces backed by shm for one directed Realm.
+    pub fn realm_client_surface_frames(&self, realm: RealmId) -> Vec<SurfacePixels<'_>> {
+        let mut frames = self.realm_toplevel_frames(realm);
+        frames.extend(self.realm_subsurface_frames_below(realm));
+        frames.extend(self.realm_subsurface_frames_above(realm));
+        frames
+    }
+
+    /// All mapped client surfaces backed by dma-buf for one directed Realm.
+    pub fn realm_client_surface_dmabuf_frames(&self, realm: RealmId) -> Vec<SurfaceDmabuf> {
+        let mut frames = self.realm_toplevel_dmabuf_frames(realm);
+        frames.extend(self.realm_subsurface_dmabuf_frames_below(realm));
+        frames.extend(self.realm_subsurface_dmabuf_frames_above(realm));
+        frames
     }
 
     pub fn realm_toplevel_dmabuf_frames(&self, realm: RealmId) -> Vec<SurfaceDmabuf> {
@@ -463,15 +542,19 @@ impl Server {
         frames
     }
 
-    /// Cursor and drag-icon role surfaces, composited above all client
-    /// toplevels and subsurfaces in drag-icon-then-cursor order.
+    /// Input-popup, drag-icon, and cursor role surfaces, composited above all
+    /// client toplevels and subsurfaces in that order.
     pub fn overlay_frames(&self) -> Vec<SurfacePixels<'_>> {
         let drag_icon = self
             .state
             .drag
             .as_ref()
             .map_or(std::ptr::null_mut(), |drag| drag.icon);
-        [drag_icon, self.state.cursor_surface]
+        let mut resources = unsafe {
+            extensions::input_popup_resources(self.state.as_ref() as *const _ as *mut _, HUMAN_SEAT)
+        };
+        resources.extend([drag_icon, self.state.cursor_surface]);
+        resources
             .into_iter()
             .filter(|resource| !resource.is_null())
             .filter_map(|resource| {
@@ -511,7 +594,11 @@ impl Server {
             .drag
             .as_ref()
             .map_or(std::ptr::null_mut(), |drag| drag.icon);
-        [drag_icon, self.state.cursor_surface]
+        let mut resources = unsafe {
+            extensions::input_popup_resources(self.state.as_ref() as *const _ as *mut _, HUMAN_SEAT)
+        };
+        resources.extend([drag_icon, self.state.cursor_surface]);
+        resources
             .into_iter()
             .filter(|resource| !resource.is_null())
             .filter_map(|resource| {
@@ -600,19 +687,28 @@ impl Server {
             return Vec::new();
         }
         let mut out = Vec::new();
-        for root in self.state.live_surfaces() {
-            let parent = unsafe { &*root };
-            if !parent.mapped
-                || parent.xdg_toplevel.is_null()
-                || parent.window.minimized
-                || !self
-                    .state
-                    .authority
-                    .realm_observes_window(realm, parent.window.id)
+        for role_pointer in self.state.live_surfaces() {
+            let role_surface = unsafe { &*role_pointer };
+            if !role_surface.mapped
+                || (role_surface.xdg_toplevel.is_null() && role_surface.xdg_popup.is_null())
             {
                 continue;
             }
-            for &child_ptr in &parent.children {
+            let root = unsafe { surface_root_toplevel(role_pointer) };
+            if root.is_null() {
+                continue;
+            }
+            let root_surface = unsafe { &*root };
+            if !root_surface.mapped
+                || root_surface.window.minimized
+                || !self
+                    .state
+                    .authority
+                    .realm_observes_window(realm, root_surface.window.id)
+            {
+                continue;
+            }
+            for &child_ptr in &role_surface.children {
                 if child_ptr.is_null() {
                     continue;
                 }
@@ -622,7 +718,7 @@ impl Server {
                         child,
                         root,
                         realm,
-                        parent.window.id,
+                        root_surface.window.id,
                         &mut out,
                         0,
                     );
@@ -694,19 +790,28 @@ impl Server {
             return Vec::new();
         }
         let mut out = Vec::new();
-        for root in self.state.live_surfaces() {
-            let parent = unsafe { &*root };
-            if !parent.mapped
-                || parent.xdg_toplevel.is_null()
-                || parent.window.minimized
-                || !self
-                    .state
-                    .authority
-                    .realm_observes_window(realm, parent.window.id)
+        for role_pointer in self.state.live_surfaces() {
+            let role_surface = unsafe { &*role_pointer };
+            if !role_surface.mapped
+                || (role_surface.xdg_toplevel.is_null() && role_surface.xdg_popup.is_null())
             {
                 continue;
             }
-            for &child_ptr in &parent.children {
+            let root = unsafe { surface_root_toplevel(role_pointer) };
+            if root.is_null() {
+                continue;
+            }
+            let root_surface = unsafe { &*root };
+            if !root_surface.mapped
+                || root_surface.window.minimized
+                || !self
+                    .state
+                    .authority
+                    .realm_observes_window(realm, root_surface.window.id)
+            {
+                continue;
+            }
+            for &child_ptr in &role_surface.children {
                 if child_ptr.is_null() {
                     continue;
                 }
@@ -716,7 +821,7 @@ impl Server {
                         child,
                         root,
                         realm,
-                        parent.window.id,
+                        root_surface.window.id,
                         &mut out,
                         0,
                     );
@@ -788,31 +893,40 @@ impl Server {
     pub(crate) fn collect_subsurfaces_shm(&self, want_above: bool) -> Vec<SurfacePixels<'_>> {
         let visible = self.visible();
         let mut out = Vec::new();
-        for p in self.state.live_surfaces() {
-            let parent = unsafe { &*p };
-            if !parent.mapped
-                || parent.xdg_toplevel.is_null()
-                || parent.window.minimized
-                || !visible.contains(&parent.window.id)
+        for role_pointer in self.state.live_surfaces() {
+            let role_surface = unsafe { &*role_pointer };
+            if !role_surface.mapped
+                || (role_surface.xdg_toplevel.is_null() && role_surface.xdg_popup.is_null())
+            {
+                continue;
+            }
+            let root = unsafe { surface_root_toplevel(role_pointer) };
+            if root.is_null() {
+                continue;
+            }
+            let root_surface = unsafe { &*root };
+            if !root_surface.mapped
+                || root_surface.window.minimized
+                || !visible.contains(&root_surface.window.id)
                 || !self
                     .state
                     .authority
-                    .realm_observes_window(HUMAN_REALM, parent.window.id)
+                    .realm_observes_window(HUMAN_REALM, root_surface.window.id)
             {
                 continue;
             }
             // ADR-0029: the toplevel's in-flight transition shifts its whole
             // subsurface tree by the same delta.
             let delta = self
-                .transition_render_rect(parent)
+                .transition_render_rect(root_surface)
                 .map(|r| {
                     (
-                        r.origin.x - parent.position.x,
-                        r.origin.y - parent.position.y,
+                        r.origin.x - root_surface.position.x,
+                        r.origin.y - root_surface.position.y,
                     )
                 })
                 .unwrap_or((0, 0));
-            for &child_ptr in &parent.children {
+            for &child_ptr in &role_surface.children {
                 if child_ptr.is_null() {
                     continue;
                 }
@@ -820,7 +934,7 @@ impl Server {
                 if child.subsurface_above_parent != want_above {
                     continue;
                 }
-                Self::collect_subtree_shm(child, &mut out, delta, parent.window.id, 0);
+                Self::collect_subtree_shm(child, &mut out, delta, root_surface.window.id, 0);
             }
         }
         out
@@ -891,29 +1005,38 @@ impl Server {
     pub(crate) fn collect_subsurfaces_dmabuf(&self, want_above: bool) -> Vec<SurfaceDmabuf> {
         let visible = self.visible();
         let mut out = Vec::new();
-        for p in self.state.live_surfaces() {
-            let parent = unsafe { &*p };
-            if !parent.mapped
-                || parent.xdg_toplevel.is_null()
-                || parent.window.minimized
-                || !visible.contains(&parent.window.id)
+        for role_pointer in self.state.live_surfaces() {
+            let role_surface = unsafe { &*role_pointer };
+            if !role_surface.mapped
+                || (role_surface.xdg_toplevel.is_null() && role_surface.xdg_popup.is_null())
+            {
+                continue;
+            }
+            let root = unsafe { surface_root_toplevel(role_pointer) };
+            if root.is_null() {
+                continue;
+            }
+            let root_surface = unsafe { &*root };
+            if !root_surface.mapped
+                || root_surface.window.minimized
+                || !visible.contains(&root_surface.window.id)
                 || !self
                     .state
                     .authority
-                    .realm_observes_window(HUMAN_REALM, parent.window.id)
+                    .realm_observes_window(HUMAN_REALM, root_surface.window.id)
             {
                 continue;
             }
             let delta = self
-                .transition_render_rect(parent)
+                .transition_render_rect(root_surface)
                 .map(|r| {
                     (
-                        r.origin.x - parent.position.x,
-                        r.origin.y - parent.position.y,
+                        r.origin.x - root_surface.position.x,
+                        r.origin.y - root_surface.position.y,
                     )
                 })
                 .unwrap_or((0, 0));
-            for &child_ptr in &parent.children {
+            for &child_ptr in &role_surface.children {
                 if child_ptr.is_null() {
                     continue;
                 }
@@ -921,7 +1044,7 @@ impl Server {
                 if child.subsurface_above_parent != want_above {
                     continue;
                 }
-                Self::collect_subtree_dmabuf(child, &mut out, delta, parent.window.id, 0);
+                Self::collect_subtree_dmabuf(child, &mut out, delta, root_surface.window.id, 0);
             }
         }
         out
@@ -1076,5 +1199,31 @@ impl Server {
         }
         self.state.retired_buffer_releases.extend(retry);
         unsafe { ffi::wl_display_flush_clients(self.state.display) };
+    }
+}
+
+/// Flatten one xdg-role surface and its wl_subsurface descendants into Wayland
+/// paint order. The server owns the tree; the renderer only receives resource
+/// ids and frame payloads.
+unsafe fn append_surface_tree_frame_order(
+    surface: *mut SurfaceRec,
+    order: &mut Vec<usize>,
+    depth: u32,
+) {
+    unsafe {
+        if surface.is_null() || !(*surface).mapped || depth >= 32 {
+            return;
+        }
+        for &child in &(*surface).children {
+            if !child.is_null() && !(*child).subsurface_above_parent {
+                append_surface_tree_frame_order(child, order, depth + 1);
+            }
+        }
+        order.push((*surface).resource as usize);
+        for &child in &(*surface).children {
+            if !child.is_null() && (*child).subsurface_above_parent {
+                append_surface_tree_frame_order(child, order, depth + 1);
+            }
+        }
     }
 }

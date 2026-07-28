@@ -409,30 +409,18 @@ pub(super) fn draw_client_scene(
     if scale != 1.0 {
         canvas.scale(scale, scale);
     }
-    let shm = server.toplevel_frames();
-    let dmabuf = server.toplevel_dmabuf_frames();
-    let toplevel_order = server.toplevel_frame_order();
-    let sub_shm_below = server.subsurface_frames_below();
-    let sub_shm_above = server.subsurface_frames_above();
-    let sub_dmabuf_below = server.subsurface_dmabuf_frames_below();
-    let sub_dmabuf_above = server.subsurface_dmabuf_frames_above();
+    let shm = server.client_surface_frames();
+    let dmabuf = server.client_surface_dmabuf_frames();
+    let surface_order = server.client_surface_frame_order();
     let overlay_shm = server.overlay_frames();
     let overlay_dmabuf = server.overlay_dmabuf_frames();
     renderer.gc(shm
         .iter()
         .map(|frame| frame.id)
         .chain(dmabuf.iter().map(|frame| frame.id))
-        .chain(sub_shm_below.iter().map(|frame| frame.id))
-        .chain(sub_shm_above.iter().map(|frame| frame.id))
-        .chain(sub_dmabuf_below.iter().map(|frame| frame.id))
-        .chain(sub_dmabuf_above.iter().map(|frame| frame.id))
         .chain(overlay_shm.iter().map(|frame| frame.id))
         .chain(overlay_dmabuf.iter().map(|frame| frame.id)));
-    renderer.draw_subsurfaces(device, canvas, &sub_shm_below);
-    renderer.draw_dmabuf_subsurfaces(device, canvas, &sub_dmabuf_below);
-    renderer.draw_toplevels_ordered(device, canvas, &toplevel_order, &shm, &dmabuf);
-    renderer.draw_subsurfaces(device, canvas, &sub_shm_above);
-    renderer.draw_dmabuf_subsurfaces(device, canvas, &sub_dmabuf_above);
+    renderer.draw_surfaces_ordered(device, canvas, &surface_order, &shm, &dmabuf);
     renderer.draw_toplevels(device, canvas, &overlay_shm, (0.0, 0.0));
     renderer.draw_dmabuf_toplevels(device, canvas, &overlay_dmabuf, (0.0, 0.0));
     canvas.restore();
@@ -545,26 +533,14 @@ pub(super) fn draw_overview_scene(
     if scale != 1.0 {
         canvas.scale(scale, scale);
     }
-    let shm = server.toplevel_frames();
-    let dmabuf = server.toplevel_dmabuf_frames();
-    let toplevel_order = server.toplevel_frame_order();
-    let sub_shm_below = server.subsurface_frames_below();
-    let sub_shm_above = server.subsurface_frames_above();
-    let sub_dmabuf_below = server.subsurface_dmabuf_frames_below();
-    let sub_dmabuf_above = server.subsurface_dmabuf_frames_above();
+    let shm = server.client_surface_frames();
+    let dmabuf = server.client_surface_dmabuf_frames();
+    let surface_order = server.client_surface_frame_order();
     renderer.gc(shm
         .iter()
         .map(|frame| frame.id)
-        .chain(dmabuf.iter().map(|frame| frame.id))
-        .chain(sub_shm_below.iter().map(|frame| frame.id))
-        .chain(sub_shm_above.iter().map(|frame| frame.id))
-        .chain(sub_dmabuf_below.iter().map(|frame| frame.id))
-        .chain(sub_dmabuf_above.iter().map(|frame| frame.id)));
-    renderer.draw_subsurfaces_mapped(device, canvas, &sub_shm_below, &map);
-    renderer.draw_dmabuf_subsurfaces_mapped(device, canvas, &sub_dmabuf_below, &map);
-    renderer.draw_toplevels_ordered_mapped(device, canvas, &toplevel_order, &shm, &dmabuf, &map);
-    renderer.draw_subsurfaces_mapped(device, canvas, &sub_shm_above, &map);
-    renderer.draw_dmabuf_subsurfaces_mapped(device, canvas, &sub_dmabuf_above, &map);
+        .chain(dmabuf.iter().map(|frame| frame.id)));
+    renderer.draw_surfaces_ordered_mapped(device, canvas, &surface_order, &shm, &dmabuf, &map);
     canvas.restore();
 }
 

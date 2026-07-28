@@ -4,11 +4,11 @@
 //! creating the resource, and request vtables. Several are fully functional
 //! (xdg-output, fractional-scale, presentation-time, relative-pointer,
 //! pointer-constraints, cursor-shape, idle-inhibit, ext-idle-notify,
-//! ext-foreign-toplevel-list), others accept requests but defer the
-//! compositor-side behaviour (ext-session-lock surfaces, text-input IME) —
-//! the goal is correct protocol object lifecycle
-//! so clients that require an advertised global can connect without a protocol
-//! error.
+//! ext-foreign-toplevel-list, text-input-v3, input-method-v2, and
+//! virtual-keyboard-v1), while others accept requests but defer some
+//! compositor-side behavior (ext-session-lock surfaces). Every advertised
+//! protocol still owns a complete object lifecycle so clients do not fail
+//! with protocol errors.
 //!
 //! Every global stores `State*` in its resource user-data (or derives it
 //! from a bound object), matching the core protocol handlers in lib.rs.
@@ -27,6 +27,7 @@ mod explicit_sync;
 mod foreign_toplevel;
 mod fractional_scale;
 mod idle;
+mod input_method;
 mod keyboard_shortcuts;
 mod output;
 mod pointer_constraints;
@@ -44,6 +45,7 @@ pub(crate) use explicit_sync::*;
 pub(crate) use foreign_toplevel::*;
 pub(crate) use fractional_scale::*;
 pub(crate) use idle::*;
+pub(crate) use input_method::*;
 pub(crate) use keyboard_shortcuts::*;
 pub(crate) use output::*;
 pub(crate) use pointer_constraints::*;

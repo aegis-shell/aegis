@@ -33,24 +33,6 @@ impl Server {
         let old = self.state.keyboard_focus;
         let empty = ffi::wl_array::empty();
 
-        // Notify text-input clients of the focus transition (IME enter/leave).
-        unsafe {
-            extensions::text_input_focus_changed(
-                self.state.as_ref() as *const State as *mut State,
-                old,
-                new_focus,
-            );
-            data_device_focus_changed(
-                self.state.as_ref() as *const State as *mut State,
-                old,
-                new_focus,
-            );
-            extensions::keyboard_shortcuts_focus_changed(
-                self.state.as_ref() as *const State as *mut State,
-                new_focus,
-            );
-        };
-
         if !old.is_null() {
             let old_client = unsafe { ffi::wl_resource_get_client(old) };
             for k in self.iter_focus_keyboards(old_client) {
@@ -81,6 +63,26 @@ impl Server {
             // Set activated on the surface gaining keyboard focus.
             self.set_activated_for_surface(new_focus, true);
         }
+
+        // Text-input focus follows keyboard focus. Publish it after the
+        // corresponding wl_keyboard leave/enter events so clients never
+        // observe an IME enter for a surface their keyboard has not entered.
+        unsafe {
+            extensions::text_input_focus_changed(
+                self.state.as_ref() as *const State as *mut State,
+                old,
+                new_focus,
+            );
+            data_device_focus_changed(
+                self.state.as_ref() as *const State as *mut State,
+                old,
+                new_focus,
+            );
+            extensions::keyboard_shortcuts_focus_changed(
+                self.state.as_ref() as *const State as *mut State,
+                new_focus,
+            );
+        };
     }
 
     /// Move a focused toplevel and its whole surface tree to the top of the

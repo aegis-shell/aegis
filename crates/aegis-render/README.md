@@ -26,14 +26,16 @@ to avoid re-uploading unchanged buffers.
 ## Use
 
 Construct one `Renderer` for the compositor lifetime. During each frame, pass
-the mapped shm and dma-buf surface iterators to the matching draw methods, draw
-subsurfaces, then call `gc` with the live surface identifiers. The executable
-owns this sequencing because it also draws wallpaper and chrome around the
-client scene.
+the complete mapped shm and dma-buf frame sets plus the compositor's
+authoritative surface order to `draw_surfaces_ordered`, then call `gc` with
+the live surface identifiers. Do not draw backing types or subsurface classes
+in separate global passes: each toplevel's complete surface tree is one
+stacking unit. The executable owns this sequencing because it also draws
+wallpaper and chrome around the client scene.
 
 ## Related Documentation
 
 - [Per-frame data flow](../../docs/explanation/architecture.md#per-frame-data-flow)
 - [Client-buffer import decision](../../docs/adr/0004-client-buffers-via-flux-dmabuf-import.md)
+- [Client surface compositing decision](../../docs/adr/0061-window-tree-atomic-client-surface-compositing.md)
 - [Workspace layout](../../docs/dev/project-layout.md)
-

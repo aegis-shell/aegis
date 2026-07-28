@@ -7,6 +7,41 @@ project cuts a tagged release.
 
 ## Unreleased
 
+### Wayland input methods and browser stability
+
+- Added host-side Wayland input-method support through
+  `zwp_input_method_manager_v2`, `zwp_virtual_keyboard_manager_v1`, keyboard
+  grabs, virtual-keyboard forwarding, and compositor-positioned candidate
+  popups. Native Wayland applications continue to use
+  `zwp_text_input_manager_v3`; privileged input-method globals are hidden
+  from Realm clients.
+- Fixed `wp_viewport.set_source(-1, -1, -1, -1)` decoding. The protocol
+  transports `-1.0` as the 24.8 fixed-point value `-256`; treating the wire
+  value as integer `-1` disconnected Chromium-based clients with an invalid
+  viewport error.
+
+### Device defaults
+
+- Touchpads now use natural scrolling by default.
+- Direct display sessions now select the highest-pixel mode at its highest
+  refresh rate when no output mode is configured. A configured resolution
+  without an explicit refresh rate also selects its highest available rate.
+
+### Smart Dock visibility
+
+- The Dock now hides automatically when a visible window is maximized and
+  returns when the pointer reaches the bottom edge. Fullscreen windows use a
+  stricter lock that keeps the Dock hidden and disables its hover trigger
+  until fullscreen ends.
+
+### Client surface compositing
+
+- Fixed client-side title bars, popup-internal surfaces, and other
+  above-parent `wl_subsurface` content from lower windows rendering over a
+  foreground window. Physical output, overview thumbnails, and directed
+  Realm capture now composite each toplevel and its complete surface tree as
+  one z-ordered unit while preserving mixed shm and dma-buf order.
+
 ## [0.0.1] - 2026-07-27
 
 ### Release v0.0.1 Preparation & Installation

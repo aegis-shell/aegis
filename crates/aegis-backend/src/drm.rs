@@ -714,16 +714,17 @@ mod tests {
     }
 
     #[test]
-    fn pick_mode_without_spec_prefers_flagged_then_first() {
+    fn pick_mode_without_spec_uses_highest_pixel_count_then_refresh() {
         let modes = [
             (1920, 1080, 60_000, false),
             (2560, 1440, 60_000, true),
-            (1920, 1080, 144_000, false),
+            (2560, 1440, 144_000, false),
+            (3840, 2160, 60_000, false),
         ];
-        assert_eq!(pick_mode(&modes, None), Some(1));
-        // No PREFERRED flag anywhere → the first advertised mode.
-        let plain = [(1920, 1080, 60_000, false), (1280, 720, 60_000, false)];
-        assert_eq!(pick_mode(&plain, None), Some(0));
+        assert_eq!(pick_mode(&modes, None), Some(3));
+
+        let same_resolution = [(2560, 1440, 60_000, true), (2560, 1440, 144_000, false)];
+        assert_eq!(pick_mode(&same_resolution, None), Some(1));
         assert_eq!(pick_mode(&[], None), None);
     }
 
@@ -738,17 +739,14 @@ mod tests {
     }
 
     #[test]
-    fn pick_mode_with_spec_prefers_flagged_then_refresh_then_index() {
+    fn pick_mode_with_spec_uses_highest_refresh_then_tie_breakers() {
         let modes = [
             (1920, 1080, 60_000, false),
             (1920, 1080, 144_000, false),
             (1920, 1080, 75_000, true),
         ];
         let spec: ModeSpec = "1920x1080".parse().unwrap();
-        // PREFERRED wins over the higher refresh.
-        assert_eq!(pick_mode(&modes, Some(&spec)), Some(2));
-        // Without a flagged match, the highest refresh wins.
-        assert_eq!(pick_mode(&modes[..2], Some(&spec)), Some(1));
+        assert_eq!(pick_mode(&modes, Some(&spec)), Some(1));
         // An exact refresh request selects only that rate (rounded).
         let hz: ModeSpec = "1920x1080@144".parse().unwrap();
         assert_eq!(pick_mode(&modes, Some(&hz)), Some(1));

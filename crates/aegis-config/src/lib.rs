@@ -659,8 +659,8 @@ impl Config {
                 match mode.parse::<aegis_core::output::ModeSpec>() {
                     Ok(spec) => {
                         // Sanity caps, not hardware limits: they catch typos
-                        // (a stray digit) that would otherwise fall back to
-                        // the preferred mode with a confusing log line.
+                        // (a stray digit) that would otherwise fall back to the
+                        // best available mode with a confusing log line.
                         if spec.width > 16384 || spec.height > 16384 {
                             diagnostics.push(Diagnostic::new(
                                 Some(format!("output.{index}.mode")),
@@ -1437,6 +1437,7 @@ mod tests {
     fn touchpad_config_parses_defaults_and_rejects_bad_speed() {
         let defaults = Config::parse("schema_version = 1\n").unwrap();
         assert_eq!(defaults.input.touchpad, TouchpadConfig::default());
+        assert!(defaults.input.touchpad.natural_scroll);
 
         let cfg = Config::parse(
             "schema_version = 1\n\

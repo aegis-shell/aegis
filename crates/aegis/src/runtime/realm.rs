@@ -246,18 +246,10 @@ pub(super) fn begin_realm_capture(
     if scale != 1.0 {
         target.canvas.scale(scale, scale);
     }
-    let shm = server.realm_toplevel_frames(realm);
-    let dmabuf = server.realm_toplevel_dmabuf_frames(realm);
-    let toplevel_order = server.realm_toplevel_frame_order(realm);
-    let sub_shm_below = server.realm_subsurface_frames_below(realm);
-    let sub_shm_above = server.realm_subsurface_frames_above(realm);
-    let sub_dmabuf_below = server.realm_subsurface_dmabuf_frames_below(realm);
-    let sub_dmabuf_above = server.realm_subsurface_dmabuf_frames_above(realm);
-    renderer.draw_subsurfaces(device, &target.canvas, &sub_shm_below);
-    renderer.draw_dmabuf_subsurfaces(device, &target.canvas, &sub_dmabuf_below);
-    renderer.draw_toplevels_ordered(device, &target.canvas, &toplevel_order, &shm, &dmabuf);
-    renderer.draw_subsurfaces(device, &target.canvas, &sub_shm_above);
-    renderer.draw_dmabuf_subsurfaces(device, &target.canvas, &sub_dmabuf_above);
+    let shm = server.realm_client_surface_frames(realm);
+    let dmabuf = server.realm_client_surface_dmabuf_frames(realm);
+    let surface_order = server.realm_client_surface_frame_order(realm);
+    renderer.draw_surfaces_ordered(device, &target.canvas, &surface_order, &shm, &dmabuf);
     target.canvas.restore();
     target.canvas.end();
     frame.request_readback().map_err(|error| {

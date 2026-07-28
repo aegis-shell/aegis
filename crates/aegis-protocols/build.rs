@@ -72,24 +72,38 @@ fn main() {
         let xml = PathBuf::from(&pkgdatadir)
             .join(category)
             .join(format!("{base}.xml"));
-        assert!(xml.exists(), "missing protocol xml: {}", xml.display());
-        let cfile = out.join(format!("{base}-protocol.c"));
-        let status = Command::new("wayland-scanner")
-            .arg("private-code")
-            .arg(&xml)
-            .arg(&cfile)
-            .status()
-            .expect("failed to run wayland-scanner");
-        assert!(
-            status.success(),
-            "wayland-scanner private-code failed for {base}"
-        );
-        build.file(&cfile);
-        println!("cargo:rerun-if-changed={}", xml.display());
+        compile_protocol(&mut build, &out, &xml, base);
+    }
+    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    for base in ["input-method-unstable-v2", "virtual-keyboard-unstable-v1"] {
+        let xml = manifest.join("protocols").join(format!("{base}.xml"));
+        compile_protocol(&mut build, &out, &xml, base);
     }
     build.compile("aegis_protocols");
 
     println!("cargo:rerun-if-changed=build.rs");
+}
+
+fn compile_protocol(
+    build: &mut cc::Build,
+    out: &std::path::Path,
+    xml: &std::path::Path,
+    base: &str,
+) {
+    assert!(xml.exists(), "missing protocol xml: {}", xml.display());
+    let cfile = out.join(format!("{base}-protocol.c"));
+    let status = Command::new("wayland-scanner")
+        .arg("private-code")
+        .arg(xml)
+        .arg(&cfile)
+        .status()
+        .expect("failed to run wayland-scanner");
+    assert!(
+        status.success(),
+        "wayland-scanner private-code failed for {base}"
+    );
+    build.file(&cfile);
+    println!("cargo:rerun-if-changed={}", xml.display());
 }
 
 /// Parse `-I<dir>` flags out of `pkg-config --cflags-only-I <pkg>`. Returns

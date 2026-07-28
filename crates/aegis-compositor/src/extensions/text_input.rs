@@ -131,9 +131,11 @@ unsafe extern "C" fn text_input_resource_destroy(resource: *mut ffi::wl_resource
             let _guard = crate::ActiveSeatGuard::enter_existing(&mut *state, (*rec).seat);
             (*state).text_inputs.retain(|r| *r != resource);
             if (*rec).current.enabled {
-                (*state)
-                    .pending_text_input_states
-                    .push(aegis_core::input::TextInputState::default());
+                route_or_queue_text_input_state(
+                    state,
+                    (*rec).seat,
+                    aegis_core::input::TextInputState::default(),
+                );
             }
             (*state).untrack_seat_resource(resource);
         }
@@ -261,6 +263,27 @@ unsafe fn queue_text_input_state(rec: *mut TextInputRec) {
         if (*rec).current_surface != (*state).keyboard_focus {
             return;
         }
+        let value = text_input_state_in_compositor_space(rec);
+        route_or_queue_text_input_state(state, (*rec).seat, value);
+    }
+}
+
+unsafe fn route_or_queue_text_input_state(
+    state: *mut State,
+    seat: aegis_core::realm::SeatId,
+    value: aegis_core::input::TextInputState,
+) {
+    unsafe {
+        if !super::route_text_input_state(state, seat, value.clone()) {
+            (*state).pending_text_input_states.push(value);
+        }
+    }
+}
+
+unsafe fn text_input_state_in_compositor_space(
+    rec: *mut TextInputRec,
+) -> aegis_core::input::TextInputState {
+    unsafe {
         let mut value = (*rec).current.clone();
         if let Some((x, y, width, height)) = value.cursor_rect {
             let surface = ffi::wl_resource_get_user_data((*rec).current_surface) as *mut SurfaceRec;
@@ -271,7 +294,33 @@ unsafe fn queue_text_input_state(rec: *mut TextInputRec) {
                 value.cursor_rect = Some((x + origin.x, y + origin.y, width, height));
             }
         }
-        (*state).pending_text_input_states.push(value);
+        value
+    }
+}
+
+pub(crate) unsafe fn current_text_input_state(
+    state: *mut State,
+    seat: aegis_core::realm::SeatId,
+) -> Option<aegis_core::input::TextInputState> {
+    unsafe {
+        let _guard = crate::ActiveSeatGuard::enter_existing(&mut *state, seat)?;
+        let focus = (*state).keyboard_focus;
+        if focus.is_null() {
+            return None;
+        }
+        let resources = (*state).text_inputs.clone();
+        resources.into_iter().find_map(|resource| {
+            let rec = ffi::wl_resource_get_user_data(resource) as *mut TextInputRec;
+            if rec.is_null()
+                || (*rec).seat != seat
+                || (*rec).current_surface != focus
+                || !(*rec).current.enabled
+            {
+                None
+            } else {
+                Some(text_input_state_in_compositor_space(rec))
+            }
+        })
     }
 }
 
@@ -302,9 +351,11 @@ pub(crate) unsafe fn text_input_focus_changed(
             if !old_focus.is_null() && ffi::wl_resource_get_client(old_focus) == ti_client {
                 ffi::wl_resource_post_event(ti, ffi::ZWP_TEXT_INPUT_V3_LEAVE, old_focus);
                 if (*rec).current.enabled {
-                    (*state)
-                        .pending_text_input_states
-                        .push(aegis_core::input::TextInputState::default());
+                    route_or_queue_text_input_state(
+                        state,
+                        (*rec).seat,
+                        aegis_core::input::TextInputState::default(),
+                    );
                 }
                 (*rec).current_surface = std::ptr::null_mut();
                 (*rec).pending = Default::default();
