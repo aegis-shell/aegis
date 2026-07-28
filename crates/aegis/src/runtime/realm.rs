@@ -276,6 +276,7 @@ pub(super) fn begin_realm_capture(
             height: physical_size.1,
             crop: (region != full_region)
                 .then(|| logical_rect_to_physical(region, scale, physical_size.0, physical_size.1)),
+            cursor: None,
             security_generation,
         },
         context: RealmCaptureContext {

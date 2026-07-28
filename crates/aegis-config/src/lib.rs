@@ -269,6 +269,11 @@ pub struct ScreenshotConfig {
     /// `$XDG_PICTURES_DIR/screenshots`.
     #[serde(default = "default_screenshot_save_dir")]
     pub save_dir: String,
+    /// Include the physical-seat cursor in saved screenshots. This defaults
+    /// to true for the desktop screenshot UX and does not change output-
+    /// capture or screencast IPC policy.
+    #[serde(default = "default_screenshot_include_cursor")]
+    pub include_cursor: bool,
 }
 
 /// Default screenshot directory from the XDG user Pictures directory,
@@ -285,10 +290,15 @@ fn default_screenshot_save_dir() -> String {
     default_screenshot_dir().to_string_lossy().into_owned()
 }
 
+const fn default_screenshot_include_cursor() -> bool {
+    true
+}
+
 impl Default for ScreenshotConfig {
     fn default() -> Self {
         Self {
             save_dir: default_screenshot_save_dir(),
+            include_cursor: default_screenshot_include_cursor(),
         }
     }
 }
@@ -1902,10 +1912,17 @@ mod tests {
         let cfg = Config::parse("schema_version = 1\n").unwrap();
         assert!(!cfg.screenshot.save_dir.is_empty());
         assert!(cfg.screenshot.save_dir.ends_with("screenshots"));
+        assert!(cfg.screenshot.include_cursor);
 
-        let cfg2 =
-            Config::parse("schema_version = 1\n[screenshot]\nsave_dir = \"/tmp/shots\"\n").unwrap();
+        let cfg2 = Config::parse(
+            "schema_version = 1\n\
+             [screenshot]\n\
+             save_dir = \"/tmp/shots\"\n\
+             include_cursor = false\n",
+        )
+        .unwrap();
         assert_eq!(cfg2.screenshot.save_dir, "/tmp/shots");
+        assert!(!cfg2.screenshot.include_cursor);
 
         let err = Config::parse("schema_version = 1\n[screenshot]\nsave_dir = \"\"\n").unwrap_err();
         assert!(

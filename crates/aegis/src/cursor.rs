@@ -270,6 +270,10 @@ impl CursorTheme {
 /// One resolved, uploaded cursor ready to draw: a texture plus its hotspot.
 pub struct LoadedCursor {
     pub image: flux::Image,
+    /// Original premultiplied BGRA pixels retained for cursor-inclusive
+    /// screenshots on nested backends, whose host cursor is not part of the
+    /// compositor framebuffer.
+    pub pixels: std::sync::Arc<[u8]>,
     /// Draw size in physical pixels (the image's natural size).
     pub width: f32,
     pub height: f32,
@@ -343,16 +347,18 @@ impl CursorCache {
             .entry(key)
             .or_insert_with(|| {
                 let img = theme.load_shape(shape, scale)?;
+                let pixels: std::sync::Arc<[u8]> = img.pixels.into();
                 let image = flux::Image::from_bytes(
                     device,
                     img.width,
                     img.height,
                     flux::Format::FLUX_FORMAT_BGRA8_UNORM,
-                    &img.pixels,
+                    &pixels,
                 )
                 .ok()?;
                 Some(LoadedCursor {
                     image,
+                    pixels,
                     width: img.width as f32,
                     height: img.height as f32,
                     xhot: img.xhot as f32,

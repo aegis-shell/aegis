@@ -545,6 +545,12 @@ impl Server {
     /// Input-popup, drag-icon, and cursor role surfaces, composited above all
     /// client toplevels and subsurfaces in that order.
     pub fn overlay_frames(&self) -> Vec<SurfacePixels<'_>> {
+        self.overlay_frames_with_cursor(true)
+    }
+
+    /// Overlay frames with optional client-cursor inclusion. Input-method
+    /// popups and drag icons remain present when the cursor is excluded.
+    pub fn overlay_frames_with_cursor(&self, include_cursor: bool) -> Vec<SurfacePixels<'_>> {
         let drag_icon = self
             .state
             .drag
@@ -553,7 +559,10 @@ impl Server {
         let mut resources = unsafe {
             extensions::input_popup_resources(self.state.as_ref() as *const _ as *mut _, HUMAN_SEAT)
         };
-        resources.extend([drag_icon, self.state.cursor_surface]);
+        resources.push(drag_icon);
+        if include_cursor {
+            resources.push(self.state.cursor_surface);
+        }
         resources
             .into_iter()
             .filter(|resource| !resource.is_null())
@@ -589,6 +598,11 @@ impl Server {
 
     /// dma-buf variant of [`overlay_frames`](Self::overlay_frames).
     pub fn overlay_dmabuf_frames(&self) -> Vec<SurfaceDmabuf> {
+        self.overlay_dmabuf_frames_with_cursor(true)
+    }
+
+    /// dma-buf overlay frames with optional client-cursor inclusion.
+    pub fn overlay_dmabuf_frames_with_cursor(&self, include_cursor: bool) -> Vec<SurfaceDmabuf> {
         let drag_icon = self
             .state
             .drag
@@ -597,7 +611,10 @@ impl Server {
         let mut resources = unsafe {
             extensions::input_popup_resources(self.state.as_ref() as *const _ as *mut _, HUMAN_SEAT)
         };
-        resources.extend([drag_icon, self.state.cursor_surface]);
+        resources.push(drag_icon);
+        if include_cursor {
+            resources.push(self.state.cursor_surface);
+        }
         resources
             .into_iter()
             .filter(|resource| !resource.is_null())

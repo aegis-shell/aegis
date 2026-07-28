@@ -65,10 +65,6 @@ const SPRING_DAMPING: f32 = 0.85;
 /// Side length a brand-new tile grows in from. Springs up over the first few
 /// frames instead of popping in at full size.
 const DOCK_TILE_BIRTH: f32 = 6.0;
-/// Vertical band above the bar that still triggers magnification, in pixels.
-/// Lets the wave start as the cursor approaches; outside it (pointer in a
-/// window above) the row stays at rest.
-const MAGNIFY_APPROACH_BAND: f32 = 48.0;
 /// Gap between adjacent rest slots inside the bar.
 const DOCK_TILE_GAP: f32 = 10.0;
 /// Extra breathing room between the pinned strip and the transient (running,
@@ -217,13 +213,18 @@ pub struct Dock {
     autohide_idle: f32,
     /// Configurable inactivity timeout in seconds before an autohiding dock collapses.
     autohide_timeout: f32,
+    /// Whether a pointer entry may reveal the collapsed handle. Entering
+    /// maximized mode disarms it until the pointer leaves the handle target,
+    /// preventing a Dock under a stationary pointer from reopening on the
+    /// very frame it is collapsed.
+    hidden_trigger_armed: bool,
     /// Compositor-derived cover state for the current visible windows. Kept
     /// outside render state because reserved edges, pointer capture, and
     /// backdrop capture are queried before the dock renders.
     space_use: SpaceUse,
-    /// Resolved tile strip cache (Launchpad tile first), shared by `render`
-    /// and `pointer_bounds` (via `backdrop_regions`/`captures_pointer`) so the
-    /// strip is built once per change instead of up to three times per frame.
+    /// Resolved tile strip cache (Launchpad tile first), shared by rendering,
+    /// visual backdrop geometry, and stable pointer geometry so the strip is
+    /// built once per change instead of up to three times per frame.
     /// Interior mutability: the pointer-side trait methods take `&self`.
     tile_cache: RefCell<TileCache>,
     /// Bumped on every catalog push so the tile cache notices pinned-app and
@@ -278,6 +279,7 @@ impl Dock {
             autohide_reveal: 1.0,
             autohide_idle: 0.0,
             autohide_timeout: AUTOHIDE_IDLE_TIMEOUT,
+            hidden_trigger_armed: true,
             space_use: SpaceUse::Available,
             tile_cache: RefCell::new(TileCache {
                 signature: None,
@@ -337,6 +339,17 @@ impl Dock {
             && cursor.1 < trigger.y + trigger.h
     }
 
+    /// A forced collapse must observe a pointer exit before the same pointer
+    /// can reveal the Dock again. This turns reveal into an entry gesture
+    /// instead of a level-triggered condition under a stationary cursor.
+    fn hidden_reveal_requested(armed: &mut bool, cursor: (f32, f32), display: (f32, f32)) -> bool {
+        if !Self::hidden_trigger_contains(cursor, display) {
+            *armed = true;
+            return false;
+        }
+        *armed
+    }
+
     /// Close UI that must not survive an automatic dock hide.
     fn dismiss_transient_ui(&mut self) {
         self.app_menu.dismiss();
@@ -385,6 +398,26 @@ impl Dock {
         bar_x + DOCK_PAD + i as f32 * (DOCK_TILE + DOCK_TILE_GAP) + extra + DOCK_TILE * 0.5
     }
 
+    /// Stable, unanimated panel rectangle used by hover activation, pointer
+    /// capture, and click gating. Keeping this geometry in one place prevents
+    /// the magnification spring from expanding chrome's input ownership.
+    fn rest_bounds(tile_count: usize, pinned_count: usize, display: (f32, f32)) -> Rect {
+        let unpinned = tile_count.saturating_sub(pinned_count);
+        let section_gap = if pinned_count > 0 && unpinned > 0 {
+            DOCK_SECTION_GAP
+        } else {
+            0.0
+        };
+        let gaps = tile_count.saturating_sub(1) as f32 * DOCK_TILE_GAP + section_gap;
+        let bar_w = tile_count as f32 * DOCK_TILE + gaps + 2.0 * DOCK_PAD;
+        Rect {
+            x: (display.0 - bar_w) * 0.5,
+            y: display.1 - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN,
+            w: bar_w,
+            h: DOCK_PANEL_HEIGHT,
+        }
+    }
+
     /// Advance a damped spring one `dt` seconds toward `target`. Semi-implicit
     /// Euler keeps it stable at large `dt` (a clamped-vs-true hybrid blows up
     /// under frame hitches); the under-damped ratio gives a single gentle
@@ -412,12 +445,11 @@ impl Dock {
     /// match no pinned app. A window matches an app when its lowercased
     /// `app_id` is among the app's [`DockApp::keys`].
     ///
-    /// The strip is cached: `render` and `pointer_bounds` (called by both
-    /// `backdrop_regions` and `captures_pointer`) all need it every frame, but
-    /// it only changes when the window set, the pinned catalog, or the
-    /// localized label does. Callers that do not know the localized label
-    /// (the pointer-side trait methods) pass `None` and reuse the strip as
-    /// long as the window signature matches.
+    /// The strip is cached: rendering, backdrop geometry, and pointer
+    /// geometry all need it every frame, but it only changes when the window
+    /// set, the pinned catalog, or the localized label does. Callers that do
+    /// not know the localized label pass `None` and reuse the strip as long
+    /// as the window signature matches.
     ///
     /// An associated function (not a method) so the returned borrow ties to
     /// `tile_cache` alone and `render` can keep mutating its other fields
@@ -577,9 +609,10 @@ impl Dock {
             .to_vec()
     }
 
-    /// Bounds of the live dock interaction surface. Uses the current spring
-    /// widths (or rest width before a tile's first render) so pointer routing
-    /// follows the bar as it expands without claiming the entire bottom edge.
+    /// Bounds of the resting dock interaction surface. Pointer ownership is
+    /// intentionally stable while magnification animates: the visual spring
+    /// may expand beyond this rectangle, but it must not make a larger part of
+    /// an application window suddenly belong to chrome.
     fn pointer_bounds(&self, windows: &[Window], display: (f32, f32)) -> Rect {
         let tiles = Self::frame_tiles(
             &self.tile_cache,
@@ -589,16 +622,28 @@ impl Dock {
             windows,
             None,
         );
-        let widths: Vec<f32> = tiles
-            .iter()
-            .map(|t| {
-                self.sizes
-                    .get(&t.key)
-                    .map(|s| s.value.max(DOCK_TILE))
-                    .unwrap_or(DOCK_TILE)
-            })
-            .collect();
         let pinned_count = tiles.iter().filter(|t| t.pinned).count();
+        Self::rest_bounds(tiles.len(), pinned_count, display)
+    }
+
+    /// Bounds of the animated panel material. Unlike pointer ownership, the
+    /// backdrop follows the spring width so the widened glass remains blurred
+    /// all the way to its visible edges.
+    fn visual_panel_bounds(&self, windows: &[Window], display: (f32, f32)) -> Rect {
+        let tiles = Self::frame_tiles(
+            &self.tile_cache,
+            &self.apps,
+            &self.icons,
+            self.catalog_revision,
+            windows,
+            None,
+        );
+        let widths = tiles.iter().map(|tile| {
+            self.sizes
+                .get(&tile.key)
+                .map_or(DOCK_TILE, |state| state.value.max(DOCK_TILE))
+        });
+        let pinned_count = tiles.iter().filter(|tile| tile.pinned).count();
         let unpinned = tiles.len().saturating_sub(pinned_count);
         let section_gap = if pinned_count > 0 && unpinned > 0 {
             DOCK_SECTION_GAP
@@ -606,14 +651,12 @@ impl Dock {
             0.0
         };
         let gaps = tiles.len().saturating_sub(1) as f32 * DOCK_TILE_GAP + section_gap;
-        let bar_w = widths.iter().sum::<f32>() + gaps + 2.0 * DOCK_PAD;
-        let panel_y = display.1 - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN;
-        let icon_bottom = panel_y + DOCK_PANEL_HEIGHT - DOCK_BASELINE_INSET;
+        let bar_w = widths.sum::<f32>() + gaps + 2.0 * DOCK_PAD;
         Rect {
             x: (display.0 - bar_w) * 0.5,
-            y: icon_bottom - DOCK_TILE_MAX,
+            y: display.1 - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN,
             w: bar_w,
-            h: panel_y + DOCK_PANEL_HEIGHT - (icon_bottom - DOCK_TILE_MAX),
+            h: DOCK_PANEL_HEIGHT,
         }
     }
 }
@@ -675,6 +718,7 @@ impl Chrome for Dock {
         } else {
             0.0
         };
+        let rest_bounds = Self::rest_bounds(n, pinned_count, (disp.x, disp.y));
 
         // Drop eased sizes for tiles no longer present so the map does not
         // grow unbounded across long sessions.
@@ -687,9 +731,16 @@ impl Chrome for Dock {
 
         // Pointer activation band for magnification and autohide reveal.
         let in_band = if effective_autohide && self.autohide_reveal < 0.2 {
-            Self::hidden_trigger_contains((cursor.x, cursor.y), (disp.x, disp.y))
+            Self::hidden_reveal_requested(
+                &mut self.hidden_trigger_armed,
+                (cursor.x, cursor.y),
+                (disp.x, disp.y),
+            )
         } else {
-            cursor.y >= rest_panel_y - MAGNIFY_APPROACH_BAND
+            cursor.x >= rest_bounds.x
+                && cursor.y >= rest_bounds.y
+                && cursor.x < rest_bounds.x + rest_bounds.w
+                && cursor.y < rest_bounds.y + rest_bounds.h
         };
         let menu_open = self.app_menu.is_open();
 
@@ -884,13 +935,15 @@ impl Chrome for Dock {
             );
         }
 
-        // Hit-test the cursor against tile slots. A slot spans each tile's live
-        // width (so magnified tiles are fully clickable) and the whole bar
-        // height plus the popped-icon band; ties resolve to the nearest centre.
-        let slot_top = icon_bottom - DOCK_TILE_MAX;
-        let slot_bottom = panel_y + DOCK_PANEL_HEIGHT;
+        // Hit-test live tile positions only after the pointer is inside the
+        // stable resting panel. Magnified pixels may pop outside that panel,
+        // but animation must never enlarge the Dock's click ownership.
         let mut hit: Option<usize> = None;
-        if cursor.y >= slot_top && cursor.y <= slot_bottom {
+        if cursor.x >= rest_bounds.x
+            && cursor.y >= rest_bounds.y
+            && cursor.x < rest_bounds.x + rest_bounds.w
+            && cursor.y < rest_bounds.y + rest_bounds.h
+        {
             let mut best = f32::MAX;
             for (i, width) in eased.iter().enumerate() {
                 let cx = centre(i);
@@ -1147,7 +1200,7 @@ impl Chrome for Dock {
         if self.fullscreen_locked() || (self.effective_autohide() && self.autohide_reveal <= 0.05) {
             return Vec::new();
         }
-        let bounds = self.pointer_bounds(windows, display);
+        let bounds = self.visual_panel_bounds(windows, display);
         let rest_panel_y = display.1 - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN;
         let hidden_y = display.1 + 10.0;
         let panel_y = hidden_y + (rest_panel_y - hidden_y) * self.autohide_reveal;
@@ -1253,6 +1306,7 @@ impl Chrome for Dock {
                 self.dismiss_transient_ui();
                 self.autohide_reveal = 0.0;
                 self.autohide_idle = self.autohide_timeout;
+                self.hidden_trigger_armed = false;
                 self.anim_active = false;
             }
             SpaceUse::Maximized => {
@@ -1262,10 +1316,12 @@ impl Chrome for Dock {
                 self.dismiss_transient_ui();
                 self.autohide_reveal = 0.0;
                 self.autohide_idle = self.autohide_timeout;
+                self.hidden_trigger_armed = false;
                 self.anim_active = false;
             }
             SpaceUse::Available => {
                 self.autohide_idle = 0.0;
+                self.hidden_trigger_armed = true;
             }
         }
     }
@@ -1582,6 +1638,44 @@ mod tests {
     }
 
     #[test]
+    fn pointer_bounds_stay_at_rest_while_tiles_are_magnified() {
+        let mut dock = dock_with(vec![app("firefox.desktop")]);
+        dock.sizes.insert(
+            "launchpad".into(),
+            SpringState {
+                value: DOCK_TILE_MAX,
+                vel: 0.0,
+            },
+        );
+        dock.sizes.insert(
+            "app:firefox.desktop".into(),
+            SpringState {
+                value: DOCK_TILE_MAX,
+                vel: 0.0,
+            },
+        );
+
+        let display = (1920.0, 1080.0);
+        let bounds = dock.pointer_bounds(&[], display);
+        let visual_bounds = dock.visual_panel_bounds(&[], display);
+        let expected_width = 2.0 * DOCK_TILE + DOCK_TILE_GAP + 2.0 * DOCK_PAD;
+        assert_eq!(bounds.w, expected_width);
+        assert_eq!(
+            visual_bounds.w,
+            2.0 * DOCK_TILE_MAX + DOCK_TILE_GAP + 2.0 * DOCK_PAD
+        );
+        assert_eq!(bounds.y, display.1 - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN);
+        assert_eq!(bounds.h, DOCK_PANEL_HEIGHT);
+        assert!(!dock.captures_pointer(
+            display.0 * 0.5,
+            bounds.y - 1.0,
+            display,
+            &[],
+            &workspace_snapshot(),
+        ));
+    }
+
+    #[test]
     fn read_only_mirror_has_no_physical_focus_action() {
         let dock = Dock::new();
         let mut mirror = window(7, "org.example.App", false);
@@ -1601,6 +1695,7 @@ mod tests {
 
         assert_eq!(dock.space_use, SpaceUse::Maximized);
         assert_eq!(dock.autohide_reveal, 0.0);
+        assert!(!dock.hidden_trigger_armed);
         assert_eq!(dock.reserved(), Reserved::default());
         assert_eq!(dock.backdrop_blur_sigma(), 0.0);
         assert!(
@@ -1613,6 +1708,21 @@ mod tests {
         assert!(
             !dock.captures_pointer(20.0, 1079.0, (1920.0, 1080.0), &[], &workspace_snapshot(),)
         );
+        assert!(!Dock::hidden_reveal_requested(
+            &mut dock.hidden_trigger_armed,
+            (960.0, 1079.0),
+            (1920.0, 1080.0),
+        ));
+        assert!(!Dock::hidden_reveal_requested(
+            &mut dock.hidden_trigger_armed,
+            (20.0, 1079.0),
+            (1920.0, 1080.0),
+        ));
+        assert!(Dock::hidden_reveal_requested(
+            &mut dock.hidden_trigger_armed,
+            (960.0, 1079.0),
+            (1920.0, 1080.0),
+        ));
         assert!(!dock.anim_pending());
     }
 

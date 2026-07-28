@@ -35,7 +35,7 @@ schema-incompatible existing file is left untouched.
 | `[ui]` | table | borderless windows, reduced_motion `false` | Desktop-wide UI and window-presentation policy. See [UI](#ui). |
 | `[input.touchpad]` | table | touchpad defaults | Touchpad pointing, tapping, and scrolling profile. See [Touchpad](#touchpad). |
 | `[[output]]` | array of tables | none | Per-connector display policy: mode, scale, position, transform, primary. See [Outputs](#outputs). |
-| `[screenshot]` | table | XDG Pictures directory | Screenshot save location. See [Screenshots](#screenshots). |
+| `[screenshot]` | table | XDG Pictures directory, cursor included | Screenshot output policy. See [Screenshots](#screenshots). |
 | `[appearance]` | table | `color_scheme = "system"` | Desktop-wide appearance preference read by the portal Settings backend. See [Appearance](#appearance). |
 | `[agent]` | table | no scopes | Named automation scopes enforced by the IPC server. See [Agent Scopes](#agent-scopes). |
 | `[realm_sandbox]` | table | default deny | Network, filesystem, and cgroup policy for new Realm application launches. See [Realm Sandbox](#realm-sandbox). |
@@ -144,18 +144,20 @@ applied after hotplug when a compatible touchpad appears.
 ## Screenshots
 
 The `[screenshot]` table controls where the interactive screenshot selector
-writes PNG files. Changes apply on live reload. After a successful interactive
-capture, the compositor also publishes `image/png` and `text/uri-list` to the
-physical human seat's clipboard. IPC and Realm captures do not modify that
-clipboard.
+writes PNG files and whether saved screenshots include the cursor. Changes
+apply on live reload. After a successful interactive capture, the compositor
+also publishes `image/png` and `text/uri-list` to the physical human seat's
+clipboard. IPC and Realm captures do not modify that clipboard.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `save_dir` | string | `$XDG_PICTURES_DIR/screenshots` | Directory for timestamped screenshots. Falls back to `~/Pictures/screenshots` when the XDG user Pictures directory is unavailable. |
+| `include_cursor` | boolean | `true` | Include the physical-seat cursor in saved screenshots. This does not affect output-capture or screencast IPC. |
 
 ```toml
 [screenshot]
 save_dir = "/home/alice/Pictures/screenshots"
+include_cursor = true
 ```
 
 ## Appearance

@@ -31,6 +31,22 @@ project cuts a tagged release.
   Corner targets extend 24 logical pixels along both adjacent edges, making
   diagonal resize easier to acquire without consuming application content.
 
+### Screenshots
+
+- Saved screenshots now include the physical-seat cursor by default on
+  nested and direct-display backends, including themed and client-provided
+  cursor surfaces. Set `[screenshot] include_cursor = false` to omit it;
+  output-capture and screencast IPC policy is unchanged.
+
+### Dock interaction
+
+- Maximizing a window now leaves the Dock collapsed as a centered capsule
+  until the pointer exits and re-enters its local reveal target.
+- Normal Dock hover, click, and pointer-capture bounds now remain fixed to
+  the unmagnified panel. Icon animation no longer expands chrome ownership
+  into application content, while the visual glass backdrop still follows
+  the animated width.
+
 ## [0.0.4] - 2026-07-28
 
 ### Input-method keyboard grab

@@ -39,6 +39,19 @@ impl CompositorRuntime {
         // capture always forces a presentation frame.
         let mut frame_capture =
             self.prepare_frame_capture(session_locked, &mut pending_screenshots);
+        let screenshot_include_cursor = self
+            .config
+            .as_ref()
+            .is_none_or(|config| config.screenshot.include_cursor);
+        let bound_saved_screenshot = frame_capture
+            .as_ref()
+            .is_some_and(|(_, target)| matches!(target, CaptureTarget::Screenshot { .. }));
+        // Print-key screenshots keep the freeze armed through confirmation.
+        // Portal pick sessions also use the freeze, but retain their own
+        // cursor-free capture contract and are not governed by this setting.
+        let human_screenshot_session = self.screenshot_freeze.armed && self.pending_pick.is_none();
+        let cursorless_saved_frame =
+            !screenshot_include_cursor && (bound_saved_screenshot || human_screenshot_session);
         let damage = self.assess_frame_damage(
             had_input,
             session_locked,
@@ -458,6 +471,7 @@ impl CompositorRuntime {
                         &mut self.renderer,
                         &self.server,
                         scale,
+                        !cursorless_saved_frame,
                     );
                 }
                 // Finish the freeze snapshot pass: the chrome above rendered
@@ -896,7 +910,7 @@ impl CompositorRuntime {
                         Err(e) => log::warn!("launcher: failed to spawn {}: {e}", entry.id),
                     }
                 }
-                if self.host.uses_software_cursor() && !cursor_hidden {
+                if self.host.uses_software_cursor() && !cursor_hidden && !cursorless_saved_frame {
                     draw_software_cursor(
                         &self.canvas,
                         &self.device,
@@ -908,6 +922,24 @@ impl CompositorRuntime {
                 }
                 self.canvas.end();
                 let mut capture_for_present = frame_capture.take().and_then(|(crop, target)| {
+                    let cursor = if screenshot_include_cursor
+                        && matches!(&target, CaptureTarget::Screenshot { .. })
+                        && !self.host.uses_software_cursor()
+                        && !cursor_hidden
+                    {
+                        let position = self.input_acc.cursor;
+                        self.cursor_cache
+                            .get(&self.device, cursor_shape, scale)
+                            .map(|loaded| CaptureCursor {
+                                x: (position.0 * scale - loaded.xhot).round() as i32,
+                                y: (position.1 * scale - loaded.yhot).round() as i32,
+                                width: loaded.width.round().max(1.0) as u32,
+                                height: loaded.height.round().max(1.0) as u32,
+                                bgra: std::sync::Arc::clone(&loaded.pixels),
+                            })
+                    } else {
+                        None
+                    };
                     let readback = PendingReadback {
                         width: physical_size.0,
                         height: physical_size.1,
@@ -919,6 +951,7 @@ impl CompositorRuntime {
                                 physical_size.1,
                             )
                         }),
+                        cursor,
                         security_generation: self.capture_worker.security_generation(),
                     };
                     match frame.request_readback() {

@@ -441,13 +441,14 @@ pub(super) fn draw_client_overlays(
     renderer: &mut aegis_render::Renderer,
     server: &aegis_compositor::Server,
     scale: f32,
+    include_cursor: bool,
 ) {
     canvas.save();
     if scale != 1.0 {
         canvas.scale(scale, scale);
     }
-    let overlay_shm = server.overlay_frames();
-    let overlay_dmabuf = server.overlay_dmabuf_frames();
+    let overlay_shm = server.overlay_frames_with_cursor(include_cursor);
+    let overlay_dmabuf = server.overlay_dmabuf_frames_with_cursor(include_cursor);
     renderer.draw_toplevels(device, canvas, &overlay_shm, (0.0, 0.0));
     renderer.draw_dmabuf_toplevels(device, canvas, &overlay_dmabuf, (0.0, 0.0));
     canvas.restore();

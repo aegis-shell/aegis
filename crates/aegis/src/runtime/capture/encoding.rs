@@ -9,13 +9,26 @@ pub(in crate::runtime) struct CapturedPixels {
     height: u32,
     readback: flux::Readback,
     crop: Option<aegis_core::Rect>,
+    cursor: Option<CaptureCursor>,
     pub(super) security_generation: u64,
+}
+
+/// Cursor pixels to composite into a saved screenshot after GPU readback.
+/// The source is premultiplied BGRA8, matching Xcursor/Flux; `(x, y)` is the
+/// physical-pixel top-left after applying the hotspot.
+pub(in crate::runtime) struct CaptureCursor {
+    pub(in crate::runtime) x: i32,
+    pub(in crate::runtime) y: i32,
+    pub(in crate::runtime) width: u32,
+    pub(in crate::runtime) height: u32,
+    pub(in crate::runtime) bgra: std::sync::Arc<[u8]>,
 }
 
 pub(in crate::runtime) struct PendingReadback {
     pub(in crate::runtime) width: u32,
     pub(in crate::runtime) height: u32,
     pub(in crate::runtime) crop: Option<aegis_core::Rect>,
+    pub(in crate::runtime) cursor: Option<CaptureCursor>,
     pub(in crate::runtime) security_generation: u64,
 }
 
@@ -31,6 +44,7 @@ pub(in crate::runtime) fn read_captured_pixels(
         height: pending.height,
         readback,
         crop: pending.crop,
+        cursor: pending.cursor,
         security_generation: pending.security_generation,
     })
 }
@@ -43,7 +57,57 @@ pub(super) fn encode_capture(capture: CapturedPixels) -> Result<(u32, u32, Vec<u
         .readback
         .read_pixels(&mut full_rgba)
         .map_err(|error| format!("shot pixel copy: {error}"))?;
+    if let Some(cursor) = capture.cursor {
+        composite_cursor(&mut full_rgba, capture.width, capture.height, &cursor);
+    }
     encode_rgba_capture(capture.width, capture.height, full_rgba, capture.crop)
+}
+
+/// Premultiplied source-over from an Xcursor BGRA sprite into the framebuffer
+/// RGBA buffer. Compositing happens before region cropping so a cursor that
+/// crosses the selection edge clips naturally.
+fn composite_cursor(
+    destination: &mut [u8],
+    destination_width: u32,
+    destination_height: u32,
+    cursor: &CaptureCursor,
+) {
+    let expected_destination = destination_width as usize * destination_height as usize * 4;
+    let expected_source = cursor.width as usize * cursor.height as usize * 4;
+    if destination.len() < expected_destination || cursor.bgra.len() < expected_source {
+        return;
+    }
+
+    let left = cursor.x.max(0) as u32;
+    let top = cursor.y.max(0) as u32;
+    let right =
+        (cursor.x.saturating_add_unsigned(cursor.width)).clamp(0, destination_width as i32) as u32;
+    let bottom = (cursor.y.saturating_add_unsigned(cursor.height))
+        .clamp(0, destination_height as i32) as u32;
+    if left >= right || top >= bottom {
+        return;
+    }
+
+    for destination_y in top..bottom {
+        let source_y = (destination_y as i32 - cursor.y) as usize;
+        for destination_x in left..right {
+            let source_x = (destination_x as i32 - cursor.x) as usize;
+            let source_at = (source_y * cursor.width as usize + source_x) * 4;
+            let destination_at =
+                (destination_y as usize * destination_width as usize + destination_x as usize) * 4;
+            let source = &cursor.bgra[source_at..source_at + 4];
+            let destination = &mut destination[destination_at..destination_at + 4];
+            let alpha = u32::from(source[3]);
+            let inverse = 255 - alpha;
+
+            // Xcursor is BGRA; the readback buffer is RGBA.
+            for (destination_channel, source_channel) in [(0, 2), (1, 1), (2, 0), (3, 3)] {
+                let over = u32::from(source[source_channel])
+                    + (u32::from(destination[destination_channel]) * inverse + 127) / 255;
+                destination[destination_channel] = over.min(255) as u8;
+            }
+        }
+    }
 }
 
 pub(in crate::runtime) fn encode_rgba_capture(
@@ -140,4 +204,31 @@ pub(in crate::runtime) fn flux_last_error_detail() -> String {
     }
     let message = unsafe { std::ffi::CStr::from_ptr(info.message) };
     format!(" ({})", message.to_string_lossy())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_composite_converts_bgra_and_clips_to_the_output() {
+        let mut rgba = vec![0u8; 3 * 2 * 4];
+        for pixel in rgba.chunks_exact_mut(4) {
+            pixel[3] = 255;
+        }
+        let cursor = CaptureCursor {
+            x: -1,
+            y: 0,
+            width: 2,
+            height: 2,
+            // 50%-opaque premultiplied red in BGRA order.
+            bgra: std::sync::Arc::from([0, 0, 128, 128].repeat(4)),
+        };
+
+        composite_cursor(&mut rgba, 3, 2, &cursor);
+
+        assert_eq!(&rgba[0..4], &[128, 0, 0, 255]);
+        assert_eq!(&rgba[4..8], &[0, 0, 0, 255]);
+        assert_eq!(&rgba[12..16], &[128, 0, 0, 255]);
+    }
 }
