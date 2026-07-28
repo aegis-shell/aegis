@@ -25,6 +25,12 @@ project cuts a tagged release.
   Consumers such as OBS can link the node and receive compositor frames
   instead of seeing a source with no video flow.
 
+### Window resize
+
+- Floating windows now expose an eight-logical-pixel outer resize border.
+  Corner targets extend 24 logical pixels along both adjacent edges, making
+  diagonal resize easier to acquire without consuming application content.
+
 ## [0.0.4] - 2026-07-28
 
 ### Input-method keyboard grab

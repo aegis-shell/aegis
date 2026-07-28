@@ -236,16 +236,17 @@ fn window_casts_resize_shadow(window: &aegis_core::window::Window) -> bool {
         && window.size.h > 0
 }
 
-/// Paint a four-logical-pixel compositor shadow immediately below a floating
-/// window. Each one-pixel ring occupies exactly the direct-resize margin; the
-/// stronger active-window ramp makes stack order legible without taking any
-/// client-content pixels.
+/// Paint a subtle four-logical-pixel compositor shadow immediately below a
+/// floating window. Its visual extent is intentionally independent from the
+/// larger direct-resize hit target.
 fn draw_window_resize_shadow(canvas: &flux::Canvas, window: &aegis_core::window::Window) {
+    const SHADOW_MARGIN: u32 = 4;
+
     let x = window.position.x as f32;
     let y = window.position.y as f32;
     let w = window.size.w as f32;
     let h = window.size.h as f32;
-    let margin = aegis_core::window::RESIZE_OUTER_MARGIN as u32;
+    let margin = SHADOW_MARGIN;
     for extent in (1..=margin).rev() {
         let inset = extent as f32 - 0.5;
         let distance_from_outer = margin - extent;

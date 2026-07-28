@@ -32,7 +32,9 @@ Tiled, maximized, and fullscreen windows change to floating windows before a
 ## Resize from an Invisible Border
 
 1. Use a floating window that is neither maximized nor fullscreen.
-2. Move the pointer within eight pixels of the inside edge or corner.
+2. Move the pointer within eight logical pixels outside an edge. Near a
+   corner, the corner target extends 24 logical pixels along both adjacent
+   edges.
 3. Wait for the resize cursor to identify the active edge or corner.
 4. Left-drag the border, then release the button at the required size.
 
@@ -45,8 +47,8 @@ fullscreen. Layout-owned windows do not expose the invisible border.
    is required.
 2. Use `Super` + left-drag anywhere in the terminal content to move it.
 3. Use `Super` + right-drag anywhere in the terminal content to resize it.
-4. After it is floating, use its eight-pixel inside border for direct resize
-   when convenient.
+4. After it is floating, use its eight-logical-pixel outer border for direct
+   resize when convenient.
 
 The same procedure applies to any Wayland `xdg_toplevel`, regardless of
 whether the client provides decorations.
