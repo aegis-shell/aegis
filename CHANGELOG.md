@@ -96,15 +96,20 @@ project cuts a tagged release.
 
 ### Cursor theming
 
-- `wp_cursor_shape` name resolution now prefers the protocol/CSS name
-  (`default`, `text`, `e-resize`, ...) with legacy Xcursor aliases
-  (`left_ptr`, `xterm`, ...) as fallback, matching what modern themes
-  ship.
+- The software cursor now draws from **SVG** cursor themes instead of the
+  legacy Xcursor binary format, following the same freedesktop cursor naming
+  and theme-inheritance spec (`$XCURSOR_THEME`/`$XCURSOR_SIZE`, icon roots,
+  `index.theme`). SVG is rasterized on demand with the pure-Rust `resvg`, so
+  cursors stay crisp at any scale and HiDPI factor. The Xcursor parser is
+  removed. See [ADR-0070](docs/adr/0070-svg-cursors-with-bundled-bibata-fallback.md).
+- A full **Bibata-Modern-Ice** SVG theme is bundled in the binary and used as
+  the universal fallback, so a standard cursor always exists — even on a bare
+  TTY with no `XCURSOR_THEME` and no installed icon theme. (Bibata is GPL-3.0;
+  its license ships with the theme.)
+- `wp_cursor_shape` name resolution still prefers the protocol/CSS name
+  (`default`, `text`, `e-resize`, ...) with legacy cursor-name aliases
+  (`left_ptr`, `xterm`, ...) as fallback, matching what modern themes ship.
 - `$XCURSOR_PATH` is honored for theme search roots when set.
-- The software cursor is sourced exclusively from the XDG cursor theme.
-  When a theme ships no image (or no theme is installed), the compositor
-  no longer falls back to hand-drawn glyphs; a missing theme is logged as
-  an error.
 
 ### Overlay compositing
 

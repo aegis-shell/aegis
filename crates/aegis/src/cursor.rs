@@ -1,36 +1,39 @@
 //! XDG cursor themes for the software cursor on direct display.
 //!
 //! The DRM backend has no hardware cursor plane yet, so the compositor draws
-//! the cursor itself. Load real cursor themes per the freedesktop cursor
-//! specification: `$XCURSOR_THEME` / `$XCURSOR_SIZE`, `$XCURSOR_PATH` or the
-//! standard icon roots, `index.theme` inheritance, and the Xcursor file
-//! format. Client-provided cursor surfaces are composited by the server as
-//! before; this covers the `wp_cursor_shape` protocol and compositor-owned
-//! (resize/move) cursors.
+//! the cursor itself. Cursor themes are resolved per the freedesktop cursor
+//! specification — `$XCURSOR_THEME` / `$XCURSOR_SIZE`, `XCURSOR_PATH` or the
+//! standard icon roots, `index.theme` inheritance — but aegis draws cursors
+//! from **SVG** rather than the legacy Xcursor binary format: SVG stays crisp
+//! at any scale and is rasterized on demand with the pure-Rust `resvg`.
+//!
+//! A full Bibata-Modern-Ice theme is embedded in the binary
+//! (`assets/cursors/Bibata-Modern-Ice`) so a sane default cursor always
+//! exists, even on a bare TTY with no installed icon theme and no
+//! `XCURSOR_THEME`. Client-provided cursor surfaces are composited by the
+//! server as before; this covers the `wp_cursor_shape` protocol and
+//! compositor-owned (resize/move) cursors.
+//!
+//! Hotspot convention: the bundled art stamps each cursor's hotspot onto the
+//! `<svg>` root as `data-hotspot-x` / `data-hotspot-y`, in the SVG's native
+//! (viewBox) coordinate space (see `scripts/prepare-bibata-cursors.py`).
+//! `resvg`/`usvg` drop unknown attributes, so the hotspot is read from the
+//! raw SVG text before rasterization and scaled by the requested size.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// One parsed Xcursor file: every image it carries, largest first.
-#[derive(Debug)]
-pub struct XcursorFile {
-    pub images: Vec<XcursorImage>,
-}
+use include_dir::{include_dir, Dir};
 
-/// One cursor image with its hotspot, in pixels.
-#[derive(Debug, Clone)]
-pub struct XcursorImage {
-    pub size: u32,
-    pub width: u32,
-    pub height: u32,
-    pub xhot: u32,
-    pub yhot: u32,
-    /// BGRA premultiplied pixels, row-major (the flux/wl_shm contract).
-    pub pixels: Vec<u8>,
-}
+/// The cursor art shipped with the binary, used as the universal fallback
+/// when no filesystem theme resolves a shape. GPL-3.0 art from Bibata Cursor;
+/// see `LICENSE`/`NOTICE` under the directory.
+static BUNDLED_THEME: Dir<'static> =
+    include_dir!("$CARGO_MANIFEST_DIR/../../assets/cursors/Bibata-Modern-Ice");
 
 /// `wp_cursor_shape_device_v1.shape` value with its XDG candidate names,
-/// protocol/CSS name first and legacy Xcursor aliases afterwards. The first
+/// protocol/CSS name first and legacy cursor aliases afterwards. The first
 /// name found in the theme wins.
 fn shape_candidates(shape: u32) -> &'static [&'static str] {
     match shape {
@@ -74,83 +77,140 @@ fn shape_candidates(shape: u32) -> &'static [&'static str] {
     }
 }
 
-/// Parse an Xcursor file into its images, largest size first. Returns `None`
-/// on a bad magic or truncated layout; individual malformed images are
-/// skipped rather than failing the whole file.
-pub fn parse_xcursor(data: &[u8]) -> Option<XcursorFile> {
-    let u32at = |off: usize| -> Option<u32> {
-        data.get(off..off + 4)
-            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    };
-    if data.len() < 16 || u32at(0)? != 0x7275_6358 {
-        return None; // "Xcur" little-endian
-    }
-    let ntoc = u32at(12)? as usize;
-    let mut images = Vec::new();
-    for i in 0..ntoc {
-        let toc = 16 + i * 12;
-        let (kind, position) = (u32at(toc)?, u32at(toc + 8)? as usize);
-        // 0xFFFD0002 = image chunk; 0xFFFE0001 = comment chunk (skipped).
-        if kind != 0xFFFD_0002 {
-            continue;
-        }
-        let (width, height) = (u32at(position + 16)?, u32at(position + 20)?);
-        if width == 0 || height == 0 || width > 256 || height > 256 {
-            continue;
-        }
-        let (xhot, yhot) = (u32at(position + 24)?, u32at(position + 28)?);
-        // The delay at `position + 32` belongs to animated cursor playback.
-        // Aegis intentionally selects one static image, so validate that the
-        // field exists without retaining unused animation state.
-        u32at(position + 32)?;
-        let start = position + 36;
-        let len = width as usize * height as usize * 4;
-        let raw = data.get(start..start + len)?;
-        // Xcursor pixels are XRGB8888 little-endian (= BGRA in memory) with
-        // straight alpha; flux wants BGRA premultiplied.
-        let mut pixels = raw.to_vec();
-        for px in pixels.chunks_exact_mut(4) {
-            let a = u32::from(px[3]);
-            if a > 0 && a < 255 {
-                for c in &mut px[0..3] {
-                    *c = ((u32::from(*c) * a + 127) / 255) as u8;
-                }
-            }
-        }
-        images.push(XcursorImage {
-            size: u32at(position + 8)?,
-            width,
-            height,
-            xhot,
-            yhot,
-            pixels,
-        });
-    }
-    if images.is_empty() {
-        return None;
-    }
-    images.sort_by_key(|img| std::cmp::Reverse(img.size));
-    Some(XcursorFile { images })
+/// Hotspot and native size read from the raw SVG text. `native` is the
+/// viewBox (or width/height) the hotspot is expressed in; both dimensions are
+/// assumed square for cursor art.
+struct SvgMeta {
+    hotspot: (f32, f32),
+    native: (f32, f32),
 }
 
-/// Pick the image for `want` pixels: exact match first, then the nearest
-/// larger size (downscaling looks better than upscaling), then the largest
-/// available.
-pub fn best_image(file: &XcursorFile, want: u32) -> Option<&XcursorImage> {
-    let mut larger: Option<&XcursorImage> = None;
-    let mut largest: Option<&XcursorImage> = None;
-    for img in &file.images {
-        if img.size == want {
-            return Some(img);
+/// Scan the `<svg ...>` opening tag for `data-hotspot-x/y` and the viewBox or
+/// width/height. Unknown themes without a stamped hotspot fall back to the
+/// top-left corner (0, 0). A malformed tag simply yields defaults.
+fn svg_meta(svg: &[u8]) -> SvgMeta {
+    let text = std::str::from_utf8(svg).unwrap_or("");
+    let tag = svg_open_tag(text).unwrap_or("");
+    let hotspot = (
+        attr(tag, "data-hotspot-x").and_then(num).unwrap_or(0.0),
+        attr(tag, "data-hotspot-y").and_then(num).unwrap_or(0.0),
+    );
+    let native = viewbox(tag).or_else(|| width_height(tag)).unwrap_or((256.0, 256.0));
+    SvgMeta { hotspot, native }
+}
+
+/// Slice the first `<svg ...>` opening tag (the cursor's root), so attribute
+/// scanning never matches nested elements.
+fn svg_open_tag(text: &str) -> Option<&str> {
+    let start = text.find("<svg")?;
+    let end = text[start..].find('>').map(|p| start + p + 1)?;
+    Some(&text[start..end])
+}
+
+/// Extract the value of attribute `name` (`name="..."` or `name='...'`) from
+/// `tag`. Byte-level and therefore UTF-8-safe: quotes are ASCII and cannot be
+/// part of a multibyte continuation, so the returned slice lands on char
+/// boundaries.
+fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let bytes = tag.as_bytes();
+    let nb = name.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = tag[from..].find(name) {
+        let start = from + rel;
+        from = start + nb.len();
+        // The name must be its own token: preceded by whitespace (it is never
+        // at the very start of the slice because "<svg" leads it).
+        let prev = bytes.get(start.wrapping_sub(1)).copied().unwrap_or(b' ');
+        if !(prev == b' ' || prev == b'\t' || prev == b'\n' || prev == b'\r') {
+            continue;
         }
-        if img.size > want && larger.is_none_or(|b| img.size < b.size) {
-            larger = Some(img);
+        let mut j = start + nb.len();
+        while matches!(bytes.get(j), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+            j += 1;
         }
-        if largest.is_none_or(|b| img.size > b.size) {
-            largest = Some(img);
+        if bytes.get(j) != Some(&b'=') {
+            continue;
+        }
+        j += 1;
+        while matches!(bytes.get(j), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+            j += 1;
+        }
+        let quote = match bytes.get(j) {
+            Some(&b'"') => b'"',
+            Some(&b'\'') => b'\'',
+            _ => continue,
+        };
+        let value_start = j + 1;
+        let mut k = value_start;
+        while bytes.get(k).is_some_and(|&b| b != quote) {
+            k += 1;
+        }
+        if bytes.get(k) == Some(&quote) {
+            return Some(&tag[value_start..k]);
         }
     }
-    larger.or(largest)
+    None
+}
+
+/// Parse a leading floating-point number out of a value like `55` or `55.5px`.
+fn num(value: &str) -> Option<f32> {
+    let token: String = value
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+        .collect();
+    token.parse().ok()
+}
+
+/// `viewBox="0 0 W H"` → `(W, H)`.
+fn viewbox(tag: &str) -> Option<(f32, f32)> {
+    let v = attr(tag, "viewBox")?;
+    let parts: Vec<&str> = v.split_ascii_whitespace().collect();
+    let (w, h) = (parts.get(2)?.parse().ok()?, parts.get(3)?.parse().ok()?);
+    (w > 0.0 && h > 0.0).then_some((w, h))
+}
+
+/// `width="W"` / `height="H"` fallback when there is no viewBox.
+fn width_height(tag: &str) -> Option<(f32, f32)> {
+    let w = num(attr(tag, "width")?)?;
+    let h = num(attr(tag, "height")?)?;
+    (w > 0.0 && h > 0.0).then_some((w, h))
+}
+
+/// One rasterized cursor image: premultiplied BGRA8 pixels with its hotspot.
+struct RasterCursor {
+    width: u32,
+    height: u32,
+    xhot: u32,
+    yhot: u32,
+    pixels: Vec<u8>,
+}
+
+/// Render `svg` to a square `out`×`out` premultiplied BGRA8 sprite, applying
+/// the stamped hotspot scaled from the native viewBox space. Returns `None`
+/// on any parse/render failure so the caller can try the next candidate.
+fn rasterize(svg: &[u8], out: u32) -> Option<RasterCursor> {
+    let out = out.clamp(1, 256);
+    let meta = svg_meta(svg);
+    let tree = usvg::Tree::from_data(svg, &usvg::Options::default()).ok()?;
+    let (nw, nh) = meta.native;
+    let mut pixmap = tiny_skia::Pixmap::new(out, out)?;
+    let transform =
+        tiny_skia::Transform::from_scale(out as f32 / nw, out as f32 / nh);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    let mut pixels = pixmap.data().to_vec();
+    // tiny-skia emits premultiplied RGBA8; flux samples premultiplied BGRA8.
+    for chunk in pixels.chunks_exact_mut(4) {
+        chunk.swap(0, 2);
+    }
+    let xhot = (meta.hotspot.0 * out as f32 / nw).round().clamp(0.0, out as f32 - 1.0) as u32;
+    let yhot = (meta.hotspot.1 * out as f32 / nh).round().clamp(0.0, out as f32 - 1.0) as u32;
+    Some(RasterCursor {
+        width: out,
+        height: out,
+        xhot,
+        yhot,
+        pixels,
+    })
 }
 
 /// Cursor theme search roots, in XDG priority order.
@@ -199,15 +259,38 @@ fn theme_inherits(theme_dir: &Path) -> Vec<String> {
     inherits
 }
 
-/// A resolved cursor theme: the search chain of candidate theme directories.
+/// One link in a theme's search chain: either a filesystem `cursors/`
+/// directory or the in-binary bundled theme.
+enum Source {
+    Dir(PathBuf),
+    Bundled,
+}
+
+impl Source {
+    /// Resolve `name` to raw SVG bytes from this source, if present.
+    fn svg(&self, name: &str) -> Option<Cow<'_, [u8]>> {
+        match self {
+            Source::Dir(dir) => std::fs::read(dir.join(format!("{name}.svg")))
+                .ok()
+                .map(Cow::Owned),
+            Source::Bundled => BUNDLED_THEME
+                .get_file(format!("cursors/{name}.svg"))
+                .map(|file| Cow::Borrowed(file.contents())),
+        }
+    }
+}
+
+/// A resolved cursor theme: the search chain of candidate sources.
 pub struct CursorTheme {
-    chain: Vec<PathBuf>,
+    chain: Vec<Source>,
     size: u32,
 }
 
 impl CursorTheme {
     /// Resolve a theme by name and preferred size. The search chain follows
-    /// `index.theme` inheritance, breadth-first, cycles cut.
+    /// `index.theme` inheritance, breadth-first (cycles cut), and always ends
+    /// with the bundled Bibata-Modern-Ice theme so a cursor exists even when
+    /// nothing is installed.
     pub fn resolve(name: &str, size: u32) -> CursorTheme {
         let roots = search_roots();
         let mut chain = Vec::new();
@@ -225,31 +308,34 @@ impl CursorTheme {
                             queue.push(inherited);
                         }
                     }
-                    chain.push(dir.join("cursors"));
+                    chain.push(Source::Dir(dir.join("cursors")));
                     break;
                 }
             }
         }
+        chain.push(Source::Bundled);
         CursorTheme {
             chain,
             size: size.max(1),
         }
     }
 
-    /// Load the best image for a `wp_cursor_shape` value at `scale`, trying
-    /// each candidate name down the inheritance chain.
-    pub fn load_shape(&self, shape: u32, scale: f32) -> Option<XcursorImage> {
-        let want = ((self.size as f32 * scale.max(0.25)).round() as u32).max(1);
+    /// Whether any filesystem theme directory matched (i.e. the bundled
+    /// fallback is not the only source in the chain).
+    fn has_filesystem(&self) -> bool {
+        self.chain.iter().any(|s| matches!(s, Source::Dir(_)))
+    }
+
+    /// Rasterize the best SVG for a `wp_cursor_shape` value at `scale`,
+    /// trying each candidate name down the inheritance chain.
+    fn load_shape(&self, shape: u32, scale: f32) -> Option<RasterCursor> {
+        let out = ((self.size as f32 * scale.max(0.25)).round() as u32).max(1);
         for name in shape_candidates(shape) {
-            for dir in &self.chain {
-                let path = dir.join(name);
-                let Ok(data) = std::fs::read(&path) else {
-                    continue;
-                };
-                if let Some(file) = parse_xcursor(&data)
-                    && let Some(img) = best_image(&file, want)
+            for source in &self.chain {
+                if let Some(bytes) = source.svg(name)
+                    && let Some(raster) = rasterize(&bytes, out)
                 {
-                    return Some(img.clone());
+                    return Some(raster);
                 }
             }
         }
@@ -314,19 +400,21 @@ impl CursorCache {
         (name, size)
     }
 
-    /// The cursor for a `wp_cursor_shape` value at `scale`, or `None` when no
-    /// theme ships it. Missing theme data deliberately does not fall back to
-    /// a compositor-designed cursor: cursor appearance belongs to the theme.
+    /// The cursor for a `wp_cursor_shape` value at `scale`. The bundled
+    /// Bibata theme guarantees a result for every standard shape, so this
+    /// returns `None` only if rasterization itself fails.
     pub fn get(&mut self, device: &flux::Device, shape: u32, scale: f32) -> Option<&LoadedCursor> {
         let (name, size) = self.effective();
         if !matches!(&self.theme, Some((n, s, _)) if *n == name && *s == size) {
             let theme = CursorTheme::resolve(&name, size);
-            if theme.chain.is_empty() {
-                log::error!(
-                    "cursor: Xcursor theme {name:?} was not found; no compositor-designed fallback will be used"
+            if theme.has_filesystem() {
+                log::info!(
+                    "cursor: using SVG theme {name:?} at {size} logical px; missing shapes fall back to bundled Bibata-Modern-Ice"
                 );
             } else {
-                log::info!("cursor: using Xcursor theme {name:?} at {size} logical px");
+                log::info!(
+                    "cursor: theme {name:?} not installed; using bundled Bibata-Modern-Ice at {size} logical px"
+                );
             }
             self.theme = Some((name.clone(), size, theme));
             self.cursors.clear();
@@ -363,61 +451,6 @@ impl CursorCache {
 mod tests {
     use super::*;
 
-    /// Build a minimal valid Xcursor file with `sizes` images of the given
-    /// sizes, solid white pixels.
-    fn synthetic_xcursor(sizes: &[u32]) -> Vec<u8> {
-        let mut data = Vec::new();
-        let ntoc = sizes.len() as u32;
-        data.extend_from_slice(&0x7275_6358u32.to_le_bytes()); // "Xcur"
-        data.extend_from_slice(&1u32.to_le_bytes()); // header size... (unused)
-        data.extend_from_slice(&1u32.to_le_bytes()); // version
-        data.extend_from_slice(&ntoc.to_le_bytes());
-        let mut pos = 16 + sizes.len() * 12;
-        let mut chunks = Vec::new();
-        for &size in sizes {
-            data.extend_from_slice(&0xFFFD_0002u32.to_le_bytes());
-            data.extend_from_slice(&size.to_le_bytes());
-            data.extend_from_slice(&(pos as u32).to_le_bytes());
-            let mut chunk = Vec::new();
-            chunk.extend_from_slice(&36u32.to_le_bytes());
-            chunk.extend_from_slice(&0xFFFD_0002u32.to_le_bytes());
-            chunk.extend_from_slice(&size.to_le_bytes());
-            chunk.extend_from_slice(&1u32.to_le_bytes()); // version
-            chunk.extend_from_slice(&size.to_le_bytes()); // width
-            chunk.extend_from_slice(&size.to_le_bytes()); // height
-            chunk.extend_from_slice(&2u32.to_le_bytes()); // xhot
-            chunk.extend_from_slice(&3u32.to_le_bytes()); // yhot
-            chunk.extend_from_slice(&0u32.to_le_bytes()); // delay
-            chunk.resize(36 + (size * size * 4) as usize, 0xFF);
-            pos += chunk.len();
-            chunks.push(chunk);
-        }
-        for chunk in chunks {
-            data.extend_from_slice(&chunk);
-        }
-        data
-    }
-
-    #[test]
-    fn parses_images_and_picks_best_size() {
-        let data = synthetic_xcursor(&[16, 24, 48]);
-        let file = parse_xcursor(&data).expect("valid file");
-        assert_eq!(file.images.len(), 3);
-        assert_eq!(file.images[0].size, 48, "largest first");
-        assert_eq!(best_image(&file, 24).unwrap().size, 24, "exact");
-        assert_eq!(best_image(&file, 32).unwrap().size, 48, "larger nearest");
-        assert_eq!(best_image(&file, 8).unwrap().size, 16, "smaller nearest");
-    }
-
-    #[test]
-    fn rejects_garbage() {
-        assert!(parse_xcursor(b"not a cursor").is_none());
-        assert!(parse_xcursor(&[]).is_none());
-        let mut data = synthetic_xcursor(&[24]);
-        data.truncate(20);
-        assert!(parse_xcursor(&data).is_none());
-    }
-
     #[test]
     fn shape_candidates_cover_common_shapes() {
         for shape in [1, 4, 9, 13, 18, 23, 26, 32] {
@@ -433,21 +466,68 @@ mod tests {
     }
 
     #[test]
-    fn resolves_and_loads_an_installed_theme() {
-        // Host-dependent: Bibata-Modern-Ice is the development machine's
-        // $XCURSOR_THEME; skip silently where it is not installed.
-        let theme = CursorTheme::resolve("Bibata-Modern-Ice", 24);
-        if theme.chain.is_empty() {
-            eprintln!("Bibata-Modern-Ice not installed; skipping");
-            return;
-        }
+    fn svg_meta_reads_hotspot_and_viewbox() {
+        let svg = b"<svg width=\"256\" height=\"256\" viewBox=\"0 0 256 256\" \
+                   data-hotspot-x=\"55\" data-hotspot-y=\"17\"><path/></svg>";
+        let meta = svg_meta(svg);
+        assert_eq!(meta.hotspot, (55.0, 17.0));
+        assert_eq!(meta.native, (256.0, 256.0));
+    }
+
+    #[test]
+    fn svg_meta_defaults_when_unstamped() {
+        let svg = b"<svg viewBox=\"0 0 32 32\"><circle/></svg>";
+        let meta = svg_meta(svg);
+        assert_eq!(meta.hotspot, (0.0, 0.0), "unstamped -> top-left");
+        assert_eq!(meta.native, (32.0, 32.0));
+    }
+
+    #[test]
+    fn resolution_always_appends_the_bundled_fallback() {
+        // No filesystem theme by this name exists on the test host, yet the
+        // chain must still resolve a cursor via the bundled theme.
+        let theme = CursorTheme::resolve("aegis-nonexistent-theme-xyz", 24);
+        assert!(
+            theme.chain.iter().any(|s| matches!(s, Source::Bundled)),
+            "bundled fallback is always present"
+        );
+    }
+
+    #[test]
+    fn bundled_theme_loads_default_cursor() {
+        let theme = CursorTheme::resolve("aegis-nonexistent-theme-xyz", 24);
         let img = theme
-            .load_shape(1, 2.0)
-            .expect("left_ptr loads from the theme");
-        assert!(img.width > 0 && img.height > 0);
+            .load_shape(1, 1.0)
+            .expect("bundled default (left_ptr) cursor rasterizes");
+        assert_eq!(img.width, 24);
+        assert_eq!(img.height, 24);
         assert_eq!(img.pixels.len(), (img.width * img.height * 4) as usize);
         assert!(img.xhot < img.width && img.yhot < img.height);
-        // 2x scale prefers a 48px image over the 24px base when available.
-        assert!(img.size >= 24);
+        // The rasterizer must produce visible art, not a correctly-sized
+        // blank buffer (guards against a silent transform/render bug). BGRA:
+        // alpha is every 4th byte.
+        let opaque = img
+            .pixels
+            .chunks_exact(4)
+            .any(|px| px[3] > 0);
+        assert!(opaque, "rasterized cursor has at least one opaque pixel");
+    }
+
+    #[test]
+    fn hotspot_scales_with_render_size() {
+        let theme = CursorTheme::resolve("aegis-nonexistent-theme-xyz", 32);
+        let img = theme.load_shape(1, 1.0).expect("bundled left_ptr");
+        // left_ptr hotspot (55, 17) in 256-space -> ~6.9, ~2.1 at 32px.
+        assert_eq!(img.xhot, 7, "x hot scales: 55 * 32 / 256 = 6.875 -> 7");
+        assert!(img.yhot <= 3, "y hot scales: 17 * 32 / 256 = 2.125");
+    }
+
+    #[test]
+    fn rasterize_clamps_oversized_requests() {
+        // The source art is 256px; requesting far more must not allocate a
+        // giant sprite, it is clamped to the native cap.
+        let theme = CursorTheme::resolve("aegis-nonexistent-theme-xyz", 4096);
+        let img = theme.load_shape(9, 4.0).expect("bundled text cursor");
+        assert!(img.width <= 256);
     }
 }

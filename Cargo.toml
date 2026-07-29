@@ -121,6 +121,19 @@ image = { version = "0.25", default-features = false, features = [
     "rayon",
 ] }
 
+# SVG cursor rasterization (pure Rust; see ADR-0070 and cursor.rs). The
+# bundled Bibata cursors are path/fill/stroke art with no text and no
+# embedded raster images, so resvg/usvg default-features stay off: that
+# drops the text-shaping (rustybuzz/fontdb/unicode) and image-decode
+# (gif/webp/jpeg) trees from the compositor build entirely.
+resvg = { version = "0.47", default-features = false }
+usvg = { version = "0.47", default-features = false }
+tiny-skia = "0.12"
+
+# Embed the bundled Bibata-Modern-Ice cursor theme into the binary so a
+# sane default exists even with no XCURSOR_THEME and a bare TTY.
+include_dir = "0.7"
+
 [profile.dev]
 opt-level = 1
 debug = 1

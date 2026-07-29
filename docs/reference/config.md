@@ -92,7 +92,7 @@ Applied live on reload.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `reduced_motion` | boolean | `false` | Accessibility reduced-motion switch. When `true`, every chrome and lens transition (dock magnification, launcher reveal, fades, slides) resolves to its end state in at most one frame. |
-| `cursor_theme` | string | none | XDG cursor theme for the software cursor on direct display. `$XCURSOR_THEME` wins when set; use this on bare-metal sessions with no cursor environment. |
+| `cursor_theme` | string | none | SVG cursor theme for the software cursor on direct display, resolved through the freedesktop cursor spec. `$XCURSOR_THEME` wins when set; use this on bare-metal sessions with no cursor environment. When unset or not installed, the bundled Bibata-Modern-Ice theme is used. |
 | `cursor_size` | integer | `24` | Cursor size in logical pixels, 8–128. `$XCURSOR_SIZE` wins when set. |
 | `window_decorations` | string | `"borderless"` | Decoration ownership for Wayland toplevels. `"borderless"` makes Aegis own window controls without drawing per-window title bars; `"client-side"` asks applications to draw their own frames. |
 

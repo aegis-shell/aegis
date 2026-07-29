@@ -76,3 +76,4 @@ background and how the decisions fit together, see
 | [0067](0067-remote-optics-dependencies-and-local-overrides.md) | Remote Optics dependencies with local development overrides | Accepted |
 | [0068](0068-cargo-native-development-and-environment-backend-selection.md) | Cargo-native development and environment-only backend selection | Superseded by [0069](0069-documentation-owned-installation-and-throwaway-development-staging.md) |
 | [0069](0069-documentation-owned-installation-and-throwaway-development-staging.md) | Documentation-owned installation and throwaway development staging (supersedes [0068](0068-cargo-native-development-and-environment-backend-selection.md)) | Accepted |
+| [0070](0070-svg-cursors-with-bundled-bibata-fallback.md) | SVG cursors with a bundled Bibata fallback | Accepted |

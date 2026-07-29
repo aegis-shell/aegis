@@ -35,6 +35,14 @@ aegis-launcher = { workspace = true }
 flux = { workspace = true }
 lens = { workspace = true }
 image = { workspace = true }
+# SVG cursor rasterization for the software cursor (ADR-0070). Pure Rust,
+# with text/raster-image features off since the bundled cursor art is
+# path/fill/stroke only.
+resvg = { workspace = true }
+usvg = { workspace = true }
+tiny-skia = { workspace = true }
+# Embeds the bundled Bibata-Modern-Ice cursor theme as the default fallback.
+include_dir = { workspace = true }
 log.workspace = true
 env_logger.workspace = true
 # Direct deps purely so this binary's build script receives DEP_FLUX_RPATHS /

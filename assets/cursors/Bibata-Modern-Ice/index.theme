@@ -1,0 +1,10 @@
+[Icon Theme]
+Name=Bibata-Modern-Ice
+Comment=Bibata Modern Ice (white fill, black stroke) — bundled default cursor theme.
+Directories=cursors
+
+[cursors]
+Size=24
+MinSize=8
+MaxSize=512
+Type=Fixed

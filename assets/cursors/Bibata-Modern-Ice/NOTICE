@@ -1,0 +1,4 @@
+The SVG cursor art in this directory is derived from Bibata Cursor
+(https://github.com/ful1e5/Bibata_Cursor), licensed under GPL-3.0.
+Recoloured to the Modern-Ice palette with hotspots stamped in by
+scripts/prepare-bibata-cursors.py. See LICENSE in this directory.
