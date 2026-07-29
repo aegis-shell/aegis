@@ -87,6 +87,7 @@ pub(super) struct CompositorRuntime {
     pub(super) reload: Option<aegis_config::ReloadWatcher>,
     pub(super) quit_requested: bool,
     pub(super) ipc_cmd_rx: std::sync::mpsc::Receiver<IpcCommandRequest>,
+    pub(super) system_control_rx: std::sync::mpsc::Receiver<SystemControlRequest>,
     pub(super) capture_rx: std::sync::mpsc::Receiver<CaptureRequest>,
     pub(super) realm_control_rx: std::sync::mpsc::Receiver<RealmControlRequest>,
     pub(super) settings_control_rx: std::sync::mpsc::Receiver<SettingsControlRequest>,

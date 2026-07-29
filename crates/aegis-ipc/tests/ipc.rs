@@ -38,6 +38,9 @@ struct TestHandler {
     realm_connections: Mutex<Vec<u64>>,
     settings: Mutex<SettingsSnapshot>,
     system_status: Mutex<SystemStatus>,
+    system_actions: Mutex<Vec<SystemAction>>,
+    system_connections: Mutex<Vec<u64>>,
+    system_result: Mutex<Result<(), String>>,
     settings_actions: Mutex<Vec<SettingsAction>>,
     settings_connections: Mutex<Vec<u64>>,
     refusals: Mutex<Vec<(u64, aegis_ipc::JournalMutation, String)>>,
@@ -72,6 +75,9 @@ impl TestHandler {
                 brightness: Some(73),
                 ..SystemStatus::default()
             }),
+            system_actions: Mutex::new(Vec::new()),
+            system_connections: Mutex::new(Vec::new()),
+            system_result: Mutex::new(Ok(())),
             settings_actions: Mutex::new(Vec::new()),
             settings_connections: Mutex::new(Vec::new()),
             refusals: Mutex::new(Vec::new()),
@@ -111,6 +117,9 @@ impl TestHandler {
                 brightness: Some(73),
                 ..SystemStatus::default()
             }),
+            system_actions: Mutex::new(Vec::new()),
+            system_connections: Mutex::new(Vec::new()),
+            system_result: Mutex::new(Ok(())),
             settings_actions: Mutex::new(Vec::new()),
             settings_connections: Mutex::new(Vec::new()),
             refusals: Mutex::new(Vec::new()),
@@ -185,6 +194,11 @@ impl Handler for TestHandler {
     }
     fn system_status(&self) -> SystemStatus {
         self.system_status.lock().unwrap().clone()
+    }
+    fn system_action(&self, conn_id: u64, action: SystemAction) -> Result<(), String> {
+        self.system_connections.lock().unwrap().push(conn_id);
+        self.system_actions.lock().unwrap().push(action);
+        self.system_result.lock().unwrap().clone()
     }
     fn settings_action(
         &self,
@@ -560,14 +574,9 @@ fn system_status_query_and_control_round_trip() {
     let action = SystemAction::SetBrightness { level: 55 };
     client
         .apply_system_action(action.clone())
-        .expect("queue system control");
-    assert!(
-        handler
-            .commands
-            .lock()
-            .unwrap()
-            .contains(&Command::System { action })
-    );
+        .expect("apply system control");
+    assert_eq!(*handler.system_actions.lock().unwrap(), [action]);
+    assert!(handler.commands.lock().unwrap().is_empty());
 
     let mut denied =
         Client::connect_scoped(&path, requested, "focus-first").expect("restricted connect");
@@ -575,6 +584,35 @@ fn system_status_query_and_control_round_trip() {
         .apply_system_action(SystemAction::ToggleMute)
         .unwrap_err();
     assert!(error.to_string().contains("out of scope"), "{error}");
+}
+
+#[test]
+fn system_control_returns_the_authoritative_apply_error() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(vec![]));
+    *handler.system_result.lock().unwrap() = Err("backend refused system control".into());
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let mut client = Client::connect_with(
+        &path,
+        Capabilities {
+            query: true,
+            control: true,
+            ..Capabilities::default()
+        },
+    )
+    .expect("connect");
+
+    let error = client
+        .apply_system_action(SystemAction::ToggleMute)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("backend refused system control"),
+        "{error}"
+    );
+    assert_eq!(
+        *handler.system_actions.lock().unwrap(),
+        [SystemAction::ToggleMute]
+    );
 }
 
 #[test]
@@ -596,6 +634,7 @@ fn invalid_system_control_is_refused_before_dispatch() {
         .apply_system_action(SystemAction::SetVolume { level: 101 })
         .unwrap_err();
     assert!(error.to_string().contains("outside 0..=100"), "{error}");
+    assert!(handler.system_actions.lock().unwrap().is_empty());
     assert!(handler.commands.lock().unwrap().is_empty());
 }
 

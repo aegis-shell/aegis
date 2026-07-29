@@ -9,6 +9,7 @@ use super::*;
 /// state is not `Send`, so connection threads must not touch it directly.
 pub(super) struct LiveChannels {
     pub(super) commands: std::sync::mpsc::Sender<IpcCommandRequest>,
+    pub(super) system_controls: std::sync::mpsc::Sender<SystemControlRequest>,
     pub(super) capture: std::sync::mpsc::Sender<CaptureRequest>,
     pub(super) realm_controls: std::sync::mpsc::Sender<RealmControlRequest>,
     pub(super) settings_controls: std::sync::mpsc::Sender<SettingsControlRequest>,
@@ -29,6 +30,7 @@ pub(super) struct LiveState {
     notifications: std::sync::Arc<std::sync::Mutex<aegis_core::notify::NotificationQueue>>,
     journal: std::sync::Arc<std::sync::Mutex<aegis_ipc::Journal>>,
     commands: std::sync::Mutex<std::sync::mpsc::Sender<IpcCommandRequest>>,
+    system_controls: std::sync::Mutex<std::sync::mpsc::Sender<SystemControlRequest>>,
     capture: std::sync::Mutex<std::sync::mpsc::Sender<CaptureRequest>>,
     realm_controls: std::sync::Mutex<std::sync::mpsc::Sender<RealmControlRequest>>,
     settings_controls: std::sync::Mutex<std::sync::mpsc::Sender<SettingsControlRequest>>,
@@ -61,6 +63,7 @@ impl LiveState {
             notifications,
             journal,
             commands: std::sync::Mutex::new(channels.commands),
+            system_controls: std::sync::Mutex::new(channels.system_controls),
             capture: std::sync::Mutex::new(channels.capture),
             realm_controls: std::sync::Mutex::new(channels.realm_controls),
             settings_controls: std::sync::Mutex::new(channels.settings_controls),
@@ -179,6 +182,22 @@ impl aegis_ipc::Handler for LiveState {
             origin: aegis_ipc::Origin::Ipc { conn_id },
             command: cmd,
         });
+    }
+
+    fn system_action(&self, conn_id: u64, action: aegis_ipc::SystemAction) -> Result<(), String> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.system_controls
+            .lock()
+            .unwrap()
+            .send(SystemControlRequest {
+                origin: aegis_ipc::Origin::Ipc { conn_id },
+                action,
+                reply: reply_tx,
+            })
+            .map_err(|_| "compositor is shutting down".to_owned())?;
+        reply_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|_| "system control timed out".to_owned())?
     }
 
     fn resolve_scope(&self, name: &str) -> Option<aegis_ipc::Scope> {

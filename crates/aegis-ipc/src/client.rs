@@ -442,7 +442,8 @@ impl Client {
         }
     }
 
-    /// Queue one immediate live-system control.
+    /// Apply one live-system control and return only after the compositor main
+    /// loop reports the authoritative result.
     pub fn apply_system_action(&mut self, action: SystemAction) -> io::Result<()> {
         self.command(Command::System { action })
     }
@@ -680,9 +681,11 @@ impl Client {
         }
     }
 
-    /// Submit a control/session command. Returns once the server has queued
-    /// it (not once the compositor has applied it); re-query with [`Client::windows`]
-    /// or subscribe to [`Event::WindowsChanged`] to observe the effect.
+    /// Submit a control/session command. Most commands return once the server
+    /// has queued them; [`Command::System`] is the exception and returns only
+    /// after the compositor main loop reports its authoritative apply result.
+    /// Re-query with [`Client::windows`] or subscribe to
+    /// [`Event::WindowsChanged`] to observe fire-and-forget commands.
     pub fn command(&mut self, cmd: Command) -> io::Result<()> {
         write_msg(&mut self.stream, &Request::Do { cmd })?;
         match read_msg::<_, Response>(&mut self.stream)? {

@@ -1,6 +1,6 @@
 # IPC Reference
 
-The aegis IPC is protocol version 10, carried as length-framed JSON over the
+The aegis IPC is protocol version 11, carried as length-framed JSON over the
 owner-only Unix socket at `$XDG_RUNTIME_DIR/aegis.sock`. Every connection starts
 with `Hello`; commands are accepted only after capability and scope checks.
 JSON messages are limited to 16 MiB. Large immutable capture and frame
@@ -98,8 +98,10 @@ live state carry the unchanged revision in both revision fields.
 | `Screenshot { path }` | `control` | `Screenshot` | Focused output |
 | `Quit` | `session` | — | Session |
 
-`Do` returns `Ok` after the command is queued, not after it is applied. Read
-the next snapshot or journal entry to observe the result.
+Most `Do` requests return `Ok` after the command is queued, not after it is
+applied. `System { action }` is the exception: its reply is the compositor
+main loop's authoritative apply result. Read the next snapshot or journal
+entry to observe fire-and-forget commands.
 Window-targeted physical commands are reauthorized on the compositor thread.
 If the human Realm is only an observer, focus, minimize, close, move,
 geometry, and workspace mutations produce `Effect::Refused` and do not reach
@@ -139,10 +141,12 @@ chrome and external IPC clients:
 
 The command requires `control`, a live privileged lease, and permission for
 the `SystemControl` operation when a named scope restricts `ops`. The server
-validates bounds before dispatch, starts host-service commands without
-blocking the compositor, publishes an optimistic snapshot, and reconciles it
-through the host status poller. `SystemStatusChanged` tells subscribers to
-re-query; it carries no partial snapshot. These actions do not write the
+validates bounds before dispatch and returns only after the compositor main
+loop applies or refuses the action. Accepted host-service commands still run
+asynchronously outside the compositor; the main loop publishes an optimistic
+snapshot and reconciles it through the host status poller.
+`SystemStatusChanged` tells subscribers to re-query; it carries no partial
+snapshot. These actions do not write the
 revisioned compositor configuration.
 
 ## Persistent Settings

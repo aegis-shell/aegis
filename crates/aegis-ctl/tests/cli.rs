@@ -23,6 +23,7 @@ fn scratch() -> PathBuf {
 /// A handler returning a fixed window/workspace set and recording commands.
 struct CtlHandler {
     commands: Mutex<Vec<Command>>,
+    system_actions: Mutex<Vec<aegis_ipc::SystemAction>>,
     realm_actions: Mutex<Vec<RealmAction>>,
 }
 
@@ -30,6 +31,7 @@ impl CtlHandler {
     fn new() -> Self {
         CtlHandler {
             commands: Mutex::new(Vec::new()),
+            system_actions: Mutex::new(Vec::new()),
             realm_actions: Mutex::new(Vec::new()),
         }
     }
@@ -126,6 +128,10 @@ impl Handler for CtlHandler {
     }
     fn command(&self, _conn_id: u64, cmd: Command) {
         self.commands.lock().unwrap().push(cmd);
+    }
+    fn system_action(&self, _conn_id: u64, action: aegis_ipc::SystemAction) -> Result<(), String> {
+        self.system_actions.lock().unwrap().push(action);
+        Ok(())
     }
     fn journal_since(&self, _since: u64) -> aegis_ipc::JournalSnapshot {
         aegis_ipc::JournalSnapshot {
@@ -306,19 +312,14 @@ fn system_control_commands_send_typed_actions() {
     aegis_ctl::run(&path, &["system".into(), "step-volume".into(), "-2".into()]).unwrap();
     aegis_ctl::run(&path, &["system".into(), "wifi".into(), "off".into()]).unwrap();
     assert_eq!(
-        handler.commands.lock().unwrap().as_slice(),
+        handler.system_actions.lock().unwrap().as_slice(),
         &[
-            Command::System {
-                action: aegis_ipc::SystemAction::SetVolume { level: 55 },
-            },
-            Command::System {
-                action: aegis_ipc::SystemAction::StepVolume { delta: -2 },
-            },
-            Command::System {
-                action: aegis_ipc::SystemAction::SetWifi { enabled: false },
-            },
+            aegis_ipc::SystemAction::SetVolume { level: 55 },
+            aegis_ipc::SystemAction::StepVolume { delta: -2 },
+            aegis_ipc::SystemAction::SetWifi { enabled: false },
         ]
     );
+    assert!(handler.commands.lock().unwrap().is_empty());
 }
 
 #[test]

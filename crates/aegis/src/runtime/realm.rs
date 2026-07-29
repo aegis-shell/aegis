@@ -19,6 +19,14 @@ pub(super) struct IpcCommandRequest {
     pub(super) command: aegis_ipc::Command,
 }
 
+/// One live-system mutation that must return the main loop's authoritative
+/// apply result rather than only acknowledging IPC queueing.
+pub(super) struct SystemControlRequest {
+    pub(super) origin: aegis_ipc::Origin,
+    pub(super) action: aegis_ipc::SystemAction,
+    pub(super) reply: std::sync::mpsc::Sender<Result<(), String>>,
+}
+
 pub(super) struct RealmControlRequest {
     pub(super) origin: aegis_ipc::Origin,
     pub(super) action: aegis_ipc::RealmAction,

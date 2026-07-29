@@ -183,8 +183,18 @@ pub trait Handler: Send + Sync {
     /// Receive a control/session [`Command`]. Called from a connection
     /// thread; the implementation must forward to the compositor's main loop
     /// because the Wayland server state is not `Send`. Fire-and-forget: the
-    /// caller acknowledges queuing, not completion.
+    /// caller acknowledges queuing, not completion. [`Command::System`] is
+    /// dispatched through [`Handler::system_action`] instead.
     fn command(&self, conn_id: u64, cmd: Command);
+    /// Commit one live-system action on the compositor main thread and return
+    /// its authoritative apply result.
+    fn system_action(
+        &self,
+        _conn_id: u64,
+        _action: crate::schema::SystemAction,
+    ) -> Result<(), String> {
+        Err("system control unsupported".into())
+    }
     /// Commit one synchronous Realm lifecycle request on the compositor main
     /// thread and return its authoritative receipt.
     fn realm_action(
@@ -903,6 +913,11 @@ fn drive_read_loop<H: Handler>(
                         message.clone(),
                     );
                     Response::Error { message }
+                } else if let Command::System { action } = cmd {
+                    match handler.system_action(conn_id, action) {
+                        Ok(()) => Response::Ok,
+                        Err(message) => Response::Error { message },
+                    }
                 } else {
                     handler.command(conn_id, cmd);
                     Response::Ok

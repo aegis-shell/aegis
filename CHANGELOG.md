@@ -28,6 +28,10 @@ project cuts a tagged release.
 
 ### Reliability
 
+- IPC protocol version 11 makes live-system controls return the compositor
+  main loop's authoritative apply result instead of only acknowledging a
+  queued command. Callers can now distinguish an accepted control from a
+  live-state refusal.
 - Embed the default static wallpaper in the executable and reject missing
   wallpaper paths before attempting image decode. Installed builds no longer
   repeatedly try to open a build-tree-only wallpaper path.

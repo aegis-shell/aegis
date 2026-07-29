@@ -702,6 +702,47 @@ impl CompositorRuntime {
             );
             let _ = request.reply.send(result);
         }
+        while let Ok(request) = self.system_control_rx.try_recv() {
+            let action = request.action;
+            let command = aegis_ipc::Command::System {
+                action: action.clone(),
+            };
+            let result = if self.server.session_locked() {
+                Err("session is locked".into())
+            } else {
+                apply_system_action(
+                    &mut self.server,
+                    &self.notif_queue,
+                    &mut self.system_status,
+                    action,
+                )
+            };
+            if result.is_ok() {
+                publish_system_status_parts(
+                    &self.system_status,
+                    &mut self.shell,
+                    &self.live,
+                    &self.ipc,
+                );
+                self.chrome_dirty = true;
+                let _ = self.status_refresh_tx.send(());
+            }
+            let effect = match &result {
+                Ok(()) => aegis_ipc::Effect::Applied,
+                Err(reason) => aegis_ipc::Effect::Refused {
+                    reason: reason.clone(),
+                },
+            };
+            journal_effect_and_broadcast(
+                &self.journal,
+                &self.ipc,
+                self.start.elapsed().as_millis() as u64,
+                request.origin,
+                command,
+                effect,
+            );
+            let _ = request.reply.send(result);
+        }
         let mut pending_synthetic_input = Vec::new();
         let mut pending_screenshots = Vec::new();
         while let Ok(request) = self.ipc_cmd_rx.try_recv() {

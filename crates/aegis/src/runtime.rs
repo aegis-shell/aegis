@@ -559,6 +559,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // IPC rather than crashing. `ipc` is held to the end of `run()` so its
     // `Drop` removes the socket.
     let (ipc_cmd_tx, ipc_cmd_rx) = std::sync::mpsc::channel::<IpcCommandRequest>();
+    let (system_control_tx, system_control_rx) = std::sync::mpsc::channel::<SystemControlRequest>();
     let (capture_tx, capture_rx) = std::sync::mpsc::channel::<CaptureRequest>();
     let (realm_control_tx, realm_control_rx) = std::sync::mpsc::channel::<RealmControlRequest>();
     let (settings_control_tx, settings_control_rx) =
@@ -574,6 +575,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let live = std::sync::Arc::new(LiveState::new(
         LiveChannels {
             commands: ipc_cmd_tx,
+            system_controls: system_control_tx,
             capture: capture_tx,
             realm_controls: realm_control_tx,
             settings_controls: settings_control_tx,
@@ -718,6 +720,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         reload,
         quit_requested,
         ipc_cmd_rx,
+        system_control_rx,
         capture_rx,
         realm_control_rx,
         settings_control_rx,
