@@ -127,9 +127,12 @@ startup.
 
 **Verification.** aegis starts from a TTY on a single monitor, lights the
 display, and runs M3's chrome against real clients without a host session.
-The known-risk paths to exercise first are the flip-wait under input load,
-VT round-trip with a flip in flight, and monitor unplug/replug during
-presentation.
+The known-risk paths to exercise first are live event dispatch while an
+atomic batch waits for every CRTC, a VT round-trip with a flip in flight, and
+monitor unplug/replug during presentation. Mixed-refresh monitors currently
+share one presentation domain and therefore retire at its slowest CRTC; the
+constraint and state lifecycle are recorded in
+[ADR-0077](../adr/0077-presentation-domain-redraw-state-machine.md).
 
 ## M5: Configuration and IPC
 

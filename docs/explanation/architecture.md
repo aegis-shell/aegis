@@ -94,7 +94,6 @@ user sees or can do" tasks:
 - **"Start or discover apps"** → `aegis-desktop-entries` (discovery) + `aegis-launcher`
   (spawn). `aegis-launcher` is intentionally narrow: process detachment and
   environment, not window management.
-
 ## Settings Boundary
 
 Persistent settings use the same state-in, intent-out direction as the rest
@@ -130,6 +129,15 @@ hardware directly with libinput input and libseat session ownership. Both
 implement one `Backend` trait so the server, renderer, and shell are written
 once.
 
+Rendering and event dispatch have separate ownership. A submitted DRM frame
+belongs to one **presentation domain** until every CRTC in its atomic batch
+reports a page flip. Client requests, input, hotplug, and session events
+continue during that interval, while visible changes coalesce into one next
+redraw. The current domain spans all active outputs because they share one
+desktop framebuffer and atomic commit. This preserves the real backend
+boundary instead of pretending the outputs can retire independently. See
+[ADR-0077](../adr/0077-presentation-domain-redraw-state-machine.md).
+
 The nested backend, and the server itself, use raw libwayland over FFI
 rather than a higher-level framework
 ([ADR-0002](../adr/0002-hand-rolled-wayland-server.md),
@@ -140,35 +148,37 @@ instance.
 
 ## Per-Frame Data Flow
 
-In nested operation, each frame runs the following sequence:
+Each frame follows this sequence:
 
-1. The backend pumps host-window events, producing input events and resize
-   or redraw signals, and holds the `VkSurfaceKHR`. The loop blocks on
-   these events when idle and waits with a ~60 fps deadline while
-   animating; the presentation engine (FIFO swapchain acquire nested,
-   the KMS page-flip wait on DRM) sets the real cadence
-   ([ADR-0038](../adr/0038-frame-pacing.md)).
-2. The server dispatches its event loop; clients commit surfaces and attach
-   buffers (`wl_shm` or dmabuf), updating the surface tree in `aegis-core`.
-   shm contents are snapshotted at commit time, copying only the damaged
-   rows when the frame's size and damage allow
-   ([ADR-0039](../adr/0039-damage-driven-shm-refresh.md)).
-3. The renderer turns each mapped surface into a flux texture — dmabuf by
-   zero-copy import, `wl_shm` by CPU upload — refreshing only the damage
-   bounding box for same-size commits. Imported dma-bufs live in a bounded
-   per-surface cache keyed by stable buffer identity; a new acquire fence for
-   a reused buffer becomes a Flux GPU wait for that frame. The renderer
-   composites surfaces in z-order, then overlays the lens chrome. When a
-   wallpaper is loaded (see [ADR-0018](../adr/0018-wallpaper-crate.md)),
-   `aegis-wallpaper` draws it as the bottom-most layer before the renderer
-   runs.
-4. The frame is submitted and presented to the host surface.
-5. Input is routed through the physical Realm's seat. Agent input uses an
-   independent Realm seat and never shares focus, modifiers, grabs,
-   selection, drag-and-drop, or text-input state with the physical stream.
-6. Client buffers are released once the GPU no longer needs them — against
-   the completion fence on DRM, or a few frames late on nested
-   ([ADR-0038](../adr/0038-frame-pacing.md)).
+1. The backend dispatches host, input, session, hotplug, and client-wakeup
+   events. Dispatch remains live when a previous DRM frame is waiting for
+   vblank.
+2. The server accepts surface commits and attached `wl_shm` or dma-buf
+   buffers. Input is routed through the owning Realm seat. Events received
+   during an in-flight presentation preserve their edge information while
+   coalescing into one next redraw.
+3. A queued redraw opens one synchronous render transaction. The renderer
+   imports or refreshes only changed client content, composites the mapped
+   surface trees, and draws wallpaper and shell chrome. A no-damage result
+   skips both rendering and presentation.
+4. A successful nested submission returns pacing to the outer compositor. A
+   successful DRM submission transfers the complete atomic batch to KMS and
+   waits asynchronously for every CRTC page flip. Pending client frame
+   callbacks complete on successful submission; callback-only work uses an
+   estimated refresh boundary without creating an empty atomic commit.
+5. VT loss or output recreation cancels the old presentation epoch. Resume
+   rebuilds the backend resources and presents a full frame before incremental
+   damage resumes.
+6. Client buffers release once the GPU or display engine no longer needs
+   them: against an explicit completion fence on DRM, or after enough later
+   nested frames to retire every Flux slot.
+
+The lifecycle and no-damage callback rules are recorded in
+[ADR-0077](../adr/0077-presentation-domain-redraw-state-machine.md).
+Incremental `wl_shm` refresh is recorded in
+[ADR-0039](../adr/0039-damage-driven-shm-refresh.md), and reusable dma-buf
+synchronization is recorded in
+[ADR-0076](../adr/0076-linux-dmabuf-device-feedback-and-reusable-buffer-sync.md).
 
 Client GPU buffers reach flux through a dma-buf import path added to flux
 ([ADR-0004](../adr/0004-client-buffers-via-flux-dmabuf-import.md)). The

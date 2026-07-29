@@ -26,6 +26,7 @@ use crate::{Error, Source};
 /// saves CPU and memory bandwidth at the cost of smoothness; 24 fps
 /// matches cinema and is well below typical display refresh rates.
 const VIDEO_FPS: u32 = 24;
+const VIDEO_FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / VIDEO_FPS as u64);
 
 /// How long `open` waits for the first frame before declaring ffmpeg
 /// unusable for this source.
@@ -56,6 +57,9 @@ pub(super) struct VideoSource {
     last_seen_seq: u64,
     /// Bumped each time `current` is refreshed.
     r#gen: u64,
+    /// Next wall-clock assessment when no decoded frame is already waiting.
+    /// Unrelated compositor redraws do not move this deadline.
+    next_poll_at: Instant,
 }
 
 impl VideoSource {
@@ -106,6 +110,7 @@ impl VideoSource {
             current: Vec::new(),
             last_seen_seq: 0,
             r#gen: 0,
+            next_poll_at: Instant::now(),
         })
     }
 }
@@ -164,6 +169,10 @@ fn spawn_ffmpeg(path: &Path, w: u32, h: u32) -> Result<std::process::Child, std:
     Command::new("ffmpeg")
         .arg("-loglevel")
         .arg("error")
+        // Without realtime input pacing ffmpeg decodes and loops as fast as
+        // the CPU allows; the compositor would then sample arbitrary frames
+        // and playback speed would depend on unrelated redraw traffic.
+        .arg("-re")
         .arg("-i")
         .arg(path)
         .arg("-vf")
@@ -199,7 +208,7 @@ impl Source for VideoSource {
         (self.width, self.height)
     }
 
-    fn poll(&mut self, _now: Instant) -> (&[u8], u64) {
+    fn poll(&mut self, now: Instant) -> (&[u8], u64) {
         let newer: Option<Vec<u8>> = {
             let s = self.slot.lock().unwrap();
             if s.seq != self.last_seen_seq {
@@ -209,10 +218,17 @@ impl Source for VideoSource {
                 None
             }
         };
+        let refreshed = newer.is_some();
         if let Some(p) = newer {
             self.current.clear();
             self.current.extend_from_slice(&p);
             self.r#gen = self.r#gen.wrapping_add(1);
+        }
+        if refreshed || now >= self.next_poll_at {
+            // If decode is late, move the retry forward instead of returning
+            // a permanently expired deadline that would busy-loop the main
+            // compositor thread.
+            self.next_poll_at = now + VIDEO_FRAME_INTERVAL;
         }
         (&self.current, self.r#gen)
     }
@@ -222,8 +238,50 @@ impl Source for VideoSource {
     }
 
     fn next_frame_in(&self) -> Option<Duration> {
-        // The reader republishes frames at the `fps=` rate fed to ffmpeg;
-        // polling at that cadence keeps uploads aligned with fresh frames.
-        Some(Duration::from_secs(1) / VIDEO_FPS)
+        let frame_ready = self.slot.lock().unwrap().seq != self.last_seen_seq;
+        Some(next_video_poll_in(
+            frame_ready,
+            self.next_poll_at,
+            Instant::now(),
+        ))
+    }
+}
+
+fn next_video_poll_in(frame_ready: bool, next_poll_at: Instant, now: Instant) -> Duration {
+    if frame_ready {
+        Duration::ZERO
+    } else {
+        next_poll_at.saturating_duration_since(now)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decoded_frame_wakes_the_compositor_immediately() {
+        let now = Instant::now();
+        assert_eq!(
+            next_video_poll_in(true, now + VIDEO_FRAME_INTERVAL, now),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn quiet_video_source_preserves_its_absolute_deadline() {
+        let now = Instant::now();
+        assert_eq!(
+            next_video_poll_in(false, now + VIDEO_FRAME_INTERVAL, now),
+            VIDEO_FRAME_INTERVAL
+        );
+        assert_eq!(
+            next_video_poll_in(
+                false,
+                now + VIDEO_FRAME_INTERVAL,
+                now + Duration::from_millis(10)
+            ),
+            VIDEO_FRAME_INTERVAL - Duration::from_millis(10)
+        );
     }
 }

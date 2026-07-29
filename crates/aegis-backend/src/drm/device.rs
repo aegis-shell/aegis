@@ -403,14 +403,7 @@ impl DrmBackend {
             return Err(DrmError::Inactive);
         }
         if !self.pending_flips.is_empty() {
-            self.wait_for_flip(Duration::from_secs(1))?;
-        }
-        // The wait above pumps session and hotplug events, either of which may
-        // have changed the world under us. A queued resize means the display
-        // set was swapped and this frame was rendered for the old topology:
-        // skip it instead of committing a stale buffer against the new set.
-        if !self.active || !self.render_ready {
-            return Err(DrmError::Inactive);
+            return Err(DrmError::Busy);
         }
         if self.pending_resize.is_some() {
             return Err(DrmError::Reconfigured);
@@ -447,10 +440,7 @@ impl DrmBackend {
             return Err(DrmError::Inactive);
         }
         if !self.pending_flips.is_empty() {
-            self.wait_for_flip(Duration::from_secs(1))?;
-        }
-        if !self.active || !self.render_ready {
-            return Err(DrmError::Inactive);
+            return Err(DrmError::Busy);
         }
         if self.pending_resize.is_some() {
             return Err(DrmError::Reconfigured);
@@ -508,10 +498,7 @@ impl DrmBackend {
             return Err(DrmError::Inactive);
         }
         if !self.pending_flips.is_empty() {
-            self.wait_for_flip(Duration::from_secs(1))?;
-        }
-        if !self.active || !self.render_ready {
-            return Err(DrmError::Inactive);
+            return Err(DrmError::Busy);
         }
         if self.pending_resize.is_some() {
             return Err(DrmError::Reconfigured);

@@ -381,12 +381,19 @@ impl CompositorRuntime {
                 && self.last_presented_cursor != Some((cursor_shape, cursor_hidden)))
             || self.shell.anim_pending()
             || self.server.transitions_pending()
-            // A live 3D model or an animated (video/GIF) wallpaper changes
-            // every frame it advances.
+            // A live 3D model changes on its own animation clock. Media
+            // wallpaper contributes damage only when its absolute source
+            // deadline elapsed or a decoded video frame is already waiting;
+            // the mere existence of an animated source must not turn every
+            // unrelated client event into a full-output composite.
             || self
                 .wallpaper
                 .as_ref()
-                .is_some_and(|w| w.has_model() || w.next_frame_in().is_some())
+                .is_some_and(|w| {
+                    w.has_model()
+                        || w.next_frame_in()
+                            .is_some_and(|remaining| remaining.is_zero())
+                })
             // Server-side topology: window list/geometry, workspace, output,
             // and Realm model changes all feed both the scene and the chrome.
             || self.last_windows_hash != Some(self.server.windows_signature())

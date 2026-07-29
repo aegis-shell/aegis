@@ -1195,7 +1195,8 @@ impl Server {
 
     /// Fire and clear all pending frame callbacks, pacing clients to the output.
     /// `time_ms` is a millisecond timestamp from a monotonic clock.
-    pub fn send_frame_callbacks(&mut self, time_ms: u32) {
+    pub fn send_frame_callbacks(&mut self, time_ms: u32) -> usize {
+        let mut sent = 0;
         for &p in &self.state.surfaces {
             if p.is_null() {
                 continue;
@@ -1206,9 +1207,11 @@ impl Server {
                     ffi::wl_resource_post_event(cb, ffi::WL_CALLBACK_DONE, time_ms);
                     ffi::wl_resource_destroy(cb);
                 }
+                sent += 1;
             }
         }
         unsafe { ffi::wl_display_flush_clients(self.state.display) };
+        sent
     }
 
     /// The last submitted frame reached the presentation backend, so every

@@ -44,7 +44,7 @@ background and how the decisions fit together, see
 | [0035](0035-fail-closed-named-ipc-scopes.md) | Fail-closed named IPC scope resolution | Accepted |
 | [0036](0036-scoped-semantic-automation.md) | Scoped semantic geometry and target-local input | Accepted |
 | [0037](0037-scoped-pixel-capture-over-ipc.md) | Scoped pixel capture over the IPC | Superseded by [0041](0041-sealed-file-descriptor-pixel-transport.md) |
-| [0038](0038-frame-pacing.md) | Frame pacing — event-driven loop with presentation throttling | Accepted |
+| [0038](0038-frame-pacing.md) | Frame pacing — event-driven loop with presentation throttling | Superseded by [0077](0077-presentation-domain-redraw-state-machine.md) |
 | [0039](0039-damage-driven-shm-refresh.md) | Damage-driven shm snapshot and texture refresh (amends [0015](0015-damage-tracking.md)) | Accepted |
 | [0040](0040-realms-seats-and-transferable-interaction-authority.md) | Realms, seats, and transferable interaction authority | Accepted |
 | [0041](0041-sealed-file-descriptor-pixel-transport.md) | Sealed file-descriptor pixel transport | Accepted |
@@ -83,3 +83,4 @@ background and how the decisions fit together, see
 | [0074](0074-generic-agent-workspaces-status-surface.md) | Generic Agent Workspaces status surface (amends [0050](0050-fuji-agent-product-and-bridge-rename.md), [0060](0060-statusbar-system-controls-and-live-system-ipc.md)) | Accepted |
 | [0075](0075-independent-portal-package-and-backend-contract.md) | Independent portal package and backend contract (supersedes [0051](0051-portal-backend-dbus-bridge.md), [0053](0053-portal-session-services-and-grants.md)) | Accepted |
 | [0076](0076-linux-dmabuf-device-feedback-and-reusable-buffer-sync.md) | Linux-dmabuf device feedback and reusable-buffer synchronization | Accepted |
+| [0077](0077-presentation-domain-redraw-state-machine.md) | Presentation-domain redraw state machine (supersedes [0038](0038-frame-pacing.md)) | Accepted |

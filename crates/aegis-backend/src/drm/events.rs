@@ -1,5 +1,22 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlipProgress {
+    Unrelated,
+    Pending,
+    Complete,
+}
+
+fn retire_page_flip(pending_flips: &mut HashSet<crtc::Handle>, crtc: crtc::Handle) -> FlipProgress {
+    if !pending_flips.remove(&crtc) {
+        FlipProgress::Unrelated
+    } else if pending_flips.is_empty() {
+        FlipProgress::Complete
+    } else {
+        FlipProgress::Pending
+    }
+}
+
 impl DrmBackend {
     /// Pump backend events until the flip requirement is satisfied, the
     /// `timeout` deadline expires, or the backend fails. The timeout is an
@@ -98,14 +115,22 @@ impl DrmBackend {
         if self.active && fds[1].revents & (libc::POLLIN | libc::POLLERR) != 0 {
             match self.card().receive_events() {
                 Ok(events) => {
+                    let mut batch_completed = false;
                     for event in events {
                         if let control::Event::PageFlip(event) = event {
-                            self.pending_flips.remove(&event.crtc);
+                            match retire_page_flip(&mut self.pending_flips, event.crtc) {
+                                FlipProgress::Complete => batch_completed = true,
+                                FlipProgress::Pending => {}
+                                FlipProgress::Unrelated => {
+                                    log::trace!(
+                                        "drm: ignoring page flip for unowned CRTC {:?}",
+                                        event.crtc
+                                    );
+                                }
+                            }
                         }
                     }
-                    if self.pending_flips.is_empty()
-                        && let Some(retired) = self.retiring.take()
-                    {
+                    if batch_completed && let Some(retired) = self.retiring.take() {
                         log::trace!("drm: releasing Flux scanout slot {}", retired.slot);
                         self.release_scanout(retired);
                     }
@@ -695,5 +720,40 @@ impl DrmBackend {
         if let Some(event) = mapped {
             self.gesture_events.push(event);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn crtc(value: u32) -> crtc::Handle {
+        crtc::Handle::from(std::num::NonZeroU32::new(value).unwrap())
+    }
+
+    #[test]
+    fn atomic_batch_retires_only_after_every_crtc_flips() {
+        let first = crtc(1);
+        let second = crtc(2);
+        let mut pending = HashSet::from([first, second]);
+
+        assert_eq!(retire_page_flip(&mut pending, first), FlipProgress::Pending);
+        assert_eq!(
+            retire_page_flip(&mut pending, second),
+            FlipProgress::Complete
+        );
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn unrelated_page_flip_cannot_complete_an_owned_batch() {
+        let owned = crtc(1);
+        let mut pending = HashSet::from([owned]);
+
+        assert_eq!(
+            retire_page_flip(&mut pending, crtc(99)),
+            FlipProgress::Unrelated
+        );
+        assert_eq!(pending, HashSet::from([owned]));
     }
 }

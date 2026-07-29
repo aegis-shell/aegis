@@ -18,6 +18,13 @@ project cuts a tagged release.
   commits no longer re-import the same two to four GPU buffers.
 - Restrict direct scanout to the formats and modifiers accepted by both Flux
   and KMS, and use the KMS out-fence as the buffer-release completion fence.
+- Replace distributed redraw flags and blocking page-flip waits with an
+  explicit presentation-domain state machine. Input and Wayland requests stay
+  live while KMS owns a frame, redraws coalesce until every CRTC flips, and
+  callback-only commits no longer force empty GPU submissions.
+- Pace video wallpapers from an absolute real-time 24 fps source clock.
+  Unrelated high-frame-rate clients no longer advance video playback or turn
+  every client event into full-output wallpaper damage.
 
 ### Reliability
 

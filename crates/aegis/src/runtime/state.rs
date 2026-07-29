@@ -140,6 +140,10 @@ pub(super) struct CompositorRuntime {
     /// Set when the output was resized/recreated; the next frame must render
     /// in full regardless of damage.
     pub(super) force_full_redraw: bool,
+    /// Explicit redraw/presentation lifecycle for the host's atomic commit
+    /// domain, plus input edges accumulated while a frame is in flight.
+    pub(super) presentation: PresentationScheduler,
+    pub(super) pending_frame: Option<FrameState>,
     pub(super) settings_revision: u64,
     pub(super) previous_agent_suspended: bool,
     pub(super) automatically_paused_realms: std::collections::BTreeSet<aegis_core::realm::RealmId>,
@@ -151,5 +155,5 @@ pub(super) struct CompositorRuntime {
     pub(super) next_app_scan: std::time::Instant,
     pub(super) scan_req_tx: std::sync::mpsc::Sender<AppScanRequest>,
     pub(super) scan_result_rx: std::sync::mpsc::Receiver<AppScanResult>,
-    pub(super) previous_frame_at: std::time::Instant,
+    pub(super) previous_render_at: std::time::Instant,
 }

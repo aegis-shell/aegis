@@ -227,6 +227,10 @@ mechanism that makes both positions hold is the `Chrome` trait
 - **niri** treats input as a first-class concern: touchpad gestures, tablet
   mapping to a specific monitor, and (planned) touch gestures, plus
   fractional scaling that keeps the compositor's own UI pixel-perfect.
+- **niri** also gives each output an explicit redraw lifecycle. Real vblank,
+  estimated vblank after a no-damage frame, and a redraw queued during either
+  wait are distinct conditions rather than combinations of incidental
+  booleans.
 - **sway/river** leave gesture handling minimal and rely on the wlroots
   input backend; fractional scaling arrived later through
   `wp_fractional_scale_v1`.
@@ -239,6 +243,14 @@ compositor workarounds, following [ADR-0001](../adr/0001-scope-and-responsibilit
 HiDPI and fractional scale are output-model concerns
 ([ADR-0028](../adr/0028-output-and-monitor-model.md)); touchpad gestures and
 tablet support arrive with the libinput backend in the DRM/KMS milestone.
+
+Aegis adopts the redraw-lifecycle kernel without copying Niri's state
+granularity. One current Aegis atomic commit spans every active CRTC, so the
+state belongs to that complete presentation domain. Input and protocol
+dispatch remain live while the batch is owned by KMS, no-damage callbacks use
+an estimated boundary, and only a real page flip from every owned CRTC retires
+the batch. The localized decision is recorded in
+[ADR-0077](../adr/0077-presentation-domain-redraw-state-machine.md).
 
 ## What aegis Rejects
 

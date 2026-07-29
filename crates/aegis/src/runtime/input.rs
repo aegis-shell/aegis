@@ -11,6 +11,73 @@ pub(super) struct FrameState {
     pub(super) pending_screenshots: Vec<PendingScreenshot>,
 }
 
+impl FrameState {
+    /// Preserve edge-triggered chrome input while the presentation backend
+    /// owns an in-flight frame. Level state comes from the newest snapshot;
+    /// button/key/text/scroll edges accumulate until the next redraw.
+    pub(super) fn merge(&mut self, newer: FrameState) {
+        let src = newer.input.as_raw();
+        let dst = self.input.as_raw_mut();
+
+        dst.cursor = src.cursor;
+        dst.display_size = src.display_size;
+        dst.mouse_down.copy_from_slice(&src.mouse_down);
+        dst.mods = src.mods;
+        for (dst, src) in dst.mouse_pressed.iter_mut().zip(&src.mouse_pressed) {
+            *dst |= *src;
+        }
+        for (dst, src) in dst.mouse_released.iter_mut().zip(&src.mouse_released) {
+            *dst |= *src;
+        }
+        dst.scroll_x += src.scroll_x;
+        dst.scroll_y += src.scroll_y;
+        dst.scroll_pixels_x += src.scroll_pixels_x;
+        dst.scroll_pixels_y += src.scroll_pixels_y;
+        dst.ime_delete_before = dst.ime_delete_before.saturating_add(src.ime_delete_before);
+        dst.ime_delete_after = dst.ime_delete_after.saturating_add(src.ime_delete_after);
+        append_c_text(&mut dst.text_utf8, &src.text_utf8);
+        if src.preedit_utf8.first().copied().unwrap_or_default() != 0 {
+            dst.preedit_utf8.copy_from_slice(&src.preedit_utf8);
+            dst.preedit_cursor = src.preedit_cursor;
+            dst.preedit_sel_lo = src.preedit_sel_lo;
+            dst.preedit_sel_hi = src.preedit_sel_hi;
+        }
+
+        let dst_keys = (dst.key_count as usize).min(dst.keys.len());
+        let src_keys = (src.key_count as usize).min(src.keys.len());
+        let copy_keys = src_keys.min(dst.keys.len().saturating_sub(dst_keys));
+        dst.keys[dst_keys..dst_keys + copy_keys].copy_from_slice(&src.keys[..copy_keys]);
+        dst.key_count = (dst_keys + copy_keys) as u32;
+
+        self.session_locked = newer.session_locked;
+        self.cursor_hidden = newer.cursor_hidden;
+        self.cursor_shape = newer.cursor_shape;
+        self.had_input |= newer.had_input;
+        self.pending_screenshots.extend(newer.pending_screenshots);
+    }
+
+    pub(super) fn set_dt(&mut self, dt: f32) {
+        self.input.set_dt(dt);
+    }
+}
+
+fn append_c_text(dst: &mut [std::os::raw::c_char], src: &[std::os::raw::c_char]) {
+    let dst_len = dst
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(dst.len());
+    let src_len = src
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(src.len());
+    if dst_len >= dst.len() || src_len == 0 {
+        return;
+    }
+    let copied = src_len.min(dst.len() - dst_len - 1);
+    dst[dst_len..dst_len + copied].copy_from_slice(&src[..copied]);
+    dst[dst_len + copied] = 0;
+}
+
 fn agent_activities_from_applied_input(
     realm: aegis_core::realm::RealmId,
     realm_label: &str,
@@ -104,7 +171,6 @@ impl CompositorRuntime {
         work: IterationWork,
     ) -> Result<FrameState, Box<dyn std::error::Error>> {
         let IterationWork {
-            frame_dt,
             pending_synthetic_input,
             pending_screenshots,
         } = work;
@@ -158,7 +224,6 @@ impl CompositorRuntime {
         input.set_mouse_down(lens::MouseButton::Left, self.input_acc.mouse_down[0]);
         input.set_mouse_down(lens::MouseButton::Right, self.input_acc.mouse_down[1]);
         input.set_mouse_down(lens::MouseButton::Middle, self.input_acc.mouse_down[2]);
-        input.set_dt(frame_dt);
         let mut shell_scroll = (0.0_f32, 0.0_f32);
         let mut shell_scroll_pixels = (0.0_f32, 0.0_f32);
         let pointer_before = self.input_acc.cursor;
@@ -746,7 +811,6 @@ impl CompositorRuntime {
             input = aegis_shell::Input::default();
             input.set_display_size(self.input_acc.display_size.0, self.input_acc.display_size.1);
             input.set_cursor(-1.0, -1.0);
-            input.set_dt(frame_dt);
         } else {
             input.set_scroll(shell_scroll.0, shell_scroll.1);
             input.set_scroll_pixels(shell_scroll_pixels.0, shell_scroll_pixels.1);
@@ -911,6 +975,63 @@ mod tests {
     use aegis_core::input::{ButtonState, InputEvent, SyntheticInputAction};
     use aegis_core::realm::RealmId;
     use aegis_core::window::WindowId;
+
+    fn frame(input: aegis_shell::Input, had_input: bool) -> FrameState {
+        FrameState {
+            input,
+            session_locked: false,
+            cursor_hidden: false,
+            cursor_shape: 1,
+            had_input,
+            pending_screenshots: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn frame_state_merge_preserves_edges_until_redraw() {
+        let mut first = aegis_shell::Input::new((100.0, 80.0), 0.0);
+        first
+            .set_cursor(10.0, 20.0)
+            .set_mouse_down(lens::MouseButton::Left, true)
+            .set_mouse_pressed(lens::MouseButton::Left, true)
+            .set_scroll(1.0, 2.0)
+            .set_text("a")
+            .push_key(lens::key::LEFT, true, false);
+        first.as_raw_mut().ime_delete_before = 2;
+        let mut merged = frame(first, true);
+
+        let mut second = aegis_shell::Input::new((120.0, 90.0), 0.0);
+        second
+            .set_cursor(30.0, 40.0)
+            .set_mouse_down(lens::MouseButton::Left, false)
+            .set_mouse_released(lens::MouseButton::Left, true)
+            .set_scroll(3.0, 4.0)
+            .set_text("b")
+            .push_key(lens::key::RIGHT, true, false);
+        second.as_raw_mut().ime_delete_before = 3;
+        second.as_raw_mut().ime_delete_after = 4;
+        merged.merge(frame(second, true));
+
+        let raw = merged.input.as_raw();
+        assert_eq!((raw.cursor.x, raw.cursor.y), (30.0, 40.0));
+        assert_eq!((raw.display_size.x, raw.display_size.y), (120.0, 90.0));
+        assert!(!raw.mouse_down[lens_sys::lens_mouse_button::LENS_MOUSE_LEFT as usize]);
+        assert!(raw.mouse_pressed[lens_sys::lens_mouse_button::LENS_MOUSE_LEFT as usize]);
+        assert!(raw.mouse_released[lens_sys::lens_mouse_button::LENS_MOUSE_LEFT as usize]);
+        assert_eq!((raw.scroll_x, raw.scroll_y), (4.0, 6.0));
+        assert_eq!(raw.key_count, 2);
+        assert_eq!(raw.keys[0].key, lens::key::LEFT);
+        assert_eq!(raw.keys[1].key, lens::key::RIGHT);
+        assert_eq!(raw.ime_delete_before, 5);
+        assert_eq!(raw.ime_delete_after, 4);
+        let text = raw
+            .text_utf8
+            .iter()
+            .take_while(|value| **value != 0)
+            .map(|value| *value as u8)
+            .collect::<Vec<_>>();
+        assert_eq!(text, b"ab");
+    }
 
     #[test]
     fn applied_agent_actions_become_ordered_privacy_preserving_feedback() {

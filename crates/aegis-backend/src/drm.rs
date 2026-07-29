@@ -5,8 +5,9 @@
 //! atomic commit. The device runs three in-flight frame slots (see
 //! `host::FRAMES_IN_FLIGHT`), so the slot a new frame renders into was retired
 //! from scanout one flip earlier — rendering never aliases the image the CRTC
-//! is still scanning. The page-flip wait in `present` is the ownership
-//! boundary that keeps that invariant one commit deep.
+//! is still scanning. `pending_flips` exposes that ownership boundary to the
+//! runtime presentation state machine: event/input dispatch remains live, but
+//! a second atomic batch cannot start until every CRTC retires the first one.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -712,24 +713,18 @@ impl Backend for DrmBackend {
     }
 
     fn dispatch(&mut self) -> bool {
-        self.pump(None, !self.pending_flips.is_empty())
+        // Presentation ownership is exposed through `presentation_pending`.
+        // Ordinary dispatch returns for *any* event so input and client
+        // commits remain responsive while a page flip is in flight.
+        self.pump(None, false)
     }
 
     fn dispatch_nonblocking(&mut self) -> bool {
-        // A pending page flip is a hard dma-buf ownership boundary, so even an
-        // animating client must wait for vblank before acquiring another Flux
-        // slot. With no flip pending this is genuinely non-blocking.
-        let pending = !self.pending_flips.is_empty();
-        let timeout = if pending {
-            Duration::from_secs(1)
-        } else {
-            Duration::ZERO
-        };
-        self.pump(Some(timeout), pending)
+        self.pump(Some(Duration::ZERO), false)
     }
 
     fn dispatch_timeout(&mut self, timeout: Duration) -> bool {
-        self.pump(Some(timeout), !self.pending_flips.is_empty())
+        self.pump(Some(timeout), false)
     }
 
     fn set_wakeup_fd(&mut self, fd: RawFd) {
@@ -750,6 +745,10 @@ impl Backend for DrmBackend {
 
     fn is_active(&self) -> bool {
         DrmBackend::is_active(self)
+    }
+
+    fn presentation_pending(&self) -> bool {
+        !self.pending_flips.is_empty()
     }
 
     fn switch_vt(&mut self, vt: i32) {

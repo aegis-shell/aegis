@@ -35,6 +35,14 @@ interface used by DRM/KMS. The Wayland server, renderer, window manager, and
 shell therefore run through their production paths; only presentation and raw
 input ownership differ.
 
+The runtime still uses the production redraw lifecycle. A successful nested
+submission has no direct KMS page-flip event, so the outer FIFO swapchain owns
+physical throttling and Aegis uses an estimated refresh boundary only for
+no-damage callbacks and compositor animation. Client commits wake the nested
+poll immediately; callback-only work does not force an empty Flux frame. The
+estimate starts at render begin, so time already spent inside FIFO
+presentation is credited rather than followed by a second full-frame wait.
+
 The nested window represents one output named `nested`. Resize the outer
 window to exercise logical resize and swapchain recreation. Move it between
 outputs to exercise integer or fractional scale changes supported by the host.
@@ -209,6 +217,7 @@ checks before completing work that crosses a backend boundary.
 |------|----------------|-----------------|
 | Shell chrome, layout, animation, and window rules | Primary loop | Final smoke check |
 | Wayland protocol and client-buffer behavior | Primary loop | Regression check when presentation-sensitive |
+| Redraw coalescing and no-damage callback throttling | Primary loop | Required for real page-flip ownership |
 | Resize, host input forwarding, IME, and host scale changes | Primary loop | Not equivalent to device input |
 | Atomic modesetting, page flips, and scanout formats | Not covered | Required |
 | libinput devices and touchpad configuration | Not covered | Required |

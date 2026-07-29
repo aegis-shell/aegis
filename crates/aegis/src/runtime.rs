@@ -12,6 +12,7 @@ mod ipc;
 mod iteration;
 mod pick;
 mod presentation;
+mod presentation_state;
 mod realm;
 mod rendering;
 mod session;
@@ -31,6 +32,7 @@ use ipc::*;
 use iteration::*;
 use pick::*;
 use presentation::*;
+use presentation_state::*;
 use realm::*;
 use rendering::*;
 use state::*;
@@ -668,7 +670,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .expect("spawn app scanner");
-    let previous_frame_at = std::time::Instant::now();
+    let previous_render_at = std::time::Instant::now();
     let agent_activity_sequence = 0;
 
     CompositorRuntime {
@@ -746,6 +748,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         last_present_minute: None,
         chrome_dirty: false,
         force_full_redraw: false,
+        presentation: PresentationScheduler::new(),
+        pending_frame: None,
         settings_revision,
         previous_agent_suspended,
         automatically_paused_realms,
@@ -757,7 +761,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         next_app_scan,
         scan_req_tx,
         scan_result_rx,
-        previous_frame_at,
+        previous_render_at,
     }
     .run_loop()
 }

@@ -243,6 +243,14 @@ impl Host {
         }
     }
 
+    /// Whether the host still owns an in-flight presentation batch.
+    pub fn presentation_pending(&self) -> bool {
+        match self {
+            Self::Nested(host) => host.presentation_pending(),
+            Self::Drm(host) => host.presentation_pending(),
+        }
+    }
+
     /// Whether the cursor must be painted into the primary framebuffer.
     /// Direct DRM normally uses dedicated KMS cursor planes; it falls back to
     /// software composition if any active output lacks a compatible plane or

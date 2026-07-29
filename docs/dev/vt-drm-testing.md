@@ -73,6 +73,25 @@ Check the areas affected by the change. A useful general pass is:
 5. If the change affects outputs, test display settings, multiple monitors,
    or hotplug as appropriate. Do not unplug the only recovery display.
 
+For presentation-loop changes, also complete this focused pass:
+
+1. Run a continuously updating client, then move the pointer and type while a
+   frame is in flight. Input must remain responsive; event dispatch no longer
+   waits inside the backend for the page flip.
+2. Leave a static client idle, then expose and cover it repeatedly. The log
+   must not show repeated empty presents or
+   `previous atomic commit still busy`.
+3. Switch VTs while animation or a game is active. On return, the first frame
+   must be complete, and press or release edges from before the switch must
+   not replay into shell chrome.
+4. On multiple monitors, unplug or reconfigure one display while a frame is
+   in flight. Aegis must wait for every CRTC owned by the old atomic batch,
+   rebuild the output surface, and present one full frame.
+5. When outputs have different refresh rates, expect the current shared
+   atomic presentation domain to retire at the slowest active CRTC. Record
+   the modes in the test result; independent mixed-refresh pacing requires
+   separately submitted presentation domains.
+
 From a terminal running inside aegis, inspect the live state and take a
 screenshot:
 
@@ -135,6 +154,13 @@ Use the following fault split:
   pacing, repeated dma-buf imports, acquire-fence waits, KMS page flips, and
   direct-scanout eligibility. Do not use compositor FPS as a proxy for the
   client's renderer.
+
+The warning
+`presentation batch still owns scanout after 1s`
+means the page-flip watchdog fired. Aegis deliberately keeps the ownership
+boundary instead of reusing a buffer that KMS may still scan. Check kernel DRM
+messages, connector state, and whether every CRTC in the atomic batch emitted
+its page-flip event.
 
 Mesa diagnostics such as `failed to get driver name for fd -1` followed by
 `llvmpipe` are strong evidence that the client did not receive a usable DRM

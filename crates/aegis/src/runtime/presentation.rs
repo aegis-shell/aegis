@@ -1,7 +1,8 @@
 use super::*;
 
 pub(super) enum PresentationOutcome {
-    Presented,
+    Submitted,
+    NoDamage { callbacks_sent: bool },
     Retry,
 }
 
@@ -137,7 +138,7 @@ impl CompositorRuntime {
                     self.last_presented_cursor = Some((cursor_shape, cursor_hidden));
                     self.last_presented_cursor_position = Some(cursor_position);
                     self.frame_count += 1;
-                    return Ok(PresentationOutcome::Presented);
+                    return Ok(PresentationOutcome::Submitted);
                 }
                 Err(HostError::Drm(DrmError::CursorFallback)) => {
                     // The backend disabled the cursor plane. Repaint this
@@ -172,15 +173,19 @@ impl CompositorRuntime {
             && !self.screenshot_freeze.armed
             && !self.server.lock_confirmation_pending()
             && !self.server.retired_buffers_pending()
-            && !self.server.frame_callbacks_pending()
         {
             // Nothing visible changed: skip the render and the atomic commit
             // — the scanout contents are already correct, so presenting
-            // would be pure waste. Pending frame callbacks deliberately
-            // disable the skip: completing them immediately on every
-            // Wayland-fd wake would let a frame-only client spin without
-            // output/vblank pacing.
-            return Ok(PresentationOutcome::Presented);
+            // would be pure waste. A frame callback may complete without a
+            // GPU submission once per estimated refresh cycle; callbacks
+            // arriving before that boundary remain pending instead of
+            // forcing empty composites.
+            let callbacks_sent = self.presentation.frame_callbacks_allowed()
+                && self
+                    .server
+                    .send_frame_callbacks(self.start.elapsed().as_millis() as u32)
+                    > 0;
+            return Ok(PresentationOutcome::NoDamage { callbacks_sent });
         }
         // Direct-scanout fast path: a single fullscreen, opaque dmabuf client
         // covering the whole output (and nothing else needing compositing) can
@@ -230,7 +235,7 @@ impl CompositorRuntime {
                     self.last_presented_cursor_position = Some(cursor_position);
                     self.force_full_redraw = false;
                     self.frame_count += 1;
-                    return Ok(PresentationOutcome::Presented);
+                    return Ok(PresentationOutcome::Submitted);
                 }
                 Err(error) => {
                     // Any rejection (unsupported format, EACCES, reconfigure,
@@ -1456,10 +1461,11 @@ impl CompositorRuntime {
                         flux_last_error_detail()
                     );
                 }
+                return Ok(PresentationOutcome::Retry);
             }
         }
 
-        Ok(PresentationOutcome::Presented)
+        Ok(PresentationOutcome::Submitted)
     }
 
     /// Drain one-shot and stream capture requests and bind at most one

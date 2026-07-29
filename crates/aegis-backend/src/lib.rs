@@ -157,6 +157,16 @@ pub trait Backend {
         true
     }
 
+    /// Whether this presentation domain has an atomic commit in flight.
+    ///
+    /// The runtime uses this as an ownership boundary: it may continue
+    /// dispatching input and client protocol traffic, but it must not submit
+    /// another frame until the backend reports completion. Nested WSI owns
+    /// its own queueing and therefore keeps the default `false`.
+    fn presentation_pending(&self) -> bool {
+        false
+    }
+
     /// Ask the session manager to switch to virtual terminal `vt` (1-based).
     /// Direct-display backends forward to libseat; the nested backend is a
     /// client of the host session and cannot switch VTs, so it ignores this.

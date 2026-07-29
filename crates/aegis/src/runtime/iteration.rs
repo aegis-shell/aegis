@@ -10,7 +10,6 @@ pub(super) struct PendingScreenshot {
 }
 
 pub(super) struct IterationWork {
-    pub(super) frame_dt: f32,
     pub(super) pending_synthetic_input: Vec<(aegis_ipc::Command, u64, aegis_ipc::Origin)>,
     pub(super) pending_screenshots: Vec<PendingScreenshot>,
 }
@@ -327,12 +326,6 @@ impl CompositorRuntime {
         if !self.host.is_active() {
             return Ok(None);
         }
-        let frame_at = std::time::Instant::now();
-        let frame_dt = (frame_at - self.previous_frame_at)
-            .as_secs_f32()
-            .clamp(0.0, 1.0 / 15.0);
-        self.previous_frame_at = frame_at;
-
         while let Ok(mut detected) = self.status_rx.try_recv() {
             detected.do_not_disturb = self.notif_queue.lock().unwrap().do_not_disturb();
             detected.tiled = self.server.tiling();
@@ -864,7 +857,6 @@ impl CompositorRuntime {
             .expire(self.start.elapsed().as_millis() as u64);
 
         Ok(Some(IterationWork {
-            frame_dt,
             pending_synthetic_input,
             pending_screenshots,
         }))
