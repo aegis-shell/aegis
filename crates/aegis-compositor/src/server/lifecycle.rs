@@ -4,7 +4,7 @@ impl Server {
     /// Create the display, bind an auto-named socket, and advertise the core
     /// globals.
     pub fn new() -> Result<Server, ServerError> {
-        Self::new_with_render_caps(true, true)
+        Self::new_with_render_caps(true, true, Vec::new())
     }
 
     /// Create a server whose advertised buffer protocols match the actual
@@ -13,6 +13,7 @@ impl Server {
     pub fn new_with_render_caps(
         dmabuf_supported: bool,
         explicit_sync_supported: bool,
+        dmabuf_formats: Vec<aegis_core::dmabuf::DmabufFormat>,
     ) -> Result<Server, ServerError> {
         unsafe {
             let display = ffi::wl_display_create();
@@ -31,6 +32,11 @@ impl Server {
             }
 
             let mut state = Box::new(State::new(display));
+            // Renderer-provided format/modifier table: the Vulkan device's real
+            // sampleable+importable modifiers per fourcc, advertised verbatim
+            // over zwp_linux_dmabuf_v1 so clients allocate GPU-optimal buffers
+            // instead of falling back to LINEAR.
+            state.dmabuf_formats = dmabuf_formats;
             // The keyboard is optional in the sense that its absence should
             // not crash the compositor — but a working keymap is needed for
             // interactive use, so a failure here is logged loudly. The seat

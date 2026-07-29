@@ -92,6 +92,8 @@ pub enum DrmError {
     FlipTimeout,
     #[error("display set changed during presentation; frame skipped")]
     Reconfigured,
+    #[error("client buffer cannot be scanned out directly")]
+    ScanoutUnsupported,
 }
 
 /// Map an atomic-commit failure to a backend error. EACCES/EPERM means the
@@ -215,7 +217,23 @@ struct ImportedBuffer {
     stride: u32,
     modifier: DrmModifier,
     format: DrmFourcc,
+    /// Byte offset of the first pixel within the dma-buf object. Zero for the
+    /// compositor's own export; a directly-scanned-out client buffer may carry
+    /// a non-zero plane offset.
+    offset: u32,
     gem: BufferHandle,
+}
+
+/// Layout descriptor for a directly-scanned-out client dma-buf. Groups the
+/// fields `import_scanout_client` needs beyond the duplicated fd, so the
+/// import call stays readable.
+struct ClientScanoutDesc {
+    width: u32,
+    height: u32,
+    stride: u32,
+    offset: u32,
+    format: DrmFourcc,
+    modifier: DrmModifier,
 }
 
 impl PlanarBuffer for ImportedBuffer {
@@ -243,7 +261,7 @@ impl PlanarBuffer for ImportedBuffer {
     }
 
     fn offsets(&self) -> [u32; 4] {
-        [0; 4]
+        [self.offset, 0, 0, 0]
     }
 }
 
@@ -627,6 +645,7 @@ mod tests {
             stride: 7680,
             modifier: DrmModifier::Linear,
             format: DrmFourcc::Xrgb8888,
+            offset: 0,
             gem: BufferHandle::from(std::num::NonZeroU32::new(1).unwrap()),
         };
         assert_eq!(buffer.size(), (1920, 1080));

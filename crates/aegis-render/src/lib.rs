@@ -7,17 +7,13 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
-use aegis_core::{SurfaceDmabuf, SurfacePixels, Transform};
+use aegis_core::{SurfaceDmabuf, SurfacePixels, Transform, dmabuf as drm_fmt};
 
-/// DRM fourccs the compositor advertises, mapped to flux formats. The
-/// 32-bit per-pixel layouts are little-endian: `ARGB8888` is `[B, G, R, A]` in
-/// memory → flux `BGRA8_UNORM`; the byte-swapped `ABGR8888` is
-/// `[R, G, B, A]` → flux `RGBA8_UNORM`. The `X*` variants carry an undefined
-/// alpha that the server forces opaque at commit time.
-const DRM_FORMAT_ARGB8888: u32 = 0x3432_5241;
-const DRM_FORMAT_XRGB8888: u32 = 0x3432_5258;
-const DRM_FORMAT_ABGR8888: u32 = 0x3432_4241;
-const DRM_FORMAT_XBGR8888: u32 = 0x3432_4258;
+/// Convenience aliases for the shared DRM fourccs in [`aegis_core::dmabuf`].
+const DRM_FORMAT_ARGB8888: u32 = drm_fmt::DRM_FORMAT_ARGB8888;
+const DRM_FORMAT_XRGB8888: u32 = drm_fmt::DRM_FORMAT_XRGB8888;
+const DRM_FORMAT_ABGR8888: u32 = drm_fmt::DRM_FORMAT_ABGR8888;
+const DRM_FORMAT_XBGR8888: u32 = drm_fmt::DRM_FORMAT_XBGR8888;
 
 fn drm_format_to_flux(drm: u32) -> Option<flux::Format> {
     match drm {
@@ -26,6 +22,46 @@ fn drm_format_to_flux(drm: u32) -> Option<flux::Format> {
         _ => None,
     }
 }
+
+/// Build the `(fourcc, modifiers)` set the compositor should advertise over
+/// `zwp_linux_dmabuf_v1`, by querying the render device for the modifiers it
+/// can both sample and import per fourcc.
+///
+/// Each advertised fourcc is paired with its real, device-supported modifier
+/// list so clients allocate GPU-optimal (tiled/compressed) buffers. A format
+/// whose modifiers the device cannot honor still degrades to the historical
+/// `[DRM_FORMAT_MOD_LINEAR]` fallback rather than being dropped entirely, so
+/// every client that previously worked keeps working.
+///
+/// Call this once at startup, after the flux device is created, and pass the
+/// result to [`aegis_compositor::Server::new_with_render_caps`].
+pub fn formats_with_modifiers(device: &flux::Device) -> Vec<drm_fmt::DmabufFormat> {
+    use drm_fmt::DmabufFormat;
+    ADVERTISED_FOURCCS
+        .iter()
+        .map(|&fourcc| {
+            let modifiers = drm_format_to_flux(fourcc)
+                .filter(|_| flux::dmabuf_supported(device))
+                .map(|fmt| {
+                    let mut mods = flux::dmabuf_format_modifiers(device, fmt);
+                    // Always include LINEAR: it is the universal fallback and
+                    // keeps the format usable on devices/pathologies where no
+                    // tiled modifier is sampleable. Dedup in case the device
+                    // already reports it.
+                    if !mods.contains(&drm_fmt::DRM_FORMAT_MOD_LINEAR) {
+                        mods.push(drm_fmt::DRM_FORMAT_MOD_LINEAR);
+                    }
+                    mods
+                })
+                .unwrap_or_else(|| vec![drm_fmt::DRM_FORMAT_MOD_LINEAR]);
+            DmabufFormat { fourcc, modifiers }
+        })
+        .collect()
+}
+
+/// The advertised fourccs in order, re-exported for callers that iterate the
+/// format table (e.g. to wire it into the compositor's modifier feedback).
+const ADVERTISED_FOURCCS: [u32; 4] = drm_fmt::ADVERTISED_FOURCCS;
 
 /// Apply a `wl_surface.set_buffer_transform` to tightly packed BGRA8/RGBA8
 /// pixels (4 bytes per pixel, no padding). Returns the transformed buffer
@@ -176,13 +212,32 @@ fn viewport_uv(
 /// import failure so the diagnostic is emitted once per surface rather than
 /// every frame.
 pub struct Renderer {
-    cache: HashMap<usize, (flux::Image, u64)>,
+    cache: HashMap<usize, CachedImage>,
     failed_imports: HashMap<usize, ()>,
     /// Images removed from the live cache stay alive beyond Flux's maximum
     /// three in-flight frame slots. Vulkan resources must not be destroyed
     /// while an older command buffer may still sample them.
     retired: Vec<(flux::Image, u64)>,
     frame_epoch: u64,
+}
+
+/// A texture cached per surface, keyed by the surface's wl_resource address.
+/// Carries enough provenance to decide whether a new frame's dmabuf is the
+/// *same* buffer as the cached one (so the expensive Vulkan import can be
+/// skipped) without risking a stale-image bug.
+///
+/// The identity used for the skip is the backing `wl_buffer` (`buffer_id`),
+/// not `generation` — the latter is bumped on every commit, even when the
+/// client reuses the same wl_buffer, so it is useless for buffer-reuse
+/// detection. The `modifier`, `width`, and `height` pin the layout too, so a
+/// reallocation that changes the tile/compression mode forces a fresh import.
+struct CachedImage {
+    image: flux::Image,
+    generation: u64,
+    buffer_id: u64,
+    modifier: u64,
+    width: u32,
+    height: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,15 +341,15 @@ impl Renderer {
             .retain(|(_, retired_at)| epoch.wrapping_sub(*retired_at) <= 4);
     }
 
-    fn cache_image(&mut self, id: usize, image: flux::Image, generation: u64) {
-        if let Some((old, _)) = self.cache.insert(id, (image, generation)) {
-            self.retired.push((old, self.frame_epoch));
+    fn cache_image(&mut self, id: usize, entry: CachedImage) {
+        if let Some(old) = self.cache.insert(id, entry) {
+            self.retired.push((old.image, self.frame_epoch));
         }
     }
 
     fn retire_cached(&mut self, id: usize) {
-        if let Some((image, _)) = self.cache.remove(&id) {
-            self.retired.push((image, self.frame_epoch));
+        if let Some(entry) = self.cache.remove(&id) {
+            self.retired.push((entry.image, self.frame_epoch));
         }
     }
 
@@ -309,8 +364,8 @@ impl Renderer {
             .filter(|id| !live.contains(id))
             .collect::<Vec<_>>();
         for id in dead {
-            if let Some((image, _)) = self.cache.remove(&id) {
-                self.retired.push((image, self.frame_epoch));
+            if let Some(entry) = self.cache.remove(&id) {
+                self.retired.push((entry.image, self.frame_epoch));
             }
         }
         self.failed_imports.retain(|k, _| live.contains(k));
@@ -519,11 +574,11 @@ impl Renderer {
             let dims_match = self
                 .cache
                 .get(&f.id)
-                .is_some_and(|(img, _)| img.size() == (tex_w as u32, tex_h as u32));
+                .is_some_and(|c| c.image.size() == (tex_w as u32, tex_h as u32));
             let new_contents = self
                 .cache
                 .get(&f.id)
-                .is_none_or(|(_, g)| *g != f.generation);
+                .is_none_or(|c| c.generation != f.generation);
             if !dims_match || new_contents {
                 let incremental = dims_match
                     && f.geometry.transform == Transform::Normal
@@ -554,8 +609,9 @@ impl Renderer {
                     }
                     if x0 < x1
                         && y0 < y1
-                        && let Some((img, _)) = self.cache.get(&f.id)
+                        && let Some(entry) = self.cache.get(&f.id)
                     {
+                        let img = &entry.image;
                         let (bw, bh) = ((x1 - x0) as u32, (y1 - y0) as u32);
                         let updated = if x0 == 0
                             && y0 == 0
@@ -584,8 +640,8 @@ impl Renderer {
                         };
                         match updated {
                             Ok(()) => {
-                                if let Some((_, r#gen)) = self.cache.get_mut(&f.id) {
-                                    *r#gen = f.generation;
+                                if let Some(cached) = self.cache.get_mut(&f.id) {
+                                    cached.generation = f.generation;
                                 }
                             }
                             Err(_) => {
@@ -619,11 +675,22 @@ impl Renderer {
                         flux::Format::FLUX_FORMAT_BGRA8_UNORM,
                         &transformed,
                     ) {
-                        self.cache_image(f.id, img, f.generation);
+                        self.cache_image(
+                            f.id,
+                            CachedImage {
+                                image: img,
+                                generation: f.generation,
+                                buffer_id: 0,
+                                modifier: 0,
+                                width: f.width as u32,
+                                height: f.height as u32,
+                            },
+                        );
                     }
                 }
             }
-            if let Some((img, _)) = self.cache.get(&f.id) {
+            if let Some(entry) = self.cache.get(&f.id) {
+                let img = &entry.image;
                 let x = f.geometry.position.x as f32;
                 let y = f.geometry.position.y as f32;
                 // Apply wp_viewport and buffer_scale to compute the
@@ -713,10 +780,26 @@ impl Renderer {
         >,
     ) {
         for f in frames.iter() {
-            let stale = self
-                .cache
-                .get(&f.id)
-                .is_none_or(|(_, g)| *g != f.generation);
+            // Decide whether the expensive Vulkan import can be skipped. The
+            // import is reusable when the *same backing buffer* is attached at
+            // the same modifier and dimensions. `generation` is bumped every
+            // commit and cannot answer that question, so the identity check is
+            // buffer_id + modifier + size. One exception: an explicit-sync
+            // acquire fence is per-frame, and a cached VkImage has no slot to
+            // re-wait on it, so a fence forces a re-import (correctness over
+            // the micro-optimization). Implicit-sync frames (no fence) import
+            // with no producer wait anyway, so skipping is always safe there.
+            let stale = match self.cache.get(&f.id) {
+                None => true,
+                Some(c) => {
+                    let identity_unchanged = c.buffer_id != 0
+                        && c.buffer_id == f.buffer_id
+                        && c.modifier == f.modifier
+                        && c.width == f.width as u32
+                        && c.height == f.height as u32;
+                    !(identity_unchanged && f.acquire_fence < 0)
+                }
+            };
             if stale {
                 if let Some(fmt) = drm_format_to_flux(f.drm_format) {
                     // Flux consumes the descriptor fd on success. The frame's
@@ -792,7 +875,17 @@ impl Renderer {
                             // the suppression so a transient error is logged
                             // again if it recurs.
                             self.failed_imports.remove(&f.id);
-                            self.cache_image(f.id, img, f.generation);
+                            self.cache_image(
+                                f.id,
+                                CachedImage {
+                                    image: img,
+                                    generation: f.generation,
+                                    buffer_id: f.buffer_id,
+                                    modifier: f.modifier,
+                                    width: f.width as u32,
+                                    height: f.height as u32,
+                                },
+                            );
                         }
                         Err(e) => {
                             // Flux leaves ownership with the caller on error.
@@ -823,7 +916,8 @@ impl Renderer {
                     self.retire_cached(f.id);
                 }
             }
-            if let Some((img, _)) = self.cache.get(&f.id) {
+            if let Some(entry) = self.cache.get(&f.id) {
+                let img = &entry.image;
                 let x = f.geometry.position.x as f32;
                 let y = f.geometry.position.y as f32;
                 // Destination size from viewport + buffer_scale, mirroring

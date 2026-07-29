@@ -5,6 +5,37 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once the
 project cuts a tagged release.
 
+## [0.0.7] - 2026-07-29
+
+### Rendering performance
+
+A Flatpak-installed GPU client such as osu! ran at ~100% GPU and was severely
+laggy under Aegis relative to niri/KDE/GNOME on the same machine. Three
+compositor-side causes were identified and fixed, bringing fullscreen-game GPU
+cost in line with other Wayland compositors. (Requires Optics `v0.0.4`, to
+which the locked Git dependency now points.)
+
+- **Real dma-buf format/modifier advertising.** The `zwp_linux_dmabuf_v1`
+  global previously advertised only `DRM_FORMAT_MOD_LINEAR`, which forced
+  clients onto uncompressed, untiled buffers and disabled GPU
+  compression/DCC. The renderer now queries the Vulkan device for the set of
+  modifiers it can both sample and import (Optics `flux_dmabuf_format_modifiers`)
+  and the server advertises them verbatim, with LINEAR retained as a universal
+  fallback.
+- **Hardware direct scanout of fullscreen client buffers.** A single
+  fullscreen, opaque, dmabuf-backed toplevel covering the whole output is now
+  page-flipped directly onto the DRM primary plane, bypassing the Vulkan
+  composite entirely (zero compositor GPU cost). The candidate bar is fully
+  conservative — any transform, clipping, mismatched size, visible software
+  cursor, or shell chrome disqualifies it and falls back to compositing;
+  leaving scanout forces a full redraw so the resumed composite is correct.
+- **dmabuf import caching by `wl_buffer` identity.** Imported Vulkan images are
+  now cached per surface keyed on the backing `wl_buffer` (plus modifier and
+  size), not on `generation` (which was bumped every commit). A buffer-recycling
+  client no longer rebuilds a `VkImage` and re-binds external memory every
+  frame. Per-frame explicit-sync acquire fences still force a re-import
+  (correctness), since a cached image has no slot to re-wait on.
+
 ## [0.0.6] - 2026-07-29
 
 ### Licensing

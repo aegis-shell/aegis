@@ -787,3 +787,79 @@ mod tests {
         assert_eq!(size, (1920, 1080));
     }
 }
+
+impl CompositorRuntime {
+    /// Pick a client dma-buf to page-flip directly onto the primary plane,
+    /// bypassing the Vulkan composite. This is the fullscreen-game fast path.
+    ///
+    /// The bar is intentionally high and fully conservative: a miss here
+    /// merely composites (always correct), while a false hit would scan out a
+    /// wrong/tearing buffer or drop the cursor. The candidate must:
+    ///
+    ///   - be the *only* visible dmabuf toplevel;
+    ///   - cover the whole output at (0,0) with a `Normal` transform and no
+    ///     viewport source/destination clipping;
+    ///   - have a post-transform buffer size equal to the output's;
+    ///   - be acceptable to the active primary plane
+    ///     ([`Host::supports_scanout`]); and
+    ///   - have nothing else to composite: the cursor must be hidden (a
+    ///     software cursor lives in the framebuffer; direct scanout would not
+    ///     draw it), and no shell chrome, blur, transition, capture, or lock
+    ///     may be active.
+    ///
+    /// `physical_size` is the output's pixel dimensions; `cursor_hidden`
+    /// reflects the current cursor visibility state.
+    pub(super) fn pick_scanout_candidate(
+        &self,
+        physical_size: (u32, u32),
+        cursor_hidden: bool,
+    ) -> Option<aegis_core::SurfaceDmabuf> {
+        // Nothing should be composited on top of the client: shell animations,
+        // overview/switcher, backdrop blur, or a software cursor all need the
+        // framebuffer and disqualify direct scanout.
+        if self.shell.anim_pending()
+            || self.shell.overview_active()
+            || self.shell.window_switcher_active()
+            || self.shell.backdrop_blur_sigma() > 0.0
+            || self.server.transitions_pending()
+            || self.capture_worker.is_busy()
+            || self.pending_capture.is_some()
+            || self.pending_realm_capture.is_some()
+            || self.screenshot_freeze.armed
+        {
+            return None;
+        }
+        // A software cursor is painted into the composite. When it is visible
+        // the direct-scanout path would drop it, so only take scanout when the
+        // cursor is hidden. Nested mode owns no scanout and is excluded by the
+        // supports_scanout check below.
+        if self.host.uses_software_cursor() && !cursor_hidden {
+            return None;
+        }
+        let mut frames = self.server.toplevel_dmabuf_frames();
+        if frames.len() != 1 {
+            return None;
+        }
+        let f = frames.pop()?;
+        // Direct scanout only honors the trivial placement: identity transform,
+        // origin at (0,0), and no viewport source/destination crop. A rotated
+        // or sub-rect client must be composited.
+        if f.geometry.transform != aegis_core::Transform::Normal
+            || f.geometry.position != (aegis_core::Point { x: 0, y: 0 })
+            || f.geometry.viewport_src.is_some()
+            || f.geometry.viewport_dst.is_some()
+        {
+            return None;
+        }
+        // The buffer must exactly fill the output; a size mismatch would need
+        // hardware scaling (not configured here) or letterboxing.
+        if (f.width as u32, f.height as u32) != physical_size {
+            return None;
+        }
+        // The primary plane must accept this fourcc/modifier pair.
+        if !self.host.supports_scanout(f.drm_format, f.modifier) {
+            return None;
+        }
+        Some(f)
+    }
+}

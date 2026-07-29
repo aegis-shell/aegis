@@ -493,6 +493,61 @@ fn popup_grab_focus_tracks_the_topmost_popup_and_unwinds_to_its_parent() {
     );
 }
 
+/// `new_with_render_caps` threads the renderer-provided format/modifier table
+/// into `State`, so `dmabuf_bind` advertises the device's real sampleable
+/// modifiers instead of the LINEAR-only fallback. A bogus tiling modifier on
+/// XRGB8888 must survive verbatim — that is exactly what lets a GPU client
+/// avoid uncompressed LINEAR buffers.
+#[test]
+fn new_with_render_caps_carries_dmabuf_format_table() {
+    use aegis_core::dmabuf::{DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_XRGB8888, DmabufFormat};
+
+    if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+        eprintln!("skipping: XDG_RUNTIME_DIR not set");
+        return;
+    }
+    const FAKE_TILE: u64 = 0x0100_0000_0000_0001;
+    let formats = vec![
+        DmabufFormat {
+            fourcc: DRM_FORMAT_XRGB8888,
+            modifiers: vec![FAKE_TILE, DRM_FORMAT_MOD_LINEAR],
+        },
+        DmabufFormat {
+            fourcc: aegis_core::dmabuf::DRM_FORMAT_ARGB8888,
+            modifiers: vec![FAKE_TILE],
+        },
+    ];
+    let server = Server::new_with_render_caps(true, true, formats.clone())
+        .expect("Server::new_with_render_caps");
+    // The table is stored on State for dmabuf_bind to read at bind time.
+    assert_eq!(
+        server.state.dmabuf_formats.len(),
+        formats.len(),
+        "format table must reach State verbatim"
+    );
+    assert_eq!(server.state.dmabuf_formats[0].fourcc, DRM_FORMAT_XRGB8888);
+    assert_eq!(
+        server.state.dmabuf_formats[0].modifiers,
+        vec![FAKE_TILE, DRM_FORMAT_MOD_LINEAR]
+    );
+}
+
+/// `Server::new` (the test/default path, with no renderer) leaves the format
+/// table empty, so `dmabuf_bind` keeps advertising the four 32-bit fourccs
+/// with LINEAR — every previously-working client must stay working.
+#[test]
+fn server_new_has_empty_dmabuf_format_table() {
+    if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+        eprintln!("skipping: XDG_RUNTIME_DIR not set");
+        return;
+    }
+    let server = Server::new().expect("Server::new");
+    assert!(
+        server.state.dmabuf_formats.is_empty(),
+        "default Server::new must not fabricate modifiers"
+    );
+}
+
 /// `Server::new` brings up the display, binds an auto-named socket, and
 /// returns a non-empty socket name. The socket lives in `XDG_RUNTIME_DIR`
 /// (libwayland's convention) and is removed by `wl_display_destroy`.

@@ -184,6 +184,20 @@ impl Host {
         }
     }
 
+    /// Page-flip a fullscreen client buffer directly, bypassing the composite.
+    /// Nested mode never owns scanout, so it reports unsupported (the runtime
+    /// then composites instead).
+    pub fn present_scanout(
+        &mut self,
+        candidate: &aegis_core::SurfaceDmabuf,
+        damage: Option<aegis_core::Rect>,
+    ) -> Result<Option<OwnedFd>, HostError> {
+        match self {
+            Self::Nested(_) => Err(HostError::Drm(DrmError::ScanoutUnsupported)),
+            Self::Drm(host) => Ok(host.present_scanout(candidate, damage)?),
+        }
+    }
+
     /// Confirm completion of the most recently submitted secure frame.
     /// Direct DRM has an exact per-CRTC page-flip barrier. Nested mode is a
     /// development host and can only wait for completion of our Vulkan work;
@@ -209,6 +223,16 @@ impl Host {
     /// composition root to paint cursor shapes into the scanout buffer.
     pub fn uses_software_cursor(&self) -> bool {
         matches!(self, Self::Drm(_))
+    }
+
+    /// Whether a client dma-buf `(fourcc, modifier)` can be scanned out
+    /// directly on the active DRM primary planes. Nested mode never owns
+    /// scanout (the outer compositor does), so it reports `false`.
+    pub fn supports_scanout(&self, fourcc: u32, modifier: u64) -> bool {
+        match self {
+            Self::Nested(_) => false,
+            Self::Drm(host) => host.supports_scanout(fourcc, modifier),
+        }
     }
 }
 

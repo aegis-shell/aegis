@@ -210,6 +210,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut server = aegis_compositor::Server::new_with_render_caps(
         flux::dmabuf_supported(&device),
         flux::dmabuf_sync_supported(&device),
+        aegis_render::formats_with_modifiers(&device),
     )?;
     server.set_outputs(host.output_infos());
     log::info!("server: listening on WAYLAND_DISPLAY={}", server.socket());
@@ -685,6 +686,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         clear,
         frame_count,
         retired_defer,
+        scanout_taken: false,
         super_tap,
         keyboard_capture,
         keymap,

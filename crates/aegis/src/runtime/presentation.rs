@@ -85,6 +85,73 @@ impl CompositorRuntime {
             // output/vblank pacing.
             return Ok(PresentationOutcome::Presented);
         }
+        // Direct-scanout fast path: a single fullscreen, opaque dmabuf client
+        // covering the whole output (and nothing else needing compositing) can
+        // be page-flipped directly onto the primary plane, skipping the Vulkan
+        // composite. This is the fullscreen-game zero-GPU-cost path. A miss or
+        // a kernel rejection falls through to the normal composite below.
+        //
+        // While scanout is active the renderer never composites, so the damage
+        // tracker's per-surface generation baselines go stale: a client that
+        // committed frames entirely through the scanout path looks "unchanged"
+        // to it. Leaving scanout must therefore force a full redraw the next
+        // composite, or the fallback frame could skip rendering and show a
+        // frozen image.
+        let was_scanout = self.scanout_taken;
+        if let Some(candidate) = self.pick_scanout_candidate(physical_size, cursor_hidden) {
+            match self.host.present_scanout(&candidate, present_damage) {
+                Ok(completion_fence) => {
+                    if !was_scanout {
+                        log::info!(
+                            "{}: direct scanout active for {:#x} (mod {:#x}); composite bypassed",
+                            self.host.name(),
+                            candidate.drm_format,
+                            candidate.modifier,
+                        );
+                    }
+                    // The buffer was scanned out directly: mark the surface
+                    // damage acknowledged so the server's damage baseline
+                    // stays correct, fire client frame callbacks to keep
+                    // pacing, and re-anchor the cursor/minute baselines the
+                    // skip-render path consults. Captures and screenshots are
+                    // disqualified by pick_scanout_candidate, so none run here.
+                    self.server.acknowledge_presented_surface_damage();
+                    if self.server.retired_buffers_pending() {
+                        self.server.release_retired_buffers(
+                            completion_fence.as_ref().map(AsRawFd::as_raw_fd),
+                        );
+                    }
+                    self.server
+                        .send_frame_callbacks(self.start.elapsed().as_millis() as u32);
+                    self.last_present_minute = Some(wall_clock_minute());
+                    self.last_presented_cursor = Some((cursor_shape, cursor_hidden));
+                    self.force_full_redraw = false;
+                    self.frame_count += 1;
+                    return Ok(PresentationOutcome::Presented);
+                }
+                Err(error) => {
+                    // Any rejection (unsupported format, EACCES, reconfigure,
+                    // flip timeout) disables scanout for this frame and falls
+                    // through to compositing. A non-transient ScanoutUnsupported
+                    // just composites; transient DRM errors retry below.
+                    self.scanout_taken = false;
+                    if !matches!(error, HostError::Drm(DrmError::ScanoutUnsupported)) {
+                        log::warn!(
+                            "{}: direct scanout failed; compositing instead: {error}",
+                            self.host.name()
+                        );
+                    }
+                }
+            }
+        } else {
+            self.scanout_taken = false;
+        }
+        // Scanout was active last frame but is no longer eligible (a window
+        // appeared, the cursor moved, chrome opened…): force a full composite so
+        // the resumed render is correct rather than skipped as "unchanged".
+        if was_scanout {
+            self.force_full_redraw = true;
+        }
         match self.surface.begin_frame() {
             Ok(mut frame) => {
                 self.renderer.begin_frame();

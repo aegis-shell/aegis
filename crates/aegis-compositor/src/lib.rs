@@ -1047,6 +1047,11 @@ pub(crate) struct State {
     pub(crate) window_state_path: std::path::PathBuf,
     /// Global toggle for remembering window positions across restarts.
     pub(crate) remember_window_positions: bool,
+    /// Format/modifier table advertised over `zwp_linux_dmabuf_v1`. Built by
+    /// the renderer from the Vulkan device's real capabilities so clients
+    /// allocate GPU-optimal (tiled/compressed) buffers instead of LINEAR.
+    /// Drives the format/modifier events in `dmabuf_bind`.
+    pub(crate) dmabuf_formats: Vec<aegis_core::dmabuf::DmabufFormat>,
     next_window_id: u64,
 }
 
@@ -1180,6 +1185,7 @@ impl State {
             window_state_store,
             window_state_path,
             remember_window_positions: true,
+            dmabuf_formats: Vec::new(),
             next_window_id: 1,
         }
     }

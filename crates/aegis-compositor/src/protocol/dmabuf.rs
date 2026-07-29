@@ -57,18 +57,55 @@ pub(crate) unsafe extern "C" fn dmabuf_bind(
             None,
         );
 
-        // Advertise supported formats (v1+) and format/modifier pairs (v3+).
-        for fmt in [
-            DRM_FORMAT_ARGB8888,
-            DRM_FORMAT_XRGB8888,
-            DRM_FORMAT_ABGR8888,
-            DRM_FORMAT_XBGR8888,
-        ] {
-            ffi::wl_resource_post_event(res, ffi::ZWP_LINUX_DMABUF_V1_FORMAT, fmt);
-            if version >= 3 {
-                let hi = (DRM_FORMAT_MOD_LINEAR >> 32) as u32;
-                let lo = (DRM_FORMAT_MOD_LINEAR & 0xffff_ffff) as u32;
-                ffi::wl_resource_post_event(res, ffi::ZWP_LINUX_DMABUF_V1_MODIFIER, fmt, hi, lo);
+        // Advertise the renderer's real format/modifier table so clients
+        // allocate GPU-optimal (tiled/compressed) buffers. A modifier set is
+        // mandatory for correct performance: advertising only LINEAR forces
+        // clients onto uncompressed, untiled layouts. Fall back to the four
+        // 32-bit fourccs with LINEAR when no table is present (tests and any
+        // path that bypassed the renderer query) so every client keeps working.
+        let state = data as *mut State;
+        let formats = if !state.is_null() && !(*state).dmabuf_formats.is_empty() {
+            &(*state).dmabuf_formats
+        } else {
+            &[] as &[aegis_core::dmabuf::DmabufFormat]
+        };
+        if formats.is_empty() {
+            for fmt in [
+                DRM_FORMAT_ARGB8888,
+                DRM_FORMAT_XRGB8888,
+                DRM_FORMAT_ABGR8888,
+                DRM_FORMAT_XBGR8888,
+            ] {
+                ffi::wl_resource_post_event(res, ffi::ZWP_LINUX_DMABUF_V1_FORMAT, fmt);
+                if version >= 3 {
+                    let hi = (DRM_FORMAT_MOD_LINEAR >> 32) as u32;
+                    let lo = (DRM_FORMAT_MOD_LINEAR & 0xffff_ffff) as u32;
+                    ffi::wl_resource_post_event(
+                        res,
+                        ffi::ZWP_LINUX_DMABUF_V1_MODIFIER,
+                        fmt,
+                        hi,
+                        lo,
+                    );
+                }
+            }
+        } else {
+            for entry in formats {
+                let fmt = entry.fourcc;
+                ffi::wl_resource_post_event(res, ffi::ZWP_LINUX_DMABUF_V1_FORMAT, fmt);
+                if version >= 3 {
+                    for &modifier in &entry.modifiers {
+                        let hi = (modifier >> 32) as u32;
+                        let lo = (modifier & 0xffff_ffff) as u32;
+                        ffi::wl_resource_post_event(
+                            res,
+                            ffi::ZWP_LINUX_DMABUF_V1_MODIFIER,
+                            fmt,
+                            hi,
+                            lo,
+                        );
+                    }
+                }
             }
         }
     }

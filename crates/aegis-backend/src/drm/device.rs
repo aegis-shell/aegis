@@ -148,6 +148,59 @@ impl DrmBackend {
     /// physical desktop (framebuffer) pixels, forwarded to KMS as
     /// `FB_DAMAGE_CLIPS` where the plane supports it. `None` means "unknown",
     /// which commits a full-output clip — always safe for the driver.
+    /// Whether a client dma-buf with this `(fourcc, modifier)` could be scanned
+    /// out directly on the selected primary planes. Direct scanout is only
+    /// taken when every active output's primary plane accepts the exact pair;
+    /// otherwise the compositor falls back to rendering. The check reuses the
+    /// negotiated display-set modifier intersection plus a format match against
+    /// the fourcc the desktop itself was configured for.
+    pub fn supports_scanout(&self, fourcc: u32, modifier: u64) -> bool {
+        if self.displays.format as u32 != fourcc {
+            return false;
+        }
+        self.displays.modifiers.contains(&modifier)
+    }
+
+    /// Import a client dma-buf as a DRM framebuffer for direct scanout, reusing
+    /// the same prime-import + add_framebuffer path as the composited export but
+    /// honoring the client's real fourcc, modifier, and (possibly non-zero)
+    /// plane offset. `fd` is a caller-duplicated descriptor (the client keeps
+    /// the original); `acquire_fence` is an optional duplicate sync_file.
+    fn import_scanout_client(
+        &self,
+        fd: std::os::fd::BorrowedFd,
+        desc: ClientScanoutDesc,
+        acquire_fence: Option<OwnedFd>,
+    ) -> Result<Scanout, DrmError> {
+        let card = self.card();
+        let gem = card.prime_fd_to_buffer(fd)?;
+        let buffer = ImportedBuffer {
+            size: (desc.width, desc.height),
+            stride: desc.stride,
+            modifier: desc.modifier,
+            format: desc.format,
+            offset: desc.offset,
+            gem,
+        };
+        let flags = if desc.modifier == DrmModifier::Invalid {
+            FbCmd2Flags::empty()
+        } else {
+            FbCmd2Flags::MODIFIERS
+        };
+        match card.add_planar_framebuffer(&buffer, flags) {
+            Ok(framebuffer) => Ok(Scanout {
+                framebuffer,
+                gem,
+                slot: 0,
+                acquire_fence,
+            }),
+            Err(error) => {
+                let _ = card.close_buffer(gem);
+                Err(error.into())
+            }
+        }
+    }
+
     pub fn present(
         &mut self,
         surface: &flux::Surface,
@@ -186,6 +239,75 @@ impl DrmBackend {
         Ok(completion_fence)
     }
 
+    /// Page-flip a single client dma-buf directly onto the primary plane,
+    /// bypassing the Vulkan composite entirely. This is the fullscreen-game
+    /// fast path: a fullscreen, unoccluded, opaque client surface whose
+    /// `(fourcc, modifier)` the plane accepts is imported and committed as-is.
+    /// No flux frame is involved, so this is called instead of (not alongside)
+    /// [`present`]. Any kernel import/commit failure is reported as an error
+    /// so the runtime falls back to compositing the next frame.
+    pub fn present_scanout(
+        &mut self,
+        client: &aegis_core::SurfaceDmabuf,
+        damage: Option<aegis_core::Rect>,
+    ) -> Result<Option<OwnedFd>, DrmError> {
+        if !self.active || !self.render_ready {
+            return Err(DrmError::Inactive);
+        }
+        if !self.pending_flips.is_empty() {
+            self.wait_for_flip(Duration::from_secs(1))?;
+        }
+        if !self.active || !self.render_ready {
+            return Err(DrmError::Inactive);
+        }
+        if self.pending_resize.is_some() {
+            return Err(DrmError::Reconfigured);
+        }
+        let format =
+            DrmFourcc::try_from(client.drm_format).map_err(|_| DrmError::ScanoutUnsupported)?;
+        let modifier = DrmModifier::from(client.modifier);
+        // Duplicate the client fd and optional acquire fence: the server owns
+        // the originals, which stay live for future commits.
+        let dup_fd = unsafe { libc::dup(client.fd) };
+        if dup_fd < 0 {
+            return Err(DrmError::ScanoutUnsupported);
+        }
+        let owned = unsafe { OwnedFd::from_raw_fd(dup_fd) };
+        let dup_fence = if client.acquire_fence >= 0 {
+            // Two independent dups: one consumed by the kernel at commit
+            // (import_scanout_client stores it on the Scanout, which
+            // commit_scanout nulls after the IN_FENCE_FD is imported), and a
+            // second returned as the per-frame completion signal so the
+            // renderer's present-ack path stays unchanged.
+            unsafe { BorrowedFd::borrow_raw(client.acquire_fence) }
+                .try_clone_to_owned()
+                .ok()
+        } else {
+            None
+        };
+        let completion_fence = if client.acquire_fence >= 0 {
+            unsafe { BorrowedFd::borrow_raw(client.acquire_fence) }
+                .try_clone_to_owned()
+                .ok()
+        } else {
+            None
+        };
+        let scanout = self.import_scanout_client(
+            owned.as_fd(),
+            ClientScanoutDesc {
+                width: client.width as u32,
+                height: client.height as u32,
+                stride: client.stride,
+                offset: client.offset,
+                format,
+                modifier,
+            },
+            dup_fence,
+        )?;
+        self.commit_scanout(scanout, damage)?;
+        Ok(completion_fence)
+    }
+
     pub fn is_active(&self) -> bool {
         self.active && self.render_ready
     }
@@ -213,6 +335,7 @@ impl DrmBackend {
             stride: dmabuf.stride,
             modifier,
             format: self.displays.format,
+            offset: 0,
             gem,
         };
         let flags = if modifier == DrmModifier::Invalid {

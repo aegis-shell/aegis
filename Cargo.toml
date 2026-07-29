@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.0.6"
+version = "0.0.7"
 edition = "2024"
 # Project source code is MIT. The bundled cursor theme under
 # assets/cursors/Bibata-Modern-Ice is GPL-3.0-only (third-party, derived from
@@ -18,13 +18,13 @@ repository = "https://github.com/ming2k/aegis"
 # monorepo and links the C libraries discovered by pkg-config. Development
 # commands can opt into ../optics through .cargo/optics-local.toml without
 # making a sibling checkout mandatory for CI or downstream packagers.
-flux = { git = "https://github.com/ming2k/optics", tag = "v0.0.3" }
-flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.3" }
-flux-scene-graph = { git = "https://github.com/ming2k/optics", tag = "v0.0.3" }
-flux-scene-graph-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.3" }
-lens = { git = "https://github.com/ming2k/optics", tag = "v0.0.3" }
-lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.3" }
-iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.3" }
+flux = { git = "https://github.com/ming2k/optics", tag = "v0.0.4" }
+flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.4" }
+flux-scene-graph = { git = "https://github.com/ming2k/optics", tag = "v0.0.4" }
+flux-scene-graph-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.4" }
+lens = { git = "https://github.com/ming2k/optics", tag = "v0.0.4" }
+lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.4" }
+iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.4" }
 
 # Observability: the facade in every crate, the impl only in the binary.
 # Long-term this seam is also how the AI-adaptation phase subscribes to
