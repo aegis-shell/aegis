@@ -102,6 +102,41 @@ nested process continues without IPC and logs an address-in-use warning when
 another Aegis process already owns that path. Stop the other process before
 testing IPC.
 
+## Verify Client GPU Selection
+
+Nested mode can validate Wayland dma-buf negotiation even though it cannot
+validate KMS scanout. Startup should identify the DRM node belonging to the
+Vulkan physical device selected by Flux:
+
+```text
+dmabuf: v4 main device is Vulkan render node 226:128
+```
+
+Inspect the inner display from another terminal, replacing the socket name:
+
+```bash
+WAYLAND_DISPLAY=wayland-1 wayland-info |
+  sed -n "/interface: 'zwp_linux_dmabuf_v1'/,+12p"
+```
+
+The linux-dmabuf global should be version 4 and its feedback should report a
+main device and render tranche. Then launch the target client through the
+built-in launcher or explicitly on the inner socket. For a Flatpak:
+
+```bash
+flatpak run \
+  --env=WAYLAND_DISPLAY=wayland-1 \
+  --env=LIBGL_DEBUG=verbose \
+  sh.ppy.osu
+```
+
+Inspect the application's own graphics log and confirm that its renderer is
+the Intel, AMD, or NVIDIA GPU rather than `llvmpipe`. A hardware renderer here
+isolates protocol negotiation and Flux import from direct-display concerns.
+Run the same check on the DRM backend before drawing conclusions about KMS
+page flips or direct scanout; see
+[VT/DRM Manual Testing](vt-drm-testing.md#verify-client-gpu-acceleration).
+
 ## Iterate on Changes
 
 Treat configuration changes and code changes differently.

@@ -295,11 +295,11 @@ pub struct SurfaceDmabuf {
     pub width: i32,
     pub height: i32,
     pub generation: u64,
-    /// Stable identity of the backing `wl_buffer` resource (its address as a
-    /// `u64`), or 0 when unknown. Unlike `generation` — which is bumped on
-    /// every commit — this stays constant across frames that reuse the same
-    /// buffer, letting the renderer skip a redundant dmabuf re-import. `fd`
-    /// cannot serve that role: it is re-`dup`ed per commit.
+    /// Stable monotonic identity of the backing `wl_buffer`, or 0 when
+    /// unknown. Unlike `generation` — which is bumped on every commit — this
+    /// stays constant across frames that reuse the same buffer and is not
+    /// vulnerable to allocator reuse of a destroyed `wl_resource` address.
+    /// `fd` cannot serve that role: it is re-`dup`ed per commit.
     pub buffer_id: u64,
     pub fd: i32,
     pub drm_format: u32,

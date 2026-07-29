@@ -82,3 +82,4 @@ background and how the decisions fit together, see
 | [0073](0073-prism-search-and-explicit-application-shortcuts.md) | Prism search and explicit application shortcuts (amends [0022](0022-application-launcher.md), [0044](0044-dock-and-control-center-crates.md)) | Accepted |
 | [0074](0074-generic-agent-workspaces-status-surface.md) | Generic Agent Workspaces status surface (amends [0050](0050-fuji-agent-product-and-bridge-rename.md), [0060](0060-statusbar-system-controls-and-live-system-ipc.md)) | Accepted |
 | [0075](0075-independent-portal-package-and-backend-contract.md) | Independent portal package and backend contract (supersedes [0051](0051-portal-backend-dbus-bridge.md), [0053](0053-portal-session-services-and-grants.md)) | Accepted |
+| [0076](0076-linux-dmabuf-device-feedback-and-reusable-buffer-sync.md) | Linux-dmabuf device feedback and reusable-buffer synchronization | Accepted |

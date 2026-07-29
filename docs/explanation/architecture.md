@@ -66,7 +66,7 @@ convention: `flux-rs` (`flux` / `flux-sys`) and `lens-rs`
 (`lens` / `lens-sys`). Native libraries cross the repository boundary
 through `pkg-config`; binding sources come from a locked release by default.
 See
-[ADR-0067](../adr/0067-remote-optics-dependencies-and-local-overrides.md).
+[ADR-0071](../adr/0071-worktree-isolated-cross-repository-development.md).
 
 ### Naming note: where the "user-facing" logic lives
 
@@ -155,8 +155,10 @@ In nested operation, each frame runs the following sequence:
    ([ADR-0039](../adr/0039-damage-driven-shm-refresh.md)).
 3. The renderer turns each mapped surface into a flux texture — dmabuf by
    zero-copy import, `wl_shm` by CPU upload — refreshing only the damage
-   bounding box for same-size commits, and composites them in
-   z-order into the frame, then overlays the lens chrome. When a
+   bounding box for same-size commits. Imported dma-bufs live in a bounded
+   per-surface cache keyed by stable buffer identity; a new acquire fence for
+   a reused buffer becomes a Flux GPU wait for that frame. The renderer
+   composites surfaces in z-order, then overlays the lens chrome. When a
    wallpaper is loaded (see [ADR-0018](../adr/0018-wallpaper-crate.md)),
    `aegis-wallpaper` draws it as the bottom-most layer before the renderer
    runs.
@@ -168,8 +170,13 @@ In nested operation, each frame runs the following sequence:
    the completion fence on DRM, or a few frames late on nested
    ([ADR-0038](../adr/0038-frame-pacing.md)).
 
-Client GPU buffers reach flux through a dmabuf import path added to flux
-([ADR-0004](../adr/0004-client-buffers-via-flux-dmabuf-import.md)).
+Client GPU buffers reach flux through a dma-buf import path added to flux
+([ADR-0004](../adr/0004-client-buffers-via-flux-dmabuf-import.md)). The
+client's graphics API is not the deciding boundary: OpenGL and Vulkan clients
+can both export dma-bufs. linux-dmabuf v4 feedback identifies the DRM device
+used by Flux's Vulkan physical device, so Mesa allocates on the same GPU;
+version 3 remains the fallback when that identity is unavailable. See
+[ADR-0076](../adr/0076-linux-dmabuf-device-feedback-and-reusable-buffer-sync.md).
 
 ## Clipboard Policy
 
@@ -219,7 +226,7 @@ dependencies. Each is placed by responsibility per
 | Import client dmabuf as a texture | flux | dmabuf import API ([ADR-0004](../adr/0004-client-buffers-via-flux-dmabuf-import.md)) |
 | Render target not tied to `VkSurfaceKHR` presentation (for DRM/KMS) | flux | Offscreen dma-buf render path (`flux::Surface::offscreen_dmabuf` + export) |
 | Rust bindings to flux and lens | bindings | `flux-rs` / `lens-rs` crates ([ADR-0023](../adr/0023-split-flux-lens-stack.md)) |
-| Explicit synchronization for buffer release | flux and aegis | `zwp_linux_explicit_synchronization_v1` with acquire fences through flux import and KMS `IN_FENCE_FD` |
+| Reusable-buffer acquire synchronization and release | flux and aegis | Aegis transports each commit's acquire fence; Flux waits it per frame on cached imports; direct scanout uses KMS fences ([ADR-0076](../adr/0076-linux-dmabuf-device-feedback-and-reusable-buffer-sync.md)) |
 | Wayland server, DRM/KMS, libinput, seat and session | aegis | Implemented in aegis ([ADR-0002](../adr/0002-hand-rolled-wayland-server.md)) |
 
 flux does not auto-enable `VK_KHR_swapchain`; the nested backend requests it

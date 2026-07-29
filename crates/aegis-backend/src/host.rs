@@ -1,6 +1,7 @@
 //! Runtime backend selection and the common compositor-host facade.
 
 use std::collections::HashMap;
+use std::ffi::CStr;
 use std::os::fd::OwnedFd;
 use std::str::FromStr;
 use std::time::Duration;
@@ -10,6 +11,7 @@ use aegis_core::input::{
     InputEvent, PointerGestureEvent, TextInputEvent, TextInputState, TouchpadConfig, TouchpadStatus,
 };
 use aegis_core::output::ModeSpec;
+use ash::vk::Handle;
 
 use crate::Backend;
 use crate::drm::{DrmBackend, DrmError};
@@ -71,6 +73,10 @@ pub enum HostError {
 }
 
 /// One runtime-selected compositor host.
+// There is exactly one process-lifetime Host. Keeping both backends inline
+// avoids an allocation and makes ownership explicit; enum stack size is not a
+// per-frame cost.
+#[allow(clippy::large_enum_variant)]
 pub enum Host {
     Nested(NestedHost),
     Drm(DrmBackend),
@@ -284,6 +290,79 @@ impl Host {
             Self::Nested(_) => false,
             Self::Drm(host) => host.supports_scanout(fourcc, modifier),
         }
+    }
+
+    /// Preferred DRM device for linux-dmabuf v4 feedback.
+    ///
+    /// Query the physical device Flux actually selected, so Mesa clients use
+    /// the same GPU even in nested and multi-GPU configurations. Direct DRM
+    /// can fall back to its KMS primary node when a Vulkan driver lacks
+    /// `VK_EXT_physical_device_drm`.
+    pub fn dmabuf_feedback_device(&self, device: &flux::Device) -> Option<u64> {
+        if let Some(device) = vulkan_dmabuf_feedback_device(device) {
+            return Some(device);
+        }
+        match self {
+            Self::Nested(_) => None,
+            Self::Drm(host) => host.dmabuf_feedback_device(),
+        }
+    }
+}
+
+fn vulkan_dmabuf_feedback_device(device: &flux::Device) -> Option<u64> {
+    unsafe {
+        let entry = match ash::Entry::load() {
+            Ok(entry) => entry,
+            Err(error) => {
+                log::warn!("dmabuf: cannot load Vulkan entry for device feedback: {error}");
+                return None;
+            }
+        };
+        let instance = ash::Instance::load(
+            entry.static_fn(),
+            ash::vk::Instance::from_raw(device.vk_instance() as usize as u64),
+        );
+        let physical =
+            ash::vk::PhysicalDevice::from_raw(device.vk_physical_device() as usize as u64);
+        let extensions = match instance.enumerate_device_extension_properties(physical) {
+            Ok(extensions) => extensions,
+            Err(error) => {
+                log::warn!("dmabuf: cannot enumerate Vulkan device extensions: {error}");
+                return None;
+            }
+        };
+        let supports_drm = extensions.iter().any(|extension| {
+            CStr::from_ptr(extension.extension_name.as_ptr())
+                == ash::vk::EXT_PHYSICAL_DEVICE_DRM_NAME
+        });
+        if !supports_drm {
+            log::warn!(
+                "dmabuf: Vulkan device lacks VK_EXT_physical_device_drm; using backend fallback"
+            );
+            return None;
+        }
+
+        let mut drm = ash::vk::PhysicalDeviceDrmPropertiesEXT::default();
+        let mut properties = ash::vk::PhysicalDeviceProperties2::default().push_next(&mut drm);
+        instance.get_physical_device_properties2(physical, &mut properties);
+
+        let selected = if drm.has_render != 0 {
+            Some(("render", drm.render_major, drm.render_minor))
+        } else if drm.has_primary != 0 {
+            Some(("primary", drm.primary_major, drm.primary_minor))
+        } else {
+            None
+        };
+        let Some((kind, major, minor)) = selected else {
+            log::warn!("dmabuf: Vulkan device reports no DRM primary or render node");
+            return None;
+        };
+        let (Ok(major), Ok(minor)) = (u32::try_from(major), u32::try_from(minor)) else {
+            log::warn!("dmabuf: Vulkan device returned invalid DRM node {major}:{minor}");
+            return None;
+        };
+        log::info!("dmabuf: v4 main device is Vulkan {kind} node {major}:{minor}");
+        Some(libc::makedev(major, minor))
     }
 }
 

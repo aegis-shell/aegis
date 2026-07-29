@@ -41,6 +41,10 @@ mandatory memory, process, CPU, freeze, and revoke boundaries require. It
 also binds to `graphical-session.target`, so session services such as
 xdg-desktop-portal start and stop with the compositor.
 
+```bash
+systemctl --user start --wait aegis.service
+```
+
 ## Session environment
 
 At startup the compositor sets `WAYLAND_DISPLAY`, `XDG_SESSION_TYPE=wayland`,
@@ -83,16 +87,20 @@ First bare-metal run, in order:
    exit. This exercises the flip-wait deadline loop.
 3. **Clients.** Launch a terminal from the launcher (`Super+A`) and
    confirm keyboard focus, typing, and window move (`Super+drag`).
-4. **VT switch.** `Ctrl+Alt+F2` away, then back (`Ctrl+Alt+F3` returns to
+4. **GPU clients.** Run `wayland-info` and confirm
+   `zwp_linux_dmabuf_v1` is version 4 with a main device. Launch an OpenGL
+   application and confirm its renderer names the physical GPU rather than
+   `llvmpipe`.
+5. **VT switch.** `Ctrl+Alt+F2` away, then back (`Ctrl+Alt+F3` returns to
    aegis — the compositor forwards these keys to libseat itself). The session
    resumes with a fresh modeset; at most one skipped frame is logged at
    warn level.
-5. **Hotplug.** Unplug and replug the monitor (or dock). The display set
+6. **Hotplug.** Unplug and replug the monitor (or dock). The display set
    is reprobed, the surface recreated if the modifier set changed, and
    workspaces return to their home connector (ADR-0025).
-6. **Session lock.** Lock, confirm the screen shows only the lock client,
+7. **Session lock.** Lock, confirm the screen shows only the lock client,
    and unlock. While locked, `aegis-ctl` commands are refused.
-7. **Screenshot.** `aegis-ctl screenshot /tmp/tty.png` produces a PNG of the
+8. **Screenshot.** `aegis-ctl screenshot /tmp/tty.png` produces a PNG of the
    desktop (also exercises the CPU readback path).
 
 ## Stop
@@ -113,3 +121,6 @@ returns to the TTY. Switch back to the original graphical VT afterward.
   path is the first suspect.
 - Black screen with a running log — check the modifier intersection in the
   log; set `AEGIS_DRM_DEVICE` to the other card on hybrid-GPU machines.
+- An OpenGL application reports `llvmpipe` — check linux-dmabuf v4 feedback
+  and the Flatpak or sandbox's `/dev/dri` access before changing the
+  application's graphics API.

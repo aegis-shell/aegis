@@ -5,6 +5,26 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once the
 project cuts a tagged release.
 
+## [Unreleased]
+
+### Graphics and performance
+
+- Added linux-dmabuf v4 feedback backed by the DRM identity of the Vulkan
+  physical device selected by Flux. Mesa OpenGL clients, including Flatpak
+  applications, can now select the compositor GPU instead of falling back to
+  `llvmpipe`.
+- Cache each member of a client's reusable dma-buf swapchain by stable buffer
+  identity and wait new acquire fences on the existing Flux image. Repeated
+  commits no longer re-import the same two to four GPU buffers.
+- Restrict direct scanout to the formats and modifiers accepted by both Flux
+  and KMS, and use the KMS out-fence as the buffer-release completion fence.
+
+### Reliability
+
+- Embed the default static wallpaper in the executable and reject missing
+  wallpaper paths before attempting image decode. Installed builds no longer
+  repeatedly try to open a build-tree-only wallpaper path.
+
 ## [0.0.8] - 2026-07-29
 
 ### Desktop portal

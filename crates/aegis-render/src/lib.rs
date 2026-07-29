@@ -6,6 +6,7 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::os::fd::{FromRawFd, OwnedFd};
 
 use aegis_core::{SurfaceDmabuf, SurfacePixels, Transform, dmabuf as drm_fmt};
 
@@ -212,7 +213,12 @@ fn viewport_uv(
 /// import failure so the diagnostic is emitted once per surface rather than
 /// every frame.
 pub struct Renderer {
+    /// CPU-uploaded SHM textures have one current backing per surface.
     cache: HashMap<usize, CachedImage>,
+    /// A Wayland dma-buf client normally cycles through a 2–4 buffer
+    /// swapchain. Cache each backing buffer independently so A→B→C→A does
+    /// not rebuild a VkImage on every commit.
+    dmabuf_cache: HashMap<(usize, u64), CachedImage>,
     failed_imports: HashMap<usize, ()>,
     /// Images removed from the live cache stay alive beyond Flux's maximum
     /// three in-flight frame slots. Vulkan resources must not be destroyed
@@ -221,10 +227,9 @@ pub struct Renderer {
     frame_epoch: u64,
 }
 
-/// A texture cached per surface, keyed by the surface's wl_resource address.
-/// Carries enough provenance to decide whether a new frame's dmabuf is the
-/// *same* buffer as the cached one (so the expensive Vulkan import can be
-/// skipped) without risking a stale-image bug.
+/// A cached texture. SHM entries are keyed by surface; dma-buf entries by
+/// `(surface, stable buffer identity)`, so every member of a client swapchain
+/// can retain its own imported VkImage.
 ///
 /// The identity used for the skip is the backing `wl_buffer` (`buffer_id`),
 /// not `generation` — the latter is bumped on every commit, even when the
@@ -234,11 +239,13 @@ pub struct Renderer {
 struct CachedImage {
     image: flux::Image,
     generation: u64,
-    buffer_id: u64,
     modifier: u64,
     width: u32,
     height: u32,
+    last_used_epoch: u64,
 }
+
+const MAX_DMABUF_BUFFERS_PER_SURFACE: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OrderedSurfaceSource {
@@ -326,6 +333,7 @@ impl Renderer {
     pub fn new() -> Renderer {
         Renderer {
             cache: HashMap::new(),
+            dmabuf_cache: HashMap::new(),
             failed_imports: HashMap::new(),
             retired: Vec::new(),
             frame_epoch: 0,
@@ -353,6 +361,49 @@ impl Renderer {
         }
     }
 
+    fn cache_dmabuf_image(&mut self, key: (usize, u64), entry: CachedImage) {
+        if let Some(old) = self.dmabuf_cache.insert(key, entry) {
+            self.retired.push((old.image, self.frame_epoch));
+        }
+
+        let surface_id = key.0;
+        let mut keys = self
+            .dmabuf_cache
+            .iter()
+            .filter_map(|(candidate, entry)| {
+                (candidate.0 == surface_id && *candidate != key)
+                    .then_some((*candidate, entry.last_used_epoch))
+            })
+            .collect::<Vec<_>>();
+        let keep_others = MAX_DMABUF_BUFFERS_PER_SURFACE.saturating_sub(1);
+        if keys.len() <= keep_others {
+            return;
+        }
+        keys.sort_unstable_by_key(|(_, last_used)| *last_used);
+        let evict = keys.len() - keep_others;
+        for (old_key, _) in keys.into_iter().take(evict) {
+            self.retire_dmabuf(old_key);
+        }
+    }
+
+    fn retire_dmabuf(&mut self, key: (usize, u64)) {
+        if let Some(entry) = self.dmabuf_cache.remove(&key) {
+            self.retired.push((entry.image, self.frame_epoch));
+        }
+    }
+
+    fn retire_dmabuf_surface(&mut self, id: usize) {
+        let keys = self
+            .dmabuf_cache
+            .keys()
+            .copied()
+            .filter(|key| key.0 == id)
+            .collect::<Vec<_>>();
+        for key in keys {
+            self.retire_dmabuf(key);
+        }
+    }
+
     /// Drop cached textures for surfaces no longer present. Call once per frame
     /// with every live surface id (shm and dma-buf).
     pub fn gc(&mut self, live_ids: impl Iterator<Item = usize>) {
@@ -367,6 +418,15 @@ impl Renderer {
             if let Some(entry) = self.cache.remove(&id) {
                 self.retired.push((entry.image, self.frame_epoch));
             }
+        }
+        let dead_dmabufs = self
+            .dmabuf_cache
+            .keys()
+            .copied()
+            .filter(|(id, _)| !live.contains(id))
+            .collect::<Vec<_>>();
+        for key in dead_dmabufs {
+            self.retire_dmabuf(key);
         }
         self.failed_imports.retain(|k, _| live.contains(k));
     }
@@ -555,6 +615,7 @@ impl Renderer {
         >,
     ) {
         for f in frames.iter() {
+            self.retire_dmabuf_surface(f.id);
             // Upload gating has two layers:
             //
             // * WHEN to upload: only when the surface committed new
@@ -680,10 +741,10 @@ impl Renderer {
                             CachedImage {
                                 image: img,
                                 generation: f.generation,
-                                buffer_id: 0,
                                 modifier: 0,
                                 width: f.width as u32,
                                 height: f.height as u32,
+                                last_used_epoch: self.frame_epoch,
                             },
                         );
                     }
@@ -780,27 +841,57 @@ impl Renderer {
         >,
     ) {
         for f in frames.iter() {
-            // Decide whether the expensive Vulkan import can be skipped. The
-            // import is reusable when the *same backing buffer* is attached at
-            // the same modifier and dimensions. `generation` is bumped every
-            // commit and cannot answer that question, so the identity check is
-            // buffer_id + modifier + size. One exception: an explicit-sync
-            // acquire fence is per-frame, and a cached VkImage has no slot to
-            // re-wait on it, so a fence forces a re-import (correctness over
-            // the micro-optimization). Implicit-sync frames (no fence) import
-            // with no producer wait anyway, so skipping is always safe there.
-            let stale = match self.cache.get(&f.id) {
-                None => true,
-                Some(c) => {
-                    let identity_unchanged = c.buffer_id != 0
-                        && c.buffer_id == f.buffer_id
-                        && c.modifier == f.modifier
-                        && c.width == f.width as u32
-                        && c.height == f.height as u32;
-                    !(identity_unchanged && f.acquire_fence < 0)
+            self.retire_cached(f.id);
+            let key = (f.id, f.buffer_id);
+            let reusable = f.buffer_id != 0
+                && self.dmabuf_cache.get(&key).is_some_and(|cached| {
+                    cached.modifier == f.modifier
+                        && cached.width == f.width as u32
+                        && cached.height == f.height as u32
+                });
+
+            if reusable {
+                // Explicit-sync fences describe each new producer commit, not
+                // the lifetime of the backing buffer. Attach the new fence to
+                // this frame's use of the existing VkImage; Flux waits it on
+                // the GPU before the FOREIGN -> graphics ownership acquire.
+                if f.acquire_fence >= 0 {
+                    let fd = unsafe { libc::dup(f.acquire_fence) };
+                    if fd < 0 {
+                        if self.failed_imports.insert(f.id, ()).is_none() {
+                            log::warn!(
+                                "[render] failed to duplicate reusable dma-buf acquire fence fd {}",
+                                f.acquire_fence
+                            );
+                        }
+                        continue;
+                    }
+                    // SAFETY: dup returned a fresh descriptor owned by this
+                    // scope and OwnedFd closes it unless Flux consumes it.
+                    let fence = unsafe { OwnedFd::from_raw_fd(fd) };
+                    let wait = {
+                        let cached = self.dmabuf_cache.get(&key).expect("reusable cache entry");
+                        canvas.wait_dmabuf_acquire(&cached.image, fence)
+                    };
+                    if let Err(e) = wait {
+                        if self.failed_imports.insert(f.id, ()).is_none() {
+                            log::warn!(
+                                "[render] reusable dma-buf acquire wait failed ({e}): buffer={} fourcc={:#x} mod={:#x}",
+                                f.buffer_id,
+                                f.drm_format,
+                                f.modifier,
+                            );
+                        }
+                        continue;
+                    }
                 }
-            };
-            if stale {
+                if let Some(cached) = self.dmabuf_cache.get_mut(&key) {
+                    cached.generation = f.generation;
+                    cached.last_used_epoch = self.frame_epoch;
+                }
+                self.failed_imports.remove(&f.id);
+            } else {
+                self.retire_dmabuf(key);
                 if let Some(fmt) = drm_format_to_flux(f.drm_format) {
                     // Flux consumes the descriptor fd on success. The frame's
                     // fd is borrowed from the server and must remain valid for
@@ -827,7 +918,6 @@ impl Renderer {
                                     f.acquire_fence
                                 );
                             }
-                            self.retire_cached(f.id);
                             continue;
                         }
                         Some(fd)
@@ -862,7 +952,11 @@ impl Renderer {
                     };
                     match img {
                         Ok(img) => {
-                            if !self.cache.contains_key(&f.id) {
+                            if !self
+                                .dmabuf_cache
+                                .keys()
+                                .any(|candidate| candidate.0 == f.id)
+                            {
                                 log::info!(
                                     "[render] dma-buf imported: {}x{} fourcc={:#x} mod={:#x}",
                                     f.width,
@@ -875,15 +969,15 @@ impl Renderer {
                             // the suppression so a transient error is logged
                             // again if it recurs.
                             self.failed_imports.remove(&f.id);
-                            self.cache_image(
-                                f.id,
+                            self.cache_dmabuf_image(
+                                key,
                                 CachedImage {
                                     image: img,
                                     generation: f.generation,
-                                    buffer_id: f.buffer_id,
                                     modifier: f.modifier,
                                     width: f.width as u32,
                                     height: f.height as u32,
+                                    last_used_epoch: self.frame_epoch,
                                 },
                             );
                         }
@@ -893,7 +987,6 @@ impl Renderer {
                             if let Some(acquire_fence) = acquire_fence {
                                 unsafe { libc::close(acquire_fence) };
                             }
-                            self.retire_cached(f.id);
                             // Suppress repeated identical failures; otherwise a
                             // persistent import problem floods the log every
                             // frame, since `stale` keeps re-triggering the path.
@@ -913,10 +1006,10 @@ impl Renderer {
                         }
                     }
                 } else {
-                    self.retire_cached(f.id);
+                    self.retire_dmabuf(key);
                 }
             }
-            if let Some(entry) = self.cache.get(&f.id) {
+            if let Some(entry) = self.dmabuf_cache.get(&key) {
                 let img = &entry.image;
                 let x = f.geometry.position.x as f32;
                 let y = f.geometry.position.y as f32;

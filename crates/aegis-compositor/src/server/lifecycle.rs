@@ -15,6 +15,23 @@ impl Server {
         explicit_sync_supported: bool,
         dmabuf_formats: Vec<aegis_core::dmabuf::DmabufFormat>,
     ) -> Result<Server, ServerError> {
+        Self::new_with_render_caps_and_device(
+            dmabuf_supported,
+            explicit_sync_supported,
+            dmabuf_formats,
+            None,
+        )
+    }
+
+    /// Create a server with renderer capabilities plus the renderer's Linux
+    /// DRM device identity. A discoverable device enables linux-dmabuf v4
+    /// feedback, which GPU clients use to select the same render device.
+    pub fn new_with_render_caps_and_device(
+        dmabuf_supported: bool,
+        explicit_sync_supported: bool,
+        dmabuf_formats: Vec<aegis_core::dmabuf::DmabufFormat>,
+        dmabuf_main_device: Option<u64>,
+    ) -> Result<Server, ServerError> {
         unsafe {
             let display = ffi::wl_display_create();
             if display.is_null() {
@@ -37,6 +54,7 @@ impl Server {
             // over zwp_linux_dmabuf_v1 so clients allocate GPU-optimal buffers
             // instead of falling back to LINEAR.
             state.dmabuf_formats = dmabuf_formats;
+            state.dmabuf_main_device = dmabuf_main_device;
             // The keyboard is optional in the sense that its absence should
             // not crash the compositor — but a working keymap is needed for
             // interactive use, so a failure here is logged loudly. The seat
@@ -86,10 +104,15 @@ impl Server {
                 ddm_bind,
             );
             if dmabuf_supported {
+                let version = if state.dmabuf_main_device.is_some() {
+                    4
+                } else {
+                    3
+                };
                 ffi::wl_global_create(
                     display,
                     &ffi::zwp_linux_dmabuf_v1_interface,
-                    3,
+                    version,
                     data,
                     dmabuf_bind,
                 );

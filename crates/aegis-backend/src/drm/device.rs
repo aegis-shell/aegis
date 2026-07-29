@@ -1,5 +1,69 @@
 use super::*;
 
+pub(super) fn scanout_formats_support(
+    formats: &HashMap<u32, Vec<u64>>,
+    fourcc: u32,
+    modifier: u64,
+) -> bool {
+    formats
+        .get(&fourcc)
+        .is_some_and(|modifiers| modifiers.contains(&modifier))
+}
+
+#[repr(C)]
+struct SyncMergeData {
+    name: [u8; 32],
+    fd2: i32,
+    fence: i32,
+    flags: u32,
+    pad: u32,
+}
+
+/// `SYNC_IOC_MERGE` from `<linux/sync_file.h>`. The UAPI encoding and
+/// `sync_merge_data` layout are stable across Linux architectures supported by
+/// Aegis.
+const SYNC_IOC_MERGE: libc::c_ulong = 0xC030_3E03;
+
+fn merge_sync_fences(mut fences: Vec<OwnedFd>) -> Option<OwnedFd> {
+    let mut merged = fences.pop()?;
+    for fence in fences {
+        let mut data = SyncMergeData {
+            name: [0; 32],
+            fd2: fence.as_raw_fd(),
+            fence: -1,
+            flags: 0,
+            pad: 0,
+        };
+        data.name[..9].copy_from_slice(b"aegis-kms");
+        let result = unsafe {
+            libc::ioctl(
+                merged.as_raw_fd(),
+                SYNC_IOC_MERGE,
+                &mut data as *mut SyncMergeData,
+            )
+        };
+        if result < 0 || data.fence < 0 {
+            log::warn!(
+                "drm: failed to merge multi-output completion fences: {}",
+                std::io::Error::last_os_error()
+            );
+            return None;
+        }
+        // SAFETY: a successful SYNC_IOC_MERGE returns a new owned sync_file.
+        merged = unsafe { OwnedFd::from_raw_fd(data.fence) };
+    }
+    Some(merged)
+}
+
+fn close_raw_fences(fences: &mut [i32]) {
+    for fence in fences {
+        if *fence >= 0 {
+            unsafe { libc::close(*fence) };
+            *fence = -1;
+        }
+    }
+}
+
 impl DrmBackend {
     /// Acquire the seat, choose a connected DRM card/output, enable atomic
     /// modesetting, and attach libinput to the same seat. `configured_modes`
@@ -183,13 +247,11 @@ impl DrmBackend {
     /// out directly on the selected primary planes. Direct scanout is only
     /// taken when every active output's primary plane accepts the exact pair;
     /// otherwise the compositor falls back to rendering. The check reuses the
-    /// negotiated display-set modifier intersection plus a format match against
-    /// the fourcc the desktop itself was configured for.
+    /// selected primary planes' real per-format modifier intersection. The
+    /// client format need not equal the compositor render-target format (for
+    /// example, an ARGB game can scan out while the desktop uses XRGB).
     pub fn supports_scanout(&self, fourcc: u32, modifier: u64) -> bool {
-        if self.displays.format as u32 != fourcc {
-            return false;
-        }
-        self.displays.modifiers.contains(&modifier)
+        scanout_formats_support(&self.displays.scanout_formats, fourcc, modifier)
     }
 
     pub fn hardware_cursor_supported(&self) -> bool {
@@ -365,7 +427,7 @@ impl DrmBackend {
             .map(OwnedFd::try_clone)
             .transpose()?;
         let scanout = self.import_scanout(dmabuf)?;
-        self.commit_scanout(scanout, damage)?;
+        self.commit_scanout(scanout, damage, false)?;
         Ok(completion_fence)
     }
 
@@ -415,13 +477,6 @@ impl DrmBackend {
         } else {
             None
         };
-        let completion_fence = if client.acquire_fence >= 0 {
-            unsafe { BorrowedFd::borrow_raw(client.acquire_fence) }
-                .try_clone_to_owned()
-                .ok()
-        } else {
-            None
-        };
         let scanout = self.import_scanout_client(
             owned.as_fd(),
             ClientScanoutDesc {
@@ -434,7 +489,14 @@ impl DrmBackend {
             },
             dup_fence,
         )?;
-        self.commit_scanout(scanout, damage)?;
+        let completion_fence = self.commit_scanout(scanout, damage, true)?;
+        if completion_fence.is_none() {
+            // Older KMS drivers lack CRTC OUT_FENCE_PTR. Preserve correct
+            // wl_buffer release semantics by waiting for the page flip only
+            // on that compatibility path; modern drivers remain fully
+            // pipelined through the returned sync_file.
+            self.wait_for_flip(Duration::from_secs(1))?;
+        }
         Ok(completion_fence)
     }
 
@@ -559,7 +621,8 @@ impl DrmBackend {
         &mut self,
         mut scanout: Scanout,
         damage: Option<aegis_core::Rect>,
-    ) -> Result<(), DrmError> {
+        request_completion_fence: bool,
+    ) -> Result<Option<OwnedFd>, DrmError> {
         let mut request = atomic::AtomicModeReq::new();
         let acquire_fd = scanout
             .acquire_fence
@@ -569,6 +632,13 @@ impl DrmBackend {
         // Per-commit FB_DAMAGE_CLIPS blobs, destroyed once the commit ioctl
         // has run (the kernel references the blob, it does not borrow ours).
         let mut damage_blobs: Vec<u64> = Vec::new();
+        let use_out_fences = request_completion_fence
+            && self
+                .displays
+                .outputs
+                .iter()
+                .all(|output| output.props.crtc_out_fence_ptr.is_some());
+        let mut out_fence_fds = vec![-1_i32; self.displays.outputs.len()];
         for output in &self.displays.outputs {
             let props = output.props;
             let (width, height) = output.mode.size();
@@ -694,6 +764,7 @@ impl DrmBackend {
                 AtomicCommitFlags::ALLOW_MODESET | AtomicCommitFlags::TEST_ONLY,
                 request.clone(),
             ) {
+                close_raw_fences(&mut out_fence_fds);
                 for blob in damage_blobs {
                     let _ = self.card().destroy_property_blob(blob);
                 }
@@ -711,7 +782,21 @@ impl DrmBackend {
                 return Err(commit_error(error));
             }
         }
+        // OUT_FENCE_PTR is an execution result, not part of mode validation.
+        // Add it only after TEST_ONLY so the preflight never allocates or
+        // mutates sync-file storage.
+        if use_out_fences {
+            for (output_index, output) in self.displays.outputs.iter().enumerate() {
+                let pointer = (&mut out_fence_fds[output_index] as *mut i32) as usize as u64;
+                request.add_property(
+                    output.crtc,
+                    output.props.crtc_out_fence_ptr.expect("checked above"),
+                    property::Value::UnsignedRange(pointer),
+                );
+            }
+        }
         if let Err(error) = self.card().atomic_commit(flags, request) {
+            close_raw_fences(&mut out_fence_fds);
             for blob in damage_blobs {
                 let _ = self.card().destroy_property_blob(blob);
             }
@@ -747,7 +832,18 @@ impl DrmBackend {
             .map(|output| output.crtc)
             .collect();
         self.modeset_done = true;
-        Ok(())
+        let fences = out_fence_fds
+            .into_iter()
+            .filter(|fd| *fd >= 0)
+            // SAFETY: OUT_FENCE_PTR writes fresh owned sync_file descriptors.
+            .map(|fd| unsafe { OwnedFd::from_raw_fd(fd) })
+            .collect::<Vec<_>>();
+        if use_out_fences && fences.len() == self.displays.outputs.len() {
+            Ok(merge_sync_fences(fences))
+        } else {
+            drop(fences);
+            Ok(None)
+        }
     }
 
     pub(super) fn wait_for_flip(&mut self, timeout: Duration) -> Result<(), DrmError> {

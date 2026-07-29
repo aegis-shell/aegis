@@ -212,10 +212,18 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Wayland server: accept client connections on its own socket. Created
     // before the icon pass so the effective output scale (backend-reported
     // geometry plus any `[[output]]` override) is known when icons decode.
-    let mut server = aegis_compositor::Server::new_with_render_caps(
+    let dmabuf_main_device = host.dmabuf_feedback_device(&device);
+    if host.name() == "drm" && dmabuf_main_device.is_none() {
+        log::warn!(
+            "drm: linux-dmabuf v4 feedback disabled because the main DRM device is unknown; \
+             OpenGL clients may fall back to software rendering"
+        );
+    }
+    let mut server = aegis_compositor::Server::new_with_render_caps_and_device(
         flux::dmabuf_supported(&device),
         flux::dmabuf_sync_supported(&device),
         aegis_render::formats_with_modifiers(&device),
+        dmabuf_main_device,
     )?;
     server.set_outputs(host.output_infos());
     log::info!("server: listening on WAYLAND_DISPLAY={}", server.socket());
@@ -334,34 +342,42 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Wallpaper: a still image (png/jpg/webp/gif/…) or a short video decoded by
     // an external ffmpeg. `$AEGIS_WALLPAPER` selects the image; with it unset we
-    // fall back to a bundled demo wallpaper so a bare `cargo run` shows a
-    // desktop rather than the bare clear colour. The default is resolved at
-    // compile time relative to the crate, so it works straight from
-    // `cargo run`. A missing/failed load is not fatal — the clear colour shows
-    // through.
+    // fall back to a bundled demo wallpaper so a bare `cargo run` and an
+    // installed binary both show a desktop rather than the bare clear colour.
+    // The default bytes are embedded at compile time; no build-tree path leaks
+    // into a packaged executable. A missing/failed override is not fatal — the
+    // clear colour shows through.
     //
     // The decode resolution is seeded from the initial *physical* host size so
     // the wallpaper is decoded at the framebuffer's true resolution; later
     // resizes GPU-scale the wallpaper on draw without re-decoding.
-    const DEFAULT_WALLPAPER: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/wallpapers/procedural-generation.png"
-    );
+    const DEFAULT_WALLPAPER: &[u8] =
+        include_bytes!("../../../assets/wallpapers/procedural-generation.png");
     let (init_w, init_h) = host.physical_size();
     let wallpaper_override = std::env::var("AEGIS_WALLPAPER")
         .ok()
         .filter(|value| !value.is_empty());
-    let wallpaper_path = wallpaper_override
-        .clone()
-        .unwrap_or_else(|| DEFAULT_WALLPAPER.to_string());
-    let is_gltf = std::path::Path::new(&wallpaper_path)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("glb"));
-    let loaded = if is_gltf {
-        aegis_wallpaper::Wallpaper::from_gltf(&device, &surface, &wallpaper_path)
+    let is_gltf = wallpaper_override.as_deref().is_some_and(|path| {
+        std::path::Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("glb"))
+    });
+    let (loaded, wallpaper_label) = if let Some(path) = wallpaper_override.as_deref() {
+        let loaded = if is_gltf {
+            aegis_wallpaper::Wallpaper::from_gltf(&device, &surface, path)
+        } else {
+            aegis_wallpaper::Wallpaper::from_path(path, init_w, init_h)
+        };
+        (loaded, path.to_owned())
     } else {
-        aegis_wallpaper::Wallpaper::from_path(&wallpaper_path, init_w, init_h)
+        (
+            aegis_wallpaper::Wallpaper::from_static_image_bytes(
+                DEFAULT_WALLPAPER,
+                "bundled procedural-generation.png",
+            ),
+            "bundled procedural-generation.png".to_owned(),
+        )
     };
     let wallpaper = match loaded {
         Ok(mut wallpaper) => {
@@ -378,11 +394,11 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
                     log::warn!("wallpaper: 3D model disabled: {error}");
                 }
             }
-            log::info!("wallpaper: enabled ({wallpaper_path})");
+            log::info!("wallpaper: enabled ({wallpaper_label})");
             Some(wallpaper)
         }
         Err(e) => {
-            log::warn!("wallpaper: load failed for {wallpaper_path}: {e}");
+            log::warn!("wallpaper: load failed for {wallpaper_label}: {e}");
             None
         }
     };

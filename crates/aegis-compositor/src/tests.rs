@@ -1,6 +1,14 @@
 use super::*;
 
 #[test]
+fn dmabuf_buffer_ids_are_nonzero_and_monotonic() {
+    let first = DmabufBuffer::empty(std::ptr::null_mut());
+    let second = DmabufBuffer::empty(std::ptr::null_mut());
+    assert_ne!(first.buffer_id, 0);
+    assert!(second.buffer_id > first.buffer_id);
+}
+
+#[test]
 fn realm_registry_filter_isolates_outputs_and_physical_authority_globals() {
     let mut state = State::new(std::ptr::null_mut());
     let bundle = state
@@ -529,6 +537,69 @@ fn new_with_render_caps_carries_dmabuf_format_table() {
     assert_eq!(
         server.state.dmabuf_formats[0].modifiers,
         vec![FAKE_TILE, DRM_FORMAT_MOD_LINEAR]
+    );
+}
+
+/// linux-dmabuf v4 is only useful if a real client can consume the feedback
+/// object and its memfd-backed format table without a protocol error.
+#[test]
+fn dmabuf_v4_feedback_roundtrips_through_wayland_info() {
+    use std::os::unix::fs::MetadataExt;
+
+    if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+        eprintln!("skipping: XDG_RUNTIME_DIR not set");
+        return;
+    }
+
+    let main_device = std::fs::metadata("/dev/null")
+        .expect("stat /dev/null")
+        .rdev();
+    let mut server =
+        Server::new_with_render_caps_and_device(true, true, Vec::new(), Some(main_device))
+            .expect("Server::new_with_render_caps_and_device");
+    assert_eq!(server.state.dmabuf_main_device, Some(main_device));
+
+    let mut child = match std::process::Command::new("wayland-info")
+        .env("WAYLAND_DISPLAY", server.socket())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("skipping: wayland-info not installed");
+            return;
+        }
+        Err(error) => panic!("could not start wayland-info: {error}"),
+    };
+
+    let mut exited = false;
+    for _ in 0..2_000 {
+        server.dispatch();
+        if child.try_wait().expect("poll wayland-info").is_some() {
+            exited = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    if !exited {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("wayland-info did not finish within two seconds");
+    }
+
+    let output = child
+        .wait_with_output()
+        .expect("collect wayland-info output");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "wayland-info failed: {stderr}");
+    let dmabuf_global = stdout
+        .lines()
+        .find(|line| line.contains("interface: 'zwp_linux_dmabuf_v1'"));
+    assert!(
+        dmabuf_global.is_some_and(|line| line.contains("version:  4")),
+        "linux-dmabuf v4 global missing:\n{stdout}"
     );
 }
 

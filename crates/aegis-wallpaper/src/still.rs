@@ -71,6 +71,12 @@ impl StillSource {
         }
     }
 
+    pub(super) fn load_static_bytes(bytes: &[u8], label: &Path) -> Result<Self, Error> {
+        let img = image::load_from_memory(bytes)
+            .map_err(|e| Error::Decode(label.to_path_buf(), e.to_string()))?;
+        Ok(Self::from_dynamic_image(img))
+    }
+
     fn load_static(path: &Path) -> Result<Self, Error> {
         let img = image::ImageReader::open(path)
             .map_err(|e| Error::Open(path.to_path_buf(), e))?
@@ -78,11 +84,15 @@ impl StillSource {
             .map_err(|e| Error::Open(path.to_path_buf(), e))?
             .decode()
             .map_err(|e| Error::Decode(path.to_path_buf(), e.to_string()))?;
+        Ok(Self::from_dynamic_image(img))
+    }
+
+    fn from_dynamic_image(img: image::DynamicImage) -> Self {
         let rgba = img.to_rgba8();
         let (w, h) = (rgba.width(), rgba.height());
         let mut pixels = rgba.into_raw();
         rgba_to_bgra_inplace(&mut pixels);
-        Ok(StillSource {
+        StillSource {
             frames: vec![Frame {
                 pixels,
                 duration: FOREVER,
@@ -92,7 +102,7 @@ impl StillSource {
             current: 0,
             last_advance: Instant::now(),
             r#gen: 0,
-        })
+        }
     }
 
     fn load_gif(path: &Path) -> Result<Self, Error> {
@@ -307,6 +317,15 @@ mod tests {
         assert_eq!(frame.len(), 4 * 2 * 4);
         // Red pixel (255,0,0,255) in RGBA → BGRA byte order (0,0,255,255).
         assert_eq!(&frame[0..4], &[0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn static_png_loads_from_packaged_bytes() {
+        let png = write_png(1, 1, &[12, 34, 56, 255]);
+        let s = StillSource::load_static_bytes(&png, Path::new("bundled.png"))
+            .expect("decode bundled png");
+        assert_eq!(s.dimensions(), (1, 1));
+        assert_eq!(&s.frames[0].pixels, &[56, 34, 12, 255]);
     }
 
     fn tempfile_dir() -> std::path::PathBuf {

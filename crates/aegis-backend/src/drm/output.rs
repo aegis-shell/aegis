@@ -427,12 +427,61 @@ pub(super) fn select_outputs(
             }
         }
     }
+    let scanout_formats = scanout_format_intersection(card, &outputs)?;
     Ok(DisplaySet {
         outputs,
         size: (desktop_width, desktop_height),
         format,
         modifiers,
+        scanout_formats,
     })
+}
+
+pub(super) fn intersect_modifier_sets(sets: &[Vec<u64>]) -> Vec<u64> {
+    let Some((first, rest)) = sets.split_first() else {
+        return Vec::new();
+    };
+    let mut shared = first.clone();
+    shared.retain(|modifier| rest.iter().all(|set| set.contains(modifier)));
+    shared.sort_unstable();
+    shared.dedup();
+    shared
+}
+
+fn scanout_format_intersection(
+    card: &Card,
+    outputs: &[Output],
+) -> Result<HashMap<u32, Vec<u64>>, DrmError> {
+    let mut result = HashMap::new();
+    for format in [
+        DrmFourcc::Argb8888,
+        DrmFourcc::Xrgb8888,
+        DrmFourcc::Abgr8888,
+        DrmFourcc::Xbgr8888,
+    ] {
+        let mut per_output = Vec::with_capacity(outputs.len());
+        for output in outputs {
+            let info = card.get_plane(output.plane)?;
+            if !info.formats().contains(&(format as u32)) {
+                per_output.clear();
+                break;
+            }
+            let modifiers = plane_modifiers(card, output.plane, format)?;
+            if modifiers.is_empty() {
+                per_output.clear();
+                break;
+            }
+            per_output.push(modifiers);
+        }
+        if per_output.len() != outputs.len() {
+            continue;
+        }
+        let shared = intersect_modifier_sets(&per_output);
+        if !shared.is_empty() {
+            result.insert(format as u32, shared);
+        }
+    }
+    Ok(result)
 }
 
 pub(super) fn assign_outputs(
@@ -507,6 +556,7 @@ pub(super) fn build_output(
         connector_crtc_id: required_prop(&connector_props, "CRTC_ID")?,
         crtc_mode_id: required_prop(&crtc_props, "MODE_ID")?,
         crtc_active: required_prop(&crtc_props, "ACTIVE")?,
+        crtc_out_fence_ptr: optional_prop(&crtc_props, "OUT_FENCE_PTR"),
         plane_fb_id: required_prop(&plane_props, "FB_ID")?,
         plane_crtc_id: required_prop(&plane_props, "CRTC_ID")?,
         plane_src_x: required_prop(&plane_props, "SRC_X")?,
@@ -642,9 +692,16 @@ pub(super) fn pick_mode(modes: &[(i32, i32, u32, bool)], spec: Option<&ModeSpec>
 }
 
 pub(super) fn display_signature(displays: &DisplaySet) -> DisplaySignature {
+    let mut scanout_formats = displays
+        .scanout_formats
+        .iter()
+        .map(|(format, modifiers)| (*format, modifiers.clone()))
+        .collect::<Vec<_>>();
+    scanout_formats.sort_unstable_by_key(|(format, _)| *format);
     (
         displays.format,
         displays.modifiers.clone(),
+        scanout_formats,
         displays
             .outputs
             .iter()

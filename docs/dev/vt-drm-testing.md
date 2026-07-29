@@ -46,6 +46,18 @@ Stage the development prefix from [Setup](setup.md#build-and-run) before
 switching VTs when this test must include discovery of the Settings
 executable and its XDG metadata.
 
+For Realm launch testing, start the installed user service instead of the
+direct command:
+
+```bash
+systemctl --user start --wait aegis.service
+```
+
+The service used for development must point at the binary under test and
+delegate the CPU, memory, and process controllers. A directly started binary
+may test graphics, but the Realm launch warning is expected because it does
+not own that delegated systemd service.
+
 ## Try the Desktop
 
 Check the areas affected by the change. A useful general pass is:
@@ -72,6 +84,61 @@ screenshot:
 
 Open `/tmp/aegis-vt.png` after leaving the session and confirm that it matches
 the visible output.
+
+## Verify Client GPU Acceleration
+
+Check the client's renderer before profiling frame pacing. OpenGL is not
+itself a problem: Mesa's Wayland EGL path exports dma-bufs that Flux imports
+with Vulkan. A software renderer means device selection failed before
+compositing.
+
+From a terminal inside aegis, inspect linux-dmabuf:
+
+```bash
+wayland-info |
+  sed -n "/interface: 'zwp_linux_dmabuf_v1'/,+12p"
+```
+
+Expect version 4, a main device, and a render tranche. Start the OpenGL client
+with Mesa diagnostics enabled. For osu!:
+
+```bash
+flatpak run \
+  --env=LIBGL_DEBUG=verbose \
+  --env=EGL_LOG_LEVEL=debug \
+  sh.ppy.osu
+```
+
+After exiting the application, inspect its newest runtime log:
+
+```bash
+runtime_log=$(ls -t \
+  ~/.var/app/sh.ppy.osu/data/osu/logs/*runtime.log |
+  head -1)
+rg 'GL Version|GL Renderer' "$runtime_log"
+```
+
+The renderer should name the physical Intel, AMD, or NVIDIA GPU, not
+`llvmpipe`. When comparing against Niri, use the same application build,
+Flatpak runtime, graphics settings, display mode, and frame limiter. If Niri
+reports hardware rendering while aegis reports `llvmpipe`, investigate
+aegis's linux-dmabuf feedback before compositor timing.
+
+Use the following fault split:
+
+- No linux-dmabuf v4 or no main device: inspect the Aegis startup log for the
+  selected Vulkan DRM node and feedback-table errors.
+- Version 4 is correct but the client still uses `llvmpipe`: check
+  `flatpak info --show-permissions sh.ppy.osu | rg 'devices|dri'`, the Flatpak
+  graphics runtime, and whether `LIBGL_ALWAYS_SOFTWARE` is set.
+- The client uses the hardware GPU but remains slow: then measure frame
+  pacing, repeated dma-buf imports, acquire-fence waits, KMS page flips, and
+  direct-scanout eligibility. Do not use compositor FPS as a proxy for the
+  client's renderer.
+
+Mesa diagnostics such as `failed to get driver name for fd -1` followed by
+`llvmpipe` are strong evidence that the client did not receive a usable DRM
+device identity.
 
 ## Quit
 

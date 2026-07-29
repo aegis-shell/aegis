@@ -23,7 +23,10 @@ pub use aegis_protocols::{
     xdg_popup_interface, xdg_positioner_interface, xdg_surface_interface, xdg_toplevel_interface,
     xdg_wm_base_interface,
 };
-pub use aegis_protocols::{zwp_linux_buffer_params_v1_interface, zwp_linux_dmabuf_v1_interface};
+pub use aegis_protocols::{
+    zwp_linux_buffer_params_v1_interface, zwp_linux_dmabuf_feedback_v1_interface,
+    zwp_linux_dmabuf_v1_interface,
+};
 pub use aegis_protocols::{
     zwp_tablet_manager_v2_interface, zwp_tablet_pad_group_v2_interface,
     zwp_tablet_pad_ring_v2_interface, zwp_tablet_pad_strip_v2_interface,
@@ -312,6 +315,13 @@ pub fn wl_fixed_from_f32(v: f32) -> i32 {
 }
 pub const ZWP_LINUX_DMABUF_V1_FORMAT: u32 = 0;
 pub const ZWP_LINUX_DMABUF_V1_MODIFIER: u32 = 1;
+pub const ZWP_LINUX_DMABUF_FEEDBACK_V1_DONE: u32 = 0;
+pub const ZWP_LINUX_DMABUF_FEEDBACK_V1_FORMAT_TABLE: u32 = 1;
+pub const ZWP_LINUX_DMABUF_FEEDBACK_V1_MAIN_DEVICE: u32 = 2;
+pub const ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_DONE: u32 = 3;
+pub const ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_TARGET_DEVICE: u32 = 4;
+pub const ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FORMATS: u32 = 5;
+pub const ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FLAGS: u32 = 6;
 pub const ZWP_LINUX_BUFFER_PARAMS_V1_CREATED: u32 = 0;
 pub const ZWP_LINUX_BUFFER_PARAMS_V1_FAILED: u32 = 1;
 /// `zwp_linux_buffer_params_v1.error.invalid_wl_buffer` (protocol enum value 7):
@@ -641,8 +651,9 @@ pub struct xdg_toplevel_interface_impl {
 }
 
 /// `zwp_linux_dmabuf_v1` requests. The interface (v5) declares four: destroy,
-/// create_params, get_default_feedback, get_surface_feedback. We bind at v3 so
-/// only the first two are reachable; the feedback entries are inert.
+/// create_params, get_default_feedback, get_surface_feedback. The DRM backend
+/// binds v4 and implements all four; renderers without a discoverable main
+/// device retain the legacy v3 bind.
 #[repr(C)]
 pub struct zwp_linux_dmabuf_v1_interface_impl {
     pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
@@ -650,6 +661,12 @@ pub struct zwp_linux_dmabuf_v1_interface_impl {
     pub get_default_feedback: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32),
     pub get_surface_feedback:
         unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+}
+
+/// `zwp_linux_dmabuf_feedback_v1` requests: destroy.
+#[repr(C)]
+pub struct zwp_linux_dmabuf_feedback_v1_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
 }
 
 /// `zwp_linux_buffer_params_v1` requests: destroy, add, create, create_immed.
@@ -729,6 +746,7 @@ assert_impl_opcode_count!(wl_keyboard_interface_impl, 1);
 assert_impl_opcode_count!(wl_touch_interface_impl, 1);
 assert_impl_opcode_count!(xdg_toplevel_interface_impl, 14);
 assert_impl_opcode_count!(zwp_linux_dmabuf_v1_interface_impl, 4);
+assert_impl_opcode_count!(zwp_linux_dmabuf_feedback_v1_interface_impl, 1);
 assert_impl_opcode_count!(zwp_linux_buffer_params_v1_interface_impl, 4);
 assert_impl_opcode_count!(wl_buffer_interface_impl, 1);
 assert_impl_opcode_count!(wp_viewporter_interface_impl, 2);

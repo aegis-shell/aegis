@@ -30,6 +30,7 @@ use std::os::raw::{c_int, c_ulong};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use aegis_core::layout::Layout;
 use aegis_core::realm::{
@@ -43,6 +44,10 @@ use aegis_core::{SurfaceDmabuf, SurfacePixels};
 /// Single-plane dma-buf parameters backing a `wl_buffer`, or accumulating in a
 /// `zwp_linux_buffer_params_v1`. Owns the imported file descriptor.
 struct DmabufBuffer {
+    /// Monotonic identity independent of the `wl_resource` address. Wayland
+    /// may recycle resource addresses after destruction, while renderer
+    /// caches can legitimately outlive several in-flight frames.
+    buffer_id: u64,
     fd: i32,
     width: i32,
     height: i32,
@@ -57,9 +62,21 @@ struct DmabufBuffer {
     state: *mut State,
 }
 
+static NEXT_DMABUF_BUFFER_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_dmabuf_buffer_id() -> u64 {
+    let id = NEXT_DMABUF_BUFFER_ID.fetch_add(1, Ordering::Relaxed);
+    if id == 0 {
+        NEXT_DMABUF_BUFFER_ID.fetch_add(1, Ordering::Relaxed)
+    } else {
+        id
+    }
+}
+
 impl DmabufBuffer {
     fn empty(state: *mut State) -> DmabufBuffer {
         DmabufBuffer {
+            buffer_id: next_dmabuf_buffer_id(),
             fd: -1,
             width: 0,
             height: 0,
@@ -88,6 +105,7 @@ impl DmabufBuffer {
             return None;
         }
         Some(DmabufBuffer {
+            buffer_id: self.buffer_id,
             fd,
             width: self.width,
             height: self.height,
@@ -1063,6 +1081,12 @@ pub(crate) struct State {
     /// allocate GPU-optimal (tiled/compressed) buffers instead of LINEAR.
     /// Drives the format/modifier events in `dmabuf_bind`.
     pub(crate) dmabuf_formats: Vec<aegis_core::dmabuf::DmabufFormat>,
+    /// Linux `dev_t` of the renderer's preferred DRM node. When present the
+    /// linux-dmabuf global is advertised at v4 and feedback objects use this
+    /// as both `main_device` and the render tranche target. Without this,
+    /// Mesa cannot reliably select the compositor's GPU and may fall back to
+    /// llvmpipe.
+    pub(crate) dmabuf_main_device: Option<u64>,
     next_window_id: u64,
 }
 
@@ -1198,6 +1222,7 @@ impl State {
             window_state_path,
             remember_window_positions: true,
             dmabuf_formats: Vec::new(),
+            dmabuf_main_device: None,
             next_window_id: 1,
         }
     }

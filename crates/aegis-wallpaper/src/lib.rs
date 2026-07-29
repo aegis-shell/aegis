@@ -101,6 +101,18 @@ impl Wallpaper {
         let path = path.as_ref();
         log::debug!("wallpaper: loading {:?}", path);
 
+        let metadata =
+            std::fs::metadata(path).map_err(|error| Error::Open(path.to_path_buf(), error))?;
+        if !metadata.is_file() {
+            return Err(Error::Open(
+                path.to_path_buf(),
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "wallpaper source is not a regular file",
+                ),
+            ));
+        }
+
         if let Ok(still) = StillSource::load(path) {
             let (w, h) = still.dimensions();
             let count = still.frame_count();
@@ -132,6 +144,23 @@ impl Wallpaper {
         );
         Ok(Wallpaper {
             source: SourceKind::Video(video),
+            width: w,
+            height: h,
+            flux_image: None,
+            last_uploaded_gen: u64::MAX,
+            model: None,
+        })
+    }
+
+    /// Decode a bundled static image without depending on a build-tree path at
+    /// runtime. `label` is used only in diagnostics.
+    pub fn from_static_image_bytes(bytes: &[u8], label: impl Into<PathBuf>) -> Result<Self, Error> {
+        let label = label.into();
+        let still = StillSource::load_static_bytes(bytes, &label)?;
+        let (w, h) = still.dimensions();
+        log::info!("wallpaper: bundled image loaded ({w}x{h})");
+        Ok(Self {
+            source: SourceKind::Still(still),
             width: w,
             height: h,
             flux_image: None,
@@ -272,5 +301,24 @@ impl Wallpaper {
         if let Some(img) = &self.flux_image {
             canvas.draw_image(img, 0.0, 0.0, dst_w, dst_h);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_path_fails_before_video_fallback() {
+        let path = std::env::temp_dir().join(format!(
+            "aegis-wallpaper-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let result = Wallpaper::from_path(&path, 1920, 1080);
+        assert!(matches!(result, Err(Error::Open(failed, _)) if failed == path));
     }
 }

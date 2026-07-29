@@ -12,6 +12,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ops::RangeBounds;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
@@ -292,6 +293,9 @@ struct AtomicProperties {
     connector_crtc_id: property::Handle,
     crtc_mode_id: property::Handle,
     crtc_active: property::Handle,
+    /// `OUT_FENCE_PTR`: produces a sync_file for completion of an atomic
+    /// commit. Direct scanout uses it for correct Wayland buffer release.
+    crtc_out_fence_ptr: Option<property::Handle>,
     plane_fb_id: property::Handle,
     plane_crtc_id: property::Handle,
     plane_src_x: property::Handle,
@@ -359,10 +363,19 @@ struct DisplaySet {
     size: (u32, u32),
     format: DrmFourcc,
     modifiers: Vec<u64>,
+    /// Exact format/modifier intersections accepted by every selected
+    /// primary plane. This is broader than the compositor render-target
+    /// format above and governs client direct scanout.
+    scanout_formats: HashMap<u32, Vec<u64>>,
 }
 
 type OutputSignature = (String, u32, u32, u32, u32, u32);
-type DisplaySignature = (DrmFourcc, Vec<u64>, Vec<OutputSignature>);
+type DisplaySignature = (
+    DrmFourcc,
+    Vec<u64>,
+    Vec<(u32, Vec<u64>)>,
+    Vec<OutputSignature>,
+);
 
 #[derive(Debug)]
 struct Scanout {
@@ -541,6 +554,29 @@ pub struct DrmBackend {
     /// `Backend::set_wakeup_fd`. Polled for readability only — the main loop
     /// dispatches the server itself once the wait wakes.
     wakeup_fd: Option<RawFd>,
+}
+
+impl DrmBackend {
+    /// Linux `dev_t` for the DRM node that owns the active KMS resources.
+    ///
+    /// linux-dmabuf feedback accepts either a primary or render node. The
+    /// primary node is the strongest identity available from this backend and
+    /// is sufficient for Mesa to resolve the matching render node. Returning
+    /// `None` keeps the compositor on the legacy v3 protocol rather than
+    /// sending an invalid device identity.
+    pub fn dmabuf_feedback_device(&self) -> Option<u64> {
+        let card = self.card.as_ref()?;
+        match std::fs::metadata(&card.path) {
+            Ok(metadata) => Some(metadata.rdev()),
+            Err(error) => {
+                log::warn!(
+                    "drm: cannot stat {} for linux-dmabuf feedback: {error}",
+                    card.path.display()
+                );
+                None
+            }
+        }
+    }
 }
 
 fn wheel_axis(event: &PointerScrollWheelEvent, axis: Axis) -> PointerAxis {
@@ -976,6 +1012,38 @@ mod tests {
         assert_eq!(selected[0].crtc, crtc::Handle::from(raw(11)));
         assert_eq!(selected[1].crtc, crtc::Handle::from(raw(10)));
         assert_eq!(modifiers, vec![0]);
+    }
+
+    #[test]
+    fn scanout_capabilities_are_checked_per_client_format() {
+        let mut formats = HashMap::new();
+        formats.insert(DrmFourcc::Xrgb8888 as u32, vec![0, 7]);
+        formats.insert(DrmFourcc::Argb8888 as u32, vec![0, 9]);
+
+        assert!(device::scanout_formats_support(
+            &formats,
+            DrmFourcc::Argb8888 as u32,
+            9
+        ));
+        assert!(!device::scanout_formats_support(
+            &formats,
+            DrmFourcc::Argb8888 as u32,
+            7
+        ));
+        assert!(!device::scanout_formats_support(
+            &formats,
+            DrmFourcc::Abgr8888 as u32,
+            0
+        ));
+    }
+
+    #[test]
+    fn scanout_modifier_intersection_requires_every_output() {
+        assert_eq!(
+            output::intersect_modifier_sets(&[vec![0, 7, 9], vec![0, 9], vec![9, 11]]),
+            vec![9]
+        );
+        assert!(output::intersect_modifier_sets(&[]).is_empty());
     }
 
     #[test]
