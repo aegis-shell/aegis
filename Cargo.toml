@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.0.7"
+version = "0.0.8"
 edition = "2024"
 # Project source code is MIT. The bundled cursor theme under
 # assets/cursors/Bibata-Modern-Ice is GPL-3.0-only (third-party, derived from
@@ -19,13 +19,13 @@ repository = "https://github.com/ming2k/aegis"
 # development worktree can patch these sources through
 # .cargo/optics-local.toml without making a sibling checkout mandatory for CI
 # or downstream packagers.
-flux = { git = "https://github.com/ming2k/optics", tag = "v0.0.4" }
-flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.4" }
-flux-scene-graph = { git = "https://github.com/ming2k/optics", tag = "v0.0.4" }
-flux-scene-graph-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.4" }
-lens = { git = "https://github.com/ming2k/optics", tag = "v0.0.4" }
-lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.4" }
-iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.4" }
+flux = { git = "https://github.com/ming2k/optics", tag = "v0.0.7" }
+flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.7" }
+flux-scene-graph = { git = "https://github.com/ming2k/optics", tag = "v0.0.7" }
+flux-scene-graph-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.7" }
+lens = { git = "https://github.com/ming2k/optics", tag = "v0.0.7" }
+lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.7" }
+iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.7" }
 
 # Observability: the facade in every crate, the impl only in the binary.
 # Long-term this seam is also how the AI-adaptation phase subscribes to
@@ -90,7 +90,8 @@ aegis-settings = { path = "crates/aegis-settings" }
 aegis-config = { path = "crates/aegis-config" }
 # IPC: versioned schema over a unix socket (ADR-0027).
 aegis-ipc = { path = "crates/aegis-ipc" }
-# xdg-desktop-portal backend: D-Bus bridge over the scoped IPC (ADR-0051).
+# Independently packaged xdg-desktop-portal backend: D-Bus bridge over the
+# scoped IPC (ADR-0075).
 aegis-portal = { path = "crates/aegis-portal" }
 # Launcher: XDG application discovery + detached launch. See ADR-0022.
 aegis-desktop-entries = { path = "crates/aegis-desktop-entries" }

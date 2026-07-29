@@ -125,7 +125,7 @@ impl PortalCapture {
 }
 
 /// A lazily connected, lease-renewing `SetIdleInhibit` client behind the
-/// same built-in `aegis-portal` scope (ADR-0053). One instance lives on the
+/// same built-in `aegis-portal` scope (ADR-0075). One instance lives on the
 /// inhibit worker thread; it is not `Sync` by design. The compositor
 /// releases the inhibitor if this connection dies, so a crashed backend can
 /// never wedge the session out of idle.

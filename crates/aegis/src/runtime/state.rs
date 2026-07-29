@@ -99,7 +99,7 @@ pub(super) struct CompositorRuntime {
     pub(super) pick_rx: std::sync::mpsc::Receiver<PickControlRequest>,
     pub(super) pending_pick: Option<PendingPick>,
     pub(super) pending_pick_open: Option<aegis_ipc::PickKind>,
-    /// IPC connections currently holding a portal idle inhibitor (ADR-0053).
+    /// IPC connections currently holding a surfaceless idle inhibitor.
     pub(super) ipc_idle_inhibits: IdleInhibits,
     pub(super) journal_refusal_rx: std::sync::mpsc::Receiver<JournalRefusalRequest>,
     pub(super) journal: std::sync::Arc<std::sync::Mutex<aegis_ipc::Journal>>,

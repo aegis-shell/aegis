@@ -247,7 +247,7 @@ pub trait Handler: Send + Sync {
     /// the main loop drops its stream state.
     fn streams_disconnected(&self, _conn_id: u64) {}
     /// Set or clear the calling connection's global idle inhibitor
-    /// (ADR-0053). Called from a connection thread after capability, lease,
+    /// (ADR-0075). Called from a connection thread after capability, lease,
     /// and scope checks; the implementation forwards to the main loop and
     /// blocks briefly for the reply, which carries the inhibitor state the
     /// connection now holds.
@@ -567,7 +567,7 @@ fn serve_connection<H: Handler + 'static>(
         journal_subs.lock().unwrap().remove(&id);
     }
     // A disconnect releases the connection's idle inhibitor fail-closed,
-    // exactly like its streams (ADR-0053).
+    // exactly like its streams (ADR-0075).
     if idle_inhibited {
         handler.idle_inhibit_disconnected(conn_id);
     }
@@ -706,7 +706,7 @@ fn drive_read_loop<H: Handler>(
     let mut sub_id: Option<SubId> = None;
     let mut journal_sub_id: Option<SubId> = None;
     // Whether this connection currently holds a global idle inhibitor;
-    // released through the handler on disconnect (ADR-0053).
+    // released through the handler on disconnect (ADR-0075).
     let mut idle_inhibited = false;
     while let Ok(req) = read_msg::<_, Request>(read) {
         let lease_alive = active_lease
@@ -1153,7 +1153,7 @@ fn drive_read_loop<H: Handler>(
             Request::SetIdleInhibit { inhibit } => {
                 // Fail-closed exactly like StreamOutputStart: `control`, a
                 // live lease, and an explicit IdleInhibit op in the granted
-                // scope — never inherited through None-means-all (ADR-0053).
+                // scope — never inherited through None-means-all (ADR-0075).
                 let current_scope = match scope_name.as_deref() {
                     Some(name) => handler.resolve_scope(name),
                     None => Some(granted_scope.clone()),

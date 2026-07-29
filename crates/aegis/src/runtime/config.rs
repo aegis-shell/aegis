@@ -377,7 +377,7 @@ pub(super) fn build_ipc_scopes(
                 ]),
             },
         ),
-        // The portal backend (ADR-0051/0052/0053/0054) serves Screenshot,
+        // The portal backend (ADR-0075; mechanisms ADR-0052/0054) serves Screenshot,
         // ScreenCast, the Inhibit portal's global idle inhibitor, and the
         // interactive picker round-trips through exactly four fail-closed
         // operations; `None`-means-all would grant it nothing, so the ops

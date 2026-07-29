@@ -1,6 +1,6 @@
 # ADR-0051: xdg-desktop-portal backend as an out-of-process D-Bus bridge
 
-- Status: Proposed
+- Status: Superseded by ADR-0075
 - Date: 2026-07-24
 
 ## Context

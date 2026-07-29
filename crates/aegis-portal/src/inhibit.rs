@@ -21,7 +21,6 @@ use crate::ipc::PortalIdle;
 
 /// The freedesktop Inhibit flag for idle.
 pub(crate) const INHIBIT_IDLE: u32 = 8;
-pub(crate) const INHIBIT_VERSION: u32 = 1;
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 
 pub(crate) enum InhibitJob {
@@ -145,11 +144,6 @@ impl InhibitIface {
             "Aegis has no session-end monitor".to_string(),
         ))
     }
-
-    #[zbus(property)]
-    fn version(&self) -> u32 {
-        INHIBIT_VERSION
-    }
 }
 
 /// The request object owned by one accepted idle-inhibit call.
@@ -235,11 +229,6 @@ mod tests {
     #[test]
     fn idle_uses_the_freedesktop_flag_value() {
         assert_eq!(INHIBIT_IDLE, 8);
-    }
-
-    #[test]
-    fn inhibit_version_is_one() {
-        assert_eq!(INHIBIT_VERSION, 1);
     }
 
     #[test]

@@ -274,26 +274,19 @@ unified overview (window grid + workspace rail, live thumbnails, click to
 focus, `Super+O` or `aegis-ctl overview`) is in daily use, and a screenshot
 path (`aegis-ctl screenshot`, scoped `CaptureOutput` pixel capture per
 [ADR-0041](../adr/0041-sealed-file-descriptor-pixel-transport.md)) covers the
-single-frame half of the capture story. The portal backend has landed its
-first phase: `aegis-portal` serves `org.freedesktop.impl.portal.Settings`
-(appearance color-scheme) and non-interactive
-`org.freedesktop.impl.portal.Screenshot` over the scoped IPC
-([ADR-0051](../adr/0051-portal-backend-dbus-bridge.md)). Its second phase
-has landed too: `org.freedesktop.impl.portal.ScreenCast` (monitor sources)
-republishes the compositor's scoped output-frame stream
+single-frame half of the capture story. The independently packaged
+`aegis-portal` backend now serves Settings v1, Screenshot v2, ScreenCast v3,
+and idle-only Inhibit through the scoped IPC
+([ADR-0075](../adr/0075-independent-portal-package-and-backend-contract.md)).
+Screenshot region selection, color picking, and monitor/window ScreenCast
+selection use one compositor-owned interactive picker. ScreenCast republishes
+the scoped output-frame stream
 ([ADR-0052](../adr/0052-scoped-output-frame-streaming.md)) as a PipeWire
-producer, so browser `getDisplayMedia` and recorder clients work through
-the standard portal path. The non-interactive half of Phase 3 has landed
-as well ([ADR-0053](../adr/0053-portal-session-services-and-grants.md)):
-`Background` v1 with persisted grant-and-record decisions and standard
-`$XDG_CONFIG_HOME/autostart` materialization, `Inhibit` v1 (idle only,
-through a new connection-scoped `SetIdleInhibit` IPC op), ScreenCast v2
-persist modes with portal-owned restore tokens, and `SettingChanged`
-emission from a config-file watcher. Still planned: window
-open/close transitions and the workspace-switch slide, interactive
-screencast source selection and the interactive screenshot dialog (the
-rest of Phase 3 of the portal roadmap), and
-screen-reader accessibility hooks.
+producer. The backend does not advertise Background or persistent ScreenCast
+grants until Aegis has the required policy UI, application tracking, and
+PermissionStore integration; unsupported interfaces fall back to GTK. Still
+planned: window open/close transitions, the workspace-switch slide,
+zero-copy ScreenCast export, and screen-reader accessibility hooks.
 
 **Verification.** Reduced-motion is respected end to end. The overview
 lists every window across workspaces and switches to a chosen one.

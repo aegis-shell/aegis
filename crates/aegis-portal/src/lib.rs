@@ -1,7 +1,7 @@
 //! aegis-portal: the `xdg-desktop-portal` backend for the aegis compositor.
 //!
 //! A standalone D-Bus-activated process that bridges the freedesktop portal
-//! backend interfaces to the compositor's own IPC (ADR-0051). Outward it
+//! backend interfaces to the compositor's own IPC (ADR-0075). Outward it
 //! serves `org.freedesktop.impl.portal.Settings` v1,
 //! `org.freedesktop.impl.portal.Screenshot` v2,
 //! `org.freedesktop.impl.portal.ScreenCast` v3, and
@@ -16,7 +16,7 @@
 //! ([ADR-0052](../../docs/adr/0052-scoped-output-frame-streaming.md)) and are
 //! republished as a PipeWire producer stream, and idle inhibits hold the
 //! scope's connection-scoped global idle inhibitor
-//! ([ADR-0053](../../docs/adr/0053-portal-session-services-and-grants.md)).
+//! ([ADR-0075](../../docs/adr/0075-independent-portal-package-and-backend-contract.md)).
 //! No Wayland capture protocol is added anywhere.
 //!
 //! The process model follows the SNI tray precedent
@@ -64,9 +64,10 @@ pub enum PortalError {
     Bus(#[from] zbus::Error),
 }
 
-/// Run the backend: serve all interfaces on the session bus, spawn the
-/// capture and screencast workers, and park forever. The process is
-/// D-Bus-activated and stays resident; the bus re-activates it if it dies.
+/// Run the backend: serve all interfaces on the session bus and spawn the
+/// capture, screencast, and inhibit workers. The process is D-Bus-activated,
+/// stays resident while the bus is connected, and exits for reactivation
+/// when that connection fails.
 pub fn run() -> Result<(), PortalError> {
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").ok_or(PortalError::NoRuntimeDir)?;
     let socket = std::path::PathBuf::from(runtime_dir).join("aegis.sock");
@@ -181,5 +182,59 @@ pub fn run() -> Result<(), PortalError> {
             "Ping",
             &(),
         )?;
+    }
+}
+
+#[cfg(test)]
+mod integration_metadata_tests {
+    const PORTAL_FILE: &str =
+        include_str!("../../../contrib/xdg-desktop-portal/portals/aegis.portal");
+    const PORTALS_CONF: &str =
+        include_str!("../../../contrib/xdg-desktop-portal/aegis-portals.conf");
+    const DBUS_SERVICE: &str = include_str!(
+        "../../../contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service"
+    );
+
+    #[test]
+    fn capability_file_advertises_exactly_the_served_interfaces() {
+        let interfaces = PORTAL_FILE
+            .lines()
+            .find_map(|line| line.strip_prefix("Interfaces="))
+            .expect("portal metadata must declare Interfaces");
+        let advertised: Vec<_> = interfaces
+            .split(';')
+            .filter(|entry| !entry.is_empty())
+            .collect();
+        assert_eq!(
+            advertised,
+            [
+                "org.freedesktop.impl.portal.Settings",
+                "org.freedesktop.impl.portal.Screenshot",
+                "org.freedesktop.impl.portal.ScreenCast",
+                "org.freedesktop.impl.portal.Inhibit",
+            ]
+        );
+    }
+
+    #[test]
+    fn unsupported_interfaces_fall_back_instead_of_reaching_aegis() {
+        assert!(PORTALS_CONF.lines().any(|line| line == "default=gtk"));
+        for interface in ["Settings", "Screenshot", "ScreenCast", "Inhibit"] {
+            let route = format!("org.freedesktop.impl.portal.{interface}=aegis");
+            assert!(
+                PORTALS_CONF.lines().any(|line| line.starts_with(&route)),
+                "missing explicit Aegis route for {interface}"
+            );
+        }
+        assert!(!PORTALS_CONF.contains("Background=aegis"));
+    }
+
+    #[test]
+    fn activation_uses_the_private_packaged_executable() {
+        assert!(
+            DBUS_SERVICE
+                .lines()
+                .any(|line| line == "Exec=/usr/lib/aegis/aegis-portal")
+        );
     }
 }

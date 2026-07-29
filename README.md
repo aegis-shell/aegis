@@ -21,11 +21,11 @@ The safest first run is a nested session inside an existing Wayland desktop.
 Aegis requires Rust 1.88 or later and the native build dependencies listed in
 the [Getting Started tutorial](docs/tutorials/01-getting-started.md).
 
-Install the Optics `v0.0.4` native libraries from a distribution package or
+Install the Optics `v0.0.7` native libraries from a distribution package or
 build the matching source release:
 
 ```bash
-git clone --branch v0.0.4 --depth 1 \
+git clone --branch v0.0.7 --depth 1 \
   https://github.com/ming2k/optics.git ../optics
 meson setup ../optics/build ../optics \
   -Dtests=false -Dbuildtype=debugoptimized
@@ -45,8 +45,10 @@ cargo run --locked -p aegis
 opens a nested window; a login on a bare TTY selects direct DRM/KMS.
 
 Source-tree Cargo commands do not install systemd, D-Bus, portal, desktop, or
-icon metadata. An installed distribution package can start the compositor as
-a user service:
+icon metadata. Distribution packaging keeps the D-Bus-activated portal
+backend in the independent `aegis-portal` package; the core compositor runs
+without it. An installed core package can start the compositor as a user
+service:
 
 ```bash
 systemctl --user enable --now aegis.service

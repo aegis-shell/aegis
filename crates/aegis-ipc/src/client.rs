@@ -585,7 +585,7 @@ impl Client {
     }
 
     /// Set or clear this connection's global idle inhibitor (the Inhibit
-    /// portal, ADR-0053), returning the state the server confirmed. Requires
+    /// portal, ADR-0075), returning the state the server confirmed. Requires
     /// `control` and an explicit `IdleInhibit` op in the connection's scope.
     /// The server releases the inhibitor when this connection drops.
     pub fn set_idle_inhibit(&mut self, inhibit: bool) -> io::Result<bool> {

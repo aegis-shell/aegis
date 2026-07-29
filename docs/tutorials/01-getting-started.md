@@ -11,15 +11,18 @@ Install:
 
 - Rust 1.88 or later;
 - Meson, Ninja, `pkg-config`, a C23 compiler, and libclang;
-- Vulkan, Wayland, xkbcommon, libinput, libseat, PipeWire, and SPA
-  development files; and
-- the Optics `v0.0.4` native libraries.
+- Vulkan, Wayland, xkbcommon, libinput, and libseat development files; and
+- the Optics `v0.0.7` native libraries.
+
+Building the independent `aegis-portal` backend additionally requires
+PipeWire and SPA development files. The nested compositor tutorial does not
+build or install that package.
 
 Build and install the matching Optics release when the distribution does not
 provide it:
 
 ```bash
-git clone --branch v0.0.4 --depth 1 \
+git clone --branch v0.0.7 --depth 1 \
   https://github.com/ming2k/optics.git ../optics
 meson setup ../optics/build ../optics \
   -Dtests=false -Dbuildtype=debugoptimized
@@ -29,7 +32,7 @@ sudo ldconfig
 pkg-config --modversion flux flux-scene-graph lens iris
 ```
 
-Each version printed by the final command must be compatible with `0.0.4`.
+Each version printed by the final command must be compatible with `0.0.7`.
 
 ## Stage System Settings
 

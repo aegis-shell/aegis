@@ -22,17 +22,18 @@ verify the native development files before building Aegis:
 pkg-config --modversion flux flux-scene-graph lens iris
 ```
 
-Each command must report a version compatible with `0.0.4`. Distribution
+Each command must report a version compatible with `0.0.7`. Distribution
 package names vary, so express the dependency in terms of the shared
 libraries, headers, and `.pc` files rather than copying files from an Optics
 build tree. (On Arch this is the separate `optics` package; see
 [Arch Linux](#arch-linux).)
 
 The remaining native build dependencies include a C toolchain, `pkg-config`,
-Wayland and its protocols, Vulkan, xkbcommon, libinput, libseat, PipeWire/SPA,
-and libclang for binding generation. Runtime integration also expects
-`xdg-desktop-portal`; install the GTK portal backend as a fallback for portal
-interfaces Aegis does not implement.
+Wayland and its protocols, Vulkan, xkbcommon, libinput, libseat, and libclang
+for binding generation. Building the complete workspace, including the
+independent portal backend, additionally requires PipeWire/SPA development
+files. The portal runtime requires `xdg-desktop-portal`; install the GTK
+backend as a fallback for interfaces Aegis does not implement.
 
 ## Reproducible Source Preparation
 
@@ -70,7 +71,7 @@ inside the package build root.
 | `target/release/aegis` | `/usr/bin/aegis` | core |
 | `target/release/aegis-settings` | `/usr/bin/aegis-settings` | core |
 | `target/release/aegis-ctl` | `/usr/bin/aegis-ctl` | core |
-| `target/release/aegis-portal` | `/usr/bin/aegis-portal` | portal |
+| `target/release/aegis-portal` | `/usr/lib/aegis/aegis-portal` | portal |
 | `target/release/aegis-fuji-mcp` | `/usr/bin/aegis-fuji-mcp` | agent integration |
 | `target/release/fuji` | `/usr/bin/fuji` | agent integration |
 | `contrib/systemd/user/aegis.service` | `/usr/lib/systemd/user/aegis.service` | core |
@@ -79,6 +80,8 @@ inside the package build root.
 | `contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | portal |
 | `contrib/xdg-desktop-portal/portals/aegis.portal` | `/usr/share/xdg-desktop-portal/portals/aegis.portal` | portal |
 | `contrib/xdg-desktop-portal/aegis-portals.conf` | `/usr/share/xdg-desktop-portal/aegis-portals.conf` | portal |
+| `LICENSE` | `/usr/share/licenses/aegis/LICENSE` | core |
+| `LICENSE` | `/usr/share/licenses/aegis-portal/LICENSE` | portal |
 | `assets/cursors/Bibata-Modern-Ice/LICENSE` | `/usr/share/licenses/aegis/Bibata-Modern-Ice/LICENSE` | core |
 | `assets/cursors/Bibata-Modern-Ice/NOTICE` | `/usr/share/licenses/aegis/Bibata-Modern-Ice/NOTICE` | core |
 
@@ -88,6 +91,9 @@ the theme's license disclosure, so the `LICENSE` and `NOTICE` files must be
 staged under `/usr/share/licenses/aegis/Bibata-Modern-Ice/`. The project code
 itself is MIT-licensed; the shipped binary is a combined work under
 `MIT AND GPL-3.0-only`.
+
+Each independently installable package also carries the project `LICENSE`
+under its own `/usr/share/licenses/<package>/` directory.
 
 For example, a simple package recipe can stage binaries with:
 
@@ -100,22 +106,24 @@ install -Dm0755 target/release/aegis-settings \
 install -Dm0755 target/release/aegis-ctl \
   "$package_root/usr/bin/aegis-ctl"
 install -Dm0755 target/release/aegis-portal \
-  "$package_root/usr/bin/aegis-portal"
+  "$package_root/usr/lib/aegis/aegis-portal"
 install -Dm0755 target/release/aegis-fuji-mcp \
   "$package_root/usr/bin/aegis-fuji-mcp"
 install -Dm0755 target/release/fuji \
   "$package_root/usr/bin/fuji"
 ```
 
-Install the data files according to the table using mode `0644`. Splitting
-the portal or agent binaries into subpackages is valid, but each subpackage
-must own its complete activation metadata and declare the matching runtime
-dependencies.
+Install the data files according to the table using mode `0644`.
+`aegis-portal` is a separate runtime component: its package owns the private
+backend executable and all three activation/configuration files. The core
+package must not own those files or require the portal frontend and PipeWire
+solely for this backend.
 
-The supplied systemd and D-Bus service files intentionally execute binaries
-from `/usr/bin`. A distribution using another logical prefix must patch those
-two files consistently; changing only the file destinations creates broken
-activation.
+The supplied systemd user service executes `aegis` from `/usr/bin`; the D-Bus
+activation file executes the private portal backend from
+`/usr/lib/aegis/aegis-portal`. A distribution using another logical prefix
+must patch the matching service file consistently; changing only a binary
+destination creates broken activation.
 
 ## Package Integration
 
@@ -127,9 +135,10 @@ phase, to:
 - refresh the dynamic-loader cache for Optics shared libraries; and
 - restart an existing desktop portal session after an upgrade when required.
 
-On Arch these map to pacman `post_install`/`post_upgrade` scripts or
-`/usr/share/libalpm/hooks/*`; see the [Arch Linux](#arch-linux) recipe for a
-concrete mapping.
+On Arch the packages that own these caches and catalogs already provide the
+appropriate `libalpm` hooks. Do not invoke `systemctl --user` from a package
+install script: the transaction does not run inside every affected user's
+session.
 
 The user service delegates the cgroup controllers required by Realm
 sandboxing. Keep its `Delegate=cpu memory pids` and session-target ordering
@@ -162,17 +171,20 @@ to a specific distribution. Each recipe consumes the same source-preparation,
 build, install-manifest, and validation contract; only the dependency names,
 package format, and integration hooks change.
 
-- [Arch Linux](#arch-linux) — `optics` + `aegis` PKGBUILDs.
+- [Arch Linux](#arch-linux) — `optics` plus an `aegis`/`aegis-portal`
+  split PKGBUILD.
 
 ### Arch Linux
 
-Aegis on Arch is two packages. Package Optics first, because Aegis needs its
-native libraries, headers, and `.pc` files as build and runtime dependencies.
+Aegis on Arch uses three installable packages. Package Optics first, then use
+one split PKGBUILD to produce the core and portal packages from the same
+locked source and build.
 
 | Package | Provides | Built by |
 |---------|----------|----------|
-| `optics` | `libflux.so`, `libflux-scene-graph.so`, `liblens.so`, `libiris.so`, headers, `flux.pc` … `iris.pc` | Meson/Ninja from the `ming2k/optics` `v0.0.4` tag |
-| `aegis` | `/usr/bin/aegis{,-settings,-ctl,-portal,-fuji-mcp}`, `/usr/bin/fuji`, plus the systemd, desktop, D-Bus, and xdg-desktop-portal metadata from `contrib/` | Cargo from the `ming2k/aegis` `v0.0.7` tag |
+| `optics` | `libflux.so`, `libflux-scene-graph.so`, `liblens.so`, `libiris.so`, headers, `flux.pc` … `iris.pc` | Meson/Ninja from the `ming2k/optics` `v0.0.7` tag |
+| `aegis` | Compositor, System Settings, CLI and agent integration binaries, systemd user unit, desktop entry, icon, and cursor license disclosure | Cargo from the `ming2k/aegis` `v0.0.8` tag |
+| `aegis-portal` | Private portal backend plus its D-Bus activation, `.portal`, and backend-selection files | The same Cargo build as `aegis` |
 
 CI installs the same Debian packages for both (`.github/workflows/ci.yml`,
 `full-workspace` job); the `makedepends`/`depends` lists below are their Arch
@@ -183,7 +195,7 @@ equivalents.
 ```bash
 # Maintainer: <you>
 pkgname=optics
-pkgver=0.0.4
+pkgver=0.0.7
 pkgrel=1
 pkgdesc='Vulkan-first rendering stack: flux, flux-scene-graph, lens, iris'
 arch=(x86_64)
@@ -211,47 +223,47 @@ package() {
 `pkg-config --modversion flux flux-scene-graph lens iris` resolves after the
 package is installed.
 
-#### `aegis` PKGBUILD
+#### `aegis` split PKGBUILD
 
 ```bash
 # Maintainer: <you>
-pkgname=aegis
-pkgver=0.0.7
+pkgbase=aegis
+pkgname=(aegis aegis-portal)
+pkgver=0.0.8
 pkgrel=1
-pkgdesc='Wayland compositor and desktop shell'
 arch=(x86_64)
 url='https://github.com/ming2k/aegis'
-# Project code is MIT; the bundled Bibata-Modern-Ice cursor theme is GPL-3.0-only.
-license=(MIT GPL-3.0-only)
-depends=(optics vulkan-icd-loader wayland libxkbcommon libinput seatd
-         pipewire systemd-libs dbus
-         xdg-desktop-portal xdg-desktop-portal-gtk   # GTK backend is the portal fallback
-         hicolor-icon-theme)
-makedepends=(rust pkgconf clang wayland wayland-protocols optics)
-optdepends=('vulkan-mesa-layers: validation and layers for development')
+makedepends=(rust pkgconf clang wayland wayland-protocols optics pipewire)
 source=("$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')   # replace with the real release-tarball checksum
 
 build() {
-  cd "$pkgname-$pkgver"
+  cd "$pkgbase-$pkgver"
   # Hard contract from the dependency section: Optics native libs must be present.
   pkg-config --modversion flux flux-scene-graph lens iris
   cargo build --locked --release --workspace
 }
 
-package() {
-  cd "$pkgname-$pkgver"
+package_aegis() {
+  pkgdesc='Wayland compositor and desktop shell'
+  # Project code is MIT; the embedded Bibata cursor is GPL-3.0-only.
+  license=(MIT GPL-3.0-only)
+  depends=(optics vulkan-icd-loader wayland libxkbcommon libinput seatd
+           systemd-libs dbus hicolor-icon-theme)
+  optdepends=(
+    "aegis-portal=$pkgver-$pkgrel: screenshots and screen sharing through xdg-desktop-portal"
+    'vulkan-mesa-layers: validation and layers for development'
+  )
+
+  cd "$pkgbase-$pkgver"
   local dest="$pkgdir/usr"
 
-  # Binaries → /usr/bin (mode 0755), per the install manifest.
   install -Dm0755 target/release/aegis          "$dest/bin/aegis"
   install -Dm0755 target/release/aegis-settings "$dest/bin/aegis-settings"
   install -Dm0755 target/release/aegis-ctl      "$dest/bin/aegis-ctl"
-  install -Dm0755 target/release/aegis-portal   "$dest/bin/aegis-portal"
   install -Dm0755 target/release/aegis-fuji-mcp "$dest/bin/aegis-fuji-mcp"
   install -Dm0755 target/release/fuji           "$dest/bin/fuji"
 
-  # Metadata (mode 0644).
   install -Dm0644 contrib/systemd/user/aegis.service \
     "$pkgdir/usr/lib/systemd/user/aegis.service"
   install -Dm0644 contrib/io.github.ming2k.aegis.Settings.desktop \
@@ -259,6 +271,28 @@ package() {
   install -Dm0644 \
     contrib/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg \
     "$dest/share/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg"
+
+  install -Dm0644 LICENSE \
+    "$pkgdir/usr/share/licenses/aegis/LICENSE"
+  install -Dm0644 assets/cursors/Bibata-Modern-Ice/LICENSE \
+    "$pkgdir/usr/share/licenses/aegis/Bibata-Modern-Ice/LICENSE"
+  install -Dm0644 assets/cursors/Bibata-Modern-Ice/NOTICE \
+    "$pkgdir/usr/share/licenses/aegis/Bibata-Modern-Ice/NOTICE"
+}
+
+package_aegis-portal() {
+  pkgdesc='xdg-desktop-portal backend for the Aegis compositor'
+  license=(MIT)
+  depends=("aegis=$pkgver-$pkgrel" pipewire xdg-desktop-portal)
+  optdepends=(
+    'xdg-desktop-portal-gtk: fallback for portal interfaces Aegis does not implement'
+  )
+
+  cd "$pkgbase-$pkgver"
+  local dest="$pkgdir/usr"
+
+  install -Dm0755 target/release/aegis-portal \
+    "$dest/lib/aegis/aegis-portal"
   install -Dm0644 \
     contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service \
     "$dest/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service"
@@ -266,22 +300,9 @@ package() {
     "$dest/share/xdg-desktop-portal/portals/aegis.portal"
   install -Dm0644 contrib/xdg-desktop-portal/aegis-portals.conf \
     "$dest/share/xdg-desktop-portal/aegis-portals.conf"
-
-  # Bundled Bibata-Modern-Ice (GPL-3.0) license disclosure — embedded into the
-  # aegis binary via include_dir, so the disclosure must ship with it.
-  install -Dm0644 assets/cursors/Bibata-Modern-Ice/LICENSE \
-    "$pkgdir/usr/share/licenses/aegis/Bibata-Modern-Ice/LICENSE"
-  install -Dm0644 assets/cursors/Bibata-Modern-Ice/NOTICE \
-    "$pkgdir/usr/share/licenses/aegis/Bibata-Modern-Ice/NOTICE"
+  install -Dm0644 LICENSE \
+    "$dest/share/licenses/aegis-portal/LICENSE"
 }
-
-# pacman hooks: the package build never runs these; they run on the target.
-post_install() {
-  systemctl --user daemon-reload        2>/dev/null || true
-  update-desktop-database -q            2>/dev/null || true
-  gtk-update-icon-cache -q -t -f usr/share/icons/hicolor 2>/dev/null || true
-}
-post_upgrade() { post_install "$@"; }
 ```
 
 #### Recipe notes
@@ -292,20 +313,17 @@ post_upgrade() { post_install "$@"; }
   For a fully offline build (e.g. an air-gapped build server), vendor in
   `prepare()` instead: `cargo vendor --locked vendor`, then build with
   `--frozen --offline` and include `vendor/` in `source=`.
-- **`/usr` prefix is fixed.** `contrib/systemd/user/aegis.service` and
-  `contrib/dbus-1/services/...aegis.service` hard-code `/usr/bin/...`. If you
-  ever change the logical prefix, patch both files consistently or D-Bus
-  activation breaks.
+- **The package boundary is intentional.** `aegis` works without the portal
+  package. `aegis-portal` depends on the matching core version because its
+  scoped IPC protocol and compositor mechanisms move in lockstep.
+- **`/usr` prefix is fixed.** The systemd unit runs `/usr/bin/aegis`; the
+  D-Bus service runs `/usr/lib/aegis/aegis-portal`. Patch the corresponding
+  unit or service when changing either destination.
 - **Keep `Delegate=cpu memory pids`** in `aegis.service`; Realm sandboxing
   depends on it.
-- **Hooks, not build steps.** `systemctl --user daemon-reload`,
-  `update-desktop-database`, `gtk-update-icon-cache`, and `ldconfig` for
-  Optics belong in pacman hooks (`post_install`/`post_upgrade` or
-  `/usr/share/libalpm/hooks/*`), never in `build()`/`package()`.
-- **Optional subpackages.** Splitting `aegis-portal` and the `fuji`/agent
-  binaries into their own packages is valid, but each subpackage must own its
-  activation metadata (the D-Bus/xdg-desktop-portal files for the portal
-  subpackage) and declare its runtime dependencies.
+- **Use distribution hooks.** The packages that own systemd, desktop, icon,
+  and loader catalogs provide the standard `libalpm` hooks. Do not place
+  `systemctl --user` calls in the PKGBUILD or an install script.
 - **Validate** with the commands in [Validation](#validation) after
   installing, and run `makepkg --printsrcinfo > .SRCINFO` before publishing to
   the AUR.

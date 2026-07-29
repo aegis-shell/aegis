@@ -1,5 +1,5 @@
 //! `org.freedesktop.impl.portal.Session` objects and the cast-session
-//! registry behind the ScreenCast portal (ADR-0051 Phase 2).
+//! registry behind the ScreenCast portal (ADR-0075).
 //!
 //! One Session object per `CreateSession` call, registered at the exact
 //! `session_handle` supplied by the portal frontend. `Close` hands the path to the

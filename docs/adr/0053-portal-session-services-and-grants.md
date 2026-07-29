@@ -1,6 +1,6 @@
 # ADR-0053: Portal backend ABI ownership and scoped session services
 
-- Status: Accepted
+- Status: Superseded by ADR-0075
 - Date: 2026-07-29
 
 ## Context

@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aegis"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aegis-ai-workspaces",
  "aegis-backend",
@@ -21,6 +21,7 @@ dependencies = [
  "aegis-dock",
  "aegis-ipc",
  "aegis-launcher",
+ "aegis-prism",
  "aegis-render",
  "aegis-shell",
  "aegis-statusbar",
@@ -41,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-ai-workspaces"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aegis-core",
  "aegis-design",
@@ -52,7 +53,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-backend"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aegis-core",
  "aegis-protocols",
@@ -71,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-compositor"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aegis-core",
  "aegis-protocols",
@@ -83,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-config"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aegis-core",
  "dirs",
@@ -95,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-core"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "serde",
  "serde_json",
@@ -103,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-ctl"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aegis-config",
  "aegis-core",
@@ -118,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-design"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "lens",
  "lens-sys",
@@ -126,7 +127,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-desktop-entries"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aegis-core",
  "dirs",
@@ -138,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-dock"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aegis-core",
  "aegis-design",
@@ -149,7 +150,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-fuji"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aegis-core",
  "aegis-desktop-entries",
@@ -173,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-ipc"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aegis-core",
  "libc",
@@ -183,7 +184,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-launcher"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aegis-core",
  "aegis-desktop-entries",
@@ -195,29 +196,39 @@ dependencies = [
 
 [[package]]
 name = "aegis-portal"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aegis-core",
  "aegis-ipc",
+ "async-channel",
  "env_logger",
  "log",
  "pipewire",
- "serde",
- "serde_json",
  "thiserror 1.0.69",
  "zbus",
 ]
 
 [[package]]
+name = "aegis-prism"
+version = "0.0.8"
+dependencies = [
+ "aegis-core",
+ "aegis-design",
+ "aegis-shell",
+ "lens",
+ "lens-sys",
+]
+
+[[package]]
 name = "aegis-protocols"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "aegis-render"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aegis-core",
  "flux",
@@ -228,7 +239,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-settings"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aegis-core",
  "aegis-design",
@@ -241,7 +252,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-shell"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aegis-core",
  "aegis-design",
@@ -254,7 +265,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-statusbar"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aegis-core",
  "aegis-design",
@@ -271,7 +282,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-wallpaper"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "flux",
  "flux-scene-graph",
@@ -666,26 +677,6 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bindgen"
-version = "0.70.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f49d8fed880d473ea71efb9bf597651e77201bdd4893efe54c9e5d65ae04ce6f"
-dependencies = [
- "bitflags",
- "cexpr",
- "clang-sys",
- "itertools 0.13.0",
- "log",
- "prettyplease",
- "proc-macro2",
- "quote",
- "regex",
- "rustc-hash 1.1.0",
- "shlex 1.3.0",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
@@ -695,10 +686,12 @@ dependencies = [
  "cexpr",
  "clang-sys",
  "itertools 0.13.0",
+ "log",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
- "rustc-hash 2.1.3",
+ "rustc-hash",
  "shlex 1.3.0",
  "syn 2.0.117",
 ]
@@ -1380,16 +1373,16 @@ checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
 
 [[package]]
 name = "flux"
-version = "0.0.4"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.4#1ccc3d88a51fd740989610252287ffa263397535"
+version = "0.0.7"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.7#b1dc0ec3c0067dc8fc11ecf69d2a0fa34a874b9c"
 dependencies = [
  "flux-sys",
 ]
 
 [[package]]
 name = "flux-scene-graph"
-version = "0.0.4"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.4#1ccc3d88a51fd740989610252287ffa263397535"
+version = "0.0.7"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.7#b1dc0ec3c0067dc8fc11ecf69d2a0fa34a874b9c"
 dependencies = [
  "flux",
  "flux-scene-graph-sys",
@@ -1397,19 +1390,19 @@ dependencies = [
 
 [[package]]
 name = "flux-scene-graph-sys"
-version = "0.0.4"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.4#1ccc3d88a51fd740989610252287ffa263397535"
+version = "0.0.7"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.7#b1dc0ec3c0067dc8fc11ecf69d2a0fa34a874b9c"
 dependencies = [
- "bindgen 0.70.1",
+ "bindgen",
  "pkg-config",
 ]
 
 [[package]]
 name = "flux-sys"
-version = "0.0.4"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.4#1ccc3d88a51fd740989610252287ffa263397535"
+version = "0.0.7"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.7#b1dc0ec3c0067dc8fc11ecf69d2a0fa34a874b9c"
 dependencies = [
- "bindgen 0.70.1",
+ "bindgen",
  "pkg-config",
 ]
 
@@ -1963,8 +1956,8 @@ checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
 
 [[package]]
 name = "iris"
-version = "0.0.4"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.4#1ccc3d88a51fd740989610252287ffa263397535"
+version = "0.0.7"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.7#b1dc0ec3c0067dc8fc11ecf69d2a0fa34a874b9c"
 dependencies = [
  "iris-sys",
  "lens",
@@ -1973,10 +1966,10 @@ dependencies = [
 
 [[package]]
 name = "iris-sys"
-version = "0.0.4"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.4#1ccc3d88a51fd740989610252287ffa263397535"
+version = "0.0.7"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.7#b1dc0ec3c0067dc8fc11ecf69d2a0fa34a874b9c"
 dependencies = [
- "bindgen 0.70.1",
+ "bindgen",
  "pkg-config",
 ]
 
@@ -2119,8 +2112,8 @@ checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
 
 [[package]]
 name = "lens"
-version = "0.0.4"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.4#1ccc3d88a51fd740989610252287ffa263397535"
+version = "0.0.7"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.7#b1dc0ec3c0067dc8fc11ecf69d2a0fa34a874b9c"
 dependencies = [
  "flux",
  "lens-sys",
@@ -2128,10 +2121,10 @@ dependencies = [
 
 [[package]]
 name = "lens-sys"
-version = "0.0.4"
-source = "git+https://github.com/ming2k/optics?tag=v0.0.4#1ccc3d88a51fd740989610252287ffa263397535"
+version = "0.0.7"
+source = "git+https://github.com/ming2k/optics?tag=v0.0.7#b1dc0ec3c0067dc8fc11ecf69d2a0fa34a874b9c"
 dependencies = [
- "bindgen 0.70.1",
+ "bindgen",
  "pkg-config",
 ]
 
@@ -2212,7 +2205,7 @@ version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69ad52764fca54818486f3cf75afec844d1f1a1568c24dcee25d41b1ab007dda"
 dependencies = [
- "bindgen 0.72.1",
+ "bindgen",
  "cc",
  "system-deps",
 ]
@@ -2559,7 +2552,7 @@ version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2089f245b548723e60325773c27f586b7a2372c79ea941b246cd0d654706adc"
 dependencies = [
- "bindgen 0.72.1",
+ "bindgen",
  "libspa-sys",
  "system-deps",
 ]
@@ -2718,7 +2711,7 @@ dependencies = [
  "pin-project-lite",
  "quinn-proto",
  "quinn-udp",
- "rustc-hash 2.1.3",
+ "rustc-hash",
  "rustls",
  "socket2",
  "thiserror 2.0.18",
@@ -2740,7 +2733,7 @@ dependencies = [
  "rand 0.10.2",
  "rand_pcg",
  "ring",
- "rustc-hash 2.1.3",
+ "rustc-hash",
  "rustls",
  "rustls-pki-types",
  "slab",
@@ -3056,12 +3049,6 @@ dependencies = [
  "cfg-if",
  "ordered-multimap",
 ]
-
-[[package]]
-name = "rustc-hash"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 
 [[package]]
 name = "rustc-hash"

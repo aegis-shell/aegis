@@ -1,17 +1,20 @@
 # How to Install and Verify the Portal Backend
 
-`aegis-portal` is the xdg-desktop-portal backend for aegis
-([ADR-0051](../adr/0051-portal-backend-dbus-bridge.md)). It lets
-portal-aware and sandboxed (Flatpak) applications read the desktop
+`aegis-portal` is the independently packaged xdg-desktop-portal backend for
+Aegis
+([ADR-0075](../adr/0075-independent-portal-package-and-backend-contract.md)).
+It lets portal-aware and sandboxed (Flatpak) applications read the desktop
 appearance preference, take screenshots, and cast the screen. This guide
 installs the three integration files and verifies the backend end to end.
 
-The backend itself is the `aegis-portal` binary, D-Bus-activated on demand —
-there is no service to enable or start.
+Install the `aegis-portal` system package in addition to the core `aegis`
+package. The backend is D-Bus-activated on demand; there is no service to
+enable or start.
 
 ## Install
 
-Install the binary and the three files shipped under `contrib/`:
+Install the binary, its license, and the three files shipped under
+`contrib/`:
 
 | Source | Install to |
 |--------|-----------|
@@ -19,12 +22,13 @@ Install the binary and the three files shipped under `contrib/`:
 | `contrib/xdg-desktop-portal/portals/aegis.portal` | `/usr/share/xdg-desktop-portal/portals/aegis.portal` |
 | `contrib/xdg-desktop-portal/aegis-portals.conf` | `/usr/share/xdg-desktop-portal/aegis-portals.conf` |
 | `contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` |
+| `LICENSE` | `/usr/share/licenses/aegis-portal/LICENSE` |
 
-For a per-user install, the same files work under
+For a per-user development install, place the three integration files under
 `~/.local/share/xdg-desktop-portal/portals/`,
 `~/.config/xdg-desktop-portal/aegis-portals.conf`, and
-`~/.local/share/dbus-1/services/` respectively; point `Exec=` at wherever
-the binary lives.
+`~/.local/share/dbus-1/services/` respectively. Point `Exec=` at the
+development binary; the system package remains the supported installation.
 
 `aegis-portals.conf` keeps GTK as the default and routes only the interfaces
 listed below to Aegis. This prevents an added metadata entry from silently
@@ -54,13 +58,13 @@ currently serves:
   the selected window's visible region from its output; occluding windows
   remain visible in the stream. Persistence is not advertised because the
   version 4 `restore_data` contract requires a compatible PermissionStore.
-- `org.freedesktop.impl.portal.Inhibit` v1 — flag 8 (idle) only, held
+- `org.freedesktop.impl.portal.Inhibit` — flag 8 (idle) only, held
   through the compositor's scoped `SetIdleInhibit` IPC op
-  ([ADR-0053](../adr/0053-portal-session-services-and-grants.md)). Flags
-  1/2/4 (logout, user switch, suspend) require a session manager Aegis does
-  not have and are rejected. Each accepted call remains active until the
-  frontend closes its request object; the backend periodically renews the
-  scoped IPC lease and reconnects after a compositor restart.
+  ([ADR-0075](../adr/0075-independent-portal-package-and-backend-contract.md)).
+  Flags 1/2/4 (logout, user switch, suspend) require a session manager Aegis
+  does not have and are rejected. Each accepted call remains active until
+  the frontend closes its request object; the backend periodically renews
+  the scoped IPC lease and reconnects after a compositor restart.
 
 Aegis does not advertise the Background portal. GTK remains the default
 backend for that and other unsupported interfaces.
@@ -83,7 +87,7 @@ busctl --user introspect org.freedesktop.impl.portal.desktop.aegis /org/freedesk
 The output lists `org.freedesktop.impl.portal.Settings`,
 `org.freedesktop.impl.portal.Screenshot` (version 2),
 `org.freedesktop.impl.portal.ScreenCast` (version 3), and
-`org.freedesktop.impl.portal.Inhibit` (version 1).
+`org.freedesktop.impl.portal.Inhibit`.
 
 Read the appearance setting (with `color_scheme = "dark"` configured this
 prints `variant u 1`; the default prints `u 0`):
@@ -124,8 +128,9 @@ while the session is locked or the seat is inactive, exactly like
 
 Exercise the ScreenCast path the way applications do: share a screen or
 window from a portal-aware client (for example `getDisplayMedia()` in
-Firefox or Chromium). The chooser offers the monitor; once sharing starts,
-the stream appears as a PipeWire node named `aegis-portal-screencast`:
+Firefox or Chromium). The chooser accepts an eligible monitor or window;
+once sharing starts, the stream appears as a PipeWire node named
+`aegis-portal-screencast`:
 
 ```sh
 pw-dump | grep -A5 aegis-portal-screencast

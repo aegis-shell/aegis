@@ -418,8 +418,10 @@ work tracked in ADR-0052.
 ## Idle Inhibition
 
 `Request::SetIdleInhibit { inhibit }` sets or clears the calling
-connection's global, surfaceless idle inhibitor (ADR-0053), built for the
-portal backend's Inhibit interface. Authorization matches `CaptureOutput`:
+connection's global, surfaceless idle inhibitor
+([ADR-0075](../adr/0075-independent-portal-package-and-backend-contract.md)),
+built for the portal backend's Inhibit interface. Authorization matches
+`CaptureOutput`:
 the `control` capability, a live lease, and an explicit `IdleInhibit` entry
 in the connection's scope `ops`, never inherited through the unrestricted
 default. While any connection holds an inhibitor, ext-idle-notify
@@ -441,12 +443,13 @@ explicit unknown or removed scope fails closed.
 recovery commands. It grants the local user all Realm ids and the explicit
 Realm operation set; it does not weaken the socket's mode `0600` boundary.
 
-`aegis-portal` (the xdg-desktop-portal backend, ADR-0051) uses the built-in
-owner-only `aegis-portal` scope, which grants exactly three operations —
-`CaptureOutput` for the Screenshot portal, `StreamOutput` for the
-ScreenCast portal (ADR-0052), and `IdleInhibit` for the Inhibit portal
-(ADR-0053) — and nothing else. Both built-in
-scopes follow the same fail-closed rule as configured scopes.
+`aegis-portal` uses the built-in owner-only `aegis-portal` scope, which
+grants exactly four operations: `CaptureOutput` for Screenshot,
+`StreamOutput` for ScreenCast, `PickTarget` for user-confirmed Screenshot and
+ScreenCast selection, and `IdleInhibit` for Inhibit. It grants no general
+compositor control. The portal boundary is recorded in
+[ADR-0075](../adr/0075-independent-portal-package-and-backend-contract.md).
+Both built-in scopes follow the same fail-closed rule as configured scopes.
 
 See the [Configuration Reference](config.md#agent-scopes) for fields and
 operation names.

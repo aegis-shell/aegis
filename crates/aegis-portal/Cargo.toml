@@ -13,7 +13,7 @@ aegis-ipc = { workspace = true }
 # aegis-ipc's pick results and window snapshots carry aegis-core types (Rect,
 # WindowId, Window); a workspace-internal crate, no new external dependency.
 aegis-core = { workspace = true }
-# Session D-Bus bridge (ADR-0051): pure-Rust zbus with the blocking API so the
+# Session D-Bus bridge (ADR-0075): pure-Rust zbus with the blocking API so the
 # service stays a plain `std::thread` model — same red line as the SNI tray
 # (crates/aegis-statusbar), no tokio.
 zbus = { workspace = true }

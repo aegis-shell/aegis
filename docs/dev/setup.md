@@ -7,7 +7,7 @@ How to build and run aegis for development.
 | Requirement | Notes |
 |-------------|-------|
 | Rust toolchain | `rustc` and `cargo`, edition 2024 (1.88+) |
-| Optics `0.0.4` | Use a sibling checkout for cross-repository development or installed native libraries for the canonical build |
+| Optics `0.0.7` | Use a sibling checkout for cross-repository development or installed native libraries for the canonical build |
 | meson and a C23 compiler | To build the optics libraries |
 | Vulkan 1.3 runtime and loader | flux is Vulkan-first |
 | Wayland client and protocols | `wayland-client`, `wayland-protocols`, and `wayland-scanner` for the nested backend |
@@ -22,7 +22,7 @@ everything below this table follows from it.
 
 | You are… | Workflow | Why |
 |----------|----------|-----|
-| **Contributing to Aegis only** | [Canonical workflow](#canonical-workflow-contributor) | You never touch Optics, so the locked `v0.0.4` bindings and the system-installed native libraries are all you need. No sibling checkout, no Cargo patch. |
+| **Contributing to Aegis only** | [Canonical workflow](#canonical-workflow-contributor) | You never touch Optics, so the locked `v0.0.7` bindings and the system-installed native libraries are all you need. No sibling checkout, no Cargo patch. |
 | **Maintaining Aegis and Optics together** | [Local workflow](#local-workflow-dual-maintainer) | You isolate the live sibling Optics patch, lockfile, and target directory in a linked Aegis worktree. |
 
 ### How the two roles differ
@@ -33,7 +33,7 @@ checkout without one forcing its setup on the other:
 
 | Concern | Canonical workflow | Local workflow |
 |---------|--------------------|----------------|
-| Rust bindings | Locked Optics `v0.0.4` Git source | `[patch]` entries for `../optics/bindings` |
+| Rust bindings | Locked Optics `v0.0.7` Git source | `[patch]` entries for `../optics/bindings` |
 | Native libraries | System `pkg-config` and dynamic-loader paths | The sibling uninstalled Meson tree (via `meson-uninstalled/*.pc`) |
 | `.cargo/config.toml` | Absent | A copy of `.cargo/optics-local.toml` |
 | `Cargo.lock` | Canonical and committed | Worktree-local and excluded from commits |
@@ -108,7 +108,7 @@ for daily commits, rebases, release promotion, and merging `dev` into
 ### Canonical workflow (contributor)
 
 For everyone contributing to Aegis only. You do **not** need a sibling
-`optics` checkout. Build the matching Optics `0.0.4` once so its native
+`optics` checkout. Build the matching Optics `0.0.7` once so its native
 libraries, headers, and `.pc` files land in the system paths, then drive Aegis
 with ordinary `cargo` commands against the locked bindings.
 
@@ -124,9 +124,9 @@ sudo ldconfig
 pkg-config --modversion flux flux-scene-graph lens iris   # sanity check
 ```
 
-> If your distribution already ships an Optics `0.0.4` package, install that
+> If your distribution already ships an Optics `0.0.7` package, install that
 > instead and skip the manual build. What matters is that the four
-> `pkg-config --modversion` checks above each report a `0.0.4`-compatible
+> `pkg-config --modversion` checks above each report a `0.0.7`-compatible
 > version.
 
 **Daily development** needs no further Optics work — just Cargo:

@@ -40,10 +40,10 @@ pub const PROTOCOL_VERSION: u32 = 10;
 /// allowlist and its time-bounded lease.
 pub const LOCAL_REALM_ADMIN_SCOPE: &str = "aegis-ctl-realm-admin";
 /// Built-in owner-only scope used by the xdg-desktop-portal backend
-/// (`aegis-portal`, ADR-0051). It resolves to exactly four operations —
+/// (`aegis-portal`, ADR-0075). It resolves to exactly four operations —
 /// `CaptureOutput` for the Screenshot portal, `StreamOutput` for the
-/// ScreenCast portal (ADR-0052), `IdleInhibit` for the Inhibit portal
-/// (ADR-0053), and `PickTarget` for the interactive picker round-trips
+/// ScreenCast portal (ADR-0052), `IdleInhibit` for the Inhibit portal, and
+/// `PickTarget` for the interactive picker round-trips
 /// (ADR-0054) — and nothing else. Like the realm-admin
 /// scope it does not weaken the socket's owner-only `0600` boundary; it opts
 /// the connection into an explicit high-risk operation allowlist and its
@@ -156,7 +156,7 @@ pub enum OpClass {
     CaptureOutput,
     StreamOutput,
     /// Connection-scoped global idle inhibition (the Inhibit portal,
-    /// ADR-0053). Never inherited through `None`-means-all.
+    /// ADR-0075). Never inherited through `None`-means-all.
     IdleInhibit,
     /// Interactive, user-consent target picking (region, pixel, or window)
     /// through compositor chrome (ADR-0054). Never inherited through
@@ -840,7 +840,7 @@ pub enum Request {
     /// Stop a stream owned by this connection.
     StreamOutputStop { stream_id: u64 },
     /// Set or clear this connection's global idle inhibitor (the Inhibit
-    /// portal, ADR-0053). Authorization mirrors
+    /// portal, ADR-0075). Authorization mirrors
     /// [`Request::StreamOutputStart`]: `control`, a live lease, and an
     /// explicit [`OpClass::IdleInhibit`] entry in the connection's named
     /// scope — never inherited. The inhibitor is surfaceless: while any

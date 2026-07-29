@@ -5,7 +5,26 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once the
 project cuts a tagged release.
 
-## [Unreleased]
+## [0.0.8] - 2026-07-29
+
+### Desktop portal
+
+- `aegis-portal` is now an independent system subpackage with a private
+  `/usr/lib/aegis/aegis-portal` executable. The core compositor package no
+  longer owns portal activation metadata or directly requires the portal
+  frontend and backend-only runtime dependencies.
+- Corrected the Screenshot, ScreenCast, Request, and Session D-Bus backend
+  method contracts to use the frontend-supplied object paths and synchronous
+  `(response, results)` replies. ScreenCast now advertises version 3,
+  supports monitor and window selection through the compositor picker, and
+  advertises only the hidden cursor mode.
+- Removed the incomplete Background backend, automatic background/autostart
+  grants, and private ScreenCast restore-token store. Unsupported interfaces
+  now route to the GTK backend; persistent ScreenCast grants remain
+  unavailable until a compatible PermissionStore policy exists.
+- Fixed Inhibit to use the standard idle flag (`8`), reject unsupported
+  session-manager flags, bind each inhibitor to its backend Request object,
+  and renew its scoped IPC lease while active.
 
 ### System shortcuts
 
@@ -51,6 +70,23 @@ project cuts a tagged release.
   compositor output scale, including a `[[output]] scale` override, instead
   of falling back to the backend's native scale and replacing HiDPI textures
   with lower-resolution copies.
+
+### Build and dependencies
+
+- Updated the locked Optics Rust bindings and native-library requirement to
+  `v0.0.7`, including the Rust 1.85 compatibility and synchronized C/Rust
+  version surfaces required by canonical builds.
+
+### Agent Workspaces
+
+- Replaced the generic Fuji-branded status entry with Agent Workspaces. The
+  permanent entry now reports no active workspaces, one Realm's own label, or
+  a localized multi-Realm summary without claiming that the fuji process is
+  online.
+- Added an explicit partially-paused aggregate state and renamed manual
+  creation to **Create Empty Workspace** because it creates a Realm without
+  starting or connecting an agent. The fuji agent and MCP bridge remain
+  separate out-of-process components.
 
 ## [0.0.7] - 2026-07-29
 
