@@ -31,7 +31,7 @@ aegis is a Wayland compositor for Linux, written in Rust on
 - Looking for System Settings module routes and backend availability: read the
   [System Settings Reference](reference/settings.md).
 - Starting applications or using app-level window actions: read
-  [How to Use the Dock and Launcher](how-to/dock-and-launcher.md).
+  [How to Use the Dock, Launcher, and Prism](how-to/dock-and-launcher.md).
 - Managing a borderless window: read
   [How to Manage Borderless Windows](how-to/window-management.md).
 - Isolating agent input and applications: read

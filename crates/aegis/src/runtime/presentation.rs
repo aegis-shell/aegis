@@ -1117,8 +1117,8 @@ impl CompositorRuntime {
                         let _ = self.status_refresh_tx.send(());
                     }
                 }
-                // The dock's Launchpad tile was clicked: toggle the launcher,
-                // the same path as the Super-tap hotkey.
+                // The dock's Launchpad tile was clicked: toggle the launcher
+                // through the same path as the Super+A hotkey.
                 if self.shell.take_toggle_launcher() {
                     self.shell.toggle();
                 }

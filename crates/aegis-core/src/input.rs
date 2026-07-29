@@ -594,12 +594,10 @@ pub const KEY_RIGHTMETA: u32 = 126;
 /// Detects a "tap" of one or more modifier keys: the target was pressed and
 /// released while no other key was held or pressed.
 ///
-/// Used by the main loop to recognize a bare Super tap as the global
-/// launcher hotkey. Feeding the modifier keys themselves to the client is
-/// unaffected — a tap is observed, not intercepted — so Super still works as a
-/// modifier in every other combo (Super+letter, Super+drag, …) and never
-/// reaches [`TapDetector::on_key`] as a fire. The detector is a pure state
-/// machine over `(code, pressed)` pairs and has no I/O.
+/// The detector is a pure state machine over `(code, pressed)` pairs and has
+/// no I/O. A caller can observe a modifier tap without intercepting the
+/// modifier's ordinary key events. Aegis's built-in shortcuts do not assign
+/// an action to a bare modifier.
 ///
 /// Multiple target codes (e.g. left and right Super) are treated as one
 /// logical key: a tap fires when the held-target set becomes empty without

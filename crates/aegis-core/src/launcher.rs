@@ -185,7 +185,7 @@ impl Launcher {
     /// itself on activation.
     ///
     /// No-op when the launcher is closed — opening happens via mouse toggle
-    /// or the global Super-tap hotkey.
+    /// or a global launcher hotkey.
     pub fn handle(&mut self, action: KeyAction) -> Option<Launch> {
         if !self.open {
             return None;

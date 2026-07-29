@@ -473,6 +473,7 @@ Letters (`a`–`z`, lowercased), digits (`0`–`9`), and the common controls:
 | Name | Aliases | Effect |
 |------|---------|--------|
 | `launcher` | `togglelauncher`, `apps` | Open or close the application launcher |
+| `prism` | `toggleprism`, `spotlight` | Open or close Prism application search |
 | `overview` | `toggleoverview` | Open or close the window and workspace overview |
 | `close` | `closefocused` | Close the focused toplevel |
 | `cycle` | `next` | Move focus to the next toplevel; while `Super` remains held, show the live preview strip |
@@ -495,7 +496,8 @@ configured:
 |---------|--------|
 | `Super+Tab` | `cycle` |
 | `Super+Shift+Tab` | `prev` |
-| `Super+Return` | `launcher` |
+| `Super+A` | `launcher` |
+| `Super+Space` | `prism` |
 | `Super+O` | `overview` |
 | `Super+Q` | `close` |
 | `Super+Right` | `workspace_next` |
@@ -505,8 +507,6 @@ configured:
 | `Super+Shift+Q` | `quit` |
 | `Super+Shift+Return` | `quit` |
 
-A bare Super tap (press and release with no other key in between) also
-toggles the launcher; it is detected separately and is not a `[[keybind]]`.
 See [System Shortcuts](keyboard-shortcuts.md) for the complete default
 keyboard and pointer shortcut reference.
 

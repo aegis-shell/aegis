@@ -13,9 +13,9 @@
 //!   every enumerated `.desktop` entry; click a row to launch it (ADR-0022).
 //!
 //! Larger components have graduated to their own crates on top of the same
-//! contract (ADR-0021): the dock lives in `aegis-dock`, AI Workspaces in
-//! `aegis-ai-workspaces`, and status plus immediate system controls in
-//! `aegis-statusbar`.
+//! contract (ADR-0021): the dock lives in `aegis-dock`, Prism in
+//! `aegis-prism`, AI Workspaces in `aegis-ai-workspaces`, and status plus
+//! immediate system controls in `aegis-statusbar`.
 
 mod agent_feedback;
 mod app_menu;

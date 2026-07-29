@@ -22,6 +22,8 @@ use crate::input::{
 pub enum Action {
     /// Open or close the application launcher.
     ToggleLauncher,
+    /// Open or close Prism application search.
+    TogglePrism,
     /// Open or close the window/workspace overview (M9).
     ToggleOverview,
     /// Close the currently focused toplevel.
@@ -48,12 +50,12 @@ impl Action {
     ///
     /// Modal chrome still receives ordinary navigation and text input, and
     /// actions that mutate obscured desktop state stay suppressed. The
-    /// launcher toggle, screenshot selector, and emergency quit path are
-    /// compositor-level controls that must remain reachable.
+    /// launcher and Prism toggles, the screenshot selector, and the emergency
+    /// quit path are compositor-level controls that must remain reachable.
     const fn allowed_during_keyboard_capture(self) -> bool {
         matches!(
             self,
-            Action::ToggleLauncher | Action::Screenshot | Action::Quit
+            Action::ToggleLauncher | Action::TogglePrism | Action::Screenshot | Action::Quit
         )
     }
 }
@@ -73,8 +75,7 @@ pub struct Keymap {
 }
 
 impl Keymap {
-    /// Built-in defaults. A bare Super tap (handled by `TapDetector` in the
-    /// binary, not a binding) also toggles the launcher, so these are additive.
+    /// Built-in defaults.
     pub fn defaults() -> Keymap {
         Keymap {
             binds: vec![
@@ -84,7 +85,8 @@ impl Keymap {
                     XKB_KEY_Tab,
                     Action::CycleFocusBack,
                 ),
-                kb(Mods::SUPER, XKB_KEY_Return, Action::ToggleLauncher),
+                kb(Mods::SUPER, b'a' as u32, Action::ToggleLauncher),
+                kb(Mods::SUPER, b' ' as u32, Action::TogglePrism),
                 kb(Mods::SUPER, 0x6f, Action::ToggleOverview), /* 'o' */
                 kb(Mods::SUPER, 0x71, Action::CloseFocused),   /* 'q' */
                 kb(Mods::SUPER, 0xff53, Action::WorkspaceNext), /* Right */
@@ -163,6 +165,7 @@ pub fn mod_from_name(s: &str) -> Option<Mods> {
 pub fn action_from_name(s: &str) -> Option<Action> {
     Some(match s.to_ascii_lowercase().as_str() {
         "launcher" | "togglelauncher" | "apps" => Action::ToggleLauncher,
+        "prism" | "toggleprism" | "spotlight" => Action::TogglePrism,
         "overview" | "toggleoverview" => Action::ToggleOverview,
         "close" | "closefocused" => Action::CloseFocused,
         "cycle" | "next" => Action::CycleFocus,
@@ -242,11 +245,18 @@ mod tests {
             km.match_key(Mods::SUPER | Mods::SHIFT, XKB_KEY_ISO_Left_Tab),
             Some(Action::CycleFocusBack)
         );
-        // Super+Return → launcher.
+        // Super+A → launcher.
         assert_eq!(
-            km.match_key(Mods::SUPER, XKB_KEY_Return),
+            km.match_key(Mods::SUPER, b'a' as u32),
             Some(Action::ToggleLauncher)
         );
+        // Super+Space → Prism.
+        assert_eq!(
+            km.match_key(Mods::SUPER, b' ' as u32),
+            Some(Action::TogglePrism)
+        );
+        // The old Super+Return default is gone.
+        assert_eq!(km.match_key(Mods::SUPER, XKB_KEY_Return), None);
         // Super+Shift+Q → quit. XKB resolves the shifted letter to uppercase.
         assert_eq!(
             km.match_key(Mods::SUPER | Mods::SHIFT, b'Q' as u32),
@@ -283,8 +293,12 @@ mod tests {
             Some(Action::Screenshot)
         );
         assert_eq!(
-            km.match_key_during_keyboard_capture(Mods::SUPER, XKB_KEY_Return),
+            km.match_key_during_keyboard_capture(Mods::SUPER, b'a' as u32),
             Some(Action::ToggleLauncher)
+        );
+        assert_eq!(
+            km.match_key_during_keyboard_capture(Mods::SUPER, b' ' as u32),
+            Some(Action::TogglePrism)
         );
         assert_eq!(
             km.match_key_during_keyboard_capture(Mods::SUPER | Mods::SHIFT, b'Q' as u32),
@@ -328,6 +342,13 @@ mod tests {
         assert_eq!(keysym_from_name("prtsc"), Some(XKB_KEY_Print));
         assert_eq!(keysym_from_name("f4"), Some(0xffc1));
         assert_eq!(keysym_from_name("nonsense"), None);
+    }
+
+    #[test]
+    fn prism_action_accepts_documented_names() {
+        assert_eq!(action_from_name("prism"), Some(Action::TogglePrism));
+        assert_eq!(action_from_name("toggleprism"), Some(Action::TogglePrism));
+        assert_eq!(action_from_name("spotlight"), Some(Action::TogglePrism));
     }
 
     #[test]

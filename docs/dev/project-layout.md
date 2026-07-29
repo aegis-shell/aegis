@@ -16,6 +16,7 @@ aegis/
     aegis-render/        compositing through flux
     aegis-shell/         compositor chrome host and contract through lens
     aegis-dock/          bottom-center dock chrome component
+    aegis-prism/         compact application-search chrome component
     aegis-ai-workspaces/  Agent Realm lifecycle and authority UI
     aegis-settings/       standalone modular System Settings application
     aegis-statusbar/     top status bar chrome component (workspaces, live controls, notifications, clock, SNI tray)
@@ -48,6 +49,7 @@ Cross-repository development uses a
 | [`aegis-render`](../../crates/aegis-render/README.md) | Client buffers to flux textures, scene to output | [ADR-0004](../adr/0004-client-buffers-via-flux-dmabuf-import.md) |
 | [`aegis-shell`](../../crates/aegis-shell/README.md) | Chrome host, `Chrome` contract, and shared components on lens | [ADR-0021](../adr/0021-chrome-component-trait.md) |
 | [`aegis-dock`](../../crates/aegis-dock/README.md) | Bottom-center dock chrome component | [ADR-0019](../adr/0019-dock-as-bottom-center-overlay.md), [ADR-0021](../adr/0021-chrome-component-trait.md) |
+| [`aegis-prism`](../../crates/aegis-prism/README.md) | Compact Spotlight-style application search component | [ADR-0021](../adr/0021-chrome-component-trait.md), [ADR-0044](../adr/0044-dock-and-control-center-crates.md) |
 | [`aegis-ai-workspaces`](../../crates/aegis-ai-workspaces/README.md) | Compositor-owned Agent Realm lifecycle and authority UI | [ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md) |
 | [`aegis-settings`](../../crates/aegis-settings/README.md) | Standalone modular System Settings application | [ADR-0069](../adr/0069-documentation-owned-installation-and-throwaway-development-staging.md) |
 | [`aegis-statusbar`](../../crates/aegis-statusbar/README.md) | Top status bar chrome component with live-system controls, notifications, and the StatusNotifierItem tray | [ADR-0045](../adr/0045-statusbar-crate-and-sni-tray.md), [ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md) |

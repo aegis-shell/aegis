@@ -9,8 +9,8 @@ boundaries.
 
 - Vulkan rendering through the
   [Optics](https://github.com/ming2k/optics) stack
-- Native status bar, Dock, application launcher, notifications, and
-  multi-workspace window management
+- Native status bar, Dock, full application launcher, Prism search,
+  notifications, and multi-workspace window management
 - Nested Wayland development and direct DRM/KMS presentation
 - Versioned local IPC with a command-line client and desktop portal backend
 - Isolated Agent Realms with cgroup and capability boundaries

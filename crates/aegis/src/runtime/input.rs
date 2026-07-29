@@ -127,13 +127,6 @@ impl CompositorRuntime {
                 });
             }
         }
-        if session_locked {
-            // The lock client owns keyboard routing, so the detector cannot
-            // observe a complete held-key stream while locked. Drop the whole
-            // snapshot; retaining only a cancellation flag would leave keys
-            // released during the lock permanently marked as held.
-            self.super_tap.reset();
-        }
         for state in self.server.take_text_input_states() {
             self.host.set_text_input_state(state);
         }
@@ -232,11 +225,6 @@ impl CompositorRuntime {
                         self.input_acc.cursor = (x, y);
                     }
                     PointerButton { button, state } => {
-                        if state.is_pressed() {
-                            // A pointer gesture while Super is held is a
-                            // modifier drag, not a bare launcher-key tap.
-                            self.super_tap.cancel_current();
-                        }
                         // Map Linux BTN_* codes (0x110=left, 0x111=right,
                         // 0x112=middle) to lens's MouseButton. Other buttons
                         // are dropped; the chrome only consumes these three.
@@ -286,11 +274,6 @@ impl CompositorRuntime {
                             client_action_candidates.push((action, event_cursor));
                         }
 
-                        // The Super-tap detector observes both routes. It never
-                        // changes which owner receives the matching release.
-                        if !session_locked && self.super_tap.on_key(code, state.is_pressed()) {
-                            self.shell.toggle();
-                        }
                         if chrome_owned {
                             // XKB was already advanced above on both edges;
                             // only feed prepared presses to chrome so text is
@@ -512,6 +495,7 @@ impl CompositorRuntime {
                 let origin = aegis_ipc::Origin::Keybinding;
                 match action {
                     Action::ToggleLauncher => self.shell.toggle(),
+                    Action::TogglePrism => self.shell.toggle_prism(),
                     Action::ToggleOverview => self.shell.toggle_overview(),
                     Action::CloseFocused => {
                         if let Some(id) = self.server.focused_toplevel_id() {

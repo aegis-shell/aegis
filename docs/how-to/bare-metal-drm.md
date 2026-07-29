@@ -81,7 +81,7 @@ First bare-metal run, in order:
 2. **Input under load.** Wiggle the mouse continuously from the first
    frame; the compositor must keep pacing frames (60 Hz) and must not
    exit. This exercises the flip-wait deadline loop.
-3. **Clients.** Launch a terminal from the launcher (`Super+Return`) and
+3. **Clients.** Launch a terminal from the launcher (`Super+A`) and
    confirm keyboard focus, typing, and window move (`Super+drag`).
 4. **VT switch.** `Ctrl+Alt+F2` away, then back (`Ctrl+Alt+F3` returns to
    aegis — the compositor forwards these keys to libseat itself). The session

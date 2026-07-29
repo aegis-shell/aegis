@@ -7,9 +7,9 @@
 //! launcher, the overview — is a [`Chrome`] implementation registered with
 //! [`Shell::add`], and renders itself each frame from the shared snapshot
 //! and input. Larger components live in their own crates on top of the same
-//! contract (the dock in `aegis-dock`, AI Workspaces in
-//! `aegis-ai-workspaces`, and the status bar in `aegis-statusbar`). Adding or
-//! removing a chrome surface is a component change, not a core change.
+//! contract (the dock in `aegis-dock`, Prism in `aegis-prism`, AI Workspaces
+//! in `aegis-ai-workspaces`, and the status bar in `aegis-statusbar`). Adding
+//! or removing a chrome surface is a component change, not a core change.
 //!
 //! Input the compositor captures is fed here as a snapshot before being routed
 //! to clients; component-emitted intents are drained by the main loop into
@@ -268,7 +268,7 @@ pub struct ChromeEvents {
     pub switch_workspace: Option<aegis_core::workspace::WorkspaceId>,
     /// The chrome asked to toggle the launcher this frame (the dock's
     /// Launchpad tile). Drained by the main loop, which calls [`Shell::toggle`]
-    /// — the same path as the Super-tap hotkey — so the launcher flips open or
+    /// — the same path as the Super+A hotkey — so the launcher flips open or
     /// closed.
     pub toggle_launcher: bool,
     /// Notification id the toast stack asked to dismiss. Drained through the
@@ -357,10 +357,28 @@ pub trait Chrome {
     /// search box).
     fn key_char(&mut self, _kc: &aegis_core::input::KeyChar, _out: &mut ChromeEvents) {}
 
-    /// The global launcher hotkey fired (a Super tap detected by the main
-    /// loop's `TapDetector`). Default no-op; components with an open/closed
-    /// state (the launcher) override this to flip it.
+    /// The global application-launcher hotkey fired. Default no-op;
+    /// components with an open/closed launcher state override this to flip it.
     fn toggle(&mut self, _out: &mut ChromeEvents) {}
+
+    /// Whether this component owns the application launcher state.
+    fn launcher_active(&self) -> bool {
+        false
+    }
+
+    /// Close the application launcher without activating a result.
+    fn close_launcher(&mut self) {}
+
+    /// The global Prism hotkey fired. Only the Prism component overrides this.
+    fn toggle_prism(&mut self, _out: &mut ChromeEvents) {}
+
+    /// Whether this component owns an open Prism surface.
+    fn prism_active(&self) -> bool {
+        false
+    }
+
+    /// Close Prism without activating a result.
+    fn close_prism(&mut self) {}
 
     /// Present one compositor-owned application. Only the component backing
     /// the requested identity acts; ordinary chrome ignores it.
@@ -964,12 +982,40 @@ impl Shell {
         }
     }
 
-    /// Fire the global launcher hotkey (a Super tap the main loop detected).
-    /// Components with an open/closed state flip themselves; others no-op.
+    /// Fire the global application-launcher hotkey. Opening the launcher
+    /// closes Prism first so the two catalog surfaces cannot capture input at
+    /// the same time.
     pub fn toggle(&mut self) {
+        let opening = !self
+            .components
+            .iter()
+            .any(|component| component.launcher_active());
+        if opening {
+            for component in self.components.iter_mut() {
+                component.close_prism();
+            }
+        }
         let events = &mut self.events;
         for component in self.components.iter_mut() {
             component.toggle(events);
+        }
+    }
+
+    /// Fire the global Prism hotkey. Opening Prism closes the application
+    /// launcher first so only one catalog surface owns keyboard input.
+    pub fn toggle_prism(&mut self) {
+        let opening = !self
+            .components
+            .iter()
+            .any(|component| component.prism_active());
+        if opening {
+            for component in self.components.iter_mut() {
+                component.close_launcher();
+            }
+        }
+        let events = &mut self.events;
+        for component in self.components.iter_mut() {
+            component.toggle_prism(events);
         }
     }
 

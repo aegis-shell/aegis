@@ -71,7 +71,6 @@ pub(super) struct CompositorRuntime {
     /// Whether the previous frame took the direct-scanout fast path. Used only
     /// to log the activation once per scanout session; compositing resets it.
     pub(super) scanout_taken: bool,
-    pub(super) super_tap: aegis_core::input::TapDetector,
     pub(super) keyboard_capture: aegis_core::input::KeyboardCaptureState,
     pub(super) keymap: aegis_core::keybind::Keymap,
     pub(super) system_status: aegis_shell::SystemStatus,

@@ -288,6 +288,10 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // empty; the application catalog is pushed below and fanned out to every
     // registered component.
     shell.add(Box::new(aegis_shell::Launcher::new()));
+    // Prism is the compact application-search surface. It shares the
+    // launcher's catalog and launch/focus event path while keeping its own
+    // Spotlight-style presentation and input state in a standalone crate.
+    shell.add(Box::new(aegis_prism::Prism::new()));
     // The overview (M9): a modal window/workspace picker over the same live
     // scene; registered with the modal chrome so it covers ordinary overlays.
     shell.add(Box::new(aegis_shell::Overview::new()));
@@ -391,10 +395,6 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // count at which the first pending retirement was seen.
     let retired_defer: Option<u64> = None;
 
-    // Global launcher hotkey: a bare Super tap (press and release with no
-    // other key in between) toggles the launcher. Super still works as a
-    // modifier for every other combo — only a clean tap fires. See ADR-0022.
-    let super_tap = aegis_core::input::TapDetector::super_tap();
     // A compositor overlay changes the owner of new key presses, not the
     // Wayland keyboard focus. Preserve that owner until the matching release
     // so opening or closing chrome cannot split one physical key sequence.
@@ -691,7 +691,6 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         frame_count,
         retired_defer,
         scanout_taken: false,
-        super_tap,
         keyboard_capture,
         keymap,
         system_status,

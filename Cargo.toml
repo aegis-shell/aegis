@@ -80,6 +80,7 @@ aegis-shell = { path = "crates/aegis-shell" }
 aegis-design = { path = "crates/aegis-design" }
 # Chrome components promoted out of aegis-shell (ADR-0044).
 aegis-dock = { path = "crates/aegis-dock" }
+aegis-prism = { path = "crates/aegis-prism" }
 aegis-ai-workspaces = { path = "crates/aegis-ai-workspaces" }
 aegis-statusbar = { path = "crates/aegis-statusbar" }
 aegis-wallpaper = { path = "crates/aegis-wallpaper" }

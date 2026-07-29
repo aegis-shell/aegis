@@ -9,6 +9,11 @@ project cuts a tagged release.
 
 ### System shortcuts
 
+- The full Applications launcher now uses `Super+A`. A bare `Super` tap and
+  `Super+Return` no longer open it.
+- Added `Super+Space` for Prism, a new compact Spotlight-style application
+  search surface with live filtering, keyboard and pointer selection, and
+  start-or-focus behavior.
 - `Super+Shift+Q` now gracefully quits the current Aegis instance, providing
   a direct exit path during VT/DRM testing. `Super+Shift+Return` remains
   available as an alternate binding.

@@ -8,8 +8,8 @@ application does not also receive the shortcut.
 
 | Shortcut | Effect |
 |----------|--------|
-| `Super` tap | Open or close the application launcher |
-| `Super+Return` | Open or close the application launcher |
+| `Super+A` | Open or close the full application launcher |
+| `Super+Space` | Open or close Prism application search |
 | `Super+O` | Open or close the window and workspace overview |
 | `Super+Q` | Close the focused toplevel |
 | `Super+Tab` | Focus the next toplevel and show the live switcher while `Super` remains held |
@@ -26,9 +26,10 @@ normal shutdown path disables its outputs, releases the seat and Direct
 Rendering Manager (DRM) device, and returns control to the terminal. This is
 the preferred exit path during VT testing.
 
-`Super+Shift+Q` remains available while trusted Aegis chrome owns the
-keyboard. No global shortcut runs while the session is locked or while the
-focused client has active keyboard-shortcut inhibition.
+The launcher and Prism toggles, `Print`, and the quit shortcuts remain
+available while trusted Aegis chrome owns the keyboard. No global shortcut
+runs while the session is locked or while the focused client has active
+keyboard-shortcut inhibition.
 
 ## Direct-Display VT Shortcuts
 

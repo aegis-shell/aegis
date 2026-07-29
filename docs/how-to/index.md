@@ -4,7 +4,7 @@ Task-oriented instructions for operating an aegis session.
 
 ## Guides
 
-- [How to Use the Dock and Launcher](dock-and-launcher.md)
+- [How to Use the Dock, Launcher, and Prism](dock-and-launcher.md)
 - [How to Manage Borderless Windows](window-management.md)
 - [How to Run a Wayland Input Method](wayland-input-method.md)
 - [How to Use AI Workspaces](ai-workspaces.md)

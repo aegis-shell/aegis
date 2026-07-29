@@ -9,9 +9,9 @@ as typed intents to the compositor loop.
 - Host pluggable `Chrome` components in a defined render order.
 - Own the shared chrome contract — `Chrome`, `ChromeEvents`, and the
   `AppCatalog` snapshot — consumed by in-crate components and by the
-  separate `aegis-dock`, `aegis-ai-workspaces`, and `aegis-statusbar`
-  component crates. Persistent settings live in the standalone
-  `aegis-settings` crate.
+  separate `aegis-dock`, `aegis-prism`, `aegis-ai-workspaces`, and
+  `aegis-statusbar` component crates. Persistent settings live in the
+  standalone `aegis-settings` crate.
 - Provide the shared modal-application layout and material primitive used by
   compositor-owned application components.
 - Draw the launcher, notification toasts, Overview, the Realm transfer shelf,
@@ -33,10 +33,9 @@ behavior remains in lens.
 
 Each shell frame draws overlays above client content, reports edge reservations
 for tiled work areas, and tells the event loop whether chrome captures input or
-has an animation in flight. The launcher additionally requests a backdrop blur;
-the executable captures a live quarter-resolution desktop and applies a
-fixed-cost multi-resolution filter while the shell renders the responsive app
-grid above it.
+has an animation in flight. The launcher and Prism request backdrop blur; the
+executable captures a live quarter-resolution desktop and applies a fixed-cost
+multi-resolution filter while the shell renders the catalog surfaces above it.
 Modal chrome suppresses covered components; the launcher opts in as modal and
 persistent chrome such as the dock explicitly remains available during that
 presentation.
@@ -60,7 +59,7 @@ shell.
 ## Related Documentation
 
 - [Architecture](../../docs/explanation/architecture.md)
-- [Dock and launcher operations](../../docs/how-to/dock-and-launcher.md)
+- [Dock, launcher, and Prism operations](../../docs/how-to/dock-and-launcher.md)
 - [Borderless window operations](../../docs/how-to/window-management.md)
 - [AI Workspace operations](../../docs/how-to/ai-workspaces.md)
 - [Chrome component decision](../../docs/adr/0021-chrome-component-trait.md)

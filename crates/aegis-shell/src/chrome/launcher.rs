@@ -793,6 +793,19 @@ impl Chrome for Launcher {
         self.anim_active = true;
     }
 
+    fn launcher_active(&self) -> bool {
+        self.brain.is_open()
+    }
+
+    fn close_launcher(&mut self) {
+        if self.brain.is_open() {
+            self.app_menu.dismiss();
+            self.brain.close();
+            self.visibility = SpringState::default();
+            self.anim_active = false;
+        }
+    }
+
     fn anim_pending(&self) -> bool {
         self.anim_active
             || self.page_shift.abs() > 0.05

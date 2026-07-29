@@ -1,4 +1,4 @@
-# How to Use the Dock and Launcher
+# How to Use the Dock, Launcher, and Prism
 
 Start applications, switch between their windows, and use app-level window
 actions from the compositor chrome.
@@ -33,8 +33,7 @@ policy.
 Use any interaction:
 
 - Click the leading `Applications` tile in the Dock.
-- Tap `Super` without pressing another key or pointer button.
-- Press the default `Super+Return` key binding.
+- Press the default `Super+A` key binding.
 
 Type to filter applications. Use the arrow keys to move through the grid,
 press `Enter` to activate the selected application, or click an application
@@ -42,12 +41,23 @@ cell. Scroll or swipe to move between result pages. Press `Escape` to close
 the launcher.
 
 See the [Configuration Reference](../reference/config.md#default-key-bindings)
-to change the configurable launcher binding. The bare `Super` tap is a
-separate built-in gesture.
+to change the configurable launcher binding.
+
+## Search with Prism
+
+1. Press `Super+Space`.
+2. Type part of an application name, description, desktop ID, or keyword.
+3. Use `Up` and `Down` to select a result.
+4. Press `Enter` to start the application or focus its running window.
+
+Prism shows a compact result list without expanding the full application
+library. Press `Escape`, press `Super+Space` again, or click outside the panel
+to close it. Opening Prism closes the full launcher, and opening the launcher
+closes Prism.
 
 ## Start or Focus an Application
 
-1. Left-click an application in the Dock or launcher.
+1. Select an application in the Dock, launcher, or Prism.
 2. If the application has a running window, wait for aegis to focus and raise
    that window.
 3. If the application is not running, wait for aegis to start it.
