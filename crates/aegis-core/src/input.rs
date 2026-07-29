@@ -417,6 +417,8 @@ pub const XKB_KEY_Return: u32 = 0xff0d;
 pub const XKB_KEY_BackSpace: u32 = 0xff08;
 /// XKB `Tab`.
 pub const XKB_KEY_Tab: u32 = 0xff09;
+/// XKB `ISO_Left_Tab`, commonly resolved for Shift+Tab.
+pub const XKB_KEY_ISO_Left_Tab: u32 = 0xfe20;
 /// XKB up arrow.
 pub const XKB_KEY_Up: u32 = 0xff52;
 /// XKB left arrow.

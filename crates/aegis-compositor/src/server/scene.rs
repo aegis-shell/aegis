@@ -555,6 +555,18 @@ impl Server {
     /// Overlay frames with optional client-cursor inclusion. Input-method
     /// popups and drag icons remain present when the cursor is excluded.
     pub fn overlay_frames_with_cursor(&self, include_cursor: bool) -> Vec<SurfacePixels<'_>> {
+        self.overlay_frames_with_cursor_at(include_cursor, None)
+    }
+
+    /// Overlay frames with an optional logical cursor-position override.
+    /// Screenshot capture uses the override sampled with its request so a
+    /// later pointer event cannot move a client-provided cursor surface in
+    /// the captured frame.
+    pub fn overlay_frames_with_cursor_at(
+        &self,
+        include_cursor: bool,
+        cursor_position: Option<(f32, f32)>,
+    ) -> Vec<SurfacePixels<'_>> {
         let drag_icon = self
             .state
             .drag
@@ -579,6 +591,19 @@ impl Server {
                 if !surface.mapped || surface.content_is_dmabuf || surface.pixels.is_empty() {
                     return None;
                 }
+                let position = if resource == self.state.cursor_surface {
+                    cursor_position
+                        .map(|position| {
+                            cursor_surface_position(
+                                position,
+                                self.state.cursor_hotspot,
+                                surface.attach_offset,
+                            )
+                        })
+                        .unwrap_or(surface.position)
+                } else {
+                    surface.position
+                };
                 Some(SurfacePixels {
                     window: None,
                     id: surface.resource as usize,
@@ -587,7 +612,7 @@ impl Server {
                     generation: surface.generation,
                     pixels: &surface.pixels,
                     geometry: aegis_core::SurfaceGeometry {
-                        position: surface.position,
+                        position,
                         transform: surface.buffer_transform,
                         buffer_scale: surface.buffer_scale,
                         viewport_src: surface.viewport_src,
@@ -607,6 +632,17 @@ impl Server {
 
     /// dma-buf overlay frames with optional client-cursor inclusion.
     pub fn overlay_dmabuf_frames_with_cursor(&self, include_cursor: bool) -> Vec<SurfaceDmabuf> {
+        self.overlay_dmabuf_frames_with_cursor_at(include_cursor, None)
+    }
+
+    /// dma-buf overlay frames with an optional logical cursor-position
+    /// override. This is the dma-buf counterpart of
+    /// [`Self::overlay_frames_with_cursor_at`].
+    pub fn overlay_dmabuf_frames_with_cursor_at(
+        &self,
+        include_cursor: bool,
+        cursor_position: Option<(f32, f32)>,
+    ) -> Vec<SurfaceDmabuf> {
         let drag_icon = self
             .state
             .drag
@@ -632,6 +668,19 @@ impl Server {
                     return None;
                 }
                 let buffer = surface.dmabuf.as_ref()?;
+                let position = if resource == self.state.cursor_surface {
+                    cursor_position
+                        .map(|position| {
+                            cursor_surface_position(
+                                position,
+                                self.state.cursor_hotspot,
+                                surface.attach_offset,
+                            )
+                        })
+                        .unwrap_or(surface.position)
+                } else {
+                    surface.position
+                };
                 Some(SurfaceDmabuf {
                     window: None,
                     id: surface.resource as usize,
@@ -646,7 +695,7 @@ impl Server {
                     stride: buffer.stride,
                     acquire_fence: buffer.acquire_fence,
                     geometry: aegis_core::SurfaceGeometry {
-                        position: surface.position,
+                        position,
                         transform: surface.buffer_transform,
                         buffer_scale: surface.buffer_scale,
                         viewport_src: surface.viewport_src,
@@ -1249,5 +1298,30 @@ unsafe fn append_surface_tree_frame_order(
                 append_surface_tree_frame_order(child, order, depth + 1);
             }
         }
+    }
+}
+
+fn cursor_surface_position(
+    pointer: (f32, f32),
+    hotspot: aegis_core::Point,
+    attach_offset: aegis_core::Point,
+) -> aegis_core::Point {
+    aegis_core::Point {
+        x: pointer.0.round() as i32 - hotspot.x + attach_offset.x,
+        y: pointer.1.round() as i32 - hotspot.y + attach_offset.y,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cursor_surface_position;
+    use aegis_core::Point;
+
+    #[test]
+    fn cursor_surface_override_preserves_trigger_position_and_hotspot() {
+        assert_eq!(
+            cursor_surface_position((120.6, 79.4), Point { x: 7, y: 11 }, Point { x: 2, y: -3 },),
+            Point { x: 116, y: 65 },
+        );
     }
 }

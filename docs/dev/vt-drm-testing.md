@@ -81,8 +81,11 @@ Request a normal shutdown from a terminal inside aegis:
 ./target/release/aegis-ctl quit
 ```
 
-You can also press the default `Super+Shift+Return` binding. aegis disables its
-outputs and releases the seat and DRM device before returning to the TTY.
+You can also press `Super+Shift+Q` (or the alternate
+`Super+Shift+Return` binding). Aegis disables its outputs and releases the
+seat and DRM device before returning to the TTY. See
+[System Shortcuts](../reference/keyboard-shortcuts.md) for the complete
+shortcut reference.
 
 ## Notes
 

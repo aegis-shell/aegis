@@ -8,7 +8,7 @@ pub(super) struct FrameState {
     /// Any host input (physical, gesture, or text) or synthetic input was
     /// applied this iteration; conservatively forces a full-damage frame.
     pub(super) had_input: bool,
-    pub(super) pending_screenshots: Vec<(aegis_ipc::Command, u64, aegis_ipc::Origin)>,
+    pub(super) pending_screenshots: Vec<PendingScreenshot>,
 }
 
 fn agent_activities_from_applied_input(
@@ -68,6 +68,37 @@ fn agent_activities_from_applied_input(
 }
 
 impl CompositorRuntime {
+    /// Snapshot the physical-seat cursor state at the current logical
+    /// position. Screenshot requests carry this value through to readback so
+    /// later pointer motion cannot change the cursor that is saved.
+    pub(super) fn capture_cursor_state(&self) -> CaptureCursorState {
+        self.capture_cursor_state_at(self.input_acc.cursor)
+    }
+
+    fn capture_cursor_state_at(&self, position: (f32, f32)) -> CaptureCursorState {
+        let chrome_cursor = (!self.server.session_locked())
+            .then(|| {
+                self.shell
+                    .cursor_shape_at(position.0, position.1, self.input_acc.display_size)
+            })
+            .flatten();
+        let compositor_cursor = self.server.compositor_cursor_shape();
+        let owned_cursor = if self.server.interactive().is_some() {
+            compositor_cursor
+        } else {
+            chrome_cursor
+                .map(|shape| shape as u32)
+                .or(compositor_cursor)
+        };
+        let hidden = owned_cursor.is_none() && self.server.cursor_hidden();
+        CaptureCursorState {
+            position,
+            shape: owned_cursor.unwrap_or_else(|| self.server.cursor_shape().max(1)),
+            hidden,
+            client_surface: hidden && self.server.client_cursor_surface_active(),
+        }
+    }
+
     pub(super) fn process_input(
         &mut self,
         work: IterationWork,
@@ -82,6 +113,7 @@ impl CompositorRuntime {
         let session_locked = self.server.session_locked();
         if session_locked {
             self.shell.finish_window_switcher();
+            self.server.finish_window_switcher();
         }
         let realm_revision = self.server.realm_snapshot().revision;
         for (realm, damage) in self.server.take_realm_damage() {
@@ -186,6 +218,8 @@ impl CompositorRuntime {
         // those two events.
         let keyboard_captured = !session_locked && self.shell.captures_keyboard();
         let mut captured_actions = Vec::new();
+        let mut client_action_candidates = Vec::new();
+        let mut event_cursor = pointer_before;
         let mut chrome_owned_key_events = vec![false; events.len()];
         let mut prepared_key_events = vec![None; events.len()];
         if !events.is_empty() {
@@ -193,6 +227,7 @@ impl CompositorRuntime {
                 use aegis_core::input::InputEvent::*;
                 match *ev {
                     PointerMotion { x, y } => {
+                        event_cursor = (x, y);
                         input.set_cursor(x, y);
                         self.input_acc.cursor = (x, y);
                     }
@@ -224,6 +259,7 @@ impl CompositorRuntime {
                         }
                     }
                     PointerLeave => {
+                        event_cursor = (-1.0, -1.0);
                         input.set_cursor(-1.0, -1.0);
                         self.input_acc.cursor = (-1.0, -1.0);
                     }
@@ -236,6 +272,19 @@ impl CompositorRuntime {
                         let route = self.keyboard_capture.route(code, state, keyboard_captured);
                         let chrome_owned = route == aegis_core::input::KeyRoute::Chrome;
                         chrome_owned_key_events[event_index] = chrome_owned;
+                        if !chrome_owned
+                            && state.is_pressed()
+                            && let Some(key) = prepared.and_then(|prepared| prepared.key_char())
+                            && let Some(action) = self.keymap.match_key(key.mods, key.keysym)
+                        {
+                            // The compositor confirms below whether shortcut
+                            // inhibition permits this candidate. Keeping the
+                            // event-local pointer here lets an accepted
+                            // screenshot binding retain its exact trigger
+                            // coordinates even if this input batch contains a
+                            // later motion event.
+                            client_action_candidates.push((action, event_cursor));
+                        }
 
                         // The Super-tap detector observes both routes. It never
                         // changes which owner receives the matching release.
@@ -256,7 +305,7 @@ impl CompositorRuntime {
                                     .keymap
                                     .match_key_during_keyboard_capture(kc.mods, kc.keysym)
                                 {
-                                    captured_actions.push(action);
+                                    captured_actions.push((action, event_cursor));
                                 } else {
                                     self.shell.key_char(kc);
                                 }
@@ -422,18 +471,31 @@ impl CompositorRuntime {
                     _ => forwarded.push(ev),
                 }
             }
+            let forwarded_actions =
+                self.server
+                    .forward_prepared_input(&forwarded, &forwarded_keys, &self.keymap);
             let mut actions = captured_actions;
-            actions.extend(self.server.forward_prepared_input(
-                &forwarded,
-                &forwarded_keys,
-                &self.keymap,
-            ));
+            let mut candidate_at = 0;
+            for action in forwarded_actions {
+                let position = client_action_candidates[candidate_at..]
+                    .iter()
+                    .position(|(candidate, _)| *candidate == action)
+                    .map(|offset| {
+                        candidate_at += offset + 1;
+                        client_action_candidates[candidate_at - 1].1
+                    })
+                    .unwrap_or(self.input_acc.cursor);
+                actions.push((action, position));
+            }
             let super_held = self
                 .server
                 .depressed_modifiers()
                 .has(aegis_core::input::Mods::SUPER);
-            if self.shell.window_switcher_active() && !super_held {
+            if (self.shell.window_switcher_active() || self.server.window_switcher_active())
+                && !super_held
+            {
                 self.shell.finish_window_switcher();
+                self.server.finish_window_switcher();
             }
             // Ctrl+Alt+Fn: the compositor performs console VT switches itself
             // through libseat (the kernel never sees the key once libinput
@@ -444,7 +506,7 @@ impl CompositorRuntime {
             }
             // Dispatch ordinary global bindings plus the explicitly
             // modal-safe bindings recovered above while chrome had capture.
-            for action in actions {
+            for (action, action_cursor) in actions {
                 use aegis_core::keybind::Action;
                 let ts = self.start.elapsed().as_millis() as u64;
                 let origin = aegis_ipc::Origin::Keybinding;
@@ -469,6 +531,7 @@ impl CompositorRuntime {
                     Action::CycleFocus => {
                         if super_held {
                             self.shell.start_window_switcher();
+                            self.server.start_window_switcher();
                         }
                         let cmd = aegis_ipc::Command::Cycle { forward: true };
                         apply_command_and_journal(
@@ -485,6 +548,7 @@ impl CompositorRuntime {
                     Action::CycleFocusBack => {
                         if super_held {
                             self.shell.start_window_switcher();
+                            self.server.start_window_switcher();
                         }
                         let cmd = aegis_ipc::Command::Cycle { forward: false };
                         apply_command_and_journal(
@@ -569,7 +633,8 @@ impl CompositorRuntime {
                             // Open through the freeze session: the next frame
                             // snapshots the whole trigger frame (chrome
                             // included) and the selector opens on top of it.
-                            self.screenshot_freeze.request_open();
+                            let cursor = self.capture_cursor_state_at(action_cursor);
+                            self.screenshot_freeze.request_open(Some(cursor));
                         }
                     }
                 }
@@ -760,25 +825,9 @@ impl CompositorRuntime {
         // what gives the launcher's search field a text caret and interactive
         // HUD/dock controls a pointing hand; leaving chrome restores the
         // focused client's requested cursor (including hidden cursors).
-        let chrome_cursor = (!session_locked)
-            .then(|| {
-                self.shell.cursor_shape_at(
-                    self.input_acc.cursor.0,
-                    self.input_acc.cursor.1,
-                    self.input_acc.display_size,
-                )
-            })
-            .flatten();
-        let compositor_cursor = self.server.compositor_cursor_shape();
-        let owned_cursor = if self.server.interactive().is_some() {
-            compositor_cursor
-        } else {
-            chrome_cursor
-                .map(|shape| shape as u32)
-                .or(compositor_cursor)
-        };
-        let cursor_hidden = owned_cursor.is_none() && self.server.cursor_hidden();
-        let cursor_shape = owned_cursor.unwrap_or_else(|| self.server.cursor_shape().max(1));
+        let current_cursor = self.capture_cursor_state();
+        let cursor_hidden = current_cursor.hidden;
+        let cursor_shape = current_cursor.shape;
         // With a KMS cursor plane, plain pointer motion over client content
         // changes no compositor pixels. Let presentation issue a cursor-only
         // atomic commit instead of turning every mouse report into a full

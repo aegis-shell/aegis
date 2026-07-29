@@ -27,7 +27,7 @@ A malformed or schema-incompatible existing file is left untouched.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `schema_version` | integer | required | Schema major version. Must be `1`. A different value is rejected with a diagnostic; bumping it is a documented migration event. |
-| `[[keybind]]` | array of tables | built-in defaults | Global key bindings. See [Key Bindings](#key-bindings). |
+| `[[keybind]]` | array of tables | built-in defaults | Global key bindings. See [Key Bindings](#key-bindings) and [System Shortcuts](keyboard-shortcuts.md). |
 | `[[window_rule]]` | array of tables | none | Placement rules applied to newly-mapped toplevels. See [Window Rules](#window-rules). |
 | `[layout]` | table | gaps `8`, master_ratio `0.5` | Tiling policy parameters. See [Layout](#layout). |
 | `[dock]` | table | automatic pins | Applications pinned to the dock. See [Dock](#dock). |
@@ -473,12 +473,14 @@ Letters (`a`–`z`, lowercased), digits (`0`–`9`), and the common controls:
 | Name | Aliases | Effect |
 |------|---------|--------|
 | `launcher` | `togglelauncher`, `apps` | Open or close the application launcher |
+| `overview` | `toggleoverview` | Open or close the window and workspace overview |
 | `close` | `closefocused` | Close the focused toplevel |
 | `cycle` | `next` | Move focus to the next toplevel; while `Super` remains held, show the live preview strip |
 | `prev` | `previous`, `cycleback` | Move focus to the previous toplevel; while `Super` remains held, show the live preview strip |
 | `workspace_next` | `next_workspace`, `ws_next` | Switch to the next workspace |
 | `workspace_prev` | `prev_workspace`, `ws_prev` | Switch to the previous workspace |
 | `tiling` | `toggle_tiling` | Toggle tiling on the current workspace |
+| `screenshot` | `snapshot`, `prtsc` | Open the interactive screenshot region selector |
 | `quit` | `exit` | Quit the compositor |
 
 A matched binding is consumed before delivery to the focused client, so the
@@ -494,14 +496,19 @@ configured:
 | `Super+Tab` | `cycle` |
 | `Super+Shift+Tab` | `prev` |
 | `Super+Return` | `launcher` |
+| `Super+O` | `overview` |
 | `Super+Q` | `close` |
 | `Super+Right` | `workspace_next` |
 | `Super+Left` | `workspace_prev` |
 | `Super+T` | `tiling` |
+| `Print` | `screenshot` |
+| `Super+Shift+Q` | `quit` |
 | `Super+Shift+Return` | `quit` |
 
 A bare Super tap (press and release with no other key in between) also
 toggles the launcher; it is detected separately and is not a `[[keybind]]`.
+See [System Shortcuts](keyboard-shortcuts.md) for the complete default
+keyboard and pointer shortcut reference.
 
 ## Example
 

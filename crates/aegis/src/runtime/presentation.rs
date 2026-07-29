@@ -5,6 +5,14 @@ pub(super) enum PresentationOutcome {
     Retry,
 }
 
+struct FrameCapture {
+    crop: Option<aegis_core::Rect>,
+    target: CaptureTarget,
+    /// Cursor state sampled when a saved screenshot was requested. Output
+    /// capture, streams, and picker readbacks deliberately leave this empty.
+    cursor: Option<CaptureCursorState>,
+}
+
 impl CompositorRuntime {
     pub(super) fn render_and_present(
         &mut self,
@@ -81,7 +89,11 @@ impl CompositorRuntime {
             .is_none_or(|config| config.screenshot.include_cursor);
         let bound_saved_screenshot = frame_capture
             .as_ref()
-            .is_some_and(|(_, target)| matches!(target, CaptureTarget::Screenshot { .. }));
+            .is_some_and(|capture| matches!(&capture.target, CaptureTarget::Screenshot { .. }));
+        let bound_screenshot_cursor = frame_capture
+            .as_ref()
+            .filter(|capture| matches!(&capture.target, CaptureTarget::Screenshot { .. }))
+            .and_then(|capture| capture.cursor);
         // Print-key screenshots keep the freeze armed through confirmation.
         // Portal pick sessions also use the freeze, but retain their own
         // cursor-free capture contract and are not governed by this setting.
@@ -89,7 +101,10 @@ impl CompositorRuntime {
         let frozen_screenshot_cursor = human_screenshot_session
             .then(|| self.screenshot_freeze.cursor().cloned())
             .flatten();
-        let cursorless_saved_frame = !screenshot_include_cursor && bound_saved_screenshot;
+        let frozen_trigger_cursor = human_screenshot_session
+            .then(|| self.screenshot_freeze.trigger_cursor())
+            .flatten();
+        let failed_human_freeze = human_screenshot_session && self.screenshot_freeze.failed;
         let mut capturing_frozen_screenshot = false;
         let mut damage = self.assess_frame_damage(DamageAssessment {
             had_input,
@@ -131,7 +146,10 @@ impl CompositorRuntime {
                     damage = FrameDamage::Full;
                 }
                 Err(HostError::Drm(
-                    DrmError::FlipTimeout | DrmError::Inactive | DrmError::Reconfigured,
+                    DrmError::Busy
+                    | DrmError::FlipTimeout
+                    | DrmError::Inactive
+                    | DrmError::Reconfigured,
                 )) => {
                     self.force_full_redraw = true;
                     return Ok(PresentationOutcome::Retry);
@@ -227,6 +245,18 @@ impl CompositorRuntime {
                         // scissor.
                         damage = FrameDamage::Full;
                     }
+                    if matches!(
+                        error,
+                        HostError::Drm(
+                            DrmError::Busy
+                                | DrmError::FlipTimeout
+                                | DrmError::Inactive
+                                | DrmError::Reconfigured
+                        )
+                    ) {
+                        self.force_full_redraw = true;
+                        return Ok(PresentationOutcome::Retry);
+                    }
                     if !matches!(error, HostError::Drm(DrmError::ScanoutUnsupported)) {
                         log::warn!(
                             "{}: direct scanout failed; compositing instead: {error}",
@@ -264,7 +294,12 @@ impl CompositorRuntime {
                 // Overview mode (M9) swaps the whole client scene for the
                 // thumbnail grid and skips the launcher-blur capture path.
                 let overview_active = self.shell.overview_active();
-                let window_switcher_active = self.shell.window_switcher_active();
+                let switcher_windows = self.server.windows();
+                let window_switcher = self.shell.prepare_window_switcher(
+                    &input,
+                    aegis_core::Rect::new(0, 0, logical_size.0 as i32, logical_size.1 as i32),
+                    &switcher_windows,
+                );
                 // A screenshot freeze session replaces the whole frame with
                 // the trigger-frame snapshot: the capture frame renders the
                 // desktop scene *and* the chrome into an offscreen target
@@ -293,7 +328,8 @@ impl CompositorRuntime {
                 let (capture_origin, capture_extent) =
                     capture_bounds.unwrap_or(((0, 0), physical_size));
                 let backdrop_plan =
-                    if overview_active || window_switcher_active || self.screenshot_freeze.armed {
+                    if overview_active || window_switcher.is_some() || self.screenshot_freeze.armed
+                    {
                         BackdropPlan::Direct
                     } else {
                         self.launcher_backdrop.prepare(
@@ -377,7 +413,7 @@ impl CompositorRuntime {
                             &self.server,
                             render_geometry,
                             overview_active,
-                            window_switcher_active,
+                            window_switcher.as_ref(),
                         )?;
                         if let Some(image) = blurred {
                             for region in &backdrop_regions {
@@ -505,7 +541,7 @@ impl CompositorRuntime {
                                     &self.server,
                                     render_geometry,
                                     overview_active,
-                                    window_switcher_active,
+                                    window_switcher.as_ref(),
                                 )?;
                             }
                         } else {
@@ -525,7 +561,7 @@ impl CompositorRuntime {
                                 &self.server,
                                 render_geometry,
                                 overview_active,
-                                window_switcher_active,
+                                window_switcher.as_ref(),
                             )?;
                         }
                     }
@@ -641,10 +677,29 @@ impl CompositorRuntime {
                     && !self.shell.screenshot_active()
                     && !self.screenshot_freeze.active()
                 {
-                    let include_live_cursor = if freeze_capturing {
-                        human_screenshot_session && screenshot_include_cursor
+                    let captured_cursor = if freeze_capturing || failed_human_freeze {
+                        frozen_trigger_cursor
+                    } else if bound_saved_screenshot {
+                        bound_screenshot_cursor
                     } else {
-                        !cursorless_saved_frame
+                        None
+                    };
+                    let (include_live_cursor, cursor_position) = if freeze_capturing
+                        && !human_screenshot_session
+                    {
+                        // Portal pick sessions are cursor-free.
+                        (false, None)
+                    } else if freeze_capturing || failed_human_freeze || bound_saved_screenshot {
+                        let client_cursor = screenshot_include_cursor
+                            && captured_cursor.is_some_and(|cursor| cursor.client_surface);
+                        (
+                            client_cursor,
+                            client_cursor
+                                .then(|| captured_cursor.map(|cursor| cursor.position))
+                                .flatten(),
+                        )
+                    } else {
+                        (true, None)
                     };
                     draw_client_overlays(
                         &self.canvas,
@@ -653,6 +708,7 @@ impl CompositorRuntime {
                         &self.server,
                         scale,
                         include_live_cursor,
+                        cursor_position,
                     );
                 }
                 // Finish the freeze snapshot pass: the chrome above rendered
@@ -663,17 +719,18 @@ impl CompositorRuntime {
                 // live scene instead.
                 if freeze_capturing && !self.screenshot_freeze.failed {
                     self.canvas.end_target();
-                    let frozen_cursor = if human_screenshot_session
-                        && screenshot_include_cursor
-                        && !cursor_hidden
-                    {
-                        capture_cursor_snapshot(
-                            &self.device,
-                            &mut self.cursor_cache,
-                            self.input_acc.cursor,
-                            cursor_shape,
-                            scale,
-                        )
+                    let frozen_cursor = if human_screenshot_session && screenshot_include_cursor {
+                        frozen_trigger_cursor
+                            .filter(|cursor| !cursor.hidden && !cursor.client_surface)
+                            .and_then(|cursor| {
+                                capture_cursor_snapshot(
+                                    &self.device,
+                                    &mut self.cursor_cache,
+                                    cursor.position,
+                                    cursor.shape,
+                                    scale,
+                                )
+                            })
                     } else {
                         None
                     };
@@ -729,15 +786,16 @@ impl CompositorRuntime {
                         region: Some(region),
                     };
                     if self.capture_worker.reserve() {
-                        frame_capture = Some((
-                            Some(region),
-                            CaptureTarget::Screenshot {
+                        frame_capture = Some(FrameCapture {
+                            crop: Some(region),
+                            target: CaptureTarget::Screenshot {
                                 path,
                                 command,
                                 ts_mono_ms: ts,
                                 origin: aegis_ipc::Origin::Chrome,
                             },
-                        ));
+                            cursor: self.screenshot_freeze.trigger_cursor(),
+                        });
                     } else {
                         journal_effect_and_broadcast(
                             &self.journal,
@@ -758,13 +816,14 @@ impl CompositorRuntime {
                     && let Some(pick) = self.pending_pick.take()
                 {
                     if pick.kind == aegis_ipc::PickKind::Pixel && self.capture_worker.reserve() {
-                        frame_capture = Some((
-                            Some(aegis_core::Rect::new(point.x, point.y, 1, 1)),
-                            CaptureTarget::Pixel {
+                        frame_capture = Some(FrameCapture {
+                            crop: Some(aegis_core::Rect::new(point.x, point.y, 1, 1)),
+                            target: CaptureTarget::Pixel {
                                 point,
                                 reply: pick.reply,
                             },
-                        ));
+                            cursor: None,
+                        });
                     } else {
                         let _ = pick
                             .reply
@@ -825,6 +884,23 @@ impl CompositorRuntime {
                 // chokepoint (ADR-0033) so the journal records them.
                 let ts = self.start.elapsed().as_millis() as u64;
                 let origin = aegis_ipc::Origin::Chrome;
+                if let Some(id) = self.shell.take_window_switcher_pick() {
+                    self.server.finish_window_switcher();
+                    self.shell.finish_window_switcher();
+                    apply_chrome_window_command(
+                        &mut self.server,
+                        &self.notif_queue,
+                        &mut self.quit_requested,
+                        aegis_ipc::Command::Focus { id },
+                        &self.ipc,
+                        &self.journal,
+                        ts,
+                    );
+                }
+                if self.shell.take_window_switcher_cancel() {
+                    self.server.finish_window_switcher();
+                    self.shell.finish_window_switcher();
+                }
                 if let Some(id) = self.shell.take_clicked_window() {
                     apply_chrome_window_command(
                         &mut self.server,
@@ -913,7 +989,8 @@ impl CompositorRuntime {
                     // The selector opens through the freeze session so the
                     // trigger frame (chrome included) is snapshotted first.
                     if app == aegis_core::app::BuiltInApplication::ScreenshotSelector {
-                        self.screenshot_freeze.request_open();
+                        let cursor = self.capture_cursor_state();
+                        self.screenshot_freeze.request_open(Some(cursor));
                     } else {
                         self.shell.open_builtin(app);
                     }
@@ -1106,35 +1183,59 @@ impl CompositorRuntime {
                         Err(e) => log::warn!("launcher: failed to spawn {}: {e}", entry.id),
                     }
                 }
-                if self.host.uses_software_cursor()
-                    && !cursor_hidden
-                    && !cursorless_saved_frame
-                    && !capturing_frozen_screenshot
-                {
-                    draw_software_cursor(
-                        &self.canvas,
-                        &self.device,
-                        &mut self.cursor_cache,
-                        self.input_acc.cursor,
-                        cursor_shape,
-                        scale,
-                    );
+                if self.host.uses_software_cursor() && !capturing_frozen_screenshot {
+                    let saved_cursor = frame_capture
+                        .as_ref()
+                        .filter(|capture| {
+                            matches!(&capture.target, CaptureTarget::Screenshot { .. })
+                        })
+                        .and_then(|capture| capture.cursor);
+                    if let Some(cursor) = saved_cursor {
+                        if screenshot_include_cursor && !cursor.hidden && !cursor.client_surface {
+                            draw_software_cursor(
+                                &self.canvas,
+                                &self.device,
+                                &mut self.cursor_cache,
+                                cursor.position,
+                                cursor.shape,
+                                scale,
+                            );
+                        }
+                    } else if !cursor_hidden {
+                        draw_software_cursor(
+                            &self.canvas,
+                            &self.device,
+                            &mut self.cursor_cache,
+                            self.input_acc.cursor,
+                            cursor_shape,
+                            scale,
+                        );
+                    }
                 }
                 self.canvas.end();
-                let mut capture_for_present = frame_capture.take().and_then(|(crop, target)| {
+                let mut capture_for_present = frame_capture.take().and_then(|capture| {
+                    let FrameCapture {
+                        crop,
+                        target,
+                        cursor: trigger_cursor,
+                    } = capture;
                     let cursor = if screenshot_include_cursor
                         && matches!(&target, CaptureTarget::Screenshot { .. })
                     {
                         if capturing_frozen_screenshot {
                             frozen_screenshot_cursor.clone()
-                        } else if !self.host.uses_software_cursor() && !cursor_hidden {
-                            capture_cursor_snapshot(
-                                &self.device,
-                                &mut self.cursor_cache,
-                                self.input_acc.cursor,
-                                cursor_shape,
-                                scale,
-                            )
+                        } else if !self.host.uses_software_cursor() {
+                            trigger_cursor
+                                .filter(|cursor| !cursor.hidden && !cursor.client_surface)
+                                .and_then(|cursor| {
+                                    capture_cursor_snapshot(
+                                        &self.device,
+                                        &mut self.cursor_cache,
+                                        cursor.position,
+                                        cursor.shape,
+                                        scale,
+                                    )
+                                })
                         } else {
                             None
                         }
@@ -1206,16 +1307,24 @@ impl CompositorRuntime {
                             if matches!(
                                 error,
                                 HostError::Drm(
-                                    DrmError::FlipTimeout
+                                    DrmError::Busy
+                                        | DrmError::FlipTimeout
                                         | DrmError::Inactive
                                         | DrmError::Reconfigured
                                         | DrmError::CursorFallback
                                 )
                             ) {
-                                log::warn!(
-                                    "{}: transient present failure; skipping frame: {error}",
-                                    self.host.name()
-                                );
+                                if matches!(&error, HostError::Drm(DrmError::Busy)) {
+                                    log::debug!(
+                                        "{}: previous atomic commit still busy; coalescing frame",
+                                        self.host.name()
+                                    );
+                                } else {
+                                    log::warn!(
+                                        "{}: transient present failure; skipping frame: {error}",
+                                        self.host.name()
+                                    );
+                                }
                                 // Damage/revision baselines were assessed
                                 // before this frame was rendered. They must
                                 // not let the retry skip content that never
@@ -1282,10 +1391,10 @@ impl CompositorRuntime {
             Err(error) if error.0 == flux_sys::flux_result::FLUX_ERROR_TIMEOUT => {
                 // A capture bound by the pre-pass never got its frame; refuse
                 // it so the worker lane is released for the next iteration.
-                if let Some((_, target)) = frame_capture.take() {
+                if let Some(capture) = frame_capture.take() {
                     refuse_capture_target(
                         &self.capture_worker,
-                        target,
+                        capture.target,
                         "output frame timed out before capture".to_owned(),
                         &self.journal,
                         &self.ipc,
@@ -1300,10 +1409,10 @@ impl CompositorRuntime {
                 return Ok(PresentationOutcome::Retry);
             }
             Err(_) => {
-                if let Some((_, target)) = frame_capture.take() {
+                if let Some(capture) = frame_capture.take() {
                     refuse_capture_target(
                         &self.capture_worker,
-                        target,
+                        capture.target,
                         "output changed before capture".to_owned(),
                         &self.journal,
                         &self.ipc,
@@ -1362,9 +1471,9 @@ impl CompositorRuntime {
     fn prepare_frame_capture(
         &mut self,
         session_locked: bool,
-        pending_screenshots: &mut Vec<(aegis_ipc::Command, u64, aegis_ipc::Origin)>,
-    ) -> Option<(Option<aegis_core::Rect>, CaptureTarget)> {
-        let mut frame_capture: Option<(Option<aegis_core::Rect>, CaptureTarget)> = None;
+        pending_screenshots: &mut Vec<PendingScreenshot>,
+    ) -> Option<FrameCapture> {
+        let mut frame_capture = None;
         for req in self.capture_rx.try_iter() {
             if session_locked || !self.host.is_active() {
                 let _ = req
@@ -1375,10 +1484,20 @@ impl CompositorRuntime {
                     .reply
                     .send(Err("another capture is still being processed".to_owned()));
             } else {
-                frame_capture = Some((req.region, CaptureTarget::Reply { reply: req.reply }));
+                frame_capture = Some(FrameCapture {
+                    crop: req.region,
+                    target: CaptureTarget::Reply { reply: req.reply },
+                    cursor: None,
+                });
             }
         }
-        for (cmd, ts, origin) in pending_screenshots.drain(..) {
+        for request in pending_screenshots.drain(..) {
+            let PendingScreenshot {
+                command: cmd,
+                ts_mono_ms: ts,
+                origin,
+                cursor,
+            } = request;
             let aegis_ipc::Command::Screenshot { path, region } = &cmd else {
                 continue;
             };
@@ -1405,15 +1524,16 @@ impl CompositorRuntime {
                     },
                 );
             } else {
-                frame_capture = Some((
-                    *region,
-                    CaptureTarget::Screenshot {
+                frame_capture = Some(FrameCapture {
+                    crop: *region,
+                    target: CaptureTarget::Screenshot {
                         path: path.clone(),
                         command: cmd,
                         ts_mono_ms: ts,
                         origin,
                     },
-                ));
+                    cursor: Some(cursor),
+                });
             }
         }
         // Stream fan-out (ADR-0052): when no one-shot capture claimed this
@@ -1429,7 +1549,11 @@ impl CompositorRuntime {
             && !self.capture_worker.is_busy()
             && !self.streams.due_ids(std::time::Instant::now()).is_empty()
         {
-            frame_capture = Some((None, CaptureTarget::Stream));
+            frame_capture = Some(FrameCapture {
+                crop: None,
+                target: CaptureTarget::Stream,
+                cursor: None,
+            });
         }
         frame_capture
     }

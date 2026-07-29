@@ -472,6 +472,7 @@ mod tests {
         // main.rs treats exactly these as skip-the-frame conditions; pinning
         // the shape keeps a future enum edit from silently making them fatal.
         for error in [
+            DrmError::Busy,
             DrmError::FlipTimeout,
             DrmError::Inactive,
             DrmError::Reconfigured,
@@ -479,7 +480,12 @@ mod tests {
             let host_error = HostError::from(error);
             assert!(matches!(
                 host_error,
-                HostError::Drm(DrmError::FlipTimeout | DrmError::Inactive | DrmError::Reconfigured)
+                HostError::Drm(
+                    DrmError::Busy
+                        | DrmError::FlipTimeout
+                        | DrmError::Inactive
+                        | DrmError::Reconfigured
+                )
             ));
         }
     }

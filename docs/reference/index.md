@@ -10,6 +10,7 @@ see [Explanation](../explanation/index.md).
 | Page | Purpose |
 |------|---------|
 | [Configuration](config.md) | The `config.toml` schema: fields, key names, modifier names, action names, and defaults |
+| [System Shortcuts](keyboard-shortcuts.md) | Default global keyboard, pointer, quit, and VT controls |
 | [Command-Line Reference](cli.md) | `aegis-ctl` query, control, event-stream, JSON, and exit-status reference |
 | [IPC Reference](ipc.md) | Protocol capabilities, queries, commands, geometry, synthetic input, and scope behavior |
 | [System Settings](settings.md) | Standalone app invocation, module routes, backend availability, and apply behavior |

@@ -116,9 +116,6 @@ impl Chrome for Dock {
             self.collapse_pending = false;
         }
 
-        let hidden_y = Self::hidden_panel_y(disp.y);
-        let panel_y = hidden_y + (rest_panel_y - hidden_y) * self.autohide_reveal;
-
         // ---- contiguous reflow layout -------------------------------------
         // Unlike a fixed-rest dock, the bar widens to fit the magnified tiles
         // and neighbouring tiles spread apart around the cursor — the classic
@@ -204,13 +201,38 @@ impl Chrome for Dock {
         }
         let centre = |i: usize| centres[i];
 
-        // Bottom of every tile (icons are bottom-anchored and grow upward).
-        let icon_bottom = panel_y + DOCK_PANEL_HEIGHT - DOCK_BASELINE_INSET;
+        let surface_progress = if effective_autohide {
+            Self::collapse_surface_progress(self.autohide_reveal)
+        } else {
+            1.0
+        };
+        let content_progress = if effective_autohide {
+            Self::collapse_content_progress(self.autohide_reveal)
+        } else {
+            1.0
+        };
+        let panel_rect = if effective_autohide {
+            Self::collapsed_panel_rect((disp.x, disp.y), bar_w, self.autohide_reveal)
+        } else {
+            Rect {
+                x: bar_x,
+                y: rest_panel_y,
+                w: bar_w,
+                h: DOCK_PANEL_HEIGHT,
+            }
+        };
+
+        // Icons are pulled toward the same bottom-centre sink as the panel:
+        // their centres converge horizontally, their baseline follows the
+        // shrinking surface, and their size reaches zero before the final
+        // stadium settles.
+        let icon_bottom = panel_rect.y + panel_rect.h - DOCK_BASELINE_INSET * content_progress;
         let icon_rects: Vec<Rect> = (0..n)
             .map(|i| {
-                let s = eased[i].max(1.0);
+                let s = (eased[i] * content_progress).max(0.0);
+                let centre_x = disp.x * 0.5 + (centre(i) - disp.x * 0.5) * content_progress;
                 Rect {
-                    x: centre(i) - s * 0.5,
+                    x: centre_x - s * 0.5,
                     y: icon_bottom - s,
                     w: s,
                     h: s,
@@ -233,54 +255,15 @@ impl Chrome for Dock {
             }
         }
 
-        // The bar background, drawn first so icons stack above it. Its width
-        // follows the live reflow, so the panel visibly widens on hover.
-        let panel_rect = Rect {
-            x: bar_x,
-            y: panel_y,
-            w: bar_w,
-            h: DOCK_PANEL_HEIGHT,
-        };
+        // The bar and collapsed indicator are the same layer. As it drains,
+        // the glass grows more opaque, loses its border, and becomes the pale
+        // stadium handle while staying anchored to the same bottom edge.
+        let dock_material = collapsing_dock_material(surface_progress, panel_rect.h);
         // A layer with an empty body collapses to ~0 (the rect is only an
         // anchor, not a size); a fixed-size child forces it to the bar size.
-        f.layer(
-            "aegis-dock",
-            panel_rect,
-            &materials::dock(&Design::dark()),
-            |f| {
-                f.column_ex(&sized(bar_w, DOCK_PANEL_HEIGHT), |_| {});
-            },
-        );
-
-        let handle_progress = if effective_autohide {
-            Self::collapsed_handle_progress(self.autohide_reveal)
-        } else {
-            0.0
-        };
-        if handle_progress > 0.0 {
-            let handle_w = AUTOHIDE_HANDLE_WIDTH;
-            let handle_h = AUTOHIDE_HANDLE_HEIGHT;
-            let handle_x = (disp.x - handle_w) * 0.5;
-            let handle_y = disp.y - DOCK_BOTTOM_MARGIN - handle_h;
-            let handle_rect = Rect {
-                x: handle_x,
-                y: handle_y,
-                w: handle_w,
-                h: handle_h,
-            };
-            let color = Color::rgba(240, 243, 252, (150.0 * handle_progress) as u8);
-            f.layer(
-                "aegis-dock-autohide-stadium-handle",
-                handle_rect,
-                &tile_opts(),
-                |f| {
-                    f.column_ex(
-                        &sized_fill(handle_w, handle_h, color, handle_h * 0.5),
-                        |_| {},
-                    );
-                },
-            );
-        }
+        f.layer("aegis-dock", panel_rect, &dock_material, |f| {
+            f.column_ex(&sized(panel_rect.w, panel_rect.h), |_| {});
+        });
 
         // Hit-test live tile positions only after the pointer is inside the
         // stable resting panel. Magnified pixels may pop outside that panel,
@@ -303,88 +286,103 @@ impl Chrome for Dock {
             }
         }
 
-        // Draw each tile's icon, then its running dot.
-        for (i, t) in tiles.iter().enumerate() {
-            let s = eased[i].max(1.0);
-            let cx = centre(i);
-            let rect = icon_rects[i];
-            let icon_id = format!("aegis-dock-icon-{}", t.key);
-            if t.launchpad {
-                // A rounded "app tile" with a 3×3 grid, so it reads as macOS's
-                // Launchpad button. The grid (real content) sizes the layer;
-                // the layer paints the rounded background behind it.
-                let bg = OverlayOpts {
-                    bg: Color::rgba(70, 78, 110, 240),
-                    border: Color::rgba(150, 160, 195, 180),
-                    border_width: 1.0,
-                    radius: s * 0.22,
-                    pad: s * 0.2,
-                    cross: Align::Center,
-                    ..Default::default()
-                };
-                let gap = s * 0.1;
-                let d = (s - 2.0 * (s * 0.2) - 2.0 * gap) / 3.0;
-                f.layer(&icon_id, rect, &bg, |f| {
-                    f.column_ex(&grid(gap), |f| {
-                        for _ in 0..3 {
-                            f.row_ex(&grid(gap), |f| {
-                                for _ in 0..3 {
-                                    f.column_ex(
-                                        &sized_fill(d, d, Color::rgba(236, 238, 248, 245), d * 0.3),
-                                        |_| {},
-                                    );
-                                }
-                            });
-                        }
+        // Draw each tile's icon, then its running dot. Once content has
+        // reached the sink, no tile layers remain behind the stadium.
+        if content_progress > 0.01 {
+            for (i, t) in tiles.iter().enumerate() {
+                let s = icon_rects[i].w;
+                let cx = icon_rects[i].x + s * 0.5;
+                let rect = icon_rects[i];
+                let icon_id = format!("aegis-dock-icon-{}", t.key);
+                if t.launchpad {
+                    // A rounded "app tile" with a 3×3 grid, so it reads as macOS's
+                    // Launchpad button. The grid (real content) sizes the layer;
+                    // the layer paints the rounded background behind it.
+                    let bg = OverlayOpts {
+                        bg: Color::rgba(70, 78, 110, scaled_alpha(240, content_progress)),
+                        border: Color::rgba(150, 160, 195, scaled_alpha(180, content_progress)),
+                        border_width: 1.0,
+                        radius: s * 0.22,
+                        pad: s * 0.2,
+                        cross: Align::Center,
+                        ..Default::default()
+                    };
+                    let gap = s * 0.1;
+                    let d = (s - 2.0 * (s * 0.2) - 2.0 * gap) / 3.0;
+                    f.layer(&icon_id, rect, &bg, |f| {
+                        f.column_ex(&grid(gap), |f| {
+                            for _ in 0..3 {
+                                f.row_ex(&grid(gap), |f| {
+                                    for _ in 0..3 {
+                                        f.column_ex(
+                                            &sized_fill(
+                                                d,
+                                                d,
+                                                Color::rgba(
+                                                    236,
+                                                    238,
+                                                    248,
+                                                    scaled_alpha(245, content_progress),
+                                                ),
+                                                d * 0.3,
+                                            ),
+                                            |_| {},
+                                        );
+                                    }
+                                });
+                            }
+                        });
                     });
-                });
-            } else {
-                f.layer(&icon_id, rect, &tile_opts(), |f| match t.icon {
-                    // The pointer crosses from the binary's flux binding type to
-                    // lens's ABI-identical flux_image.
-                    Some(ptr) => unsafe { f.image(ptr as *mut lens::sys::flux_image, s, s) },
-                    None => f.icon(Icon::FileText, s * 0.6),
-                });
-            }
+                } else {
+                    f.layer(&icon_id, rect, &tile_opts(), |f| match t.icon {
+                        // The pointer crosses from the binary's flux binding type to
+                        // lens's ABI-identical flux_image.
+                        Some(ptr) => unsafe { f.image(ptr as *mut lens::sys::flux_image, s, s) },
+                        None => f.icon(Icon::FileText, s * 0.6),
+                    });
+                }
 
-            if t.running {
-                // Centre the dot in the flat strip between the icon baseline
-                // and the panel bottom, so it never falls into the rounded
-                // corner region (and outside the bar) on the leftmost or
-                // rightmost tiles.
-                let dot_w = if t.windows.len() > 1 {
-                    DOCK_DOT_STADIUM
-                } else {
-                    DOCK_DOT
-                };
-                let strip_h = DOCK_BASELINE_INSET.max(DOCK_DOT);
-                let dot_y = icon_bottom + (strip_h - DOCK_DOT) * 0.5 + DOCK_DOT * 0.5;
-                let dot_rect = Rect {
-                    x: cx - dot_w * 0.5,
-                    y: dot_y - DOCK_DOT * 0.5,
-                    w: dot_w,
-                    h: DOCK_DOT,
-                };
-                let color = if t.activated {
-                    Color::rgba(236, 238, 245, 255)
-                } else {
-                    Color::rgba(200, 204, 220, 170)
-                };
-                let dot_id = format!("aegis-dock-dot-{}", t.key);
-                f.layer(&dot_id, dot_rect, &tile_opts(), |f| {
-                    f.column_ex(&sized_fill(dot_w, DOCK_DOT, color, DOCK_DOT * 0.5), |_| {});
-                });
+                if t.running {
+                    // Centre the dot in the flat strip between the icon baseline
+                    // and the panel bottom, so it never falls into the rounded
+                    // corner region (and outside the bar) on the leftmost or
+                    // rightmost tiles.
+                    let dot_w = if t.windows.len() > 1 {
+                        DOCK_DOT_STADIUM
+                    } else {
+                        DOCK_DOT
+                    } * content_progress;
+                    let dot_h = DOCK_DOT * content_progress;
+                    let strip_h = DOCK_BASELINE_INSET.max(DOCK_DOT) * content_progress;
+                    let dot_y = icon_bottom + (strip_h - dot_h) * 0.5 + dot_h * 0.5;
+                    let dot_rect = Rect {
+                        x: cx - dot_w * 0.5,
+                        y: dot_y - dot_h * 0.5,
+                        w: dot_w,
+                        h: dot_h,
+                    };
+                    let color = if t.activated {
+                        Color::rgba(236, 238, 245, scaled_alpha(255, content_progress))
+                    } else {
+                        Color::rgba(200, 204, 220, scaled_alpha(170, content_progress))
+                    };
+                    let dot_id = format!("aegis-dock-dot-{}", t.key);
+                    f.layer(&dot_id, dot_rect, &tile_opts(), |f| {
+                        f.column_ex(&sized_fill(dot_w, dot_h, color, dot_h * 0.5), |_| {});
+                    });
+                }
             }
         }
 
         // A slim divider in the section gap separates the kept strip from the
         // transient running apps, like macOS's Dock.
-        if section_gap > 0.0 {
-            let divider_x = (centre(pinned_count - 1) + centre(pinned_count)) * 0.5;
-            let divider_h = DOCK_TILE * 0.55;
+        if section_gap > 0.0 && content_progress > 0.01 {
+            let normal_divider_x = (centre(pinned_count - 1) + centre(pinned_count)) * 0.5;
+            let divider_x = disp.x * 0.5 + (normal_divider_x - disp.x * 0.5) * content_progress;
+            let divider_h = DOCK_TILE * 0.55 * content_progress;
             let divider_rect = Rect {
                 x: divider_x - 0.5,
-                y: panel_y + (DOCK_PANEL_HEIGHT - divider_h) * 0.5,
+                y: panel_rect.y + (panel_rect.h - divider_h) * 0.5,
                 w: 1.0,
                 h: divider_h,
             };
@@ -394,7 +392,12 @@ impl Chrome for Dock {
                 &OverlayOpts::default(),
                 |f| {
                     f.column_ex(
-                        &sized_fill(1.0, divider_h, Color::rgba(255, 255, 255, 56), 0.5),
+                        &sized_fill(
+                            1.0,
+                            divider_h,
+                            Color::rgba(255, 255, 255, scaled_alpha(56, content_progress)),
+                            0.5,
+                        ),
                         |_| {},
                     );
                 },
@@ -547,23 +550,30 @@ impl Chrome for Dock {
         if self.fullscreen_locked() || (self.effective_autohide() && self.autohide_reveal <= 0.05) {
             return Vec::new();
         }
-        let bounds = self.visual_panel_bounds(windows, display);
-        let rest_panel_y = display.1 - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN;
-        let hidden_y = Self::hidden_panel_y(display.1);
-        let panel_y = hidden_y + (rest_panel_y - hidden_y) * self.autohide_reveal;
-        let radius = 18.0;
+        let expanded = self.visual_panel_bounds(windows, display);
+        let bounds = if self.effective_autohide() {
+            Self::collapsed_panel_rect(display, expanded.w, self.autohide_reveal)
+        } else {
+            expanded
+        };
+        let surface_progress = if self.effective_autohide() {
+            Self::collapse_surface_progress(self.autohide_reveal)
+        } else {
+            1.0
+        };
+        let radius = collapsing_radius(surface_progress, bounds.h);
         vec![
             BackdropRegion {
                 x: bounds.x + radius,
-                y: panel_y,
+                y: bounds.y,
                 w: (bounds.w - radius * 2.0).max(0.0),
-                h: DOCK_PANEL_HEIGHT,
+                h: bounds.h,
             },
             BackdropRegion {
                 x: bounds.x,
-                y: panel_y + radius,
+                y: bounds.y + radius,
                 w: bounds.w,
-                h: DOCK_PANEL_HEIGHT - radius * 2.0,
+                h: (bounds.h - radius * 2.0).max(0.0),
             },
         ]
     }
@@ -731,6 +741,37 @@ fn sized_fill(w: f32, h: f32, bg: Color, radius: f32) -> LayoutOpts {
         radius,
         ..Default::default()
     }
+}
+
+fn scaled_alpha(alpha: u8, progress: f32) -> u8 {
+    (f32::from(alpha) * progress.clamp(0.0, 1.0)).round() as u8
+}
+
+fn mix_channel(collapsed: u8, expanded: u8, progress: f32) -> u8 {
+    let progress = progress.clamp(0.0, 1.0);
+    (f32::from(collapsed) + (f32::from(expanded) - f32::from(collapsed)) * progress)
+        .round()
+        .clamp(0.0, 255.0) as u8
+}
+
+fn collapsing_radius(surface_progress: f32, height: f32) -> f32 {
+    let radius = AUTOHIDE_HANDLE_HEIGHT * 0.5
+        + (Design::dark().radii.dock - AUTOHIDE_HANDLE_HEIGHT * 0.5) * surface_progress;
+    radius.min(height * 0.5)
+}
+
+fn collapsing_dock_material(surface_progress: f32, height: f32) -> OverlayOpts {
+    let mut material = materials::dock(&Design::dark());
+    material.bg = Color::rgba(
+        mix_channel(240, 255, surface_progress),
+        mix_channel(243, 255, surface_progress),
+        mix_channel(252, 255, surface_progress),
+        mix_channel(150, 34, surface_progress),
+    );
+    material.border = Color::rgba(255, 255, 255, scaled_alpha(64, surface_progress));
+    material.border_width *= surface_progress;
+    material.radius = collapsing_radius(surface_progress, height);
+    material
 }
 
 /// A centred grid row/column with the given gap, for the Launchpad glyph.

@@ -903,6 +903,17 @@ struct ClientDestroyRecord {
     id: aegis_core::realm::ClientId,
 }
 
+/// Frozen MRU order while the physical user holds Super for window cycling.
+///
+/// Focusing a window raises it in the compositor stack, so deriving the next
+/// candidate afresh on every Tab would collapse into a two-window toggle.
+/// Freezing the order gives held-key cycling and one-shot MRU toggling their
+/// distinct, expected semantics.
+struct WindowSwitcherSession {
+    order: Vec<aegis_core::window::WindowId>,
+    selected: usize,
+}
+
 /// Server-wide state. Its address is handed to the C bind callbacks, so it is
 /// boxed and never moved out.
 pub(crate) struct State {
@@ -951,6 +962,7 @@ pub(crate) struct State {
     /// pointer to the end and updates affected live records' slot indices.
     /// Iterators must skip null entries.
     surfaces: Vec<*mut SurfaceRec>,
+    window_switcher: Option<WindowSwitcherSession>,
     /// Every `wl_output` resource clients have bound. Resent in full when the
     /// output geometry (mode/scale/transform) changes so bound clients update.
     pub(crate) output_resources: Vec<*mut ffi::wl_resource>,
@@ -1143,6 +1155,7 @@ impl State {
             damaged_windows: std::collections::BTreeSet::new(),
             pending_realm_damage: std::collections::BTreeMap::new(),
             surfaces: Vec::new(),
+            window_switcher: None,
             output_resources: Vec::new(),
             output_globals: Vec::new(),
             xdg_output_resources: Vec::new(),

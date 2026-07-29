@@ -70,7 +70,9 @@ impl CompositorRuntime {
                             reply,
                         });
                         self.pending_pick_open = Some(kind);
-                        self.screenshot_freeze.request_open();
+                        // Portal pickers intentionally retain their cursor-free
+                        // capture contract.
+                        self.screenshot_freeze.request_open(None);
                     }
                 }
                 PickControl::Cancel => {

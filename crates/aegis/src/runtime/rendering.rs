@@ -314,9 +314,25 @@ impl LauncherBackdrop {
 /// of the snapshot), then the compositor opens the selector over the
 /// frozen image. [`should_disarm`](Self::should_disarm) ends the session
 /// once the selector closes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct CaptureCursorState {
+    /// Logical output coordinates sampled when the screenshot was triggered.
+    pub(super) position: (f32, f32),
+    /// Effective compositor/theme cursor shape at the trigger instant.
+    pub(super) shape: u32,
+    /// Whether the compositor-owned theme cursor was hidden at the trigger
+    /// instant. A client surface may still be the visible cursor.
+    pub(super) hidden: bool,
+    /// Whether the visible cursor came from a client-provided cursor surface.
+    pub(super) client_surface: bool,
+}
+
 pub(super) struct ScreenshotFreeze {
     captures: Vec<Option<BackdropCapture>>,
     active_slot: Option<usize>,
+    /// Logical cursor state sampled synchronously with the trigger, before a
+    /// later input batch or capture frame can move it.
+    trigger_cursor: Option<CaptureCursorState>,
     /// The compositor-owned cursor as it appeared on the trigger frame.
     /// Client cursor surfaces are already part of `captures`; this is the
     /// themed cursor used by nested backends and direct KMS.
@@ -338,6 +354,7 @@ impl ScreenshotFreeze {
         Self {
             captures: Vec::new(),
             active_slot: None,
+            trigger_cursor: None,
             cursor: None,
             armed: false,
             captured: false,
@@ -348,7 +365,7 @@ impl ScreenshotFreeze {
     }
 
     /// Arm a freeze session; the selector opens after the capture frame.
-    pub(super) fn request_open(&mut self) {
+    pub(super) fn request_open(&mut self, cursor: Option<CaptureCursorState>) {
         if self.armed {
             return;
         }
@@ -358,6 +375,7 @@ impl ScreenshotFreeze {
         self.pending_open = true;
         self.opened = false;
         self.active_slot = None;
+        self.trigger_cursor = cursor;
         self.cursor = None;
     }
 
@@ -381,6 +399,10 @@ impl ScreenshotFreeze {
         self.cursor.as_ref()
     }
 
+    pub(super) fn trigger_cursor(&self) -> Option<CaptureCursorState> {
+        self.trigger_cursor
+    }
+
     pub(super) fn mark_opened(&mut self) {
         self.pending_open = false;
         self.opened = true;
@@ -399,6 +421,7 @@ impl ScreenshotFreeze {
         self.pending_open = false;
         self.opened = false;
         self.active_slot = None;
+        self.trigger_cursor = None;
         self.cursor = None;
     }
 
@@ -534,13 +557,15 @@ pub(super) fn draw_client_overlays(
     server: &aegis_compositor::Server,
     scale: f32,
     include_cursor: bool,
+    cursor_position: Option<(f32, f32)>,
 ) {
     canvas.save();
     if scale != 1.0 {
         canvas.scale(scale, scale);
     }
-    let overlay_shm = server.overlay_frames_with_cursor(include_cursor);
-    let overlay_dmabuf = server.overlay_dmabuf_frames_with_cursor(include_cursor);
+    let overlay_shm = server.overlay_frames_with_cursor_at(include_cursor, cursor_position);
+    let overlay_dmabuf =
+        server.overlay_dmabuf_frames_with_cursor_at(include_cursor, cursor_position);
     renderer.draw_toplevels(device, canvas, &overlay_shm, (0.0, 0.0));
     renderer.draw_dmabuf_toplevels(device, canvas, &overlay_dmabuf, (0.0, 0.0));
     canvas.restore();
@@ -674,14 +699,16 @@ pub(super) fn draw_window_switcher_scene(
     server: &aegis_compositor::Server,
     logical_size: (u32, u32),
     scale: f32,
+    presentation: &aegis_shell::WindowSwitcherPresentation,
 ) {
+    let scrim_alpha = (145.0 * presentation.visibility.clamp(0.0, 1.0)).round() as u8;
     canvas.save();
     canvas.fill_rect(
         0.0,
         0.0,
         logical_size.0 as f32 * scale,
         logical_size.1 as f32 * scale,
-        flux::rgba(5, 7, 12, 145),
+        flux::rgba(5, 7, 12, scrim_alpha),
     );
     canvas.restore();
 
@@ -689,23 +716,22 @@ pub(super) fn draw_window_switcher_scene(
     if windows.is_empty() {
         return;
     }
-    let display = aegis_core::Rect::new(0, 0, logical_size.0 as i32, logical_size.1 as i32);
-    let layout = aegis_core::window_switcher::layout(display, windows.len());
     let cells: std::collections::HashMap<
         aegis_core::window::WindowId,
         (aegis_core::Rect, aegis_core::Point, aegis_core::Size),
-    > = windows
+    > = presentation
+        .cards
         .iter()
-        .zip(layout.cards.iter())
-        .map(|(window, card)| {
-            (
-                window.id,
+        .filter_map(|card| {
+            let window = windows.iter().find(|window| window.id == card.window)?;
+            Some((
+                card.window,
                 (
-                    aegis_core::overview::fit(card.preview, window.size),
+                    aegis_core::overview::fit(card.geometry.preview, window.size),
                     window.position,
                     window.size,
                 ),
-            )
+            ))
         })
         .collect();
     let map = move |window: Option<aegis_core::window::WindowId>, natural: aegis_core::Rect| {
@@ -727,6 +753,12 @@ pub(super) fn draw_window_switcher_scene(
     if scale != 1.0 {
         canvas.scale(scale, scale);
     }
+    canvas.clip_rect(
+        presentation.panel.origin.x as f32,
+        presentation.panel.origin.y as f32,
+        presentation.panel.size.w as f32,
+        presentation.panel.size.h as f32,
+    );
     let shm = server.client_surface_frames();
     let dmabuf = server.client_surface_dmabuf_frames();
     let surface_order = server.client_surface_frame_order();
@@ -868,6 +900,30 @@ mod tests {
 
     fn region(x: f32, y: f32, w: f32, h: f32) -> aegis_shell::BackdropRegion {
         aegis_shell::BackdropRegion { x, y, w, h }
+    }
+
+    #[test]
+    fn screenshot_freeze_keeps_the_trigger_cursor_snapshot() {
+        let trigger = CaptureCursorState {
+            position: (42.25, 73.5),
+            shape: 7,
+            hidden: true,
+            client_surface: true,
+        };
+        let later = CaptureCursorState {
+            position: (900.0, 500.0),
+            shape: 1,
+            hidden: true,
+            client_surface: false,
+        };
+        let mut freeze = ScreenshotFreeze::new();
+
+        freeze.request_open(Some(trigger));
+        freeze.request_open(Some(later));
+        assert_eq!(freeze.trigger_cursor(), Some(trigger));
+
+        freeze.disarm();
+        assert_eq!(freeze.trigger_cursor(), None);
     }
 
     #[test]

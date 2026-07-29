@@ -106,6 +106,26 @@ pub struct BackdropRegion {
     pub h: f32,
 }
 
+/// One live preview target in the compositor-owned window switcher.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WindowSwitcherCard {
+    pub window: aegis_core::window::WindowId,
+    pub geometry: aegis_core::window_switcher::Card,
+}
+
+/// Shared switcher presentation prepared once per frame.
+///
+/// The executable uses these exact targets for live client previews and the
+/// shell uses them for borders, labels, hit-testing, and animation. Keeping a
+/// single snapshot prevents the chrome and client scene from drifting apart.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowSwitcherPresentation {
+    pub panel: aegis_core::Rect,
+    pub cards: Vec<WindowSwitcherCard>,
+    pub selected: Option<aegis_core::window::WindowId>,
+    pub visibility: f32,
+}
+
 /// Decoded icon texture handles shared with chrome components.
 ///
 /// The textures are owned by the composition root's icon cache; an `IconSet`
@@ -258,6 +278,10 @@ pub struct ChromeEvents {
     /// Drained through the focus command/journal path; picking also closes
     /// the overview.
     pub overview_pick: Option<aegis_core::window::WindowId>,
+    /// Window id clicked in the held-modifier switcher.
+    pub window_switcher_pick: Option<aegis_core::window::WindowId>,
+    /// The switcher was dismissed by clicking outside its cards.
+    pub window_switcher_cancel: bool,
     /// Workspace id the overview's rail asked to switch to. Drained through
     /// the same command/journal path as `SwitchWorkspaceTo`.
     pub overview_switch: Option<aegis_core::workspace::WorkspaceId>,
@@ -419,6 +443,20 @@ pub trait Chrome {
     /// the switcher component keeps its preview strip visible until
     /// [`Chrome::finish_window_switcher`] arrives.
     fn start_window_switcher(&mut self) {}
+
+    /// Advance and cache the switcher's shared live-preview layout.
+    ///
+    /// Only the switcher component returns a presentation. The shell calls
+    /// this before the compositor paints client previews, then the component
+    /// reuses the same snapshot during its chrome render.
+    fn prepare_window_switcher(
+        &mut self,
+        _input: &Input,
+        _display: aegis_core::Rect,
+        _windows: &[Window],
+    ) -> Option<WindowSwitcherPresentation> {
+        None
+    }
 
     /// Close the held-modifier window switcher when Super is released.
     fn finish_window_switcher(&mut self) {}
@@ -756,6 +794,19 @@ impl Shell {
         }
     }
 
+    /// Advance the switcher once and return the exact layout shared by the
+    /// compositor's live-preview pass and shell chrome.
+    pub fn prepare_window_switcher(
+        &mut self,
+        input: &Input,
+        display: aegis_core::Rect,
+        windows: &[Window],
+    ) -> Option<WindowSwitcherPresentation> {
+        self.components
+            .iter_mut()
+            .find_map(|component| component.prepare_window_switcher(input, display, windows))
+    }
+
     /// Close the preview strip after the held Super modifier is released.
     pub fn finish_window_switcher(&mut self) {
         for component in self.components.iter_mut() {
@@ -773,6 +824,16 @@ impl Shell {
     /// Window id the overview asked to focus this frame, if any.
     pub fn take_overview_pick(&mut self) -> Option<aegis_core::window::WindowId> {
         self.events.overview_pick.take()
+    }
+
+    /// Window clicked in the held-modifier switcher, if any.
+    pub fn take_window_switcher_pick(&mut self) -> Option<aegis_core::window::WindowId> {
+        self.events.window_switcher_pick.take()
+    }
+
+    /// Whether a click-away dismissed the window switcher this frame.
+    pub fn take_window_switcher_cancel(&mut self) -> bool {
+        std::mem::take(&mut self.events.window_switcher_cancel)
     }
 
     /// Workspace id the overview's rail asked to switch to, if any.

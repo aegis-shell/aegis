@@ -26,6 +26,8 @@ aegis is a Wayland compositor for Linux, written in Rust on
   Xfce: read [Comparative Survey](explanation/comparative-survey.md).
 - Looking for a config key or option: read the
   [Configuration Reference](reference/config.md).
+- Looking for global keyboard, pointer, quit, or VT controls: read
+  [System Shortcuts](reference/keyboard-shortcuts.md).
 - Looking for System Settings module routes and backend availability: read the
   [System Settings Reference](reference/settings.md).
 - Starting applications or using app-level window actions: read

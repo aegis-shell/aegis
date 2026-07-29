@@ -24,7 +24,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use include_dir::{include_dir, Dir};
+use include_dir::{Dir, include_dir};
 
 /// The cursor art shipped with the binary, used as the universal fallback
 /// when no filesystem theme resolves a shape. GPL-3.0 art from Bibata Cursor;
@@ -95,7 +95,9 @@ fn svg_meta(svg: &[u8]) -> SvgMeta {
         attr(tag, "data-hotspot-x").and_then(num).unwrap_or(0.0),
         attr(tag, "data-hotspot-y").and_then(num).unwrap_or(0.0),
     );
-    let native = viewbox(tag).or_else(|| width_height(tag)).unwrap_or((256.0, 256.0));
+    let native = viewbox(tag)
+        .or_else(|| width_height(tag))
+        .unwrap_or((256.0, 256.0));
     SvgMeta { hotspot, native }
 }
 
@@ -194,16 +196,19 @@ fn rasterize(svg: &[u8], out: u32) -> Option<RasterCursor> {
     let tree = usvg::Tree::from_data(svg, &usvg::Options::default()).ok()?;
     let (nw, nh) = meta.native;
     let mut pixmap = tiny_skia::Pixmap::new(out, out)?;
-    let transform =
-        tiny_skia::Transform::from_scale(out as f32 / nw, out as f32 / nh);
+    let transform = tiny_skia::Transform::from_scale(out as f32 / nw, out as f32 / nh);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
     let mut pixels = pixmap.data().to_vec();
     // tiny-skia emits premultiplied RGBA8; flux samples premultiplied BGRA8.
     for chunk in pixels.chunks_exact_mut(4) {
         chunk.swap(0, 2);
     }
-    let xhot = (meta.hotspot.0 * out as f32 / nw).round().clamp(0.0, out as f32 - 1.0) as u32;
-    let yhot = (meta.hotspot.1 * out as f32 / nh).round().clamp(0.0, out as f32 - 1.0) as u32;
+    let xhot = (meta.hotspot.0 * out as f32 / nw)
+        .round()
+        .clamp(0.0, out as f32 - 1.0) as u32;
+    let yhot = (meta.hotspot.1 * out as f32 / nh)
+        .round()
+        .clamp(0.0, out as f32 - 1.0) as u32;
     Some(RasterCursor {
         width: out,
         height: out,
@@ -502,10 +507,7 @@ mod tests {
         // The rasterizer must produce visible art, not a correctly-sized
         // blank buffer (guards against a silent transform/render bug). BGRA:
         // alpha is every 4th byte.
-        let opaque = img
-            .pixels
-            .chunks_exact(4)
-            .any(|px| px[3] > 0);
+        let opaque = img.pixels.chunks_exact(4).any(|px| px[3] > 0);
         assert!(opaque, "rasterized cursor has at least one opaque pixel");
     }
 

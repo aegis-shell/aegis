@@ -1,13 +1,9 @@
 use crate::*;
 
 impl Server {
-    /// Cycle keyboard focus among mapped, non-minimized toplevels in creation
-    /// order. `forward` selects the next surface, `false` the previous. No-op
-    /// if fewer than two eligible toplevels exist. Backs the `CycleFocus` /
-    /// `CycleFocusBack` key bindings.
-    pub fn cycle_focus(&mut self, forward: bool) {
+    fn switcher_candidates(&self) -> Vec<aegis_core::window::WindowId> {
         let visible = self.visible();
-        let ids: Vec<aegis_core::window::WindowId> = self
+        let mut candidates: Vec<_> = self
             .state
             .live_surfaces()
             .map(|p| unsafe { &*p })
@@ -23,24 +19,74 @@ impl Server {
             })
             .map(|s| s.window.id)
             .collect();
-        if ids.len() < 2 {
+        candidates.reverse();
+        candidates
+    }
+
+    /// Freeze the current most-recently-used order for a held-Super cycle.
+    pub fn start_window_switcher(&mut self) {
+        if self.state.window_switcher.is_some() {
             return;
         }
-        let next = match self
+        let order = self.switcher_candidates();
+        let selected = self
             .focused_toplevel_id()
-            .and_then(|id| ids.iter().position(|x| *x == id))
-        {
-            Some(i) => {
-                let n = ids.len();
-                if forward {
-                    ids[(i + 1) % n]
-                } else {
-                    ids[(i + n - 1) % n]
-                }
+            .and_then(|id| order.iter().position(|candidate| *candidate == id))
+            .unwrap_or(0);
+        self.state.window_switcher = Some(WindowSwitcherSession { order, selected });
+    }
+
+    /// End the held-Super cycle. The focused window is already raised, so the
+    /// next one-shot cycle naturally sees the old window as the previous MRU
+    /// target and toggles back to it.
+    pub fn finish_window_switcher(&mut self) {
+        self.state.window_switcher = None;
+    }
+
+    pub fn window_switcher_active(&self) -> bool {
+        self.state.window_switcher.is_some()
+    }
+
+    /// Cycle keyboard focus in a frozen MRU order while a switcher session is
+    /// active. Outside a held session this performs one temporary MRU step;
+    /// repeated quick Super+Tab taps therefore alternate between the two most
+    /// recent windows instead of walking the whole creation order.
+    pub fn cycle_focus(&mut self, forward: bool) {
+        let one_shot = self.state.window_switcher.is_none();
+        self.start_window_switcher();
+
+        let eligible: std::collections::HashSet<_> =
+            self.switcher_candidates().into_iter().collect();
+        if eligible.len() < 2 {
+            if one_shot {
+                self.finish_window_switcher();
             }
-            None => ids[0],
+            return;
+        }
+        let focused = self.focused_toplevel_id();
+        let next = {
+            let Some(session) = self.state.window_switcher.as_mut() else {
+                return;
+            };
+            let selected_id = session.order.get(session.selected).copied();
+            session.order.retain(|id| eligible.contains(id));
+            if session.order.len() < 2 {
+                return;
+            }
+            session.selected = selected_id
+                .and_then(|id| session.order.iter().position(|candidate| *candidate == id))
+                .or_else(|| {
+                    focused
+                        .and_then(|id| session.order.iter().position(|candidate| *candidate == id))
+                })
+                .unwrap_or(0);
+            session.selected = stepped_index(session.selected, session.order.len(), forward);
+            session.order[session.selected]
         };
         self.focus_surface_by_id(next);
+        if one_shot {
+            self.finish_window_switcher();
+        }
     }
 
     /// Switch to an adjacent workspace on the focused output (ADR-0025). The
@@ -582,5 +628,44 @@ impl Server {
         if !visible.contains(&wid) {
             self.change_keyboard_focus(std::ptr::null_mut());
         }
+    }
+}
+
+fn stepped_index(current: usize, len: usize, forward: bool) -> usize {
+    debug_assert!(len > 0);
+    if forward {
+        (current + 1) % len
+    } else {
+        (current + len - 1) % len
+    }
+}
+
+#[cfg(test)]
+mod window_switcher_tests {
+    use super::*;
+
+    #[test]
+    fn frozen_order_cycles_both_directions() {
+        assert_eq!(stepped_index(0, 4, true), 1);
+        assert_eq!(stepped_index(3, 4, true), 0);
+        assert_eq!(stepped_index(0, 4, false), 3);
+        assert_eq!(stepped_index(2, 4, false), 1);
+    }
+
+    #[test]
+    fn rebuilding_mru_after_one_step_toggles_back() {
+        use aegis_core::window::WindowId;
+
+        // Bottom-to-top stacking order; C starts focused.
+        let mut stack = vec![WindowId(1), WindowId(2), WindowId(3)];
+        let first_mru: Vec<_> = stack.iter().rev().copied().collect();
+        let target = first_mru[stepped_index(0, first_mru.len(), true)];
+        assert_eq!(target, WindowId(2));
+
+        stack.retain(|id| *id != target);
+        stack.push(target);
+        let second_mru: Vec<_> = stack.iter().rev().copied().collect();
+        let target = second_mru[stepped_index(0, second_mru.len(), true)];
+        assert_eq!(target, WindowId(3));
     }
 }

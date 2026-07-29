@@ -88,6 +88,8 @@ pub enum DrmError {
     DmabufUnsupported,
     #[error("DRM session is inactive")]
     Inactive,
+    #[error("previous DRM atomic commit is still being cleaned up")]
+    Busy,
     #[error("timed out waiting for a KMS page flip")]
     FlipTimeout,
     #[error("display set changed during presentation; frame skipped")]
@@ -100,18 +102,28 @@ pub enum DrmError {
     CursorFallback,
 }
 
-/// Map an atomic-commit failure to a backend error. EACCES/EPERM means the
-/// session lost DRM master to a VT switch whose seat Disable event has not
-/// been dispatched yet — a transient, frame-skip condition that must never
-/// kill the compositor.
+/// Map an atomic-commit failure to a backend error. EBUSY is an allowed result
+/// for a non-blocking atomic update while an earlier update is still pending;
+/// a page-flip event marks `flip_done`, which can precede the kernel's terminal
+/// `cleanup_done`. EACCES/EPERM means the session lost DRM master to a VT
+/// switch whose seat Disable event has not been dispatched yet. All three are
+/// transient frame-skip conditions and must never kill the compositor.
 fn commit_error(error: std::io::Error) -> DrmError {
     match error.raw_os_error() {
+        Some(libc::EBUSY) => DrmError::Busy,
         Some(libc::EACCES) | Some(libc::EPERM) => {
             log::warn!("drm: commit while masterless (VT switch in flight); skipping frame");
             DrmError::Inactive
         }
         _ => DrmError::Io(error),
     }
+}
+
+fn commit_error_is_transient(error: &std::io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::EBUSY | libc::EACCES | libc::EPERM)
+    )
 }
 
 /// Clip a desktop-wide damage bounding box (physical framebuffer pixels) to
@@ -855,6 +867,13 @@ mod tests {
         let past = std::time::Instant::now() - Duration::from_secs(1);
         assert_eq!(poll_ms_remaining(Some(past)), 0);
         assert!(deadline_passed(Some(past)));
+    }
+
+    #[test]
+    fn busy_nonblocking_commit_is_a_transient_frame_skip() {
+        let error = std::io::Error::from_raw_os_error(libc::EBUSY);
+        assert!(commit_error_is_transient(&error));
+        assert!(matches!(commit_error(error), DrmError::Busy));
     }
 
     #[test]

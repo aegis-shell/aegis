@@ -83,6 +83,11 @@ const AUTOHIDE_IDLE_TIMEOUT: f32 = 2.5;
 const AUTOHIDE_HANDLE_WIDTH: f32 = 140.0;
 /// Height of the thin stadium handle shown when the dock is autohidden.
 const AUTOHIDE_HANDLE_HEIGHT: f32 = 6.0;
+/// Reveal progress below which iconography has completely drained into the
+/// collapsing surface. The panel continues morphing into the stadium handle
+/// after its content is gone, so neither icons nor running dots linger beside
+/// the final indicator.
+const AUTOHIDE_CONTENT_DRAIN_END: f32 = 0.28;
 /// Horizontal breathing room around the collapsed handle that reveals the
 /// Dock. The rest of the bottom edge remains client-owned.
 const AUTOHIDE_TRIGGER_PAD_X: f32 = 40.0;
@@ -339,24 +344,43 @@ impl Dock {
         self.autohide || self.dock_obscured
     }
 
-    /// Put the panel far enough below the logical output that even a fully
-    /// magnified, upward-lifted icon is outside the scanout. The thin reveal
-    /// handle is rendered independently at the output edge.
-    fn hidden_panel_y(display_height: f32) -> f32 {
-        display_height + DOCK_TILE_MAX
+    /// Cubic easing with zero velocity at both ends. The reveal state remains
+    /// the animation clock; this shapes the visible geometry so the Dock does
+    /// not arrive at either the panel or handle with a hard stop.
+    fn smoothstep(progress: f32) -> f32 {
+        let progress = progress.clamp(0.0, 1.0);
+        progress * progress * (3.0 - 2.0 * progress)
     }
 
-    /// Reveal progress for the collapsed stadium handle.
-    ///
-    /// The handle must not coexist with the panel or its icons. The largest
-    /// icon is the last piece of Dock content to leave the output while the
-    /// panel moves from its resting position to [`Dock::hidden_panel_y`].
-    /// Start fading the handle in only after that icon's top edge has crossed
-    /// the bottom edge of the output.
-    fn collapsed_handle_progress(reveal: f32) -> f32 {
-        let panel_travel = DOCK_TILE_MAX + DOCK_PANEL_HEIGHT + DOCK_BOTTOM_MARGIN;
-        let fully_hidden_reveal = (DOCK_PANEL_HEIGHT - DOCK_BASELINE_INSET) / panel_travel;
-        ((fully_hidden_reveal - reveal) / fully_hidden_reveal).clamp(0.0, 1.0)
+    /// Geometric expansion of the single Dock surface: zero is the collapsed
+    /// stadium handle and one is the full glass panel.
+    fn collapse_surface_progress(reveal: f32) -> f32 {
+        Self::smoothstep(reveal)
+    }
+
+    /// Content drains earlier than the containing surface. Icons, dots, and
+    /// the section divider converge and shrink into the bottom-centre sink,
+    /// then stay absent while the remaining glass finishes becoming a handle.
+    fn collapse_content_progress(reveal: f32) -> f32 {
+        let normalized = (reveal - AUTOHIDE_CONTENT_DRAIN_END) / (1.0 - AUTOHIDE_CONTENT_DRAIN_END);
+        Self::smoothstep(normalized)
+    }
+
+    /// The Dock and its autohide indicator are one bottom-anchored surface.
+    /// Width, height, and corner radius morph continuously instead of moving a
+    /// fully rendered panel offscreen and fading in a second object.
+    fn collapsed_panel_rect(display: (f32, f32), expanded_width: f32, reveal: f32) -> Rect {
+        let progress = Self::collapse_surface_progress(reveal);
+        let width = AUTOHIDE_HANDLE_WIDTH + (expanded_width - AUTOHIDE_HANDLE_WIDTH) * progress;
+        let height =
+            AUTOHIDE_HANDLE_HEIGHT + (DOCK_PANEL_HEIGHT - AUTOHIDE_HANDLE_HEIGHT) * progress;
+        let bottom = display.1 - DOCK_BOTTOM_MARGIN;
+        Rect {
+            x: (display.0 - width) * 0.5,
+            y: bottom - height,
+            w: width,
+            h: height,
+        }
     }
 
     fn hidden_trigger_bounds(display: (f32, f32)) -> Rect {

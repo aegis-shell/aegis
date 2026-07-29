@@ -100,7 +100,7 @@ First bare-metal run, in order:
 Request a graceful compositor shutdown with one of these methods:
 
 - Run `aegis-ctl quit` from a terminal inside aegis.
-- Press the default `Super+Shift+Return` binding.
+- Press `Super+Shift+Q` or the alternate `Super+Shift+Return` binding.
 
 The compositor disables its outputs, releases the seat and DRM device, and
 returns to the TTY. Switch back to the original graphical VT afterward.

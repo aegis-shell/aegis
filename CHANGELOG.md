@@ -7,6 +7,17 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### System shortcuts
+
+- `Super+Shift+Q` now gracefully quits the current Aegis instance, providing
+  a direct exit path during VT/DRM testing. `Super+Shift+Return` remains
+  available as an alternate binding.
+- Global binding matching now normalizes ASCII letter keysyms, so configured
+  combinations such as `Super+Shift+Q` match the uppercase keysym produced by
+  XKB.
+- Added a dedicated system-shortcut reference covering global keyboard,
+  pointer, quit, and direct-display VT controls.
+
 ### Desktop preferences
 
 - System Settings now provides an editable Appearance page for color scheme,

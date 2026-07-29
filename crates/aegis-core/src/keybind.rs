@@ -13,8 +13,8 @@
 //! the `depressed` mask the matcher reads.
 
 use crate::input::{
-    Mods, XKB_KEY_BackSpace, XKB_KEY_Down, XKB_KEY_Escape, XKB_KEY_Print, XKB_KEY_Return,
-    XKB_KEY_Tab, XKB_KEY_Up,
+    Mods, XKB_KEY_BackSpace, XKB_KEY_Down, XKB_KEY_Escape, XKB_KEY_ISO_Left_Tab, XKB_KEY_Print,
+    XKB_KEY_Return, XKB_KEY_Tab, XKB_KEY_Up,
 };
 
 /// A compositor action a key binding can trigger.
@@ -91,7 +91,8 @@ impl Keymap {
                 kb(Mods::SUPER, 0xff51, Action::WorkspacePrev), /* Left */
                 kb(Mods::SUPER, 0x74, Action::ToggleTiling),   /* 't' */
                 kb(Mods::NONE, XKB_KEY_Print, Action::Screenshot), /* Print Screen */
-                kb(Mods::SUPER | Mods::SHIFT, 0xff0d, Action::Quit),
+                kb(Mods::SUPER | Mods::SHIFT, b'q' as u32, Action::Quit),
+                kb(Mods::SUPER | Mods::SHIFT, XKB_KEY_Return, Action::Quit),
             ],
         }
     }
@@ -104,12 +105,12 @@ impl Keymap {
         Keymap { binds: combined }
     }
 
-    /// Find the action for a pressed key, if any binding matches its modifier
-    /// mask and keysym exactly. First match wins.
+    /// Find the action for a pressed key. Modifier masks match exactly; ASCII
+    /// letter keysyms are normalized to lowercase. First match wins.
     pub fn match_key(&self, mods: Mods, keysym: u32) -> Option<Action> {
         self.binds
             .iter()
-            .find(|b| b.mods == mods && b.keysym == keysym)
+            .find(|b| b.mods == mods && normalize_keysym(b.keysym) == normalize_keysym(keysym))
             .map(|b| b.action)
     }
 
@@ -136,6 +137,16 @@ const fn kb(mods: Mods, keysym: u32, action: Action) -> Keybind {
         mods,
         keysym,
         action,
+    }
+}
+
+const fn normalize_keysym(keysym: u32) -> u32 {
+    if keysym >= b'A' as u32 && keysym <= b'Z' as u32 {
+        keysym + (b'a' - b'A') as u32
+    } else if keysym == XKB_KEY_ISO_Left_Tab {
+        XKB_KEY_Tab
+    } else {
+        keysym
     }
 }
 
@@ -227,10 +238,24 @@ mod tests {
             km.match_key(Mods::SUPER | Mods::SHIFT, XKB_KEY_Tab),
             Some(Action::CycleFocusBack)
         );
+        assert_eq!(
+            km.match_key(Mods::SUPER | Mods::SHIFT, XKB_KEY_ISO_Left_Tab),
+            Some(Action::CycleFocusBack)
+        );
         // Super+Return → launcher.
         assert_eq!(
             km.match_key(Mods::SUPER, XKB_KEY_Return),
             Some(Action::ToggleLauncher)
+        );
+        // Super+Shift+Q → quit. XKB resolves the shifted letter to uppercase.
+        assert_eq!(
+            km.match_key(Mods::SUPER | Mods::SHIFT, b'Q' as u32),
+            Some(Action::Quit)
+        );
+        // Super+Shift+Return remains an alternate quit binding.
+        assert_eq!(
+            km.match_key(Mods::SUPER | Mods::SHIFT, XKB_KEY_Return),
+            Some(Action::Quit)
         );
         // Super+q → close focused ('q' keysym 0x71).
         assert_eq!(km.match_key(Mods::SUPER, 0x71), Some(Action::CloseFocused));
@@ -262,7 +287,7 @@ mod tests {
             Some(Action::ToggleLauncher)
         );
         assert_eq!(
-            km.match_key_during_keyboard_capture(Mods::SUPER | Mods::SHIFT, XKB_KEY_Return),
+            km.match_key_during_keyboard_capture(Mods::SUPER | Mods::SHIFT, b'Q' as u32),
             Some(Action::Quit)
         );
         assert_eq!(

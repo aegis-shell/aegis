@@ -288,29 +288,38 @@ fn minimized_window_does_not_count_as_a_dock_invasion() {
 }
 
 #[test]
-fn hidden_panel_places_magnified_icons_fully_below_the_output() {
-    let display_height = 1080.0;
-    let icon_top = Dock::hidden_panel_y(display_height) + DOCK_PANEL_HEIGHT
-        - DOCK_BASELINE_INSET
-        - DOCK_TILE_MAX;
-    assert!(icon_top >= display_height);
+fn dock_surface_morphs_between_panel_and_exact_handle_geometry() {
+    let display = (1920.0, 1080.0);
+    let expanded_width = 320.0;
+    let expanded = Dock::collapsed_panel_rect(display, expanded_width, 1.0);
+    assert_eq!(expanded.w, expanded_width);
+    assert_eq!(expanded.h, DOCK_PANEL_HEIGHT);
+    assert_eq!(
+        expanded.y,
+        display.1 - DOCK_BOTTOM_MARGIN - DOCK_PANEL_HEIGHT
+    );
+
+    let collapsed = Dock::collapsed_panel_rect(display, expanded_width, 0.0);
+    assert_eq!(collapsed.w, AUTOHIDE_HANDLE_WIDTH);
+    assert_eq!(collapsed.h, AUTOHIDE_HANDLE_HEIGHT);
+    assert_eq!(
+        collapsed.y,
+        display.1 - DOCK_BOTTOM_MARGIN - AUTOHIDE_HANDLE_HEIGHT
+    );
+    assert_eq!(expanded.y + expanded.h, collapsed.y + collapsed.h);
 }
 
 #[test]
-fn collapsed_handle_waits_until_dock_content_is_offscreen() {
-    let panel_travel = DOCK_TILE_MAX + DOCK_PANEL_HEIGHT + DOCK_BOTTOM_MARGIN;
-    let fully_hidden_reveal = (DOCK_PANEL_HEIGHT - DOCK_BASELINE_INSET) / panel_travel;
-
-    assert_eq!(Dock::collapsed_handle_progress(1.0), 0.0);
+fn dock_content_finishes_draining_before_surface_becomes_handle() {
+    assert_eq!(Dock::collapse_content_progress(1.0), 1.0);
     assert_eq!(
-        Dock::collapsed_handle_progress(fully_hidden_reveal),
-        0.0,
-        "the handle must not overlap the last visible magnified icon"
+        Dock::collapse_content_progress(AUTOHIDE_CONTENT_DRAIN_END),
+        0.0
     );
-    assert_eq!(Dock::collapsed_handle_progress(0.0), 1.0);
+    assert_eq!(Dock::collapse_content_progress(0.0), 0.0);
     assert!(
-        Dock::collapsed_handle_progress(fully_hidden_reveal * 0.5) > 0.0,
-        "the handle fades in after all Dock content crosses the output edge"
+        Dock::collapse_surface_progress(AUTOHIDE_CONTENT_DRAIN_END) > 0.0,
+        "the glass surface must still be visibly morphing after its icons drain"
     );
 }
 

@@ -485,7 +485,9 @@ impl DrmBackend {
             AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT,
             request,
         ) {
-            if self.cursor_state.is_some() || self.cursor_plane_active {
+            let cursor_rejected = !commit_error_is_transient(&error)
+                && (self.cursor_state.is_some() || self.cursor_plane_active);
+            if cursor_rejected {
                 log::warn!(
                     "drm: cursor-only atomic commit rejected ({error}); disabling hardware cursor"
                 );
@@ -695,7 +697,9 @@ impl DrmBackend {
                 for blob in damage_blobs {
                     let _ = self.card().destroy_property_blob(blob);
                 }
-                if self.cursor_state.is_some() || self.cursor_plane_active {
+                let cursor_rejected = !commit_error_is_transient(&error)
+                    && (self.cursor_state.is_some() || self.cursor_plane_active);
+                if cursor_rejected {
                     log::warn!(
                         "drm: cursor-plane TEST_ONLY commit rejected ({error}); disabling hardware cursor"
                     );
@@ -711,7 +715,9 @@ impl DrmBackend {
             for blob in damage_blobs {
                 let _ = self.card().destroy_property_blob(blob);
             }
-            if self.cursor_state.is_some() || self.cursor_plane_active {
+            let cursor_rejected = !commit_error_is_transient(&error)
+                && (self.cursor_state.is_some() || self.cursor_plane_active);
+            if cursor_rejected {
                 log::warn!(
                     "drm: cursor-plane atomic commit rejected ({error}); disabling hardware cursor"
                 );

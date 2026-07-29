@@ -2,10 +2,17 @@ use super::*;
 
 const APP_RESCAN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
+pub(super) struct PendingScreenshot {
+    pub(super) command: aegis_ipc::Command,
+    pub(super) ts_mono_ms: u64,
+    pub(super) origin: aegis_ipc::Origin,
+    pub(super) cursor: CaptureCursorState,
+}
+
 pub(super) struct IterationWork {
     pub(super) frame_dt: f32,
     pub(super) pending_synthetic_input: Vec<(aegis_ipc::Command, u64, aegis_ipc::Origin)>,
-    pub(super) pending_screenshots: Vec<(aegis_ipc::Command, u64, aegis_ipc::Origin)>,
+    pub(super) pending_screenshots: Vec<PendingScreenshot>,
 }
 
 impl CompositorRuntime {
@@ -831,7 +838,12 @@ impl CompositorRuntime {
             // Screenshots render with the GPU objects below, not in the
             // generic command path.
             if matches!(cmd, aegis_ipc::Command::Screenshot { .. }) {
-                pending_screenshots.push((cmd, ts, origin));
+                pending_screenshots.push(PendingScreenshot {
+                    command: cmd,
+                    ts_mono_ms: ts,
+                    origin,
+                    cursor: self.capture_cursor_state(),
+                });
                 continue;
             }
             apply_command_and_journal(
