@@ -15,20 +15,39 @@ How to build and run aegis for development.
 | A running Wayland session | `$WAYLAND_DISPLAY` must be set to run the nested backend |
 | bubblewrap + systemd user manager | Required for real Realm application sandbox tests |
 
-## Dependency modes
+## Choose your workflow
 
-Aegis keeps Rust source selection separate from native library discovery:
+Aegis development splits into two roles. Pick the row that describes you;
+everything below this table follows from it.
 
-| Mode | Rust bindings | Native libraries | Intended use |
-|------|---------------|------------------|--------------|
-| Local | Path overrides into `../optics/bindings` | The sibling uninstalled Meson tree | Cross-repository development |
-| Canonical | Locked Optics `v0.0.3` Git source | System `pkg-config` and loader paths | CI, releases, and distribution packages |
+| You are… | Workflow | Why |
+|----------|----------|-----|
+| **Contributing to Aegis only** | [Canonical workflow](#canonical-workflow-contributor) | You never touch Optics, so the locked `v0.0.3` bindings and the system-installed native libraries are all you need. No sibling checkout, no Cargo override. |
+| **Maintaining Aegis *and* Optics together** (e.g. their joint authors) | [Local workflow](#local-workflow-dual-maintainer) | You drive both libraries in lockstep and want every Aegis `cargo` command to build against the live Optics tree you are editing. |
+
+### How the two roles differ
+
+Aegis deliberately keeps Rust source selection separate from native library
+discovery. That separation is what makes both roles coexist on the same
+checkout without one forcing its setup on the other:
+
+| Concern | Canonical workflow | Local workflow |
+|---------|--------------------|----------------|
+| Rust bindings | Locked Optics `v0.0.3` Git source | Path overrides into `../optics/bindings` |
+| Native libraries | System `pkg-config` and dynamic-loader paths | The sibling uninstalled Meson tree (via `meson-uninstalled/*.pc`) |
+| `.cargo/config.toml` | Absent | A copy of `.cargo/optics-local.toml` |
+| Sibling `../optics` required | No | Yes |
 
 The root `Cargo.toml` always records the canonical Git dependencies.
-`.cargo/optics-local.toml` is an explicit development override, so an
-independent Aegis checkout never requires a sibling repository.
+`.cargo/optics-local.toml` is an explicit, opt-in development override, so an
+independent Aegis checkout never requires a sibling repository. Distribution
+packaging and CI always use the canonical workflow; see
+[Distribution Packaging](packaging.md).
 
-## Local Optics development
+### Local workflow (dual maintainer)
+
+For maintainers who edit Aegis *and* Optics together and want every Aegis
+`cargo` command to build against the live Optics tree.
 
 The Rust bindings build against the unified optics Meson build tree, so build
 `libflux`, `libflux-scene-graph`, `liblens`, and `libiris` first:
@@ -65,9 +84,15 @@ cargo test --locked --workspace
 `.cargo/config.toml` is ignored by Git. Remove it to return to the canonical
 locked Git sources and installed native libraries.
 
-## Canonical and package builds
+### Canonical workflow (contributor)
 
-Install the matching Optics release before building Aegis:
+For everyone contributing to Aegis only. You do **not** need a sibling
+`optics` checkout. Build the matching Optics `0.0.3` once so its native
+libraries, headers, and `.pc` files land in the system paths, then drive Aegis
+with ordinary `cargo` commands against the locked bindings.
+
+**One-time Optics install** (or upgrade it whenever a project bump moves to a
+new Optics tag):
 
 ```bash
 meson setup ../optics/build-release ../optics \
@@ -75,19 +100,31 @@ meson setup ../optics/build-release ../optics \
 meson compile -C ../optics/build-release
 sudo meson install -C ../optics/build-release
 sudo ldconfig
-pkg-config --modversion flux flux-scene-graph lens iris
-cargo build --locked --release --workspace
+pkg-config --modversion flux flux-scene-graph lens iris   # sanity check
 ```
 
-Distribution packages should declare the Optics `0.0.3` shared libraries,
-headers, and `.pc` files as system build/runtime dependencies. Fetch or
-vendor the locked Rust Git dependencies during the package source-preparation
-phase, then run Cargo with `--locked`; do not require an `../optics` source
-path in the package build directory.
+> If your distribution already ships an Optics `0.0.3` package, install that
+> instead and skip the manual build. What matters is that the four
+> `pkg-config --modversion` checks above each report a `0.0.3`-compatible
+> version.
 
-The full CI job exercises this exact boundary: it installs the tagged Optics
-C libraries, verifies their `pkg-config` metadata, and builds the locked
-remote Rust bindings without a local Cargo override.
+**Daily development** needs no further Optics work — just Cargo:
+
+```bash
+cargo run --locked -p aegis          # build & run (see Build and run below)
+cargo test --locked --workspace
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+```
+
+This is the exact boundary the full CI job exercises: it installs the tagged
+Optics C libraries, verifies their `pkg-config` metadata, and builds the
+locked remote Rust bindings without any local Cargo override.
+
+Building distribution packages is a separate concern with its own rules
+(vendoring, offline builds, install manifests, integration triggers). Do not
+apply them to contributor development; see
+[Distribution Packaging](packaging.md) instead.
 
 ## Build and run
 
@@ -145,7 +182,7 @@ which owns systemd units, D-Bus services, and portal metadata, is documented
 separately in [Distribution Packaging](packaging.md).
 
 The compositor creates a `VkSurfaceKHR` on flux's Vulkan instance and presents
-the shell. Local-mode binaries and test harnesses re-emit the uninstalled
+the shell. Local-workflow binaries and test harnesses re-emit the uninstalled
 build-tree rpaths published by the binding crates. Canonical builds use the
 system dynamic-loader configuration.
 
@@ -170,8 +207,8 @@ cargo test --locked --workspace
 ```
 
 `aegis-core` and `aegis-compositor` unit tests run without the flux dependency;
-the rest need either the sibling Optics Meson tree in local mode or the
-installed libraries in canonical mode.
+the rest need either the sibling Optics Meson tree in the local workflow or
+the installed libraries in the canonical workflow.
 
 The ordinary workspace run skips kernel-level Realm launcher tests when the
 test process is not alone in a controller-delegated cgroup. Run those tests
@@ -194,9 +231,9 @@ its process group.
 | `cannot connect to host Wayland display` | `$WAYLAND_DISPLAY` is unset or points at no compositor |
 | `$XDG_RUNTIME_DIR is unset` | Log in through PAM/logind; do not create a shared runtime directory under `/tmp` |
 | DRM runner rejects root | Log in as the normal seat user; do not bypass logind or seatd with `sudo` |
-| Missing a `flux`, `flux-scene-graph`, `lens`, or `iris` pkg-config file | Build the sibling tree for local mode, or install the matching Optics release for canonical mode |
+| Missing a `flux`, `flux-scene-graph`, `lens`, or `iris` pkg-config file | In the local workflow, build the sibling tree; in the canonical workflow, install the matching Optics release |
 | `vkCreateSwapchainKHR: function pointer was NULL` | `VK_KHR_swapchain` not enabled; the backend requests it, so check the flux device extensions |
-| `error while loading shared libraries: libflux*.so` / `liblens*.so` / `libiris*.so` | In local mode, rebuild after moving the Meson tree; in canonical mode, refresh the loader cache or configure the installed prefix |
+| `error while loading shared libraries: libflux*.so` / `liblens*.so` / `libiris*.so` | In the local workflow, rebuild after moving the Meson tree; in the canonical workflow, refresh the loader cache or configure the installed prefix |
 | `Realm cgroup isolation is unavailable` | Run Aegis in the packaged systemd user service; a shared terminal scope cannot satisfy controller delegation |
 
 ## See Also

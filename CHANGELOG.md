@@ -5,7 +5,21 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once the
 project cuts a tagged release.
 
-## Unreleased
+## [0.0.5] - 2026-07-29
+
+### Cursors
+
+- Cursor rendering switched from binary Xcursor parsing to SVG rasterization
+  via `resvg`/`usvg`/`tiny-skia`. SVG cursors from the active theme and from
+  Wayland clients are rasterized at runtime; see ADR-0070.
+- A full Bibata-Modern-Ice SVG cursor theme is now bundled in the binary
+  (`assets/cursors/Bibata-Modern-Ice`, embedded via `include_dir`) as the
+  default cursor source, so a sane pointer exists even with no
+  `XCURSOR_THEME` and a bare TTY.
+- **Licensing note:** Bibata-Modern-Ice is GPL-3.0. Its `LICENSE` and `NOTICE`
+  are staged under `/usr/share/licenses/aegis/Bibata-Modern-Ice/` by the
+  distribution packaging contract; downstream packagers must preserve that
+  disclosure. The project code itself remains Apache-2.0.
 
 ### Build and dependency acquisition
 
