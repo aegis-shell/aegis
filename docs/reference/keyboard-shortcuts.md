@@ -17,6 +17,7 @@ application does not also receive the shortcut.
 | `Super+Right` | Switch to the next workspace |
 | `Super+Left` | Switch to the previous workspace |
 | `Super+T` | Toggle tiling on the current workspace |
+| `Super+L` | Lock the session |
 | `Print` | Open the interactive screenshot region selector |
 | `Super+Shift+Q` | Gracefully quit the current Aegis instance |
 | `Super+Shift+Return` | Gracefully quit the current Aegis instance |
@@ -26,10 +27,15 @@ normal shutdown path disables its outputs, releases the seat and Direct
 Rendering Manager (DRM) device, and returns control to the terminal. This is
 the preferred exit path during VT testing.
 
-The launcher and Prism toggles, `Print`, and the quit shortcuts remain
-available while trusted Aegis chrome owns the keyboard. No global shortcut
-runs while the session is locked or while the focused client has active
-keyboard-shortcut inhibition.
+The launcher and Prism toggles, `Super+L`, `Print`, and the quit shortcuts
+remain available while trusted Aegis chrome owns the keyboard. No global
+shortcut runs while the session is locked or while the focused client has
+active keyboard-shortcut inhibition.
+
+`Super+L` starts the first-party `ext-session-lock-v1` client. The compositor
+then routes input only to its lock surfaces and retains an opaque fail-closed
+frame if the client exits unexpectedly. See
+[How to Configure Locking and Idle](../how-to/lock-and-idle.md).
 
 ## Direct-Display VT Shortcuts
 

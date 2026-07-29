@@ -21,6 +21,7 @@ pub(super) fn publish_system_status_parts(
 /// against the host service immediately afterwards.
 pub(super) fn apply_system_action(
     server: &mut aegis_compositor::Server,
+    host: &mut aegis_backend::host::Host,
     notifications: &std::sync::Arc<std::sync::Mutex<aegis_core::notify::NotificationQueue>>,
     status: &mut aegis_core::system::SystemStatus,
     action: aegis_core::system::SystemAction,
@@ -28,6 +29,7 @@ pub(super) fn apply_system_action(
     use aegis_core::system::SystemAction;
 
     action.validate().map_err(str::to_owned)?;
+    validate_session_boundary(server.session_lock_confirmed(), &action)?;
     match action {
         SystemAction::ToggleMute => {
             spawn_host_command("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])?;
@@ -81,8 +83,26 @@ pub(super) fn apply_system_action(
             server.set_tiling(enabled);
             status.tiled = enabled;
         }
+        SystemAction::SetOutputPower { powered } => {
+            host.set_outputs_powered(powered)?;
+        }
     }
     Ok(())
+}
+
+fn validate_session_boundary(
+    lock_confirmed: bool,
+    action: &aegis_core::system::SystemAction,
+) -> Result<(), String> {
+    if matches!(
+        action,
+        aegis_core::system::SystemAction::SetOutputPower { powered: false }
+    ) && !lock_confirmed
+    {
+        Err("output power-off requires a confirmed session lock".into())
+    } else {
+        Ok(())
+    }
 }
 
 fn spawn_host_command(program: &str, args: &[&str]) -> Result<(), String> {
@@ -94,4 +114,22 @@ fn spawn_host_command(program: &str, args: &[&str]) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("failed to start {program}: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aegis_core::system::SystemAction;
+
+    #[test]
+    fn output_power_requires_confirmed_secure_presentation() {
+        let action = SystemAction::SetOutputPower { powered: false };
+        assert!(validate_session_boundary(false, &action).is_err());
+        assert!(validate_session_boundary(true, &action).is_ok());
+        assert!(
+            validate_session_boundary(false, &SystemAction::SetOutputPower { powered: true })
+                .is_ok()
+        );
+        assert!(validate_session_boundary(false, &SystemAction::ToggleMute).is_ok());
+    }
 }

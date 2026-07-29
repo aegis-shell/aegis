@@ -41,7 +41,7 @@ impl Server {
 
     /// Every mapped client surface id in paint order for a directed Realm.
     pub fn realm_client_surface_frame_order(&self, realm: RealmId) -> Vec<usize> {
-        if self.state.session_locked || self.realm_output(realm).is_none() {
+        if self.state.session_lock_phase.is_active() || self.realm_output(realm).is_none() {
             return Vec::new();
         }
         self.client_surface_frame_order_for_realm(realm, None)
@@ -258,7 +258,7 @@ impl Server {
     /// virtual realms are independent of the user's currently visible
     /// workspace and use realm-local placements on their virtual output.
     pub fn realm_toplevel_frames(&self, realm: RealmId) -> Vec<SurfacePixels<'_>> {
-        if self.state.session_locked || self.realm_output(realm).is_none() {
+        if self.state.session_lock_phase.is_active() || self.realm_output(realm).is_none() {
             return Vec::new();
         }
         self.state
@@ -312,7 +312,7 @@ impl Server {
     }
 
     pub fn realm_toplevel_dmabuf_frames(&self, realm: RealmId) -> Vec<SurfaceDmabuf> {
-        if self.state.session_locked || self.realm_output(realm).is_none() {
+        if self.state.session_lock_phase.is_active() || self.realm_output(realm).is_none() {
             return Vec::new();
         }
         self.state
@@ -754,7 +754,7 @@ impl Server {
         realm: RealmId,
         want_above: bool,
     ) -> Vec<SurfacePixels<'_>> {
-        if self.state.session_locked || self.realm_output(realm).is_none() {
+        if self.state.session_lock_phase.is_active() || self.realm_output(realm).is_none() {
             return Vec::new();
         }
         let mut out = Vec::new();
@@ -857,7 +857,7 @@ impl Server {
         realm: RealmId,
         want_above: bool,
     ) -> Vec<SurfaceDmabuf> {
-        if self.state.session_locked || self.realm_output(realm).is_none() {
+        if self.state.session_lock_phase.is_active() || self.realm_output(realm).is_none() {
             return Vec::new();
         }
         let mut out = Vec::new();

@@ -132,6 +132,76 @@ impl DesktopPreferences {
     }
 }
 
+/// Staged inactivity policy owned by the Aegis session.
+///
+/// A timeout of zero disables that individual stage. Keeping inactive values
+/// in the snapshot lets System Settings disable automatic idle handling and
+/// later restore it without discarding the user's preferred timings.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdleSettings {
+    /// Whether inactivity notifications may trigger the configured stages.
+    /// Explicit locking and lock-before-sleep remain available when false.
+    pub enabled: bool,
+    pub dim_after_seconds: u32,
+    pub lock_after_seconds: u32,
+    pub display_off_after_seconds: u32,
+    pub suspend_after_seconds: u32,
+    /// Backlight level used by the dim stage, as a percentage.
+    pub dim_percent: u8,
+}
+
+impl Default for IdleSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            dim_after_seconds: 5 * 60,
+            lock_after_seconds: 10 * 60,
+            display_off_after_seconds: 11 * 60,
+            suspend_after_seconds: 30 * 60,
+            dim_percent: 30,
+        }
+    }
+}
+
+impl IdleSettings {
+    /// A generous upper bound that still catches a seconds/milliseconds typo
+    /// before it reaches the Wayland protocol.
+    pub const MAX_TIMEOUT_SECONDS: u32 = 7 * 24 * 60 * 60;
+
+    pub fn validate(self) -> Result<(), &'static str> {
+        if !(1..=100).contains(&self.dim_percent) {
+            return Err("idle dim percentage is outside 1..=100");
+        }
+        let stages = [
+            self.dim_after_seconds,
+            self.lock_after_seconds,
+            self.display_off_after_seconds,
+            self.suspend_after_seconds,
+        ];
+        if stages
+            .into_iter()
+            .any(|seconds| seconds > Self::MAX_TIMEOUT_SECONDS)
+        {
+            return Err("idle timeout is longer than seven days");
+        }
+        if (self.display_off_after_seconds != 0 || self.suspend_after_seconds != 0)
+            && self.lock_after_seconds == 0
+        {
+            return Err("locking must be enabled before display power-off or suspend");
+        }
+        let mut previous = 0;
+        for current in stages.into_iter().filter(|seconds| *seconds != 0) {
+            if current <= previous {
+                return Err("enabled idle stages must be strictly increasing");
+            }
+            previous = current;
+        }
+        Ok(())
+    }
+}
+
 /// Live display capabilities and current effective configuration.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -163,6 +233,7 @@ pub struct SettingsSnapshot {
     pub touchpad: TouchpadStatus,
     pub display: DisplayStatus,
     pub preferences: DesktopPreferences,
+    pub idle: IdleSettings,
 }
 
 /// One typed persistent-settings transaction.
@@ -173,6 +244,7 @@ pub enum SettingsAction {
     SetTouchpad { config: TouchpadConfig },
     SetDisplay { settings: DisplaySettings },
     SetDesktopPreferences { preferences: DesktopPreferences },
+    SetIdle { settings: IdleSettings },
 }
 
 impl SettingsAction {
@@ -209,6 +281,7 @@ impl SettingsAction {
                 Err("display mode is outside the supported range")
             }
             Self::SetDesktopPreferences { preferences } => preferences.validate(),
+            Self::SetIdle { settings } => settings.validate(),
             _ => Ok(()),
         }
     }
@@ -257,6 +330,17 @@ mod tests {
         };
         assert!(
             SettingsAction::SetDesktopPreferences { preferences }
+                .validate()
+                .is_err()
+        );
+
+        let idle = IdleSettings {
+            lock_after_seconds: 0,
+            display_off_after_seconds: 60,
+            ..Default::default()
+        };
+        assert!(
+            SettingsAction::SetIdle { settings: idle }
                 .validate()
                 .is_err()
         );

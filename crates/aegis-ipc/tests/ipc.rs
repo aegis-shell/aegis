@@ -222,6 +222,7 @@ impl Handler for TestHandler {
             SettingsAction::SetDesktopPreferences { preferences } => {
                 snapshot.preferences = preferences;
             }
+            SettingsAction::SetIdle { settings } => snapshot.idle = settings,
         }
         snapshot.revision += 1;
         Ok(SettingsReceipt {
@@ -549,9 +550,27 @@ fn settings_query_and_confirmed_transaction_round_trip() {
     assert_eq!(receipt.revision, 9);
     assert_eq!(
         handler.settings_actions.lock().unwrap().as_slice(),
-        &[action, appearance_action]
+        &[action.clone(), appearance_action.clone()]
     );
     assert_eq!(client.settings().unwrap().preferences, preferences);
+
+    let idle = aegis_core::settings::IdleSettings {
+        dim_after_seconds: 120,
+        lock_after_seconds: 300,
+        display_off_after_seconds: 360,
+        suspend_after_seconds: 900,
+        ..Default::default()
+    };
+    let idle_action = SettingsAction::SetIdle { settings: idle };
+    let receipt = client
+        .apply_settings(Some(9), idle_action.clone())
+        .expect("confirmed idle-policy apply");
+    assert_eq!(receipt.revision, 10);
+    assert_eq!(
+        handler.settings_actions.lock().unwrap().as_slice(),
+        &[action, appearance_action, idle_action]
+    );
+    assert_eq!(client.settings().unwrap().idle, idle);
 }
 
 #[test]
@@ -590,7 +609,7 @@ fn system_status_query_and_control_round_trip() {
 fn system_control_returns_the_authoritative_apply_error() {
     let path = scratch();
     let handler = Arc::new(TestHandler::permissive(vec![]));
-    *handler.system_result.lock().unwrap() = Err("backend refused system control".into());
+    *handler.system_result.lock().unwrap() = Err("backend refused output power".into());
     let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
     let mut client = Client::connect_with(
         &path,
@@ -606,7 +625,7 @@ fn system_control_returns_the_authoritative_apply_error() {
         .apply_system_action(SystemAction::ToggleMute)
         .unwrap_err();
     assert!(
-        error.to_string().contains("backend refused system control"),
+        error.to_string().contains("backend refused output power"),
         "{error}"
     );
     assert_eq!(

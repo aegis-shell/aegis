@@ -252,6 +252,53 @@ an estimated boundary, and only a real page flip from every owned CRTC retires
 the batch. The localized decision is recorded in
 [ADR-0077](../adr/0077-presentation-domain-redraw-state-machine.md).
 
+## Session Lock and Idle Policy
+
+Every compositor must hide desktop content before a power or sleep transition
+and route input only to an authentication surface. The reference systems split
+along two axes: where the security boundary lives, and how inactivity becomes a
+transition.
+
+- **sway** delegates the entire concern: `swaylock` is an external
+  `ext-session-lock-v1` client, and `swayidle` is an external policy daemon
+  that runs user-configured shell commands at each stage. The compositor owns
+  only the protocol; the locker, the policy, and the command surface are the
+  user's integration project.
+- **GNOME and KDE** keep the lock screen and idle policy inside the shell
+  process. Authentication, credential handling, brightness tools, and the
+  power daemons become part of the trusted compositor crash surface.
+- **niri** implements session lock inside the compositor through Smithay. Its
+  durable idea is not a particular API but the **explicit lock phase**:
+  `WaitingForSurfaces → Locking → Locked`. Each phase names what the
+  compositor may safely do, and a dead lock client can be replaced without
+  abandoning the locked state. The lock surface and policy still live in the
+  compositor process.
+- **macOS** runs authentication in a dedicated login window process, but the
+  window server remains the only framebuffer writer and keeps the transition
+  opaque.
+
+aegis absorbs niri's explicit-phase kernel without copying its in-compositor
+object structure. The compositor keeps the irreducible security state that
+must fail closed — protocol acceptance, exclusive input routing, idle
+inhibition, physical output power, and the opaque scene shown when a confirmed
+locker disappears — and converges the independent booleans and timestamps that
+previously described that state into a single enum that cannot express
+contradictory combinations. Presentation and authentication move to a
+first-party `ext-session-lock-v1` client (`aegis-lock`), and staged inactivity
+policy moves to a supervised `ext-idle-notify-v1` client (`aegis-idle`). A
+policy client may request a lock, but only the compositor's confirmation
+promotes the client's readiness signal, and only that signal releases the
+logind sleep delay. The separation, and the rejection of configurable shell
+commands at each idle stage, is recorded in
+[ADR-0078](../adr/0078-out-of-process-idle-and-session-lock.md).
+
+Output recovery follows the same ownership rule. A transient KMS `Busy` or
+inactive VT result must not consume the only chance to wake a display after the
+coordinator exits, so the wake intent is a single sticky recovery owned by the
+compositor: a user-visible unlock may promote a backed-off coordinator
+recovery to an immediate attempt, but re-observing the same reason never
+erases a failure backoff.
+
 ## What aegis Rejects
 
 To stay small, aegis deliberately leaves the following to other layers or to

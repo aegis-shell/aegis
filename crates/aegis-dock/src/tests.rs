@@ -1,4 +1,4 @@
-use super::rendering::entry_matches_app_id;
+use super::rendering::{entry_matches_app_id, hit_test_tiles};
 use super::*;
 
 fn app(id: &str) -> Entry {
@@ -321,6 +321,48 @@ fn dock_content_finishes_draining_before_surface_becomes_handle() {
         Dock::collapse_surface_progress(AUTOHIDE_CONTENT_DRAIN_END) > 0.0,
         "the glass surface must still be visibly morphing after its icons drain"
     );
+}
+
+#[test]
+fn collapsed_handle_has_no_tile_hover_target() {
+    let display = (1920.0, 1080.0);
+    let rest_bounds = Dock::rest_bounds(1, 1, display);
+    let panel_rect = Dock::collapsed_panel_rect(display, rest_bounds.w, 0.0);
+    let old_icon_rect = Rect {
+        x: display.0 * 0.5 - DOCK_TILE * 0.5,
+        y: rest_bounds.y + 5.0,
+        w: DOCK_TILE,
+        h: DOCK_TILE,
+    };
+    let cursor = (display.0 * 0.5, old_icon_rect.y + old_icon_rect.h * 0.5);
+
+    assert_eq!(
+        hit_test_tiles(cursor, rest_bounds, rest_bounds, 1.0, &[old_icon_rect]),
+        Some(0),
+        "the same point owns the visible tile while the Dock is expanded"
+    );
+    assert!(
+        hit_test_tiles(
+            cursor,
+            rest_bounds,
+            panel_rect,
+            Dock::collapse_content_progress(0.0),
+            &[old_icon_rect],
+        )
+        .is_none()
+    );
+
+    let mut dock = Dock::new();
+    dock.set_autohide(true);
+    dock.autohide_reveal = 0.0;
+    assert!(!dock.captures_pointer(cursor.0, cursor.1, display, &[], &workspace_snapshot(),));
+    assert!(dock.captures_pointer(
+        display.0 * 0.5,
+        display.1 - 1.0,
+        display,
+        &[],
+        &workspace_snapshot(),
+    ));
 }
 
 #[test]

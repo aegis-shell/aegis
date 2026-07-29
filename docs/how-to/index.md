@@ -6,6 +6,7 @@ Task-oriented instructions for operating an aegis session.
 
 - [How to Use the Dock, Launcher, and Prism](dock-and-launcher.md)
 - [How to Manage Borderless Windows](window-management.md)
+- [How to Configure Locking and Idle](lock-and-idle.md)
 - [How to Run a Wayland Input Method](wayland-input-method.md)
 - [How to Use Agent Workspaces](ai-workspaces.md)
 - [Connect fuji to Aegis](fuji.md)

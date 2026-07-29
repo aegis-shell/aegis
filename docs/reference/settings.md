@@ -12,6 +12,7 @@ window.
 | `aegis-settings display` | Open the display page. |
 | `aegis-settings --module touchpad` | Open the touchpad page. |
 | `aegis-settings --module appearance` | Open the appearance page. |
+| `aegis-settings --module power` | Open the power-management page. |
 | `aegis-settings --module=window-rules` | Open the window-rules page. |
 
 An unknown module id falls back to the first registered page. The desktop
@@ -38,7 +39,7 @@ discovers System Settings through the installed XDG metadata.
 | `touchpad` | Hardware | Instant | Available; aegis input policy and libinput backend |
 | `keyboard` | Hardware | Explicit | Not available yet; keymap, repeat, compose, and shortcut backend required |
 | `appearance` | Personalization | Explicit Apply button | Available; Aegis desktop-preference authority and portal projection |
-| `power` | System | Instant | Not available yet; logind, UPower, and power-profile service adapters required |
+| `power` | System | Explicit Apply button | Available; Aegis idle policy, session lock, output power, and logind sleep coordination |
 | `users` | System | Explicit | Not available yet; AccountsService and authorization adapter required |
 | `window-rules` | System | Explicit | Not available yet; revisioned window-rule settings backend required |
 
@@ -48,16 +49,18 @@ metadata, but render no editable controls.
 ## Settings Transactions
 
 The application loads one revisioned settings snapshot. Display, touchpad,
-and appearance changes are submitted as typed actions with the observed
-revision. A successful response means the compositor main loop persisted and
-applied the change. A stale revision or backend failure preserves the newer
-authoritative snapshot and displays an error.
+appearance, and idle-policy changes are submitted as typed actions with the
+observed revision. A successful response means the compositor main loop
+persisted and applied the change. A stale revision or backend failure
+preserves the newer authoritative snapshot and displays an error.
 
-Display and appearance edits use explicit apply. The appearance transaction
-contains the complete color scheme, optional accent, contrast, reduced-motion
-state, fonts, text scale, icon theme, and cursor profile. Touchpad edits apply
-immediately. Multiple unsent actions of one type are coalesced to the newest
-value while a previous transaction is in flight.
+Display, appearance, and power edits use explicit apply. The appearance
+transaction contains the complete color scheme, optional accent, contrast,
+reduced-motion state, fonts, text scale, icon theme, and cursor profile. The
+power transaction contains the automatic-idle switch, ordered dim, lock,
+display-off, and suspend timeouts, and dimmed brightness. Touchpad edits
+apply immediately. Multiple unsent actions of one type are coalesced to the
+newest value while a previous transaction is in flight.
 
 ## Non-settings Controls
 

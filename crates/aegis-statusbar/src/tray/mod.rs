@@ -102,7 +102,7 @@ pub struct TrayPixmap {
 pub struct MenuNode {
     pub id: i32,
     pub kind: MenuEntryKind,
-    /// Mnemonic underscores stripped (see [`strip_mnemonic`]).
+    /// Mnemonic underscores stripped (see `strip_mnemonic`).
     pub label: String,
     pub enabled: bool,
     pub visible: bool,

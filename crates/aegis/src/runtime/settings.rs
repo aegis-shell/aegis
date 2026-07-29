@@ -33,6 +33,7 @@ impl CompositorRuntime {
             &mut self.cursor_cache,
             &mut self.host,
             &mut self.reload,
+            &mut self.idle_process,
             &self.live,
             &mut self.system_status,
             &mut self.input_acc,
@@ -54,6 +55,7 @@ pub(super) fn publish_settings_parts(
         touchpad: status.touchpad.clone(),
         display: status.display.clone(),
         preferences: effective_desktop_preferences(config),
+        idle: config.map(|config| config.idle).unwrap_or_default(),
     };
     live.set_settings(snapshot.clone());
     publish_system_status_parts(status, shell, live, ipc);
@@ -81,6 +83,7 @@ pub(super) fn commit_settings_parts(
     cursor_cache: &mut crate::cursor::CursorCache,
     host: &mut Host,
     reload: &mut Option<aegis_config::ReloadWatcher>,
+    idle_process: &mut session::IdleProcess,
     live: &std::sync::Arc<LiveState>,
     status: &mut aegis_shell::SystemStatus,
     input_acc: &mut InputAccumulator,
@@ -137,6 +140,19 @@ pub(super) fn commit_settings_parts(
                 cursor_cache,
                 reload,
             )
+        }
+        aegis_ipc::SettingsAction::SetIdle { settings } => {
+            config_writer
+                .apply_and_wait(aegis_config::ConfigEdit::SetIdle { settings })
+                .map_err(|error| format!("failed to persist idle settings: {error}"))?;
+            if let Some(current) = config.as_mut() {
+                current.idle = settings;
+            } else if let Some(path) = config_path {
+                *config = aegis_config::load(path)
+                    .map_err(|error| format!("failed to reload idle settings: {error}"))?;
+            }
+            idle_process.reconfigure(settings);
+            Ok(())
         }
     };
 

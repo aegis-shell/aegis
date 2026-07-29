@@ -654,6 +654,7 @@ impl CompositorRuntime {
                             origin,
                         );
                     }
+                    Action::Lock => self.idle_process.lock_now(),
                     Action::Quit => {
                         let cmd = aegis_ipc::Command::Quit;
                         apply_command_and_journal(

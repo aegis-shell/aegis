@@ -268,7 +268,7 @@ unsafe fn idle_inhibitor_is_active(record: *mut IdleInhibitorRec) -> bool {
             || !(*record).honored
             || (*record).state.is_null()
             || (*record).surface.is_null()
-            || (*(*record).state).session_locked
+            || (*(*record).state).session_lock_phase.is_active()
             || !(*(*record).surface).mapped
         {
             return false;
@@ -292,7 +292,7 @@ pub(crate) unsafe fn update_idle_notifications(state: *mut State) {
         }
         // A scoped IPC surfaceless inhibitor counts like an active
         // per-surface one, gated on the session being unlocked the same way.
-        let inhibited = (!(*state).session_locked && (*state).ipc_idle_inhibit)
+        let inhibited = (!(*state).session_lock_phase.is_active() && (*state).ipc_idle_inhibit)
             || (*state).idle_inhibitors.iter().any(|resource| {
                 if resource.is_null() {
                     return false;

@@ -29,11 +29,13 @@ build tree. (On Arch this is the separate `optics` package; see
 [Arch Linux](#arch-linux).)
 
 The remaining native build dependencies include a C toolchain, `pkg-config`,
-Wayland and its protocols, Vulkan, xkbcommon, libinput, libseat, and libclang
-for binding generation. Building the complete workspace, including the
-independent portal backend, additionally requires PipeWire/SPA development
-files. The portal runtime requires `xdg-desktop-portal`; install the GTK
-backend as a fallback for interfaces Aegis does not implement.
+Wayland and its protocols, Vulkan, xkbcommon, libinput, libseat, Linux PAM,
+and libclang for binding generation. Building the complete workspace,
+including the independent portal backend, additionally requires PipeWire/SPA
+development files. The core runtime uses logind and `brightnessctl` for
+sleep coordination and backlight dimming. The portal runtime requires
+`xdg-desktop-portal`; install the GTK backend as a fallback for interfaces
+Aegis does not implement.
 
 ## Reproducible Source Preparation
 
@@ -69,6 +71,8 @@ inside the package build root.
 | Source | Destination | Suggested component |
 |--------|-------------|---------------------|
 | `target/release/aegis` | `/usr/bin/aegis` | core |
+| `target/release/aegis-idle` | `/usr/bin/aegis-idle` | core |
+| `target/release/aegis-lock` | `/usr/bin/aegis-lock` | core |
 | `target/release/aegis-settings` | `/usr/bin/aegis-settings` | core |
 | `target/release/aegis-ctl` | `/usr/bin/aegis-ctl` | core |
 | `target/release/aegis-portal` | `/usr/lib/aegis/aegis-portal` | portal |
@@ -77,6 +81,7 @@ inside the package build root.
 | `contrib/systemd/user/aegis.service` | `/usr/lib/systemd/user/aegis.service` | core |
 | `contrib/io.github.ming2k.aegis.Settings.desktop` | `/usr/share/applications/io.github.ming2k.aegis.Settings.desktop` | core |
 | `contrib/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg` | `/usr/share/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg` | core |
+| `contrib/pam/aegis-lock` | `/etc/pam.d/aegis-lock` | core |
 | `contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | portal |
 | `contrib/xdg-desktop-portal/portals/aegis.portal` | `/usr/share/xdg-desktop-portal/portals/aegis.portal` | portal |
 | `contrib/xdg-desktop-portal/aegis-portals.conf` | `/usr/share/xdg-desktop-portal/aegis-portals.conf` | portal |
@@ -101,6 +106,10 @@ For example, a simple package recipe can stage binaries with:
 package_root=${DESTDIR:?set DESTDIR to the package staging root}
 install -Dm0755 target/release/aegis \
   "$package_root/usr/bin/aegis"
+install -Dm0755 target/release/aegis-idle \
+  "$package_root/usr/bin/aegis-idle"
+install -Dm0755 target/release/aegis-lock \
+  "$package_root/usr/bin/aegis-lock"
 install -Dm0755 target/release/aegis-settings \
   "$package_root/usr/bin/aegis-settings"
 install -Dm0755 target/release/aegis-ctl \
@@ -114,6 +123,13 @@ install -Dm0755 target/release/fuji \
 ```
 
 Install the data files according to the table using mode `0644`.
+The PAM profile lives under `/etc`, outside the logical `/usr` prefix. A
+distribution may replace its `login` includes with the distribution's
+canonical authentication and account stacks, but it must keep both service
+classes: `aegis-lock` calls PAM authentication followed by account
+management. Omitting or misnaming this profile leaves a securely locked
+session unable to authenticate.
+
 `aegis-portal` is a separate runtime component: its package owns the private
 backend executable and all three activation/configuration files. The core
 package must not own those files or require the portal frontend and PipeWire
@@ -154,15 +170,19 @@ systemd-analyze --user verify aegis.service
 desktop-file-validate \
   /usr/share/applications/io.github.ming2k.aegis.Settings.desktop
 pkg-config --modversion flux flux-scene-graph lens iris
+test -x /usr/bin/aegis-idle
+test -x /usr/bin/aegis-lock
+test -r /etc/pam.d/aegis-lock
 systemctl --user daemon-reload
 systemctl --user start aegis.service
 ```
 
-Confirm that System Settings appears with its icon, `aegis-portal` activates
-through D-Bus, the preferred portal configuration is selected for an Aegis
-session, and `aegis-ctl` reaches the compositor. Run the Realm sandbox test
-through the packaged service topology as described in
-[Setup](setup.md#tests).
+Confirm that System Settings appears with its icon, the Power Management page
+persists an idle policy, `Super+L` authenticates through the installed PAM
+stack, `aegis-portal` activates through D-Bus, the preferred portal
+configuration is selected for an Aegis session, and `aegis-ctl` reaches the
+compositor. Run the Realm sandbox test through the packaged service topology
+as described in [Setup](setup.md#tests).
 
 ## Distribution recipes
 
@@ -233,7 +253,7 @@ pkgver=0.0.8
 pkgrel=1
 arch=(x86_64)
 url='https://github.com/ming2k/aegis'
-makedepends=(rust pkgconf clang wayland wayland-protocols optics pipewire)
+makedepends=(rust pkgconf clang wayland wayland-protocols optics pipewire pam)
 source=("$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')   # replace with the real release-tarball checksum
 
@@ -249,7 +269,7 @@ package_aegis() {
   # Project code is MIT; the embedded Bibata cursor is GPL-3.0-only.
   license=(MIT GPL-3.0-only)
   depends=(optics vulkan-icd-loader wayland libxkbcommon libinput seatd
-           systemd-libs dbus hicolor-icon-theme)
+           systemd-libs dbus pam brightnessctl hicolor-icon-theme)
   optdepends=(
     "aegis-portal=$pkgver-$pkgrel: screenshots and screen sharing through xdg-desktop-portal"
     'vulkan-mesa-layers: validation and layers for development'
@@ -259,6 +279,8 @@ package_aegis() {
   local dest="$pkgdir/usr"
 
   install -Dm0755 target/release/aegis          "$dest/bin/aegis"
+  install -Dm0755 target/release/aegis-idle     "$dest/bin/aegis-idle"
+  install -Dm0755 target/release/aegis-lock     "$dest/bin/aegis-lock"
   install -Dm0755 target/release/aegis-settings "$dest/bin/aegis-settings"
   install -Dm0755 target/release/aegis-ctl      "$dest/bin/aegis-ctl"
   install -Dm0755 target/release/aegis-fuji-mcp "$dest/bin/aegis-fuji-mcp"
@@ -271,6 +293,8 @@ package_aegis() {
   install -Dm0644 \
     contrib/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg \
     "$dest/share/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg"
+  install -Dm0644 contrib/pam/aegis-lock \
+    "$pkgdir/etc/pam.d/aegis-lock"
 
   install -Dm0644 LICENSE \
     "$pkgdir/usr/share/licenses/aegis/LICENSE"

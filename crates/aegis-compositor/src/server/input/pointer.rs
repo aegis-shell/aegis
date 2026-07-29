@@ -197,7 +197,7 @@ impl Server {
     }
 
     pub(crate) fn pointer_button(&mut self, button: u32, state: aegis_core::input::ButtonState) {
-        if self.state.session_locked {
+        if self.state.session_lock_phase.is_active() {
             if state.is_pressed() && !self.state.pointer_focus.is_null() {
                 self.change_keyboard_focus(self.state.pointer_focus);
             }
@@ -568,7 +568,10 @@ impl Server {
         // dispatch. Modifier-only keys never match, so modifiers still post.
         let shortcuts_inhibited =
             unsafe { extensions::keyboard_shortcuts_inhibited(self.state.as_mut()) };
-        let matched = if state.is_pressed() && !shortcuts_inhibited && !self.state.session_locked {
+        let matched = if state.is_pressed()
+            && !shortcuts_inhibited
+            && !self.state.session_lock_phase.is_active()
+        {
             keymap.and_then(|keymap| {
                 keymap.match_key(aegis_core::input::Mods(outcome.depressed), outcome.keysym)
             })
@@ -649,7 +652,7 @@ impl Server {
         let mut hit: *mut ffi::wl_resource = std::ptr::null_mut();
         for p in self.state.live_surfaces() {
             let s = unsafe { &*p };
-            if self.state.session_locked {
+            if self.state.session_lock_phase.is_active() {
                 if !unsafe {
                     extensions::is_active_session_lock_surface(
                         self.state.as_ref() as *const State as *mut State,
@@ -865,7 +868,7 @@ impl Server {
     /// Transition focus: post leave to the old client's pointer resources and
     /// enter to the new client's, with a fresh serial.
     pub(crate) fn change_pointer_focus(&mut self, mut new_focus: *mut ffi::wl_resource) {
-        let allowed = if self.state.session_locked {
+        let allowed = if self.state.session_lock_phase.is_active() {
             self.is_lock_resource(new_focus)
         } else {
             !new_focus.is_null() && self.active_seat_controls_resource(new_focus)

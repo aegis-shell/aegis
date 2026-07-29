@@ -14,7 +14,7 @@ use aegis_shell::Message;
 use module::{
     ApplyPolicy, ModuleAvailability, ModuleCategory, ModuleId, ModuleMetadata, ModuleRegistry,
 };
-use modules::{AppearanceModule, DisplayModule, TouchpadModule, UnavailableModule};
+use modules::{AppearanceModule, DisplayModule, PowerModule, TouchpadModule, UnavailableModule};
 
 /// Construct the built-in module set in stable navigation order.
 pub fn builtin_settings_modules() -> ModuleRegistry {
@@ -46,18 +46,7 @@ pub fn builtin_settings_modules() -> ModuleRegistry {
         Message::KeyboardDescription,
     ));
     modules.register(AppearanceModule::new());
-    modules.register(UnavailableModule::new(
-        ModuleMetadata {
-            id: ModuleId::new("power"),
-            title: Message::PowerManagement,
-            icon: Icon::Zap,
-            category: ModuleCategory::System,
-            keywords: &["power", "battery", "idle", "suspend", "profile"],
-            apply_policy: ApplyPolicy::Instant,
-            availability: ModuleAvailability::BackendUnavailable,
-        },
-        Message::PowerManagementDescription,
-    ));
+    modules.register(PowerModule::new());
     modules.register(UnavailableModule::new(
         ModuleMetadata {
             id: ModuleId::new("users"),
@@ -114,7 +103,7 @@ mod tests {
                 .filter(|module| module.availability == ModuleAvailability::Available)
                 .map(|module| module.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["display", "touchpad", "appearance"]
+            vec!["display", "touchpad", "appearance", "power"]
         );
     }
 }

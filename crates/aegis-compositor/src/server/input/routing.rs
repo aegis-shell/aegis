@@ -209,7 +209,7 @@ impl Server {
         use aegis_core::input::{ButtonState, InputEvent, SyntheticInputAction};
 
         let runtime = self.state.seat_runtime(seat)?;
-        if self.state.session_locked
+        if self.state.session_lock_phase.is_active()
             || actions.is_empty()
             || actions.len() > 64
             || runtime.interactive.is_some()

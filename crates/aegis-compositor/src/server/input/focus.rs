@@ -9,7 +9,7 @@ impl Server {
     /// `activated` toplevel state bit on the old and new surfaces so clients
     /// update their title-bar chrome to match focus.
     pub(crate) fn change_keyboard_focus(&mut self, mut new_focus: *mut ffi::wl_resource) {
-        let allowed = if self.state.session_locked {
+        let allowed = if self.state.session_lock_phase.is_active() {
             self.is_lock_resource(new_focus)
         } else {
             !new_focus.is_null() && self.active_seat_controls_resource(new_focus)

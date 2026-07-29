@@ -53,6 +53,8 @@ backend, renderer, and shell behind clear seams so the
 | | `aegis-statusbar` | Top status bar chrome component: workspace state, clock, live-system controls, notifications, and the host-rendered StatusNotifierItem tray |
 | | `aegis-wallpaper` | Background layer: multi-format image and short-video wallpaper |
 | | `aegis-config` | Declarative configuration: versioned TOML schema, loader, live reload |
+| **Session services** | `aegis-lock` | Multi-output session-lock presentation and PAM authentication |
+| | `aegis-idle` | Ordered inactivity policy, lock-before-sleep coordination, and display-power requests |
 | **Convenience channels** | `aegis-desktop-entries` | freedesktop.org desktop-entry enumeration and icon-theme lookup |
 | | `aegis-launcher` | Ordinary app detachment and fail-closed Realm namespace/cgroup launch |
 | | `aegis-ipc` | Versioned scoped IPC, sealed capture transport, and introspection over a Unix socket |
@@ -94,6 +96,11 @@ user sees or can do" tasks:
 - **"Start or discover apps"** → `aegis-desktop-entries` (discovery) + `aegis-launcher`
   (spawn). `aegis-launcher` is intentionally narrow: process detachment and
   environment, not window management.
+- **"Lock or handle inactivity"** → `aegis-lock` owns presentation and
+  authentication, while `aegis-idle` owns staged policy. The compositor
+  retains protocol, input, inhibitor, output-power, and fail-closed authority
+  ([ADR-0078](../adr/0078-out-of-process-idle-and-session-lock.md)).
+
 ## Settings Boundary
 
 Persistent settings use the same state-in, intent-out direction as the rest
@@ -106,9 +113,10 @@ revision.
 A module owns one visible settings domain and its draft editor state. It does
 not own the configuration file or the host service. This distinction keeps
 the module catalog broad without pretending all settings belong to the
-compositor: account modules use system account and authorization services,
-power modules use power services, and compositor-owned display/input policy
-uses the aegis settings IPC.
+compositor: account modules use system account and authorization services.
+The power module persists Aegis inactivity policy, while the supervised
+policy client coordinates the host's backlight and logind services.
+Compositor-owned display/input policy uses the Aegis settings IPC.
 
 Volume, brightness, radios, Do Not Disturb, and current-workspace layout are
 immediate service or session controls rather than persistent settings. The
@@ -119,6 +127,35 @@ Workspaces surface. The standalone System Settings app remains the canonical
 persistent-settings UI. See
 [ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md) and
 the [System Settings Reference](../reference/settings.md).
+
+## Session Lock and Inactivity
+
+Session security crosses three lifetimes. The compositor has the longest
+lifetime and owns the state that must fail closed: protocol acceptance,
+exclusive input routing, idle inhibition, physical output power, and the
+opaque scene shown when a confirmed locker disappears. The lock client has a
+short authentication lifetime and owns only what the user sees and enters.
+The idle coordinator has a replaceable policy lifetime and can restart when
+settings change.
+
+This separation keeps authentication and host power services out of the
+compositor without delegating the security boundary. The idle coordinator
+may request a lock, but it cannot claim that the lock is secure. It waits for
+the lock client's readiness signal, which is emitted only after compositor
+confirmation. Display power-off, suspend, and release of the logind delay
+inhibitor occur after that boundary.
+
+Activity reverses presentation policy in the opposite order: outputs wake
+behind the secure frame, the backlight is restored, and authentication
+remains necessary. A policy failure can wake a screen but cannot unlock it.
+A lock-presentation failure can remove the client but cannot reveal normal
+desktop content.
+
+Direct sessions own the physical devices and system sleep transition. Nested
+sessions retain the complete locking model but leave brightness, output
+power, and suspend to the outer desktop. See
+[ADR-0078](../adr/0078-out-of-process-idle-and-session-lock.md) and
+[How to Configure Locking and Idle](../how-to/lock-and-idle.md).
 
 ## Backend Abstraction
 
@@ -137,14 +174,6 @@ redraw. The current domain spans all active outputs because they share one
 desktop framebuffer and atomic commit. This preserves the real backend
 boundary instead of pretending the outputs can retire independently. See
 [ADR-0077](../adr/0077-presentation-domain-redraw-state-machine.md).
-
-Presentation availability retains its reason rather than collapsing to one
-active flag. Deliberate scanout power-off and a temporarily absent output
-target suspend rendering while preserving the active input epoch. Loss of
-libseat/VT authority invalidates that epoch, including when it happens after
-rendering was already suspended for another reason. Returning from any
-suspension forces a full frame; visual edges collected while no target exists
-are not replayed later.
 
 The nested backend, and the server itself, use raw libwayland over FFI
 rather than a higher-level framework
@@ -174,10 +203,9 @@ Each frame follows this sequence:
    waits asynchronously for every CRTC page flip. Pending client frame
    callbacks complete on successful submission; callback-only work uses an
    estimated refresh boundary without creating an empty atomic commit.
-5. VT loss cancels the backend and input epochs. Output power-off or temporary
-   target loss preserves input for wake and hotplug handling but rejects
-   unpresentable visual work. Every resume presents a full frame before
-   incremental damage continues.
+5. VT loss or output recreation cancels the old presentation epoch. Resume
+   rebuilds the backend resources and presents a full frame before incremental
+   damage resumes.
 6. Client buffers release once the GPU or display engine no longer needs
    them: against an explicit completion fence on DRM, or after enough later
    nested frames to retire every Flux slot.

@@ -35,7 +35,7 @@ fn drm_format_to_flux(drm: u32) -> Option<flux::Format> {
 /// every client that previously worked keeps working.
 ///
 /// Call this once at startup, after the flux device is created, and pass the
-/// result to [`aegis_compositor::Server::new_with_render_caps`].
+/// result to `aegis_compositor::Server::new_with_render_caps`.
 pub fn formats_with_modifiers(device: &flux::Device) -> Vec<drm_fmt::DmabufFormat> {
     use drm_fmt::DmabufFormat;
     ADVERTISED_FOURCCS

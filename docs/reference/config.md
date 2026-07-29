@@ -17,10 +17,11 @@ all configuration writes, and applies live state. Dock pin changes use the
 same serialized path.
 
 `aegis-config::ConfigStore` translates the accepted dock, touchpad, output,
-and desktop-preference edits into TOML. Each edit preserves comments and
-unrelated keys, validates the complete resulting schema, flushes a temporary
-file in the same directory, and atomically replaces the configuration file.
-A malformed or schema-incompatible existing file is left untouched.
+desktop-preference, and idle-policy edits into TOML. Each edit preserves
+comments and unrelated keys, validates the complete resulting schema, flushes
+a temporary file in the same directory, and atomically replaces the
+configuration file. A malformed or schema-incompatible existing file is left
+untouched.
 
 ## Top-Level Fields
 
@@ -34,6 +35,7 @@ A malformed or schema-incompatible existing file is left untouched.
 | `[statusbar]` | table | `enabled = true` | Whether the top status bar is registered at startup. See [Status Bar](#status-bar). |
 | `[ui]` | table | `hicolor` icons, `default` 24 px cursor, borderless windows, full motion | Desktop-wide UI and window-presentation policy. See [UI](#ui). |
 | `[input.touchpad]` | table | touchpad defaults | Touchpad pointing, tapping, and scrolling profile. See [Touchpad](#touchpad). |
+| `[idle]` | table | dim 5 min, lock 10 min, display off 11 min, suspend 30 min | Ordered inactivity, session-lock, display-power, and suspend policy. See [Idle and Locking](#idle-and-locking). |
 | `[[output]]` | array of tables | none | Per-connector display policy: mode, scale, position, transform, primary. See [Outputs](#outputs). |
 | `[screenshot]` | table | XDG Pictures directory, cursor included | Screenshot output policy. See [Screenshots](#screenshots). |
 | `[appearance]` | table | system color scheme, normal contrast, standard fonts and scale | Desktop-wide color, contrast, and typography preferences. See [Appearance](#appearance). |
@@ -152,6 +154,52 @@ scroll_method = "two-finger"
 Unsupported controls are disabled when a physical device reports its
 capabilities. The selected values remain the device profile and will be
 applied after hotplug when a compatible touchpad appears.
+
+## Idle and Locking
+
+The `[idle]` table is the staged inactivity policy used by the supervised
+`aegis-idle` session client. Saving a valid change replaces the running policy
+without restarting the compositor. The lock screen uses
+`ext-session-lock-v1`; display power-off and suspend wait until the compositor
+has confirmed the secure lock.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | boolean | `true` | Allow inactivity to trigger configured stages. Manual locking and lock-before-sleep remain active when `false`. |
+| `dim_after_seconds` | integer | `300` | Seconds after the last activity to set the hardware backlight to `dim_percent`; `0` disables the stage. |
+| `lock_after_seconds` | integer | `600` | Seconds after the last activity to start `aegis-lock`; `0` disables automatic locking. |
+| `display_off_after_seconds` | integer | `660` | Seconds after the last activity to power down displays after lock confirmation; `0` disables the stage. |
+| `suspend_after_seconds` | integer | `1800` | Seconds after the last activity to request logind suspend after lock confirmation; `0` disables the stage. |
+| `dim_percent` | integer | `30` | Hardware backlight target, 1–100 percent. |
+
+Each timeout is either `0` or at most `604800` seconds (seven days).
+Nonzero timeouts must be strictly increasing in table order. A nonzero
+display-off or suspend timeout requires a nonzero lock timeout.
+
+```toml
+[idle]
+enabled = true
+dim_after_seconds = 300
+lock_after_seconds = 600
+display_off_after_seconds = 660
+suspend_after_seconds = 1800
+dim_percent = 30
+```
+
+Per-surface `zwp_idle_inhibit_v1` inhibitors and authorized portal
+`IdleInhibit` requests keep every stage resumed. A locked session ignores
+those inhibitors. Activity restores a dimmed backlight and wakes powered-down
+outputs behind the lock.
+
+In a nested session, locking remains active but the outer desktop retains
+brightness, physical output-power, and suspend ownership. The dim,
+display-off, and suspend stages are therefore not executed by the nested
+session.
+
+See [How to Configure Locking and Idle](../how-to/lock-and-idle.md) for the
+System Settings workflow and
+[ADR-0078](../adr/0078-out-of-process-idle-and-session-lock.md) for the
+security boundary.
 
 ## Screenshots
 
@@ -482,6 +530,7 @@ Letters (`a`–`z`, lowercased), digits (`0`–`9`), and the common controls:
 | `workspace_prev` | `prev_workspace`, `ws_prev` | Switch to the previous workspace |
 | `tiling` | `toggle_tiling` | Toggle tiling on the current workspace |
 | `screenshot` | `snapshot`, `prtsc` | Open the interactive screenshot region selector |
+| `lock` | `lockscreen`, `lock_screen` | Secure the session with the first-party lock screen |
 | `quit` | `exit` | Quit the compositor |
 
 A matched binding is consumed before delivery to the focused client, so the
@@ -503,6 +552,7 @@ configured:
 | `Super+Right` | `workspace_next` |
 | `Super+Left` | `workspace_prev` |
 | `Super+T` | `tiling` |
+| `Super+L` | `lock` |
 | `Print` | `screenshot` |
 | `Super+Shift+Q` | `quit` |
 | `Super+Shift+Return` | `quit` |

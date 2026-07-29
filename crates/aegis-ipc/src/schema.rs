@@ -22,9 +22,10 @@ use aegis_core::workspace::{OutputId, Switch, WorkspaceId, WorkspaceSnapshot};
 use crate::journal::{JournalEntry, JournalSnapshot};
 
 /// The protocol major version this build speaks. A client must offer the
-/// same major version at the [`Request::Hello`] handshake. Version 11 makes
-/// live system-control replies authoritative main-loop receipts. Version 10
-/// adds the complete effective desktop-preferences snapshot and transaction.
+/// same major version at the [`Request::Hello`] handshake. Version 12 adds
+/// the staged idle-policy snapshot and transaction. Version 11 makes live
+/// system-control replies authoritative main-loop receipts. Version 10 adds
+/// the complete effective desktop-preferences snapshot and transaction.
 /// Version 9 adds compositor maximize/restore commands. Version 8 adds explicit
 /// output-space-use transition events. Version 7 adds
 /// live system-status queries and immediate system-control commands. Version
@@ -34,7 +35,7 @@ use crate::journal::{JournalEntry, JournalSnapshot};
 /// `Event::StreamFrame`, `Event::StreamEnded`, `StreamOutputStop`,
 /// ADR-0052). Version 4 adds revisioned desktop-settings snapshots,
 /// subscriptions, and confirmed settings transactions.
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 /// Built-in owner-only scope used by the compositor's reference CLI for
 /// Realm recovery and administration. The Unix socket remains user-private;
 /// naming this scope opts the connection into the high-risk Realm operation
@@ -1215,6 +1216,20 @@ mod tests {
         assert_eq!(cmd.op_class(), OpClass::SystemControl);
         assert!(cmd.required_cap().control);
         assert!(cmd.validate().is_ok());
+    }
+
+    #[test]
+    fn output_power_command_has_a_stable_tagged_shape() {
+        let cmd = Command::System {
+            action: SystemAction::SetOutputPower { powered: false },
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"System","action":{"type":"SetOutputPower","powered":false}}"#
+        );
+        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
+        assert!(cmd.required_cap().control);
     }
 
     #[test]

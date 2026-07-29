@@ -11,7 +11,8 @@ Install:
 
 - Rust 1.88 or later;
 - Meson, Ninja, `pkg-config`, a C23 compiler, and libclang;
-- Vulkan, Wayland, xkbcommon, libinput, and libseat development files; and
+- Vulkan, Wayland, xkbcommon, libinput, libseat, and Linux PAM development
+  files; and
 - the Optics `v0.0.7` native libraries.
 
 Building the independent `aegis-portal` backend additionally requires
@@ -56,9 +57,10 @@ export XDG_DATA_DIRS="$aegis_stage/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/
 
 ## Start the Nested Compositor
 
-Run:
+Build the two supervised session clients, then run:
 
 ```bash
+cargo build --locked -p aegis-idle -p aegis-lock
 cargo run --locked -p aegis
 ```
 

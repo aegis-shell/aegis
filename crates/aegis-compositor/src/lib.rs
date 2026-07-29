@@ -41,6 +41,118 @@ use aegis_core::realm::{
 };
 use aegis_core::{SurfaceDmabuf, SurfacePixels};
 
+/// Security-visible phase of the ext-session-lock protocol.
+///
+/// Request acceptance hides normal content immediately. `Securing` persists
+/// until a newly secure frame reaches every active output; only then may the
+/// compositor emit `locked` and enter `Locked`. Keeping the presentation
+/// receipt in the phase prevents impossible combinations such as "confirmed
+/// but still waiting for the first frame".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionLockPhase {
+    Unlocked,
+    Securing {
+        requested_at: std::time::Instant,
+        frame_pending: bool,
+    },
+    Locked {
+        frame_pending: bool,
+    },
+}
+
+impl SessionLockPhase {
+    fn begin(&mut self, now: std::time::Instant) {
+        debug_assert_eq!(*self, Self::Unlocked);
+        *self = Self::Securing {
+            requested_at: now,
+            frame_pending: false,
+        };
+    }
+
+    pub(crate) fn is_active(self) -> bool {
+        !matches!(self, Self::Unlocked)
+    }
+
+    pub(crate) fn is_confirmed(self) -> bool {
+        matches!(self, Self::Locked { .. })
+    }
+
+    pub(crate) fn frame_pending(self) -> bool {
+        matches!(
+            self,
+            Self::Securing {
+                frame_pending: true,
+                ..
+            } | Self::Locked {
+                frame_pending: true
+            }
+        )
+    }
+
+    pub(crate) fn request_secure_frame(&mut self) {
+        match self {
+            Self::Unlocked => {}
+            Self::Securing { frame_pending, .. } | Self::Locked { frame_pending } => {
+                *frame_pending = true;
+            }
+        }
+    }
+
+    pub(crate) fn expire_surface_grace(
+        &mut self,
+        now: std::time::Instant,
+        grace: std::time::Duration,
+    ) {
+        if let Self::Securing {
+            requested_at,
+            frame_pending,
+        } = self
+            && now.duration_since(*requested_at) >= grace
+        {
+            *frame_pending = true;
+        }
+    }
+
+    /// Record presentation of the requested secure frame.
+    ///
+    /// Returns `true` only for the first receipt, when the protocol's
+    /// `locked` event becomes legal. Later receipts merely retire replacement
+    /// or fallback-frame work while the session remains locked.
+    pub(crate) fn secure_frame_presented(&mut self) -> bool {
+        match *self {
+            Self::Securing {
+                frame_pending: true,
+                ..
+            } => {
+                *self = Self::Locked {
+                    frame_pending: false,
+                };
+                true
+            }
+            Self::Locked {
+                frame_pending: true,
+            } => {
+                *self = Self::Locked {
+                    frame_pending: false,
+                };
+                false
+            }
+            Self::Unlocked
+            | Self::Securing {
+                frame_pending: false,
+                ..
+            }
+            | Self::Locked {
+                frame_pending: false,
+            } => false,
+        }
+    }
+
+    pub(crate) fn unlock(&mut self) {
+        *self = Self::Unlocked;
+    }
+}
+
 /// Single-plane dma-buf parameters backing a `wl_buffer`, or accumulating in a
 /// `zwp_linux_buffer_params_v1`. Owns the imported file descriptor.
 struct DmabufBuffer {
@@ -250,7 +362,7 @@ pub struct SurfaceRec {
     /// space. For surfaces without a client-declared window geometry this is
     /// also the buffer's draw origin; for CSD surfaces that exclude shadows
     /// via `set_window_geometry` the buffer is drawn up-left of this point
-    /// (see [`surface_draw_origin`]). M1 assigns a placeholder cascade on
+    /// (see `surface_draw_origin`). M1 assigns a placeholder cascade on
     /// map; M3's window manager will own placement policy.
     pub position: aegis_core::Point,
     /// Last committed contents, tightly packed BGRA8, copied out of the client
@@ -353,7 +465,7 @@ pub struct SurfaceRec {
     /// Committed xdg-shell window geometry (excluding client shadows). Its
     /// size is the window rect's size; its origin is the frame inset by
     /// which the buffer sits up-left of the window rect (see
-    /// [`surface_draw_origin`]).
+    /// `surface_draw_origin`).
     window_geometry: Option<aegis_core::Rect>,
     pending_window_geometry: Option<aegis_core::Rect>,
     /// `None` means the whole surface accepts input; `Some` is the union of
@@ -1016,14 +1128,16 @@ pub(crate) struct State {
     /// callbacks. Callbacks cannot construct a second mutable `Server`, so
     /// dispatch applies the newest target for each seat after they return.
     pending_popup_focus: std::collections::BTreeMap<SeatId, *mut ffi::wl_resource>,
-    /// Active ext-session-lock object and fail-closed visibility state.
+    /// Active ext-session-lock object and fail-closed visibility phase.
+    ///
+    /// The object pointer may be null in `Locked` after its client dies. A
+    /// replacement first-party locker can then assume responsibility without
+    /// exposing the session between clients.
     pub(crate) session_lock: *mut c_void,
-    pub(crate) session_locked: bool,
+    pub(crate) session_lock_phase: SessionLockPhase,
     pub(crate) lock_focus_dirty: bool,
     pub(crate) pending_lock_focus: *mut ffi::wl_resource,
     pub(crate) pre_lock_keyboard_focus: *mut ffi::wl_resource,
-    pub(crate) session_lock_requested_at: Option<std::time::Instant>,
-    pub(crate) lock_frame_pending: bool,
     /// Pending console VT switch requested by a Ctrl+Alt+Fn key press
     /// (XF86Switch_VT_N). The kernel never sees these keys once libinput owns
     /// evdev, so the compositor performs the session switch through libseat.
@@ -1194,12 +1308,10 @@ impl State {
             pending_activation: None,
             pending_popup_focus: std::collections::BTreeMap::new(),
             session_lock: std::ptr::null_mut(),
-            session_locked: false,
+            session_lock_phase: SessionLockPhase::Unlocked,
             lock_focus_dirty: false,
             pending_lock_focus: std::ptr::null_mut(),
             pre_lock_keyboard_focus: std::ptr::null_mut(),
-            session_lock_requested_at: None,
-            lock_frame_pending: false,
             pending_vt_switch: None,
             workspaces,
             output,

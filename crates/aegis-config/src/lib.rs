@@ -23,7 +23,9 @@ use std::path::{Path, PathBuf};
 
 use aegis_core::input::{Mods, TouchpadConfig, TouchpadScrollMethod};
 use aegis_core::keybind::{Keybind, Keymap};
-pub use aegis_core::settings::{AccentColor, ColorScheme, Contrast, DesktopPreferences};
+pub use aegis_core::settings::{
+    AccentColor, ColorScheme, Contrast, DesktopPreferences, IdleSettings,
+};
 use toml_edit::DocumentMut;
 
 /// The schema `schema_version` this build understands. A file whose
@@ -105,6 +107,11 @@ pub struct Config {
     /// single effective desktop-preferences snapshot.
     #[serde(default)]
     pub appearance: AppearanceConfig,
+
+    /// Staged inactivity, locking, display-power, and suspend policy, written
+    /// as `[idle]`.
+    #[serde(default)]
+    pub idle: IdleSettings,
 }
 
 /// The `[appearance]` section: desktop-wide visual and typography policy.
@@ -763,6 +770,9 @@ impl Config {
                 "must be between 0.5 and 3.0",
             ));
         }
+        if let Err(message) = cfg.idle.validate() {
+            diagnostics.push(Diagnostic::new(Some("idle".into()), message));
+        }
         if !cfg.input.touchpad.pointer_speed.is_finite()
             || !(-1.0..=1.0).contains(&cfg.input.touchpad.pointer_speed)
         {
@@ -1004,6 +1014,8 @@ pub enum ConfigEdit {
     /// Replace all compositor-owned desktop appearance and UI preference
     /// fields while preserving unrelated presentation policy.
     SetDesktopPreferences { preferences: DesktopPreferences },
+    /// Replace the complete `[idle]` staged inactivity policy.
+    SetIdle { settings: IdleSettings },
 }
 
 /// Path-bound access to the versioned configuration document.
@@ -1045,6 +1057,7 @@ impl ConfigStore {
             ConfigEdit::SetDesktopPreferences { preferences } => {
                 apply_desktop_preferences(&mut document, &preferences)
             }
+            ConfigEdit::SetIdle { settings } => apply_idle(&mut document, settings),
         }
         let contents = document.to_string();
         Config::parse(&contents).map_err(|diagnostics| LoadError::Invalid {
@@ -1053,6 +1066,20 @@ impl ConfigStore {
         })?;
         write_document_atomic(&self.path, &contents)
     }
+}
+
+fn apply_idle(document: &mut DocumentMut, settings: IdleSettings) {
+    if !document.get("idle").is_some_and(toml_edit::Item::is_table) {
+        document["idle"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    let idle = &mut document["idle"];
+    idle["enabled"] = toml_edit::value(settings.enabled);
+    idle["dim_after_seconds"] = toml_edit::value(i64::from(settings.dim_after_seconds));
+    idle["lock_after_seconds"] = toml_edit::value(i64::from(settings.lock_after_seconds));
+    idle["display_off_after_seconds"] =
+        toml_edit::value(i64::from(settings.display_off_after_seconds));
+    idle["suspend_after_seconds"] = toml_edit::value(i64::from(settings.suspend_after_seconds));
+    idle["dim_percent"] = toml_edit::value(i64::from(settings.dim_percent));
 }
 
 fn apply_desktop_preferences(document: &mut DocumentMut, preferences: &DesktopPreferences) {

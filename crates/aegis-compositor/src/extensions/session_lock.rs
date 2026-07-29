@@ -38,6 +38,18 @@ static SESSION_LOCK_SURFACE_IMPL: ffi::ext_session_lock_surface_v1_interface_imp
         ack_configure: session_lock_surface_ack,
     };
 
+unsafe fn restore_unlocked_state(state: *mut State) {
+    unsafe {
+        if state.is_null() {
+            return;
+        }
+        (*state).session_lock_phase.unlock();
+        (*state).pending_lock_focus = (*state).pre_lock_keyboard_focus;
+        (*state).pre_lock_keyboard_focus = std::ptr::null_mut();
+        (*state).lock_focus_dirty = true;
+    }
+}
+
 pub(crate) unsafe extern "C" fn session_lock_bind(
     client: *mut ffi::wl_client,
     data: *mut c_void,
@@ -89,16 +101,32 @@ unsafe extern "C" fn session_lock_manager_lock(
             Box::into_raw(record) as *mut c_void,
             Some(session_lock_resource_destroy),
         );
-        if state.is_null() || !(*state).session_lock.is_null() || (*state).session_locked {
+        if state.is_null() || !(*state).session_lock.is_null() {
+            (*record_ptr).finished_sent = true;
+            ffi::wl_resource_post_event(res, ffi::EXT_SESSION_LOCK_V1_FINISHED);
+            return;
+        }
+        if (*state).session_lock_phase.is_confirmed() {
+            // A confirmed lock outlives its client. Allow a new lock object to
+            // assume responsibility without passing through Unlocked or
+            // exposing normal content between the two clients.
+            (*state).session_lock = record_ptr as *mut c_void;
+            (*record_ptr).locked_sent = true;
+            ffi::wl_resource_post_event(res, ffi::EXT_SESSION_LOCK_V1_LOCKED);
+            log::info!("[server] replacement client assumed the fail-closed session lock");
+            return;
+        }
+        if (*state).session_lock_phase.is_active() {
+            // A securing phase without its object should be transient only
+            // inside resource destruction. Refuse re-entry rather than
+            // assigning two owners to one protocol transaction.
             (*record_ptr).finished_sent = true;
             ffi::wl_resource_post_event(res, ffi::EXT_SESSION_LOCK_V1_FINISHED);
             return;
         }
         (*state).session_lock = record_ptr as *mut c_void;
-        (*state).session_locked = true;
+        (*state).session_lock_phase.begin(std::time::Instant::now());
         log::info!("[server] session lock requested; normal content hidden");
-        (*state).session_lock_requested_at = Some(std::time::Instant::now());
-        (*state).lock_frame_pending = false;
         (*state).pre_lock_keyboard_focus = (*state).keyboard_focus;
         (*state).pending_lock_focus = std::ptr::null_mut();
         (*state).lock_focus_dirty = true;
@@ -107,6 +135,12 @@ unsafe extern "C" fn session_lock_manager_lock(
         (*state).implicit_grab_active = false;
         if (*state).drag.is_some() {
             crate::cancel_drag(state, true);
+        }
+        if (*state).output_infos.is_empty() {
+            // With no active outputs there is no sensitive scanout to replace.
+            // The ext-session-lock presentation condition is vacuously met.
+            (*state).session_lock_phase.request_secure_frame();
+            session_lock_presented(state);
         }
     }
 }
@@ -214,12 +248,7 @@ unsafe extern "C" fn session_lock_unlock(
         let state = (*record).state;
         if !state.is_null() && (*state).session_lock == record as *mut c_void {
             (*state).session_lock = std::ptr::null_mut();
-            (*state).session_locked = false;
-            (*state).session_lock_requested_at = None;
-            (*state).lock_frame_pending = false;
-            (*state).pending_lock_focus = (*state).pre_lock_keyboard_focus;
-            (*state).pre_lock_keyboard_focus = std::ptr::null_mut();
-            (*state).lock_focus_dirty = true;
+            restore_unlocked_state(state);
             log::info!("[server] session unlocked by lock client");
         }
         for surface in &(*record).surfaces {
@@ -243,16 +272,19 @@ unsafe extern "C" fn session_lock_resource_destroy(resource: *mut ffi::wl_resour
         }
         let state = (*record).state;
         if !state.is_null() && (*state).session_lock == record as *mut c_void {
-            // Fail closed if the client dies after locking.
             (*state).session_lock = std::ptr::null_mut();
             if !(*record).locked_sent {
-                (*state).session_locked = false;
-                (*state).session_lock_requested_at = None;
-                (*state).lock_frame_pending = false;
+                restore_unlocked_state(state);
                 log::warn!("[server] session lock client exited before lock confirmation");
             } else {
+                // Fail closed, retire the vanished client's pixels with an
+                // opaque compositor frame, and permit a replacement lock
+                // object to authenticate and unlock later.
+                (*state).session_lock_phase.request_secure_frame();
+                (*state).pending_lock_focus = std::ptr::null_mut();
+                (*state).lock_focus_dirty = true;
                 log::error!(
-                    "[server] session lock client exited while locked; retaining fail-closed black screen"
+                    "[server] session lock client exited while locked; retaining fail-closed state for replacement"
                 );
             }
         }
@@ -286,11 +318,11 @@ unsafe extern "C" fn session_lock_surface_resource_destroy(resource: *mut ffi::w
         }
         if !(*record).lock.is_null() {
             let state = (*(*record).lock).state;
-            if !state.is_null() && (*state).session_locked {
+            if !state.is_null() && (*state).session_lock_phase.is_active() {
                 // A destroyed lock surface immediately reveals the compositor's
                 // solid fallback on its output. Confirm that replacement frame
                 // before acknowledging an in-flight lock request.
-                (*state).lock_frame_pending = true;
+                (*state).session_lock_phase.request_secure_frame();
             }
             for slot in &mut (*(*record).lock).surfaces {
                 if *slot == record {
@@ -372,7 +404,7 @@ pub(crate) unsafe fn session_lock_surface_committed(surface: *mut SurfaceRec) {
             })
         });
         if all_mapped {
-            (*state).lock_frame_pending = true;
+            (*state).session_lock_phase.request_secure_frame();
             (*state).pending_lock_focus = (*surface).resource;
             (*state).lock_focus_dirty = true;
         }
@@ -381,15 +413,14 @@ pub(crate) unsafe fn session_lock_surface_committed(surface: *mut SurfaceRec) {
 
 pub(crate) unsafe fn session_lock_presented(state: *mut State) {
     unsafe {
-        if state.is_null() || !(*state).session_locked || !(*state).lock_frame_pending {
+        if state.is_null() || !(*state).session_lock_phase.frame_pending() {
             return;
         }
         let lock = (*state).session_lock as *mut SessionLockRec;
-        (*state).lock_frame_pending = false;
-        if lock.is_null() || (*lock).locked_sent || (*lock).finished_sent {
+        let first_secure_frame = (*state).session_lock_phase.secure_frame_presented();
+        if !first_secure_frame || lock.is_null() || (*lock).locked_sent || (*lock).finished_sent {
             return;
         }
-        (*state).session_lock_requested_at = None;
         (*lock).locked_sent = true;
         ffi::wl_resource_post_event((*lock).resource, ffi::EXT_SESSION_LOCK_V1_LOCKED);
         log::info!("[server] secure frame confirmed on all outputs; session locked");
@@ -409,8 +440,8 @@ pub(crate) unsafe fn session_lock_surface_destroyed(surface: *mut SurfaceRec) {
         (*surface).session_lock_surface = std::ptr::null_mut();
         if !(*record).lock.is_null() {
             let state = (*(*record).lock).state;
-            if !state.is_null() && (*state).session_locked {
-                (*state).lock_frame_pending = true;
+            if !state.is_null() && (*state).session_lock_phase.is_active() {
+                (*state).session_lock_phase.request_secure_frame();
             }
         }
     }
@@ -423,7 +454,7 @@ pub(crate) unsafe fn is_active_session_lock_surface(
     unsafe {
         if state.is_null()
             || surface.is_null()
-            || !(*state).session_locked
+            || !(*state).session_lock_phase.is_active()
             || (*state).session_lock.is_null()
             || (*surface).session_lock_surface.is_null()
         {
@@ -456,11 +487,17 @@ pub(crate) unsafe fn is_active_session_lock_client_resource(
 /// clients normally destroy them after the `wl_output` global disappears.
 pub(crate) unsafe fn session_lock_outputs_changed(state: *mut State) {
     unsafe {
-        if state.is_null() || !(*state).session_locked {
+        if state.is_null() || !(*state).session_lock_phase.is_active() {
             return;
         }
-        (*state).lock_frame_pending = true;
+        (*state).session_lock_phase.request_secure_frame();
         let lock = (*state).session_lock as *mut SessionLockRec;
+        if (*state).output_infos.is_empty() {
+            // Removing the last output leaves no scanout that could expose
+            // normal content, so an in-flight lock can be acknowledged
+            // without waiting for an unavailable presentation target.
+            session_lock_presented(state);
+        }
         if lock.is_null() {
             return;
         }

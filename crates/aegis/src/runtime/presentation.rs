@@ -1085,6 +1085,7 @@ impl CompositorRuntime {
                         };
                         let effect = match apply_system_action(
                             &mut self.server,
+                            &mut self.host,
                             &self.notif_queue,
                             &mut self.system_status,
                             action,

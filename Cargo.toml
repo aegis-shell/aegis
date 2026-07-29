@@ -84,6 +84,10 @@ aegis-prism = { path = "crates/aegis-prism" }
 aegis-ai-workspaces = { path = "crates/aegis-ai-workspaces" }
 aegis-statusbar = { path = "crates/aegis-statusbar" }
 aegis-wallpaper = { path = "crates/aegis-wallpaper" }
+# First-party session products. The compositor retains the protocol and
+# fail-closed authority; these packages are ordinary Wayland clients.
+aegis-lock = { path = "crates/aegis-lock" }
+aegis-idle = { path = "crates/aegis-idle" }
 # Standalone persistent-settings application (ADR-0056).
 aegis-settings = { path = "crates/aegis-settings" }
 # Configuration: versioned TOML schema, loader, and live reload (ADR-0026).
@@ -139,6 +143,20 @@ tiny-skia = "0.12"
 # Embed the bundled Bibata-Modern-Ice cursor theme into the binary so a
 # sane default exists even with no XCURSOR_THEME and a bare TTY.
 include_dir = "0.7"
+
+# Standalone first-party Wayland clients. The system backend is required by
+# aegis-lock because Vulkan needs the native wl_display/wl_surface pointers.
+wayland-client = { version = "0.31.14", features = ["system"] }
+wayland-protocols = { version = "0.32.13", features = [
+    "client",
+    "staging",
+    "unstable",
+] }
+wayland-backend = { version = "0.3.15", features = ["client_system"] }
+smithay-client-toolkit = { version = "0.21.1", features = ["calloop", "xkbcommon"] }
+ash = "0.38"
+xkbcommon = "0.9"
+zeroize = "1.8"
 
 [profile.dev]
 opt-level = 1

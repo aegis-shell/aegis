@@ -1,6 +1,73 @@
 use super::*;
 
 #[test]
+fn session_lock_phase_requires_a_secure_presentation_receipt() {
+    let now = std::time::Instant::now();
+    let mut phase = SessionLockPhase::Unlocked;
+    phase.begin(now);
+    assert!(phase.is_active());
+    assert!(!phase.is_confirmed());
+    assert!(!phase.secure_frame_presented());
+
+    phase.request_secure_frame();
+    assert!(phase.frame_pending());
+    assert!(phase.secure_frame_presented());
+    assert!(phase.is_confirmed());
+    assert!(!phase.frame_pending());
+}
+
+#[test]
+fn session_lock_phase_retires_fallback_frames_without_unlocking() {
+    let now = std::time::Instant::now();
+    let mut phase = SessionLockPhase::Unlocked;
+    phase.begin(now);
+    phase.request_secure_frame();
+    assert!(phase.secure_frame_presented());
+
+    phase.request_secure_frame();
+    assert!(phase.frame_pending());
+    assert!(!phase.secure_frame_presented());
+    assert!(phase.is_confirmed());
+
+    phase.unlock();
+    assert_eq!(phase, SessionLockPhase::Unlocked);
+}
+
+#[test]
+fn session_lock_surface_grace_only_advances_securing_phase() {
+    let now = std::time::Instant::now();
+    let grace = std::time::Duration::from_secs(1);
+    let mut phase = SessionLockPhase::Unlocked;
+    phase.begin(now);
+    phase.expire_surface_grace(now + grace / 2, grace);
+    assert!(!phase.frame_pending());
+    phase.expire_surface_grace(now + grace, grace);
+    assert!(phase.frame_pending());
+    assert!(phase.secure_frame_presented());
+
+    phase.expire_surface_grace(now + grace * 2, grace);
+    assert!(!phase.frame_pending());
+}
+
+#[test]
+fn destroyed_surfaces_revoke_saved_session_lock_focus() {
+    let mut state = State::new(std::ptr::null_mut());
+    let destroyed = 0x10usize as *mut ffi::wl_resource;
+    let survivor = 0x20usize as *mut ffi::wl_resource;
+
+    state.pre_lock_keyboard_focus = destroyed;
+    state.pending_lock_focus = survivor;
+    revoke_session_lock_focus(&mut state, destroyed);
+    assert!(state.pre_lock_keyboard_focus.is_null());
+    assert_eq!(state.pending_lock_focus, survivor);
+    assert!(!state.lock_focus_dirty);
+
+    revoke_session_lock_focus(&mut state, survivor);
+    assert!(state.pending_lock_focus.is_null());
+    assert!(state.lock_focus_dirty);
+}
+
+#[test]
 fn dmabuf_buffer_ids_are_nonzero_and_monotonic() {
     let first = DmabufBuffer::empty(std::ptr::null_mut());
     let second = DmabufBuffer::empty(std::ptr::null_mut());

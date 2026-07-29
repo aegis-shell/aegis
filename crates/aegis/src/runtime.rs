@@ -596,6 +596,10 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         touchpad: system_status.touchpad.clone(),
         display: system_status.display.clone(),
         preferences: desktop_preferences.clone(),
+        idle: config
+            .as_ref()
+            .map(|config| config.idle)
+            .unwrap_or_default(),
     });
     live.set_system_status(system_status.clone());
     let ipc: Option<aegis_ipc::Server> = match std::env::var_os("XDG_RUNTIME_DIR") {
@@ -617,6 +621,17 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
             None
         }
     };
+    // Start the policy client only after both the Wayland and IPC sockets are
+    // published. It is supervised for the lifetime of this runtime and
+    // inherits the exact session environment advertised above.
+    let idle_process = session::IdleProcess::start(
+        config
+            .as_ref()
+            .map(|config| config.idle)
+            .unwrap_or_default(),
+        host.name() == "nested",
+        ipc.is_some(),
+    );
     // Signature of the last broadcast window set, used to detect changes.
     let last_win_sig: Option<WindowEventSignature> = None;
     let last_space_use = None;
@@ -718,6 +733,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         status_refresh_tx,
         config_writer,
         reload,
+        idle_process,
         quit_requested,
         ipc_cmd_rx,
         system_control_rx,

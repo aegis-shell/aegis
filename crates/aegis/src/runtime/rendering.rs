@@ -308,11 +308,11 @@ impl LauncherBackdrop {
 /// as [`LauncherBackdrop`]: a slot is rewritten only after `begin_frame`
 /// has waited its fence.
 ///
-/// Session flow: [`request_open`](Self::request_open) arms a session and
+/// Session flow: `ScreenshotFreeze::request_open` arms a session and
 /// defers the selector opening; the capture frame renders the normal frame
 /// into the target (the selector is not open yet, so its scrim stays out
 /// of the snapshot), then the compositor opens the selector over the
-/// frozen image. [`should_disarm`](Self::should_disarm) ends the session
+/// frozen image. `ScreenshotFreeze::should_disarm` ends the session
 /// once the selector closes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct CaptureCursorState {

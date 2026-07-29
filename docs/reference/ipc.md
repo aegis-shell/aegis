@@ -1,6 +1,6 @@
 # IPC Reference
 
-The aegis IPC is protocol version 11, carried as length-framed JSON over the
+The aegis IPC is protocol version 12, carried as length-framed JSON over the
 owner-only Unix socket at `$XDG_RUNTIME_DIR/aegis.sock`. Every connection starts
 with `Hello`; commands are accepted only after capability and scope checks.
 JSON messages are limited to 16 MiB. Large immutable capture and frame
@@ -98,10 +98,10 @@ live state carry the unchanged revision in both revision fields.
 | `Screenshot { path }` | `control` | `Screenshot` | Focused output |
 | `Quit` | `session` | — | Session |
 
-Most `Do` requests return `Ok` after the command is queued, not after it is
-applied. `System { action }` is the exception: its reply is the compositor
-main loop's authoritative apply result. Read the next snapshot or journal
-entry to observe fire-and-forget commands.
+`Do` returns `Ok` after most commands are queued, not after they are applied.
+`System { action }` is the exception: its reply is an authoritative main-loop
+receipt, and an apply refusal returns `Error`. Read the next snapshot or
+journal entry to observe other commands.
 Window-targeted physical commands are reauthorized on the compositor thread.
 If the human Realm is only an observer, focus, minimize, close, move,
 geometry, and workspace mutations produce `Effect::Refused` and do not reach
@@ -138,16 +138,17 @@ chrome and external IPC clients:
 | `SetBluetooth` | `enabled` | Unblock or block Bluetooth radios. |
 | `SetDoNotDisturb` | `enabled` | Change notification suppression. |
 | `SetTiling` | `enabled` | Set the current workspace layout mode. |
+| `SetOutputPower` | `powered` | Power all physical outputs on or off. Power-off is accepted only after a secure lock frame is confirmed; wake is always safe. Used by `aegis-idle`. |
 
 The command requires `control`, a live privileged lease, and permission for
 the `SystemControl` operation when a named scope restricts `ops`. The server
 validates bounds before dispatch and returns only after the compositor main
-loop applies or refuses the action. Accepted host-service commands still run
-asynchronously outside the compositor; the main loop publishes an optimistic
-snapshot and reconciles it through the host status poller.
-`SystemStatusChanged` tells subscribers to re-query; it carries no partial
-snapshot. These actions do not write the
-revisioned compositor configuration.
+loop applies or refuses the action. Host-service commands are still spawned
+without blocking for the external service's eventual state change. A
+successful apply publishes an optimistic snapshot and reconciles it through
+the host status poller. `SystemStatusChanged` tells subscribers to re-query;
+it carries no partial snapshot. These actions do not write the revisioned
+compositor configuration.
 
 ## Persistent Settings
 
@@ -159,6 +160,7 @@ revisioned compositor configuration.
 | `touchpad` | `TouchpadStatus` | Effective profile, detected devices, capabilities, and configurability. |
 | `display` | `DisplayStatus` | Connected outputs, advertised modes, configurability, and the last apply error. |
 | `preferences` | `DesktopPreferences` | Complete effective desktop profile after configuration defaults and explicit startup overrides. |
+| `idle` | `IdleSettings` | Complete validated inactivity, lock, output-power, and suspend policy. |
 
 `DesktopPreferences` contains:
 
@@ -173,6 +175,19 @@ revisioned compositor configuration.
 | `icon_theme`, `cursor_theme` | string | Non-empty, at most 256 bytes |
 | `cursor_size` | unsigned integer | 8–128 logical pixels |
 
+`IdleSettings` contains:
+
+| Field | Type | Bounds or values |
+|-------|------|------------------|
+| `enabled` | boolean | Whether inactivity may trigger configured stages |
+| `dim_after_seconds` | unsigned integer | `0` or 1–604800 |
+| `lock_after_seconds` | unsigned integer | `0` or 1–604800 |
+| `display_off_after_seconds` | unsigned integer | `0` or 1–604800; requires nonzero locking |
+| `suspend_after_seconds` | unsigned integer | `0` or 1–604800; requires nonzero locking |
+| `dim_percent` | unsigned integer | 1–100 |
+
+Nonzero stage times must be strictly increasing in the order shown.
+
 `Settings` submits one tagged action with an optional `expected_revision`:
 
 | Action | Payload | Effect |
@@ -180,6 +195,7 @@ revisioned compositor configuration.
 | `SetTouchpad` | complete `TouchpadConfig` | Validate, persist `[input.touchpad]`, and apply the profile to live libinput devices. |
 | `SetDisplay` | connector, mode, scale, position, and primary flag | Validate, atomically persist the output entry, and reconcile the live direct-DRM output. |
 | `SetDesktopPreferences` | complete `DesktopPreferences` | Validate, atomically persist the `[appearance]` and preference-related `[ui]` fields, apply chrome and cursor policy, and refresh application icons. |
+| `SetIdle` | complete `IdleSettings` | Validate and atomically persist `[idle]`, then replace the supervised idle policy client. |
 
 The operation requires `session` plus a live privileged lease. It is refused
 while the session is locked. When `expected_revision` does not match the
@@ -192,9 +208,10 @@ the revision, publishes the replacement snapshot, broadcasts
 `SettingsChanged`, and records the action and before/after revisions in the
 mutation journal.
 
-Display, touchpad, and desktop appearance are settings domains in the current
-snapshot. Mouse, keyboard, power, accounts, and window-rule modules remain
-unavailable until their authoritative services expose typed state and actions.
+Display, touchpad, desktop appearance, and idle power policy are settings
+domains in the current snapshot. Mouse, keyboard, accounts, and window-rule
+modules remain unavailable until their authoritative services expose typed
+state and actions.
 See the [System Settings Reference](settings.md#modules) and
 [ADR-0072](../adr/0072-desktop-preference-authority-and-toolkit-compatibility.md).
 

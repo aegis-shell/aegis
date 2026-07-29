@@ -40,6 +40,8 @@ pub enum Action {
     ToggleTiling,
     /// Open the interactive screenshot region selector.
     Screenshot,
+    /// Secure the current session with the trusted lock client.
+    Lock,
     /// Quit the compositor.
     Quit,
 }
@@ -55,7 +57,11 @@ impl Action {
     const fn allowed_during_keyboard_capture(self) -> bool {
         matches!(
             self,
-            Action::ToggleLauncher | Action::TogglePrism | Action::Screenshot | Action::Quit
+            Action::ToggleLauncher
+                | Action::TogglePrism
+                | Action::Screenshot
+                | Action::Lock
+                | Action::Quit
         )
     }
 }
@@ -92,6 +98,7 @@ impl Keymap {
                 kb(Mods::SUPER, 0xff53, Action::WorkspaceNext), /* Right */
                 kb(Mods::SUPER, 0xff51, Action::WorkspacePrev), /* Left */
                 kb(Mods::SUPER, 0x74, Action::ToggleTiling),   /* 't' */
+                kb(Mods::SUPER, b'l' as u32, Action::Lock),
                 kb(Mods::NONE, XKB_KEY_Print, Action::Screenshot), /* Print Screen */
                 kb(Mods::SUPER | Mods::SHIFT, b'q' as u32, Action::Quit),
                 kb(Mods::SUPER | Mods::SHIFT, XKB_KEY_Return, Action::Quit),
@@ -174,6 +181,7 @@ pub fn action_from_name(s: &str) -> Option<Action> {
         "workspace_prev" | "prev_workspace" | "ws_prev" => Action::WorkspacePrev,
         "tiling" | "toggle_tiling" => Action::ToggleTiling,
         "screenshot" | "snapshot" | "prtsc" => Action::Screenshot,
+        "lock" | "lockscreen" | "lock_screen" => Action::Lock,
         "quit" | "exit" => Action::Quit,
         _ => return None,
     })
@@ -274,6 +282,8 @@ mod tests {
             km.match_key(Mods::NONE, XKB_KEY_Print),
             Some(Action::Screenshot)
         );
+        // Super+L → secure session lock.
+        assert_eq!(km.match_key(Mods::SUPER, b'l' as u32), Some(Action::Lock));
         // Bare modifier keys never match (no keysym).
         assert_eq!(km.match_key(Mods::SUPER, XKB_KEY_NoSymbol), None);
     }
@@ -303,6 +313,10 @@ mod tests {
         assert_eq!(
             km.match_key_during_keyboard_capture(Mods::SUPER | Mods::SHIFT, b'Q' as u32),
             Some(Action::Quit)
+        );
+        assert_eq!(
+            km.match_key_during_keyboard_capture(Mods::SUPER, b'l' as u32),
+            Some(Action::Lock)
         );
         assert_eq!(
             km.match_key_during_keyboard_capture(Mods::SUPER, 0x71),

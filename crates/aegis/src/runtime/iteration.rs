@@ -36,6 +36,24 @@ impl CompositorRuntime {
         // woke this iteration must become visible before a pending Realm or
         // desktop capture can be handed to its requester.
         self.server.dispatch();
+        self.idle_process.maintain();
+        let outputs_powered = self.host.outputs_powered();
+        if !self.server.session_locked() && !outputs_powered {
+            self.idle_process
+                .require_output_wake(session::OutputWakeReason::SessionUnlock);
+        }
+        if let Some(wake_reason) = self.idle_process.output_wake_due(outputs_powered) {
+            match self.host.set_outputs_powered(true) {
+                Ok(()) => self.idle_process.output_wake_succeeded(),
+                Err(error) => {
+                    self.idle_process.output_wake_failed();
+                    log::warn!(
+                        "session: could not wake outputs for {}: {error}",
+                        wake_reason.description()
+                    );
+                }
+            }
+        }
         self.capture_worker
             .set_allowed(!self.server.session_locked() && self.host.is_active());
         let agent_suspended = self.server.session_locked() || !self.host.is_active();
@@ -402,6 +420,12 @@ impl CompositorRuntime {
                 error: None,
             };
             self.settings_revision = self.settings_revision.saturating_add(1);
+            self.idle_process.reconfigure(
+                self.config
+                    .as_ref()
+                    .map(|config| config.idle)
+                    .unwrap_or_default(),
+            );
             self.publish_settings();
             self.live.set_scopes(build_ipc_scopes(self.config.as_ref()));
             let pinned = resolve_pinned(
@@ -426,7 +450,11 @@ impl CompositorRuntime {
             self.queue_app_scan();
         }
 
-        if std::time::Instant::now() >= self.next_app_scan {
+        if app_scan_due(
+            std::time::Instant::now(),
+            self.next_app_scan,
+            self.server.session_locked(),
+        ) {
             self.queue_app_scan();
         }
         while let Ok((
@@ -707,11 +735,14 @@ impl CompositorRuntime {
             let command = aegis_ipc::Command::System {
                 action: action.clone(),
             };
-            let result = if self.server.session_locked() {
+            let allowed_while_locked =
+                matches!(&action, aegis_ipc::SystemAction::SetOutputPower { .. });
+            let result = if self.server.session_locked() && !allowed_while_locked {
                 Err("session is locked".into())
             } else {
                 apply_system_action(
                     &mut self.server,
+                    &mut self.host,
                     &self.notif_queue,
                     &mut self.system_status,
                     action,
@@ -749,7 +780,13 @@ impl CompositorRuntime {
             let cmd = request.command;
             let origin = request.origin;
             let ts = self.start.elapsed().as_millis() as u64;
-            if self.server.session_locked() {
+            let allowed_while_locked = matches!(
+                &cmd,
+                aegis_ipc::Command::System {
+                    action: aegis_ipc::SystemAction::SetOutputPower { .. }
+                }
+            );
+            if self.server.session_locked() && !allowed_while_locked {
                 journal_effect_and_broadcast(
                     &self.journal,
                     &self.ipc,
@@ -765,6 +802,7 @@ impl CompositorRuntime {
             if let aegis_ipc::Command::System { action } = &cmd {
                 let effect = match apply_system_action(
                     &mut self.server,
+                    &mut self.host,
                     &self.notif_queue,
                     &mut self.system_status,
                     action.clone(),
@@ -904,6 +942,14 @@ impl CompositorRuntime {
     }
 }
 
+fn app_scan_due(
+    now: std::time::Instant,
+    next_scan: std::time::Instant,
+    session_locked: bool,
+) -> bool {
+    !session_locked && now >= next_scan
+}
+
 /// User-initiated compositor surfaces may update the physical clipboard.
 /// IPC and internal captures remain side-effect-free across the Realm boundary.
 pub(super) fn screenshot_updates_human_clipboard(origin: aegis_ipc::Origin) -> bool {
@@ -911,4 +957,18 @@ pub(super) fn screenshot_updates_human_clipboard(origin: aegis_ipc::Origin) -> b
         origin,
         aegis_ipc::Origin::Chrome | aegis_ipc::Origin::Keybinding
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn periodic_app_scan_is_suppressed_while_locked() {
+        let now = std::time::Instant::now();
+        let due = now - APP_RESCAN_INTERVAL;
+        assert!(app_scan_due(now, due, false));
+        assert!(!app_scan_due(now, due, true));
+        assert!(!app_scan_due(now, now + APP_RESCAN_INTERVAL, false));
+    }
 }

@@ -133,7 +133,7 @@ pub(super) fn resolve_pinned(
 }
 
 /// Match every configuration spelling accepted for a persistent pin. The full
-/// desktop-file id is a configuration identity, while [`Entry::match_keys`]
+/// desktop-file id is a configuration identity, while `Entry::match_keys`
 /// covers the extensionless id and runtime aliases used by windows and icons.
 fn entry_matches_pin_name(entry: &aegis_core::app::Entry, name: &str) -> bool {
     entry.id.eq_ignore_ascii_case(name) || entry.match_keys().contains(&name.to_ascii_lowercase())

@@ -265,30 +265,21 @@ impl Chrome for Dock {
             f.column_ex(&sized(panel_rect.w, panel_rect.h), |_| {});
         });
 
-        // Hit-test live tile positions only after the pointer is inside the
-        // stable resting panel. Magnified pixels may pop outside that panel,
-        // but animation must never enlarge the Dock's click ownership.
-        let mut hit: Option<usize> = None;
-        if cursor.x >= rest_bounds.x
-            && cursor.y >= rest_bounds.y
-            && cursor.x < rest_bounds.x + rest_bounds.w
-            && cursor.y < rest_bounds.y + rest_bounds.h
-        {
-            let mut best = f32::MAX;
-            for (i, width) in eased.iter().enumerate() {
-                let cx = centre(i);
-                let half = *width * 0.5 + DOCK_TILE_GAP * 0.5;
-                let d = (cursor.x - cx).abs();
-                if d <= half && d < best {
-                    best = d;
-                    hit = Some(i);
-                }
-            }
-        }
+        // Hit-test only content that still exists in the morphing surface.
+        // The resting bounds remain the outer ownership limit, while the
+        // current panel and transformed icon geometry prevent the collapsed
+        // handle (or an icon's former position) from impersonating a tile.
+        let hit = hit_test_tiles(
+            (cursor.x, cursor.y),
+            rest_bounds,
+            panel_rect,
+            content_progress,
+            &icon_rects,
+        );
 
         // Draw each tile's icon, then its running dot. Once content has
         // reached the sink, no tile layers remain behind the stadium.
-        if content_progress > 0.01 {
+        if content_progress > AUTOHIDE_CONTENT_INTERACTION_MIN {
             for (i, t) in tiles.iter().enumerate() {
                 let s = icon_rects[i].w;
                 let cx = icon_rects[i].x + s * 0.5;
@@ -376,7 +367,7 @@ impl Chrome for Dock {
 
         // A slim divider in the section gap separates the kept strip from the
         // transient running apps, like macOS's Dock.
-        if section_gap > 0.0 && content_progress > 0.01 {
+        if section_gap > 0.0 && content_progress > AUTOHIDE_CONTENT_INTERACTION_MIN {
             let normal_divider_x = (centre(pinned_count - 1) + centre(pinned_count)) * 0.5;
             let divider_x = disp.x * 0.5 + (normal_divider_x - disp.x * 0.5) * content_progress;
             let divider_h = DOCK_TILE * 0.55 * content_progress;
@@ -631,10 +622,18 @@ impl Chrome for Dock {
         if self.app_menu.contains(x, y, display) {
             return true;
         }
-        if self.effective_autohide() && self.autohide_reveal < 0.1 {
+        if self.effective_autohide()
+            && Self::collapse_content_progress(self.autohide_reveal)
+                <= AUTOHIDE_CONTENT_INTERACTION_MIN
+        {
             return Self::hidden_trigger_contains((x, y), display);
         }
-        let r = self.pointer_bounds(windows, display);
+        let rest = self.pointer_bounds(windows, display);
+        let r = if self.effective_autohide() {
+            Self::collapsed_panel_rect(display, rest.w, self.autohide_reveal)
+        } else {
+            rest
+        };
         x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h
     }
 
@@ -697,6 +696,40 @@ impl Chrome for Dock {
         self.icons = catalog.icons.clone();
         self.catalog_revision = self.catalog_revision.wrapping_add(1);
     }
+}
+
+pub(super) fn hit_test_tiles(
+    cursor: (f32, f32),
+    rest_bounds: Rect,
+    panel_rect: Rect,
+    content_progress: f32,
+    icon_rects: &[Rect],
+) -> Option<usize> {
+    let contains = |rect: Rect| {
+        cursor.0 >= rect.x
+            && cursor.1 >= rect.y
+            && cursor.0 < rect.x + rect.w
+            && cursor.1 < rect.y + rect.h
+    };
+    if content_progress <= AUTOHIDE_CONTENT_INTERACTION_MIN
+        || !contains(rest_bounds)
+        || !contains(panel_rect)
+    {
+        return None;
+    }
+
+    let mut hit = None;
+    let mut best = f32::MAX;
+    for (i, rect) in icon_rects.iter().enumerate() {
+        let centre = rect.x + rect.w * 0.5;
+        let half = rect.w * 0.5 + DOCK_TILE_GAP * content_progress * 0.5;
+        let distance = (cursor.0 - centre).abs();
+        if distance <= half && distance < best {
+            best = distance;
+            hit = Some(i);
+        }
+    }
+    hit
 }
 
 /// Whether `entry` is the desktop entry a running `app_id` belongs to. The

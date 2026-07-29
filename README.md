@@ -11,6 +11,8 @@ boundaries.
   [Optics](https://github.com/ming2k/optics) stack
 - Native status bar, Dock, full application launcher, Prism search,
   notifications, and multi-workspace window management
+- Multi-output session lock, staged idle policy, lock-before-sleep, and
+  physical display power management
 - Nested Wayland development and direct DRM/KMS presentation
 - Versioned local IPC with a command-line client and desktop portal backend
 - Isolated Agent Realms with cgroup and capability boundaries
@@ -38,6 +40,7 @@ pkg-config --modversion flux flux-scene-graph lens iris
 From the Aegis repository root, start the compositor:
 
 ```bash
+cargo build --locked -p aegis-idle -p aegis-lock
 cargo run --locked -p aegis
 ```
 
@@ -60,6 +63,7 @@ systemctl --user enable --now aegis.service
 |--------|---------------------|
 | Open Applications | Click Launchpad or press `Super` |
 | Open System Settings | Select it in Applications or run `aegis-settings` |
+| Lock the session | Press `Super+L` |
 | Inspect compositor state | Run `aegis-ctl --help` |
 
 ## Documentation

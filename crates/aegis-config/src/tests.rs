@@ -22,6 +22,65 @@ fn appearance_defaults_to_no_preference() {
 }
 
 #[test]
+fn idle_policy_defaults_parses_and_enforces_security_order() {
+    let defaults = Config::parse("schema_version = 1\n").unwrap();
+    assert_eq!(defaults.idle, IdleSettings::default());
+
+    let configured = Config::parse(
+        "schema_version = 1\n\
+         [idle]\n\
+         enabled = true\n\
+         dim_after_seconds = 120\n\
+         lock_after_seconds = 300\n\
+         display_off_after_seconds = 360\n\
+         suspend_after_seconds = 900\n\
+         dim_percent = 25\n",
+    )
+    .unwrap();
+    assert_eq!(configured.idle.lock_after_seconds, 300);
+    assert_eq!(configured.idle.dim_percent, 25);
+
+    let invalid = Config::parse(
+        "schema_version = 1\n\
+         [idle]\n\
+         lock_after_seconds = 0\n\
+         display_off_after_seconds = 60\n",
+    )
+    .unwrap_err();
+    assert!(invalid.iter().any(|diagnostic| {
+        diagnostic.field.as_deref() == Some("idle")
+            && diagnostic.message.contains("locking must be enabled")
+    }));
+}
+
+#[test]
+fn config_store_persists_idle_policy_without_losing_other_sections() {
+    let path = temp_config_path("idle-policy");
+    std::fs::write(
+        &path,
+        "schema_version = 1\n\n# keep this\n[ui]\nreduced_motion = true\n",
+    )
+    .unwrap();
+    let settings = IdleSettings {
+        enabled: false,
+        dim_after_seconds: 60,
+        lock_after_seconds: 120,
+        display_off_after_seconds: 180,
+        suspend_after_seconds: 600,
+        dim_percent: 20,
+    };
+    ConfigStore::new(&path)
+        .apply(ConfigEdit::SetIdle { settings })
+        .unwrap();
+    let contents = std::fs::read_to_string(&path).unwrap();
+    assert!(contents.contains("# keep this"));
+    let config = load(&path).unwrap().expect("updated config");
+    assert_eq!(config.idle, settings);
+    assert!(config.ui.reduced_motion);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn appearance_color_scheme_parses_portal_vocabulary() {
     let cfg = Config::parse("schema_version = 1\n[appearance]\ncolor_scheme = \"dark\"\n").unwrap();
     assert_eq!(cfg.appearance.color_scheme, ColorScheme::Dark);
@@ -513,6 +572,21 @@ fn prism_keybind_action_resolves() {
     assert_eq!(binds[0].mods, M::SUPER);
     assert_eq!(binds[0].keysym, 0x20);
     assert_eq!(binds[0].action, Action::TogglePrism);
+}
+
+#[test]
+fn lock_keybind_action_resolves() {
+    let cfg = Config::parse(
+        "schema_version = 1\n\
+             [[keybind]]\n\
+             mods = [\"super\"]\n\
+             key = \"l\"\n\
+             action = \"lockscreen\"\n",
+    )
+    .unwrap();
+    let (binds, errs) = cfg.resolve_keybinds();
+    assert!(errs.is_empty());
+    assert_eq!(binds[0].action, Action::Lock);
 }
 
 #[test]

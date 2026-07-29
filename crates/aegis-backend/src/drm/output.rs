@@ -3,8 +3,8 @@ use super::*;
 impl DrmBackend {
     /// Change KMS scanout power while retaining connector assignment and
     /// input ownership. Turning outputs back on is completed by the next
-    /// ordinary modeset frame, so the compositor redraws current secure
-    /// content instead of exposing a stale framebuffer.
+    /// ordinary modeset frame, so the compositor redraws the still-locked
+    /// scene instead of exposing a stale pre-lock framebuffer.
     pub fn set_outputs_powered(&mut self, powered: bool) -> Result<(), DrmError> {
         if self.outputs_powered == powered {
             return Ok(());

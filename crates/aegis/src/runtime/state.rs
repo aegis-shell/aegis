@@ -85,6 +85,8 @@ pub(super) struct CompositorRuntime {
     /// receipt.
     pub(super) config_writer: ConfigWriter,
     pub(super) reload: Option<aegis_config::ReloadWatcher>,
+    /// Supervised ext-idle-notify policy client for this session.
+    pub(super) idle_process: session::IdleProcess,
     pub(super) quit_requested: bool,
     pub(super) ipc_cmd_rx: std::sync::mpsc::Receiver<IpcCommandRequest>,
     pub(super) system_control_rx: std::sync::mpsc::Receiver<SystemControlRequest>,

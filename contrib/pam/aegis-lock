@@ -1,0 +1,6 @@
+#%PAM-1.0
+# Distribution packages may replace these includes with their canonical
+# system-auth/common-auth stack. The login service is the portable baseline
+# and preserves the host's authentication and account policy.
+auth include login
+account include login

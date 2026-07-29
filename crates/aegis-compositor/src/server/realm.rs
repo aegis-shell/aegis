@@ -833,16 +833,13 @@ impl Server {
             self.change_pointer_focus(focus);
             self.change_keyboard_focus(focus);
         }
-        if self.state.session_locked
-            && self
-                .state
-                .session_lock_requested_at
-                .is_some_and(|started| started.elapsed() >= std::time::Duration::from_secs(1))
-        {
+        if self.state.session_lock_phase.is_active() {
             // The compositor-rendered opaque fallback is sufficient after the
             // bounded grace period even if the locker has not mapped every
             // output yet. The event is deferred until presentation_complete.
-            self.state.lock_frame_pending = true;
+            self.state
+                .session_lock_phase
+                .expire_surface_grace(std::time::Instant::now(), std::time::Duration::from_secs(1));
         }
         unsafe { extensions::update_idle_notifications(self.state.as_mut()) };
     }
@@ -861,7 +858,7 @@ impl Server {
         let changed_windows = std::mem::take(&mut self.state.damaged_windows);
         let mut damage = std::mem::take(&mut self.state.pending_realm_damage);
 
-        if self.state.session_locked {
+        if self.state.session_lock_phase.is_active() {
             return std::collections::BTreeMap::new();
         }
 
@@ -919,13 +916,19 @@ impl Server {
     /// This becomes true as soon as a lock request is accepted, before the
     /// protocol's `locked` event, so the next frame fails closed.
     pub fn session_locked(&self) -> bool {
-        self.state.session_locked
+        self.state.session_lock_phase.is_active()
+    }
+
+    /// Whether a secure frame has been physically presented and acknowledged.
+    /// Power transitions must not rely on the earlier request-time state.
+    pub fn session_lock_confirmed(&self) -> bool {
+        self.state.session_lock_phase.is_confirmed()
     }
 
     /// A newly blanked/locked frame must be confirmed on every output before
     /// the protocol lock request can be acknowledged.
     pub fn lock_confirmation_pending(&self) -> bool {
-        self.state.session_locked && self.state.lock_frame_pending
+        self.state.session_lock_phase.frame_pending()
     }
 
     /// Confirm that the just-submitted secure frame reached all outputs.

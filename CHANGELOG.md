@@ -32,13 +32,32 @@ project cuts a tagged release.
   backend/VT loss in the presentation state machine. Input remains live for
   wake and hotplug, stale input ownership cannot cross a later VT loss, and
   visual work from a targetless interval is not replayed on resume.
-- IPC protocol version 11 makes live-system controls return the compositor
-  main loop's authoritative apply result instead of only acknowledging a
-  queued command. Callers can now distinguish an accepted control from a
-  live-state refusal.
 - Embed the default static wallpaper in the executable and reject missing
   wallpaper paths before attempting image decode. Installed builds no longer
   repeatedly try to open a build-tree-only wallpaper path.
+- Make live-system IPC controls return the compositor main loop's
+  authoritative apply result instead of only acknowledging that a command was
+  queued. Policy clients can now retry refused hardware transitions without
+  inventing local state.
+
+### Session security and power
+
+- Added the first-party `aegis-lock` multi-output session locker with an
+  Aegis glass lock screen, locale-aware clock and date, keyboard-layout and
+  Caps Lock feedback, bounded credential entry, PAM authentication, retry
+  backoff, and explicit credential-memory clearing.
+- Added the supervised `aegis-idle` policy client with ordered backlight dim,
+  secure lock, physical display power-off, and logind suspend stages. Sleep
+  delay is released only after compositor-confirmed lock readiness; input
+  wakes powered-down displays behind the lock.
+- Added the available Power Management page in System Settings and the
+  persistent `[idle]` configuration table. IPC protocol version 12 adds
+  `IdleSettings` to `SettingsSnapshot` and the atomic `SetIdle` action.
+- Added `Super+L` as the default lock shortcut. The compositor remains the
+  authority for exclusive lock input, idle inhibitors, output power, and an
+  opaque fail-closed scene if the locker exits unexpectedly.
+- Core packaging now includes `aegis-idle`, `aegis-lock`, and the
+  `/etc/pam.d/aegis-lock` service profile.
 
 ## [0.0.8] - 2026-07-29
 

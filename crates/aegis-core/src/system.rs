@@ -57,13 +57,33 @@ pub struct SystemStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SystemAction {
     ToggleMute,
-    StepVolume { delta: i8 },
-    SetVolume { level: u8 },
-    SetBrightness { level: u8 },
-    SetWifi { enabled: bool },
-    SetBluetooth { enabled: bool },
-    SetDoNotDisturb { enabled: bool },
-    SetTiling { enabled: bool },
+    StepVolume {
+        delta: i8,
+    },
+    SetVolume {
+        level: u8,
+    },
+    SetBrightness {
+        level: u8,
+    },
+    SetWifi {
+        enabled: bool,
+    },
+    SetBluetooth {
+        enabled: bool,
+    },
+    SetDoNotDisturb {
+        enabled: bool,
+    },
+    SetTiling {
+        enabled: bool,
+    },
+    /// Enable or disable physical scanout without changing the output
+    /// topology. Used by the trusted idle policy after the session lock has
+    /// been compositor-confirmed.
+    SetOutputPower {
+        powered: bool,
+    },
 }
 
 impl SystemAction {

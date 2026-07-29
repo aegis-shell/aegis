@@ -38,15 +38,15 @@ jobs:
         run: >-
           cargo clippy --locked
           -p aegis-core -p aegis-config -p aegis-ipc -p aegis-desktop-entries
-          -p aegis-launcher -p aegis-ctl -p aegis-fuji -p aegis-protocols -p aegis-compositor
-          -p aegis-portal
+          -p aegis-launcher -p aegis-ctl -p aegis-fuji -p aegis-idle
+          -p aegis-protocols -p aegis-compositor -p aegis-portal
           --all-targets -- -D warnings
       - name: Doc check (flux-free crates)
         run: >-
           cargo doc --locked --no-deps
           -p aegis-core -p aegis-config -p aegis-ipc -p aegis-desktop-entries
-          -p aegis-launcher -p aegis-ctl -p aegis-fuji -p aegis-protocols -p aegis-compositor
-          -p aegis-portal
+          -p aegis-launcher -p aegis-ctl -p aegis-fuji -p aegis-idle
+          -p aegis-protocols -p aegis-compositor -p aegis-portal
 
   flux-free-tests:
     runs-on: ubuntu-24.04
@@ -64,8 +64,8 @@ jobs:
         run: >-
           cargo test --locked
           -p aegis-core -p aegis-config -p aegis-ipc -p aegis-desktop-entries
-          -p aegis-launcher -p aegis-ctl -p aegis-fuji -p aegis-compositor
-          -p aegis-portal
+          -p aegis-launcher -p aegis-ctl -p aegis-fuji -p aegis-idle
+          -p aegis-compositor -p aegis-portal
       - name: Build aegis-protocols
         run: cargo build --locked -p aegis-protocols
 
@@ -93,7 +93,8 @@ jobs:
             vulkan-validationlayers mesa-vulkan-drivers \
             libfreetype-dev libharfbuzz-dev libfontconfig1-dev libfribidi-dev \
             libglfw3-dev libxkbcommon-dev libsystemd-dev libclang-dev \
-            libinput-dev libseat-dev libpipewire-0.3-dev libspa-0.2-dev
+            libinput-dev libseat-dev libpam0g-dev \
+            libpipewire-0.3-dev libspa-0.2-dev
       - name: Build and install optics C libraries
         run: |
           meson setup optics/build optics \

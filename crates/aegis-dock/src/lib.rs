@@ -88,6 +88,9 @@ const AUTOHIDE_HANDLE_HEIGHT: f32 = 6.0;
 /// after its content is gone, so neither icons nor running dots linger beside
 /// the final indicator.
 const AUTOHIDE_CONTENT_DRAIN_END: f32 = 0.28;
+/// Content at or below this scale is visually drained into the collapsed
+/// handle and must no longer expose per-tile hover or click targets.
+const AUTOHIDE_CONTENT_INTERACTION_MIN: f32 = 0.01;
 /// Horizontal breathing room around the collapsed handle that reveals the
 /// Dock. The rest of the bottom edge remains client-owned.
 const AUTOHIDE_TRIGGER_PAD_X: f32 = 40.0;

@@ -430,7 +430,7 @@ impl DrmBackend {
     /// fast path: a fullscreen, unoccluded, opaque client surface whose
     /// `(fourcc, modifier)` the plane accepts is imported and committed as-is.
     /// No flux frame is involved, so this is called instead of (not alongside)
-    /// [`present`]. Any kernel import/commit failure is reported as an error
+    /// [`Self::present`]. Any kernel import/commit failure is reported as an error
     /// so the runtime falls back to compositing the next frame.
     pub fn present_scanout(
         &mut self,

@@ -1086,6 +1086,11 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
             {
                 state.pending_activation = None;
             }
+            // Session-lock focus keeps non-owning resource pointers across
+            // dispatch batches. Revoke them at the surface's single reclaim
+            // point so neither pre-lock restoration nor a pending lock-focus
+            // transition can dereference a destroyed wl_resource.
+            revoke_session_lock_focus(state, resource);
             state
                 .pending_popup_focus
                 .retain(|_, pending| *pending != resource);
@@ -1118,6 +1123,16 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
             std::ptr::write(slot, std::ptr::null_mut());
         }
         drop(Box::from_raw(rec));
+    }
+}
+
+pub(crate) fn revoke_session_lock_focus(state: &mut State, resource: *mut ffi::wl_resource) {
+    if state.pre_lock_keyboard_focus == resource {
+        state.pre_lock_keyboard_focus = std::ptr::null_mut();
+    }
+    if state.pending_lock_focus == resource {
+        state.pending_lock_focus = std::ptr::null_mut();
+        state.lock_focus_dirty = true;
     }
 }
 

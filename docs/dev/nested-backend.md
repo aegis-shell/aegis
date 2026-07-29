@@ -107,8 +107,10 @@ cargo run --locked -p aegis-ctl -- outputs
 
 Only one aegis IPC server can own an `aegis.sock` path. A manually started
 nested process continues without IPC and logs an address-in-use warning when
-another Aegis process already owns that path. Stop the other process before
-testing IPC.
+another Aegis process already owns that path. It does not start a supervised
+idle coordinator in that state, so it cannot send policy actions to the other
+session; `Super+L` still starts its own lock client directly. Stop the other
+process before testing IPC.
 
 ## Verify Client GPU Selection
 

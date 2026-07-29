@@ -14,11 +14,9 @@
 //!
 //! # Status
 //!
-//! Protocol version 7 adds live system-status queries and immediate
-//! system-control commands on top of version 6's user-consent interactive
-//! picking (`PickTarget`, ADR-0054) and window stream target, version 5's
-//! continuous physical-output frame streaming (ADR-0052), and version 4's
-//! revisioned desktop-settings transactions.
+//! Protocol version 12 adds the staged inactivity-policy snapshot and
+//! transaction. Earlier settings and live-system revisions are recorded in
+//! [`schema::PROTOCOL_VERSION`].
 
 pub mod client;
 pub mod codec;

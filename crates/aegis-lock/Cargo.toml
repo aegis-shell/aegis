@@ -1,0 +1,34 @@
+[package]
+name = "aegis-lock"
+description = "First-party secure session locker for the Aegis desktop"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[dependencies]
+aegis-design.workspace = true
+ash.workspace = true
+env_logger.workspace = true
+flux.workspace = true
+flux-sys.workspace = true
+image.workspace = true
+lens.workspace = true
+lens-sys.workspace = true
+libc.workspace = true
+log.workspace = true
+smithay-client-toolkit.workspace = true
+thiserror.workspace = true
+wayland-backend.workspace = true
+wayland-client.workspace = true
+wayland-protocols.workspace = true
+xkbcommon.workspace = true
+zeroize.workspace = true
+
+[build-dependencies]
+pkg-config = "0.3"
+
+[package.metadata.cargo-machete]
+ignored = ["flux-sys", "lens-sys", "pkg-config", "wayland-backend"]
