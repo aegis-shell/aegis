@@ -3,9 +3,12 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.0.5"
+version = "0.0.6"
 edition = "2024"
-license = "Apache-2.0"
+# Project source code is MIT. The bundled cursor theme under
+# assets/cursors/Bibata-Modern-Ice is GPL-3.0-only (third-party, derived from
+# Bibata Cursor); the combined binary is therefore MIT AND GPL-3.0-only.
+license = "MIT AND GPL-3.0-only"
 rust-version = "1.88"
 repository = "https://github.com/ming2k/aegis"
 

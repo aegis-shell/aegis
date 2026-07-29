@@ -5,6 +5,22 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once the
 project cuts a tagged release.
 
+## [0.0.6] - 2026-07-29
+
+### Licensing
+
+- The project source code is now licensed under **MIT** (was Apache-2.0).
+- The bundled `Bibata-Modern-Ice` cursor theme under
+  `assets/cursors/Bibata-Modern-Ice/` remains a third-party **GPL-3.0-only**
+  asset (derived from [Bibata Cursor](https://github.com/ful1e5/Bibata_Cursor)).
+  Its `LICENSE`/`NOTICE` in that directory are preserved and govern the asset
+  only. The shipped binary is therefore a combined work under
+  `MIT AND GPL-3.0-only`; distribution must keep the bundled theme's GPL
+  disclosure, which the install manifest stages under
+  `/usr/share/licenses/aegis/Bibata-Modern-Ice/`.
+- The intent is to replace the bundled cursor theme with original MIT-licensed
+  art in a future release, at which point the whole project becomes MIT.
+
 ## [0.0.5] - 2026-07-29
 
 ### Cursors

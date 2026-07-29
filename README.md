@@ -71,4 +71,10 @@ systemctl --user enable --now aegis.service
 
 ## License
 
-[Apache-2.0](LICENSE)
+Project source code is licensed under the [MIT License](LICENSE).
+
+The bundled cursor theme under `assets/cursors/Bibata-Modern-Ice/` is derived
+from [Bibata Cursor](https://github.com/ful1e5/Bibata_Cursor) and is licensed
+under GPL-3.0-only; see its `LICENSE` and `NOTICE` in that directory. The
+shipped binary therefore combines MIT (code) and GPL-3.0-only (bundled
+cursor art).

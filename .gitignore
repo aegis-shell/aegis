@@ -1,3 +1,6 @@
 /target
 /kimi-export-*.md
 /.cargo/config.toml
+
+# Local backup bundle from the license-rewrite safety step
+*.bundle

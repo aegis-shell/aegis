@@ -85,7 +85,8 @@ The bundled Bibata-Modern-Ice cursor theme (GPL-3.0) is embedded into the
 `aegis` binary via `include_dir`. Distributing that binary requires preserving
 the theme's license disclosure, so the `LICENSE` and `NOTICE` files must be
 staged under `/usr/share/licenses/aegis/Bibata-Modern-Ice/`. The project code
-itself remains Apache-2.0.
+itself is MIT-licensed; the shipped binary is a combined work under
+`MIT AND GPL-3.0-only`.
 
 For example, a simple package recipe can stage binaries with:
 
@@ -186,7 +187,7 @@ pkgrel=1
 pkgdesc='Vulkan-first rendering stack: flux, flux-scene-graph, lens, iris'
 arch=(x86_64)
 url='https://github.com/ming2k/optics'
-license=(Apache-2.0)
+license=(MIT)
 depends=(glibc vulkan-icd-loader wayland libxkbcommon pipewire libinput
          seatd freetype2 harfbuzz fontconfig fribidi)
 makedepends=(meson ninja pkgconf gcc glslang clang
@@ -214,13 +215,13 @@ package is installed.
 ```bash
 # Maintainer: <you>
 pkgname=aegis
-pkgver=0.0.5
+pkgver=0.0.6
 pkgrel=1
 pkgdesc='Wayland compositor and desktop shell'
 arch=(x86_64)
 url='https://github.com/ming2k/aegis'
-# Project code is Apache-2.0; the bundled Bibata-Modern-Ice cursor theme is GPL-3.0-only.
-license=(Apache-2.0 GPL-3.0-only)
+# Project code is MIT; the bundled Bibata-Modern-Ice cursor theme is GPL-3.0-only.
+license=(MIT GPL-3.0-only)
 depends=(optics vulkan-icd-loader wayland libxkbcommon libinput seatd
          pipewire systemd-libs dbus
          xdg-desktop-portal xdg-desktop-portal-gtk   # GTK backend is the portal fallback
