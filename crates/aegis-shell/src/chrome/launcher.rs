@@ -803,6 +803,10 @@ impl Chrome for Launcher {
             }
     }
 
+    fn requires_composition(&self) -> bool {
+        self.brain.is_open() || self.visibility.value > 0.01
+    }
+
     fn set_reduced_motion(&mut self, reduced: bool) {
         self.reduced_motion = reduced;
     }

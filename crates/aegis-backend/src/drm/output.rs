@@ -96,10 +96,22 @@ impl DrmBackend {
         }
     }
 
-    pub(super) fn disable_outputs(&self) -> Result<(), DrmError> {
+    pub(super) fn disable_outputs(&mut self) -> Result<(), DrmError> {
         let mut request = atomic::AtomicModeReq::new();
         for output in &self.displays.outputs {
             let props = output.props;
+            if let Some(cursor) = &output.cursor {
+                request.add_property(
+                    cursor.handle,
+                    cursor.props.plane_fb_id,
+                    property::Value::Framebuffer(None),
+                );
+                request.add_property(
+                    cursor.handle,
+                    cursor.props.plane_crtc_id,
+                    property::Value::CRTC(None),
+                );
+            }
             request.add_property(
                 output.plane,
                 props.plane_fb_id,
@@ -123,6 +135,7 @@ impl DrmBackend {
         }
         self.card()
             .atomic_commit(AtomicCommitFlags::ALLOW_MODESET, request)?;
+        self.cursor_plane_active = false;
         Ok(())
     }
 }
@@ -372,6 +385,48 @@ pub(super) fn select_outputs(
         x += size.0 as u32;
         outputs.push(output);
     }
+    // Cursor planes are independent of the primary-plane matching above:
+    // assign at most one ARGB8888 linear plane to each selected CRTC. Failure
+    // is non-fatal because the compositor can still paint a software cursor,
+    // but direct scanout with a visible cursor then remains disabled.
+    let cursor_planes = card
+        .plane_handles()?
+        .into_iter()
+        .filter(|handle| plane_type(card, *handle) == Some(control::PlaneType::Cursor))
+        .collect::<Vec<_>>();
+    let mut used_cursor_planes = HashSet::new();
+    for output in &mut outputs {
+        for handle in &cursor_planes {
+            if used_cursor_planes.contains(handle) {
+                continue;
+            }
+            let Ok(info) = card.get_plane(*handle) else {
+                continue;
+            };
+            if !resources
+                .filter_crtcs(info.possible_crtcs())
+                .contains(&output.crtc)
+                || !info.formats().contains(&(DrmFourcc::Argb8888 as u32))
+            {
+                continue;
+            }
+            let supports_linear = plane_modifiers(card, *handle, DrmFourcc::Argb8888)
+                .is_ok_and(|modifiers| modifiers.contains(&u64::from(DrmModifier::Linear)));
+            if !supports_linear {
+                continue;
+            }
+            match build_cursor_plane(card, *handle) {
+                Ok(cursor) => {
+                    output.cursor = Some(cursor);
+                    used_cursor_planes.insert(*handle);
+                    break;
+                }
+                Err(error) => {
+                    log::warn!("drm: cursor plane {handle:?} is incomplete: {error}");
+                }
+            }
+        }
+    }
     Ok(DisplaySet {
         outputs,
         size: (desktop_width, desktop_height),
@@ -505,8 +560,28 @@ pub(super) fn build_output(
         x,
         y: 0,
         props,
+        cursor: None,
         full_damage_blob,
         available_modes: candidate.available_modes,
+    })
+}
+
+fn build_cursor_plane(card: &Card, handle: plane::Handle) -> Result<CursorPlane, DrmError> {
+    let props = property_map(card, handle)?;
+    Ok(CursorPlane {
+        handle,
+        props: CursorPlaneProperties {
+            plane_fb_id: required_prop(&props, "FB_ID")?,
+            plane_crtc_id: required_prop(&props, "CRTC_ID")?,
+            plane_src_x: required_prop(&props, "SRC_X")?,
+            plane_src_y: required_prop(&props, "SRC_Y")?,
+            plane_src_w: required_prop(&props, "SRC_W")?,
+            plane_src_h: required_prop(&props, "SRC_H")?,
+            plane_crtc_x: required_prop(&props, "CRTC_X")?,
+            plane_crtc_y: required_prop(&props, "CRTC_Y")?,
+            plane_crtc_w: required_prop(&props, "CRTC_W")?,
+            plane_crtc_h: required_prop(&props, "CRTC_H")?,
+        },
     })
 }
 

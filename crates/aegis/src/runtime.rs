@@ -726,6 +726,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         last_chrome_mode: None,
         last_session_locked: false,
         last_presented_cursor: None,
+        last_presented_cursor_position: None,
+        composite_slot_damage: Vec::new(),
         last_present_minute: None,
         chrome_dirty: false,
         force_full_redraw: false,

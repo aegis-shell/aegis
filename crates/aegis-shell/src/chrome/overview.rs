@@ -468,6 +468,10 @@ impl Chrome for Overview {
         self.open || self.visibility > 0.01
     }
 
+    fn requires_composition(&self) -> bool {
+        self.open || self.visibility > 0.01
+    }
+
     /// The overview renders while modal — it *is* the modal component.
     fn visible_during_modal(&self) -> bool {
         true

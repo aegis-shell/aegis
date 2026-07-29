@@ -7,26 +7,63 @@ pub(super) const BACKDROP_DOWNSAMPLE: u32 = 4;
 
 /// Begin a compositor canvas pass without Flux's clear-triggered 4x MSAA.
 ///
-/// Flux v0.0.4 selects its multisample render-and-resolve path whenever a
+/// Legacy Flux selects its multisample render-and-resolve path whenever a
 /// clear colour is supplied. That is useful for arbitrary vector artwork, but
 /// disproportionately expensive for a compositor pass whose dominant work is
 /// opaque image quads: at 3072x1920 it turns one output pixel into four colour
 /// samples plus a full-frame resolve. Aegis chrome already uses analytic
-/// rounded-rectangle coverage and coverage-texture glyphs, so start a
-/// single-sample LOAD pass and overwrite the whole destination with an opaque
-/// rectangle instead.
+/// rounded-rectangle coverage and coverage-texture glyphs, so request the
+/// explicit one-sample attachment-clear path.
 ///
-/// `clear` must be opaque: SRC_OVER with alpha 255 is then exactly equivalent
-/// to an attachment clear, including on the first use of a frame-slot image.
+/// `clear` must be opaque because the compositor output does not preserve
+/// destination alpha between layers.
 pub(super) fn begin_opaque_frame(
+    canvas: &flux::Canvas,
+    frame: &flux::Frame<'_>,
+    clear: u32,
+) -> Result<(), flux::Error> {
+    debug_assert_eq!(clear >> 24, 0xff, "compositor pass clear must be opaque");
+    canvas.begin_pass(
+        frame,
+        flux::CanvasPassOptions {
+            clear: Some(clear),
+            antialias: flux::CanvasAntialias::None,
+        },
+    )
+}
+
+/// Begin an opaque output pass clipped to the accumulated damage for this
+/// ring slot. The full scene may still be submitted, but rasterization,
+/// texture sampling, blending and framebuffer writes stay inside the scissor.
+pub(super) fn begin_opaque_frame_repaint(
     canvas: &flux::Canvas,
     frame: &flux::Frame<'_>,
     size: (u32, u32),
     clear: u32,
+    repaint: FrameDamage,
 ) -> Result<(), flux::Error> {
     debug_assert_eq!(clear >> 24, 0xff, "compositor pass clear must be opaque");
-    canvas.begin(frame, None)?;
-    canvas.fill_rect(0.0, 0.0, size.0 as f32, size.1 as f32, clear);
+    match repaint {
+        FrameDamage::Area(rect) => {
+            canvas.begin(frame, None)?;
+            canvas.clip_rect(
+                rect.origin.x as f32,
+                rect.origin.y as f32,
+                rect.size.w as f32,
+                rect.size.h as f32,
+            );
+            canvas.fill_rect(0.0, 0.0, size.0 as f32, size.1 as f32, clear);
+        }
+        FrameDamage::Full | FrameDamage::None => {
+            canvas.begin_pass(
+                frame,
+                flux::CanvasPassOptions {
+                    clear: Some(clear),
+                    antialias: flux::CanvasAntialias::None,
+                },
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -38,10 +75,14 @@ pub(super) fn begin_opaque_target(
     clear: u32,
 ) -> Result<(), flux::Error> {
     debug_assert_eq!(clear >> 24, 0xff, "compositor pass clear must be opaque");
-    canvas.begin_target(frame, target, None)?;
-    let (width, height) = target.size();
-    canvas.fill_rect(0.0, 0.0, width as f32, height as f32, clear);
-    Ok(())
+    canvas.begin_target_pass(
+        frame,
+        target,
+        flux::CanvasPassOptions {
+            clear: Some(clear),
+            antialias: flux::CanvasAntialias::None,
+        },
+    )
 }
 
 /// Union of the declared backdrop regions in physical pixels, expanded by
@@ -725,6 +766,102 @@ pub(super) fn draw_software_cursor(
     }
 }
 
+impl CompositorRuntime {
+    /// Pick a client dma-buf to page-flip directly onto the primary plane,
+    /// bypassing the Vulkan composite. This is the fullscreen-game fast path.
+    ///
+    /// The bar is intentionally high and fully conservative: a miss here
+    /// merely composites (always correct), while a false hit would scan out a
+    /// wrong/tearing buffer or drop the cursor. The candidate must:
+    ///
+    ///   - be the *only* visible dmabuf toplevel;
+    ///   - cover the whole output at (0,0) with a `Normal` transform and no
+    ///     viewport source/destination clipping;
+    ///   - have a post-transform buffer size equal to the output's;
+    ///   - be acceptable to the active primary plane
+    ///     ([`Host::supports_scanout`]); and
+    ///   - have nothing else to composite: a visible cursor needs either a
+    ///     KMS cursor plane or the composite, and no client overlay, shell
+    ///     chrome, blur, transition, capture, or lock may be active.
+    ///
+    /// `physical_size` is the output's pixel dimensions; `cursor_hidden`
+    /// reflects the current cursor visibility state.
+    pub(super) fn pick_scanout_candidate(
+        &self,
+        physical_size: (u32, u32),
+        cursor_hidden: bool,
+    ) -> Option<aegis_core::SurfaceDmabuf> {
+        // Nothing should be composited on top of the client: shell animations,
+        // overview/switcher, backdrop blur, or a software cursor all need the
+        // framebuffer and disqualify direct scanout.
+        if self.shell.anim_pending()
+            || self.shell.overview_active()
+            || self.shell.window_switcher_active()
+            || self.shell.backdrop_blur_sigma() > 0.0
+            || self.server.session_locked()
+            || self.server.transitions_pending()
+            || self.capture_worker.is_busy()
+            || self.pending_capture.is_some()
+            || self.pending_realm_capture.is_some()
+            || self.screenshot_freeze.armed
+            || self.shell.requires_composition()
+        {
+            return None;
+        }
+        // Client cursor surfaces, drag icons, and other protocol overlays are
+        // separate scene elements. They cannot ride the compositor-owned KMS
+        // cursor plane, so never drop them merely because the base toplevel is
+        // scanout-compatible.
+        if !self.server.overlay_frames().is_empty()
+            || !self.server.overlay_dmabuf_frames().is_empty()
+        {
+            return None;
+        }
+        // A software cursor is painted into the composite. When it is visible
+        // the direct-scanout path would drop it, so only take scanout when the
+        // cursor is hidden. Nested mode owns no scanout and is excluded by the
+        // supports_scanout check below.
+        if self.host.uses_software_cursor() && !cursor_hidden {
+            return None;
+        }
+        // A scanout buffer must be the only visible client surface, not just
+        // the only dma-buf toplevel. Otherwise an shm popup or either kind of
+        // subsurface would silently disappear.
+        if !self.server.client_surface_frames().is_empty() {
+            return None;
+        }
+        let all_dmabufs = self.server.client_surface_dmabuf_frames();
+        if all_dmabufs.len() != 1 {
+            return None;
+        }
+        let mut frames = self.server.toplevel_dmabuf_frames();
+        if frames.len() != 1 || frames[0].id != all_dmabufs[0].id {
+            return None;
+        }
+        let f = frames.pop()?;
+        // Direct scanout only honors the trivial placement: identity transform,
+        // origin at (0,0), and no viewport source/destination crop. A rotated
+        // or sub-rect client must be composited.
+        if f.geometry.transform != aegis_core::Transform::Normal
+            || f.geometry.position != (aegis_core::Point { x: 0, y: 0 })
+            || f.geometry.viewport_src.is_some()
+            || f.geometry.viewport_dst.is_some()
+        {
+            return None;
+        }
+        // The buffer must exactly fill the output; a size mismatch would need
+        // hardware scaling (not configured here) or letterboxing.
+        if (f.width as u32, f.height as u32) != physical_size {
+            return None;
+        }
+        // The primary plane must accept this fourcc/modifier pair.
+        if !self.host.supports_scanout(f.drm_format, f.modifier) {
+            return None;
+        }
+        Some(f)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -840,7 +977,6 @@ mod tests {
             begin_opaque_frame(
                 &canvas,
                 &frame,
-                size,
                 flux::rgba(expected[0], expected[1], expected[2], expected[3]),
             )
             .unwrap();
@@ -857,80 +993,39 @@ mod tests {
             );
         }
     }
-}
 
-impl CompositorRuntime {
-    /// Pick a client dma-buf to page-flip directly onto the primary plane,
-    /// bypassing the Vulkan composite. This is the fullscreen-game fast path.
-    ///
-    /// The bar is intentionally high and fully conservative: a miss here
-    /// merely composites (always correct), while a false hit would scan out a
-    /// wrong/tearing buffer or drop the cursor. The candidate must:
-    ///
-    ///   - be the *only* visible dmabuf toplevel;
-    ///   - cover the whole output at (0,0) with a `Normal` transform and no
-    ///     viewport source/destination clipping;
-    ///   - have a post-transform buffer size equal to the output's;
-    ///   - be acceptable to the active primary plane
-    ///     ([`Host::supports_scanout`]); and
-    ///   - have nothing else to composite: the cursor must be hidden (a
-    ///     software cursor lives in the framebuffer; direct scanout would not
-    ///     draw it), and no shell chrome, blur, transition, capture, or lock
-    ///     may be active.
-    ///
-    /// `physical_size` is the output's pixel dimensions; `cursor_hidden`
-    /// reflects the current cursor visibility state.
-    pub(super) fn pick_scanout_candidate(
-        &self,
-        physical_size: (u32, u32),
-        cursor_hidden: bool,
-    ) -> Option<aegis_core::SurfaceDmabuf> {
-        // Nothing should be composited on top of the client: shell animations,
-        // overview/switcher, backdrop blur, or a software cursor all need the
-        // framebuffer and disqualify direct scanout.
-        if self.shell.anim_pending()
-            || self.shell.overview_active()
-            || self.shell.window_switcher_active()
-            || self.shell.backdrop_blur_sigma() > 0.0
-            || self.server.transitions_pending()
-            || self.capture_worker.is_busy()
-            || self.pending_capture.is_some()
-            || self.pending_realm_capture.is_some()
-            || self.screenshot_freeze.armed
-        {
-            return None;
-        }
-        // A software cursor is painted into the composite. When it is visible
-        // the direct-scanout path would drop it, so only take scanout when the
-        // cursor is hidden. Nested mode owns no scanout and is excluded by the
-        // supports_scanout check below.
-        if self.host.uses_software_cursor() && !cursor_hidden {
-            return None;
-        }
-        let mut frames = self.server.toplevel_dmabuf_frames();
-        if frames.len() != 1 {
-            return None;
-        }
-        let f = frames.pop()?;
-        // Direct scanout only honors the trivial placement: identity transform,
-        // origin at (0,0), and no viewport source/destination crop. A rotated
-        // or sub-rect client must be composited.
-        if f.geometry.transform != aegis_core::Transform::Normal
-            || f.geometry.position != (aegis_core::Point { x: 0, y: 0 })
-            || f.geometry.viewport_src.is_some()
-            || f.geometry.viewport_dst.is_some()
-        {
-            return None;
-        }
-        // The buffer must exactly fill the output; a size mismatch would need
-        // hardware scaling (not configured here) or letterboxing.
-        if (f.width as u32, f.height as u32) != physical_size {
-            return None;
-        }
-        // The primary plane must accept this fourcc/modifier pair.
-        if !self.host.supports_scanout(f.drm_format, f.modifier) {
-            return None;
-        }
-        Some(f)
+    #[test]
+    fn damaged_opaque_frame_preserves_pixels_outside_the_scissor() {
+        let Ok(device) = flux::Device::new(true, &[], &[], 1) else {
+            return;
+        };
+        let size = (32, 24);
+        let surface = flux::Surface::offscreen(&device, size.0, size.1).unwrap();
+        let canvas = flux::Canvas::new(&surface).unwrap();
+
+        let frame = surface.begin_frame().unwrap();
+        begin_opaque_frame(&canvas, &frame, flux::rgba(200, 30, 20, 255)).unwrap();
+        canvas.end();
+        frame.submit().unwrap().present().unwrap();
+
+        let frame = surface.begin_frame().unwrap();
+        begin_opaque_frame_repaint(
+            &canvas,
+            &frame,
+            size,
+            flux::rgba(10, 80, 220, 255),
+            FrameDamage::Area(aegis_core::Rect::new(8, 6, 10, 9)),
+        )
+        .unwrap();
+        canvas.end();
+        frame.submit().unwrap().present().unwrap();
+
+        let mut pixels = vec![0; size.0 as usize * size.1 as usize * 4];
+        surface.read_pixels(&mut pixels).unwrap();
+        let pixel = |x: usize, y: usize| &pixels[(y * size.0 as usize + x) * 4..][..4];
+        assert_eq!(pixel(0, 0), [200, 30, 20, 255]);
+        assert_eq!(pixel(9, 7), [10, 80, 220, 255]);
+        assert_eq!(pixel(17, 14), [10, 80, 220, 255]);
+        assert_eq!(pixel(18, 15), [200, 30, 20, 255]);
     }
 }

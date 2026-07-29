@@ -29,12 +29,12 @@ use aegis_core::input::{
     TouchpadConfig, TouchpadScrollMethod, TouchpadStatus,
 };
 use aegis_core::output::{ModeSpec, OutputMode};
-use drm::Device as BasicDevice;
-use drm::buffer::{DrmFourcc, DrmModifier, Handle as BufferHandle, PlanarBuffer};
+use drm::buffer::{Buffer, DrmFourcc, DrmModifier, Handle as BufferHandle, PlanarBuffer};
 use drm::control::{
     self, AtomicCommitFlags, Device as ControlDevice, FbCmd2Flags, Mode, ModeTypeFlags,
     ResourceHandle, atomic, connector, crtc, plane, property,
 };
+use drm::{Device as BasicDevice, DriverCapability};
 use input::event::EventTrait;
 use input::event::device::DeviceEvent;
 use input::event::gesture::{
@@ -94,6 +94,10 @@ pub enum DrmError {
     Reconfigured,
     #[error("client buffer cannot be scanned out directly")]
     ScanoutUnsupported,
+    #[error("hardware cursor unsupported: {0}")]
+    CursorUnsupported(&'static str),
+    #[error("hardware cursor atomic commit was rejected; retry with software composition")]
+    CursorFallback,
 }
 
 /// Map an atomic-commit failure to a backend error. EACCES/EPERM means the
@@ -134,6 +138,128 @@ fn damage_clip_for_output(
     (x2 > x1 && y2 > y1).then_some([x1, y1, x2, y2])
 }
 
+/// Place one cursor sprite on an output when their rectangles intersect. The
+/// input position is the global physical-pixel hotspot and destination
+/// coordinates are CRTC-local. Cursor planes conventionally require the full
+/// source rectangle (Smithay/Niri follow the same rule); negative or
+/// edge-crossing destination coordinates let KMS clip it. Returning a
+/// placement for every intersected CRTC lets a cursor straddle outputs.
+fn cursor_plane_rect(
+    position: (i32, i32),
+    hotspot: (u32, u32),
+    image_size: (u32, u32),
+    output_origin: (u32, u32),
+    output_size: (u32, u32),
+) -> Option<CursorPlaneRect> {
+    let left = i64::from(position.0) - i64::from(hotspot.0);
+    let top = i64::from(position.1) - i64::from(hotspot.1);
+    let right = left + i64::from(image_size.0);
+    let bottom = top + i64::from(image_size.1);
+    let output_left = i64::from(output_origin.0);
+    let output_top = i64::from(output_origin.1);
+    let output_right = output_left + i64::from(output_size.0);
+    let output_bottom = output_top + i64::from(output_size.1);
+    if right <= output_left || bottom <= output_top || left >= output_right || top >= output_bottom
+    {
+        return None;
+    }
+    Some(CursorPlaneRect {
+        src: (0, 0, image_size.0, image_size.1),
+        dst: (
+            (left - output_left) as i32,
+            (top - output_top) as i32,
+            image_size.0,
+            image_size.1,
+        ),
+    })
+}
+
+fn add_cursor_plane_to_commit(
+    request: &mut atomic::AtomicModeReq,
+    output: &Output,
+    state: Option<CursorState>,
+    buffers: &[CursorBuffer],
+) {
+    let Some(cursor) = &output.cursor else {
+        return;
+    };
+    let placement = state.and_then(|state| {
+        let buffer = buffers.get(state.buffer)?;
+        let (width, height) = output.mode.size();
+        let rect = cursor_plane_rect(
+            state.position,
+            state.hotspot,
+            buffer.dumb.size(),
+            (output.x, output.y),
+            (u32::from(width), u32::from(height)),
+        )?;
+        Some((buffer.framebuffer, rect))
+    });
+    let Some((framebuffer, rect)) = placement else {
+        request.add_property(
+            cursor.handle,
+            cursor.props.plane_fb_id,
+            property::Value::Framebuffer(None),
+        );
+        request.add_property(
+            cursor.handle,
+            cursor.props.plane_crtc_id,
+            property::Value::CRTC(None),
+        );
+        return;
+    };
+    request.add_property(
+        cursor.handle,
+        cursor.props.plane_fb_id,
+        property::Value::Framebuffer(Some(framebuffer)),
+    );
+    request.add_property(
+        cursor.handle,
+        cursor.props.plane_crtc_id,
+        property::Value::CRTC(Some(output.crtc)),
+    );
+    request.add_property(
+        cursor.handle,
+        cursor.props.plane_src_x,
+        property::Value::UnsignedRange(u64::from(rect.src.0) << 16),
+    );
+    request.add_property(
+        cursor.handle,
+        cursor.props.plane_src_y,
+        property::Value::UnsignedRange(u64::from(rect.src.1) << 16),
+    );
+    request.add_property(
+        cursor.handle,
+        cursor.props.plane_src_w,
+        property::Value::UnsignedRange(u64::from(rect.src.2) << 16),
+    );
+    request.add_property(
+        cursor.handle,
+        cursor.props.plane_src_h,
+        property::Value::UnsignedRange(u64::from(rect.src.3) << 16),
+    );
+    request.add_property(
+        cursor.handle,
+        cursor.props.plane_crtc_x,
+        property::Value::SignedRange(i64::from(rect.dst.0)),
+    );
+    request.add_property(
+        cursor.handle,
+        cursor.props.plane_crtc_y,
+        property::Value::SignedRange(i64::from(rect.dst.1)),
+    );
+    request.add_property(
+        cursor.handle,
+        cursor.props.plane_crtc_w,
+        property::Value::UnsignedRange(u64::from(rect.dst.2)),
+    );
+    request.add_property(
+        cursor.handle,
+        cursor.props.plane_crtc_h,
+        property::Value::UnsignedRange(u64::from(rect.dst.3)),
+    );
+}
+
 #[derive(Debug)]
 struct Card {
     device: libseat::Device,
@@ -171,6 +297,26 @@ struct AtomicProperties {
     plane_fb_damage_clips: Option<property::Handle>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CursorPlaneProperties {
+    plane_fb_id: property::Handle,
+    plane_crtc_id: property::Handle,
+    plane_src_x: property::Handle,
+    plane_src_y: property::Handle,
+    plane_src_w: property::Handle,
+    plane_src_h: property::Handle,
+    plane_crtc_x: property::Handle,
+    plane_crtc_y: property::Handle,
+    plane_crtc_w: property::Handle,
+    plane_crtc_h: property::Handle,
+}
+
+#[derive(Debug)]
+struct CursorPlane {
+    handle: plane::Handle,
+    props: CursorPlaneProperties,
+}
+
 #[derive(Debug)]
 struct Output {
     connector: connector::Handle,
@@ -183,6 +329,9 @@ struct Output {
     x: u32,
     y: u32,
     props: AtomicProperties,
+    /// Dedicated ARGB8888 KMS cursor plane for this CRTC. Direct scanout may
+    /// keep running with a visible cursor only when every output has one.
+    cursor: Option<CursorPlane>,
     /// Pre-created `FB_DAMAGE_CLIPS` blob covering the output's whole
     /// framebuffer rectangle, reused by every commit whose damage is unknown
     /// or spans the output. Present only when the plane exposes the property.
@@ -209,6 +358,30 @@ struct Scanout {
     gem: BufferHandle,
     slot: u32,
     acquire_fence: Option<OwnedFd>,
+}
+
+#[derive(Debug)]
+struct CursorBuffer {
+    framebuffer: control::framebuffer::Handle,
+    dumb: control::dumbbuffer::DumbBuffer,
+    pixels: Vec<u8>,
+    /// Size of the actual cursor art inside the fixed-size transparent KMS
+    /// buffer. Plane programming uses the full driver-advertised dumb-buffer
+    /// extent, while this value keeps cache lookup exact.
+    content_size: (u32, u32),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CursorState {
+    buffer: usize,
+    position: (i32, i32),
+    hotspot: (u32, u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CursorPlaneRect {
+    src: (u32, u32, u32, u32),
+    dst: (i32, i32, u32, u32),
 }
 
 #[derive(Debug)]
@@ -324,6 +497,14 @@ pub struct DrmBackend {
     pending_flips: HashSet<crtc::Handle>,
     current: Option<Scanout>,
     retiring: Option<Scanout>,
+    cursor_buffers: Vec<CursorBuffer>,
+    cursor_state: Option<CursorState>,
+    /// Whether the last successful atomic commit left any cursor plane
+    /// enabled. This intentionally survives a software-fallback decision
+    /// until a later commit has actually disabled the kernel plane.
+    cursor_plane_active: bool,
+    cursor_extent: (u32, u32),
+    hardware_cursor_failed: bool,
     input_events: Vec<InputEvent>,
     gesture_events: Vec<PointerGestureEvent>,
     pointer: (f32, f32),
@@ -565,6 +746,16 @@ impl Drop for DrmBackend {
         if let Some(scanout) = self.current.take() {
             self.release_scanout(scanout);
         }
+        if let Some(card) = self.card.as_ref() {
+            for cursor in self.cursor_buffers.drain(..) {
+                if let Err(error) = card.destroy_framebuffer(cursor.framebuffer) {
+                    log::warn!("DRM: failed to destroy cursor framebuffer: {error}");
+                }
+                if let Err(error) = card.destroy_dumb_buffer(cursor.dumb) {
+                    log::warn!("DRM: failed to destroy cursor buffer: {error}");
+                }
+            }
+        }
         if let Some(card) = self.card.take() {
             for output in &self.displays.outputs {
                 let _ = card.destroy_property_blob(output.mode_blob_id);
@@ -610,6 +801,42 @@ mod tests {
         // Damage fully outside the framebuffer on the negative side.
         let negative = Some(Rect::new(-50, -50, 40, 40));
         assert_eq!(damage_clip_for_output(negative, 0, 0, 1920, 1080), None);
+    }
+
+    #[test]
+    fn cursor_plane_rect_clips_hotspot_and_output_boundaries() {
+        assert_eq!(
+            cursor_plane_rect((100, 80), (4, 6), (24, 24), (0, 0), (1920, 1080)),
+            Some(CursorPlaneRect {
+                src: (0, 0, 24, 24),
+                dst: (96, 74, 24, 24),
+            })
+        );
+        // Hotspot near the top-left keeps the full source and lets KMS clip a
+        // negative destination, as cursor planes conventionally require.
+        assert_eq!(
+            cursor_plane_rect((2, 3), (6, 7), (24, 24), (0, 0), (1920, 1080)),
+            Some(CursorPlaneRect {
+                src: (0, 0, 24, 24),
+                dst: (-4, -4, 24, 24),
+            })
+        );
+        // The same sprite can be committed to two cursor planes while it
+        // straddles side-by-side outputs.
+        assert_eq!(
+            cursor_plane_rect((1920, 100), (12, 12), (24, 24), (0, 0), (1920, 1080)),
+            Some(CursorPlaneRect {
+                src: (0, 0, 24, 24),
+                dst: (1908, 88, 24, 24),
+            })
+        );
+        assert_eq!(
+            cursor_plane_rect((1920, 100), (12, 12), (24, 24), (1920, 0), (1920, 1080),),
+            Some(CursorPlaneRect {
+                src: (0, 0, 24, 24),
+                dst: (-12, 88, 24, 24),
+            })
+        );
     }
 
     #[test]

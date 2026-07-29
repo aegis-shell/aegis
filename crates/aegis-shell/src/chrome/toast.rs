@@ -151,6 +151,11 @@ impl Chrome for Toast {
             x >= left && x < left + TOAST_W && y >= top && y < top + TOAST_H
         })
     }
+
+    fn requires_composition(&self) -> bool {
+        let queue = self.queue.lock().unwrap();
+        !queue.do_not_disturb() && !queue.recent().is_empty()
+    }
 }
 
 #[cfg(test)]

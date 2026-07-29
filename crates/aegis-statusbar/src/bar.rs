@@ -1454,6 +1454,10 @@ impl Chrome for StatusBar {
         }
     }
 
+    fn requires_composition(&self) -> bool {
+        !self.fullscreen_active
+    }
+
     fn set_reduced_motion(&mut self, reduced: bool) {
         self.reduced_motion = reduced;
         if reduced {

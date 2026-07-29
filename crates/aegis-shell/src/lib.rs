@@ -483,6 +483,13 @@ pub trait Chrome {
         false
     }
 
+    /// Whether this component would draw visible pixels in the next frame.
+    /// The default is conservative: third-party chrome blocks direct scanout
+    /// until it explicitly proves that its inactive state is visually empty.
+    fn requires_composition(&self) -> bool {
+        true
+    }
+
     /// Blur width requested for the desktop behind compositor
     /// chrome, in logical pixels. The host takes the maximum across
     /// components and applies one shared backdrop capture before rendering
@@ -937,6 +944,20 @@ impl Shell {
             return true;
         }
         self.ui.anim_pending()
+    }
+
+    /// Whether any component that would participate in the next chrome pass
+    /// has visible output. Direct scanout is safe only when this is false.
+    pub fn requires_composition(&self) -> bool {
+        let modal_active = self
+            .components
+            .iter()
+            .any(|component| component.modal_active());
+        self.components
+            .iter()
+            .filter(|component| !self.screenshot_freeze || component.screenshot_active())
+            .filter(|component| !modal_active || component.visible_during_modal())
+            .any(|component| component.requires_composition())
     }
 
     /// Strongest backdrop blur requested by any registered component, in

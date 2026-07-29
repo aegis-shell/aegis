@@ -22,6 +22,17 @@ use crate::nested::{DEVICE_EXTENSIONS, INSTANCE_EXTENSIONS, NestedError, NestedH
 /// frames ago — exactly the one on screen until the pending flip lands).
 const FRAMES_IN_FLIGHT: u32 = 3;
 
+/// One compositor-owned cursor sprite for a KMS cursor plane. Pixels are
+/// premultiplied BGRA8, which is the in-memory byte order of DRM ARGB8888 on
+/// little-endian Linux.
+pub struct HardwareCursor<'a> {
+    pub pixels: &'a [u8],
+    pub size: (u32, u32),
+    pub hotspot: (u32, u32),
+    /// Global physical-pixel hotspot position.
+    pub position: (i32, i32),
+}
+
 /// User-selected presentation backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendKind {
@@ -198,6 +209,13 @@ impl Host {
         }
     }
 
+    pub fn present_cursor(&mut self) -> Result<(), HostError> {
+        match self {
+            Self::Nested(_) => Err(HostError::Drm(DrmError::ScanoutUnsupported)),
+            Self::Drm(host) => Ok(host.present_cursor()?),
+        }
+    }
+
     /// Confirm completion of the most recently submitted secure frame.
     /// Direct DRM has an exact per-CRTC page-flip barrier. Nested mode is a
     /// development host and can only wait for completion of our Vulkan work;
@@ -219,10 +237,43 @@ impl Host {
         }
     }
 
-    /// Direct KMS has no outer compositor cursor and therefore needs the
-    /// composition root to paint cursor shapes into the scanout buffer.
+    /// Whether the cursor must be painted into the primary framebuffer.
+    /// Direct DRM normally uses dedicated KMS cursor planes; it falls back to
+    /// software composition if any active output lacks a compatible plane or
+    /// cursor framebuffer allocation failed.
     pub fn uses_software_cursor(&self) -> bool {
-        matches!(self, Self::Drm(_))
+        matches!(self, Self::Drm(host) if !host.hardware_cursor_supported())
+    }
+
+    pub fn supports_hardware_cursor(&self) -> bool {
+        matches!(self, Self::Drm(host) if host.hardware_cursor_supported())
+    }
+
+    pub fn disable_hardware_cursor(&mut self) {
+        if let Self::Drm(host) = self {
+            host.disable_hardware_cursor();
+        }
+    }
+
+    /// Update the cursor-plane sprite and placement. `None` disables it.
+    /// Returns whether hardware presentation remains available so the caller
+    /// can paint a software fallback in the same frame after any failure.
+    pub fn set_hardware_cursor(&mut self, cursor: Option<HardwareCursor<'_>>) -> bool {
+        match self {
+            Self::Nested(_) => false,
+            Self::Drm(host) => {
+                if !host.hardware_cursor_supported() {
+                    return false;
+                }
+                if let Err(error) = host.set_hardware_cursor(cursor) {
+                    log::warn!("drm: hardware cursor failed ({error}); using composited cursor");
+                    host.disable_hardware_cursor();
+                    false
+                } else {
+                    true
+                }
+            }
+        }
     }
 
     /// Whether a client dma-buf `(fourcc, modifier)` can be scanned out

@@ -28,6 +28,14 @@ impl DrmBackend {
 
         let (card, displays) = open_card_and_outputs(&seat, &configured_modes)?;
         let size = displays.size;
+        let cursor_extent = (
+            card.get_driver_capability(DriverCapability::CursorWidth)
+                .unwrap_or(64)
+                .clamp(1, u64::from(u32::MAX)) as u32,
+            card.get_driver_capability(DriverCapability::CursorHeight)
+                .unwrap_or(64)
+                .clamp(1, u64::from(u32::MAX)) as u32,
+        );
 
         let input_devices = Rc::new(RefCell::new(HashMap::new()));
         let interface = SeatInputInterface {
@@ -73,6 +81,24 @@ impl DrmBackend {
                 output.mode.vrefresh()
             );
         }
+        let cursor_planes = displays
+            .outputs
+            .iter()
+            .filter(|output| output.cursor.is_some())
+            .count();
+        if cursor_planes == displays.outputs.len() {
+            log::info!(
+                "drm: hardware cursor enabled on every output (maximum {}x{})",
+                cursor_extent.0,
+                cursor_extent.1
+            );
+        } else {
+            log::warn!(
+                "drm: hardware cursor unavailable on {}/{} output(s); using composited cursor",
+                displays.outputs.len().saturating_sub(cursor_planes),
+                displays.outputs.len()
+            );
+        }
 
         let mut backend = Self {
             seat,
@@ -88,6 +114,11 @@ impl DrmBackend {
             pending_flips: HashSet::new(),
             current: None,
             retiring: None,
+            cursor_buffers: Vec::new(),
+            cursor_state: None,
+            cursor_plane_active: false,
+            cursor_extent,
+            hardware_cursor_failed: false,
             input_events: Vec::new(),
             gesture_events: Vec::new(),
             pointer: (size.0 as f32 * 0.5, size.1 as f32 * 0.5),
@@ -159,6 +190,105 @@ impl DrmBackend {
             return false;
         }
         self.displays.modifiers.contains(&modifier)
+    }
+
+    pub fn hardware_cursor_supported(&self) -> bool {
+        !self.hardware_cursor_failed
+            && !self.displays.outputs.is_empty()
+            && self
+                .displays
+                .outputs
+                .iter()
+                .all(|output| output.cursor.is_some())
+    }
+
+    pub fn disable_hardware_cursor(&mut self) {
+        self.cursor_state = None;
+        self.hardware_cursor_failed = true;
+    }
+
+    pub fn set_hardware_cursor(
+        &mut self,
+        cursor: Option<crate::host::HardwareCursor<'_>>,
+    ) -> Result<(), DrmError> {
+        if !self.hardware_cursor_supported() {
+            return Err(DrmError::CursorUnsupported(
+                "not every output has a compatible ARGB8888 cursor plane",
+            ));
+        }
+        let Some(cursor) = cursor else {
+            self.cursor_state = None;
+            return Ok(());
+        };
+        let (width, height) = cursor.size;
+        let expected = width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .map(|bytes| bytes as usize)
+            .ok_or(DrmError::CursorUnsupported("sprite size overflows"))?;
+        if width == 0 || height == 0 || cursor.pixels.len() != expected {
+            return Err(DrmError::CursorUnsupported(
+                "sprite must be non-empty tightly packed BGRA8",
+            ));
+        }
+        if width > self.cursor_extent.0 || height > self.cursor_extent.1 {
+            return Err(DrmError::CursorUnsupported(
+                "sprite exceeds the DRM cursor-size capability",
+            ));
+        }
+        if cursor.hotspot.0 >= width || cursor.hotspot.1 >= height {
+            return Err(DrmError::CursorUnsupported(
+                "hotspot lies outside the sprite",
+            ));
+        }
+
+        let buffer = if let Some(index) = self.cursor_buffers.iter().position(|buffer| {
+            buffer.content_size == cursor.size && buffer.pixels.as_slice() == cursor.pixels
+        }) {
+            index
+        } else {
+            let card = self.card();
+            let mut dumb = card.create_dumb_buffer(self.cursor_extent, DrmFourcc::Argb8888, 32)?;
+            let pitch = dumb.pitch() as usize;
+            {
+                let mut mapping = card.map_dumb_buffer(&mut dumb)?;
+                mapping.fill(0);
+                let row_bytes = width as usize * 4;
+                for row in 0..height as usize {
+                    let source = &cursor.pixels[row * row_bytes..(row + 1) * row_bytes];
+                    let destination = &mut mapping[row * pitch..row * pitch + row_bytes];
+                    destination.copy_from_slice(source);
+                }
+            }
+            let imported = ImportedBuffer {
+                size: self.cursor_extent,
+                stride: dumb.pitch(),
+                modifier: DrmModifier::Invalid,
+                format: DrmFourcc::Argb8888,
+                offset: 0,
+                gem: dumb.handle(),
+            };
+            let framebuffer = match card.add_planar_framebuffer(&imported, FbCmd2Flags::empty()) {
+                Ok(framebuffer) => framebuffer,
+                Err(error) => {
+                    let _ = card.destroy_dumb_buffer(dumb);
+                    return Err(error.into());
+                }
+            };
+            self.cursor_buffers.push(CursorBuffer {
+                framebuffer,
+                dumb,
+                pixels: cursor.pixels.to_vec(),
+                content_size: cursor.size,
+            });
+            self.cursor_buffers.len() - 1
+        };
+        self.cursor_state = Some(CursorState {
+            buffer,
+            position: cursor.position,
+            hotspot: cursor.hotspot,
+        });
+        Ok(())
     }
 
     /// Import a client dma-buf as a DRM framebuffer for direct scanout, reusing
@@ -308,6 +438,72 @@ impl DrmBackend {
         Ok(completion_fence)
     }
 
+    /// Commit only KMS cursor-plane state while retaining the currently
+    /// scanned-out primary framebuffer. This is the pointer-motion fast path:
+    /// no Vulkan frame, dma-buf export, GEM import, or primary-plane flip.
+    pub fn present_cursor(&mut self) -> Result<(), DrmError> {
+        if !self.active || !self.render_ready {
+            return Err(DrmError::Inactive);
+        }
+        if !self.pending_flips.is_empty() {
+            self.wait_for_flip(Duration::from_secs(1))?;
+        }
+        if !self.active || !self.render_ready {
+            return Err(DrmError::Inactive);
+        }
+        if self.pending_resize.is_some() {
+            return Err(DrmError::Reconfigured);
+        }
+        let framebuffer = self
+            .current
+            .as_ref()
+            .map(|scanout| scanout.framebuffer)
+            .ok_or(DrmError::ScanoutUnsupported)?;
+        let mut request = atomic::AtomicModeReq::new();
+        for output in &self.displays.outputs {
+            // Re-state the unchanged primary plane so PAGE_FLIP_EVENT has an
+            // unambiguous CRTC target on drivers that do not emit events for
+            // a cursor-only property delta.
+            request.add_property(
+                output.plane,
+                output.props.plane_fb_id,
+                property::Value::Framebuffer(Some(framebuffer)),
+            );
+            request.add_property(
+                output.plane,
+                output.props.plane_crtc_id,
+                property::Value::CRTC(Some(output.crtc)),
+            );
+            add_cursor_plane_to_commit(
+                &mut request,
+                output,
+                self.cursor_state,
+                &self.cursor_buffers,
+            );
+        }
+        if let Err(error) = self.card().atomic_commit(
+            AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT,
+            request,
+        ) {
+            if self.cursor_state.is_some() || self.cursor_plane_active {
+                log::warn!(
+                    "drm: cursor-only atomic commit rejected ({error}); disabling hardware cursor"
+                );
+                self.disable_hardware_cursor();
+                return Err(DrmError::CursorFallback);
+            }
+            return Err(commit_error(error));
+        }
+        self.cursor_plane_active = self.cursor_state.is_some();
+        self.pending_flips = self
+            .displays
+            .outputs
+            .iter()
+            .map(|output| output.crtc)
+            .collect();
+        Ok(())
+    }
+
     pub fn is_active(&self) -> bool {
         self.active && self.render_ready
     }
@@ -374,6 +570,12 @@ impl DrmBackend {
         for output in &self.displays.outputs {
             let props = output.props;
             let (width, height) = output.mode.size();
+            add_cursor_plane_to_commit(
+                &mut request,
+                output,
+                self.cursor_state,
+                &self.cursor_buffers,
+            );
             request.add_property(
                 output.connector,
                 props.connector_crtc_id,
@@ -493,6 +695,14 @@ impl DrmBackend {
                 for blob in damage_blobs {
                     let _ = self.card().destroy_property_blob(blob);
                 }
+                if self.cursor_state.is_some() || self.cursor_plane_active {
+                    log::warn!(
+                        "drm: cursor-plane TEST_ONLY commit rejected ({error}); disabling hardware cursor"
+                    );
+                    self.disable_hardware_cursor();
+                    self.release_scanout(scanout);
+                    return Err(DrmError::CursorFallback);
+                }
                 self.release_scanout(scanout);
                 return Err(commit_error(error));
             }
@@ -501,12 +711,21 @@ impl DrmBackend {
             for blob in damage_blobs {
                 let _ = self.card().destroy_property_blob(blob);
             }
+            if self.cursor_state.is_some() || self.cursor_plane_active {
+                log::warn!(
+                    "drm: cursor-plane atomic commit rejected ({error}); disabling hardware cursor"
+                );
+                self.disable_hardware_cursor();
+                self.release_scanout(scanout);
+                return Err(DrmError::CursorFallback);
+            }
             self.release_scanout(scanout);
             return Err(commit_error(error));
         }
         for blob in damage_blobs {
             let _ = self.card().destroy_property_blob(blob);
         }
+        self.cursor_plane_active = self.cursor_state.is_some();
 
         // The ioctl imported the sync_file; userspace retains and closes its
         // descriptor immediately after atomic_commit returns.

@@ -599,6 +599,10 @@ impl Chrome for Dock {
         self.anim_active || (effective_autohide && (target - self.autohide_reveal).abs() > 0.002)
     }
 
+    fn requires_composition(&self) -> bool {
+        !self.fullscreen_locked()
+    }
+
     fn set_reduced_motion(&mut self, reduced: bool) {
         self.reduced_motion = reduced;
     }

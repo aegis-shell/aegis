@@ -257,6 +257,10 @@ impl Chrome for AiWorkspaces {
         self.open
     }
 
+    fn requires_composition(&self) -> bool {
+        self.open
+    }
+
     fn visible_during_modal(&self) -> bool {
         true
     }

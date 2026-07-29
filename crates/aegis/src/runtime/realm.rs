@@ -231,13 +231,7 @@ pub(super) fn begin_realm_capture(
         )
     })?;
     renderer.begin_frame();
-    begin_opaque_frame(
-        &target.canvas,
-        &frame,
-        physical_size,
-        flux::rgba(17, 20, 27, 255),
-    )
-    .map_err(|error| {
+    begin_opaque_frame(&target.canvas, &frame, flux::rgba(17, 20, 27, 255)).map_err(|error| {
         format!(
             "begin realm {} canvas: {error}{}",
             realm.0,

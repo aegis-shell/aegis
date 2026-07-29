@@ -106,12 +106,15 @@ impl CompositorRuntime {
             self.host.set_text_input_state(state);
         }
         let mut had_input = false;
+        let mut non_cursor_input = false;
         for event in self.host.take_text_input() {
             had_input = true;
+            non_cursor_input = true;
             self.server.text_input_event(&event);
         }
         for event in self.host.take_pointer_gestures() {
             had_input = true;
+            non_cursor_input = true;
             self.server.pointer_gesture_event(&event);
         }
         // Drain backend input: forward to clients (via the server's seat) and
@@ -135,8 +138,13 @@ impl CompositorRuntime {
         let mut shell_scroll_pixels = (0.0_f32, 0.0_f32);
         let pointer_before = self.input_acc.cursor;
         let mut events = self.host.take_input();
+        let pointer_motion_only = !events.is_empty()
+            && events
+                .iter()
+                .all(|event| matches!(event, aegis_core::input::InputEvent::PointerMotion { .. }));
         if !events.is_empty() {
             had_input = true;
+            non_cursor_input |= !pointer_motion_only;
             self.server.note_user_activity();
         }
         // Coordinate contract: backends emit absolute coordinates in their
@@ -573,6 +581,7 @@ impl CompositorRuntime {
         // thread; this main-loop pass validates live geometry, z-order, and
         // shell occlusion before sending any event.
         had_input |= !pending_synthetic_input.is_empty();
+        non_cursor_input |= !pending_synthetic_input.is_empty();
         for (cmd, ts, origin) in pending_synthetic_input {
             let effect = match &cmd {
                 aegis_ipc::Command::InjectInput { id, actions } => {
@@ -724,6 +733,7 @@ impl CompositorRuntime {
                 let (pw, ph) = self.host.physical_size();
                 self.surface.resize(pw, ph)?;
             }
+            self.composite_slot_damage.clear();
             if let Err(error) = self.surface.prepare_readback() {
                 log::warn!(
                     "capture: could not preallocate resized readback staging: {error}{}",
@@ -769,6 +779,28 @@ impl CompositorRuntime {
         };
         let cursor_hidden = owned_cursor.is_none() && self.server.cursor_hidden();
         let cursor_shape = owned_cursor.unwrap_or_else(|| self.server.cursor_shape().max(1));
+        // With a KMS cursor plane, plain pointer motion over client content
+        // changes no compositor pixels. Let presentation issue a cursor-only
+        // atomic commit instead of turning every mouse report into a full
+        // Vulkan frame. Chrome hover, drags, client cursor surfaces, locks,
+        // and every non-motion input remain conservative full-damage signals.
+        let cursor_plane_only = had_input
+            && !non_cursor_input
+            && pointer_motion_only
+            && pointer_before != self.input_acc.cursor
+            && self.host.supports_hardware_cursor()
+            && !session_locked
+            && !self.shell.captures_pointer_at(
+                self.input_acc.cursor.0,
+                self.input_acc.cursor.1,
+                self.input_acc.display_size,
+            )
+            && self.server.interactive().is_none()
+            && !self.server.drag_active()
+            && !self.server.client_cursor_surface_active();
+        if cursor_plane_only {
+            had_input = false;
+        }
         if cursor_hidden != self.last_cursor_hidden
             || (!cursor_hidden && cursor_shape != self.last_cursor_shape)
         {

@@ -148,6 +148,16 @@ impl Chrome for AgentFeedback {
         }
     }
 
+    fn requires_composition(&self) -> bool {
+        let now = Instant::now();
+        self.activity.iter().any(|(realm, activity)| {
+            now.saturating_duration_since(activity.latest_at) < VISIBLE_FOR
+                && self.realms.realms.iter().any(|candidate| {
+                    candidate.id == *realm && candidate.state != RealmState::Revoked
+                })
+        })
+    }
+
     fn update_realms(&mut self, snapshot: &RealmSnapshot) {
         self.realms = snapshot.clone();
         self.activity.retain(|realm, _| {

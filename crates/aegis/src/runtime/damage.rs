@@ -5,6 +5,7 @@ use super::*;
 /// The pipeline is conservative by design: any uncertainty resolves to
 /// [`FrameDamage::Full`] (or to not skipping), because a missed region leaves
 /// stale pixels on screen while an over-large region only costs a hint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FrameDamage {
     /// Nothing visible changed: rendering and presentation may be skipped.
     None,
@@ -12,6 +13,60 @@ pub(super) enum FrameDamage {
     Full,
     /// Tight bounding box in physical desktop (framebuffer) pixels.
     Area(aegis_core::Rect),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct DamageAssessment {
+    pub had_input: bool,
+    pub session_locked: bool,
+    pub cursor_hidden: bool,
+    pub cursor_shape: u32,
+    pub software_cursor: bool,
+    pub scale: f32,
+    pub physical_size: (u32, u32),
+}
+
+fn union_frame_damage(left: FrameDamage, right: FrameDamage) -> FrameDamage {
+    match (left, right) {
+        (FrameDamage::Full, _) | (_, FrameDamage::Full) => FrameDamage::Full,
+        (FrameDamage::None, damage) | (damage, FrameDamage::None) => damage,
+        (FrameDamage::Area(left), FrameDamage::Area(right)) => {
+            let mut union = Some(left);
+            union_bbox(&mut union, right);
+            FrameDamage::Area(union.expect("two non-empty rectangles have a union"))
+        }
+    }
+}
+
+/// Damage that must be repainted into `slot`, including every change that
+/// happened while another ring image was scanned out.
+pub(super) fn composite_repaint_for_slot(
+    slots: &mut Vec<FrameDamage>,
+    slot: usize,
+    current: FrameDamage,
+) -> FrameDamage {
+    if slots.len() <= slot {
+        slots.resize(slot + 1, FrameDamage::Full);
+    }
+    union_frame_damage(slots[slot], current)
+}
+
+/// Advance ring-image damage history only after a successful presentation.
+pub(super) fn record_composite_present(
+    slots: &mut Vec<FrameDamage>,
+    slot: usize,
+    current: FrameDamage,
+) {
+    if slots.len() <= slot {
+        slots.resize(slot + 1, FrameDamage::Full);
+    }
+    for (index, pending) in slots.iter_mut().enumerate() {
+        if index == slot {
+            *pending = FrameDamage::None;
+        } else {
+            *pending = union_frame_damage(*pending, current);
+        }
+    }
 }
 
 /// Damage contributed by client surface commits, in compositor logical
@@ -292,15 +347,16 @@ impl CompositorRuntime {
     /// to [`FrameDamage::Full`]. [`FrameDamage::None`] is the only verdict
     /// that lets the caller skip rendering entirely, so the burden of proof
     /// is on "nothing changed".
-    pub(super) fn assess_frame_damage(
-        &mut self,
-        had_input: bool,
-        session_locked: bool,
-        cursor_hidden: bool,
-        cursor_shape: u32,
-        scale: f32,
-        physical_size: (u32, u32),
-    ) -> FrameDamage {
+    pub(super) fn assess_frame_damage(&mut self, assessment: DamageAssessment) -> FrameDamage {
+        let DamageAssessment {
+            had_input,
+            session_locked,
+            cursor_hidden,
+            cursor_shape,
+            software_cursor,
+            scale,
+            physical_size,
+        } = assessment;
         let (notif_revision, do_not_disturb) = {
             let queue = self.notif_queue.lock().unwrap();
             (queue.revision(), queue.do_not_disturb())
@@ -321,7 +377,8 @@ impl CompositorRuntime {
             // it as full damage rather than tracking hover precisely.
             || had_input
             || session_locked != self.last_session_locked
-            || self.last_presented_cursor != Some((cursor_shape, cursor_hidden))
+            || (software_cursor
+                && self.last_presented_cursor != Some((cursor_shape, cursor_hidden)))
             || self.shell.anim_pending()
             || self.server.transitions_pending()
             // A live 3D model or an animated (video/GIF) wallpaper changes
@@ -423,6 +480,18 @@ mod tests {
     }
 
     #[test]
+    fn frame_damage_union_preserves_full_and_joins_areas() {
+        let a = FrameDamage::Area(aegis_core::Rect::new(10, 20, 30, 40));
+        let b = FrameDamage::Area(aegis_core::Rect::new(0, 50, 20, 20));
+        assert_eq!(
+            union_frame_damage(a, b),
+            FrameDamage::Area(aegis_core::Rect::new(0, 20, 40, 50))
+        );
+        assert_eq!(union_frame_damage(FrameDamage::None, a), a);
+        assert_eq!(union_frame_damage(FrameDamage::Full, a), FrameDamage::Full);
+    }
+
+    #[test]
     fn logical_to_physical_rounds_outward_and_clamps() {
         // scale 2: outward rounding keeps every touched physical pixel.
         let mapped = logical_to_physical(aegis_core::Rect::new(5, 5, 11, 11), 2.0, (1920, 1080));
@@ -439,6 +508,35 @@ mod tests {
         assert_eq!(
             logical_to_physical(aegis_core::Rect::new(0, 0, 10, 10), 0.0, (1920, 1080)),
             None
+        );
+    }
+
+    #[test]
+    fn ring_slot_damage_accumulates_missed_frames() {
+        let first = FrameDamage::Area(aegis_core::Rect::new(10, 10, 20, 20));
+        let second = FrameDamage::Area(aegis_core::Rect::new(40, 40, 10, 10));
+        let mut slots = Vec::new();
+
+        // Every ring image begins undefined and therefore repaints in full on
+        // its first acquisition.
+        assert_eq!(
+            composite_repaint_for_slot(&mut slots, 0, first),
+            FrameDamage::Full
+        );
+        record_composite_present(&mut slots, 0, first);
+        assert_eq!(slots, [FrameDamage::None]);
+
+        assert_eq!(
+            composite_repaint_for_slot(&mut slots, 1, second),
+            FrameDamage::Full
+        );
+        record_composite_present(&mut slots, 1, second);
+        // Slot zero missed the second frame; when it comes around again, its
+        // repaint includes both that history and the new frame's damage.
+        assert_eq!(slots, [second, FrameDamage::None]);
+        assert_eq!(
+            composite_repaint_for_slot(&mut slots, 0, first),
+            FrameDamage::Area(aegis_core::Rect::new(10, 10, 40, 40))
         );
     }
 

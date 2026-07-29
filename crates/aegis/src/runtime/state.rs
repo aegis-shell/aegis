@@ -126,6 +126,11 @@ pub(super) struct CompositorRuntime {
     pub(super) last_session_locked: bool,
     /// (shape, hidden) as of the last presented frame.
     pub(super) last_presented_cursor: Option<(u32, bool)>,
+    pub(super) last_presented_cursor_position: Option<(i32, i32)>,
+    /// Damage each Flux ring slot has missed since it was last presented.
+    /// Partial repaint unions the current frame's damage with this history so
+    /// a three-buffer compositor never exposes stale pixels.
+    pub(super) composite_slot_damage: Vec<FrameDamage>,
     /// Wall-clock minute of the last presented frame; a rollover forces one
     /// frame so the status-bar clock cannot go stale while idle.
     pub(super) last_present_minute: Option<u64>,

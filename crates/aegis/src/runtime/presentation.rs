@@ -35,6 +35,42 @@ impl CompositorRuntime {
             (scale, logical)
         };
         let physical_size = self.surface.size();
+        let cursor_position = (
+            (self.input_acc.cursor.0 * scale).round() as i32,
+            (self.input_acc.cursor.1 * scale).round() as i32,
+        );
+        // Upload and place compositor-owned theme cursors on dedicated KMS
+        // planes before deciding whether a fullscreen client can scan out
+        // directly. The cheap Arc clone ends the CursorCache borrow before
+        // mutating the host; cursor buffers themselves are cached by exact
+        // pixels in the DRM backend.
+        if self.host.supports_hardware_cursor() {
+            if cursor_hidden {
+                self.host.set_hardware_cursor(None);
+            } else {
+                let loaded = self
+                    .cursor_cache
+                    .get(&self.device, cursor_shape, scale)
+                    .map(|cursor| {
+                        (
+                            std::sync::Arc::clone(&cursor.pixels),
+                            (cursor.width as u32, cursor.height as u32),
+                            (cursor.xhot as u32, cursor.yhot as u32),
+                        )
+                    });
+                if let Some((pixels, size, hotspot)) = loaded {
+                    self.host.set_hardware_cursor(Some(HardwareCursor {
+                        pixels: &pixels,
+                        size,
+                        hotspot,
+                        position: cursor_position,
+                    }));
+                } else {
+                    log::warn!("cursor: theme rasterization failed; disabling hardware cursor");
+                    self.host.disable_hardware_cursor();
+                }
+            }
+        }
         // Bind capture requests before the render/skip decision: a bound
         // capture always forces a presentation frame.
         let mut frame_capture =
@@ -55,14 +91,57 @@ impl CompositorRuntime {
             .flatten();
         let cursorless_saved_frame = !screenshot_include_cursor && bound_saved_screenshot;
         let mut capturing_frozen_screenshot = false;
-        let damage = self.assess_frame_damage(
+        let mut damage = self.assess_frame_damage(DamageAssessment {
             had_input,
             session_locked,
             cursor_hidden,
             cursor_shape,
+            software_cursor: self.host.uses_software_cursor(),
             scale,
             physical_size,
-        );
+        });
+        let cursor_plane_changed = self.host.supports_hardware_cursor()
+            && (self.last_presented_cursor != Some((cursor_shape, cursor_hidden))
+                || (!cursor_hidden
+                    && self.last_presented_cursor_position != Some(cursor_position)));
+        let cursor_only_eligible = matches!(damage, FrameDamage::None)
+            && cursor_plane_changed
+            && frame_capture.is_none()
+            && self.pending_capture.is_none()
+            && self.pending_realm_capture.is_none()
+            && !self.capture_worker.is_busy()
+            && !self.screenshot_freeze.armed
+            && !self.server.lock_confirmation_pending()
+            && !self.server.retired_buffers_pending();
+        if cursor_only_eligible {
+            match self.host.present_cursor() {
+                Ok(()) => {
+                    self.server
+                        .send_frame_callbacks(self.start.elapsed().as_millis() as u32);
+                    self.last_present_minute = Some(wall_clock_minute());
+                    self.last_presented_cursor = Some((cursor_shape, cursor_hidden));
+                    self.last_presented_cursor_position = Some(cursor_position);
+                    self.frame_count += 1;
+                    return Ok(PresentationOutcome::Presented);
+                }
+                Err(HostError::Drm(DrmError::CursorFallback)) => {
+                    // The backend disabled the cursor plane. Repaint this
+                    // frame with the software cursor rather than showing one
+                    // cursorless refresh.
+                    damage = FrameDamage::Full;
+                }
+                Err(HostError::Drm(
+                    DrmError::FlipTimeout | DrmError::Inactive | DrmError::Reconfigured,
+                )) => {
+                    self.force_full_redraw = true;
+                    return Ok(PresentationOutcome::Retry);
+                }
+                Err(HostError::Drm(DrmError::ScanoutUnsupported)) => {
+                    damage = FrameDamage::Full;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
         let present_damage = match damage {
             FrameDamage::Area(rect) => Some(rect),
             _ => None,
@@ -98,7 +177,11 @@ impl CompositorRuntime {
         // composite, or the fallback frame could skip rendering and show a
         // frozen image.
         let was_scanout = self.scanout_taken;
-        if let Some(candidate) = self.pick_scanout_candidate(physical_size, cursor_hidden) {
+        let scanout_candidate = frame_capture
+            .is_none()
+            .then(|| self.pick_scanout_candidate(physical_size, cursor_hidden))
+            .flatten();
+        if let Some(candidate) = scanout_candidate {
             match self.host.present_scanout(&candidate, present_damage) {
                 Ok(completion_fence) => {
                     self.scanout_taken = true;
@@ -126,6 +209,7 @@ impl CompositorRuntime {
                         .send_frame_callbacks(self.start.elapsed().as_millis() as u32);
                     self.last_present_minute = Some(wall_clock_minute());
                     self.last_presented_cursor = Some((cursor_shape, cursor_hidden));
+                    self.last_presented_cursor_position = Some(cursor_position);
                     self.force_full_redraw = false;
                     self.frame_count += 1;
                     return Ok(PresentationOutcome::Presented);
@@ -136,6 +220,13 @@ impl CompositorRuntime {
                     // through to compositing. A non-transient ScanoutUnsupported
                     // just composites; transient DRM errors retry below.
                     self.scanout_taken = false;
+                    if matches!(error, HostError::Drm(DrmError::CursorFallback)) {
+                        // The backend disabled the KMS cursor after rejecting
+                        // this commit. The same frame must include the
+                        // software cursor, outside any client-only damage
+                        // scissor.
+                        damage = FrameDamage::Full;
+                    }
                     if !matches!(error, HostError::Drm(DrmError::ScanoutUnsupported)) {
                         log::warn!(
                             "{}: direct scanout failed; compositing instead: {error}",
@@ -152,9 +243,13 @@ impl CompositorRuntime {
         // the resumed render is correct rather than skipped as "unchanged".
         if was_scanout {
             self.force_full_redraw = true;
+            damage = FrameDamage::Full;
         }
         match self.surface.begin_frame() {
             Ok(mut frame) => {
+                let frame_slot = frame.index() as usize;
+                let repaint =
+                    composite_repaint_for_slot(&mut self.composite_slot_damage, frame_slot, damage);
                 self.renderer.begin_frame();
                 let render_geometry = RenderGeometry {
                     logical_size,
@@ -267,7 +362,7 @@ impl CompositorRuntime {
                             &frame,
                             blur_sigma * capture_scale,
                         );
-                        begin_opaque_frame(&self.canvas, &frame, physical_size, self.clear)?;
+                        begin_opaque_frame(&self.canvas, &frame, self.clear)?;
                         // Preserve the live desktop everywhere, then replace
                         // only the component-declared glass regions with the
                         // shared blurred capture. This is a true backdrop
@@ -322,7 +417,7 @@ impl CompositorRuntime {
                         if self.screenshot_freeze.active() {
                             // Frozen: present only the trigger-frame
                             // snapshot; the selector draws on top below.
-                            begin_opaque_frame(&self.canvas, &frame, physical_size, self.clear)?;
+                            begin_opaque_frame(&self.canvas, &frame, self.clear)?;
                             if let Some(image) = self.screenshot_freeze.image() {
                                 self.canvas.draw_image(
                                     image,
@@ -400,12 +495,7 @@ impl CompositorRuntime {
                                 }
                             }
                             if !in_target {
-                                begin_opaque_frame(
-                                    &self.canvas,
-                                    &frame,
-                                    physical_size,
-                                    self.clear,
-                                )?;
+                                begin_opaque_frame(&self.canvas, &frame, self.clear)?;
                                 draw_direct_desktop_scene(
                                     &self.canvas,
                                     &self.device,
@@ -419,7 +509,13 @@ impl CompositorRuntime {
                                 )?;
                             }
                         } else {
-                            begin_opaque_frame(&self.canvas, &frame, physical_size, self.clear)?;
+                            begin_opaque_frame_repaint(
+                                &self.canvas,
+                                &frame,
+                                physical_size,
+                                self.clear,
+                                repaint,
+                            )?;
                             draw_direct_desktop_scene(
                                 &self.canvas,
                                 &self.device,
@@ -582,7 +678,7 @@ impl CompositorRuntime {
                         None
                     };
                     self.screenshot_freeze.mark_captured(&frame, frozen_cursor);
-                    begin_opaque_frame(&self.canvas, &frame, physical_size, self.clear)?;
+                    begin_opaque_frame(&self.canvas, &frame, self.clear)?;
                     if let Some(image) = self.screenshot_freeze.image() {
                         self.canvas.draw_image(
                             image,
@@ -1113,6 +1209,7 @@ impl CompositorRuntime {
                                     DrmError::FlipTimeout
                                         | DrmError::Inactive
                                         | DrmError::Reconfigured
+                                        | DrmError::CursorFallback
                                 )
                             ) {
                                 log::warn!(
@@ -1129,6 +1226,7 @@ impl CompositorRuntime {
                             return Err(error.into());
                         }
                     };
+                record_composite_present(&mut self.composite_slot_damage, frame_slot, damage);
                 if let Some(capture) = capture_for_present {
                     debug_assert!(self.pending_capture.is_none());
                     self.pending_capture = Some(capture);
@@ -1170,6 +1268,7 @@ impl CompositorRuntime {
                 // baselines (clock minute, cursor, post-resize full redraw).
                 self.last_present_minute = Some(wall_clock_minute());
                 self.last_presented_cursor = Some((cursor_shape, cursor_hidden));
+                self.last_presented_cursor_position = Some(cursor_position);
                 self.force_full_redraw = false;
 
                 self.frame_count += 1;
@@ -1238,6 +1337,7 @@ impl CompositorRuntime {
                 }
                 let (nw, nh) = self.host.physical_size();
                 self.surface.resize(nw, nh)?;
+                self.composite_slot_damage.clear();
                 // Damage tracked against the old framebuffer does not
                 // describe the rebuilt one; render the next frame in full.
                 self.force_full_redraw = true;

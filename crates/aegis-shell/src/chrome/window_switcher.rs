@@ -189,6 +189,10 @@ impl Chrome for WindowSwitcher {
         self.anim_active
     }
 
+    fn requires_composition(&self) -> bool {
+        self.open || self.visibility > 0.01
+    }
+
     fn set_reduced_motion(&mut self, reduced: bool) {
         self.reduced_motion = reduced;
     }

@@ -768,6 +768,14 @@ impl Server {
         self.state.cursor_hidden
     }
 
+    /// Whether the focused client supplied a wl_surface cursor. Unlike an
+    /// explicitly hidden cursor, this surface moves with the pointer and must
+    /// participate in compositor damage; it cannot be represented by the
+    /// compositor-owned KMS cursor sprite.
+    pub fn client_cursor_surface_active(&self) -> bool {
+        !self.state.cursor_surface.is_null()
+    }
+
     /// Cursor shape owned by compositor-side window manipulation. Active
     /// grabs take precedence; otherwise a floating window's outer resize
     /// margin advertises the edge/corner before the user presses it.

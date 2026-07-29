@@ -516,6 +516,10 @@ impl Chrome for ScreenshotSelector {
         self.active
     }
 
+    fn requires_composition(&self) -> bool {
+        self.active
+    }
+
     fn visible_during_modal(&self) -> bool {
         true
     }

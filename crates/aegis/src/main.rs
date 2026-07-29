@@ -6,7 +6,7 @@
 
 use aegis_backend::Backend;
 use aegis_backend::drm::DrmError;
-use aegis_backend::host::{BackendKind, Host, HostError};
+use aegis_backend::host::{BackendKind, HardwareCursor, Host, HostError};
 use std::os::fd::AsRawFd;
 
 mod cursor;
