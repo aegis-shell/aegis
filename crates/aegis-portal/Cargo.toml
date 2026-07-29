@@ -3,7 +3,9 @@ name = "aegis-portal"
 description = "xdg-desktop-portal backend for the aegis compositor: D-Bus bridge over the scoped aegis IPC"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+# The portal package contains project code only; the compositor's bundled
+# GPL cursor artwork is not linked or installed with this binary.
+license = "MIT"
 rust-version.workspace = true
 
 [dependencies]
@@ -15,6 +17,7 @@ aegis-core = { workspace = true }
 # service stays a plain `std::thread` model — same red line as the SNI tray
 # (crates/aegis-statusbar), no tokio.
 zbus = { workspace = true }
+async-channel = "2"
 log = { workspace = true }
 env_logger = { workspace = true }
 thiserror = { workspace = true }
@@ -22,12 +25,6 @@ thiserror = { workspace = true }
 # scoped IPC frame stream (ADR-0052). Rust binding over the system
 # libpipewire (rust-version 1.80, within the workspace MSRV); no tokio.
 pipewire = "0.10"
-# Portal-owned persistent state (Background decisions, ScreenCast restore
-# tokens, ADR-0053): JSON documents written atomically under
-# $XDG_DATA_HOME/aegis-portal. Both crates already carry the workspace IPC and
-# config, so this adds no new external dependency.
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
 
 [lib]
 name = "aegis_portal"

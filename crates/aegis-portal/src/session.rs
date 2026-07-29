@@ -1,8 +1,8 @@
 //! `org.freedesktop.impl.portal.Session` objects and the cast-session
 //! registry behind the ScreenCast portal (ADR-0051 Phase 2).
 //!
-//! One Session object per `CreateSession` call, registered at the
-//! `session_handle_token`-derived path. `Close` hands the path to the
+//! One Session object per `CreateSession` call, registered at the exact
+//! `session_handle` supplied by the portal frontend. `Close` hands the path to the
 //! screencast worker, which stops the cast (if any), emits `Closed`, and
 //! removes the object. A cast that ends from the compositor side
 //! (`Event::StreamEnded`, disconnect) takes the same teardown path.
@@ -21,15 +21,11 @@ pub(crate) enum CastSource {
 
 /// State of one portal screencast session.
 pub(crate) struct CastSession {
-    /// Application identity bound by the first successful `SelectSources`.
-    /// `CreateSession` has no `app_id` argument, so the owner starts unset.
-    pub(crate) app_id: Option<String>,
+    /// Application identity supplied by the frontend at `CreateSession`.
+    pub(crate) app_id: String,
     pub(crate) sources_selected: bool,
     /// The armed source; meaningful once `sources_selected` holds.
     pub(crate) source: CastSource,
-    /// The restore token `Start` reports (ScreenCast v2). `Some` only for
-    /// `persist_mode` 1/2 sessions.
-    pub(crate) restore_token: Option<String>,
     /// Closing this end makes the cast thread's stop socket readable, which
     /// quits its PipeWire main loop. `None` until `Start` succeeds.
     pub(crate) stop: Option<UnixStream>,
@@ -45,17 +41,19 @@ pub(crate) struct SessionRegistry {
 impl SessionRegistry {
     /// Register a fresh session. Duplicate paths are refused so a hostile or
     /// buggy client cannot shadow another application's session.
-    pub(crate) fn insert(&mut self, path: &str) -> Result<(), String> {
+    pub(crate) fn insert(&mut self, path: &str, app_id: &str) -> Result<(), String> {
         if self.sessions.contains_key(path) {
             return Err(format!("session {path} already exists"));
+        }
+        if app_id.is_empty() {
+            return Err("application id must not be empty".to_string());
         }
         self.sessions.insert(
             path.to_string(),
             CastSession {
-                app_id: None,
+                app_id: app_id.to_string(),
                 sources_selected: false,
                 source: CastSource::Monitor,
-                restore_token: None,
                 stop: None,
                 cast_thread: None,
             },
@@ -71,7 +69,6 @@ impl SessionRegistry {
         &mut self,
         path: &str,
         app_id: &str,
-        restore_token: Option<String>,
         source: CastSource,
     ) -> Result<(), String> {
         let session = self
@@ -84,22 +81,12 @@ impl SessionRegistry {
         if app_id.is_empty() {
             return Err("application id must not be empty".to_string());
         }
-        if let Some(owner) = &session.app_id
-            && owner != app_id
-        {
+        if session.app_id != app_id {
             return Err(format!("session {path} belongs to another application"));
         }
-        session.app_id = Some(app_id.to_string());
         session.sources_selected = true;
         session.source = source;
-        session.restore_token = restore_token;
         Ok(())
-    }
-
-    /// The restore token `Start` must report, if the session was armed with
-    /// one (ScreenCast v2).
-    pub(crate) fn restore_token(&self, path: &str) -> Option<String> {
-        self.sessions.get(path)?.restore_token.clone()
     }
 
     /// Validate the application owner and return the source `Start` must cast.
@@ -108,7 +95,7 @@ impl SessionRegistry {
             .sessions
             .get(path)
             .ok_or_else(|| format!("unknown session {path}"))?;
-        if session.app_id.as_deref() != Some(app_id) {
+        if session.app_id != app_id {
             return Err(format!("session {path} belongs to another application"));
         }
         if !session.sources_selected {
@@ -163,6 +150,11 @@ impl SessionIface {
             })
             .map_err(|_| zbus::fdo::Error::Failed("screencast worker is gone".to_string()))
     }
+
+    #[zbus(property)]
+    fn version(&self) -> u32 {
+        1
+    }
 }
 
 #[cfg(test)]
@@ -171,7 +163,7 @@ mod tests {
 
     fn registry_with(path: &str) -> SessionRegistry {
         let mut registry = SessionRegistry::default();
-        registry.insert(path).unwrap();
+        registry.insert(path, "org.example.App").unwrap();
         registry
     }
 
@@ -179,8 +171,8 @@ mod tests {
     fn duplicate_session_paths_are_refused() {
         let mut registry = registry_with("/s/1");
         assert!(registry.contains("/s/1"));
-        assert!(registry.insert("/s/1").is_err());
-        assert!(registry.insert("/s/2").is_ok());
+        assert!(registry.insert("/s/1", "org.example.App").is_err());
+        assert!(registry.insert("/s/2", "org.example.App").is_ok());
     }
 
     #[test]
@@ -192,7 +184,7 @@ mod tests {
                 .is_err()
         );
         registry
-            .mark_sources_selected("/s/1", "org.example.App", None, CastSource::Monitor)
+            .mark_sources_selected("/s/1", "org.example.App", CastSource::Monitor)
             .unwrap();
         assert_eq!(
             registry.source_for_start("/s/1", "org.example.App"),
@@ -205,7 +197,7 @@ mod tests {
         );
         assert!(
             registry
-                .mark_sources_selected("/s/1", "org.example.App", None, CastSource::Monitor)
+                .mark_sources_selected("/s/1", "org.example.App", CastSource::Monitor)
                 .is_err()
         );
 
@@ -223,7 +215,7 @@ mod tests {
     fn remove_stops_and_joins_the_cast() {
         let mut registry = registry_with("/s/1");
         registry
-            .mark_sources_selected("/s/1", "org.example.App", None, CastSource::Monitor)
+            .mark_sources_selected("/s/1", "org.example.App", CastSource::Monitor)
             .unwrap();
         let (stop, read) = UnixStream::pair().unwrap();
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

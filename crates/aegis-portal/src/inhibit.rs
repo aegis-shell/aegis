@@ -1,20 +1,14 @@
-//! `org.freedesktop.impl.portal.Inhibit` v1, idle-only path.
+//! `org.freedesktop.impl.portal.Inhibit`, backed by scoped idle inhibition.
 //!
-//! Of the spec's four flags — 1 logout, 2 user switch, 4 idle, 8 suspend —
-//! only 4 (idle) is servable: the other three belong to a session manager
-//! aegis does not have, so they are logged and ignored. Flag 4 lands on the
-//! compositor's surfaceless global idle inhibitor over the scoped IPC
-//! (`SetIdleInhibit`, ADR-0053): the portal has no Wayland surface to hang
-//! a `zwp_idle_inhibit_v1` object on.
+//! Aegis can inhibit idle only. The freedesktop backend ABI assigns idle to
+//! flag 8; logout (1), user switch (2), and suspend (4) require session
+//! services Aegis does not own and are rejected instead of being silently
+//! reported as active.
 //!
-//! `Inhibit` is fire-and-forget (no `Response` signal), so the method only
-//! validates and enqueues; the inhibit worker applies count transitions to
-//! the IPC. Counts are kept per app_id; because v1 has no uninhibit call, a
-//! sender's inhibits are released when its bus name vanishes (polled via
-//! `NameHasOwner`), and the compositor releases everything when the portal
-//! process dies. `QueryEndResponse` is declared for introspection but never
-//! emitted — it is the session-end notification, and there is no session
-//! manager to end the session.
+//! Every accepted call exports an `org.freedesktop.impl.portal.Request` at
+//! the exact `handle` supplied by the frontend. `Request.Close` releases that
+//! one inhibitor. The worker also periodically reasserts active inhibition,
+//! which renews the scoped IPC lease and recovers after a compositor restart.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -25,199 +19,213 @@ use zbus::zvariant::{ObjectPath, Value};
 
 use crate::ipc::PortalIdle;
 
-/// The only flag this backend serves: idle inhibition.
-pub(crate) const INHIBIT_IDLE: u32 = 4;
-/// How often the sender monitor re-checks tracked bus names.
-const MONITOR_INTERVAL: Duration = Duration::from_secs(2);
+/// The freedesktop Inhibit flag for idle.
+pub(crate) const INHIBIT_IDLE: u32 = 8;
+pub(crate) const INHIBIT_VERSION: u32 = 1;
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 
-/// One job handed from the bus method or the sender monitor to the inhibit
-/// worker.
 pub(crate) enum InhibitJob {
-    Inhibit {
+    Add {
+        request_path: String,
         app_id: String,
-        sender: String,
     },
-    /// The sender's bus name vanished; drop every inhibit it holds.
-    ReleaseSender {
-        sender: String,
+    Release {
+        request_path: String,
     },
 }
 
-/// Per-app_id inhibit counts. Multiple `Inhibit` calls from one app stack;
-/// the compositor-facing flag is the fold over all of them.
+/// Active idle inhibitors keyed by backend Request object path.
 #[derive(Default)]
 pub(crate) struct InhibitCounts {
-    /// app_id → (owning sender, count).
-    counts: HashMap<String, (String, u32)>,
+    requests: HashMap<String, String>,
 }
 
 impl InhibitCounts {
-    fn add(&mut self, app_id: &str, sender: &str) -> usize {
-        let entry = self
-            .counts
-            .entry(app_id.to_string())
-            .or_insert_with(|| (sender.to_string(), 0));
-        // A restarted application re-inhibits from a new bus name; the
-        // latest caller owns the stacked count for release purposes.
-        entry.0 = sender.to_string();
-        entry.1 += 1;
-        self.total()
+    fn add(&mut self, request_path: &str, app_id: &str) -> usize {
+        self.requests
+            .insert(request_path.to_string(), app_id.to_string());
+        self.requests.len()
     }
 
-    /// Drop every inhibit owned by `sender`, returning the remaining total.
-    fn release_sender(&mut self, sender: &str) -> usize {
-        self.counts.retain(|_, (owner, _)| owner != sender);
-        self.total()
+    fn release(&mut self, request_path: &str) -> usize {
+        self.requests.remove(request_path);
+        self.requests.len()
     }
 
     fn total(&self) -> usize {
-        self.counts.values().map(|(_, count)| *count as usize).sum()
-    }
-
-    fn senders(&self) -> Vec<String> {
-        let mut senders: Vec<String> = self
-            .counts
-            .values()
-            .map(|(sender, _)| sender.clone())
-            .collect();
-        senders.sort();
-        senders.dedup();
-        senders
+        self.requests.len()
     }
 }
 
-/// The served Inhibit interface. Stateless apart from the job channel: the
-/// method never blocks on the executor.
 pub(crate) struct InhibitIface {
+    pub(crate) conn: zbus::Connection,
     pub(crate) jobs: mpsc::Sender<InhibitJob>,
 }
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Inhibit")]
 impl InhibitIface {
     /// `Inhibit(o handle, s app_id, s window, u flags, a{sv} options)`.
-    /// Fire-and-forget per the v1 contract: no `Response` signal.
     async fn inhibit(
         &self,
-        _handle: ObjectPath<'_>,
+        handle: ObjectPath<'_>,
         app_id: &str,
         _window: &str,
         flags: u32,
-        _options: HashMap<String, Value<'_>>,
-        #[zbus(header)] header: zbus::message::Header<'_>,
+        options: HashMap<String, Value<'_>>,
     ) -> zbus::fdo::Result<()> {
         let unsupported = flags & !INHIBIT_IDLE;
         if unsupported != 0 {
-            log::info!(
-                "portal: Inhibit for '{app_id}' requests unsupported flags {unsupported:#x} \
-                 (logout/user-switch/suspend need a session manager); ignoring them"
-            );
+            return Err(zbus::fdo::Error::NotSupported(format!(
+                "Aegis supports idle inhibition only; unsupported flags {unsupported:#x}"
+            )));
         }
         if flags & INHIBIT_IDLE == 0 {
-            return Ok(());
+            return Err(zbus::fdo::Error::InvalidArgs(
+                "Inhibit requires the idle flag (8)".to_string(),
+            ));
         }
-        let sender = header
-            .sender()
-            .map(|name| name.as_str().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-        log::info!("portal: idle inhibit for '{app_id}' from {sender}");
-        self.jobs
-            .send(InhibitJob::Inhibit {
+        if let Some(Value::Str(reason)) = options.get("reason") {
+            log::info!("portal: idle inhibit for '{app_id}': {reason}");
+        }
+
+        let path = handle.as_str().to_string();
+        let inserted = self
+            .conn
+            .object_server()
+            .at(
+                path.as_str(),
+                InhibitRequestIface {
+                    path: path.clone(),
+                    jobs: self.jobs.clone(),
+                },
+            )
+            .await
+            .map_err(zbus::fdo::Error::from)?;
+        if !inserted {
+            return Err(zbus::fdo::Error::Failed(format!(
+                "request handle {path} is already active"
+            )));
+        }
+        if self
+            .jobs
+            .send(InhibitJob::Add {
+                request_path: path.clone(),
                 app_id: app_id.to_string(),
-                sender,
             })
-            .map_err(|_| zbus::fdo::Error::Failed("inhibit worker is gone".to_string()))
+            .is_err()
+        {
+            let _ = self
+                .conn
+                .object_server()
+                .remove::<InhibitRequestIface, _>(path.as_str())
+                .await;
+            return Err(zbus::fdo::Error::Failed(
+                "inhibit worker is gone".to_string(),
+            ));
+        }
+        log::info!("portal: idle inhibit for '{app_id}' at {path}");
+        Ok(())
+    }
+
+    /// Aegis has no session-state monitor, so fail explicitly instead of
+    /// exposing a partial Session object.
+    async fn create_monitor(
+        &self,
+        _handle: ObjectPath<'_>,
+        _session_handle: ObjectPath<'_>,
+        app_id: &str,
+        _window: &str,
+    ) -> u32 {
+        log::info!("portal: session monitor for '{app_id}' is unsupported");
+        2
+    }
+
+    async fn query_end_response(&self, _session_handle: ObjectPath<'_>) -> zbus::fdo::Result<()> {
+        Err(zbus::fdo::Error::NotSupported(
+            "Aegis has no session-end monitor".to_string(),
+        ))
     }
 
     #[zbus(property)]
     fn version(&self) -> u32 {
-        1
+        INHIBIT_VERSION
     }
-
-    /// Declared so introspection advertises the signal; never emitted — it
-    /// notifies applications of an impending session end, and aegis has no
-    /// session manager to end the session.
-    #[zbus(signal)]
-    async fn query_end_response(
-        emitter: &zbus::object_server::SignalEmitter<'_>,
-    ) -> zbus::Result<()>;
 }
 
-/// Worker loop: one job at a time, folding per-app counts into the single
-/// compositor-facing inhibitor on 0↔1 transitions.
+/// The request object owned by one accepted idle-inhibit call.
+pub(crate) struct InhibitRequestIface {
+    path: String,
+    jobs: mpsc::Sender<InhibitJob>,
+}
+
+#[zbus::interface(name = "org.freedesktop.impl.portal.Request")]
+impl InhibitRequestIface {
+    async fn close(&self) -> zbus::fdo::Result<()> {
+        log::info!("portal: releasing idle inhibit {}", self.path);
+        self.jobs
+            .send(InhibitJob::Release {
+                request_path: self.path.clone(),
+            })
+            .map_err(|_| zbus::fdo::Error::Failed("inhibit worker is gone".to_string()))
+    }
+}
+
 pub(crate) fn inhibit_worker(
     rx: mpsc::Receiver<InhibitJob>,
     counts: Arc<Mutex<InhibitCounts>>,
     socket: PathBuf,
+    conn: zbus::blocking::Connection,
 ) {
     let mut idle = PortalIdle::new(socket);
     let mut ipc_inhibited = false;
-    while let Ok(job) = rx.recv() {
+    loop {
+        let job = match rx.recv_timeout(KEEPALIVE_INTERVAL) {
+            Ok(job) => Some(job),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        };
+        let keepalive = job.is_none();
+
+        let mut remove_path = None;
         let total = {
             let mut counts = counts.lock().unwrap();
             match job {
-                InhibitJob::Inhibit { app_id, sender } => counts.add(&app_id, &sender),
-                InhibitJob::ReleaseSender { sender } => {
-                    log::info!("portal: sender {sender} vanished; releasing its idle inhibits");
-                    counts.release_sender(&sender)
+                Some(InhibitJob::Add {
+                    request_path,
+                    app_id,
+                }) => counts.add(&request_path, &app_id),
+                Some(InhibitJob::Release { request_path }) => {
+                    let total = counts.release(&request_path);
+                    remove_path = Some(request_path);
+                    total
                 }
+                None => counts.total(),
             }
         };
         let want = total > 0;
-        if want == ipc_inhibited {
-            continue;
-        }
-        match idle.set_inhibit(want) {
-            Ok(()) => {
-                ipc_inhibited = want;
-                log::info!("portal: global idle inhibit {want} ({total} app inhibit(s))");
-            }
-            // Keep the old state: the next transition retries. A dead
-            // compositor connection self-heals on the reconnect inside
-            // `set_inhibit`; a persistent failure is logged, never fatal.
-            Err(error) => log::warn!("portal: could not set idle inhibit {want}: {error}"),
-        }
-    }
-}
 
-/// Poll tracked senders and hand releases to the worker. v1 has no
-/// uninhibit call, so a vanished bus name is the only per-app release
-/// signal; the alternative (subscribing to `NameOwnerChanged`) would pull
-/// zbus's async signal stream into a blocking-connection process for one
-/// signal.
-pub(crate) fn sender_monitor(
-    conn: zbus::blocking::Connection,
-    counts: Arc<Mutex<InhibitCounts>>,
-    jobs: mpsc::Sender<InhibitJob>,
-) {
-    loop {
-        std::thread::sleep(MONITOR_INTERVAL);
-        let senders = counts.lock().unwrap().senders();
-        for sender in senders {
-            match name_has_owner(&conn, &sender) {
-                Ok(true) => {}
-                Ok(false) => {
-                    if jobs.send(InhibitJob::ReleaseSender { sender }).is_err() {
-                        return;
-                    }
+        // A timeout deliberately reasserts `true`: this renews the scoped
+        // lease and reconnects after compositor restarts.
+        if want != ipc_inhibited || (keepalive && want) {
+            match idle.set_inhibit(want) {
+                Ok(()) => {
+                    ipc_inhibited = want;
+                    log::info!("portal: global idle inhibit {want} ({total} request(s))");
                 }
                 Err(error) => {
-                    log::warn!("portal: NameHasOwner({sender}) failed: {error}");
+                    log::warn!("portal: could not set idle inhibit {want}: {error}");
                 }
             }
         }
-    }
-}
 
-/// `org.freedesktop.DBus.NameHasOwner` over the blocking connection.
-fn name_has_owner(conn: &zbus::blocking::Connection, name: &str) -> zbus::Result<bool> {
-    let reply = conn.call_method(
-        Some("org.freedesktop.DBus"),
-        "/org/freedesktop/DBus",
-        Some("org.freedesktop.DBus"),
-        "NameHasOwner",
-        &name,
-    )?;
-    reply.body().deserialize()
+        if let Some(path) = remove_path
+            && let Err(error) = conn
+                .object_server()
+                .remove::<InhibitRequestIface, _>(path.as_str())
+        {
+            log::warn!("portal: could not remove inhibit request {path}: {error}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -225,27 +233,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn counts_stack_per_app_and_fold_to_a_total() {
-        let mut counts = InhibitCounts::default();
-        assert_eq!(counts.add("org.example.A", ":1.1"), 1);
-        assert_eq!(counts.add("org.example.A", ":1.1"), 2);
-        assert_eq!(counts.add("org.example.B", ":1.2"), 3);
-        assert_eq!(
-            counts.senders(),
-            vec![":1.1".to_string(), ":1.2".to_string()]
-        );
+    fn idle_uses_the_freedesktop_flag_value() {
+        assert_eq!(INHIBIT_IDLE, 8);
     }
 
     #[test]
-    fn releasing_a_sender_drops_only_its_apps() {
+    fn inhibit_version_is_one() {
+        assert_eq!(INHIBIT_VERSION, 1);
+    }
+
+    #[test]
+    fn requests_are_independent_and_idempotently_released() {
         let mut counts = InhibitCounts::default();
-        counts.add("org.example.A", ":1.1");
-        counts.add("org.example.B", ":1.2");
-        counts.add("org.example.C", ":1.2");
-        assert_eq!(counts.release_sender(":1.2"), 1);
-        assert_eq!(counts.senders(), vec![":1.1".to_string()]);
-        // Releasing twice is a no-op; releasing the last sender empties.
-        assert_eq!(counts.release_sender(":1.2"), 1);
-        assert_eq!(counts.release_sender(":1.1"), 0);
+        assert_eq!(counts.add("/r/1", "org.example.A"), 1);
+        assert_eq!(counts.add("/r/2", "org.example.A"), 2);
+        assert_eq!(counts.add("/r/3", "org.example.B"), 3);
+        assert_eq!(counts.release("/r/2"), 2);
+        assert_eq!(counts.release("/r/2"), 2);
+        assert_eq!(counts.release("/r/1"), 1);
+        assert_eq!(counts.release("/r/3"), 0);
     }
 }

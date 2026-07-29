@@ -903,16 +903,15 @@ impl Server {
         damage
     }
 
-    /// Set or clear the portal backend's surfaceless global idle inhibitor
-    /// (the Inhibit portal over scoped IPC, ADR-0053). While set, idle
-    /// notifications stay resumed as if a visible per-surface inhibitor were
-    /// active. The compositor clears it when the owning IPC connection dies.
-    pub fn set_portal_idle_inhibit(&mut self, inhibited: bool) {
-        if self.state.portal_idle_inhibit == inhibited {
+    /// Set or clear the effective surfaceless idle inhibitor held by scoped
+    /// IPC connections. While set, idle notifications stay resumed as if a
+    /// visible per-surface inhibitor were active.
+    pub fn set_ipc_idle_inhibit(&mut self, inhibited: bool) {
+        if self.state.ipc_idle_inhibit == inhibited {
             return;
         }
-        log::info!("idle: portal idle inhibit {inhibited}");
-        self.state.portal_idle_inhibit = inhibited;
+        log::info!("idle: IPC idle inhibit {inhibited}");
+        self.state.ipc_idle_inhibit = inhibited;
         unsafe { extensions::update_idle_notifications(self.state.as_mut()) };
     }
 

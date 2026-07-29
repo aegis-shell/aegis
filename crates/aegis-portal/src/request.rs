@@ -1,14 +1,21 @@
 //! `org.freedesktop.impl.portal.Request` objects and their cancellation
 //! bookkeeping.
 //!
-//! One object per in-flight call, registered at the `handle_token`-derived
-//! path and removed after the `Response` signal. `Close` records the path in
-//! the shared tracker; the capture worker checks the tracker both before it
-//! starts a job and after a capture completes, so a racing cancel answers
-//! with response code 1 instead of a completed result.
+//! The portal frontend passes the exact object path in each backend method's
+//! `handle` argument. The backend exports one object at that path for the
+//! duration of the method call and removes it before returning the
+//! `(response, results)` reply. `Close` records the path in the shared
+//! tracker; workers check it before and after interactive work so a racing
+//! cancellation answers with response code 1.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+
+use zbus::zvariant::Value;
+
+pub(crate) type PortalResults = std::collections::HashMap<String, Value<'static>>;
+pub(crate) type PortalResponse = (u32, PortalResults);
+pub(crate) type ResponseSender = async_channel::Sender<PortalResponse>;
 
 /// Cancellation state shared between every served `Request` object and the
 /// capture worker.
@@ -46,6 +53,45 @@ impl RequestIface {
             .insert(self.path.clone());
         Ok(())
     }
+}
+
+/// Export the backend request object at the exact path supplied by the portal
+/// frontend. A duplicate handle is a protocol error rather than an
+/// opportunity to share cancellation state between calls.
+pub(crate) async fn register(
+    conn: &zbus::Connection,
+    tracker: &Arc<Mutex<RequestTracker>>,
+    path: &str,
+) -> zbus::fdo::Result<()> {
+    let inserted = conn
+        .object_server()
+        .at(
+            path,
+            RequestIface {
+                path: path.to_string(),
+                tracker: Arc::clone(tracker),
+            },
+        )
+        .await
+        .map_err(zbus::fdo::Error::from)?;
+    if !inserted {
+        return Err(zbus::fdo::Error::Failed(format!(
+            "request handle {path} is already active"
+        )));
+    }
+    Ok(())
+}
+
+/// Remove a finished request object and its cancellation marker.
+pub(crate) async fn finish(
+    conn: &zbus::Connection,
+    tracker: &Arc<Mutex<RequestTracker>>,
+    path: &str,
+) {
+    if let Err(error) = conn.object_server().remove::<RequestIface, _>(path).await {
+        log::warn!("portal: could not remove request {path}: {error}");
+    }
+    tracker.lock().unwrap().forget(path);
 }
 
 #[cfg(test)]

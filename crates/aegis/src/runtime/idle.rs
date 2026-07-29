@@ -1,11 +1,10 @@
-//! Portal-driven global idle inhibition (ADR-0053).
+//! Connection-scoped global idle inhibition over IPC.
 //!
-//! The portal backend's Inhibit interface has no Wayland surface to hang a
-//! `zwp_idle_inhibit_v1` object on, so it holds a connection-scoped global
-//! inhibitor over the scoped IPC (`Request::SetIdleInhibit`). The registry
+//! An IPC client without a Wayland surface can hold a connection-scoped
+//! global inhibitor through `Request::SetIdleInhibit`. The registry
 //! lives on the compositor main loop, keyed by IPC connection id; the
 //! effective flag fans into the Wayland server's
-//! `Server::set_portal_idle_inhibit`, and a connection disconnect releases
+//! `Server::set_ipc_idle_inhibit`, and a connection disconnect releases
 //! its entry fail-closed — the same shape as the output-stream registry.
 
 use super::*;
@@ -63,7 +62,7 @@ impl CompositorRuntime {
             match request.action {
                 IdleControl::Set { inhibit, reply } => {
                     let effective = self.ipc_idle_inhibits.set(request.conn_id, inhibit);
-                    self.server.set_portal_idle_inhibit(effective);
+                    self.server.set_ipc_idle_inhibit(effective);
                     let _ = reply.send(Ok(inhibit));
                 }
                 IdleControl::Disconnect => {
@@ -72,7 +71,7 @@ impl CompositorRuntime {
                             "idle: IPC connection {} gone; releasing its inhibitor",
                             request.conn_id
                         );
-                        self.server.set_portal_idle_inhibit(effective);
+                        self.server.set_ipc_idle_inhibit(effective);
                     }
                 }
             }

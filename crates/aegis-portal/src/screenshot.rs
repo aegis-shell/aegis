@@ -1,12 +1,11 @@
 //! `org.freedesktop.impl.portal.Screenshot` v2.
 //!
-//! `Screenshot` registers an `org.freedesktop.impl.portal.Request` object at
-//! the path the frontend expects (`handle_token`-derived), hands the job to
-//! the capture worker, and returns the handle immediately. The worker pulls
-//! the focused output's PNG over the scoped IPC, writes it under the portal
-//! cache directory, emits `Response` on the request object, and removes the
-//! object. With `interactive = true` the worker first runs the compositor's
-//! region picker (`PickTarget`, ADR-0054) and captures the picked rect.
+//! `Screenshot` exports an `org.freedesktop.impl.portal.Request` object at the
+//! exact `handle` supplied by the portal frontend, then awaits a dedicated
+//! capture worker without blocking zbus's executor. The worker pulls the
+//! focused output's PNG over scoped IPC and returns the backend contract's
+//! `(response, results)` tuple. With `interactive = true` it first runs the
+//! compositor's region picker (`PickTarget`, ADR-0054).
 //!
 //! Version 2 adds `PickColor`: the compositor's crosshair picker returns the
 //! clicked point's RGB, which the response reports as the spec's `color`
@@ -19,13 +18,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, mpsc};
 
-use zbus::zvariant::{ObjectPath, OwnedObjectPath, Value};
+use zbus::zvariant::{ObjectPath, Value};
 
 use crate::files;
 use crate::ipc::PortalCapture;
-use crate::request::{RequestIface, RequestTracker};
-
-const REQUEST_IFACE: &str = "org.freedesktop.impl.portal.Request";
+use crate::request::{PortalResponse, RequestTracker, ResponseSender};
 
 /// The served interface version: 2 adds `PickColor`.
 pub(crate) const SCREENSHOT_VERSION: u32 = 2;
@@ -38,48 +35,28 @@ pub(crate) enum CaptureJob {
         token: String,
         app_id: String,
         interactive: bool,
+        reply: ResponseSender,
     },
     PickColor {
         request_path: String,
         app_id: String,
+        reply: ResponseSender,
     },
-}
-
-impl CaptureJob {
-    /// The request object path the worker responds on.
-    pub(crate) fn request_path(&self) -> &str {
-        match self {
-            CaptureJob::Screenshot { request_path, .. }
-            | CaptureJob::PickColor { request_path, .. } => request_path,
-        }
-    }
 }
 
 /// Options parsed out of the `a{sv}` argument.
 pub(crate) struct ScreenshotOptions {
     pub(crate) interactive: bool,
-    pub(crate) handle_token: Option<String>,
 }
 
-/// Parse the `Screenshot` options dict. Unknown keys are ignored per spec;
-/// `handle_token` is accepted only when it survives sanitization unchanged,
-/// so a hostile token cannot escape the request-path namespace.
+/// Parse the backend `Screenshot` options dict. Request-token handling belongs
+/// to the portal frontend; backend options contain only request policy.
 pub(crate) fn parse_options(options: &HashMap<String, Value<'_>>) -> ScreenshotOptions {
     let interactive = options
         .get("interactive")
         .and_then(|value| bool::try_from(value).ok())
         .unwrap_or(false);
-    let handle_token = options
-        .get("handle_token")
-        .and_then(|value| match value {
-            Value::Str(token) => Some(token.to_string()),
-            _ => None,
-        })
-        .filter(|token| !token.is_empty() && sanitize_token(token) == *token);
-    ScreenshotOptions {
-        interactive,
-        handle_token,
-    }
+    ScreenshotOptions { interactive }
 }
 
 /// Object-path elements allow `[A-Za-z0-9_]`; the filename and the bus path
@@ -97,22 +74,14 @@ pub(crate) fn sanitize_token(token: &str) -> String {
         .collect()
 }
 
-/// Map a sender unique name (`:1.42`) to its request-path element (`1_42`).
-pub(crate) fn sender_element(sender: Option<&str>) -> String {
-    sender
-        .map(|name| name.trim_start_matches(':').replace('.', "_"))
-        .filter(|element| !element.is_empty())
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// The request object path the frontend reconstructs from the sender and
-/// the `handle_token` it generated.
-pub(crate) fn request_path(sender: Option<&str>, token: &str) -> String {
-    format!(
-        "/org/freedesktop/portal/desktop/request/{}/{}",
-        sender_element(sender),
-        token
-    )
+fn capture_token(handle: &ObjectPath<'_>) -> String {
+    handle
+        .as_str()
+        .rsplit('/')
+        .next()
+        .filter(|tail| !tail.is_empty())
+        .map(sanitize_token)
+        .unwrap_or_else(|| "capture".to_string())
 }
 
 /// The served screenshot interface. Methods only register the request
@@ -133,63 +102,35 @@ impl ScreenshotIface {
         app_id: &str,
         _parent_window: &str,
         options: HashMap<String, Value<'_>>,
-        #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> zbus::fdo::Result<OwnedObjectPath> {
+    ) -> zbus::fdo::Result<PortalResponse> {
         let options = parse_options(&options);
-        let sender = header.sender().map(|name| name.as_str());
-        let token = match options.handle_token {
-            Some(token) => token,
-            // No usable token: fall back to the handle the frontend passed,
-            // then to a process-unique id. The frontend cannot match an
-            // unexpected path, so this only salvages non-conforming callers.
-            None => handle
-                .as_str()
-                .rsplit('/')
-                .next()
-                .filter(|tail| !tail.is_empty())
-                .map(sanitize_token)
-                .unwrap_or_else(|| {
-                    static COUNTER: std::sync::atomic::AtomicU64 =
-                        std::sync::atomic::AtomicU64::new(0);
-                    format!(
-                        "aegis{}",
-                        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    )
-                }),
-        };
-        let path = request_path(sender, &token);
+        let path = handle.as_str().to_string();
+        let token = capture_token(&handle);
         log::info!(
             "portal: Screenshot for '{app_id}' (interactive={}) at {path}",
             options.interactive
         );
 
-        self.conn
-            .object_server()
-            .at(
-                path.as_str(),
-                RequestIface {
-                    path: path.clone(),
-                    tracker: Arc::clone(&self.tracker),
-                },
-            )
-            .await
-            .map_err(zbus::fdo::Error::from)?;
-
-        if self
-            .jobs
-            .send(CaptureJob::Screenshot {
-                request_path: path.clone(),
-                token,
-                app_id: app_id.to_string(),
-                interactive: options.interactive,
-            })
-            .is_err()
-        {
+        crate::request::register(&self.conn, &self.tracker, &path).await?;
+        let (reply, response) = async_channel::bounded(1);
+        let queued = self.jobs.send(CaptureJob::Screenshot {
+            request_path: path.clone(),
+            token,
+            app_id: app_id.to_string(),
+            interactive: options.interactive,
+            reply,
+        });
+        if queued.is_err() {
+            crate::request::finish(&self.conn, &self.tracker, &path).await;
             return Err(zbus::fdo::Error::Failed(
                 "capture worker is gone".to_string(),
             ));
         }
-        OwnedObjectPath::try_from(path).map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
+        let result = response.recv().await.map_err(|_| {
+            zbus::fdo::Error::Failed("capture worker dropped its response".to_string())
+        });
+        crate::request::finish(&self.conn, &self.tracker, &path).await;
+        result
     }
 
     async fn pick_color(
@@ -197,42 +138,29 @@ impl ScreenshotIface {
         handle: ObjectPath<'_>,
         app_id: &str,
         _parent_window: &str,
-        options: HashMap<String, Value<'_>>,
-        #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> zbus::fdo::Result<OwnedObjectPath> {
-        let options = parse_options(&options);
-        let sender = header.sender().map(|name| name.as_str());
-        let token = options
-            .handle_token
-            .unwrap_or_else(|| crate::screencast::fallback_token(&handle));
-        let path = request_path(sender, &token);
+        _options: HashMap<String, Value<'_>>,
+    ) -> zbus::fdo::Result<PortalResponse> {
+        let path = handle.as_str().to_string();
         log::info!("portal: PickColor for '{app_id}' at {path}");
 
-        self.conn
-            .object_server()
-            .at(
-                path.as_str(),
-                RequestIface {
-                    path: path.clone(),
-                    tracker: Arc::clone(&self.tracker),
-                },
-            )
-            .await
-            .map_err(zbus::fdo::Error::from)?;
-
-        if self
-            .jobs
-            .send(CaptureJob::PickColor {
-                request_path: path.clone(),
-                app_id: app_id.to_string(),
-            })
-            .is_err()
-        {
+        crate::request::register(&self.conn, &self.tracker, &path).await?;
+        let (reply, response) = async_channel::bounded(1);
+        let queued = self.jobs.send(CaptureJob::PickColor {
+            request_path: path.clone(),
+            app_id: app_id.to_string(),
+            reply,
+        });
+        if queued.is_err() {
+            crate::request::finish(&self.conn, &self.tracker, &path).await;
             return Err(zbus::fdo::Error::Failed(
                 "capture worker is gone".to_string(),
             ));
         }
-        OwnedObjectPath::try_from(path).map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
+        let result = response.recv().await.map_err(|_| {
+            zbus::fdo::Error::Failed("capture worker dropped its response".to_string())
+        });
+        crate::request::finish(&self.conn, &self.tracker, &path).await;
+        result
     }
 
     #[zbus(property)]
@@ -245,26 +173,15 @@ impl ScreenshotIface {
 /// compositor side, so serializing them is the natural pacing.
 pub(crate) fn capture_worker(
     rx: mpsc::Receiver<CaptureJob>,
-    conn: zbus::blocking::Connection,
     tracker: Arc<Mutex<RequestTracker>>,
     mut capture: PortalCapture,
 ) {
     while let Ok(job) = rx.recv() {
-        let (code, results) = run_job(&mut capture, &tracker, &job);
-        let request_path = job.request_path();
-        if let Err(error) = conn.emit_signal(
-            None::<&str>,
-            request_path,
-            REQUEST_IFACE,
-            "Response",
-            &(code, results),
-        ) {
-            log::warn!("portal: could not emit Response for {request_path}: {error}");
-        }
-        if let Err(error) = conn.object_server().remove::<RequestIface, _>(request_path) {
-            log::warn!("portal: could not remove {request_path}: {error}");
-        }
-        tracker.lock().unwrap().forget(request_path);
+        let result = run_job(&mut capture, &tracker, &job);
+        let reply = match &job {
+            CaptureJob::Screenshot { reply, .. } | CaptureJob::PickColor { reply, .. } => reply,
+        };
+        let _ = reply.send_blocking(result);
     }
 }
 
@@ -280,6 +197,7 @@ fn run_job(
             token,
             app_id,
             interactive,
+            ..
         } => {
             if tracker.lock().unwrap().was_closed(request_path) {
                 return (1, HashMap::new());
@@ -324,6 +242,7 @@ fn run_job(
         CaptureJob::PickColor {
             request_path,
             app_id,
+            ..
         } => {
             if tracker.lock().unwrap().was_closed(request_path) {
                 return (1, HashMap::new());
@@ -398,50 +317,21 @@ mod tests {
     }
 
     #[test]
-    fn options_default_to_non_interactive_without_token() {
+    fn options_default_to_non_interactive() {
         let parsed = parse_options(&HashMap::new());
         assert!(!parsed.interactive);
-        assert_eq!(parsed.handle_token, None);
     }
 
     #[test]
-    fn options_parse_interactive_and_token() {
-        let parsed = parse_options(&options(&[
-            ("interactive", Value::from(true)),
-            ("handle_token", Value::from("portal123")),
-        ]));
+    fn options_parse_interactive() {
+        let parsed = parse_options(&options(&[("interactive", Value::from(true))]));
         assert!(parsed.interactive);
-        assert_eq!(parsed.handle_token.as_deref(), Some("portal123"));
-    }
-
-    #[test]
-    fn hostile_tokens_are_rejected() {
-        for bad in ["../evil", "a/b", "tok en", "wíde", ""] {
-            let parsed = parse_options(&options(&[("handle_token", Value::from(bad))]));
-            assert_eq!(parsed.handle_token, None, "token {bad:?} must be rejected");
-        }
     }
 
     #[test]
     fn wrong_typed_options_are_ignored() {
-        let parsed = parse_options(&options(&[
-            ("interactive", Value::from("yes")),
-            ("handle_token", Value::from(7u32)),
-        ]));
+        let parsed = parse_options(&options(&[("interactive", Value::from("yes"))]));
         assert!(!parsed.interactive);
-        assert_eq!(parsed.handle_token, None);
-    }
-
-    #[test]
-    fn request_path_follows_the_portal_convention() {
-        assert_eq!(
-            request_path(Some(":1.42"), "portal123"),
-            "/org/freedesktop/portal/desktop/request/1_42/portal123"
-        );
-        assert_eq!(
-            request_path(None, "t"),
-            "/org/freedesktop/portal/desktop/request/unknown/t"
-        );
     }
 
     #[test]

@@ -59,7 +59,7 @@ background and how the decisions fit together, see
 | [0050](0050-fuji-agent-product-and-bridge-rename.md) | fuji agent product and the aegis-fuji bridge rename (amends [0047](0047-neenee-agent-realm-platform-bridge.md)) | Accepted |
 | [0051](0051-portal-backend-dbus-bridge.md) | xdg-desktop-portal backend as an out-of-process D-Bus bridge | Proposed |
 | [0052](0052-scoped-output-frame-streaming.md) | Scoped output frame streaming | Proposed |
-| [0053](0053-portal-session-services-and-grants.md) | Portal session services, connection-scoped idle inhibition, and portal-owned grants | Proposed |
+| [0053](0053-portal-session-services-and-grants.md) | Portal backend ABI ownership and scoped session services | Accepted |
 | [0054](0054-interactive-target-picking.md) | Interactive target picking and window-scoped stream targets | Proposed |
 | [0055](0055-zero-copy-dmabuf-frame-export.md) | Zero-copy dmabuf export for ScreenCast and frame capture | Proposed |
 | [0056](0056-system-settings-identity-and-boundary.md) | System Settings identity and Control Center boundary (supersedes [0049](0049-standalone-modular-control-center.md)) | Superseded by [0057](0057-system-settings-canonical-namespace.md) |

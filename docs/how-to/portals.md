@@ -15,7 +15,7 @@ Install the binary and the three files shipped under `contrib/`:
 
 | Source | Install to |
 |--------|-----------|
-| `target/release/aegis-portal` | `/usr/bin/aegis-portal` |
+| `target/release/aegis-portal` | `/usr/lib/aegis/aegis-portal` |
 | `contrib/xdg-desktop-portal/portals/aegis.portal` | `/usr/share/xdg-desktop-portal/portals/aegis.portal` |
 | `contrib/xdg-desktop-portal/aegis-portals.conf` | `/usr/share/xdg-desktop-portal/aegis-portals.conf` |
 | `contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` |
@@ -26,8 +26,9 @@ For a per-user install, the same files work under
 `~/.local/share/dbus-1/services/` respectively; point `Exec=` at wherever
 the binary lives.
 
-`aegis-portals.conf` sets `default=aegis;gtk`, so interfaces aegis does not serve
-yet (file chooser, notifications, …) fall back to the GTK backend. aegis
+`aegis-portals.conf` keeps GTK as the default and routes only the interfaces
+listed below to Aegis. This prevents an added metadata entry from silently
+making Aegis responsible for an interface it does not implement. Aegis
 currently serves:
 
 - `org.freedesktop.impl.portal.Settings` v1 — the standardized
@@ -41,33 +42,28 @@ currently serves:
   [ADR-0072](../adr/0072-desktop-preference-authority-and-toolkit-compatibility.md).
   The backend interface remains v1; the public
   `org.freedesktop.portal.Settings` frontend is v2 and provides `ReadOne`.
-- `org.freedesktop.impl.portal.Screenshot` v1 — non-interactive captures
-  only. `interactive = true` requests fail with response code 2 until the
-  interactive dialog lands (Phase 3).
-- `org.freedesktop.impl.portal.ScreenCast` v2 — monitor sources only,
-  no cursor capture. Each cast republishes the
+- `org.freedesktop.impl.portal.Screenshot` v2 — focused-output screenshots,
+  interactive region selection, and `PickColor`. The interactive operations
+  use the compositor's picker and can be cancelled with Escape.
+- `org.freedesktop.impl.portal.ScreenCast` v3 — monitor and window sources
+  with a hidden cursor. Source selection always uses the compositor's
+  interactive picker. Each cast republishes the
   compositor's scoped output-frame stream
   ([ADR-0052](../adr/0052-scoped-output-frame-streaming.md)) as a PipeWire
-  producer, so a running PipeWire session is required. Source selection is
-  non-interactive until Phase 3. `persist_mode` 1 and 2 are accepted: mode
-  1 tokens live until the portal restarts, mode 2 tokens persist (see
-  [Persisted grants](#persisted-grants)). `Start` returns the session's
-  `restore_token`; presenting a valid token in `SelectSources` restores the
-  cast with no further check — the token is the authorization credential.
-- `org.freedesktop.impl.portal.Background` v1 — `background = true` is
-  granted by default and recorded (aegis has no running-application tracking;
-  the grant is a bookkeeping answer, not enforced confinement).
-  `autostart = true` copies the application's desktop file into
-  `$XDG_CONFIG_HOME/autostart/` and is reported `false` when the
-  application ships no desktop file; `autostart = false` removes the file.
-- `org.freedesktop.impl.portal.Inhibit` v1 — flag 4 (idle) only, held
+  producer, so a running PipeWire session is required. Window sharing crops
+  the selected window's visible region from its output; occluding windows
+  remain visible in the stream. Persistence is not advertised because the
+  version 4 `restore_data` contract requires a compatible PermissionStore.
+- `org.freedesktop.impl.portal.Inhibit` v1 — flag 8 (idle) only, held
   through the compositor's scoped `SetIdleInhibit` IPC op
   ([ADR-0053](../adr/0053-portal-session-services-and-grants.md)). Flags
-  1/2/8 (logout, user switch, suspend) need a session manager aegis does not
-  have; they are logged and ignored. An application's idle inhibits are
-  released when it exits (its bus name vanishes) or when the portal
-  restarts. `QueryEndResponse` is declared but never emitted — there is no
-  session manager to end the session.
+  1/2/4 (logout, user switch, suspend) require a session manager Aegis does
+  not have and are rejected. Each accepted call remains active until the
+  frontend closes its request object; the backend periodically renews the
+  scoped IPC lease and reconnects after a compositor restart.
+
+Aegis does not advertise the Background portal. GTK remains the default
+backend for that and other unsupported interfaces.
 
 Restart `xdg-desktop-portal` after installing so it re-scans the portal
 files:
@@ -85,10 +81,9 @@ busctl --user introspect org.freedesktop.impl.portal.desktop.aegis /org/freedesk
 ```
 
 The output lists `org.freedesktop.impl.portal.Settings`,
-`org.freedesktop.impl.portal.Screenshot`,
-`org.freedesktop.impl.portal.ScreenCast` (version 2),
-`org.freedesktop.impl.portal.Background`, and
-`org.freedesktop.impl.portal.Inhibit` (version 1 each).
+`org.freedesktop.impl.portal.Screenshot` (version 2),
+`org.freedesktop.impl.portal.ScreenCast` (version 3), and
+`org.freedesktop.impl.portal.Inhibit` (version 1).
 
 Read the appearance setting (with `color_scheme = "dark"` configured this
 prints `variant u 1`; the default prints `u 0`):
@@ -150,42 +145,14 @@ Sharing pauses while the session is locked or the seat is inactive and
 resumes afterwards; it ends when the app stops sharing, the app exits, or
 the portal session is closed.
 
-Exercise the Background path through the frontend (the call a Flatpak
-application makes when it asks to keep running without a window):
-
-```sh
-gdbus call --session \
-  --dest org.freedesktop.portal.Desktop \
-  --object-path /org/freedesktop/portal/desktop \
-  --method org.freedesktop.portal.Background.RequestBackground "" \
-  "{'reason': <'portal smoke test'>, 'autostart': <false>}"
-```
-
-The response carries `background: true` once the frontend resolves it
-through the aegis backend; with `autostart: <true>` the application's desktop
-file appears under `$XDG_CONFIG_HOME/autostart/`.
-
 Exercise the Inhibit path by requesting idle inhibition from a test client
 (for example `gdbus` against the frontend's
-`org.freedesktop.portal.Inhibit.Inhibit` with flags `4`), then confirm the
+`org.freedesktop.portal.Inhibit.Inhibit` with the frontend's idle flag), then
+confirm the backend receives flag `8` and the
 compositor no longer reports idle: a client subscribed to
 `ext-idle-notify-v1` sees no `idled` event past its timeout while the
 inhibiting application is alive, and sees it again once that application
 exits.
-
-## Persisted Grants
-
-aegis has no PermissionStore; the backend records its own authorization
-decisions as JSON under `$XDG_DATA_HOME/aegis-portal/`
-([ADR-0053](../adr/0053-portal-session-services-and-grants.md)):
-
-- `background.json` — one recorded `{background, autostart}` decision per
-  app_id, answered on every repeat request.
-- `screencast-tokens.json` — mode 2 ScreenCast restore tokens. Delete the
-  file (or individual entries) to revoke persisted cast grants; a presented
-  token that no longer validates is replaced by a freshly minted one.
-
-Both files are mode `0600` and written atomically.
 
 If the name does not activate, check that the `.service` file's `Exec=`
 path exists and that the compositor is running: the backend captures through

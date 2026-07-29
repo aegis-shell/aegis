@@ -977,12 +977,11 @@ pub(crate) struct State {
     /// timer/role state is owned by resource user data in `extensions.rs`.
     pub(crate) idle_notifications: Vec<*mut ffi::wl_resource>,
     pub(crate) idle_inhibitors: Vec<*mut ffi::wl_resource>,
-    /// Surfaceless global idle inhibitor held by the portal backend over the
-    /// scoped IPC (`SetIdleInhibit`, ADR-0053). Unlike the per-surface
-    /// protocol inhibitors above it has no visibility rules: while set, idle
-    /// notifications stay resumed. The compositor clears it when the owning
+    /// Effective surfaceless global idle inhibitor held by scoped IPC
+    /// connections. Unlike the per-surface protocol inhibitors above it has
+    /// no visibility rules. The compositor clears each contribution when its
     /// IPC connection dies.
-    pub(crate) portal_idle_inhibit: bool,
+    pub(crate) ipc_idle_inhibit: bool,
     /// Physical tablet tools seen so far, with their announced info. A tool
     /// is announced to every seat the first time it enters proximity.
     pub(crate) known_tools: Vec<(u64, aegis_core::input::TabletToolInfo)>,
@@ -1162,7 +1161,7 @@ impl State {
             xdg_output_links: std::collections::HashMap::new(),
             idle_notifications: Vec::new(),
             idle_inhibitors: Vec::new(),
-            portal_idle_inhibit: false,
+            ipc_idle_inhibit: false,
             known_tools: Vec::new(),
             retired_buffer_releases: Vec::new(),
             foreign_toplevel_lists: Vec::new(),

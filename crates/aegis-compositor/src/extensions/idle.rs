@@ -290,9 +290,9 @@ pub(crate) unsafe fn update_idle_notifications(state: *mut State) {
         if state.is_null() {
             return;
         }
-        // The portal backend's surfaceless inhibitor counts like an active
+        // A scoped IPC surfaceless inhibitor counts like an active
         // per-surface one, gated on the session being unlocked the same way.
-        let inhibited = (!(*state).session_locked && (*state).portal_idle_inhibit)
+        let inhibited = (!(*state).session_locked && (*state).ipc_idle_inhibit)
             || (*state).idle_inhibitors.iter().any(|resource| {
                 if resource.is_null() {
                     return false;

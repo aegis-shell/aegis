@@ -2,8 +2,9 @@
 //!
 //! The portal connects under the built-in owner-only `aegis-portal` scope
 //! (`aegis_ipc::LOCAL_PORTAL_SCOPE`), which the compositor resolves to exactly
-//! one operation — `CaptureOutput` — with the `control` capability and its
-//! time-bounded lease. The wrapper keeps the connection alive across idle
+//! the capture, stream, target-picking, and idle-inhibit operations used by
+//! the advertised portal interfaces, with the `control` capability and a
+//! time-bounded lease. The wrapper keeps each connection alive across idle
 //! periods by renewing the lease at half its TTL, and reconnects once on any
 //! failure so a compositor restart or an expired lease self-heals on the
 //! next screenshot instead of killing the D-Bus service.

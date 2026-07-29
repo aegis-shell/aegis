@@ -3,10 +3,9 @@
 //! A standalone D-Bus-activated process that bridges the freedesktop portal
 //! backend interfaces to the compositor's own IPC (ADR-0051). Outward it
 //! serves `org.freedesktop.impl.portal.Settings` v1,
-//! `org.freedesktop.impl.portal.Screenshot` v1,
-//! `org.freedesktop.impl.portal.ScreenCast` v2,
-//! `org.freedesktop.impl.portal.Background` v1, and
-//! `org.freedesktop.impl.portal.Inhibit` v1 at
+//! `org.freedesktop.impl.portal.Screenshot` v2,
+//! `org.freedesktop.impl.portal.ScreenCast` v3, and
+//! `org.freedesktop.impl.portal.Inhibit` at
 //! `/org/freedesktop/portal/desktop` under the well-known name
 //! `org.freedesktop.impl.portal.desktop.aegis`. Inward it is an ordinary scoped
 //! IPC client: pixels come from `Request::CaptureOutput` under the built-in
@@ -27,12 +26,7 @@
 //! happens on a dedicated capture worker so a slow capture never stalls the
 //! bus, and every screencast runs its own PipeWire main loop on a dedicated
 //! cast thread.
-//!
-//! Portal-owned authorization state (Background decisions, ScreenCast
-//! restore tokens) persists as JSON under `$XDG_DATA_HOME/aegis-portal`
-//! (ADR-0053) — aegis has no PermissionStore.
 
-mod background;
 mod cast;
 mod files;
 mod inhibit;
@@ -42,15 +36,13 @@ mod screencast;
 mod screenshot;
 mod session;
 mod settings;
-mod state;
 
 use std::sync::{Arc, Mutex, mpsc};
 
-use background::BackgroundIface;
 use inhibit::InhibitIface;
 use ipc::PortalCapture;
 use request::RequestTracker;
-use screencast::{CastJob, ScreenCastIface, TokenStore};
+use screencast::{CastJob, ScreenCastIface};
 use screenshot::{CaptureJob, ScreenshotIface};
 use session::SessionRegistry;
 use settings::{SettingsIface, SettingsStore};
@@ -90,7 +82,6 @@ pub fn run() -> Result<(), PortalError> {
     let sessions = Arc::new(Mutex::new(SessionRegistry::default()));
     let (jobs, rx) = mpsc::channel::<CaptureJob>();
     let (cast_jobs, cast_rx) = mpsc::channel::<CastJob>();
-    let (bg_jobs, bg_rx) = mpsc::channel::<background::BackgroundJob>();
     let (inhibit_jobs, inhibit_rx) = mpsc::channel::<inhibit::InhibitJob>();
     let inhibit_counts = Arc::new(Mutex::new(inhibit::InhibitCounts::default()));
     let settings_store = SettingsStore::default();
@@ -119,31 +110,18 @@ pub fn run() -> Result<(), PortalError> {
     )?;
     conn.object_server().at(
         DESKTOP_PATH,
-        BackgroundIface {
-            conn: conn.inner().clone(),
-            tracker: Arc::clone(&tracker),
-            jobs: bg_jobs,
-        },
-    )?;
-    conn.object_server().at(
-        DESKTOP_PATH,
         InhibitIface {
+            conn: conn.inner().clone(),
             jobs: inhibit_jobs.clone(),
         },
     )?;
 
-    let worker_conn = conn.clone();
     let worker_tracker = Arc::clone(&tracker);
     let worker_socket = socket.clone();
     std::thread::Builder::new()
         .name("aegis-portal-capture".to_string())
         .spawn(move || {
-            screenshot::capture_worker(
-                rx,
-                worker_conn,
-                worker_tracker,
-                PortalCapture::new(worker_socket),
-            )
+            screenshot::capture_worker(rx, worker_tracker, PortalCapture::new(worker_socket))
         })
         .map_err(|e| {
             PortalError::Bus(zbus::Error::Failure(format!("spawn capture worker: {e}")))
@@ -152,7 +130,6 @@ pub fn run() -> Result<(), PortalError> {
     let cast_worker_conn = conn.clone();
     let cast_worker_tracker = Arc::clone(&tracker);
     let cast_worker_socket = socket.clone();
-    let tokens = TokenStore::load(state::state_dir());
     std::thread::Builder::new()
         .name("aegis-portal-screencast".to_string())
         .spawn(move || {
@@ -163,7 +140,6 @@ pub fn run() -> Result<(), PortalError> {
                 cast_worker_tracker,
                 sessions,
                 cast_worker_socket,
-                tokens,
             )
         })
         .map_err(|e| {
@@ -172,51 +148,38 @@ pub fn run() -> Result<(), PortalError> {
             )))
         })?;
 
-    let bg_worker_conn = conn.clone();
-    let bg_worker_tracker = Arc::clone(&tracker);
-    let bg_store = background::BackgroundStore::load(state::state_dir());
-    std::thread::Builder::new()
-        .name("aegis-portal-background".to_string())
-        .spawn(move || {
-            background::background_worker(bg_rx, bg_worker_conn, bg_worker_tracker, bg_store)
-        })
-        .map_err(|e| {
-            PortalError::Bus(zbus::Error::Failure(format!(
-                "spawn background worker: {e}"
-            )))
-        })?;
-
     let inhibit_socket = socket.clone();
     let inhibit_worker_counts = Arc::clone(&inhibit_counts);
+    let inhibit_conn = conn.clone();
     std::thread::Builder::new()
         .name("aegis-portal-inhibit".to_string())
-        .spawn(move || inhibit::inhibit_worker(inhibit_rx, inhibit_worker_counts, inhibit_socket))
+        .spawn(move || {
+            inhibit::inhibit_worker(
+                inhibit_rx,
+                inhibit_worker_counts,
+                inhibit_socket,
+                inhibit_conn,
+            )
+        })
         .map_err(|e| {
             PortalError::Bus(zbus::Error::Failure(format!("spawn inhibit worker: {e}")))
-        })?;
-
-    let monitor_conn = conn.clone();
-    std::thread::Builder::new()
-        .name("aegis-portal-inhibit-monitor".to_string())
-        .spawn(move || inhibit::sender_monitor(monitor_conn, inhibit_counts, inhibit_jobs))
-        .map_err(|e| {
-            PortalError::Bus(zbus::Error::Failure(format!(
-                "spawn inhibit sender monitor: {e}"
-            )))
         })?;
 
     settings::spawn_watcher(conn.clone(), socket, settings_store);
 
     conn.request_name(BUS_NAME)?;
-    log::info!(
-        "portal: serving Settings+Screenshot+ScreenCast+Background+Inhibit backends as {BUS_NAME}"
-    );
+    log::info!("portal: serving Settings+Screenshot+ScreenCast+Inhibit as {BUS_NAME}");
 
-    // Method dispatch runs on zbus's internal executor; the main thread has
-    // nothing else to do. Losing the bus name is fatal by construction: the
-    // connection drops, zbus's executor stops, and the next activation
-    // re-runs the whole process.
+    // Keep the main thread tied to the bus connection. A disconnected
+    // backend must exit so D-Bus activation can start a fresh process.
     loop {
-        std::thread::park();
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        conn.call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus.Peer"),
+            "Ping",
+            &(),
+        )?;
     }
 }
