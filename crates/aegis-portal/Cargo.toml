@@ -19,7 +19,7 @@ aegis-core = { workspace = true }
 zbus = { workspace = true }
 async-channel = "2"
 log = { workspace = true }
-env_logger = { workspace = true }
+aegis-logging = { workspace = true }
 thiserror = { workspace = true }
 # ScreenCast delivery: a PipeWire producer stream fed from the compositor's
 # scoped IPC frame stream (ADR-0052). Rust binding over the system

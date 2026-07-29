@@ -732,6 +732,15 @@ impl CompositorRuntime {
         }
         while let Ok(request) = self.system_control_rx.try_recv() {
             let action = request.action;
+            // Correlate every event produced while applying this live-system
+            // control request. `debug_span` is elided at the default `info`
+            // level, so it is free in production and active under RUST_LOG.
+            let _span = tracing::debug_span!(
+                "ipc",
+                kind = "system_control",
+                ?action
+            )
+            .entered();
             let command = aegis_ipc::Command::System {
                 action: action.clone(),
             };

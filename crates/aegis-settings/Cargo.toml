@@ -10,6 +10,7 @@ build = "build.rs"
 
 [dependencies]
 aegis-core = { workspace = true }
+aegis-logging.workspace = true
 aegis-design = { workspace = true }
 aegis-ipc = { workspace = true }
 aegis-shell = { workspace = true }

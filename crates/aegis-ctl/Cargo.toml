@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 aegis-ipc = { workspace = true }
 aegis-core = { workspace = true, features = ["serde"] }
+aegis-logging.workspace = true
 aegis-config = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

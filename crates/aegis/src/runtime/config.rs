@@ -81,18 +81,9 @@ pub(super) fn effective_desktop_preferences(
 ///
 /// Backend selection is process environment because it describes the launch
 /// environment, not an Aegis command. X11/XWayland are intentionally not
-/// accepted backends.
+/// accepted backends. The informational options (`--help`/`--version`) are
+/// handled in `main` before this runs; any other argument is rejected there.
 pub(super) fn requested_backend() -> Result<BackendKind, Box<dyn std::error::Error>> {
-    if let Some(argument) = std::env::args().nth(1) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "aegis accepts no command-line options (got {argument:?}); \
-                 set AEGIS_BACKEND=auto|drm|nested to select a backend"
-            ),
-        )
-        .into());
-    }
     let selected = std::env::var("AEGIS_BACKEND").unwrap_or_else(|_| "auto".to_owned());
     Ok(selected.parse()?)
 }
@@ -348,7 +339,7 @@ pub(super) fn build_keymap(config: Option<&aegis_config::Config>) -> aegis_core:
     if overrides.is_empty() {
         aegis_core::keybind::Keymap::defaults()
     } else {
-        log::info!("keybinds: {} override(s) applied", overrides.len());
+        log::debug!("keybinds: {} override(s) applied", overrides.len());
         aegis_core::keybind::Keymap::defaults().with_overrides(overrides)
     }
 }

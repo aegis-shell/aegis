@@ -3,7 +3,7 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    env_logger::init();
+    aegis_logging::init("info");
     match aegis_portal::run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

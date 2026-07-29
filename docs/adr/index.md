@@ -85,3 +85,4 @@ background and how the decisions fit together, see
 | [0076](0076-linux-dmabuf-device-feedback-and-reusable-buffer-sync.md) | Linux-dmabuf device feedback and reusable-buffer synchronization | Accepted |
 | [0077](0077-presentation-domain-redraw-state-machine.md) | Presentation-domain redraw state machine (supersedes [0038](0038-frame-pacing.md)) | Accepted |
 | [0078](0078-out-of-process-idle-and-session-lock.md) | Out-of-process idle policy and session lock | Accepted |
+| [0079](0079-tracing-based-observability-seam.md) | Tracing-based observability seam | Accepted |

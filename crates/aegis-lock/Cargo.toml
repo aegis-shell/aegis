@@ -11,7 +11,7 @@ build = "build.rs"
 [dependencies]
 aegis-design.workspace = true
 ash.workspace = true
-env_logger.workspace = true
+aegis-logging.workspace = true
 flux.workspace = true
 flux-sys.workspace = true
 image.workspace = true

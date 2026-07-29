@@ -506,6 +506,7 @@ fn requested_module(args: impl IntoIterator<Item = String>) -> Option<String> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    aegis_logging::init("info");
     let requested = requested_module(std::env::args().skip(1));
     let mut app = SettingsApp::new(requested.as_deref(), socket_path());
     let config = Config::new(app.i18n.text(Message::SystemSettings))?

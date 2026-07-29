@@ -7,6 +7,9 @@ use std::process::ExitCode;
 use aegis_ctl::Cli;
 
 fn main() -> ExitCode {
+    // Quiet by default: a one-shot CLI prints results on stdout, not a log
+    // stream. `RUST_LOG=aegis_ctl=debug` reveals diagnostics when needed.
+    aegis_logging::init("warn");
     use clap::Parser;
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,

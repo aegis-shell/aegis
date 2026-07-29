@@ -1,0 +1,14 @@
+[package]
+name = "aegis-logging"
+description = "Shared tracing-based observability init for Aegis processes"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+log.workspace = true
+tracing.workspace = true
+tracing-log.workspace = true
+tracing-subscriber.workspace = true

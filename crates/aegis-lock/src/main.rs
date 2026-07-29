@@ -81,7 +81,7 @@ struct AppData {
 }
 
 fn main() {
-    env_logger::init();
+    aegis_logging::init("info");
     if let Err(error) = run() {
         log::error!("lock: {error}");
         eprintln!("aegis-lock: {error}");

@@ -27,11 +27,21 @@ lens = { git = "https://github.com/ming2k/optics", tag = "v0.0.7" }
 lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.7" }
 iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.7" }
 
-# Observability: the facade in every crate, the impl only in the binary.
+# Observability: crates emit through the `log` facade; each binary installs a
+# `tracing`-based subscriber through the shared `aegis-logging` crate, which
+# bridges `log::` records into structured spans and fields (ADR-0079).
 # Long-term this seam is also how the AI-adaptation phase subscribes to
 # compositor events.
 log = "0.4"
-env_logger = "0.11"
+tracing = "0.1"
+tracing-log = "0.2"
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "env-filter",
+    "fmt",
+    "ansi",
+    "json",
+    "registry",
+] }
 
 # fuji (宓姬) is the in-tree agent product. aegis exposes a narrow MCP platform
 # bridge so the agent can discover scoped desktop and Realm tools without
@@ -71,6 +81,8 @@ ini = { package = "rust-ini", version = "0.20" }
 
 # Internal crates.
 aegis-core = { path = "crates/aegis-core" }
+# Shared tracing-based observability init installed once by every binary.
+aegis-logging = { path = "crates/aegis-logging" }
 aegis-protocols = { path = "crates/aegis-protocols" }
 aegis-compositor = { path = "crates/aegis-compositor" }
 aegis-backend = { path = "crates/aegis-backend" }

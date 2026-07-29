@@ -167,7 +167,7 @@ struct Daemon {
 }
 
 fn main() {
-    env_logger::init();
+    aegis_logging::init("info");
     match run() {
         Ok(()) => {}
         Err(error) => {

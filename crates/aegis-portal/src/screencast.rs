@@ -180,7 +180,7 @@ impl ScreenCastIface {
         validate_select(&options).map_err(zbus::fdo::Error::InvalidArgs)?;
 
         let path = handle.as_str().to_string();
-        log::info!("portal: SelectSources for '{app_id}' on {session_path} at {path}");
+        log::debug!("portal: SelectSources for '{app_id}' on {session_path} at {path}");
 
         crate::request::register(&self.conn, &self.tracker, &path).await?;
         let (reply, response) = async_channel::bounded(1);
@@ -218,7 +218,7 @@ impl ScreenCastIface {
             )));
         }
         let path = handle.as_str().to_string();
-        log::info!("portal: Start for '{app_id}' on {session_path} at {path}");
+        log::debug!("portal: Start for '{app_id}' on {session_path} at {path}");
 
         crate::request::register(&self.conn, &self.tracker, &path).await?;
         let (reply, response) = async_channel::bounded(1);
@@ -296,7 +296,7 @@ pub(crate) fn cast_worker(
                     source_types,
                     cursor_mode,
                 );
-                log::info!("portal: SelectSources for '{app_id}' → response {code}");
+                log::debug!("portal: SelectSources for '{app_id}' → response {code}");
                 let _ = reply.send_blocking((code, HashMap::new()));
             }
             CastJob::Start {
@@ -315,7 +315,7 @@ pub(crate) fn cast_worker(
                     &session_path,
                     &app_id,
                 );
-                log::info!("portal: Start for '{app_id}' → response {}", response.0);
+                log::debug!("portal: Start for '{app_id}' → response {}", response.0);
                 let _ = reply.send_blocking(response);
                 // A failed Start leaves the session armed but idle; the
                 // client may retry Start or close the session itself.
@@ -521,7 +521,7 @@ fn close_session(
     let Some(_session) = sessions.lock().unwrap().remove(session_path) else {
         return;
     };
-    log::info!("portal: screencast session {session_path} closed");
+    log::debug!("portal: screencast session {session_path} closed");
     if let Err(error) = conn.emit_signal(None::<&str>, session_path, SESSION_IFACE, "Closed", &()) {
         log::warn!("portal: could not emit Closed for {session_path}: {error}");
     }

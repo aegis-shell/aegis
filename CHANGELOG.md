@@ -28,6 +28,12 @@ project cuts a tagged release.
 
 ### Reliability
 
+- Unified observability across every first-party process through a shared
+  tracing-based subscriber. `RUST_LOG` now controls all of `aegis`,
+  `aegis-ctl`, `aegis-idle`, `aegis-lock`, `aegis-portal`, and `aegis-settings`
+  with one filter syntax (default `info`, `warn` for the one-shot CLI);
+  `AEGIS_LOG_FORMAT=json` switches to machine-readable output, and per-request
+  traffic that previously ran at `info` is downgraded to `debug`. See ADR-0079.
 - Distinguish powered-off scanout, a temporarily absent output target, and
   backend/VT loss in the presentation state machine. Input remains live for
   wake and hotplug, stale input ownership cannot cross a later VT loss, and
