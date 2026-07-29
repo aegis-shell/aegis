@@ -49,16 +49,12 @@ packaging and CI always use the canonical workflow; see
 ### Local workflow (dual maintainer)
 
 For maintainers who edit Aegis and Optics together. Keep the primary Aegis
-worktree in canonical mode and create a linked worktree for each
-cross-repository feature:
+worktree in canonical mode and create one long-lived linked development
+worktree:
 
 ```bash
-git fetch origin
-git worktree add \
-  ../aegis-optics-dev \
-  -b feat/<topic> \
-  origin/main
-cd ../aegis-optics-dev
+git worktree add -b dev ../aegis-dev main
+cd ../aegis-dev
 cp .cargo/optics-local.toml .cargo/config.toml
 git config core.hooksPath .githooks
 ```
@@ -66,7 +62,9 @@ git config core.hooksPath .githooks
 Run these commands only in the linked worktree. They install the local
 `[patch]` configuration and enable the repository commit hook. The hook
 preserves ordinary `git add .` usage by automatically removing the local
-`Cargo.lock` and `.cargo/config.toml` from the staged set.
+`Cargo.lock` and `.cargo/config.toml` from the staged set. Keep the worktree
+on its long-lived local `dev` branch and fast-forward `main` to completed
+`dev` commits.
 
 The Rust bindings build against the unified optics Meson build tree, so build
 `libflux`, `libflux-scene-graph`, `liblens`, and `libiris` first:
@@ -104,8 +102,8 @@ cargo test --locked --workspace
 The local lockfile and target directory remain inside the linked worktree.
 Follow
 [Aegis and Optics Cross-Repository Development](cross-repository-development.md)
-for daily commits, rebases, release promotion, and merging the feature branch
-into `main`.
+for daily commits, rebases, release promotion, and merging `dev` into
+`main`.
 
 ### Canonical workflow (contributor)
 

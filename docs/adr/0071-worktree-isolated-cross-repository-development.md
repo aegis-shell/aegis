@@ -48,7 +48,7 @@ immutable release tag or fixed commit. Promotion removes the local Cargo
 configuration, restores the canonical lockfile, updates every Optics Git
 dependency together, resolves the new remote graph, and validates it with
 `--locked`. Only that canonical `Cargo.toml` and `Cargo.lock` update enters
-the Aegis feature branch.
+the Aegis development branch.
 
 CI derives the Optics native-library checkout tag from the workspace
 manifest. The Rust bindings, native libraries, and lockfile therefore use one

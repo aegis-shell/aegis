@@ -1,13 +1,14 @@
 # Aegis and Optics Cross-Repository Development
 
-Use a linked Git worktree when one change edits both Aegis and Optics. The
-primary Aegis worktree remains the canonical remote-dependency checkout; the
-linked worktree resolves the live sibling Optics sources through Cargo
+Use one long-lived linked Git worktree for Aegis and Optics development. The
+primary Aegis worktree remains on `main` with the canonical remote dependency
+graph. The development worktree normally remains on the long-lived local
+`dev` branch and resolves the live sibling Optics sources through Cargo
 `[patch]`.
 
 ## Dependency Modes
 
-| Concern | Primary worktree | Optics development worktree |
+| Concern | Primary worktree | Aegis development worktree |
 |---------|------------------|-----------------------------|
 | Rust bindings | Tagged Optics Git source | Sibling `../optics` paths through `[patch]` |
 | `Cargo.lock` | Canonical and committed | Local resolution, never committed |
@@ -19,16 +20,12 @@ Do not set a shared `CARGO_TARGET_DIR` for these worktrees. Separate target
 directories prevent the canonical and patched dependency graphs from reusing
 the same incremental artifacts.
 
-## Create the Worktree
+## Create the Development Worktree
 
-Run the following commands from the primary Aegis worktree:
+Create the linked worktree once from the primary Aegis worktree:
 
 ```bash
-git fetch origin
-git worktree add \
-  ../aegis-optics-dev \
-  -b feat/<topic> \
-  origin/main
+git worktree add -b dev ../aegis-dev main
 ```
 
 The expected directory layout is:
@@ -36,15 +33,18 @@ The expected directory layout is:
 ```text
 projects/
 ├── aegis/
-├── aegis-optics-dev/
+├── aegis-dev/
 └── optics/
 ```
 
-Enter the linked Aegis worktree, install the local patch configuration, and
-enable the repository hooks:
+The primary `aegis/` worktree keeps `main` checked out. The `aegis-dev/`
+worktree permanently keeps the local `dev` branch checked out.
+
+Enter the development worktree, install the local patch configuration, and
+enable the repository hooks once:
 
 ```bash
-cd ../aegis-optics-dev
+cd ../aegis-dev
 cp .cargo/optics-local.toml .cargo/config.toml
 git config core.hooksPath .githooks
 ```
@@ -125,29 +125,32 @@ pre-commit hook automatically unstages:
 - `.cargo/config.toml`, if it was force-added.
 
 The hook prints the excluded paths and lets the remaining commit proceed.
-Do not use `--no-verify`. Local patch state is not part of an Aegis feature
-commit.
+Do not use `--no-verify`. Local patch state is not part of an Aegis commit.
 
-Commits created in the linked worktree already belong to the shared Git
-repository. No file-copy step is required. Push the feature branch for a
-pull request:
+Commits created on `dev` already belong to the shared Git repository. No
+file-copy, push, or pull step is required for a local merge. Uncommitted files
+in the development worktree do not enter `main`; Git merges commits, not
+worktree state.
+
+## Synchronize with Aegis Main
+
+Update `main` in the primary worktree first. This may be a local merge or a
+pull when remote changes exist:
 
 ```bash
-git push -u origin feat/<topic>
+cd ../aegis
+git switch main
+git pull --ff-only
 ```
 
-Uncommitted files in the linked worktree do not enter `main`; Git merges
-commits, not worktree state.
-
-## Rebase onto Aegis Main
-
-The local lockfile is disposable. Restore it before rebasing, then resolve
-the patch again:
+Skip the pull when `main` is already current locally. Then restore the
+disposable local lockfile and rebase the development branch onto the shared
+local `main` branch:
 
 ```bash
+cd ../aegis-dev
 git restore Cargo.lock
-git fetch origin
-git rebase origin/main
+git rebase main
 cargo check -p aegis
 ```
 
@@ -197,40 +200,82 @@ update:
 ```bash
 git add .
 git commit -m "build: adopt Optics vX.Y.Z"
-git push
 ```
 
 The local patch configuration is absent at this point, so the hook permits
 the canonical `Cargo.lock` update.
 
-## Merge and Remove the Worktree
+## Merge Locally and Reuse the Worktree
 
-Merge through the pull request, then update the primary worktree:
+Fast-forward `main` to the completed `dev` commits from the primary worktree:
 
 ```bash
 cd ../aegis
 git switch main
-git pull --ff-only
+git merge --ff-only dev
 ```
 
-After the feature branch is merged and the linked worktree is clean, remove
-it:
+This operation uses commits already stored in the shared local repository. It
+does not contact a remote server.
+
+Both branches now point at the same commit. Continue with the next change in
+the existing development worktree:
 
 ```bash
-git worktree remove ../aegis-optics-dev
-git branch -d feat/<topic>
+cd ../aegis-dev
+git restore Cargo.lock
+cp .cargo/optics-local.toml .cargo/config.toml
+cargo check -p aegis
 ```
 
-For a local-only integration, merge the committed branch directly from the
-primary worktree:
+The copy command is harmless when local mode remained enabled. It also
+restores local mode when the previous change removed `.cargo/config.toml`
+during Optics release promotion.
+
+## Optional Pull Request Workflow
+
+Use a remote pull request only when CI, review, backup, or collaboration
+requires it. Start that change on a temporary feature branch from canonical
+`main` instead of advancing `dev`:
 
 ```bash
+cd ../aegis-dev
+git restore Cargo.lock
+git switch -c feat/<topic> main
+cargo check -p aegis
+
+# After committing the reviewed change:
+git push -u origin feat/<topic>
+
+# After the remote pull request is merged:
+cd ../aegis
 git switch main
-git merge --ff-only feat/<topic>
+git pull --ff-only
+
+cd ../aegis-dev
+git restore Cargo.lock
+git switch dev
+git merge --ff-only main
+cp .cargo/optics-local.toml .cargo/config.toml
+cargo check -p aegis
 ```
 
-The ignored local configuration and any uncommitted local lockfile are not
-part of that merge.
+The development worktree remains in place and returns to `dev` after the pull
+request. Delete the temporary branch when it is no longer needed.
+
+## Remove the Development Worktree
+
+Remove the worktree only when cross-repository development is no longer
+needed:
+
+```bash
+cd ../aegis-dev
+mv .cargo/config.toml /tmp/aegis-optics-local.toml
+git restore Cargo.lock
+
+cd ../aegis
+git worktree remove ../aegis-dev
+```
 
 ## Test an Unreleased Optics Commit in CI
 

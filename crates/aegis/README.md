@@ -34,8 +34,8 @@ For cross-repository development, create a linked Aegis worktree next to the
 Optics checkout, enable the local Cargo patch there, then build and run:
 
 ```bash
-git worktree add ../aegis-optics-dev -b feat/<topic> origin/main
-cd ../aegis-optics-dev
+git worktree add -b dev ../aegis-dev main
+cd ../aegis-dev
 cp .cargo/optics-local.toml .cargo/config.toml
 git config core.hooksPath .githooks
 meson compile -C ../optics/build
