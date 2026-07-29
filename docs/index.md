@@ -35,7 +35,7 @@ aegis is a Wayland compositor for Linux, written in Rust on
 - Managing a borderless window: read
   [How to Manage Borderless Windows](how-to/window-management.md).
 - Isolating agent input and applications: read
-  [How to Use AI Workspaces](how-to/ai-workspaces.md).
+  [How to Use Agent Workspaces](how-to/ai-workspaces.md).
 - Connecting the fuji agent to scoped desktop and Realm tools: read
   [Connect fuji to Aegis](how-to/fuji.md).
 - Booting from a TTY and smoke-testing real hardware: read

@@ -1,4 +1,4 @@
-//! Compositor-owned AI Workspace lifecycle and authority presentation.
+//! Compositor-owned Agent Workspace lifecycle and authority presentation.
 
 use aegis_core::app::BuiltInApplication;
 use aegis_core::input::{KeyAction, KeyChar, key_action};
@@ -56,7 +56,7 @@ impl AiWorkspaces {
     fn render_content(&mut self, frame: &mut Frame, i18n: &Localizer, out: &mut ChromeEvents) {
         frame.label_wrapped_sized(i18n.text(Message::AiWorkspacesDescription), 12.0, 640.0);
         frame.size_next(0.0, 32.0);
-        if frame.button(i18n.text(Message::NewAiWorkspace)) {
+        if frame.button(i18n.text(Message::CreateEmptyAgentWorkspace)) {
             let ordinal = self
                 .snapshot
                 .realms
@@ -65,7 +65,7 @@ impl AiWorkspaces {
                 .count()
                 + 1;
             out.realm_intents.push(RealmIntent::Create {
-                label: format!("AI Workspace {ordinal}"),
+                label: i18n.default_agent_workspace_label(ordinal),
             });
         }
 

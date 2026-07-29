@@ -17,8 +17,9 @@ compositor's StatusNotifierItem (SNI) system tray.
 - Open one status-and-controls panel for volume, brightness, Wi-Fi,
   Bluetooth, Do Not Disturb, current-workspace layout, and recent
   notifications.
-- Show a persistent, state-colored Agent Realm indicator whenever AI
-  authority is live; clicking it opens AI Workspaces directly.
+- Show a persistent, state-colored Agent Workspaces entry. It reports no live
+  Realm, one Realm's own label, or a multi-Realm aggregate without inferring
+  agent process state; clicking it opens Agent Workspaces directly.
 - Run the session's StatusNotifierWatcher + Host on the session D-Bus,
   render registered SNI items' icons in the tray row, and forward
   left-click (`Activate`), right-click (`SecondaryActivate`, or a
@@ -85,6 +86,7 @@ application catalog and system status.
 
 - [Status bar crate and SNI tray decision](../../docs/adr/0045-statusbar-crate-and-sni-tray.md)
 - [Status bar system controls](../../docs/adr/0060-statusbar-system-controls-and-live-system-ipc.md)
+- [Generic Agent Workspaces status surface](../../docs/adr/0074-generic-agent-workspaces-status-surface.md)
 - [Chrome component decision](../../docs/adr/0021-chrome-component-trait.md)
 - [Design system decision](../../docs/adr/0046-design-system-crate.md)
 - [Configuration reference: `[statusbar]`](../../docs/reference/config.md#status-bar)

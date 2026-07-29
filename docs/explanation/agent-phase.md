@@ -162,7 +162,7 @@ The shape is defined as much by what it refuses as by what it adds.
 - **No retrieval index inside the compositor.** If the agent needs semantic
   search over its history, the agent indexes the journal; the compositor
   provides the data, not the index.
-- **No model-driven chrome.** AI Workspace controls expose human-owned
+- **No model-driven chrome.** Agent Workspace controls expose human-owned
   security and authority state; they do not run inference, choose actions, or
   embed an agent in the shell.
 - **No special agent client.** The agent connects as `control` under a

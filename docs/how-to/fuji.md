@@ -67,9 +67,10 @@ target/release/aegis-fuji-mcp smoke
 ```
 
 Watch for a fuji notification and a temporary `Fuji · Active` or
-`Fuji · Paused` indicator in the status bar. Click the indicator while it
-is present. **AI Workspaces** opens directly, where the temporary Realm id,
-state, and controlled-window count are visible.
+`Fuji · Paused` label in the permanent Agent Workspaces status entry. Click
+the entry. **Agent Workspaces** opens directly, where the temporary Realm id,
+state, and controlled-window count are visible. The entry reports Realm
+authority, not whether the fuji process is online.
 
 The command posts a start notification and verifies it by reading it back
 from compositor state. It then verifies a temporary Realm through

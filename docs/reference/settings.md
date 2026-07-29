@@ -64,9 +64,9 @@ value while a previous transaction is in flight.
 | Surface | Built-in identity | Access | Scope |
 |---------|-------------------|--------|-------|
 | Status bar system controls | None; part of compositor chrome | Audio, network, or notification controls in the status bar; also available over IPC | Live volume, brightness, Wi-Fi, Bluetooth, Do Not Disturb, and current-workspace layout |
-| AI Workspaces | `BuiltInApplication::AiWorkspaces` | Launcher or the status bar Fuji indicator | Realm creation, pause, resume, revocation, and authority status |
+| Agent Workspaces | `BuiltInApplication::AiWorkspaces` | Launcher or the permanent Agent Workspaces status entry | Empty Realm creation, pause, resume, revocation, and authority status |
 
-Neither the live controls nor AI Workspaces are System Settings modules or
+Neither the live controls nor Agent Workspaces are System Settings modules or
 write persistent configuration.
 
 See [persistent settings](ipc.md#persistent-settings) and

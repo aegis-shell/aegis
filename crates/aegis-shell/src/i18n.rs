@@ -194,13 +194,13 @@ pub enum Message {
     ScrollMethod,
     TwoFingerScroll,
     EdgeScroll,
-    Fuji,
-    FujiReady,
-    FujiPanelDescription,
-    FujiOpenWorkspaces,
     AiWorkspaces,
     AiWorkspacesDescription,
-    NewAiWorkspace,
+    AgentWorkspacesPanelDescription,
+    NoActiveAgentWorkspaces,
+    OpenAgentWorkspaces,
+    CreateEmptyAgentWorkspace,
+    AgentWorkspacesPartiallyPaused,
     PauseRealm,
     ResumeRealm,
     RevokeRealm,
@@ -393,13 +393,13 @@ impl Localizer {
             Message::ScrollMethod => &catalog.scroll_method,
             Message::TwoFingerScroll => &catalog.two_finger_scroll,
             Message::EdgeScroll => &catalog.edge_scroll,
-            Message::Fuji => &catalog.fuji,
-            Message::FujiReady => &catalog.fuji_ready,
-            Message::FujiPanelDescription => &catalog.fuji_panel_description,
-            Message::FujiOpenWorkspaces => &catalog.fuji_open_workspaces,
             Message::AiWorkspaces => &catalog.ai_workspaces,
             Message::AiWorkspacesDescription => &catalog.ai_workspaces_description,
-            Message::NewAiWorkspace => &catalog.new_ai_workspace,
+            Message::AgentWorkspacesPanelDescription => &catalog.agent_workspaces_panel_description,
+            Message::NoActiveAgentWorkspaces => &catalog.no_active_agent_workspaces,
+            Message::OpenAgentWorkspaces => &catalog.open_agent_workspaces,
+            Message::CreateEmptyAgentWorkspace => &catalog.create_empty_agent_workspace,
+            Message::AgentWorkspacesPartiallyPaused => &catalog.agent_workspaces_partially_paused,
             Message::PauseRealm => &catalog.pause_realm,
             Message::ResumeRealm => &catalog.resume_realm,
             Message::RevokeRealm => &catalog.revoke_realm,
@@ -448,6 +448,22 @@ impl Localizer {
         } else {
             interpolate(&catalog.many_recent_notifications, "count", count)
         }
+    }
+
+    pub fn agent_workspace_count(self, count: usize) -> String {
+        interpolate(
+            &catalog(self.language).many_agent_workspaces,
+            "count",
+            count,
+        )
+    }
+
+    pub fn default_agent_workspace_label(self, ordinal: usize) -> String {
+        interpolate(
+            &catalog(self.language).default_agent_workspace_label,
+            "count",
+            ordinal,
+        )
     }
 
     pub fn muted_volume(self, level: u8) -> String {
@@ -605,13 +621,15 @@ struct Catalog {
     scroll_method: String,
     two_finger_scroll: String,
     edge_scroll: String,
-    fuji: String,
-    fuji_ready: String,
-    fuji_panel_description: String,
-    fuji_open_workspaces: String,
     ai_workspaces: String,
     ai_workspaces_description: String,
-    new_ai_workspace: String,
+    agent_workspaces_panel_description: String,
+    no_active_agent_workspaces: String,
+    open_agent_workspaces: String,
+    create_empty_agent_workspace: String,
+    agent_workspaces_partially_paused: String,
+    many_agent_workspaces: String,
+    default_agent_workspace_label: String,
     pause_realm: String,
     resume_realm: String,
     revoke_realm: String,
@@ -695,7 +713,9 @@ mod tests {
         assert_eq!(zh.charging_battery(80), "80% · 充电中");
         assert_eq!(en.text(Message::AgentPointerMove), "Pointer move");
         assert_eq!(zh.text(Message::AgentKeyboard), "键盘输入");
-        assert_eq!(en.text(Message::FujiOpenWorkspaces), "Open AI Workspaces");
-        assert_eq!(zh.text(Message::FujiReady), "已就绪");
+        assert_eq!(en.text(Message::OpenAgentWorkspaces), "Manage workspaces");
+        assert_eq!(zh.text(Message::NoActiveAgentWorkspaces), "暂无活动工作区");
+        assert_eq!(en.agent_workspace_count(2), "2 workspaces");
+        assert_eq!(zh.default_agent_workspace_label(3), "Agent 工作区 3");
     }
 }

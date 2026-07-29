@@ -67,7 +67,7 @@ systemctl --user enable --now aegis.service
 - [Daily-use guides](docs/how-to/index.md)
 - [Configuration reference](docs/reference/config.md)
 - [Architecture](docs/explanation/architecture.md)
-- [AI Workspaces](docs/how-to/ai-workspaces.md)
+- [Agent Workspaces](docs/how-to/ai-workspaces.md)
 
 ## License
 

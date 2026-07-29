@@ -89,6 +89,6 @@ Run `aegis-ctl realm --help` for the per-subcommand usage.
 ## Related Documentation
 
 - [Command-line reference](../../docs/reference/cli.md)
-- [How to Use AI Workspaces](../../docs/how-to/ai-workspaces.md)
+- [How to Use Agent Workspaces](../../docs/how-to/ai-workspaces.md)
 - [IPC and introspection decision](../../docs/adr/0027-ipc-and-introspection.md)
 - [Status bar system controls](../../docs/adr/0060-statusbar-system-controls-and-live-system-ipc.md)

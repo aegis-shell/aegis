@@ -78,8 +78,8 @@ user sees or can do" tasks:
 - **"Change the chrome / interactions"** (dock, launcher, bars) → `aegis-shell`
   for the host and contract; the dock and status bar live in the `aegis-dock`
   and `aegis-statusbar` component crates. The status bar owns live-system
-  controls, AI Workspaces has an independent compositor-owned component, and
-  persistent settings run as the standalone `aegis-settings` application
+  controls, Agent Workspaces has an independent compositor-owned component,
+  and persistent settings run as the standalone `aegis-settings` application
   ([ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md),
   [ADR-0069](../adr/0069-documentation-owned-installation-and-throwaway-development-staging.md),
   [ADR-0045](../adr/0045-statusbar-crate-and-sni-tray.md)).
@@ -87,7 +87,10 @@ user sees or can do" tasks:
   `aegis-ctl`; the fuji agent consumes that same IPC through
   `aegis-fuji-mcp` without entering the compositor process
   ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md),
-  [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md)).
+  [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md)). The
+  compositor-owned Agent Workspaces surface reports generic Realm authority;
+  it does not infer fuji process state
+  ([ADR-0074](../adr/0074-generic-agent-workspaces-status-surface.md)).
 - **"Start or discover apps"** → `aegis-desktop-entries` (discovery) + `aegis-launcher`
   (spawn). `aegis-launcher` is intentionally narrow: process detachment and
   environment, not window management.

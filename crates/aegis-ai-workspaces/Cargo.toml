@@ -1,6 +1,6 @@
 [package]
 name = "aegis-ai-workspaces"
-description = "Compositor-owned AI Workspace lifecycle and authority UI"
+description = "Compositor-owned Agent Workspace lifecycle and authority UI"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true

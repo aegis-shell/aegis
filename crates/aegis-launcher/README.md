@@ -70,4 +70,4 @@ process.terminate()?;
 ## Related Documentation
 
 - [Application launcher decision](../../docs/adr/0022-application-launcher.md)
-- [How to Use AI Workspaces](../../docs/how-to/ai-workspaces.md)
+- [How to Use Agent Workspaces](../../docs/how-to/ai-workspaces.md)

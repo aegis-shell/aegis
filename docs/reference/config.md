@@ -287,7 +287,7 @@ compositor startup.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | boolean | `true` | Whether the top status bar is registered. When `false`, the bar's reserved edge and live-control panel are unavailable; the dock, launcher, and AI Workspaces are unaffected, and live controls remain available over IPC. |
+| `enabled` | boolean | `true` | Whether the top status bar is registered. When `false`, the bar's reserved edge and live-control panel are unavailable; the dock, launcher, and Agent Workspaces are unaffected, and live controls remain available over IPC. |
 
 ```toml
 [statusbar]

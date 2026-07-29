@@ -61,7 +61,7 @@ shell.
 - [Architecture](../../docs/explanation/architecture.md)
 - [Dock, launcher, and Prism operations](../../docs/how-to/dock-and-launcher.md)
 - [Borderless window operations](../../docs/how-to/window-management.md)
-- [AI Workspace operations](../../docs/how-to/ai-workspaces.md)
+- [Agent Workspace operations](../../docs/how-to/ai-workspaces.md)
 - [Chrome component decision](../../docs/adr/0021-chrome-component-trait.md)
 - [Status bar system controls](../../docs/adr/0060-statusbar-system-controls-and-live-system-ipc.md)
 - [Design system decision](../../docs/adr/0046-design-system-crate.md)

@@ -9,8 +9,8 @@ fn status_bar_reserves_exactly_its_visual_height() {
 fn fullscreen_window_hides_status_bar_and_releases_its_surface_policy() {
     let mut bar = StatusBar::new();
     bar.panel_open = true;
-    bar.fuji_open = true;
-    bar.fuji_reveal = 1.0;
+    bar.agent_panel_open = true;
+    bar.agent_panel_reveal = 1.0;
     bar.menu_open_for = Some("org.example.Tray".to_string());
 
     let mut fullscreen = Window::new(aegis_core::window::WindowId(7));
@@ -22,8 +22,8 @@ fn fullscreen_window_hides_status_bar_and_releases_its_surface_policy() {
     };
     assert!(bar.fullscreen_active);
     assert!(!bar.panel_open);
-    assert!(!bar.fuji_open);
-    assert_eq!(bar.fuji_reveal, 0.0);
+    assert!(!bar.agent_panel_open);
+    assert_eq!(bar.agent_panel_reveal, 0.0);
     assert!(bar.menu_open_for.is_none());
     assert_eq!(bar.reserved(), Reserved::default());
     assert_eq!(bar.backdrop_blur_sigma(), 0.0);
@@ -59,17 +59,17 @@ fn maximized_and_minimized_fullscreen_windows_keep_status_bar_visible() {
 }
 
 #[test]
-fn fuji_entry_is_permanent_and_tracks_live_realm_state() {
+fn agent_workspace_entry_is_permanent_and_tracks_aggregate_realm_state() {
     let i18n = Localizer::new("en-US");
     let mut model = aegis_core::realm::RealmModel::new();
-    let indicator = agent_indicator(&model.snapshot(), &i18n);
-    assert_eq!(indicator.state, AgentIndicatorState::Ready);
-    assert_eq!(indicator.label, "Fuji");
+    let indicator = agent_workspace_indicator(&model.snapshot(), &i18n);
+    assert_eq!(indicator.state, AgentWorkspaceState::Idle);
+    assert_eq!(indicator.label, "Agent Workspaces");
 
     let bundle = model.create_agent_realm("Fuji", Default::default());
     let mut snapshot = model.snapshot();
-    let indicator = agent_indicator(&snapshot, &i18n);
-    assert_eq!(indicator.state, AgentIndicatorState::Active);
+    let indicator = agent_workspace_indicator(&snapshot, &i18n);
+    assert_eq!(indicator.state, AgentWorkspaceState::Active);
     assert_eq!(indicator.label, "Fuji · Active");
 
     snapshot
@@ -78,19 +78,42 @@ fn fuji_entry_is_permanent_and_tracks_live_realm_state() {
         .find(|realm| realm.id == bundle.realm)
         .expect("agent Realm")
         .state = RealmState::Paused;
-    let indicator = agent_indicator(&snapshot, &i18n);
-    assert_eq!(indicator.state, AgentIndicatorState::Paused);
+    let indicator = agent_workspace_indicator(&snapshot, &i18n);
+    assert_eq!(indicator.state, AgentWorkspaceState::Paused);
     assert_eq!(indicator.label, "Fuji · Paused");
 
+    let research = model.create_agent_realm("Research Agent", Default::default());
+    let mut snapshot = model.snapshot();
     snapshot
         .realms
         .iter_mut()
         .find(|realm| realm.id == bundle.realm)
         .expect("agent Realm")
-        .state = RealmState::Revoked;
-    let indicator = agent_indicator(&snapshot, &i18n);
-    assert_eq!(indicator.state, AgentIndicatorState::Ready);
-    assert_eq!(indicator.label, "Fuji");
+        .state = RealmState::Paused;
+    let indicator = agent_workspace_indicator(&snapshot, &i18n);
+    assert_eq!(indicator.state, AgentWorkspaceState::PartiallyPaused);
+    assert_eq!(indicator.label, "2 workspaces · Partially paused");
+
+    snapshot
+        .realms
+        .iter_mut()
+        .find(|realm| realm.id == research.realm)
+        .expect("second agent Realm")
+        .state = RealmState::Paused;
+    let indicator = agent_workspace_indicator(&snapshot, &i18n);
+    assert_eq!(indicator.state, AgentWorkspaceState::Paused);
+    assert_eq!(indicator.label, "2 workspaces · Paused");
+
+    for realm in snapshot
+        .realms
+        .iter_mut()
+        .filter(|realm| realm.kind == RealmKind::Agent)
+    {
+        realm.state = RealmState::Revoked;
+    }
+    let indicator = agent_workspace_indicator(&snapshot, &i18n);
+    assert_eq!(indicator.state, AgentWorkspaceState::Idle);
+    assert_eq!(indicator.label, "Agent Workspaces");
 }
 
 #[test]
@@ -103,16 +126,16 @@ fn panel_stays_inside_narrow_displays() {
 }
 
 #[test]
-fn fuji_panel_stays_inside_narrow_displays_and_expands_from_the_right() {
-    let final_panel = StatusBar::fuji_panel_bounds((320.0, 480.0));
+fn agent_panel_stays_inside_narrow_displays_and_expands_from_the_right() {
+    let final_panel = StatusBar::agent_panel_bounds((320.0, 480.0));
     assert!(final_panel.x >= 0.0);
     assert!(final_panel.x + final_panel.w <= 320.0);
     assert!(final_panel.y + final_panel.h <= 480.0);
 
     let mut bar = StatusBar::new();
-    let collapsed = bar.revealed_fuji_panel_bounds((320.0, 480.0));
-    bar.fuji_reveal = 1.0;
-    let expanded = bar.revealed_fuji_panel_bounds((320.0, 480.0));
+    let collapsed = bar.revealed_agent_panel_bounds((320.0, 480.0));
+    bar.agent_panel_reveal = 1.0;
+    let expanded = bar.revealed_agent_panel_bounds((320.0, 480.0));
     assert!(expanded.w > collapsed.w);
     assert_eq!(expanded.x + expanded.w, collapsed.x + collapsed.w);
 }

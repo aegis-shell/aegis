@@ -8,59 +8,68 @@ pub(super) enum MenuRowAction {
     Click(i32),
 }
 
-/// Permanent Fuji entry plus the live Agent Realm state it summarizes.
-pub(super) struct AgentIndicator {
+/// Permanent Agent Workspaces entry plus the live Agent Realm state it
+/// summarizes.
+pub(super) struct AgentWorkspaceIndicator {
     pub(super) label: String,
-    pub(super) state: AgentIndicatorState,
+    pub(super) state: AgentWorkspaceState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum AgentIndicatorState {
-    Ready,
+pub(super) enum AgentWorkspaceState {
+    Idle,
     Active,
     Paused,
+    PartiallyPaused,
 }
 
-pub(super) fn agent_indicator(snapshot: &RealmSnapshot, i18n: &Localizer) -> AgentIndicator {
+pub(super) fn agent_workspace_indicator(
+    snapshot: &RealmSnapshot,
+    i18n: &Localizer,
+) -> AgentWorkspaceIndicator {
     let live = snapshot
         .realms
         .iter()
         .filter(|realm| realm.kind == RealmKind::Agent && realm.state != RealmState::Revoked)
         .collect::<Vec<_>>();
-    let active = live.iter().any(|realm| realm.state == RealmState::Active);
+    let active_count = live
+        .iter()
+        .filter(|realm| realm.state == RealmState::Active)
+        .count();
     let state = match live.as_slice() {
-        [] => AgentIndicatorState::Ready,
-        _ if active => AgentIndicatorState::Active,
-        _ => AgentIndicatorState::Paused,
+        [] => AgentWorkspaceState::Idle,
+        _ if active_count == live.len() => AgentWorkspaceState::Active,
+        _ if active_count == 0 => AgentWorkspaceState::Paused,
+        _ => AgentWorkspaceState::PartiallyPaused,
     };
+    let state_label = agent_workspace_state_label(state, i18n);
     let label = match live.as_slice() {
-        [] => i18n.text(Message::Fuji).to_string(),
-        [realm] => format!(
-            "{} · {}",
-            realm.label,
-            if active {
-                i18n.text(Message::RealmActive)
-            } else {
-                i18n.text(Message::RealmPaused)
-            }
-        ),
+        [] => i18n.text(Message::AiWorkspaces).to_string(),
+        [realm] => format!("{} · {state_label}", realm.label),
         realms => format!(
-            "AI {} · {}",
-            realms.len(),
-            if active {
-                i18n.text(Message::RealmActive)
-            } else {
-                i18n.text(Message::RealmPaused)
-            }
+            "{} · {state_label}",
+            i18n.agent_workspace_count(realms.len())
         ),
     };
-    AgentIndicator { label, state }
+    AgentWorkspaceIndicator { label, state }
 }
 
-pub(super) fn render_agent_indicator(
+pub(super) fn agent_workspace_state_label(
+    state: AgentWorkspaceState,
+    i18n: &Localizer,
+) -> &'static str {
+    match state {
+        AgentWorkspaceState::Idle => i18n.text(Message::NoActiveAgentWorkspaces),
+        AgentWorkspaceState::Active => i18n.text(Message::RealmActive),
+        AgentWorkspaceState::Paused => i18n.text(Message::RealmPaused),
+        AgentWorkspaceState::PartiallyPaused => i18n.text(Message::AgentWorkspacesPartiallyPaused),
+    }
+}
+
+pub(super) fn render_agent_workspace_indicator(
     frame: &mut Frame,
     rect: Rect,
-    indicator: &AgentIndicator,
+    indicator: &AgentWorkspaceIndicator,
     hovered: bool,
 ) {
     let accent = indicator_accent(indicator.state);
@@ -87,7 +96,7 @@ pub(super) fn render_agent_indicator(
         h: 10.0,
     };
     frame.layer(
-        "aegis-hud-fuji-entry-orb",
+        "aegis-hud-agent-workspaces-entry-orb",
         dot,
         &OverlayOpts {
             bg: accent.with_alpha(66),
@@ -100,7 +109,7 @@ pub(super) fn render_agent_indicator(
     );
     render_text_left(
         frame,
-        "aegis-hud-fuji-entry-label",
+        "aegis-hud-agent-workspaces-entry-label",
         Rect {
             x: rect.x + 24.0,
             y: rect.y,
@@ -112,19 +121,20 @@ pub(super) fn render_agent_indicator(
     );
 }
 
-pub(super) fn indicator_accent(state: AgentIndicatorState) -> Color {
+pub(super) fn indicator_accent(state: AgentWorkspaceState) -> Color {
     match state {
-        AgentIndicatorState::Ready => Color::rgba(173, 119, 255, 255),
-        AgentIndicatorState::Active => Color::rgba(82, 193, 255, 255),
-        AgentIndicatorState::Paused => Color::rgba(240, 184, 84, 255),
+        AgentWorkspaceState::Idle => Color::rgba(173, 119, 255, 255),
+        AgentWorkspaceState::Active => Color::rgba(82, 193, 255, 255),
+        AgentWorkspaceState::Paused => Color::rgba(240, 184, 84, 255),
+        AgentWorkspaceState::PartiallyPaused => Color::rgba(150, 178, 255, 255),
     }
 }
 
-/// Draw a seek-safe, compositor-owned "algorithm core": layered Siri-like
-/// colour fields, orbiting inference nodes, and a responsive signal strip.
-/// It is presentation only; fuji's model and credentials remain out of
-/// process behind the existing Agent/Realm boundary.
-pub(super) fn render_fuji_algorithm(
+/// Draw a seek-safe, compositor-owned Agent Workspace visualization: layered
+/// color fields, orbiting Realm nodes, and a responsive activity strip. It is
+/// presentation only; agent models and credentials remain out of process
+/// behind the Agent/Realm boundary.
+pub(super) fn render_agent_workspace_visual(
     frame: &mut Frame,
     rect: Rect,
     phase: f32,
@@ -143,14 +153,14 @@ pub(super) fn render_fuji_algorithm(
 
     render_disc(
         frame,
-        "aegis-hud-fuji-glow",
+        "aegis-hud-agent-workspaces-glow",
         center,
         diameter * 1.48 * breathe,
         Color::rgba(78, 83, 255, fade_alpha(34, progress)),
     );
     render_ring(
         frame,
-        "aegis-hud-fuji-orbit-outer",
+        "aegis-hud-agent-workspaces-orbit-outer",
         center,
         diameter * 1.18,
         Color::rgba(101, 220, 255, fade_alpha(78, progress)),
@@ -158,7 +168,7 @@ pub(super) fn render_fuji_algorithm(
     );
     render_ring(
         frame,
-        "aegis-hud-fuji-orbit-inner",
+        "aegis-hud-agent-workspaces-orbit-inner",
         center,
         diameter * 0.86,
         Color::rgba(215, 111, 255, fade_alpha(96, progress)),
@@ -195,7 +205,7 @@ pub(super) fn render_fuji_algorithm(
         );
         render_disc(
             frame,
-            &format!("aegis-hud-fuji-core-{index}"),
+            &format!("aegis-hud-agent-workspaces-core-{index}"),
             layer_center,
             size * breathe,
             color,
@@ -218,7 +228,7 @@ pub(super) fn render_fuji_algorithm(
         };
         render_disc(
             frame,
-            &format!("aegis-hud-fuji-node-{index}"),
+            &format!("aegis-hud-agent-workspaces-node-{index}"),
             node_center,
             node_size,
             color,
@@ -241,7 +251,7 @@ pub(super) fn render_fuji_algorithm(
             h: height,
         };
         frame.layer(
-            &format!("aegis-hud-fuji-signal-{index}"),
+            &format!("aegis-hud-agent-workspaces-signal-{index}"),
             bar,
             &OverlayOpts {
                 bg: Color::rgba(

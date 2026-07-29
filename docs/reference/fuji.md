@@ -51,9 +51,9 @@ journal sequence, and restoration result.
 | Surface | Behavior |
 |---------|----------|
 | Notification toast and history | Shows fuji-originated notifications. Do Not Disturb suppresses only the toast. |
-| Status bar Agent indicator | Appears while at least one Agent Realm is live. The label includes the Realm name and `Active` or `Paused`; blue means active and amber means paused. |
+| Status bar Agent Workspaces entry | Permanent while the status bar is enabled. One live Realm shows its own label; multiple Realms show a count and aggregate state. It does not report whether the fuji process is online. |
 | Agent operation feedback | After Realm input is applied, shows a labeled circular Agent crosshair, movement trail, click pulse, or scroll/keyboard label over a visible read-only mirror. Hidden targets and positionless input use a background-operation pill. This never moves the user's XDG cursor and is excluded from Realm capture. |
-| AI Workspaces | Opens when the Agent indicator is clicked. Shows each Realm id, state, controlled-window count, pointer/keyboard/touch seat capabilities, and lifecycle controls. |
+| Agent Workspaces | Opens from the status entry. Shows each Realm id, state, controlled-window count, pointer/keyboard/touch seat capabilities, and lifecycle controls. |
 | Overview Realm shelf | Shows live Realm targets and window authority during overview and drag transfer. |
 
 Committed Realm receipts and observed state are authoritative. A transient

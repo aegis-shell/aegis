@@ -42,9 +42,9 @@ const PANEL_H: f32 = 400.0;
 const CLOCK_POLL_INTERVAL: Duration = Duration::from_secs(15);
 const BACKDROP_BLUR_SIGMA: f32 = 12.0;
 const AGENT_INDICATOR_MAX_W: f32 = 154.0;
-const FUJI_PANEL_GAP: f32 = 7.0;
-const FUJI_PANEL_W: f32 = 372.0;
-const FUJI_PANEL_H: f32 = 224.0;
+const AGENT_PANEL_GAP: f32 = 7.0;
+const AGENT_PANEL_W: f32 = 372.0;
+const AGENT_PANEL_H: f32 = 224.0;
 
 // dbusmenu popover geometry. Placement follows the shared shell popup policy.
 const MENU_WIDTH: f32 = 236.0;
@@ -59,14 +59,14 @@ pub struct StatusBar {
     prev_right_down: bool,
     fullscreen_active: bool,
     panel_open: bool,
-    /// Whether the Fuji assistant surface is expanded from its permanent
+    /// Whether the Agent Workspaces surface is expanded from its permanent
     /// status-bar entry.
-    fuji_open: bool,
+    agent_panel_open: bool,
     /// Eased reveal amount retained while the panel closes, so the surface
     /// contracts back into the entry instead of disappearing in one frame.
-    fuji_reveal: f32,
-    /// Continuous phase for the compositor-owned algorithm visualization.
-    fuji_phase: f32,
+    agent_panel_reveal: f32,
+    /// Continuous phase for the compositor-owned workspace visualization.
+    agent_visual_phase: f32,
     /// Accessibility reduced-motion policy shared with the other chrome.
     reduced_motion: bool,
     icons: IconSet,
@@ -184,9 +184,9 @@ impl StatusBar {
             prev_right_down: false,
             fullscreen_active: false,
             panel_open: false,
-            fuji_open: false,
-            fuji_reveal: 0.0,
-            fuji_phase: 0.0,
+            agent_panel_open: false,
+            agent_panel_reveal: 0.0,
+            agent_visual_phase: 0.0,
             reduced_motion: false,
             icons: IconSet::default(),
             notifications,
@@ -233,20 +233,20 @@ impl StatusBar {
         Self::panel_bounds(display).y + 298.0
     }
 
-    fn fuji_panel_bounds(display: (f32, f32)) -> Rect {
-        let w = FUJI_PANEL_W.min((display.0 - 16.0).max(240.0));
-        let h = FUJI_PANEL_H.min((display.1 - HUD_HEIGHT - 16.0).max(160.0));
+    fn agent_panel_bounds(display: (f32, f32)) -> Rect {
+        let w = AGENT_PANEL_W.min((display.0 - 16.0).max(240.0));
+        let h = AGENT_PANEL_H.min((display.1 - HUD_HEIGHT - 16.0).max(160.0));
         Rect {
             x: (display.0 - w - 8.0).max(8.0),
-            y: HUD_HEIGHT + FUJI_PANEL_GAP,
+            y: HUD_HEIGHT + AGENT_PANEL_GAP,
             w,
             h,
         }
     }
 
-    fn revealed_fuji_panel_bounds(&self, display: (f32, f32)) -> Rect {
-        let panel = Self::fuji_panel_bounds(display);
-        let progress = ease_out_cubic(self.fuji_reveal.clamp(0.0, 1.0));
+    fn revealed_agent_panel_bounds(&self, display: (f32, f32)) -> Rect {
+        let panel = Self::agent_panel_bounds(display);
+        let progress = ease_out_cubic(self.agent_panel_reveal.clamp(0.0, 1.0));
         let w = 76.0_f32.min(panel.w) + (panel.w - 76.0_f32.min(panel.w)) * progress;
         let h = HUD_HEIGHT.min(panel.h) + (panel.h - HUD_HEIGHT.min(panel.h)) * progress;
         Rect {
@@ -257,8 +257,8 @@ impl StatusBar {
         }
     }
 
-    fn fuji_action_bounds(&self, display: (f32, f32)) -> Rect {
-        let panel = self.revealed_fuji_panel_bounds(display);
+    fn agent_action_bounds(&self, display: (f32, f32)) -> Rect {
+        let panel = self.revealed_agent_panel_bounds(display);
         let split = (panel.w * 0.43).clamp(98.0, 154.0);
         Rect {
             x: panel.x + split,
@@ -268,45 +268,46 @@ impl StatusBar {
         }
     }
 
-    fn advance_fuji_animation(&mut self, dt: f32) {
-        let target = if self.fuji_open { 1.0 } else { 0.0 };
+    fn advance_agent_animation(&mut self, dt: f32) {
+        let target = if self.agent_panel_open { 1.0 } else { 0.0 };
         if self.reduced_motion {
-            self.fuji_reveal = target;
+            self.agent_panel_reveal = target;
             return;
         }
         let dt = dt.clamp(0.0, 1.0 / 15.0);
         let follow = 1.0 - (-15.0 * dt).exp();
-        self.fuji_reveal += (target - self.fuji_reveal) * follow;
-        if (target - self.fuji_reveal).abs() < 0.002 {
-            self.fuji_reveal = target;
+        self.agent_panel_reveal += (target - self.agent_panel_reveal) * follow;
+        if (target - self.agent_panel_reveal).abs() < 0.002 {
+            self.agent_panel_reveal = target;
         }
-        if self.fuji_open || self.fuji_reveal > 0.01 {
-            self.fuji_phase = (self.fuji_phase + dt).rem_euclid(std::f32::consts::TAU);
+        if self.agent_panel_open || self.agent_panel_reveal > 0.01 {
+            self.agent_visual_phase =
+                (self.agent_visual_phase + dt).rem_euclid(std::f32::consts::TAU);
         }
     }
 
     fn dismiss_transient_ui(&mut self) {
         self.panel_open = false;
-        self.fuji_open = false;
-        self.fuji_reveal = 0.0;
+        self.agent_panel_open = false;
+        self.agent_panel_reveal = 0.0;
         if let Some(key) = self.menu_open_for.clone() {
             self.close_menu(key);
         }
     }
 
-    fn render_fuji_panel(
+    fn render_agent_panel(
         &self,
         frame: &mut Frame,
         display: (f32, f32),
         cursor: (f32, f32),
-        indicator: &AgentIndicator,
+        indicator: &AgentWorkspaceIndicator,
         i18n: &Localizer,
     ) {
-        let panel = self.revealed_fuji_panel_bounds(display);
-        let reveal = self.fuji_reveal.clamp(0.0, 1.0);
+        let panel = self.revealed_agent_panel_bounds(display);
+        let reveal = self.agent_panel_reveal.clamp(0.0, 1.0);
         let content = ((reveal - 0.24) / 0.76).clamp(0.0, 1.0);
         frame.layer(
-            "aegis-hud-fuji-panel",
+            "aegis-hud-agent-workspaces-panel",
             panel,
             &OverlayOpts {
                 bg: Color::rgba(15, 19, 34, fade_alpha(220, reveal)),
@@ -331,12 +332,15 @@ impl StatusBar {
             w: (split - 12.0).max(70.0),
             h: (panel.h - 45.0).max(70.0),
         };
-        render_fuji_algorithm(
+        render_agent_workspace_visual(
             frame,
             visual,
-            self.fuji_phase,
+            self.agent_visual_phase,
             content,
-            indicator.state == AgentIndicatorState::Active,
+            matches!(
+                indicator.state,
+                AgentWorkspaceState::Active | AgentWorkspaceState::PartiallyPaused
+            ),
             self.reduced_motion,
         );
 
@@ -344,19 +348,19 @@ impl StatusBar {
         let copy_w = (panel.w - split - 15.0).max(1.0);
         render_text_left(
             frame,
-            "aegis-hud-fuji-title",
+            "aegis-hud-agent-workspaces-title",
             Rect {
                 x: copy_x,
                 y: panel.y + 20.0,
                 w: copy_w,
                 h: 27.0,
             },
-            i18n.text(Message::Fuji),
+            i18n.text(Message::AiWorkspaces),
             18.0,
         );
         render_text_left(
             frame,
-            "aegis-hud-fuji-subtitle",
+            "aegis-hud-agent-workspaces-subtitle",
             Rect {
                 x: copy_x,
                 y: panel.y + 52.0,
@@ -364,17 +368,13 @@ impl StatusBar {
                 h: 22.0,
             },
             &truncate(
-                i18n.text(Message::FujiPanelDescription),
+                i18n.text(Message::AgentWorkspacesPanelDescription),
                 (copy_w / 6.2) as usize,
             ),
             11.0,
         );
 
-        let state_label = match indicator.state {
-            AgentIndicatorState::Ready => i18n.text(Message::FujiReady),
-            AgentIndicatorState::Active => i18n.text(Message::RealmActive),
-            AgentIndicatorState::Paused => i18n.text(Message::RealmPaused),
-        };
+        let state_label = agent_workspace_state_label(indicator.state, i18n);
         let state = Rect {
             x: copy_x,
             y: panel.y + 84.0,
@@ -383,7 +383,7 @@ impl StatusBar {
         };
         let state_accent = indicator_accent(indicator.state);
         frame.layer(
-            "aegis-hud-fuji-state",
+            "aegis-hud-agent-workspaces-state",
             state,
             &OverlayOpts {
                 bg: state_accent.with_alpha(fade_alpha(34, content)),
@@ -396,16 +396,16 @@ impl StatusBar {
         );
         render_text(
             frame,
-            "aegis-hud-fuji-state-label",
+            "aegis-hud-agent-workspaces-state-label",
             state,
             state_label,
             10.5,
         );
 
-        let action = self.fuji_action_bounds(display);
+        let action = self.agent_action_bounds(display);
         let hovered = contains(action, cursor.0, cursor.1);
         frame.layer(
-            "aegis-hud-fuji-open",
+            "aegis-hud-agent-workspaces-open",
             action,
             &OverlayOpts {
                 bg: if hovered {
@@ -430,7 +430,7 @@ impl StatusBar {
                     |frame| {
                         frame.label_compact_sized(
                             &truncate(
-                                i18n.text(Message::FujiOpenWorkspaces),
+                                i18n.text(Message::OpenAgentWorkspaces),
                                 ((action.w - 27.0) / 6.2).max(4.0) as usize,
                             ),
                             10.5,
@@ -1064,7 +1064,7 @@ impl Chrome for StatusBar {
         }
 
         self.refresh_status();
-        self.advance_fuji_animation(raw.dt_seconds.max(0.0));
+        self.advance_agent_animation(raw.dt_seconds.max(0.0));
         let display = (raw.display_size.x, raw.display_size.y);
         let cursor = (raw.cursor.x, raw.cursor.y);
         let down = raw.mouse_down.first().copied().unwrap_or(false);
@@ -1159,13 +1159,13 @@ impl Chrome for StatusBar {
             &notification_count,
             contains(bell, cursor.0, cursor.1),
         );
-        let agent_indicator = agent_indicator(&self.realms, i18n);
-        let label_w = agent_indicator.label.chars().count() as f32 * 6.8 + 32.0;
+        let workspace_indicator = agent_workspace_indicator(&self.realms, i18n);
+        let label_w = workspace_indicator.label.chars().count() as f32 * 6.8 + 32.0;
         let agent = take_right(&mut right_x, label_w.clamp(72.0, AGENT_INDICATOR_MAX_W));
-        render_agent_indicator(
+        render_agent_workspace_indicator(
             f,
             agent,
-            &agent_indicator,
+            &workspace_indicator,
             contains(agent, cursor.0, cursor.1),
         );
         if let Some(battery) = self.status.battery {
@@ -1287,7 +1287,7 @@ impl Chrome for StatusBar {
             out.system_actions.push(SystemAction::ToggleMute);
         } else if pressed && contains(network, cursor.0, cursor.1) {
             self.panel_open = !self.panel_open;
-            self.fuji_open = false;
+            self.agent_panel_open = false;
         }
         let scroll_y = raw.scroll_y * 40.0 + raw.scroll_pixels_y;
         if contains(audio, cursor.0, cursor.1) && scroll_y.abs() > 0.01 {
@@ -1297,25 +1297,25 @@ impl Chrome for StatusBar {
         }
         if pressed && contains(bell, cursor.0, cursor.1) {
             self.panel_open = !self.panel_open;
-            self.fuji_open = false;
+            self.agent_panel_open = false;
         } else if pressed && contains(agent, cursor.0, cursor.1) {
             self.panel_open = false;
-            self.fuji_open = !self.fuji_open;
+            self.agent_panel_open = !self.agent_panel_open;
         }
 
-        if self.fuji_open && pressed {
-            let action = self.fuji_action_bounds(display);
-            if self.fuji_reveal > 0.45 && contains(action, cursor.0, cursor.1) {
-                self.fuji_open = false;
+        if self.agent_panel_open && pressed {
+            let action = self.agent_action_bounds(display);
+            if self.agent_panel_reveal > 0.45 && contains(action, cursor.0, cursor.1) {
+                self.agent_panel_open = false;
                 out.open_builtin = Some(BuiltInApplication::AiWorkspaces);
-            } else if !contains(Self::fuji_panel_bounds(display), cursor.0, cursor.1)
+            } else if !contains(Self::agent_panel_bounds(display), cursor.0, cursor.1)
                 && !contains(agent, cursor.0, cursor.1)
             {
-                self.fuji_open = false;
+                self.agent_panel_open = false;
             }
         }
-        if self.fuji_reveal > 0.001 {
-            self.render_fuji_panel(f, display, cursor, &agent_indicator, i18n);
+        if self.agent_panel_reveal > 0.001 {
+            self.render_agent_panel(f, display, cursor, &workspace_indicator, i18n);
         }
 
         if self.panel_open {
@@ -1395,8 +1395,8 @@ impl Chrome for StatusBar {
         if self.panel_open && contains(Self::panel_bounds(display), x, y) {
             return true;
         }
-        if (self.fuji_open || self.fuji_reveal > 0.001)
-            && contains(Self::fuji_panel_bounds(display), x, y)
+        if (self.agent_panel_open || self.agent_panel_reveal > 0.001)
+            && contains(Self::agent_panel_bounds(display), x, y)
         {
             return true;
         }
@@ -1449,8 +1449,9 @@ impl Chrome for StatusBar {
         if self.fullscreen_active || self.reduced_motion {
             false
         } else {
-            self.fuji_open
-                || (self.fuji_reveal - if self.fuji_open { 1.0 } else { 0.0 }).abs() > 0.002
+            self.agent_panel_open
+                || (self.agent_panel_reveal - if self.agent_panel_open { 1.0 } else { 0.0 }).abs()
+                    > 0.002
         }
     }
 
@@ -1461,7 +1462,7 @@ impl Chrome for StatusBar {
     fn set_reduced_motion(&mut self, reduced: bool) {
         self.reduced_motion = reduced;
         if reduced {
-            self.fuji_reveal = if self.fuji_open { 1.0 } else { 0.0 };
+            self.agent_panel_reveal = if self.agent_panel_open { 1.0 } else { 0.0 };
         }
     }
 
@@ -1514,8 +1515,8 @@ impl Chrome for StatusBar {
                 h: (panel.h - radius * 2.0).max(0.0),
             });
         }
-        if self.fuji_open || self.fuji_reveal > 0.001 {
-            let panel = self.revealed_fuji_panel_bounds(display);
+        if self.agent_panel_open || self.agent_panel_reveal > 0.001 {
+            let panel = self.revealed_agent_panel_bounds(display);
             let radius = 22.0_f32.min(panel.w * 0.5).min(panel.h * 0.5);
             regions.push(BackdropRegion {
                 x: panel.x + radius,
