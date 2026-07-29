@@ -1,132 +1,396 @@
 //! `org.freedesktop.impl.portal.Settings` v1.
 //!
-//! The single supported key is `color-scheme` in the
-//! `org.freedesktop.appearance` namespace, mapped from the compositor
-//! configuration's `[appearance] color_scheme` (see
-//! `docs/reference/config.md`). The file is re-read per call: it is small,
-//! reads are rare, and re-reading keeps the backend honest across the
-//! compositor's live reload without any watcher thread.
-//!
-//! `SettingChanged` is emitted by a light watcher thread that polls the
-//! configuration file's mtime (ADR-0053): appearance lives in the config
-//! file rather than the revisioned IPC settings snapshot, so there is no
-//! IPC event to subscribe to. The poll interval is two seconds — enough
-//! for a live-reload-driven theme flip, cheap enough to run forever.
+//! The compositor's revisioned IPC snapshot is the only input. This backend
+//! exports the standardized `org.freedesktop.appearance` keys and a curated
+//! `org.gnome.desktop.interface` compatibility namespace used by GTK
+//! applications. It never reads Aegis TOML, dconf, or another desktop's
+//! settings database.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 
-use zbus::zvariant::OwnedValue;
+use aegis_core::settings::{ColorScheme, Contrast, DesktopPreferences};
+use zbus::zvariant::{OwnedValue, Str, Structure};
 
-/// The freedesktop appearance namespace.
 pub(crate) const APPEARANCE_NAMESPACE: &str = "org.freedesktop.appearance";
-/// The color-scheme key: 0 = no preference, 1 = prefer dark, 2 = prefer
-/// light.
+pub(crate) const GTK_INTERFACE_NAMESPACE: &str = "org.gnome.desktop.interface";
 pub(crate) const COLOR_SCHEME_KEY: &str = "color-scheme";
-/// The settings interface name, used by the watcher's signal emission.
+pub(crate) const ACCENT_COLOR_KEY: &str = "accent-color";
+pub(crate) const CONTRAST_KEY: &str = "contrast";
+pub(crate) const REDUCED_MOTION_KEY: &str = "reduced-motion";
 const SETTINGS_IFACE: &str = "org.freedesktop.impl.portal.Settings";
-/// How often the watcher re-stats the configuration file.
-const WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+const RECONNECT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+const IPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// The served settings interface. Stateless: every call re-reads the
-/// configuration file.
-pub(crate) struct SettingsIface;
+#[derive(Clone, Default)]
+pub(crate) struct SettingsStore {
+    preferences: Arc<RwLock<DesktopPreferences>>,
+}
 
-/// Resolve one setting against a parsed configuration. `None` means the
-/// namespace/key pair is not ours and the caller answers `NotFound`-style.
+impl SettingsStore {
+    fn snapshot(&self) -> DesktopPreferences {
+        self.preferences
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn replace(&self, preferences: DesktopPreferences) -> DesktopPreferences {
+        let mut current = self
+            .preferences
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::replace(&mut *current, preferences)
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct SettingsIface {
+    store: SettingsStore,
+}
+
+impl SettingsIface {
+    pub(crate) fn new(store: SettingsStore) -> Self {
+        Self { store }
+    }
+}
+
+#[derive(Debug, zbus::DBusError)]
+#[zbus(prefix = "org.freedesktop.portal.Error")]
+enum SettingsError {
+    NotFound(String),
+    #[zbus(error)]
+    ZBus(zbus::Error),
+}
+
+fn string_value(value: &str) -> OwnedValue {
+    OwnedValue::from(Str::from(value.to_owned()))
+}
+
+fn structure_value<T>(value: T) -> OwnedValue
+where
+    Structure<'static>: From<T>,
+{
+    OwnedValue::try_from(Structure::from(value)).expect("static setting structure is owned")
+}
+
+fn portal_color_scheme(value: ColorScheme) -> u32 {
+    match value {
+        ColorScheme::System => 0,
+        ColorScheme::Dark => 1,
+        ColorScheme::Light => 2,
+    }
+}
+
+fn gtk_color_scheme(value: ColorScheme) -> &'static str {
+    match value {
+        ColorScheme::System => "default",
+        ColorScheme::Dark => "prefer-dark",
+        ColorScheme::Light => "prefer-light",
+    }
+}
+
+fn setting_entries(
+    preferences: &DesktopPreferences,
+) -> Vec<(&'static str, &'static str, OwnedValue)> {
+    let mut entries = vec![
+        (
+            APPEARANCE_NAMESPACE,
+            COLOR_SCHEME_KEY,
+            OwnedValue::from(portal_color_scheme(preferences.color_scheme)),
+        ),
+        (
+            APPEARANCE_NAMESPACE,
+            CONTRAST_KEY,
+            OwnedValue::from(match preferences.contrast {
+                Contrast::Normal => 0_u32,
+                Contrast::High => 1_u32,
+            }),
+        ),
+        (
+            APPEARANCE_NAMESPACE,
+            REDUCED_MOTION_KEY,
+            OwnedValue::from(u32::from(preferences.reduced_motion)),
+        ),
+        (
+            GTK_INTERFACE_NAMESPACE,
+            COLOR_SCHEME_KEY,
+            string_value(gtk_color_scheme(preferences.color_scheme)),
+        ),
+        (
+            GTK_INTERFACE_NAMESPACE,
+            "font-name",
+            string_value(&preferences.font_name),
+        ),
+        (
+            GTK_INTERFACE_NAMESPACE,
+            "monospace-font-name",
+            string_value(&preferences.monospace_font_name),
+        ),
+        (
+            GTK_INTERFACE_NAMESPACE,
+            "text-scaling-factor",
+            OwnedValue::from(preferences.text_scale),
+        ),
+        (
+            GTK_INTERFACE_NAMESPACE,
+            "icon-theme",
+            string_value(&preferences.icon_theme),
+        ),
+        (
+            GTK_INTERFACE_NAMESPACE,
+            "cursor-theme",
+            string_value(&preferences.cursor_theme),
+        ),
+        (
+            GTK_INTERFACE_NAMESPACE,
+            "cursor-size",
+            OwnedValue::from(preferences.cursor_size as i32),
+        ),
+        (
+            GTK_INTERFACE_NAMESPACE,
+            "enable-animations",
+            OwnedValue::from(!preferences.reduced_motion),
+        ),
+    ];
+    if let Some(accent) = preferences.accent_color {
+        entries.push((
+            APPEARANCE_NAMESPACE,
+            ACCENT_COLOR_KEY,
+            structure_value(accent.normalized()),
+        ));
+    }
+    entries
+}
+
 pub(crate) fn lookup(
-    config: Option<&aegis_config::Config>,
+    preferences: &DesktopPreferences,
     namespace: &str,
     key: &str,
-) -> Option<u32> {
-    match (namespace, key) {
-        (APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY) => Some(color_scheme(config)),
-        _ => None,
-    }
+) -> Option<OwnedValue> {
+    setting_entries(preferences).into_iter().find_map(
+        |(candidate_namespace, candidate_key, value)| {
+            (candidate_namespace == namespace && candidate_key == key).then_some(value)
+        },
+    )
 }
 
-/// Map the configured preference onto the portal enum. A missing or invalid
-/// configuration means "no preference".
-pub(crate) fn color_scheme(config: Option<&aegis_config::Config>) -> u32 {
-    match config.map(|c| c.appearance.color_scheme) {
-        Some(aegis_config::ColorScheme::Dark) => 1,
-        Some(aegis_config::ColorScheme::Light) => 2,
-        _ => 0,
-    }
+fn namespace_matches(pattern: &str, namespace: &str) -> bool {
+    pattern.is_empty()
+        || pattern == namespace
+        || pattern
+            .strip_suffix('*')
+            .is_some_and(|prefix| namespace.starts_with(prefix))
 }
 
-/// Load the compositor configuration, tolerating every failure mode as "no
-/// preference": a missing file is the common case and a malformed one is
-/// already reported by the compositor's own diagnostics.
-fn load_config() -> Option<aegis_config::Config> {
-    let path = aegis_config::default_path()?;
-    load_config_at(&path)
-}
-
-/// The path-parameterized half of [`load_config`], split out for the
-/// watcher and tests.
-fn load_config_at(path: &std::path::Path) -> Option<aegis_config::Config> {
-    match aegis_config::load(path) {
-        Ok(config) => config,
-        Err(error) => {
-            log::warn!(
-                "portal: cannot read {} for settings: {error}",
-                path.display()
-            );
-            None
+fn read_all_values(
+    preferences: &DesktopPreferences,
+    namespaces: &[String],
+) -> HashMap<String, HashMap<String, OwnedValue>> {
+    let mut out: HashMap<String, HashMap<String, OwnedValue>> = HashMap::new();
+    for (namespace, key, value) in setting_entries(preferences) {
+        let wanted = namespaces.is_empty()
+            || namespaces
+                .iter()
+                .any(|pattern| namespace_matches(pattern, namespace));
+        if wanted {
+            out.entry(namespace.to_owned())
+                .or_default()
+                .insert(key.to_owned(), value);
         }
     }
+    out
 }
 
-/// The effective color-scheme at `path` — the watcher's sample.
-fn scheme_at(path: &std::path::Path) -> u32 {
-    color_scheme(load_config_at(path).as_ref())
+fn changed_settings(
+    previous: &DesktopPreferences,
+    current: &DesktopPreferences,
+) -> Vec<(&'static str, &'static str, OwnedValue)> {
+    let mut changed = Vec::new();
+    if previous.color_scheme != current.color_scheme {
+        changed.push((
+            APPEARANCE_NAMESPACE,
+            COLOR_SCHEME_KEY,
+            OwnedValue::from(portal_color_scheme(current.color_scheme)),
+        ));
+        changed.push((
+            GTK_INTERFACE_NAMESPACE,
+            COLOR_SCHEME_KEY,
+            string_value(gtk_color_scheme(current.color_scheme)),
+        ));
+    }
+    if previous.accent_color != current.accent_color {
+        let value = current
+            .accent_color
+            .map(|accent| structure_value(accent.normalized()))
+            // The public portal treats out-of-range components as unset.
+            .unwrap_or_else(|| structure_value((-1.0_f64, -1.0_f64, -1.0_f64)));
+        changed.push((APPEARANCE_NAMESPACE, ACCENT_COLOR_KEY, value));
+    }
+    if previous.contrast != current.contrast {
+        changed.push((
+            APPEARANCE_NAMESPACE,
+            CONTRAST_KEY,
+            OwnedValue::from(match current.contrast {
+                Contrast::Normal => 0_u32,
+                Contrast::High => 1_u32,
+            }),
+        ));
+    }
+    if previous.reduced_motion != current.reduced_motion {
+        changed.push((
+            APPEARANCE_NAMESPACE,
+            REDUCED_MOTION_KEY,
+            OwnedValue::from(u32::from(current.reduced_motion)),
+        ));
+        changed.push((
+            GTK_INTERFACE_NAMESPACE,
+            "enable-animations",
+            OwnedValue::from(!current.reduced_motion),
+        ));
+    }
+    if previous.font_name != current.font_name {
+        changed.push((
+            GTK_INTERFACE_NAMESPACE,
+            "font-name",
+            string_value(&current.font_name),
+        ));
+    }
+    if previous.monospace_font_name != current.monospace_font_name {
+        changed.push((
+            GTK_INTERFACE_NAMESPACE,
+            "monospace-font-name",
+            string_value(&current.monospace_font_name),
+        ));
+    }
+    if previous.text_scale != current.text_scale {
+        changed.push((
+            GTK_INTERFACE_NAMESPACE,
+            "text-scaling-factor",
+            OwnedValue::from(current.text_scale),
+        ));
+    }
+    if previous.icon_theme != current.icon_theme {
+        changed.push((
+            GTK_INTERFACE_NAMESPACE,
+            "icon-theme",
+            string_value(&current.icon_theme),
+        ));
+    }
+    if previous.cursor_theme != current.cursor_theme {
+        changed.push((
+            GTK_INTERFACE_NAMESPACE,
+            "cursor-theme",
+            string_value(&current.cursor_theme),
+        ));
+    }
+    if previous.cursor_size != current.cursor_size {
+        changed.push((
+            GTK_INTERFACE_NAMESPACE,
+            "cursor-size",
+            OwnedValue::from(current.cursor_size as i32),
+        ));
+    }
+    changed
 }
 
-/// Spawn the mtime watcher that emits `SettingChanged` when the mapped
-/// color-scheme value changes. No configuration path means no watcher (the
-/// `Read` half answers "no preference" from defaults anyway).
-pub(crate) fn spawn_watcher(conn: zbus::blocking::Connection) {
-    let Some(path) = aegis_config::default_path() else {
-        log::info!("portal: no config path; SettingChanged watcher disabled");
-        return;
-    };
-    std::thread::Builder::new()
-        .name("aegis-portal-settings".to_string())
-        .spawn(move || watch_loop(conn, path))
-        .map(|_| ())
-        .unwrap_or_else(|error| log::warn!("portal: cannot spawn settings watcher: {error}"));
-}
-
-/// Poll the file's mtime and emit on an effective-value change, including
-/// the file appearing or disappearing (both change the mapped value).
-fn watch_loop(conn: zbus::blocking::Connection, path: std::path::PathBuf) {
-    let mut last_mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-    let mut scheme = scheme_at(&path);
-    loop {
-        std::thread::sleep(WATCH_INTERVAL);
-        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-        if mtime == last_mtime {
-            continue;
-        }
-        last_mtime = mtime;
-        let current = scheme_at(&path);
-        if current == scheme {
-            continue;
-        }
-        scheme = current;
-        log::info!("portal: color-scheme changed → {scheme}");
+fn update_and_emit(
+    conn: &zbus::blocking::Connection,
+    store: &SettingsStore,
+    preferences: DesktopPreferences,
+) {
+    let previous = store.replace(preferences.clone());
+    for (namespace, key, value) in changed_settings(&previous, &preferences) {
         if let Err(error) = conn.emit_signal(
             None::<&str>,
             crate::DESKTOP_PATH,
             SETTINGS_IFACE,
             "SettingChanged",
-            &(
-                APPEARANCE_NAMESPACE,
-                COLOR_SCHEME_KEY,
-                zbus::zvariant::Value::from(scheme),
-            ),
+            &(namespace, key, value),
         ) {
-            log::warn!("portal: could not emit SettingChanged: {error}");
+            log::warn!("portal: could not emit SettingChanged for {namespace}/{key}: {error}");
+        }
+    }
+}
+
+pub(crate) fn spawn_watcher(
+    conn: zbus::blocking::Connection,
+    socket: PathBuf,
+    store: SettingsStore,
+) {
+    std::thread::Builder::new()
+        .name("aegis-portal-settings".to_owned())
+        .spawn(move || watch_loop(conn, socket, store))
+        .map(|_| ())
+        .unwrap_or_else(|error| log::warn!("portal: cannot spawn settings watcher: {error}"));
+}
+
+/// Bound the initial IPC query before the D-Bus name is acquired, preventing
+/// the first portal read from racing the subscription thread's first sample.
+pub(crate) fn prime_store(socket: &Path, store: &SettingsStore) {
+    let result = aegis_ipc::Client::connect_with_timeout(
+        socket,
+        aegis_ipc::Capabilities::QUERY,
+        IPC_TIMEOUT,
+    )
+    .and_then(|mut client| client.settings());
+    match result {
+        Ok(snapshot) => {
+            store.replace(snapshot.preferences);
+        }
+        Err(error) => log::warn!(
+            "portal: starting with default desktop preferences; {} is unavailable: {error}",
+            socket.display()
+        ),
+    }
+}
+
+fn watch_loop(conn: zbus::blocking::Connection, socket: PathBuf, store: SettingsStore) {
+    let mut reported_disconnect = false;
+    loop {
+        match watch_connection(&conn, &socket, &store) {
+            Ok(()) => unreachable!("settings subscription only exits on an IPC error"),
+            Err(error) => {
+                if !reported_disconnect {
+                    log::warn!(
+                        "portal: compositor settings IPC unavailable at {}: {error}",
+                        socket.display()
+                    );
+                    reported_disconnect = true;
+                } else {
+                    log::debug!("portal: compositor settings IPC still unavailable: {error}");
+                }
+            }
+        }
+        std::thread::sleep(RECONNECT_INTERVAL);
+    }
+}
+
+fn watch_connection(
+    conn: &zbus::blocking::Connection,
+    socket: &Path,
+    store: &SettingsStore,
+) -> std::io::Result<()> {
+    let mut events = aegis_ipc::Client::connect_with_timeout(
+        socket,
+        aegis_ipc::Capabilities::QUERY,
+        IPC_TIMEOUT,
+    )?;
+    events.subscribe()?;
+    events.set_io_timeout(None)?;
+
+    let mut query = aegis_ipc::Client::connect_with_timeout(
+        socket,
+        aegis_ipc::Capabilities::QUERY,
+        IPC_TIMEOUT,
+    )?;
+    update_and_emit(conn, store, query.settings()?.preferences);
+    log::info!("portal: subscribed to compositor desktop preferences");
+
+    loop {
+        if let aegis_ipc::Event::SettingsChanged { .. } = events.next_event()? {
+            update_and_emit(conn, store, query.settings()?.preferences);
         }
     }
 }
@@ -134,40 +398,28 @@ fn watch_loop(conn: zbus::blocking::Connection, path: std::path::PathBuf) {
 #[zbus::interface(name = "org.freedesktop.impl.portal.Settings")]
 impl SettingsIface {
     /// `v Read(s namespace, s key)`.
-    async fn read(&self, namespace: &str, key: &str) -> zbus::fdo::Result<OwnedValue> {
-        let config = load_config();
-        lookup(config.as_ref(), namespace, key)
-            .map(OwnedValue::from)
-            .ok_or_else(|| zbus::fdo::Error::Failed(format!("unknown setting {namespace} {key}")))
+    async fn read(&self, namespace: &str, key: &str) -> Result<OwnedValue, SettingsError> {
+        lookup(&self.store.snapshot(), namespace, key)
+            .ok_or_else(|| SettingsError::NotFound(format!("{namespace} {key}")))
     }
 
     /// `a{sa{sv}} ReadAll(as namespaces)`. An empty list asks for every
-    /// supported namespace; namespaces we do not implement are skipped.
+    /// supported namespace. An empty string also matches all, and patterns
+    /// ending in `*` select a namespace prefix.
     async fn read_all(
         &self,
         namespaces: Vec<String>,
     ) -> HashMap<String, HashMap<String, OwnedValue>> {
-        let config = load_config();
-        let mut out = HashMap::new();
-        let wanted = |ns: &str| namespaces.is_empty() || namespaces.iter().any(|n| n == ns);
-        if wanted(APPEARANCE_NAMESPACE) {
-            out.insert(
-                APPEARANCE_NAMESPACE.to_string(),
-                HashMap::from([(
-                    COLOR_SCHEME_KEY.to_string(),
-                    OwnedValue::from(color_scheme(config.as_ref())),
-                )]),
-            );
-        }
-        out
+        read_all_values(&self.store.snapshot(), &namespaces)
     }
 
     #[zbus(property)]
     fn version(&self) -> u32 {
+        // This is the backend interface version. The public frontend exposes
+        // org.freedesktop.portal.Settings v2 (including ReadOne).
         1
     }
 
-    /// Emitted by the watcher thread when the mapped color-scheme changes.
     #[zbus(signal)]
     async fn setting_changed(
         emitter: &zbus::object_server::SignalEmitter<'_>,
@@ -180,85 +432,94 @@ impl SettingsIface {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn config_with(toml: &str) -> Option<aegis_config::Config> {
-        aegis_config::Config::parse(toml).ok()
-    }
+    use aegis_core::settings::AccentColor;
 
     #[test]
-    fn color_scheme_maps_config_to_portal_enum() {
-        assert_eq!(color_scheme(None), 0);
-        assert_eq!(color_scheme(config_with("schema_version = 1").as_ref()), 0);
+    fn standardized_appearance_values_have_portal_types() {
+        let preferences = DesktopPreferences {
+            color_scheme: ColorScheme::Dark,
+            accent_color: Some(AccentColor {
+                red: 51,
+                green: 102,
+                blue: 255,
+            }),
+            contrast: Contrast::High,
+            reduced_motion: true,
+            ..Default::default()
+        };
         assert_eq!(
-            color_scheme(
-                config_with("schema_version = 1\n[appearance]\ncolor_scheme = \"dark\"").as_ref()
-            ),
+            u32::try_from(lookup(&preferences, APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY).unwrap())
+                .unwrap(),
             1
         );
         assert_eq!(
-            color_scheme(
-                config_with("schema_version = 1\n[appearance]\ncolor_scheme = \"light\"").as_ref()
-            ),
-            2
+            u32::try_from(lookup(&preferences, APPEARANCE_NAMESPACE, CONTRAST_KEY).unwrap())
+                .unwrap(),
+            1
         );
         assert_eq!(
-            color_scheme(
-                config_with("schema_version = 1\n[appearance]\ncolor_scheme = \"system\"").as_ref()
-            ),
-            0
+            u32::try_from(lookup(&preferences, APPEARANCE_NAMESPACE, REDUCED_MOTION_KEY).unwrap())
+                .unwrap(),
+            1
         );
+        let accent: (f64, f64, f64) = lookup(&preferences, APPEARANCE_NAMESPACE, ACCENT_COLOR_KEY)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(accent, (0.2, 0.4, 1.0));
     }
 
     #[test]
-    fn lookup_only_knows_the_appearance_namespace() {
-        let config = config_with("schema_version = 1\n[appearance]\ncolor_scheme = \"dark\"");
+    fn gtk_namespace_is_a_curated_compatibility_projection() {
+        let preferences = DesktopPreferences {
+            icon_theme: "Papirus".into(),
+            reduced_motion: true,
+            ..Default::default()
+        };
         assert_eq!(
-            lookup(config.as_ref(), APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY),
-            Some(1)
+            String::try_from(lookup(&preferences, GTK_INTERFACE_NAMESPACE, "icon-theme").unwrap())
+                .unwrap(),
+            "Papirus"
         );
-        assert_eq!(
-            lookup(config.as_ref(), APPEARANCE_NAMESPACE, "accent-color"),
-            None
+        assert!(
+            !bool::try_from(
+                lookup(&preferences, GTK_INTERFACE_NAMESPACE, "enable-animations").unwrap()
+            )
+            .unwrap()
         );
-        assert_eq!(
-            lookup(
-                config.as_ref(),
-                "org.gnome.desktop.interface",
-                "color-scheme"
-            ),
-            None
-        );
+        assert!(lookup(&preferences, GTK_INTERFACE_NAMESPACE, "gtk-theme").is_none());
     }
 
     #[test]
-    fn scheme_at_tracks_file_content_and_absence() {
-        let dir = std::env::temp_dir().join(format!(
-            "aegis-portal-settings-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        // Missing file → no preference.
-        assert_eq!(scheme_at(&path), 0);
-        std::fs::write(
-            &path,
-            "schema_version = 1\n[appearance]\ncolor_scheme = \"dark\"\n",
-        )
-        .unwrap();
-        assert_eq!(scheme_at(&path), 1);
-        std::fs::write(
-            &path,
-            "schema_version = 1\n[appearance]\ncolor_scheme = \"light\"\n",
-        )
-        .unwrap();
-        assert_eq!(scheme_at(&path), 2);
-        // Deleted again → no preference.
-        std::fs::remove_file(&path).unwrap();
-        assert_eq!(scheme_at(&path), 0);
-        std::fs::remove_dir_all(&dir).unwrap();
+    fn read_all_supports_exact_and_prefix_namespace_filters() {
+        let preferences = DesktopPreferences::default();
+        let exact = read_all_values(&preferences, &[APPEARANCE_NAMESPACE.into()]);
+        assert!(exact.contains_key(APPEARANCE_NAMESPACE));
+        assert!(!exact.contains_key(GTK_INTERFACE_NAMESPACE));
+
+        let prefix = read_all_values(&preferences, &["org.gnome.*".into()]);
+        assert!(prefix.contains_key(GTK_INTERFACE_NAMESPACE));
+        assert!(!prefix.contains_key(APPEARANCE_NAMESPACE));
+
+        let all = read_all_values(&preferences, &["".into()]);
+        assert!(all.contains_key(APPEARANCE_NAMESPACE));
+        assert!(all.contains_key(GTK_INTERFACE_NAMESPACE));
+    }
+
+    #[test]
+    fn change_projection_emits_only_dependent_keys() {
+        let previous = DesktopPreferences::default();
+        let current = DesktopPreferences {
+            reduced_motion: true,
+            ..previous.clone()
+        };
+        let changed = changed_settings(&previous, &current);
+        assert_eq!(changed.len(), 2);
+        assert!(changed.iter().any(|(_, key, _)| *key == REDUCED_MOTION_KEY));
+        assert!(
+            changed
+                .iter()
+                .any(|(_, key, _)| *key == "enable-animations")
+        );
     }
 }

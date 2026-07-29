@@ -1,8 +1,13 @@
 use super::*;
 
 type IconSnapshot = std::collections::BTreeMap<std::path::PathBuf, Option<IconFileStamp>>;
+pub(super) struct AppScanRequest {
+    pub(super) icon_theme: String,
+    pub(super) scale: u32,
+}
 pub(super) type AppScanResult = (
     String,
+    u32,
     Vec<aegis_core::app::Entry>,
     IconSnapshot,
     Vec<DecodedIcon>,
@@ -140,8 +145,7 @@ pub(super) struct CompositorRuntime {
     pub(super) last_cursor_shape: u32,
     pub(super) last_cursor_hidden: bool,
     pub(super) next_app_scan: std::time::Instant,
-    pub(super) scan_req_tx: std::sync::mpsc::Sender<u32>,
+    pub(super) scan_req_tx: std::sync::mpsc::Sender<AppScanRequest>,
     pub(super) scan_result_rx: std::sync::mpsc::Receiver<AppScanResult>,
-    pub(super) pending_scan_scale: u32,
     pub(super) previous_frame_at: std::time::Instant,
 }

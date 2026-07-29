@@ -346,6 +346,19 @@ impl Dock {
         display_height + DOCK_TILE_MAX
     }
 
+    /// Reveal progress for the collapsed stadium handle.
+    ///
+    /// The handle must not coexist with the panel or its icons. The largest
+    /// icon is the last piece of Dock content to leave the output while the
+    /// panel moves from its resting position to [`Dock::hidden_panel_y`].
+    /// Start fading the handle in only after that icon's top edge has crossed
+    /// the bottom edge of the output.
+    fn collapsed_handle_progress(reveal: f32) -> f32 {
+        let panel_travel = DOCK_TILE_MAX + DOCK_PANEL_HEIGHT + DOCK_BOTTOM_MARGIN;
+        let fully_hidden_reveal = (DOCK_PANEL_HEIGHT - DOCK_BASELINE_INSET) / panel_travel;
+        ((fully_hidden_reveal - reveal) / fully_hidden_reveal).clamp(0.0, 1.0)
+    }
+
     fn hidden_trigger_bounds(display: (f32, f32)) -> Rect {
         Rect {
             x: (display.0 - AUTOHIDE_HANDLE_WIDTH) * 0.5 - AUTOHIDE_TRIGGER_PAD_X,

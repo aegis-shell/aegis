@@ -15,9 +15,10 @@ repository = "https://github.com/ming2k/aegis"
 [workspace.dependencies]
 # flux (rendering engine) + lens (immediate-mode UI engine) Rust bindings.
 # The canonical build resolves the binding sources from the tagged optics
-# monorepo and links the C libraries discovered by pkg-config. Development
-# commands can opt into ../optics through .cargo/optics-local.toml without
-# making a sibling checkout mandatory for CI or downstream packagers.
+# monorepo and links the C libraries discovered by pkg-config. A linked
+# development worktree can patch these sources through
+# .cargo/optics-local.toml without making a sibling checkout mandatory for CI
+# or downstream packagers.
 flux = { git = "https://github.com/ming2k/optics", tag = "v0.0.4" }
 flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.4" }
 flux-scene-graph = { git = "https://github.com/ming2k/optics", tag = "v0.0.4" }

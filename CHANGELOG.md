@@ -5,6 +5,37 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once the
 project cuts a tagged release.
 
+## [Unreleased]
+
+### Desktop preferences
+
+- System Settings now provides an editable Appearance page for color scheme,
+  optional accent color, contrast, reduced motion, interface fonts, text
+  scale, icon theme, and cursor theme and size. One confirmed transaction
+  persists and applies the complete profile.
+- The compositor now publishes one effective desktop-preference snapshot to
+  chrome, cursor rendering, IPC, and portal consumers. It no longer probes
+  GNOME GSettings for an icon theme; Aegis config and the documented explicit
+  startup overrides have deterministic precedence.
+- The Settings portal now exports `color-scheme`, `accent-color`, `contrast`,
+  and `reduced-motion`, plus a curated GTK interface compatibility namespace.
+  It subscribes to compositor IPC instead of parsing or polling
+  `config.toml`, and emits per-key `SettingChanged` signals.
+- IPC protocol version 10 adds `DesktopPreferences` to `SettingsSnapshot` and
+  the atomic `SetDesktopPreferences` action.
+
+### Application icons
+
+- `[ui] icon_theme` now selects the freedesktop application icon theme used
+  by the launcher, Dock, and themed shell symbols. The setting is hot-reloaded
+  and discovers themes under `$XDG_DATA_HOME/icons` (normally
+  `~/.local/share/icons`) as well as the standard system locations.
+  `AEGIS_ICON_THEME` remains the highest-precedence override.
+- Periodic application rescans now rasterize icons at the effective
+  compositor output scale, including a `[[output]] scale` override, instead
+  of falling back to the backend's native scale and replacing HiDPI textures
+  with lower-resolution copies.
+
 ## [0.0.7] - 2026-07-29
 
 ### Rendering performance

@@ -13,13 +13,13 @@ Install:
 - Meson, Ninja, `pkg-config`, a C23 compiler, and libclang;
 - Vulkan, Wayland, xkbcommon, libinput, libseat, PipeWire, and SPA
   development files; and
-- the Optics `v0.0.3` native libraries.
+- the Optics `v0.0.4` native libraries.
 
 Build and install the matching Optics release when the distribution does not
 provide it:
 
 ```bash
-git clone --branch v0.0.3 --depth 1 \
+git clone --branch v0.0.4 --depth 1 \
   https://github.com/ming2k/optics.git ../optics
 meson setup ../optics/build ../optics \
   -Dtests=false -Dbuildtype=debugoptimized
@@ -29,7 +29,7 @@ sudo ldconfig
 pkg-config --modversion flux flux-scene-graph lens iris
 ```
 
-Each version printed by the final command must be compatible with `0.0.3`.
+Each version printed by the final command must be compatible with `0.0.4`.
 
 ## Stage System Settings
 

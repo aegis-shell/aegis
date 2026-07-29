@@ -33,7 +33,8 @@ aegis/
 flux, lens, iris, and their Rust binding workspaces live in the
 [Optics monorepo](https://github.com/ming2k/optics). The canonical dependency
 graph uses the locked Optics Git release and system-installed C libraries.
-The local development configuration overrides the binding sources into
+Cross-repository development uses a
+[worktree-isolated Cargo patch](cross-repository-development.md) for
 `../optics/bindings` and discovers that checkout's uninstalled Meson tree.
 
 ## Modules

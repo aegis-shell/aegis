@@ -32,6 +32,101 @@ fn appearance_color_scheme_parses_portal_vocabulary() {
 }
 
 #[test]
+fn ui_icon_theme_is_a_declared_configuration_field() {
+    let cfg = Config::parse("schema_version = 1\n[ui]\nicon_theme = \"Papirus-Dark\"\n").unwrap();
+    assert_eq!(cfg.ui.icon_theme.as_deref(), Some("Papirus-Dark"));
+}
+
+#[test]
+fn desktop_preferences_resolve_the_complete_config_profile() {
+    let cfg = Config::parse(
+        "schema_version = 1\n\
+         [appearance]\n\
+         color_scheme = \"dark\"\n\
+         accent_color = \"#3366FF\"\n\
+         contrast = \"high\"\n\
+         font_name = \"Inter 11\"\n\
+         monospace_font_name = \"Iosevka 11\"\n\
+         text_scale = 1.25\n\
+         [ui]\n\
+         reduced_motion = true\n\
+         icon_theme = \"Papirus\"\n\
+         cursor_theme = \"Bibata\"\n\
+         cursor_size = 32\n",
+    )
+    .unwrap();
+    let preferences = cfg.desktop_preferences();
+    assert_eq!(preferences.color_scheme, ColorScheme::Dark);
+    assert_eq!(preferences.accent_color.unwrap().to_hex(), "#3366FF");
+    assert_eq!(preferences.contrast, Contrast::High);
+    assert!(preferences.reduced_motion);
+    assert_eq!(preferences.font_name, "Inter 11");
+    assert_eq!(preferences.monospace_font_name, "Iosevka 11");
+    assert_eq!(preferences.text_scale, 1.25);
+    assert_eq!(preferences.icon_theme, "Papirus");
+    assert_eq!(preferences.cursor_theme, "Bibata");
+    assert_eq!(preferences.cursor_size, 32);
+}
+
+#[test]
+fn desktop_preferences_reject_invalid_values_at_parse_time() {
+    for body in [
+        "[appearance]\naccent_color = \"blue\"\n",
+        "[appearance]\ntext_scale = 8.0\n",
+        "[appearance]\nfont_name = \"\"\n",
+        "[ui]\ncursor_size = 4\n",
+        "[ui]\nicon_theme = \"\"\n",
+    ] {
+        assert!(Config::parse(&format!("schema_version = 1\n{body}")).is_err());
+    }
+}
+
+#[test]
+fn config_store_persists_desktop_preferences_without_losing_ui_policy() {
+    let path = temp_config_path("desktop-preferences");
+    std::fs::write(
+        &path,
+        "schema_version = 1\n\
+         # keep this policy and comment\n\
+         [ui]\n\
+         window_decorations = \"client-side\"\n",
+    )
+    .unwrap();
+    let preferences = DesktopPreferences {
+        color_scheme: ColorScheme::Light,
+        accent_color: Some(AccentColor {
+            red: 51,
+            green: 102,
+            blue: 255,
+        }),
+        contrast: Contrast::High,
+        reduced_motion: true,
+        font_name: "Inter 11".into(),
+        monospace_font_name: "Iosevka 11".into(),
+        text_scale: 1.2,
+        icon_theme: "Papirus".into(),
+        cursor_theme: "Bibata".into(),
+        cursor_size: 36,
+    };
+    ConfigStore::new(&path)
+        .apply(ConfigEdit::SetDesktopPreferences {
+            preferences: preferences.clone(),
+        })
+        .unwrap();
+    let contents = std::fs::read_to_string(&path).unwrap();
+    assert!(contents.contains("# keep this policy and comment"));
+    assert!(contents.contains("window_decorations = \"client-side\""));
+    assert_eq!(
+        load(&path)
+            .unwrap()
+            .expect("updated config")
+            .desktop_preferences(),
+        preferences
+    );
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn dock_defaults_to_an_empty_user_owned_strip() {
     let cfg = Config::parse("schema_version = 1\n").unwrap();
     assert!(cfg.dock.pinned.is_empty());

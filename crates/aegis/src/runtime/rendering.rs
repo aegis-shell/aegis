@@ -5,6 +5,45 @@ use super::*;
 /// 16x pixel reduction bounds the cost of live 2D + 3D wallpaper capture.
 pub(super) const BACKDROP_DOWNSAMPLE: u32 = 4;
 
+/// Begin a compositor canvas pass without Flux's clear-triggered 4x MSAA.
+///
+/// Flux v0.0.4 selects its multisample render-and-resolve path whenever a
+/// clear colour is supplied. That is useful for arbitrary vector artwork, but
+/// disproportionately expensive for a compositor pass whose dominant work is
+/// opaque image quads: at 3072x1920 it turns one output pixel into four colour
+/// samples plus a full-frame resolve. Aegis chrome already uses analytic
+/// rounded-rectangle coverage and coverage-texture glyphs, so start a
+/// single-sample LOAD pass and overwrite the whole destination with an opaque
+/// rectangle instead.
+///
+/// `clear` must be opaque: SRC_OVER with alpha 255 is then exactly equivalent
+/// to an attachment clear, including on the first use of a frame-slot image.
+pub(super) fn begin_opaque_frame(
+    canvas: &flux::Canvas,
+    frame: &flux::Frame<'_>,
+    size: (u32, u32),
+    clear: u32,
+) -> Result<(), flux::Error> {
+    debug_assert_eq!(clear >> 24, 0xff, "compositor pass clear must be opaque");
+    canvas.begin(frame, None)?;
+    canvas.fill_rect(0.0, 0.0, size.0 as f32, size.1 as f32, clear);
+    Ok(())
+}
+
+/// Offscreen-target counterpart to [`begin_opaque_frame`].
+pub(super) fn begin_opaque_target(
+    canvas: &flux::Canvas,
+    frame: &flux::Frame<'_>,
+    target: &flux::Image,
+    clear: u32,
+) -> Result<(), flux::Error> {
+    debug_assert_eq!(clear >> 24, 0xff, "compositor pass clear must be opaque");
+    canvas.begin_target(frame, target, None)?;
+    let (width, height) = target.size();
+    canvas.fill_rect(0.0, 0.0, width as f32, height as f32, clear);
+    Ok(())
+}
+
 /// Union of the declared backdrop regions in physical pixels, expanded by
 /// the blur footprint and aligned to the downsample factor.
 ///
@@ -172,7 +211,7 @@ impl LauncherBackdrop {
         let Some(target) = self.target(frame) else {
             return false;
         };
-        if let Err(error) = canvas.begin_target(frame, target, Some(clear)) {
+        if let Err(error) = begin_opaque_target(canvas, frame, target, clear) {
             log::warn!(
                 "launcher: failed to begin backdrop capture ({error}); using translucent fallback"
             );
@@ -785,6 +824,38 @@ mod tests {
         );
         assert_eq!(origin, (0, 0));
         assert_eq!(size, (1920, 1080));
+    }
+
+    #[test]
+    fn opaque_frame_fill_replaces_undefined_and_previous_contents() {
+        let Ok(device) = flux::Device::new(true, &[], &[], 0) else {
+            return;
+        };
+        let size = (32, 24);
+        let surface = flux::Surface::offscreen(&device, size.0, size.1).unwrap();
+        let canvas = flux::Canvas::new(&surface).unwrap();
+
+        for expected in [[13, 77, 191, 255], [211, 43, 29, 255]] {
+            let frame = surface.begin_frame().unwrap();
+            begin_opaque_frame(
+                &canvas,
+                &frame,
+                size,
+                flux::rgba(expected[0], expected[1], expected[2], expected[3]),
+            )
+            .unwrap();
+            canvas.end();
+            frame.submit().unwrap().present().unwrap();
+
+            let mut pixels = vec![0; size.0 as usize * size.1 as usize * 4];
+            surface.read_pixels(&mut pixels).unwrap();
+            assert!(
+                pixels
+                    .chunks_exact(4)
+                    .all(|pixel| pixel == expected.as_slice()),
+                "opaque fill did not replace every output pixel"
+            );
+        }
     }
 }
 

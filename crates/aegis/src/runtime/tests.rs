@@ -128,16 +128,74 @@ fn only_user_initiated_screenshots_update_the_human_clipboard() {
 }
 
 #[test]
-fn parses_gsettings_icon_theme_string() {
-    assert_eq!(
-        parse_gsettings_string("'Papirus-Dark'\n").as_deref(),
-        Some("Papirus-Dark")
+fn desktop_preferences_have_one_deterministic_override_chain() {
+    let config = aegis_config::Config::parse(
+        "schema_version = 1\n\
+         [ui]\n\
+         icon_theme = \"Papirus-Dark\"\n\
+         cursor_theme = \"Bibata\"\n\
+         cursor_size = 32\n",
+    )
+    .unwrap();
+    let preferences = resolve_desktop_preferences(
+        Some(&config),
+        &PreferenceOverrides {
+            icon_theme: Some("Breeze".into()),
+            cursor_theme: None,
+            cursor_size: Some(48),
+        },
+    );
+    assert_eq!(preferences.icon_theme, "Breeze");
+    assert_eq!(preferences.cursor_theme, "Bibata");
+    assert_eq!(preferences.cursor_size, 48);
+
+    let defaults = resolve_desktop_preferences(None, &PreferenceOverrides::default());
+    assert_eq!(defaults.icon_theme, "hicolor");
+    assert_eq!(defaults.cursor_theme, "default");
+    assert_eq!(defaults.cursor_size, 24);
+}
+
+#[test]
+fn desktop_preference_overrides_are_not_copied_into_persistence() {
+    let config = aegis_config::Config::parse(
+        "schema_version = 1\n\
+         [ui]\n\
+         icon_theme = \"Papirus\"\n\
+         cursor_theme = \"Bibata\"\n\
+         cursor_size = 32\n",
+    )
+    .unwrap();
+    let requested = aegis_core::settings::DesktopPreferences {
+        color_scheme: aegis_core::settings::ColorScheme::Dark,
+        icon_theme: "OverrideIcon".into(),
+        cursor_theme: "OverrideCursor".into(),
+        cursor_size: 64,
+        ..config.desktop_preferences()
+    };
+    let persistent = preferences_for_persistence(
+        Some(&config),
+        requested,
+        &PreferenceOverrides {
+            icon_theme: Some("OverrideIcon".into()),
+            cursor_theme: Some("OverrideCursor".into()),
+            cursor_size: Some(64),
+        },
     );
     assert_eq!(
-        parse_gsettings_string("\"Adwaita\"").as_deref(),
-        Some("Adwaita")
+        persistent.color_scheme,
+        aegis_core::settings::ColorScheme::Dark
     );
-    assert_eq!(parse_gsettings_string("  "), None);
+    assert_eq!(persistent.icon_theme, "Papirus");
+    assert_eq!(persistent.cursor_theme, "Bibata");
+    assert_eq!(persistent.cursor_size, 32);
+}
+
+#[test]
+fn icon_raster_scale_uses_effective_output_policy() {
+    assert_eq!(effective_icon_scale(Some(2.0), 1.0), 2);
+    assert_eq!(effective_icon_scale(Some(1.5), 1.0), 2);
+    assert_eq!(effective_icon_scale(None, 2.0), 2);
+    assert_eq!(effective_icon_scale(Some(f32::NAN), 0.0), 1);
 }
 
 #[test]

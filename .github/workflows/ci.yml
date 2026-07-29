@@ -14,7 +14,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  OPTICS_REF: v0.0.3
 
 jobs:
   # Resolve the locked remote binding sources, but do not build native
@@ -76,11 +75,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Resolve the locked Optics release
+        id: optics-release
+        run: echo "ref=$(scripts/optics-release-ref.sh)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           repository: ming2k/optics
           path: optics
-          ref: ${{ env.OPTICS_REF }}
+          ref: ${{ steps.optics-release.outputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Install system dependencies
         run: |

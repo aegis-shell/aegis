@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+config_path=".cargo/config.toml"
+patch_header='[patch."https://github.com/ming2k/optics"]'
+
+if [ ! -f "$config_path" ] || ! grep -Fqx "$patch_header" "$config_path"; then
+    exit 0
+fi
+
+excluded=
+
+if ! git diff --cached --quiet -- Cargo.lock; then
+    git restore --staged -- Cargo.lock
+    excluded="Cargo.lock"
+fi
+
+if ! git diff --cached --quiet -- "$config_path"; then
+    git restore --staged -- "$config_path"
+    if [ -n "$excluded" ]; then
+        excluded="$excluded and $config_path"
+    else
+        excluded="$config_path"
+    fi
+fi
+
+if [ -n "$excluded" ]; then
+    printf '%s\n' \
+        "Local Optics mode: excluded $excluded from this commit." \
+        "Disable $config_path before committing the canonical lockfile."
+fi

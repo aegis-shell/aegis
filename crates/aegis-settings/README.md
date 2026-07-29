@@ -37,9 +37,10 @@ The binary opens an `xdg_toplevel` with app id
 `$XDG_RUNTIME_DIR/aegis.sock`; the UI receives authoritative snapshots and
 coalesces unsent instant edits while a confirmed transaction is in flight.
 
-The `display` and `touchpad` modules are editable. `mouse`, `keyboard`,
-`appearance`, `power`, `users`, and `window-rules` keep stable routes but
-remain unavailable until their backends exist.
+The `display`, `touchpad`, and `appearance` modules are editable. Appearance
+submits the complete desktop preference profile as one explicit-apply
+transaction. `mouse`, `keyboard`, `power`, `users`, and `window-rules` keep
+stable routes but remain unavailable until their backends exist.
 
 ## Use
 

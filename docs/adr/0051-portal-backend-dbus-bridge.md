@@ -40,11 +40,10 @@ The backend serves at `/org/freedesktop/portal/desktop` under
 `org.freedesktop.impl.portal.desktop.aegis`, D-Bus-activated:
 
 - **`org.freedesktop.impl.portal.Settings` v1.** `Read`/`ReadAll` answer
-  `org.freedesktop.appearance` `color-scheme` from the compositor
-  configuration's new `[appearance] color_scheme` key, re-read per call so
-  the compositor's live reload is honored without a watcher. `SettingChanged`
-  is declared for introspection but not emitted until the setting joins the
-  revisioned IPC settings snapshot.
+  desktop-owned preferences projected from the compositor's revisioned IPC
+  settings snapshot. The complete key set and toolkit compatibility boundary
+  are recorded in
+  [ADR-0072](0072-desktop-preference-authority-and-toolkit-compatibility.md).
 - **`org.freedesktop.impl.portal.Screenshot` v1, non-interactive only.**
   `Screenshot` registers an `org.freedesktop.impl.portal.Request` object at
   the `handle_token`-derived path, captures the focused output through
@@ -76,10 +75,9 @@ through the control-center chrome.
 **Phase 3A (landed, [ADR-0053](0053-portal-session-services-and-grants.md)).**
 The non-interactive half of Phase 3: `Background` v1 and `Inhibit` v1
 (idle flag only, over a new scoped `SetIdleInhibit` IPC op), ScreenCast v2
-(`persist_mode` / `restore_token`), and `SettingChanged` emission from a
-config-file mtime watcher — the Settings bullet above is superseded on
-that point. The interactive halves (screenshot dialog, source selection)
-remain open.
+(`persist_mode` / `restore_token`), and `SettingChanged` emission. The final
+IPC-backed Settings source replaces that phase implementation in ADR-0072.
+The interactive halves (screenshot dialog, source selection) remain open.
 
 ## Alternatives
 
@@ -111,8 +109,8 @@ remain open.
   the portal is journaled and revocable by the same machinery as any scoped
   client.
 - `aegis-config` gains `[appearance] color_scheme`, documented in
-  `docs/reference/config.md`; it is the first config key consumed by a
-  satellite process rather than the compositor itself.
+  `docs/reference/config.md`; the compositor projects it to satellite
+  processes through the settings snapshot.
 - Portal screenshots are cache files, not user pictures: they go to the
   portal cache directory, separate from `[screenshot] save_dir`, and the
   owning application is expected to move them.

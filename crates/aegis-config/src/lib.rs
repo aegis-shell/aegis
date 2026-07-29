@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 
 use aegis_core::input::{Mods, TouchpadConfig, TouchpadScrollMethod};
 use aegis_core::keybind::{Keybind, Keymap};
+pub use aegis_core::settings::{AccentColor, ColorScheme, Contrast, DesktopPreferences};
 use toml_edit::DocumentMut;
 
 /// The schema `schema_version` this build understands. A file whose
@@ -99,17 +100,15 @@ pub struct Config {
     #[serde(default)]
     pub screenshot: ScreenshotConfig,
 
-    /// Desktop-wide appearance preference, written as `[appearance]`. The
-    /// compositor itself does not theme from it yet; the portal backend
-    /// (`aegis-portal`) reads it to answer the freedesktop
-    /// `org.freedesktop.appearance` settings namespace (ADR-0051).
+    /// Desktop-wide appearance preference, written as `[appearance]`.
+    /// Together with `[ui]`, this is resolved by the compositor into the
+    /// single effective desktop-preferences snapshot.
     #[serde(default)]
     pub appearance: AppearanceConfig,
 }
 
-/// The `[appearance]` section: desktop-wide appearance preference consumed
-/// by the portal Settings backend (ADR-0051).
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+/// The `[appearance]` section: desktop-wide visual and typography policy.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppearanceConfig {
     /// Preferred color scheme. `system` (the default) advertises no
@@ -117,20 +116,22 @@ pub struct AppearanceConfig {
     /// values 1 and 2.
     #[serde(default)]
     pub color_scheme: ColorScheme,
-}
-
-/// A desktop color-scheme preference. Names match the freedesktop Settings
-/// portal vocabulary.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ColorScheme {
-    /// No preference; applications pick their own default.
-    #[default]
-    System,
-    /// Prefer a dark appearance.
-    Dark,
-    /// Prefer a light appearance.
-    Light,
+    /// Optional sRGB accent color in canonical `#RRGGBB` form. Omission
+    /// means no accent-color preference.
+    #[serde(default)]
+    pub accent_color: Option<String>,
+    /// Normal or high visual contrast.
+    #[serde(default)]
+    pub contrast: Contrast,
+    /// GTK/Pango-style proportional interface font description.
+    #[serde(default)]
+    pub font_name: Option<String>,
+    /// GTK/Pango-style monospace font description.
+    #[serde(default)]
+    pub monospace_font_name: Option<String>,
+    /// UI text scaling multiplier.
+    #[serde(default)]
+    pub text_scale: Option<f64>,
 }
 
 /// The `[agent]` section (ADR-0034). Named scopes that bound what an agent
@@ -382,6 +383,11 @@ pub struct UiConfig {
     /// springs, or slides (ADR-0029). Individual effects do not override it.
     #[serde(default)]
     pub reduced_motion: bool,
+    /// Freedesktop application icon theme name for shell chrome such as the
+    /// launcher and Dock. `$AEGIS_ICON_THEME` is an explicit startup
+    /// override; no other desktop's settings database is consulted.
+    #[serde(default)]
+    pub icon_theme: Option<String>,
     /// XDG cursor theme name for the software cursor on direct display.
     /// `$XCURSOR_THEME` wins when set; this is the session-independent
     /// fallback (bare TTY sessions usually have no cursor env vars).
@@ -725,6 +731,38 @@ impl Config {
                 "must be between 8 and 128",
             ));
         }
+        for (field, value) in [
+            ("ui.icon_theme", cfg.ui.icon_theme.as_deref()),
+            ("ui.cursor_theme", cfg.ui.cursor_theme.as_deref()),
+            ("appearance.font_name", cfg.appearance.font_name.as_deref()),
+            (
+                "appearance.monospace_font_name",
+                cfg.appearance.monospace_font_name.as_deref(),
+            ),
+        ] {
+            if value.is_some_and(|value| value.trim().is_empty() || value.len() > 256) {
+                diagnostics.push(Diagnostic::new(
+                    Some(field.into()),
+                    "must not be empty or longer than 256 bytes",
+                ));
+            }
+        }
+        if let Some(value) = cfg.appearance.accent_color.as_deref()
+            && AccentColor::parse_hex(value).is_err()
+        {
+            diagnostics.push(Diagnostic::new(
+                Some("appearance.accent_color".into()),
+                "must use #RRGGBB",
+            ));
+        }
+        if let Some(scale) = cfg.appearance.text_scale
+            && (!scale.is_finite() || !(0.5..=3.0).contains(&scale))
+        {
+            diagnostics.push(Diagnostic::new(
+                Some("appearance.text_scale".into()),
+                "must be between 0.5 and 3.0",
+            ));
+        }
         if !cfg.input.touchpad.pointer_speed.is_finite()
             || !(-1.0..=1.0).contains(&cfg.input.touchpad.pointer_speed)
         {
@@ -791,6 +829,41 @@ impl Config {
             Ok(cfg)
         } else {
             Err(diagnostics)
+        }
+    }
+
+    /// Resolve optional configuration fields against Aegis' deterministic
+    /// built-in defaults. Explicit process-environment overrides are applied
+    /// by the compositor runtime, not by this pure schema crate.
+    pub fn desktop_preferences(&self) -> DesktopPreferences {
+        let defaults = DesktopPreferences::default();
+        DesktopPreferences {
+            color_scheme: self.appearance.color_scheme,
+            accent_color: self
+                .appearance
+                .accent_color
+                .as_deref()
+                .and_then(|value| AccentColor::parse_hex(value).ok()),
+            contrast: self.appearance.contrast,
+            reduced_motion: self.ui.reduced_motion,
+            font_name: self
+                .appearance
+                .font_name
+                .clone()
+                .unwrap_or(defaults.font_name),
+            monospace_font_name: self
+                .appearance
+                .monospace_font_name
+                .clone()
+                .unwrap_or(defaults.monospace_font_name),
+            text_scale: self.appearance.text_scale.unwrap_or(defaults.text_scale),
+            icon_theme: self.ui.icon_theme.clone().unwrap_or(defaults.icon_theme),
+            cursor_theme: self
+                .ui
+                .cursor_theme
+                .clone()
+                .unwrap_or(defaults.cursor_theme),
+            cursor_size: self.ui.cursor_size.unwrap_or(defaults.cursor_size),
         }
     }
 
@@ -928,6 +1001,9 @@ pub enum ConfigEdit {
     SetOutput {
         settings: aegis_core::settings::DisplaySettings,
     },
+    /// Replace all compositor-owned desktop appearance and UI preference
+    /// fields while preserving unrelated presentation policy.
+    SetDesktopPreferences { preferences: DesktopPreferences },
 }
 
 /// Path-bound access to the versioned configuration document.
@@ -966,6 +1042,9 @@ impl ConfigStore {
             ConfigEdit::SetDockPinned { pinned } => apply_dock_pinned(&mut document, &pinned),
             ConfigEdit::SetTouchpad { config } => apply_touchpad(&mut document, &config),
             ConfigEdit::SetOutput { settings } => apply_output(&mut document, settings),
+            ConfigEdit::SetDesktopPreferences { preferences } => {
+                apply_desktop_preferences(&mut document, &preferences)
+            }
         }
         let contents = document.to_string();
         Config::parse(&contents).map_err(|diagnostics| LoadError::Invalid {
@@ -974,6 +1053,46 @@ impl ConfigStore {
         })?;
         write_document_atomic(&self.path, &contents)
     }
+}
+
+fn apply_desktop_preferences(document: &mut DocumentMut, preferences: &DesktopPreferences) {
+    if !document
+        .get("appearance")
+        .is_some_and(toml_edit::Item::is_table)
+    {
+        document["appearance"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    if !document.get("ui").is_some_and(toml_edit::Item::is_table) {
+        document["ui"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+
+    let appearance = &mut document["appearance"];
+    appearance["color_scheme"] = toml_edit::value(match preferences.color_scheme {
+        ColorScheme::System => "system",
+        ColorScheme::Dark => "dark",
+        ColorScheme::Light => "light",
+    });
+    if let Some(accent) = preferences.accent_color {
+        appearance["accent_color"] = toml_edit::value(accent.to_hex());
+    } else {
+        appearance
+            .as_table_mut()
+            .expect("appearance was normalized to a table")
+            .remove("accent_color");
+    }
+    appearance["contrast"] = toml_edit::value(match preferences.contrast {
+        Contrast::Normal => "normal",
+        Contrast::High => "high",
+    });
+    appearance["font_name"] = toml_edit::value(preferences.font_name.as_str());
+    appearance["monospace_font_name"] = toml_edit::value(preferences.monospace_font_name.as_str());
+    appearance["text_scale"] = toml_edit::value(preferences.text_scale);
+
+    let ui = &mut document["ui"];
+    ui["reduced_motion"] = toml_edit::value(preferences.reduced_motion);
+    ui["icon_theme"] = toml_edit::value(preferences.icon_theme.as_str());
+    ui["cursor_theme"] = toml_edit::value(preferences.cursor_theme.as_str());
+    ui["cursor_size"] = toml_edit::value(i64::from(preferences.cursor_size));
 }
 
 fn apply_dock_pinned(document: &mut DocumentMut, pinned: &[String]) {

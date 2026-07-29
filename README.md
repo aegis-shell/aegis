@@ -21,11 +21,11 @@ The safest first run is a nested session inside an existing Wayland desktop.
 Aegis requires Rust 1.88 or later and the native build dependencies listed in
 the [Getting Started tutorial](docs/tutorials/01-getting-started.md).
 
-Install the Optics `v0.0.3` native libraries from a distribution package or
+Install the Optics `v0.0.4` native libraries from a distribution package or
 build the matching source release:
 
 ```bash
-git clone --branch v0.0.3 --depth 1 \
+git clone --branch v0.0.4 --depth 1 \
   https://github.com/ming2k/optics.git ../optics
 meson setup ../optics/build ../optics \
   -Dtests=false -Dbuildtype=debugoptimized

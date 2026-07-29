@@ -359,45 +359,41 @@ pub struct LoadedCursor {
 }
 
 /// Upload and cache theme cursors per (shape, scale). Keys are cheap; themes
-/// are reloaded only when the environment says they changed.
-#[derive(Default)]
+/// are reloaded only when the runtime's effective preference changes.
 pub struct CursorCache {
     theme: Option<(String, u32, CursorTheme)>,
     cursors: HashMap<(u32, u32), Option<LoadedCursor>>,
-    /// Configured fallback theme/size (`[ui] cursor_theme/cursor_size`).
-    /// Env vars win when set; these cover bare TTY sessions with no cursor
-    /// environment at all.
-    config_theme: Option<String>,
-    config_size: Option<u32>,
+    preference_theme: String,
+    preference_size: u32,
+}
+
+impl Default for CursorCache {
+    fn default() -> Self {
+        Self {
+            theme: None,
+            cursors: HashMap::new(),
+            preference_theme: "default".into(),
+            preference_size: 24,
+        }
+    }
 }
 
 impl CursorCache {
-    /// Set the configured fallback theme and size (`[ui]` config section);
-    /// `None` falls through to the "default" theme and 24px.
-    pub fn set_config(&mut self, theme: Option<String>, size: Option<u32>) {
-        if self.config_theme != theme || self.config_size != size {
-            self.config_theme = theme;
-            self.config_size = size;
+    /// Install the runtime's already-resolved cursor preferences. Environment
+    /// overrides are resolved once in the compositor settings pipeline, so
+    /// this rendering cache has no independent source of truth.
+    pub fn set_preferences(&mut self, theme: String, size: u32) {
+        if self.preference_theme != theme || self.preference_size != size {
+            self.preference_theme = theme;
+            self.preference_size = size;
             self.theme = None;
             self.cursors.clear();
         }
     }
 
-    /// The effective (theme, size): `$XCURSOR_THEME`/`$XCURSOR_SIZE` win,
-    /// then the configured fallback, then the freedesktop defaults.
+    /// The effective pair supplied by the compositor preference resolver.
     fn effective(&self) -> (String, u32) {
-        let name = std::env::var("XCURSOR_THEME")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .or_else(|| self.config_theme.clone())
-            .unwrap_or_else(|| "default".into());
-        let size = std::env::var("XCURSOR_SIZE")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .filter(|s| *s > 0)
-            .or(self.config_size)
-            .unwrap_or(24);
-        (name, size)
+        (self.preference_theme.clone(), self.preference_size)
     }
 
     /// The cursor for a `wp_cursor_shape` value at `scale`. The bundled

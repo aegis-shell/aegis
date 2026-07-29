@@ -22,8 +22,9 @@ use aegis_core::workspace::{OutputId, Switch, WorkspaceId, WorkspaceSnapshot};
 use crate::journal::{JournalEntry, JournalSnapshot};
 
 /// The protocol major version this build speaks. A client must offer the
-/// same major version at the [`Request::Hello`] handshake. Version 9 adds
-/// compositor maximize/restore commands. Version 8 adds explicit
+/// same major version at the [`Request::Hello`] handshake. Version 10 adds
+/// the complete effective desktop-preferences snapshot and transaction.
+/// Version 9 adds compositor maximize/restore commands. Version 8 adds explicit
 /// output-space-use transition events. Version 7 adds
 /// live system-status queries and immediate system-control commands. Version
 /// 6 adds user-consent interactive picking (`PickTarget` → `Picked`, ADR-0054)
@@ -32,7 +33,7 @@ use crate::journal::{JournalEntry, JournalSnapshot};
 /// `Event::StreamFrame`, `Event::StreamEnded`, `StreamOutputStop`,
 /// ADR-0052). Version 4 adds revisioned desktop-settings snapshots,
 /// subscriptions, and confirmed settings transactions.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 /// Built-in owner-only scope used by the compositor's reference CLI for
 /// Realm recovery and administration. The Unix socket remains user-private;
 /// naming this scope opts the connection into the high-risk Realm operation

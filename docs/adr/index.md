@@ -73,7 +73,9 @@ background and how the decisions fit together, see
 | [0064](0064-output-space-use-and-chrome-policy.md) | Output space-use state and chrome policy | Accepted |
 | [0065](0065-compositor-chrome-key-routing-without-focus-churn.md) | Compositor chrome key routing without focus churn | Accepted |
 | [0066](0066-canonical-aegis-namespace.md) | Canonical Aegis namespace | Accepted |
-| [0067](0067-remote-optics-dependencies-and-local-overrides.md) | Remote Optics dependencies with local development overrides | Accepted |
+| [0067](0067-remote-optics-dependencies-and-local-overrides.md) | Remote Optics dependencies with local development overrides | Superseded by [0071](0071-worktree-isolated-cross-repository-development.md) |
 | [0068](0068-cargo-native-development-and-environment-backend-selection.md) | Cargo-native development and environment-only backend selection | Superseded by [0069](0069-documentation-owned-installation-and-throwaway-development-staging.md) |
 | [0069](0069-documentation-owned-installation-and-throwaway-development-staging.md) | Documentation-owned installation and throwaway development staging (supersedes [0068](0068-cargo-native-development-and-environment-backend-selection.md)) | Accepted |
 | [0070](0070-svg-cursors-with-bundled-bibata-fallback.md) | SVG cursors with a bundled Bibata fallback | Accepted |
+| [0071](0071-worktree-isolated-cross-repository-development.md) | Worktree-isolated Aegis and Optics development | Accepted |
+| [0072](0072-desktop-preference-authority-and-toolkit-compatibility.md) | Desktop preference authority and toolkit compatibility | Accepted |

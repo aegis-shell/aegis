@@ -5,6 +5,7 @@ impl CompositorRuntime {
         publish_settings_parts(
             self.settings_revision,
             &self.system_status,
+            self.config.as_ref(),
             &mut self.shell,
             &self.live,
             &self.ipc,
@@ -43,6 +44,7 @@ impl CompositorRuntime {
 pub(super) fn publish_settings_parts(
     revision: u64,
     status: &aegis_shell::SystemStatus,
+    config: Option<&aegis_config::Config>,
     shell: &mut aegis_shell::Shell,
     live: &std::sync::Arc<LiveState>,
     ipc: &Option<aegis_ipc::Server>,
@@ -51,6 +53,7 @@ pub(super) fn publish_settings_parts(
         revision,
         touchpad: status.touchpad.clone(),
         display: status.display.clone(),
+        preferences: effective_desktop_preferences(config),
     };
     live.set_settings(snapshot.clone());
     publish_system_status_parts(status, shell, live, ipc);
@@ -91,6 +94,7 @@ pub(super) fn commit_settings_parts(
         ));
     }
     action.validate().map_err(str::to_owned)?;
+    let display_action = matches!(&action, aegis_ipc::SettingsAction::SetDisplay { .. });
 
     let result = match action {
         aegis_ipc::SettingsAction::SetTouchpad { config: touchpad } => {
@@ -121,20 +125,37 @@ pub(super) fn commit_settings_parts(
             status,
             input_acc,
         ),
+        aegis_ipc::SettingsAction::SetDesktopPreferences { preferences } => {
+            apply_desktop_preferences(
+                preferences,
+                config_path,
+                config_writer,
+                config,
+                keymap,
+                server,
+                shell,
+                cursor_cache,
+                reload,
+            )
+        }
     };
 
     match result {
         Ok(()) => {
             *revision = revision.saturating_add(1);
-            status.display.error = None;
-            publish_settings_parts(*revision, status, shell, live, ipc);
+            if display_action {
+                status.display.error = None;
+            }
+            publish_settings_parts(*revision, status, config.as_ref(), shell, live, ipc);
             Ok(aegis_ipc::SettingsReceipt {
                 revision: *revision,
             })
         }
         Err(error) => {
-            status.display.error = Some(error.clone());
-            publish_settings_parts(*revision, status, shell, live, ipc);
+            if display_action {
+                status.display.error = Some(error.clone());
+            }
+            publish_settings_parts(*revision, status, config.as_ref(), shell, live, ipc);
             Err(error)
         }
     }

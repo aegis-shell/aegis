@@ -8,7 +8,8 @@ Daily source-tree development does not install Aegis; see
 
 Aegis has two separate Optics dependency surfaces:
 
-- `Cargo.lock` pins the Rust bindings to the Optics `v0.0.3` Git release.
+- `Cargo.lock` pins the Rust bindings to the Optics tag reported by
+  `scripts/optics-release-ref.sh`.
 - The native `flux`, `flux-scene-graph`, `lens`, and `iris` libraries are
   system build and runtime dependencies discovered through `pkg-config` and
   the dynamic loader.
@@ -21,7 +22,7 @@ verify the native development files before building Aegis:
 pkg-config --modversion flux flux-scene-graph lens iris
 ```
 
-Each command must report a version compatible with `0.0.3`. Distribution
+Each command must report a version compatible with `0.0.4`. Distribution
 package names vary, so express the dependency in terms of the shared
 libraries, headers, and `.pc` files rather than copying files from an Optics
 build tree. (On Arch this is the separate `optics` package; see
@@ -170,8 +171,8 @@ native libraries, headers, and `.pc` files as build and runtime dependencies.
 
 | Package | Provides | Built by |
 |---------|----------|----------|
-| `optics` | `libflux.so`, `libflux-scene-graph.so`, `liblens.so`, `libiris.so`, headers, `flux.pc` … `iris.pc` | Meson/Ninja from the `ming2k/optics` `v0.0.3` tag |
-| `aegis` | `/usr/bin/aegis{,-settings,-ctl,-portal,-fuji-mcp}`, `/usr/bin/fuji`, plus the systemd, desktop, D-Bus, and xdg-desktop-portal metadata from `contrib/` | Cargo from the `ming2k/aegis` `v0.0.4` tag |
+| `optics` | `libflux.so`, `libflux-scene-graph.so`, `liblens.so`, `libiris.so`, headers, `flux.pc` … `iris.pc` | Meson/Ninja from the `ming2k/optics` `v0.0.4` tag |
+| `aegis` | `/usr/bin/aegis{,-settings,-ctl,-portal,-fuji-mcp}`, `/usr/bin/fuji`, plus the systemd, desktop, D-Bus, and xdg-desktop-portal metadata from `contrib/` | Cargo from the `ming2k/aegis` `v0.0.7` tag |
 
 CI installs the same Debian packages for both (`.github/workflows/ci.yml`,
 `full-workspace` job); the `makedepends`/`depends` lists below are their Arch
@@ -182,7 +183,7 @@ equivalents.
 ```bash
 # Maintainer: <you>
 pkgname=optics
-pkgver=0.0.3
+pkgver=0.0.4
 pkgrel=1
 pkgdesc='Vulkan-first rendering stack: flux, flux-scene-graph, lens, iris'
 arch=(x86_64)
@@ -215,7 +216,7 @@ package is installed.
 ```bash
 # Maintainer: <you>
 pkgname=aegis
-pkgver=0.0.6
+pkgver=0.0.7
 pkgrel=1
 pkgdesc='Wayland compositor and desktop shell'
 arch=(x86_64)

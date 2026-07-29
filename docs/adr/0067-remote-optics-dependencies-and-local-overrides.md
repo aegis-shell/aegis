@@ -1,6 +1,6 @@
 # ADR-0067: Remote Optics dependencies with local development overrides
 
-- Status: Accepted
+- Status: Superseded by ADR-0071
 - Date: 2026-07-28
 
 ## Context

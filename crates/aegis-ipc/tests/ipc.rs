@@ -205,6 +205,9 @@ impl Handler for TestHandler {
         match action {
             SettingsAction::SetTouchpad { config } => snapshot.touchpad.config = config,
             SettingsAction::SetDisplay { .. } => {}
+            SettingsAction::SetDesktopPreferences { preferences } => {
+                snapshot.preferences = preferences;
+            }
         }
         snapshot.revision += 1;
         Ok(SettingsReceipt {
@@ -514,9 +517,27 @@ fn settings_query_and_confirmed_transaction_round_trip() {
     assert_eq!(receipt.revision, 8);
     assert_eq!(
         handler.settings_actions.lock().unwrap().as_slice(),
-        &[action]
+        std::slice::from_ref(&action)
     );
     assert_eq!(client.settings().unwrap().touchpad.config, config);
+
+    let preferences = aegis_core::settings::DesktopPreferences {
+        color_scheme: aegis_core::settings::ColorScheme::Dark,
+        icon_theme: "Papirus".into(),
+        ..Default::default()
+    };
+    let appearance_action = SettingsAction::SetDesktopPreferences {
+        preferences: preferences.clone(),
+    };
+    let receipt = client
+        .apply_settings(Some(8), appearance_action.clone())
+        .expect("confirmed desktop-preferences apply");
+    assert_eq!(receipt.revision, 9);
+    assert_eq!(
+        handler.settings_actions.lock().unwrap().as_slice(),
+        &[action, appearance_action]
+    );
+    assert_eq!(client.settings().unwrap().preferences, preferences);
 }
 
 #[test]

@@ -252,7 +252,12 @@ impl Chrome for Dock {
             },
         );
 
-        if effective_autohide && self.autohide_reveal < 0.99 {
+        let handle_progress = if effective_autohide {
+            Self::collapsed_handle_progress(self.autohide_reveal)
+        } else {
+            0.0
+        };
+        if handle_progress > 0.0 {
             let handle_w = AUTOHIDE_HANDLE_WIDTH;
             let handle_h = AUTOHIDE_HANDLE_HEIGHT;
             let handle_x = (disp.x - handle_w) * 0.5;
@@ -263,8 +268,7 @@ impl Chrome for Dock {
                 w: handle_w,
                 h: handle_h,
             };
-            let alpha_factor = (1.0 - self.autohide_reveal).clamp(0.0, 1.0);
-            let color = Color::rgba(240, 243, 252, (150.0 * alpha_factor) as u8);
+            let color = Color::rgba(240, 243, 252, (150.0 * handle_progress) as u8);
             f.layer(
                 "aegis-dock-autohide-stadium-handle",
                 handle_rect,

@@ -401,6 +401,9 @@ fn same_action_kind(left: &SettingsAction, right: &SettingsAction) -> bool {
         ) | (
             SettingsAction::SetDisplay { .. },
             SettingsAction::SetDisplay { .. }
+        ) | (
+            SettingsAction::SetDesktopPreferences { .. },
+            SettingsAction::SetDesktopPreferences { .. }
         )
     )
 }

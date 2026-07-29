@@ -8,7 +8,6 @@ rust-version.workspace = true
 
 [dependencies]
 aegis-ipc = { workspace = true }
-aegis-config = { workspace = true }
 # aegis-ipc's pick results and window snapshots carry aegis-core types (Rect,
 # WindowId, Window); a workspace-internal crate, no new external dependency.
 aegis-core = { workspace = true }

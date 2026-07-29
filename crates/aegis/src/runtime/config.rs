@@ -1,5 +1,82 @@
 use super::*;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct PreferenceOverrides {
+    pub(super) icon_theme: Option<String>,
+    pub(super) cursor_theme: Option<String>,
+    pub(super) cursor_size: Option<u32>,
+}
+
+impl PreferenceOverrides {
+    fn from_env() -> Self {
+        Self {
+            icon_theme: nonempty_env("AEGIS_ICON_THEME"),
+            cursor_theme: nonempty_env("XCURSOR_THEME"),
+            cursor_size: std::env::var("XCURSOR_SIZE")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .filter(|size| (8..=128).contains(size)),
+        }
+    }
+}
+
+fn nonempty_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+pub(super) fn resolve_desktop_preferences(
+    config: Option<&aegis_config::Config>,
+    overrides: &PreferenceOverrides,
+) -> aegis_core::settings::DesktopPreferences {
+    let mut preferences = config
+        .map(aegis_config::Config::desktop_preferences)
+        .unwrap_or_default();
+    if let Some(theme) = overrides.icon_theme.as_ref() {
+        preferences.icon_theme.clone_from(theme);
+    }
+    if let Some(theme) = overrides.cursor_theme.as_ref() {
+        preferences.cursor_theme.clone_from(theme);
+    }
+    if let Some(size) = overrides.cursor_size {
+        preferences.cursor_size = size;
+    }
+    preferences
+}
+
+pub(super) fn preferences_for_persistence(
+    config: Option<&aegis_config::Config>,
+    mut requested: aegis_core::settings::DesktopPreferences,
+    overrides: &PreferenceOverrides,
+) -> aegis_core::settings::DesktopPreferences {
+    let configured = config
+        .map(aegis_config::Config::desktop_preferences)
+        .unwrap_or_default();
+    // A process-start override owns its field for this session. Do not let a
+    // complete effective-profile transaction accidentally copy that override
+    // into persistent configuration when the user edits an unrelated field.
+    if overrides.icon_theme.is_some() {
+        requested.icon_theme = configured.icon_theme;
+    }
+    if overrides.cursor_theme.is_some() {
+        requested.cursor_theme = configured.cursor_theme;
+    }
+    if overrides.cursor_size.is_some() {
+        requested.cursor_size = configured.cursor_size;
+    }
+    requested
+}
+
+/// Resolve Aegis config plus the small, documented set of explicit startup
+/// overrides. Toolkit or foreign-desktop settings stores are never consulted.
+pub(super) fn effective_desktop_preferences(
+    config: Option<&aegis_config::Config>,
+) -> aegis_core::settings::DesktopPreferences {
+    resolve_desktop_preferences(config, &PreferenceOverrides::from_env())
+}
+
 /// Resolve `$AEGIS_BACKEND`, defaulting to `auto`.
 ///
 /// Backend selection is process environment because it describes the launch
@@ -87,6 +164,7 @@ pub(super) fn reload_config(
                  server: &mut aegis_compositor::Server,
                  shell: &mut aegis_shell::Shell,
                  cursor_cache: &mut cursor::CursorCache| {
+        let preferences = effective_desktop_preferences(config.as_ref());
         server.set_window_rules(
             config
                 .as_ref()
@@ -97,21 +175,20 @@ pub(super) fn reload_config(
             server.set_layout_params(c.layout.clone().into());
             server.set_tiling_default(c.layout.default_tiled);
             server.set_remember_window_positions(c.layout.remember_window_positions);
-            shell.set_reduced_motion(c.ui.reduced_motion);
-            server.set_reduced_motion(c.ui.reduced_motion);
+            shell.set_reduced_motion(preferences.reduced_motion);
+            server.set_reduced_motion(preferences.reduced_motion);
             server.set_decoration_policy(c.ui.window_decorations);
-            cursor_cache.set_config(c.ui.cursor_theme.clone(), c.ui.cursor_size);
             server.set_output_policies(c.output_policies());
         } else {
             server.set_layout_params(aegis_core::layout::LayoutParams::default());
             server.set_tiling_default(false);
             server.set_remember_window_positions(true);
-            shell.set_reduced_motion(false);
-            server.set_reduced_motion(false);
+            shell.set_reduced_motion(preferences.reduced_motion);
+            server.set_reduced_motion(preferences.reduced_motion);
             server.set_decoration_policy(aegis_core::window::DecorationPolicy::default());
-            cursor_cache.set_config(None, None);
             server.set_output_policies(std::collections::HashMap::new());
         }
+        cursor_cache.set_preferences(preferences.cursor_theme, preferences.cursor_size);
     };
     match aegis_config::load(path) {
         Ok(Some(new_cfg)) => {
@@ -192,6 +269,38 @@ pub(super) fn apply_display_settings(
         outputs,
         error: None,
     };
+    Ok(())
+}
+
+/// Persist a complete desktop-preferences transaction and feed the resolved
+/// values back through the same reload path used by external file edits.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn apply_desktop_preferences(
+    preferences: aegis_core::settings::DesktopPreferences,
+    config_path: Option<&std::path::Path>,
+    config_writer: &ConfigWriter,
+    config: &mut Option<aegis_config::Config>,
+    keymap: &mut aegis_core::keybind::Keymap,
+    server: &mut aegis_compositor::Server,
+    shell: &mut aegis_shell::Shell,
+    cursor_cache: &mut cursor::CursorCache,
+    reload: &mut Option<aegis_config::ReloadWatcher>,
+) -> Result<(), String> {
+    let path = config_path
+        .map(std::path::Path::to_path_buf)
+        .ok_or_else(|| "no writable configuration path is available".to_owned())?;
+    let preferences = preferences_for_persistence(
+        config.as_ref(),
+        preferences,
+        &PreferenceOverrides::from_env(),
+    );
+    config_writer
+        .apply_and_wait(aegis_config::ConfigEdit::SetDesktopPreferences { preferences })
+        .map_err(|error| format!("failed to persist desktop preferences: {error}"))?;
+    if !reload_config(&path, config, keymap, server, shell, cursor_cache) {
+        return Err("the saved desktop preferences could not be reloaded".into());
+    }
+    *reload = Some(aegis_config::ReloadWatcher::at(&path));
     Ok(())
 }
 

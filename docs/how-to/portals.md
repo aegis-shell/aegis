@@ -30,12 +30,17 @@ the binary lives.
 yet (file chooser, notifications, …) fall back to the GTK backend. aegis
 currently serves:
 
-- `org.freedesktop.impl.portal.Settings` v1 — `org.freedesktop.appearance`
-  `color-scheme`, from `[appearance] color_scheme` in
-  `~/.config/aegis/config.toml` (see the
-  [Configuration Reference](../reference/config.md#appearance)).
-  `SettingChanged` is emitted when the value changes (a two-second mtime
-  poll of the configuration file).
+- `org.freedesktop.impl.portal.Settings` v1 — the standardized
+  `org.freedesktop.appearance` keys `color-scheme`, `accent-color`,
+  `contrast`, and `reduced-motion`, plus a curated
+  `org.gnome.desktop.interface` projection for GTK color, fonts, text scale,
+  icons, cursors, and animation policy. The backend reads the compositor's
+  effective IPC snapshot and subscribes to `SettingsChanged`; it does not
+  read TOML, GSettings, dconf, or KDE configuration. See the
+  [Configuration Reference](../reference/config.md#appearance) and
+  [ADR-0072](../adr/0072-desktop-preference-authority-and-toolkit-compatibility.md).
+  The backend interface remains v1; the public
+  `org.freedesktop.portal.Settings` frontend is v2 and provides `ReadOne`.
 - `org.freedesktop.impl.portal.Screenshot` v1 — non-interactive captures
   only. `interactive = true` requests fail with response code 2 until the
   interactive dialog lands (Phase 3).
@@ -86,13 +91,25 @@ The output lists `org.freedesktop.impl.portal.Settings`,
 `org.freedesktop.impl.portal.Inhibit` (version 1 each).
 
 Read the appearance setting (with `color_scheme = "dark"` configured this
-prints `variant u 1`; an unset key prints `u 0`):
+prints `variant u 1`; the default prints `u 0`):
 
 ```sh
 busctl --user call org.freedesktop.impl.portal.desktop.aegis \
   /org/freedesktop/portal/desktop org.freedesktop.impl.portal.Settings \
   Read ss org.freedesktop.appearance color-scheme
 ```
+
+Read the GTK-compatible effective icon theme:
+
+```sh
+busctl --user call org.freedesktop.impl.portal.desktop.aegis \
+  /org/freedesktop/portal/desktop org.freedesktop.impl.portal.Settings \
+  Read ss org.gnome.desktop.interface icon-theme
+```
+
+Change a value in the Appearance page or in `config.toml`, then repeat the
+calls. The backend receives the replacement snapshot over IPC and emits
+`SettingChanged` for each affected exported key.
 
 Exercise the Screenshot path through the frontend, the same call a
 sandboxed app makes:

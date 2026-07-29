@@ -16,11 +16,11 @@ settings transactions to the compositor, which validates authority, serializes
 all configuration writes, and applies live state. Dock pin changes use the
 same serialized path.
 
-`aegis-config::ConfigStore` translates the accepted dock, touchpad, and output
-edits into TOML. Each edit preserves comments and unrelated keys, validates
-the complete resulting schema, flushes a temporary file in the same
-directory, and atomically replaces the configuration file. A malformed or
-schema-incompatible existing file is left untouched.
+`aegis-config::ConfigStore` translates the accepted dock, touchpad, output,
+and desktop-preference edits into TOML. Each edit preserves comments and
+unrelated keys, validates the complete resulting schema, flushes a temporary
+file in the same directory, and atomically replaces the configuration file.
+A malformed or schema-incompatible existing file is left untouched.
 
 ## Top-Level Fields
 
@@ -32,22 +32,26 @@ schema-incompatible existing file is left untouched.
 | `[layout]` | table | gaps `8`, master_ratio `0.5` | Tiling policy parameters. See [Layout](#layout). |
 | `[dock]` | table | automatic pins | Applications pinned to the dock. See [Dock](#dock). |
 | `[statusbar]` | table | `enabled = true` | Whether the top status bar is registered at startup. See [Status Bar](#status-bar). |
-| `[ui]` | table | borderless windows, reduced_motion `false` | Desktop-wide UI and window-presentation policy. See [UI](#ui). |
+| `[ui]` | table | `hicolor` icons, `default` 24 px cursor, borderless windows, full motion | Desktop-wide UI and window-presentation policy. See [UI](#ui). |
 | `[input.touchpad]` | table | touchpad defaults | Touchpad pointing, tapping, and scrolling profile. See [Touchpad](#touchpad). |
 | `[[output]]` | array of tables | none | Per-connector display policy: mode, scale, position, transform, primary. See [Outputs](#outputs). |
 | `[screenshot]` | table | XDG Pictures directory, cursor included | Screenshot output policy. See [Screenshots](#screenshots). |
-| `[appearance]` | table | `color_scheme = "system"` | Desktop-wide appearance preference read by the portal Settings backend. See [Appearance](#appearance). |
+| `[appearance]` | table | system color scheme, normal contrast, standard fonts and scale | Desktop-wide color, contrast, and typography preferences. See [Appearance](#appearance). |
 | `[agent]` | table | no scopes | Named automation scopes enforced by the IPC server. See [Agent Scopes](#agent-scopes). |
 | `[realm_sandbox]` | table | default deny | Network, filesystem, and cgroup policy for new Realm application launches. See [Realm Sandbox](#realm-sandbox). |
 
 ## Environment
 
-Wallpaper sources are selected at process startup and are not hot-reloaded.
-The icon-theme override is checked during each application-catalog refresh.
+Wallpaper sources and explicit desktop-preference overrides are selected at
+process startup. Configuration remains the persistent source; overrides
+appear in the compositor's effective settings snapshot but are not written
+back to TOML.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AEGIS_ICON_THEME` | GTK `org.gnome.desktop.interface icon-theme`, then `hicolor` | Icon theme used by the dock and launcher. Theme inheritance and `hicolor` fallback still apply. |
+| `AEGIS_ICON_THEME` | `[ui] icon_theme`, then `hicolor` | Highest-precedence icon theme override used by the Dock, launcher, and exported toolkit preference. No GNOME or KDE settings database is consulted. |
+| `XCURSOR_THEME` | `[ui] cursor_theme`, then `default` | Highest-precedence cursor-theme override used by compositor rendering and exported toolkit preferences. |
+| `XCURSOR_SIZE` | `[ui] cursor_size`, then `24` | Highest-precedence cursor size override. Values outside 8–128 are ignored. |
 | `AEGIS_WALLPAPER` | bundled `procedural-generation.png` | Image, animated image, short-video, or model-only `.glb` source. An image or video is shown without a 3D overlay unless `AEGIS_WALLPAPER_MODEL` is also set. |
 | `AEGIS_WALLPAPER_MODEL` | unset | Optional 3D model drawn over an image or video with an orbiting camera and animated directional light. Set to `builtin` for the bundled procedural knot or to a `.glb` path for a custom model. Ignored when `AEGIS_WALLPAPER` is itself a `.glb`. |
 
@@ -92,17 +96,25 @@ Applied live on reload.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `reduced_motion` | boolean | `false` | Accessibility reduced-motion switch. When `true`, every chrome and lens transition (dock magnification, launcher reveal, fades, slides) resolves to its end state in at most one frame. |
-| `cursor_theme` | string | none | SVG cursor theme for the software cursor on direct display, resolved through the freedesktop cursor spec. `$XCURSOR_THEME` wins when set; use this on bare-metal sessions with no cursor environment. When unset or not installed, the bundled Bibata-Modern-Ice theme is used. |
+| `icon_theme` | string | `"hicolor"` | Freedesktop application icon theme used by the launcher, Dock, and themed shell symbols. `$AEGIS_ICON_THEME` wins when set. Changes apply live. |
+| `cursor_theme` | string | `"default"` | SVG cursor theme for the software cursor on direct display, resolved through the freedesktop cursor spec. `$XCURSOR_THEME` wins when set. When the selected theme is not installed, the bundled Bibata-Modern-Ice art is the final fallback. |
 | `cursor_size` | integer | `24` | Cursor size in logical pixels, 8–128. `$XCURSOR_SIZE` wins when set. |
 | `window_decorations` | string | `"borderless"` | Decoration ownership for Wayland toplevels. `"borderless"` makes Aegis own window controls without drawing per-window title bars; `"client-side"` asks applications to draw their own frames. |
 
 ```toml
 [ui]
 reduced_motion = true
+icon_theme = "Papirus-Dark"
 cursor_theme = "Bibata-Modern-Ice"
 cursor_size = 24
 window_decorations = "borderless"
 ```
+
+Application icon themes are searched under `$HOME/.icons`,
+`$XDG_DATA_HOME/icons` (normally `~/.local/share/icons`), and each
+`$XDG_DATA_DIRS/icons` directory. A named theme directory must contain a
+valid `index.theme`. Theme inheritance and the final `hicolor` fallback
+follow the freedesktop Icon Theme Specification.
 
 `reduced_motion` is the single switch for animation policy; individual
 effects do not override it. Changes to `window_decorations` reconfigure
@@ -162,21 +174,33 @@ include_cursor = true
 
 ## Appearance
 
-The `[appearance]` table holds the desktop-wide appearance preference. The
-compositor does not theme from it yet; the portal backend (`aegis-portal`)
-reads it to answer the freedesktop `org.freedesktop.appearance` settings
-namespace ([ADR-0051](../adr/0051-portal-backend-dbus-bridge.md)), which is
-how portal-aware and sandboxed applications learn whether to prefer a dark
-or light UI. Changes apply on live reload; the portal re-reads the file per
-query, so no restart is needed on either side.
+The `[appearance]` table holds desktop-wide color, contrast, and typography
+preferences. The compositor combines it with `[ui]` and startup overrides
+into one effective profile used by chrome and the Settings IPC. The portal
+subscribes to that profile and exports its standard and toolkit-compatible
+projections. See
+[ADR-0072](../adr/0072-desktop-preference-authority-and-toolkit-compatibility.md).
+
+Changes apply on live reload. System Settings writes the `[appearance]` and
+preference-related `[ui]` fields as one validated transaction.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `color_scheme` | string | `"system"` | `system` advertises no preference (portal `color-scheme` 0); `dark` and `light` map to 1 and 2. |
+| `accent_color` | string | unset | Optional sRGB accent color in `#RRGGBB` form. When unset, the portal omits `accent-color`. |
+| `contrast` | string | `"normal"` | `normal` advertises no special contrast preference; `high` requests high contrast. |
+| `font_name` | string | `"Sans 10"` | Proportional interface font description exported to compatible GTK applications. |
+| `monospace_font_name` | string | `"Monospace 10"` | Monospace interface font description exported to compatible GTK applications. |
+| `text_scale` | float | `1.0` | Text scaling multiplier from 0.5 through 3.0. |
 
 ```toml
 [appearance]
 color_scheme = "dark"
+accent_color = "#3584E4"
+contrast = "normal"
+font_name = "Inter 11"
+monospace_font_name = "Iosevka 11"
+text_scale = 1.0
 ```
 
 ## Outputs

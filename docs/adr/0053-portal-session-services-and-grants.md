@@ -72,11 +72,11 @@ no confirmation UI to skip. An unknown token is treated as no token and a
 fresh one is minted. `Start` returns the session's `restore_token` in its
 results.
 
-**Settings: mtime watcher for `SettingChanged`.** Appearance lives in the
-config file, not the revisioned IPC settings snapshot, so there is no IPC
-event to subscribe to. A two-second mtime poll of the configuration file
-emits `SettingChanged` when the mapped color-scheme value changes. No new
-dependency (`notify`) is pulled for one file.
+**Settings.** This proposal initially used a configuration-file mtime watcher
+for `SettingChanged`. The accepted desktop-preference authority in
+[ADR-0072](0072-desktop-preference-authority-and-toolkit-compatibility.md)
+replaces that implementation: appearance is part of the revisioned IPC
+settings snapshot and the portal subscribes to `SettingsChanged`.
 
 ## Alternatives
 

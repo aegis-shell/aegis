@@ -131,6 +131,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // first modeset (ADR-0028).
     let config_path = aegis_config::default_path();
     let config = load_config(config_path.as_deref());
+    let desktop_preferences = effective_desktop_preferences(config.as_ref());
 
     // Select the presentation target before Vulkan creation: nested Wayland
     // requires WSI extensions, while DRM requires exportable offscreen images.
@@ -193,6 +194,10 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let capture_worker = CaptureWorker::spawn()?;
     // XDG cursor theme cache for the software cursor on direct KMS.
     let mut cursor_cache = cursor::CursorCache::default();
+    cursor_cache.set_preferences(
+        desktop_preferences.cursor_theme.clone(),
+        desktop_preferences.cursor_size,
+    );
     // Advertise the pre-scaled buffer to the host; takes effect on the next
     // commit (the first present below).
     host.set_buffer_scale();
@@ -238,8 +243,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Enumerate launchable `.desktop` entries at startup; the catalog is
     // rescanned periodically below so package installs/removals appear without
     // restarting the compositor.
-    let icon_theme = selected_icon_theme();
-    let icon_scale = effective_scale.ceil().max(1.0) as u32;
+    let icon_theme = desktop_preferences.icon_theme.clone();
+    let icon_scale = effective_icon_scale(Some(effective_scale), host.scale());
     let launcher_apps = application_catalog(&icon_theme, icon_scale);
     log::info!(
         "launcher: {} launchable applications discovered (icon theme: {})",
@@ -414,12 +419,11 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         server.set_layout_params(c.layout.clone().into());
         server.set_tiling_default(c.layout.default_tiled);
         server.set_remember_window_positions(c.layout.remember_window_positions);
-        shell.set_reduced_motion(c.ui.reduced_motion);
-        server.set_reduced_motion(c.ui.reduced_motion);
         server.set_decoration_policy(c.ui.window_decorations);
-        cursor_cache.set_config(c.ui.cursor_theme.clone(), c.ui.cursor_size);
         server.set_output_policies(c.output_policies());
     }
+    shell.set_reduced_motion(desktop_preferences.reduced_motion);
+    server.set_reduced_motion(desktop_preferences.reduced_motion);
     // The dock: a persistent strip of pinned `.desktop` app icons (ADR-0022).
     // Resolve the pinned entries from the config's `[dock] pinned` list.
     // Automatic selection remains an explicit opt-in; an unconfigured session
@@ -571,6 +575,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         revision: settings_revision,
         touchpad: system_status.touchpad.clone(),
         display: system_status.display.clone(),
+        preferences: desktop_preferences.clone(),
     });
     live.set_system_status(system_status.clone());
     let ipc: Option<aegis_ipc::Server> = match std::env::var_os("XDG_RUNTIME_DIR") {
@@ -628,18 +633,18 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // applies results (GPU texture upload + catalog swap) when they arrive.
     const APP_RESCAN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
     let next_app_scan = std::time::Instant::now() + APP_RESCAN_INTERVAL;
-    let (scan_req_tx, scan_req_rx) = std::sync::mpsc::channel::<u32>();
+    let (scan_req_tx, scan_req_rx) = std::sync::mpsc::channel::<AppScanRequest>();
     let (scan_result_tx, scan_result_rx) = std::sync::mpsc::channel::<AppScanResult>();
     std::thread::Builder::new()
         .name("aegis-app-scan".into())
         .spawn(move || {
-            while let Ok(scale) = scan_req_rx.recv() {
-                let theme = selected_icon_theme();
-                let catalog = application_catalog(&theme, scale);
+            while let Ok(request) = scan_req_rx.recv() {
+                let theme = request.icon_theme;
+                let catalog = application_catalog(&theme, request.scale);
                 let snapshot = snapshot_icons(&catalog);
-                let decoded = decode_icons(&catalog, &theme, scale);
+                let decoded = decode_icons(&catalog, &theme, request.scale);
                 if scan_result_tx
-                    .send((theme, catalog, snapshot, decoded))
+                    .send((theme, request.scale, catalog, snapshot, decoded))
                     .is_err()
                 {
                     break;
@@ -647,7 +652,6 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .expect("spawn app scanner");
-    let pending_scan_scale = icon_scale;
     let previous_frame_at = std::time::Instant::now();
     let agent_activity_sequence = 0;
 
@@ -736,7 +740,6 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         next_app_scan,
         scan_req_tx,
         scan_result_rx,
-        pending_scan_scale,
         previous_frame_at,
     }
     .run_loop()

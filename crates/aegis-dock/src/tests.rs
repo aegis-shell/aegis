@@ -297,6 +297,24 @@ fn hidden_panel_places_magnified_icons_fully_below_the_output() {
 }
 
 #[test]
+fn collapsed_handle_waits_until_dock_content_is_offscreen() {
+    let panel_travel = DOCK_TILE_MAX + DOCK_PANEL_HEIGHT + DOCK_BOTTOM_MARGIN;
+    let fully_hidden_reveal = (DOCK_PANEL_HEIGHT - DOCK_BASELINE_INSET) / panel_travel;
+
+    assert_eq!(Dock::collapsed_handle_progress(1.0), 0.0);
+    assert_eq!(
+        Dock::collapsed_handle_progress(fully_hidden_reveal),
+        0.0,
+        "the handle must not overlap the last visible magnified icon"
+    );
+    assert_eq!(Dock::collapsed_handle_progress(0.0), 1.0);
+    assert!(
+        Dock::collapsed_handle_progress(fully_hidden_reveal * 0.5) > 0.0,
+        "the handle fades in after all Dock content crosses the output edge"
+    );
+}
+
+#[test]
 fn fullscreen_window_locks_dock_hidden_without_hot_edge() {
     let mut dock = Dock::new();
     let mut fullscreen = window(7, "org.example.Game", true);

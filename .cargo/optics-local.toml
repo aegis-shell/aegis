@@ -1,19 +1,18 @@
-# Opt-in source overrides for cross-repository development.
+# Local-only source patches for cross-repository development.
 #
-# Activate once for ordinary Cargo commands:
+# Enable this file only in a linked Aegis worktree:
 #   cp .cargo/optics-local.toml .cargo/config.toml
+#   git config core.hooksPath .githooks
 #
-# The destination is ignored by Git. Remove it to return to the canonical
-# locked Git dependencies.
-# Cargo path overrides preserve the canonical remote entries in Cargo.lock, so
-# switching between local and remote modes does not dirty the lockfile.
-paths = [
-    "../optics/bindings/flux-rs/crates/flux",
-    "../optics/bindings/flux-rs/crates/flux-sys",
-    "../optics/bindings/flux-rs/crates/flux-scene-graph",
-    "../optics/bindings/flux-rs/crates/flux-scene-graph-sys",
-    "../optics/bindings/lens-rs/crates/lens",
-    "../optics/bindings/lens-rs/crates/lens-sys",
-    "../optics/bindings/iris-rs/crates/iris",
-    "../optics/bindings/iris-rs/crates/iris-sys",
-]
+# The generated .cargo/config.toml is ignored by Git. Cargo resolves a local
+# lockfile in that worktree; the repository hook keeps the local lockfile out
+# of commits. Remove the generated file before promoting an Optics release.
+[patch."https://github.com/ming2k/optics"]
+flux = { path = "../optics/bindings/flux-rs/crates/flux" }
+flux-sys = { path = "../optics/bindings/flux-rs/crates/flux-sys" }
+flux-scene-graph = { path = "../optics/bindings/flux-rs/crates/flux-scene-graph" }
+flux-scene-graph-sys = { path = "../optics/bindings/flux-rs/crates/flux-scene-graph-sys" }
+lens = { path = "../optics/bindings/lens-rs/crates/lens" }
+lens-sys = { path = "../optics/bindings/lens-rs/crates/lens-sys" }
+iris = { path = "../optics/bindings/iris-rs/crates/iris" }
+iris-sys = { path = "../optics/bindings/iris-rs/crates/iris-sys" }

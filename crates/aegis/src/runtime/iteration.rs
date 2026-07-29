@@ -9,6 +9,19 @@ pub(super) struct IterationWork {
 }
 
 impl CompositorRuntime {
+    fn queue_app_scan(&mut self) {
+        let scale = effective_icon_scale(
+            self.server
+                .output_infos()
+                .first()
+                .map(|output| output.geometry.scale.as_f32()),
+            self.host.scale(),
+        );
+        let icon_theme = effective_desktop_preferences(self.config.as_ref()).icon_theme;
+        let _ = self.scan_req_tx.send(AppScanRequest { icon_theme, scale });
+        self.next_app_scan = std::time::Instant::now() + APP_RESCAN_INTERVAL;
+    }
+
     pub(super) fn prepare_iteration(
         &mut self,
     ) -> Result<Option<IterationWork>, Box<dyn std::error::Error>> {
@@ -408,17 +421,22 @@ impl CompositorRuntime {
                 pinned,
                 icons: aegis_shell::IconSet::from_raw(self.icon_cache.map.clone()),
             });
+            // Theme selection follows the same live-reload contract as the
+            // rest of the effective desktop-preferences snapshot.
+            self.queue_app_scan();
         }
 
         if std::time::Instant::now() >= self.next_app_scan {
-            self.next_app_scan = std::time::Instant::now() + APP_RESCAN_INTERVAL;
-            self.pending_scan_scale = self.host.scale().ceil().max(1.0) as u32;
-            let _ = self.scan_req_tx.send(self.pending_scan_scale);
+            self.queue_app_scan();
         }
-        while let Ok((refreshed_theme, refreshed, refreshed_snapshot, refreshed_decoded)) =
-            self.scan_result_rx.try_recv()
+        while let Ok((
+            refreshed_theme,
+            refreshed_scale,
+            refreshed,
+            refreshed_snapshot,
+            refreshed_decoded,
+        )) = self.scan_result_rx.try_recv()
         {
-            let refreshed_scale = self.pending_scan_scale;
             let catalog_changed = refreshed != self.launcher_apps;
             let icons_changed = refreshed_snapshot != self.icon_snapshot;
             let theme_changed = refreshed_theme != self.icon_theme;
@@ -645,6 +663,10 @@ impl CompositorRuntime {
         }
         while let Ok(request) = self.settings_control_rx.try_recv() {
             let action = request.action.clone();
+            let appearance_changed = matches!(
+                &action,
+                aegis_ipc::SettingsAction::SetDesktopPreferences { .. }
+            );
             let before_revision = self.settings_revision;
             let result = if self.server.session_locked() {
                 Err("session is locked".into())
@@ -655,6 +677,9 @@ impl CompositorRuntime {
                 // A committed settings action may redraw status chrome
                 // outside the signed server-state paths.
                 self.chrome_dirty = true;
+                if appearance_changed {
+                    self.queue_app_scan();
+                }
             }
             let after_revision = self.settings_revision;
             let effect = match &result {

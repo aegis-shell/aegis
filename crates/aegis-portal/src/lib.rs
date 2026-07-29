@@ -53,7 +53,7 @@ use request::RequestTracker;
 use screencast::{CastJob, ScreenCastIface, TokenStore};
 use screenshot::{CaptureJob, ScreenshotIface};
 use session::SessionRegistry;
-use settings::SettingsIface;
+use settings::{SettingsIface, SettingsStore};
 
 /// The well-known bus name the portal frontend resolves through the
 /// `aegis.portal` file's `DBusName`.
@@ -93,10 +93,13 @@ pub fn run() -> Result<(), PortalError> {
     let (bg_jobs, bg_rx) = mpsc::channel::<background::BackgroundJob>();
     let (inhibit_jobs, inhibit_rx) = mpsc::channel::<inhibit::InhibitJob>();
     let inhibit_counts = Arc::new(Mutex::new(inhibit::InhibitCounts::default()));
+    let settings_store = SettingsStore::default();
+    settings::prime_store(&socket, &settings_store);
 
     // Serve before requesting the name so no call can arrive at a name we own
     // but do not serve yet (same ordering as the SNI tray watcher).
-    conn.object_server().at(DESKTOP_PATH, SettingsIface)?;
+    conn.object_server()
+        .at(DESKTOP_PATH, SettingsIface::new(settings_store.clone()))?;
     conn.object_server().at(
         DESKTOP_PATH,
         ScreenshotIface {
@@ -202,7 +205,7 @@ pub fn run() -> Result<(), PortalError> {
             )))
         })?;
 
-    settings::spawn_watcher(conn.clone());
+    settings::spawn_watcher(conn.clone(), socket, settings_store);
 
     conn.request_name(BUS_NAME)?;
     log::info!(

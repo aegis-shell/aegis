@@ -101,6 +101,7 @@ impl CompositorRuntime {
         if let Some(candidate) = self.pick_scanout_candidate(physical_size, cursor_hidden) {
             match self.host.present_scanout(&candidate, present_damage) {
                 Ok(completion_fence) => {
+                    self.scanout_taken = true;
                     if !was_scanout {
                         log::info!(
                             "{}: direct scanout active for {:#x} (mod {:#x}); composite bypassed",
@@ -266,7 +267,7 @@ impl CompositorRuntime {
                             &frame,
                             blur_sigma * capture_scale,
                         );
-                        self.canvas.begin(&frame, Some(self.clear))?;
+                        begin_opaque_frame(&self.canvas, &frame, physical_size, self.clear)?;
                         // Preserve the live desktop everywhere, then replace
                         // only the component-declared glass regions with the
                         // shared blurred capture. This is a true backdrop
@@ -321,7 +322,7 @@ impl CompositorRuntime {
                         if self.screenshot_freeze.active() {
                             // Frozen: present only the trigger-frame
                             // snapshot; the selector draws on top below.
-                            self.canvas.begin(&frame, Some(self.clear))?;
+                            begin_opaque_frame(&self.canvas, &frame, physical_size, self.clear)?;
                             if let Some(image) = self.screenshot_freeze.image() {
                                 self.canvas.draw_image(
                                     image,
@@ -350,7 +351,8 @@ impl CompositorRuntime {
                                     .screenshot_freeze
                                     .target(&frame)
                                     .expect("ensure_target succeeded");
-                                match self.canvas.begin_target(&frame, target, Some(self.clear)) {
+                                match begin_opaque_target(&self.canvas, &frame, target, self.clear)
+                                {
                                     Ok(()) => {
                                         in_target = true;
                                         draw_wallpaper_background(
@@ -398,7 +400,12 @@ impl CompositorRuntime {
                                 }
                             }
                             if !in_target {
-                                self.canvas.begin(&frame, Some(self.clear))?;
+                                begin_opaque_frame(
+                                    &self.canvas,
+                                    &frame,
+                                    physical_size,
+                                    self.clear,
+                                )?;
                                 draw_direct_desktop_scene(
                                     &self.canvas,
                                     &self.device,
@@ -412,7 +419,7 @@ impl CompositorRuntime {
                                 )?;
                             }
                         } else {
-                            self.canvas.begin(&frame, Some(self.clear))?;
+                            begin_opaque_frame(&self.canvas, &frame, physical_size, self.clear)?;
                             draw_direct_desktop_scene(
                                 &self.canvas,
                                 &self.device,
@@ -575,7 +582,7 @@ impl CompositorRuntime {
                         None
                     };
                     self.screenshot_freeze.mark_captured(&frame, frozen_cursor);
-                    self.canvas.begin(&frame, Some(self.clear))?;
+                    begin_opaque_frame(&self.canvas, &frame, physical_size, self.clear)?;
                     if let Some(image) = self.screenshot_freeze.image() {
                         self.canvas.draw_image(
                             image,

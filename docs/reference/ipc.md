@@ -1,6 +1,6 @@
 # IPC Reference
 
-The aegis IPC is protocol version 8, carried as length-framed JSON over the
+The aegis IPC is protocol version 10, carried as length-framed JSON over the
 owner-only Unix socket at `$XDG_RUNTIME_DIR/aegis.sock`. Every connection starts
 with `Hello`; commands are accepted only after capability and scope checks.
 JSON messages are limited to 16 MiB. Large immutable capture and frame
@@ -154,6 +154,20 @@ revisioned compositor configuration.
 | `revision` | unsigned integer | Monotonic settings revision. |
 | `touchpad` | `TouchpadStatus` | Effective profile, detected devices, capabilities, and configurability. |
 | `display` | `DisplayStatus` | Connected outputs, advertised modes, configurability, and the last apply error. |
+| `preferences` | `DesktopPreferences` | Complete effective desktop profile after configuration defaults and explicit startup overrides. |
+
+`DesktopPreferences` contains:
+
+| Field | Type | Bounds or values |
+|-------|------|------------------|
+| `color_scheme` | enum | `system`, `dark`, or `light` |
+| `accent_color` | optional RGB object | `{ red, green, blue }`, each 0–255 |
+| `contrast` | enum | `normal` or `high` |
+| `reduced_motion` | boolean | Desktop and toolkit animation preference |
+| `font_name`, `monospace_font_name` | string | Non-empty, at most 256 bytes |
+| `text_scale` | float | 0.5–3.0 |
+| `icon_theme`, `cursor_theme` | string | Non-empty, at most 256 bytes |
+| `cursor_size` | unsigned integer | 8–128 logical pixels |
 
 `Settings` submits one tagged action with an optional `expected_revision`:
 
@@ -161,6 +175,7 @@ revisioned compositor configuration.
 |--------|---------|--------|
 | `SetTouchpad` | complete `TouchpadConfig` | Validate, persist `[input.touchpad]`, and apply the profile to live libinput devices. |
 | `SetDisplay` | connector, mode, scale, position, and primary flag | Validate, atomically persist the output entry, and reconcile the live direct-DRM output. |
+| `SetDesktopPreferences` | complete `DesktopPreferences` | Validate, atomically persist the `[appearance]` and preference-related `[ui]` fields, apply chrome and cursor policy, and refresh application icons. |
 
 The operation requires `session` plus a live privileged lease. It is refused
 while the session is locked. When `expected_revision` does not match the
@@ -173,10 +188,11 @@ the revision, publishes the replacement snapshot, broadcasts
 `SettingsChanged`, and records the action and before/after revisions in the
 mutation journal.
 
-Display and touchpad are the only settings domains in the current snapshot.
-Mouse, keyboard, appearance, power, accounts, and window-rule modules remain
+Display, touchpad, and desktop appearance are settings domains in the current
+snapshot. Mouse, keyboard, power, accounts, and window-rule modules remain
 unavailable until their authoritative services expose typed state and actions.
-See the [System Settings Reference](settings.md#modules).
+See the [System Settings Reference](settings.md#modules) and
+[ADR-0072](../adr/0072-desktop-preference-authority-and-toolkit-compatibility.md).
 
 ## Realm Authority
 

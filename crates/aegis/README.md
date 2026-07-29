@@ -30,17 +30,23 @@ functions remain available when that preflight fails.
 
 ## Use
 
-For cross-repository development, build the sibling Optics libraries first,
-activate the local Cargo override once, then run from the repository root:
+For cross-repository development, create a linked Aegis worktree next to the
+Optics checkout, enable the local Cargo patch there, then build and run:
 
 ```bash
-meson compile -C ../optics/build
+git worktree add ../aegis-optics-dev -b feat/<topic> origin/main
+cd ../aegis-optics-dev
 cp .cargo/optics-local.toml .cargo/config.toml
+git config core.hooksPath .githooks
+meson compile -C ../optics/build
+cargo check -p aegis
 cargo run --locked -p aegis
 ```
 
 The repository [Quick Start](../../README.md#quick-start) contains the full
-dependency build sequence.
+dependency build sequence. Contributors editing both repositories should
+follow
+[Aegis and Optics Cross-Repository Development](../../docs/dev/cross-repository-development.md).
 
 ## Related Documentation
 

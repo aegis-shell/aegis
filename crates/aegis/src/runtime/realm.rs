@@ -231,16 +231,19 @@ pub(super) fn begin_realm_capture(
         )
     })?;
     renderer.begin_frame();
-    target
-        .canvas
-        .begin(&frame, Some(flux::rgba(17, 20, 27, 255)))
-        .map_err(|error| {
-            format!(
-                "begin realm {} canvas: {error}{}",
-                realm.0,
-                flux_last_error_detail()
-            )
-        })?;
+    begin_opaque_frame(
+        &target.canvas,
+        &frame,
+        physical_size,
+        flux::rgba(17, 20, 27, 255),
+    )
+    .map_err(|error| {
+        format!(
+            "begin realm {} canvas: {error}{}",
+            realm.0,
+            flux_last_error_detail()
+        )
+    })?;
     let scale = output.scale_milli as f32 / 1000.0;
     target.canvas.save();
     if scale != 1.0 {

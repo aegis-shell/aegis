@@ -29,28 +29,15 @@ pub(super) const HUD_SYMBOLIC_ICON_NAMES: &[&str] = &[
     "application-x-executable-symbolic",
 ];
 
-/// Resolve the host's selected application icon theme. An explicit aegis
-/// override wins; otherwise query the GTK/GSettings desktop preference used
-/// by niri and other toolkit-neutral Wayland sessions. `hicolor` remains the
-/// portable fallback when GSettings is unavailable.
-pub(super) fn selected_icon_theme() -> String {
-    if let Some(theme) = std::env::var("AEGIS_ICON_THEME")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    {
-        return theme;
-    }
-
-    let output = std::process::Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.interface", "icon-theme"])
-        .output();
-    output
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .and_then(|value| parse_gsettings_string(&value))
-        .unwrap_or_else(|| aegis_desktop_entries::DEFAULT_ICON_THEME.to_string())
+/// Choose the raster scale from the compositor's effective output geometry.
+/// The backend scale is only a fallback: direct-display `[[output]]` policy
+/// can override it without changing the physical backend's native value.
+pub(super) fn effective_icon_scale(output_scale: Option<f32>, backend_scale: f32) -> u32 {
+    let scale = output_scale
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .or_else(|| (backend_scale.is_finite() && backend_scale > 0.0).then_some(backend_scale))
+        .unwrap_or(1.0);
+    scale.ceil().max(1.0) as u32
 }
 
 /// Enumerate XDG applications and append compositor-owned virtual entries.
@@ -70,21 +57,6 @@ pub(super) fn application_catalog(
         i18n.text(aegis_shell::Message::AiWorkspacesDescription),
     ));
     applications
-}
-
-pub(super) fn parse_gsettings_string(value: &str) -> Option<String> {
-    let value = value.trim();
-    let unquoted = value
-        .strip_prefix('\'')
-        .and_then(|value| value.strip_suffix('\''))
-        .or_else(|| {
-            value
-                .strip_prefix('"')
-                .and_then(|value| value.strip_suffix('"'))
-        })
-        .unwrap_or(value)
-        .trim();
-    (!unquoted.is_empty()).then(|| unquoted.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
