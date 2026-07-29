@@ -157,6 +157,30 @@ pub trait Backend {
         true
     }
 
+    /// Whether scanout is currently powered. This is independent from
+    /// [`Backend::is_active`]: input and Wayland dispatch must continue while
+    /// outputs are off so physical activity can wake a locked session.
+    fn outputs_powered(&self) -> bool {
+        true
+    }
+
+    /// Whether the backend currently has a renderable presentation target.
+    /// A direct-display backend can remain active for input while all
+    /// connectors are unplugged or a replacement target is being prepared.
+    fn presentation_target_ready(&self) -> bool {
+        true
+    }
+
+    /// Enable or disable physical scanout without changing output topology.
+    /// Nested backends cannot control their host compositor's monitors.
+    fn set_outputs_powered(&mut self, powered: bool) -> Result<(), String> {
+        if powered {
+            Ok(())
+        } else {
+            Err("output power control is unavailable on this backend".into())
+        }
+    }
+
     /// Whether this presentation domain has an atomic commit in flight.
     ///
     /// The runtime uses this as an ownership boundary: it may continue

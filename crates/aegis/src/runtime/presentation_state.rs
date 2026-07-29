@@ -33,8 +33,9 @@ enum PresentationState {
         deadline: Instant,
         redraw_queued: bool,
     },
-    /// The seat does not currently own the presentation device.
-    Suspended,
+    /// Presentation is unavailable, with the reason retained so losing the
+    /// backend after output power-off still invalidates the input epoch.
+    Suspended(PresentationAvailability),
 }
 
 /// State-machine facade used by the compositor loop.
@@ -43,9 +44,26 @@ pub(super) struct PresentationScheduler {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PresentationAvailability {
+    Available,
+    /// Scanout is deliberately dark, but the active input epoch remains valid
+    /// so physical activity can wake a locked session.
+    OutputsOff,
+    /// No renderable output target currently exists, but the backend and
+    /// active input epoch remain valid (for example, all connectors unplugged).
+    TargetUnavailable,
+    /// The backend/device epoch is gone (VT loss, seat revoke, or backend
+    /// failure).
+    BackendUnavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ActivationChange {
     None,
-    Suspended,
+    Suspended(PresentationAvailability),
+    /// The backend epoch changed after presentation was already suspended for
+    /// another reason, so input ownership still needs invalidation.
+    BackendEpochInvalidated,
     Resumed,
 }
 
@@ -58,19 +76,30 @@ impl PresentationScheduler {
         }
     }
 
-    pub(super) fn set_active(&mut self, active: bool) -> ActivationChange {
-        if !active {
-            if matches!(self.state, PresentationState::Suspended) {
-                return ActivationChange::None;
+    pub(super) fn set_availability(
+        &mut self,
+        availability: PresentationAvailability,
+    ) -> ActivationChange {
+        if availability == PresentationAvailability::Available {
+            if matches!(self.state, PresentationState::Suspended(_)) {
+                self.state = PresentationState::Queued;
+                return ActivationChange::Resumed;
             }
-            self.state = PresentationState::Suspended;
-            return ActivationChange::Suspended;
+            return ActivationChange::None;
         }
-        if matches!(self.state, PresentationState::Suspended) {
-            self.state = PresentationState::Queued;
-            return ActivationChange::Resumed;
+
+        if let PresentationState::Suspended(previous) = self.state {
+            self.state = PresentationState::Suspended(availability);
+            if previous != PresentationAvailability::BackendUnavailable
+                && availability == PresentationAvailability::BackendUnavailable
+            {
+                return ActivationChange::BackendEpochInvalidated;
+            }
+            return ActivationChange::None;
         }
-        ActivationChange::None
+
+        self.state = PresentationState::Suspended(availability);
+        ActivationChange::Suspended(availability)
     }
 
     pub(super) fn reconcile_backend(&mut self, presentation_pending: bool) {
@@ -130,7 +159,9 @@ impl PresentationScheduler {
                     redraw_queued: true,
                 }
             }
-            PresentationState::Suspended => PresentationState::Suspended,
+            PresentationState::Suspended(availability) => {
+                PresentationState::Suspended(availability)
+            }
         };
     }
 
@@ -297,7 +328,7 @@ impl PresentationScheduler {
             PresentationState::Idle => idle_timeout,
             // The seat or output is unavailable, so visual timers are also
             // irrelevant. Backend fds still wake this bounded maintenance wait.
-            PresentationState::Suspended => PRESENTATION_WATCHDOG,
+            PresentationState::Suspended(_) => PRESENTATION_WATCHDOG,
         }
     }
 
@@ -377,13 +408,44 @@ mod tests {
     #[test]
     fn suspend_blocks_and_resume_forces_one_redraw() {
         let mut state = PresentationScheduler::new();
-        assert_eq!(state.set_active(false), ActivationChange::Suspended);
-        assert_eq!(state.set_active(false), ActivationChange::None);
+        assert_eq!(
+            state.set_availability(PresentationAvailability::OutputsOff),
+            ActivationChange::Suspended(PresentationAvailability::OutputsOff)
+        );
+        assert_eq!(
+            state.set_availability(PresentationAvailability::OutputsOff),
+            ActivationChange::None
+        );
         state.queue_redraw();
         assert!(!state.can_redraw());
-        assert_eq!(state.set_active(true), ActivationChange::Resumed);
-        assert_eq!(state.set_active(true), ActivationChange::None);
+        assert_eq!(
+            state.set_availability(PresentationAvailability::Available),
+            ActivationChange::Resumed
+        );
+        assert_eq!(
+            state.set_availability(PresentationAvailability::Available),
+            ActivationChange::None
+        );
         assert!(state.can_redraw());
+    }
+
+    #[test]
+    fn backend_loss_after_input_preserving_suspension_invalidates_the_epoch() {
+        for reason in [
+            PresentationAvailability::OutputsOff,
+            PresentationAvailability::TargetUnavailable,
+        ] {
+            let mut state = PresentationScheduler::new();
+            state.set_availability(reason);
+            assert_eq!(
+                state.set_availability(PresentationAvailability::BackendUnavailable),
+                ActivationChange::BackendEpochInvalidated
+            );
+            assert_eq!(
+                state.set_availability(PresentationAvailability::BackendUnavailable),
+                ActivationChange::None
+            );
+        }
     }
 
     #[test]
@@ -475,7 +537,7 @@ mod tests {
     fn suspended_state_ignores_visual_timers() {
         let now = Instant::now();
         let mut state = PresentationScheduler::new();
-        state.set_active(false);
+        state.set_availability(PresentationAvailability::BackendUnavailable);
         assert_eq!(
             state.wait_timeout(Duration::ZERO, now),
             PRESENTATION_WATCHDOG

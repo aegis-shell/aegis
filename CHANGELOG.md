@@ -28,6 +28,10 @@ project cuts a tagged release.
 
 ### Reliability
 
+- Distinguish powered-off scanout, a temporarily absent output target, and
+  backend/VT loss in the presentation state machine. Input remains live for
+  wake and hotplug, stale input ownership cannot cross a later VT loss, and
+  visual work from a targetless interval is not replayed on resume.
 - IPC protocol version 11 makes live-system controls return the compositor
   main loop's authoritative apply result instead of only acknowledging a
   queued command. Callers can now distinguish an accepted control from a

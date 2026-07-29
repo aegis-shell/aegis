@@ -234,6 +234,11 @@ impl DrmBackend {
                         });
                         self.displays = displays;
                         self.modeset_done = false;
+                        // A VT/suspend round-trip always wakes to a freshly
+                        // rendered frame. This also closes the edge where a
+                        // policy client died while scanout was powered off and
+                        // the DRM session was temporarily inactive.
+                        self.outputs_powered = true;
                         self.render_ready = true;
                         self.active = true;
                     }

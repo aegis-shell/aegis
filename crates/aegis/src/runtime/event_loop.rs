@@ -5,23 +5,39 @@ const FALLBACK_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from
 const MODEL_WALLPAPER_INTERVAL: std::time::Duration = std::time::Duration::from_micros(16_667);
 
 impl CompositorRuntime {
+    fn presentation_availability(&self) -> PresentationAvailability {
+        if !self.host.is_active() {
+            PresentationAvailability::BackendUnavailable
+        } else if !self.host.outputs_powered() {
+            PresentationAvailability::OutputsOff
+        } else if !self.host.presentation_target_ready() {
+            PresentationAvailability::TargetUnavailable
+        } else {
+            PresentationAvailability::Available
+        }
+    }
+
     fn reconcile_presentation_state(&mut self) {
         let now = std::time::Instant::now();
-        let active = self.host.is_active();
-        match self.presentation.set_active(active) {
+        let availability = self.presentation_availability();
+        match self.presentation.set_availability(availability) {
             ActivationChange::None => {}
-            ActivationChange::Suspended => {
-                // Queued pixels belong to the presentation epoch in which
-                // they were accepted. Never replay input or a screenshot
-                // after VT authority changes.
+            ActivationChange::Suspended(reason) => {
+                // Queued visual work belongs to the presentation epoch in
+                // which it was accepted. Never replay chrome edges or a
+                // screenshot across a target-availability boundary.
                 self.refuse_suspended_frame();
-                // A VT round-trip may omit release edges. Clear
-                // compositor-side ownership and level state before a new
-                // presentation epoch starts.
-                self.input_acc.mouse_down.fill(false);
-                self.keyboard_capture = Default::default();
-                self.chrome_pointer_captured = false;
-                self.synthetic_pointer_active = false;
+                if reason == PresentationAvailability::BackendUnavailable {
+                    self.invalidate_input_epoch();
+                }
+                self.previous_render_at = now;
+            }
+            ActivationChange::BackendEpochInvalidated => {
+                // Presentation can already be suspended for a reason that
+                // preserves input. Losing VT/session ownership afterwards
+                // must still invalidate that older input epoch.
+                self.refuse_suspended_frame();
+                self.invalidate_input_epoch();
                 self.previous_render_at = now;
             }
             ActivationChange::Resumed => {
@@ -32,7 +48,7 @@ impl CompositorRuntime {
                 self.previous_render_at = now;
             }
         }
-        if active {
+        if availability == PresentationAvailability::Available {
             self.presentation
                 .reconcile_backend(self.host.presentation_pending());
             if let Some(elapsed) = self.presentation.take_stall_warning(now) {
@@ -59,6 +75,16 @@ impl CompositorRuntime {
                 }
             }
         }
+    }
+
+    fn invalidate_input_epoch(&mut self) {
+        // A VT/session round-trip may omit release edges. Clear
+        // compositor-side ownership and level state before a new backend
+        // presentation epoch starts.
+        self.input_acc.mouse_down.fill(false);
+        self.keyboard_capture = Default::default();
+        self.chrome_pointer_captured = false;
+        self.synthetic_pointer_active = false;
     }
 
     fn refuse_suspended_frame(&mut self) {
@@ -140,6 +166,14 @@ impl CompositorRuntime {
     }
 
     fn queue_frame_state(&mut self, frame: FrameState) {
+        if self.presentation_availability() != PresentationAvailability::Available {
+            // The active session can still process input without a
+            // presentation target, but visual edges from that interval must
+            // not accumulate and replay after the target returns. Resume
+            // forces a full redraw.
+            self.refuse_unpresentable_frame(frame);
+            return;
+        }
         if let Some(pending) = self.pending_frame.as_mut() {
             pending.merge(frame);
         } else {

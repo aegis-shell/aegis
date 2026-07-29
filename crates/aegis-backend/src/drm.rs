@@ -537,6 +537,9 @@ pub struct DrmBackend {
     explicit_sync: bool,
     sync_capable: bool,
     render_ready: bool,
+    /// KMS scanout power requested by the session idle policy. Input and
+    /// Wayland dispatch remain active while this is false.
+    outputs_powered: bool,
     hotplug_pending: bool,
     pending_resize: Option<Size>,
     /// Modifier intersection the live Flux surface was created with.
@@ -745,6 +748,19 @@ impl Backend for DrmBackend {
 
     fn is_active(&self) -> bool {
         DrmBackend::is_active(self)
+    }
+
+    fn outputs_powered(&self) -> bool {
+        self.outputs_powered
+    }
+
+    fn presentation_target_ready(&self) -> bool {
+        self.render_ready
+    }
+
+    fn set_outputs_powered(&mut self, powered: bool) -> Result<(), String> {
+        self.set_outputs_powered(powered)
+            .map_err(|error| error.to_string())
     }
 
     fn presentation_pending(&self) -> bool {

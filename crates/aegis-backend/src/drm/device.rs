@@ -189,6 +189,7 @@ impl DrmBackend {
             explicit_sync: false,
             sync_capable: false,
             render_ready: true,
+            outputs_powered: true,
             hotplug_pending: false,
             pending_resize: None,
             surface_modifiers: Vec::new(),
@@ -399,7 +400,7 @@ impl DrmBackend {
         frame: flux::SubmittedFrame<'_>,
         damage: Option<aegis_core::Rect>,
     ) -> Result<Option<OwnedFd>, DrmError> {
-        if !self.active || !self.render_ready {
+        if !self.active || !self.render_ready || !self.outputs_powered {
             return Err(DrmError::Inactive);
         }
         if !self.pending_flips.is_empty() {
@@ -436,7 +437,7 @@ impl DrmBackend {
         client: &aegis_core::SurfaceDmabuf,
         damage: Option<aegis_core::Rect>,
     ) -> Result<Option<OwnedFd>, DrmError> {
-        if !self.active || !self.render_ready {
+        if !self.active || !self.render_ready || !self.outputs_powered {
             return Err(DrmError::Inactive);
         }
         if !self.pending_flips.is_empty() {
@@ -494,7 +495,7 @@ impl DrmBackend {
     /// scanned-out primary framebuffer. This is the pointer-motion fast path:
     /// no Vulkan frame, dma-buf export, GEM import, or primary-plane flip.
     pub fn present_cursor(&mut self) -> Result<(), DrmError> {
-        if !self.active || !self.render_ready {
+        if !self.active || !self.render_ready || !self.outputs_powered {
             return Err(DrmError::Inactive);
         }
         if !self.pending_flips.is_empty() {

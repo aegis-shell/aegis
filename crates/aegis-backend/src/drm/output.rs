@@ -1,6 +1,39 @@
 use super::*;
 
 impl DrmBackend {
+    /// Change KMS scanout power while retaining connector assignment and
+    /// input ownership. Turning outputs back on is completed by the next
+    /// ordinary modeset frame, so the compositor redraws current secure
+    /// content instead of exposing a stale framebuffer.
+    pub fn set_outputs_powered(&mut self, powered: bool) -> Result<(), DrmError> {
+        if self.outputs_powered == powered {
+            return Ok(());
+        }
+        if !self.active {
+            return Err(DrmError::Inactive);
+        }
+        if !self.pending_flips.is_empty() {
+            // Output power is a presentation-domain transition. Never hide a
+            // page-flip wait inside this control path: the main loop must stay
+            // live and retry after the owned batch retires.
+            return Err(DrmError::Busy);
+        }
+        if !powered {
+            if self.modeset_done {
+                self.disable_outputs()?;
+            }
+            self.modeset_done = false;
+            self.cursor_plane_active = false;
+            self.outputs_powered = false;
+            log::info!("drm: physical outputs powered off; input remains active");
+        } else {
+            self.outputs_powered = true;
+            self.modeset_done = false;
+            log::info!("drm: physical outputs waking on next secure frame");
+        }
+        Ok(())
+    }
+
     pub(super) fn reconfigure_outputs(&mut self) {
         self.hotplug_pending = false;
         let selected = match select_outputs(self.card(), &self.configured_modes) {

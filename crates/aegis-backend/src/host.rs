@@ -529,6 +529,30 @@ impl Backend for Host {
         }
     }
 
+    fn outputs_powered(&self) -> bool {
+        match self {
+            Self::Nested(_) => true,
+            Self::Drm(host) => host.outputs_powered(),
+        }
+    }
+
+    fn presentation_target_ready(&self) -> bool {
+        match self {
+            Self::Nested(_) => true,
+            Self::Drm(host) => host.presentation_target_ready(),
+        }
+    }
+
+    fn set_outputs_powered(&mut self, powered: bool) -> Result<(), String> {
+        match self {
+            Self::Nested(_) if powered => Ok(()),
+            Self::Nested(_) => Err("output power control is unavailable in nested mode".into()),
+            Self::Drm(host) => host
+                .set_outputs_powered(powered)
+                .map_err(|error| error.to_string()),
+        }
+    }
+
     fn switch_vt(&mut self, vt: i32) {
         match self {
             // The nested backend shares the host's session; VT switching is

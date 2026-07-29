@@ -138,6 +138,14 @@ desktop framebuffer and atomic commit. This preserves the real backend
 boundary instead of pretending the outputs can retire independently. See
 [ADR-0077](../adr/0077-presentation-domain-redraw-state-machine.md).
 
+Presentation availability retains its reason rather than collapsing to one
+active flag. Deliberate scanout power-off and a temporarily absent output
+target suspend rendering while preserving the active input epoch. Loss of
+libseat/VT authority invalidates that epoch, including when it happens after
+rendering was already suspended for another reason. Returning from any
+suspension forces a full frame; visual edges collected while no target exists
+are not replayed later.
+
 The nested backend, and the server itself, use raw libwayland over FFI
 rather than a higher-level framework
 ([ADR-0002](../adr/0002-hand-rolled-wayland-server.md),
@@ -166,9 +174,10 @@ Each frame follows this sequence:
    waits asynchronously for every CRTC page flip. Pending client frame
    callbacks complete on successful submission; callback-only work uses an
    estimated refresh boundary without creating an empty atomic commit.
-5. VT loss or output recreation cancels the old presentation epoch. Resume
-   rebuilds the backend resources and presents a full frame before incremental
-   damage resumes.
+5. VT loss cancels the backend and input epochs. Output power-off or temporary
+   target loss preserves input for wake and hotplug handling but rejects
+   unpresentable visual work. Every resume presents a full frame before
+   incremental damage continues.
 6. Client buffers release once the GPU or display engine no longer needs
    them: against an explicit completion fence on DRM, or after enough later
    nested frames to retire every Flux slot.
