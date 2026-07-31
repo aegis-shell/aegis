@@ -40,6 +40,13 @@ pub(super) struct SettingsControlRequest {
     pub(super) reply: std::sync::mpsc::Sender<Result<aegis_ipc::SettingsReceipt, String>>,
 }
 
+/// One wallpaper mutation from an IPC connection thread, applied on the
+/// main loop; the reply carries the authoritative decode-and-swap receipt.
+pub(super) struct WallpaperControlRequest {
+    pub(super) path: std::path::PathBuf,
+    pub(super) reply: std::sync::mpsc::Sender<Result<(), String>>,
+}
+
 pub(super) struct JournalRefusalRequest {
     pub(super) origin: aegis_ipc::Origin,
     pub(super) mutation: aegis_ipc::JournalMutation,

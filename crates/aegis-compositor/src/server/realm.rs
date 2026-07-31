@@ -821,6 +821,10 @@ impl Server {
         {
             self.change_keyboard_focus(surface);
         }
+        // A toplevel that maps without taking focus (hidden workspace,
+        // observation mirror, minimized) lands at the Vec tail from its
+        // wl_surface creation; keep it below the always-on-top band.
+        self.restack_always_on_top_band();
         let pending_popup_focus = std::mem::take(&mut self.state.pending_popup_focus);
         for (seat, surface) in pending_popup_focus {
             if let Some(_guard) = ActiveSeatGuard::enter(self.state.as_mut(), seat) {
@@ -910,6 +914,17 @@ impl Server {
         log::info!("idle: IPC idle inhibit {inhibited}");
         self.state.ipc_idle_inhibit = inhibited;
         unsafe { extensions::update_idle_notifications(self.state.as_mut()) };
+    }
+
+    /// Development-only escape hatch (`[dev] allow_quit_while_locked`): while
+    /// set, the global Quit binding still matches during an active session
+    /// lock. Will be removed before release; do not rely on it.
+    pub fn set_allow_quit_while_locked(&mut self, allow: bool) {
+        if self.state.allow_quit_while_locked == allow {
+            return;
+        }
+        log::info!("input: allow quit while locked {allow}");
+        self.state.allow_quit_while_locked = allow;
     }
 
     /// Whether normal client content and compositor chrome must be hidden.

@@ -6,6 +6,8 @@
 //! variants add without renaming existing fields. See
 //! [ADR-0027](../../docs/adr/0027-ipc-and-introspection.md).
 
+use std::path::PathBuf;
+
 use aegis_core::Rect;
 use aegis_core::input::SyntheticInputAction;
 use aegis_core::notify::Notification;
@@ -22,7 +24,16 @@ use aegis_core::workspace::{OutputId, Switch, WorkspaceId, WorkspaceSnapshot};
 use crate::journal::{JournalEntry, JournalSnapshot};
 
 /// The protocol major version this build speaks. A client must offer the
-/// same major version at the [`Request::Hello`] handshake. Version 12 adds
+/// same major version at the [`Request::Hello`] handshake. Version 18 adds
+/// agent identity pairing (`Hello.agent`) and runtime-grantable `ask`
+/// operations on scopes (ADR-0088). Version 17 adds
+/// wallpaper mutation (`SetWallpaper` → `WallpaperSet`). Version 16 adds
+/// user-consent yes/no confirmation (`PickConfirm` → `ConfirmPicked`).
+/// Version 15 adds
+/// user-consent secret prompting (`PromptSecret` → `SecretPrompted`).
+/// Version 14 adds
+/// user-consent application picking (`PickApp` → `AppPicked`). Version 13
+/// adds user-consent file picking (`PickFile` → `FilePicked`). Version 12 adds
 /// the staged idle-policy snapshot and transaction. Version 11 makes live
 /// system-control replies authoritative main-loop receipts. Version 10 adds
 /// the complete effective desktop-preferences snapshot and transaction.
@@ -35,18 +46,19 @@ use crate::journal::{JournalEntry, JournalSnapshot};
 /// `Event::StreamFrame`, `Event::StreamEnded`, `StreamOutputStop`,
 /// ADR-0052). Version 4 adds revisioned desktop-settings snapshots,
 /// subscriptions, and confirmed settings transactions.
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 18;
 /// Built-in owner-only scope used by the compositor's reference CLI for
 /// Realm recovery and administration. The Unix socket remains user-private;
 /// naming this scope opts the connection into the high-risk Realm operation
 /// allowlist and its time-bounded lease.
 pub const LOCAL_REALM_ADMIN_SCOPE: &str = "aegis-ctl-realm-admin";
 /// Built-in owner-only scope used by the xdg-desktop-portal backend
-/// (`aegis-portal`, ADR-0075). It resolves to exactly four operations —
+/// (`aegis-portal`, ADR-0075). It resolves to exactly five operations —
 /// `CaptureOutput` for the Screenshot portal, `StreamOutput` for the
-/// ScreenCast portal (ADR-0052), `IdleInhibit` for the Inhibit portal, and
+/// ScreenCast portal (ADR-0052), `IdleInhibit` for the Inhibit portal,
 /// `PickTarget` for the interactive picker round-trips
-/// (ADR-0054) — and nothing else. Like the realm-admin
+/// (ADR-0054), and `PickFile` for the FileChooser portal's user-consent
+/// file picking — and nothing else. Like the realm-admin
 /// scope it does not weaken the socket's owner-only `0600` boundary; it opts
 /// the connection into an explicit high-risk operation allowlist and its
 /// time-bounded lease.
@@ -164,11 +176,45 @@ pub enum OpClass {
     /// through compositor chrome (ADR-0054). Never inherited through
     /// `None`-means-all: a pick reads back user-approved screen content.
     PickTarget,
+    /// User-consent file picking through compositor chrome (the FileChooser
+    /// portal's compositor side). Never inherited through `None`-means-all,
+    /// for the same reason as `PickTarget`: a pick reveals user-approved
+    /// filesystem names.
+    PickFile,
+    /// User-consent application picking through compositor chrome (the
+    /// AppChooser portal's compositor side). Never inherited through
+    /// `None`-means-all: the chosen app id is a user-authorization decision.
+    PickApp,
+    /// User-consent secret prompting through compositor chrome (the secret
+    /// vault's password unlock). Never inherited through `None`-means-all:
+    /// the typed secret crosses this channel.
+    PromptSecret,
+    /// User-consent yes/no confirmation through compositor chrome (portal
+    /// consent dialogs: Account, Access, DynamicLauncher). Never inherited
+    /// through `None`-means-all: the answer is a user-authorization decision.
+    PickConfirm,
+    /// Desktop wallpaper mutation (the Wallpaper portal). Never inherited
+    /// through `None`-means-all: it rewrites session-visible state.
+    SetWallpaper,
     CreateRealm,
     TransactRealm,
     RevokeRealm,
     CaptureRealm,
     LaunchInRealm,
+}
+
+/// The three-way outcome of checking one operation against a scope
+/// (ADR-0088): pre-granted, requestable through an interactive user grant,
+/// or refused outright.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeDecision {
+    /// Pre-granted by the scope's `ops` (or unrestricted on that axis).
+    Permit,
+    /// Not pre-granted but named in the scope's `ask_ops`: a paired agent
+    /// may request it, prompting the user interactively.
+    Ask(OpClass),
+    /// Outside the scope ceiling.
+    Deny,
 }
 
 /// A resource-and-operation allowlist layered on top of capabilities
@@ -196,6 +242,11 @@ pub struct Scope {
     /// synthetic input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ops: Option<Vec<OpClass>>,
+    /// Operation families the scope does not pre-grant but that a paired
+    /// agent may request at runtime through an interactive user grant
+    /// (ADR-0088). Never inherited: `None` means nothing is requestable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_ops: Option<Vec<OpClass>>,
 }
 
 impl Scope {
@@ -227,6 +278,13 @@ impl Scope {
         {
             return false;
         }
+        self.permits_realm_action_resources(action)
+    }
+
+    /// The resource-allowlist half of [`Self::permits_realm_action`],
+    /// separated so the ask path enforces Realm and window allowlists
+    /// independently of the operation lists (ADR-0088).
+    fn permits_realm_action_resources(&self, action: &RealmAction) -> bool {
         match action {
             RealmAction::Create { .. } => true,
             RealmAction::Transact { mutations, .. } => mutations.iter().all(|mutation| {
@@ -279,10 +337,18 @@ impl Scope {
         {
             return false;
         }
+        self.permits_resources(cmd)
+    }
+
+    /// The resource-allowlist half of [`Self::permits`], separated so the
+    /// ask path enforces window/workspace/Realm allowlists independently of
+    /// the operation lists (ADR-0088).
+    fn permits_resources(&self, cmd: &Command) -> bool {
         match cmd {
             Command::Focus { id }
             | Command::Minimize { id }
             | Command::SetMaximized { id, .. }
+            | Command::SetAlwaysOnTop { id, .. }
             | Command::Close { id }
             | Command::Move { id }
             | Command::SetWindowGeometry { id, .. }
@@ -296,6 +362,57 @@ impl Scope {
             }
             Command::SwitchWorkspaceTo { id } => Self::allows(&self.workspaces, *id),
             _ => true,
+        }
+    }
+
+    /// Whether `op` is requestable at runtime through an interactive user
+    /// grant (ADR-0088). Like the high-risk operations, askable operations
+    /// must be named explicitly; `None`-means-all never applies.
+    pub fn asks(&self, op: OpClass) -> bool {
+        self.ask_ops
+            .as_ref()
+            .is_some_and(|operations| operations.contains(&op))
+    }
+
+    /// Three-way command decision (ADR-0088): a pre-granted command wins; a
+    /// command named in `ask_ops` whose resource allowlists pass is
+    /// requestable through an interactive grant; anything else is refused.
+    pub fn decide_command(&self, cmd: &Command) -> ScopeDecision {
+        if self.permits(cmd) {
+            return ScopeDecision::Permit;
+        }
+        if !cmd.required_cap().session
+            && self.asks(cmd.op_class())
+            && self.permits_resources(cmd)
+        {
+            ScopeDecision::Ask(cmd.op_class())
+        } else {
+            ScopeDecision::Deny
+        }
+    }
+
+    /// Three-way Realm-action decision, mirroring [`Self::decide_command`].
+    pub fn decide_realm_action(&self, action: &RealmAction) -> ScopeDecision {
+        if self.permits_realm_action(action) {
+            return ScopeDecision::Permit;
+        }
+        let op = action.op_class();
+        if self.asks(op) && self.permits_realm_action_resources(action) {
+            ScopeDecision::Ask(op)
+        } else {
+            ScopeDecision::Deny
+        }
+    }
+
+    /// Three-way Realm-capture decision, mirroring [`Self::decide_command`].
+    pub fn decide_realm_capture(&self, realm: RealmId) -> ScopeDecision {
+        if self.permits_realm_capture(realm) {
+            return ScopeDecision::Permit;
+        }
+        if self.asks(OpClass::CaptureRealm) && Self::allows(&self.realms, realm) {
+            ScopeDecision::Ask(OpClass::CaptureRealm)
+        } else {
+            ScopeDecision::Deny
         }
     }
 }
@@ -397,6 +514,9 @@ pub enum Command {
     Minimize { id: WindowId },
     /// Set or clear compositor-managed maximization for a toplevel. `control`.
     SetMaximized { id: WindowId, maximized: bool },
+    /// Set or clear the compositor-internal always-on-top flag for a
+    /// toplevel. `control`.
+    SetAlwaysOnTop { id: WindowId, on_top: bool },
     /// Close a toplevel by id. `control`.
     Close { id: WindowId },
     /// Begin an interactive move of a toplevel by id. `control`.
@@ -439,10 +559,15 @@ pub enum Command {
     /// Apply one immediate live-system control. `control`.
     System { action: SystemAction },
     /// Post a notification (M9, delivered over the IPC). `control`.
+    /// `external_id` carries the sender's own notification id (the
+    /// Notification portal's per-application id) so a later withdrawal can
+    /// be matched; additive since protocol 14, defaulted for older peers.
     Notify {
         summary: String,
         body: String,
         app_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        external_id: Option<String>,
     },
     /// Dismiss a notification by id before its TTL elapses. `control`.
     DismissNotification { id: u64 },
@@ -559,6 +684,7 @@ impl Command {
             Command::Focus { .. } => OpClass::Focus,
             Command::Minimize { .. } => OpClass::Minimize,
             Command::SetMaximized { .. } => OpClass::SetWindowGeometry,
+            Command::SetAlwaysOnTop { .. } => OpClass::SetWindowGeometry,
             Command::Close { .. } => OpClass::Close,
             Command::Move { .. } => OpClass::Move,
             Command::SetWindowGeometry { .. } => OpClass::SetWindowGeometry,
@@ -727,6 +853,114 @@ pub enum PickResult {
     Cancelled,
 }
 
+/// How a [`Request::PickFile`] asks the user to choose filesystem paths
+/// (the FileChooser portal's compositor side).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum FilePickMode {
+    /// Pick an existing file (or several, with `multiple`).
+    #[default]
+    Open,
+    /// Name a file to write; the target may not exist yet.
+    Save,
+    /// Pick a directory.
+    ChooseDir,
+}
+
+/// One named filter of selectable files in a [`Request::PickFile`].
+/// `patterns` are globs (`"*.png"`) or MIME types (`"image/png"`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FileFilter {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub patterns: Vec<String>,
+}
+
+/// Options for a user-consent file pick ([`Request::PickFile`]). Every
+/// field carries a serde default so future additions stay additive for
+/// older peers.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FilePickOptions {
+    #[serde(default)]
+    pub mode: FilePickMode,
+    /// Allow picking several files (Open mode only).
+    #[serde(default)]
+    pub multiple: bool,
+    /// Pick a directory instead of a file (Open mode; `ChooseDir` implies
+    /// it on its own).
+    #[serde(default)]
+    pub directory: bool,
+    /// Title for the picker panel; the compositor falls back to a per-mode
+    /// default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Label for the accept button; the compositor falls back to a per-mode
+    /// default ("Open"/"Save"/"Select").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accept_label: Option<String>,
+    /// Directory the picker opens in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_folder: Option<PathBuf>,
+    /// Suggested filename seeding the Save-mode edit buffer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_name: Option<String>,
+    #[serde(default)]
+    pub filters: Vec<FileFilter>,
+}
+
+/// The outcome of a [`Request::PickFile`], delivered as
+/// [`Response::FilePicked`]. The user's confirmation is the authorization:
+/// a pick returns exactly the paths the user approved and nothing more.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum FilePickResult {
+    /// The confirmed paths, plus the index of the active filter into
+    /// [`FilePickOptions::filters`] when the request carried any.
+    Paths {
+        paths: Vec<PathBuf>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<u32>,
+    },
+    /// The user dismissed the picker without confirming.
+    Cancelled,
+}
+
+/// The outcome of a [`Request::PickApp`], delivered as
+/// [`Response::AppPicked`]. The user's confirmation is the authorization:
+/// the result is exactly the one application id the user approved.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum AppPickResult {
+    /// The confirmed application's desktop file id.
+    App { id: String },
+    /// The user dismissed the picker without confirming.
+    Cancelled,
+}
+
+/// The outcome of a [`Request::PromptSecret`], delivered as
+/// [`Response::SecretPrompted`]. The value is the user's typed secret (a
+/// password, PIN, …); both ends zeroize their copies after use.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum SecretPromptResult {
+    /// The confirmed secret value.
+    Secret { value: String },
+    /// The user dismissed the prompt without confirming.
+    Cancelled,
+}
+
+/// The outcome of a [`Request::PickConfirm`], delivered as
+/// [`Response::ConfirmPicked`]: the user's yes/no decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum ConfirmPickResult {
+    /// The user accepted.
+    Confirmed,
+    /// The user declined or dismissed the dialog.
+    Cancelled,
+}
+
 /// One atomic observation of a Realm's directed virtual output.
 ///
 /// `region` and every placement use virtual-output logical coordinates.
@@ -860,6 +1094,60 @@ pub enum Request {
     /// refused while the session is locked. One pick at a time compositor-
     /// wide; a concurrent request is refused.
     PickTarget { kind: PickKind },
+    /// Ask the user to choose filesystem paths through compositor chrome
+    /// (the FileChooser portal's compositor side). Unlike
+    /// [`Request::PickTarget`] the picker never freezes the screen: it is
+    /// ordinary modal chrome over the live scene and captures no screen
+    /// content. The connection blocks until the user confirms or cancels
+    /// (or the compositor's interaction timeout elapses). Authorization is
+    /// fail-closed exactly like `PickTarget`: `control`, a live lease, and
+    /// an explicit [`OpClass::PickFile`] entry in the connection's named
+    /// scope — never inherited — and refusal while the session is locked.
+    /// One interactive pick at a time compositor-wide, shared with
+    /// `PickTarget`; a concurrent request is refused.
+    PickFile { options: FilePickOptions },
+    /// Ask the user to choose one application out of `choices` (desktop file
+    /// ids) through compositor chrome (the AppChooser portal's compositor
+    /// side). `subject` is a human-readable context line ("the file or
+    /// content the app is chosen for"), `last_choice` pre-highlights the
+    /// previously used app. Same fail-closed authorization and one-pick-at-a
+    /// -time rule as [`Request::PickFile`]; no screen capture involved.
+    PickApp {
+        choices: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subject: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_choice: Option<String>,
+    },
+    /// Ask the user for a secret (password, PIN, …) through a masked
+    /// compositor prompt (the secret vault's password unlock). `title` and
+    /// `reason` label the prompt; the typed value returns as
+    /// [`SecretPromptResult::Secret`]. Same fail-closed authorization and
+    /// one-pick-at-a-time rule as [`Request::PickFile`]; no screen capture
+    /// involved.
+    PromptSecret {
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// Ask the user a yes/no consent question through compositor chrome
+    /// (portal consent dialogs: Account, Access, DynamicLauncher). `title`
+    /// heads the dialog, `body` explains the request, `accept_label`
+    /// overrides the affirmative button's label. Same fail-closed
+    /// authorization and one-pick-at-a-time rule as [`Request::PickFile`];
+    /// no screen capture involved.
+    PickConfirm {
+        title: String,
+        body: String,
+        accept_label: Option<String>,
+    },
+    /// Replace the desktop wallpaper with the image at `path` (the
+    /// Wallpaper portal). Decodes on the compositor main loop and swaps
+    /// live; the reply is an authoritative receipt, not a queue
+    /// acknowledgment. Fail-closed like the picks: `control`, a live lease,
+    /// and an explicit [`OpClass::SetWallpaper`] entry in the connection's
+    /// named scope — never inherited.
+    SetWallpaper { path: PathBuf },
 }
 
 /// A server → client message.
@@ -947,6 +1235,28 @@ pub enum Response {
     Picked {
         result: PickResult,
     },
+    /// Reply to [`Request::PickFile`]: the paths the user confirmed, or
+    /// [`FilePickResult::Cancelled`].
+    FilePicked {
+        result: FilePickResult,
+    },
+    /// Reply to [`Request::PickApp`]: the application id the user confirmed,
+    /// or [`AppPickResult::Cancelled`].
+    AppPicked {
+        result: AppPickResult,
+    },
+    /// Reply to [`Request::PromptSecret`]: the secret the user confirmed,
+    /// or [`SecretPromptResult::Cancelled`].
+    SecretPrompted {
+        result: SecretPromptResult,
+    },
+    /// Reply to [`Request::PickConfirm`]: the user's yes/no decision.
+    ConfirmPicked {
+        result: ConfirmPickResult,
+    },
+    /// Reply to [`Request::SetWallpaper`]: the wallpaper was decoded and
+    /// swapped (an authoritative main-loop receipt).
+    WallpaperSet {},
     LeaseRenewed {
         lease: LeaseGrant,
     },
@@ -1280,6 +1590,118 @@ mod tests {
     }
 
     #[test]
+    fn scope_ask_ops_serialize_only_when_present() {
+        let with_ask = Scope {
+            ask_ops: Some(vec![OpClass::Close]),
+            ..Scope::default()
+        };
+        let json = serde_json::to_value(&with_ask).unwrap();
+        assert_eq!(json["ask_ops"], serde_json::json!(["Close"]));
+        assert_eq!(
+            serde_json::from_value::<Scope>(json).unwrap(),
+            with_ask,
+            "ask_ops round-trips"
+        );
+        assert!(
+            serde_json::to_value(Scope::default())
+                .unwrap()
+                .get("ask_ops")
+                .is_none(),
+            "absent ask_ops stays off the wire"
+        );
+    }
+
+    #[test]
+    fn ask_ops_make_unlisted_commands_requestable_not_permitted() {
+        let s = Scope {
+            ops: Some(vec![OpClass::Focus]),
+            ask_ops: Some(vec![OpClass::Close]),
+            ..Scope::default()
+        };
+        let close = Command::Close { id: WindowId(1) };
+        assert!(!s.permits(&close), "an ask entry never pre-grants");
+        assert_eq!(
+            s.decide_command(&close),
+            ScopeDecision::Ask(OpClass::Close)
+        );
+        assert_eq!(
+            s.decide_command(&Command::Focus { id: WindowId(1) }),
+            ScopeDecision::Permit
+        );
+        assert_eq!(
+            s.decide_command(&Command::Minimize { id: WindowId(1) }),
+            ScopeDecision::Deny,
+            "neither ops nor ask_ops names Minimize"
+        );
+    }
+
+    #[test]
+    fn ask_decision_still_enforces_resource_allowlists() {
+        let s = Scope {
+            windows: Some(vec![WindowId(1)]),
+            ask_ops: Some(vec![OpClass::Close]),
+            ..Scope::default()
+        };
+        assert_eq!(
+            s.decide_command(&Command::Close { id: WindowId(1) }),
+            ScopeDecision::Ask(OpClass::Close)
+        );
+        assert_eq!(
+            s.decide_command(&Command::Close { id: WindowId(9) }),
+            ScopeDecision::Deny,
+            "a window outside the allowlist is outside the ask ceiling"
+        );
+    }
+
+    #[test]
+    fn unscoped_scope_never_asks() {
+        let s = Scope::unscoped();
+        assert!(!s.asks(OpClass::Close));
+        assert_eq!(
+            s.decide_command(&Command::Close { id: WindowId(1) }),
+            ScopeDecision::Deny
+        );
+        assert_eq!(
+            s.decide_realm_capture(RealmId(2)),
+            ScopeDecision::Deny
+        );
+    }
+
+    #[test]
+    fn realm_action_and_capture_have_ask_decisions() {
+        let s = Scope {
+            ask_ops: Some(vec![OpClass::TransactRealm, OpClass::CaptureRealm]),
+            ..Scope::default()
+        };
+        let transact = RealmAction::Transact {
+            expected_revision: None,
+            mutations: vec![RealmMutation::SetState {
+                realm: RealmId(2),
+                state: aegis_core::realm::RealmState::Paused,
+            }],
+        };
+        assert!(!s.permits_realm_action(&transact));
+        assert_eq!(
+            s.decide_realm_action(&transact),
+            ScopeDecision::Ask(OpClass::TransactRealm)
+        );
+        assert_eq!(
+            s.decide_realm_capture(RealmId(2)),
+            ScopeDecision::Ask(OpClass::CaptureRealm)
+        );
+        let create = RealmAction::Create {
+            label: "agent".into(),
+            capabilities: SeatCapabilities::POINTER_KEYBOARD,
+            output: None,
+        };
+        assert_eq!(
+            s.decide_realm_action(&create),
+            ScopeDecision::Deny,
+            "CreateRealm is in neither ops nor ask_ops"
+        );
+    }
+
+    #[test]
     fn scoped_windows_enforce_allowlist() {
         let s = Scope {
             windows: Some(vec![WindowId(1), WindowId(2)]),
@@ -1473,6 +1895,89 @@ mod tests {
                 other => panic!("expected Picked, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn pick_file_round_trips_options_and_results() {
+        let req = Request::PickFile {
+            options: FilePickOptions {
+                mode: FilePickMode::Save,
+                multiple: true,
+                directory: true,
+                title: Some("Export".into()),
+                accept_label: Some("Export".into()),
+                current_folder: Some(PathBuf::from("/home/user/Documents")),
+                current_name: Some("report.pdf".into()),
+                filters: vec![
+                    FileFilter {
+                        label: "Images".into(),
+                        patterns: vec!["*.png".into(), "image/jpeg".into()],
+                    },
+                    FileFilter {
+                        label: "All files".into(),
+                        patterns: Vec::new(),
+                    },
+                ],
+            },
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""type":"PickFile""#), "{json}");
+        assert!(json.contains(r#""mode":{"type":"Save"}"#), "{json}");
+        assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
+
+        // Every option defaults, so a bare request stays additive for
+        // peers that predate individual fields.
+        let bare: Request = serde_json::from_str(r#"{"type":"PickFile","options":{}}"#).unwrap();
+        assert_eq!(
+            bare,
+            Request::PickFile {
+                options: FilePickOptions::default()
+            }
+        );
+
+        for result in [
+            FilePickResult::Paths {
+                paths: vec![PathBuf::from("/home/user/a.png")],
+                filter: Some(1),
+            },
+            FilePickResult::Paths {
+                paths: vec![PathBuf::from("/home/user/a.png")],
+                filter: None,
+            },
+            FilePickResult::Cancelled,
+        ] {
+            let resp = Response::FilePicked {
+                result: result.clone(),
+            };
+            let json = serde_json::to_string(&resp).unwrap();
+            match serde_json::from_str::<Response>(&json).unwrap() {
+                Response::FilePicked { result: back } => assert_eq!(back, result),
+                other => panic!("expected FilePicked, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn pick_file_op_class_is_explicit_in_scopes() {
+        // Like PickTarget, PickFile is never inherited through
+        // `None`-means-all: the ops allowlist must name it.
+        let scoped = Scope {
+            ops: Some(vec![OpClass::PickFile]),
+            ..Scope::default()
+        };
+        assert!(
+            scoped
+                .ops
+                .as_ref()
+                .is_some_and(|ops| ops.contains(&OpClass::PickFile))
+        );
+        let unscoped = Scope::unscoped();
+        assert!(
+            !unscoped
+                .ops
+                .as_ref()
+                .is_some_and(|ops| ops.contains(&OpClass::PickFile))
+        );
     }
 
     #[test]

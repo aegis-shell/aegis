@@ -17,6 +17,11 @@ pub struct Notification {
     pub body: String,
     /// Originating application id, if known.
     pub app_id: Option<String>,
+    /// The sender's own notification id (the Notification portal's
+    /// per-application id), so an external withdrawal can be matched back
+    /// to this entry. `None` for compositor-originated notifications.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub external_id: Option<String>,
     /// Compositor-relative timestamp (ms) the notification was posted.
     pub at_ms: u64,
 }
@@ -26,6 +31,12 @@ pub struct Notification {
 /// reading [`Self::recent`]. Every mutation bumps [`Self::revision`], so
 /// per-frame readers can cache their clone of the entries and only re-clone
 /// when the queue actually changed.
+///
+/// The TTL is the *retention* horizon (how long the command panel's list,
+/// the HUD count, and the IPC history keep an entry). Transient surfaces
+/// such as the toast strip apply their own, shorter presentation window on
+/// top, measured against the compositor clock the queue is ticked with (see
+/// [`Self::now_ms`]).
 #[derive(Debug)]
 pub struct NotificationQueue {
     entries: Vec<Notification>,
@@ -33,6 +44,8 @@ pub struct NotificationQueue {
     ttl_ms: u64,
     do_not_disturb: bool,
     revision: u64,
+    /// The `now_ms` of the last [`Self::expire`] tick.
+    now_ms: u64,
 }
 
 impl NotificationQueue {
@@ -44,6 +57,7 @@ impl NotificationQueue {
             ttl_ms,
             do_not_disturb: false,
             revision: 0,
+            now_ms: 0,
         }
     }
 
@@ -57,11 +71,26 @@ impl NotificationQueue {
         app_id: Option<String>,
         now_ms: u64,
     ) -> Notification {
+        self.push_external(summary, body, app_id, None, now_ms)
+    }
+
+    /// Push one notification carrying the sender's own external id (the
+    /// Notification portal's per-application id). Compositor-originated
+    /// pushes pass `None`.
+    pub fn push_external(
+        &mut self,
+        summary: impl Into<String>,
+        body: impl Into<String>,
+        app_id: Option<String>,
+        external_id: Option<String>,
+        now_ms: u64,
+    ) -> Notification {
         let n = Notification {
             id: self.next_id,
             summary: summary.into(),
             body: body.into(),
             app_id,
+            external_id,
             at_ms: now_ms,
         };
         self.next_id += 1;
@@ -70,8 +99,10 @@ impl NotificationQueue {
         n
     }
 
-    /// Drop entries older than `ttl_ms` relative to `now_ms`.
+    /// Drop entries older than `ttl_ms` relative to `now_ms`. Also records
+    /// `now_ms` as the queue's clock reading (see [`Self::now_ms`]).
     pub fn expire(&mut self, now_ms: u64) {
+        self.now_ms = now_ms;
         let before = self.entries.len();
         self.entries
             .retain(|n| now_ms.saturating_sub(n.at_ms) <= self.ttl_ms);
@@ -131,6 +162,15 @@ impl NotificationQueue {
     /// clone while the revision is unchanged.
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// The compositor-relative clock of the last [`Self::expire`] tick. The
+    /// main loop ticks `expire` every iteration before chrome renders, so
+    /// chrome can measure presentation windows shorter than the retention
+    /// TTL against this reading (a toast aging out does not bump the
+    /// revision).
+    pub fn now_ms(&self) -> u64 {
+        self.now_ms
     }
 }
 
@@ -213,6 +253,17 @@ mod tests {
         assert_eq!(q.revision(), 4);
         q.set_do_not_disturb(true);
         assert_eq!(q.revision(), 5);
+    }
+
+    #[test]
+    fn expire_records_the_compositor_clock() {
+        let mut q = NotificationQueue::new(1000);
+        assert_eq!(q.now_ms(), 0);
+        q.push("a", "", None, 0);
+        q.expire(500);
+        assert_eq!(q.now_ms(), 500);
+        q.expire(2000);
+        assert_eq!(q.now_ms(), 2000);
     }
 
     #[test]

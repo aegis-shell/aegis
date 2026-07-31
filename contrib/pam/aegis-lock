@@ -3,4 +3,9 @@
 # system-auth/common-auth stack. The login service is the portable baseline
 # and preserves the host's authentication and account policy.
 auth include login
+# Cache the just-verified password for the aegis-portal secret vault's
+# auto-unlock (writes $XDG_RUNTIME_DIR/aegis-pam-token, mode 0600; the
+# portal consumes and deletes it). Optional: authentication never depends
+# on the module.
+auth optional pam_aegis.so
 account include login

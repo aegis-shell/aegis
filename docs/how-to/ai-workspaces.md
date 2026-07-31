@@ -5,7 +5,7 @@ application process tree from the physical desktop.
 
 ## Create a Workspace
 
-1. Click **Agent Workspaces** in the status bar.
+1. Open **Agent Workspaces** from the application launcher (`Super+A`).
 2. Select **Create Empty Workspace**.
 
 The workspace starts with an independent pointer/keyboard seat and a

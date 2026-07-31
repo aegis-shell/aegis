@@ -594,6 +594,7 @@ impl CompositorRuntime {
                                 w.state.maximized,
                                 w.state.fullscreen,
                                 w.minimized,
+                                w.always_on_top,
                                 w.title.clone(),
                             )
                         })
@@ -864,6 +865,93 @@ impl CompositorRuntime {
                 {
                     let _ = pick.reply.send(Ok(aegis_ipc::PickResult::Cancelled));
                 }
+                // File-pick delivery (the FileChooser portal's compositor
+                // side): the modal picker answers the parked request with
+                // the confirmed paths and active filter, or a cancellation.
+                // No freeze is involved at any point of this path.
+                if let Some((paths, filter)) = self.shell.take_file_pick_confirmed()
+                    && let Some(pick) = self.pending_file_pick.take()
+                {
+                    let _ = pick
+                        .reply
+                        .send(Ok(aegis_ipc::FilePickResult::Paths { paths, filter }));
+                }
+                if self.shell.take_file_pick_cancelled()
+                    && let Some(pick) = self.pending_file_pick.take()
+                {
+                    let _ = pick.reply.send(Ok(aegis_ipc::FilePickResult::Cancelled));
+                }
+                // Safety net, mirroring the picker overlay's: a file picker
+                // that closed without emitting any event still answers its
+                // request.
+                if self.pending_file_pick.is_some()
+                    && !self.shell.file_pick_active()
+                    && let Some(pick) = self.pending_file_pick.take()
+                {
+                    let _ = pick.reply.send(Ok(aegis_ipc::FilePickResult::Cancelled));
+                }
+                // App-pick delivery (the AppChooser portal's compositor
+                // side), same shape as the file pick above.
+                if let Some(id) = self.shell.take_app_pick_confirmed()
+                    && let Some(pick) = self.pending_app_pick.take()
+                {
+                    let _ = pick.reply.send(Ok(aegis_ipc::AppPickResult::App { id }));
+                }
+                if self.shell.take_app_pick_cancelled()
+                    && let Some(pick) = self.pending_app_pick.take()
+                {
+                    let _ = pick.reply.send(Ok(aegis_ipc::AppPickResult::Cancelled));
+                }
+                if self.pending_app_pick.is_some()
+                    && !self.shell.app_pick_active()
+                    && let Some(pick) = self.pending_app_pick.take()
+                {
+                    let _ = pick.reply.send(Ok(aegis_ipc::AppPickResult::Cancelled));
+                }
+                // Secret-prompt delivery (the vault password unlock's
+                // compositor side), same shape as the other picks above.
+                if let Some(value) = self.shell.take_secret_prompt_confirmed()
+                    && let Some(pick) = self.pending_secret_prompt.take()
+                {
+                    let _ = pick
+                        .reply
+                        .send(Ok(aegis_ipc::SecretPromptResult::Secret { value }));
+                }
+                if self.shell.take_secret_prompt_cancelled()
+                    && let Some(pick) = self.pending_secret_prompt.take()
+                {
+                    let _ = pick
+                        .reply
+                        .send(Ok(aegis_ipc::SecretPromptResult::Cancelled));
+                }
+                if self.pending_secret_prompt.is_some()
+                    && !self.shell.secret_prompt_active()
+                    && let Some(pick) = self.pending_secret_prompt.take()
+                {
+                    let _ = pick
+                        .reply
+                        .send(Ok(aegis_ipc::SecretPromptResult::Cancelled));
+                }
+                // Confirmation delivery (portal consent dialogs), same
+                // shape as the other picks above.
+                if let Some(confirmed) = self.shell.take_confirm_pick_answered()
+                    && let Some(pick) = self.pending_confirm_pick.take()
+                {
+                    let result = if confirmed {
+                        aegis_ipc::ConfirmPickResult::Confirmed
+                    } else {
+                        aegis_ipc::ConfirmPickResult::Cancelled
+                    };
+                    let _ = pick.reply.send(Ok(result));
+                }
+                if self.pending_confirm_pick.is_some()
+                    && !self.shell.confirm_pick_active()
+                    && let Some(pick) = self.pending_confirm_pick.take()
+                {
+                    let _ = pick
+                        .reply
+                        .send(Ok(aegis_ipc::ConfirmPickResult::Cancelled));
+                }
                 // The selector closed this frame (confirmed above or
                 // cancelled). This frame still presented the frozen
                 // snapshot — exactly what the bound readback captures — so
@@ -951,6 +1039,9 @@ impl CompositorRuntime {
                         }
                         aegis_shell::WindowAction::SetMaximized(id, maximized) => {
                             aegis_ipc::Command::SetMaximized { id, maximized }
+                        }
+                        aegis_shell::WindowAction::SetAlwaysOnTop(id, on_top) => {
+                            aegis_ipc::Command::SetAlwaysOnTop { id, on_top }
                         }
                         aegis_shell::WindowAction::Close(id) => aegis_ipc::Command::Close { id },
                     };
@@ -1088,6 +1179,7 @@ impl CompositorRuntime {
                             &mut self.host,
                             &self.notif_queue,
                             &mut self.system_status,
+                            &mut self.ipc_idle_inhibits,
                             action,
                         ) {
                             Ok(()) => {
@@ -1122,6 +1214,11 @@ impl CompositorRuntime {
                         // blocks on a wpctl/nmcli subprocess.
                         let _ = self.status_refresh_tx.send(());
                     }
+                }
+                // The command panel's Lock now row: lock immediately through
+                // the same idle-process path as the Super+L binding.
+                if self.shell.take_lock() {
+                    self.idle_process.lock_now();
                 }
                 // The dock's Launchpad tile was clicked: toggle the launcher
                 // through the same path as the Super+A hotkey.

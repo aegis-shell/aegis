@@ -47,6 +47,32 @@ pub fn application(design: &Design) -> Theme {
         .with_scrollbar_radius(design.radii.scrollbar)
 }
 
+/// The light widget theme inside the SAO command panel's white surfaces
+/// (ADR-0080): dark text, amber accent, amber slider fill.
+#[must_use]
+pub fn sao(sao: &crate::tokens::Sao) -> Theme {
+    Theme::light()
+        .with_bg(sao.surface)
+        .with_fg(sao.text)
+        .with_accent(sao.accent)
+        .with_border(sao.border)
+        .with_hover(sao.accent_soft)
+        .with_active(sao.accent_soft)
+        .with_corner_radius(8.0)
+        .with_border_width(0.0)
+        .with_slider_track_color(sao.track)
+        .with_slider_fill_color(sao.accent)
+        .with_slider_knob_color(sao.knob)
+        .with_scrollbar_width(5.0)
+        .with_scrollbar_radius(2.5)
+}
+
+/// Derive the subdued SAO caption theme without changing other tokens.
+#[must_use]
+pub fn sao_muted(sao_theme: Theme, sao: &crate::tokens::Sao) -> Theme {
+    sao_theme.with_fg(sao.text_muted)
+}
+
 #[cfg(test)]
 mod tests {
     use lens::Color;
@@ -69,5 +95,14 @@ mod tests {
         assert_eq!(theme.bg(), Color::rgba(25, 28, 40, 255));
         assert_eq!(theme.fg(), Color::rgba(244, 246, 252, 255));
         assert_eq!(theme.accent(), Color::rgba(102, 156, 255, 255));
+    }
+
+    #[test]
+    fn sao_theme_is_light_with_amber_accent() {
+        let tokens = crate::tokens::Sao::classic();
+        let theme = sao(&tokens);
+        assert_eq!(theme.fg(), tokens.text);
+        assert_eq!(theme.accent(), tokens.accent);
+        assert_eq!(sao_muted(theme, &tokens).fg(), tokens.text_muted);
     }
 }

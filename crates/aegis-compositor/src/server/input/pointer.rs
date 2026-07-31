@@ -566,15 +566,23 @@ impl Server {
         // A key that matches a global binding on press is consumed (not posted
         // to the focused client) and its action returned for the caller to
         // dispatch. Modifier-only keys never match, so modifiers still post.
+        // While the session is locked, bindings stay swallowed — except for
+        // the development-only Quit escape hatch (`[dev]
+        // allow_quit_while_locked`), which still matches so a wedged lock
+        // surface cannot trap the session. That hatch will be removed before
+        // release.
         let shortcuts_inhibited =
             unsafe { extensions::keyboard_shortcuts_inhibited(self.state.as_mut()) };
+        let locked = self.state.session_lock_phase.is_active();
         let matched = if state.is_pressed()
             && !shortcuts_inhibited
-            && !self.state.session_lock_phase.is_active()
+            && (!locked || self.state.allow_quit_while_locked)
         {
-            keymap.and_then(|keymap| {
-                keymap.match_key(aegis_core::input::Mods(outcome.depressed), outcome.keysym)
-            })
+            keymap
+                .and_then(|keymap| {
+                    keymap.match_key(aegis_core::input::Mods(outcome.depressed), outcome.keysym)
+                })
+                .filter(|action| !locked || matches!(action, aegis_core::keybind::Action::Quit))
         } else {
             None
         };

@@ -13,10 +13,15 @@ pub(super) struct LiveChannels {
     pub(super) capture: std::sync::mpsc::Sender<CaptureRequest>,
     pub(super) realm_controls: std::sync::mpsc::Sender<RealmControlRequest>,
     pub(super) settings_controls: std::sync::mpsc::Sender<SettingsControlRequest>,
+    pub(super) wallpaper_controls: std::sync::mpsc::Sender<WallpaperControlRequest>,
     pub(super) realm_capture: std::sync::mpsc::Sender<RealmCaptureRequest>,
     pub(super) stream_controls: std::sync::mpsc::Sender<StreamControlRequest>,
     pub(super) idle_controls: std::sync::mpsc::Sender<IdleControlRequest>,
     pub(super) pick_controls: std::sync::mpsc::Sender<PickControlRequest>,
+    pub(super) file_pick_controls: std::sync::mpsc::Sender<FilePickControlRequest>,
+    pub(super) app_pick_controls: std::sync::mpsc::Sender<AppPickControlRequest>,
+    pub(super) secret_prompt_controls: std::sync::mpsc::Sender<SecretPromptControlRequest>,
+    pub(super) confirm_pick_controls: std::sync::mpsc::Sender<ConfirmPickControlRequest>,
     pub(super) journal_refusals: std::sync::mpsc::Sender<JournalRefusalRequest>,
 }
 
@@ -34,10 +39,15 @@ pub(super) struct LiveState {
     capture: std::sync::Mutex<std::sync::mpsc::Sender<CaptureRequest>>,
     realm_controls: std::sync::Mutex<std::sync::mpsc::Sender<RealmControlRequest>>,
     settings_controls: std::sync::Mutex<std::sync::mpsc::Sender<SettingsControlRequest>>,
+    wallpaper_controls: std::sync::Mutex<std::sync::mpsc::Sender<WallpaperControlRequest>>,
     realm_capture: std::sync::Mutex<std::sync::mpsc::Sender<RealmCaptureRequest>>,
     stream_controls: std::sync::Mutex<std::sync::mpsc::Sender<StreamControlRequest>>,
     idle_controls: std::sync::Mutex<std::sync::mpsc::Sender<IdleControlRequest>>,
     pick_controls: std::sync::Mutex<std::sync::mpsc::Sender<PickControlRequest>>,
+    file_pick_controls: std::sync::Mutex<std::sync::mpsc::Sender<FilePickControlRequest>>,
+    app_pick_controls: std::sync::Mutex<std::sync::mpsc::Sender<AppPickControlRequest>>,
+    secret_prompt_controls: std::sync::Mutex<std::sync::mpsc::Sender<SecretPromptControlRequest>>,
+    confirm_pick_controls: std::sync::Mutex<std::sync::mpsc::Sender<ConfirmPickControlRequest>>,
     journal_refusals: std::sync::mpsc::Sender<JournalRefusalRequest>,
     capture_delivery_gate: std::sync::Arc<std::sync::atomic::AtomicBool>,
     scopes: std::sync::RwLock<std::collections::HashMap<String, aegis_ipc::Scope>>,
@@ -67,10 +77,15 @@ impl LiveState {
             capture: std::sync::Mutex::new(channels.capture),
             realm_controls: std::sync::Mutex::new(channels.realm_controls),
             settings_controls: std::sync::Mutex::new(channels.settings_controls),
+            wallpaper_controls: std::sync::Mutex::new(channels.wallpaper_controls),
             realm_capture: std::sync::Mutex::new(channels.realm_capture),
             stream_controls: std::sync::Mutex::new(channels.stream_controls),
             idle_controls: std::sync::Mutex::new(channels.idle_controls),
             pick_controls: std::sync::Mutex::new(channels.pick_controls),
+            file_pick_controls: std::sync::Mutex::new(channels.file_pick_controls),
+            app_pick_controls: std::sync::Mutex::new(channels.app_pick_controls),
+            secret_prompt_controls: std::sync::Mutex::new(channels.secret_prompt_controls),
+            confirm_pick_controls: std::sync::Mutex::new(channels.confirm_pick_controls),
             journal_refusals: channels.journal_refusals,
             capture_delivery_gate,
             scopes: std::sync::RwLock::new(scopes),
@@ -266,6 +281,22 @@ impl aegis_ipc::Handler for LiveState {
             .map_err(|_| "settings operation timed out".to_owned())?
     }
 
+    fn set_wallpaper(&self, _conn_id: u64, path: std::path::PathBuf) -> Result<(), String> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.wallpaper_controls
+            .lock()
+            .unwrap()
+            .send(WallpaperControlRequest {
+                path,
+                reply: reply_tx,
+            })
+            .map_err(|_| "compositor is shutting down".to_owned())?;
+        // A video wallpaper's first decode can take a moment.
+        reply_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .map_err(|_| "wallpaper operation timed out".to_owned())?
+    }
+
     fn capture_realm(
         &self,
         realm: aegis_core::realm::RealmId,
@@ -385,6 +416,163 @@ impl aegis_ipc::Handler for LiveState {
                     action: PickControl::Cancel,
                 });
                 Err("interactive pick timed out".to_owned())
+            }
+        }
+    }
+
+    fn pick_confirm(
+        &self,
+        conn_id: u64,
+        title: String,
+        body: String,
+        accept_label: Option<String>,
+    ) -> Result<aegis_ipc::ConfirmPickResult, String> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.confirm_pick_controls
+            .lock()
+            .unwrap()
+            .send(ConfirmPickControlRequest {
+                conn_id,
+                action: ConfirmPickControl::Start {
+                    title,
+                    body,
+                    accept_label,
+                    reply: reply_tx,
+                },
+            })
+            .map_err(|_| "compositor is shutting down".to_owned())?;
+        // The reply parks until the user confirms or cancels, exactly like
+        // the other picks; the timeout bounds an abandoned dialog and
+        // cancels the chrome so the panel never lingers for a dead
+        // requester.
+        match reply_rx.recv_timeout(PICK_TIMEOUT) {
+            Ok(result) => result,
+            Err(_) => {
+                let _ = self
+                    .confirm_pick_controls
+                    .lock()
+                    .unwrap()
+                    .send(ConfirmPickControlRequest {
+                        conn_id,
+                        action: ConfirmPickControl::Cancel,
+                    });
+                Err("confirmation timed out".to_owned())
+            }
+        }
+    }
+
+    fn prompt_secret(
+        &self,
+        conn_id: u64,
+        title: String,
+        reason: Option<String>,
+    ) -> Result<aegis_ipc::SecretPromptResult, String> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.secret_prompt_controls
+            .lock()
+            .unwrap()
+            .send(SecretPromptControlRequest {
+                conn_id,
+                action: SecretPromptControl::Start {
+                    title,
+                    reason,
+                    reply: reply_tx,
+                },
+            })
+            .map_err(|_| "compositor is shutting down".to_owned())?;
+        // The reply parks until the user confirms or cancels, exactly like
+        // the other picks; the timeout bounds an abandoned prompt and
+        // cancels the chrome so the panel never lingers for a dead
+        // requester.
+        match reply_rx.recv_timeout(PICK_TIMEOUT) {
+            Ok(result) => result,
+            Err(_) => {
+                let _ =
+                    self.secret_prompt_controls
+                        .lock()
+                        .unwrap()
+                        .send(SecretPromptControlRequest {
+                            conn_id,
+                            action: SecretPromptControl::Cancel,
+                        });
+                Err("secret prompt timed out".to_owned())
+            }
+        }
+    }
+
+    fn pick_app(
+        &self,
+        conn_id: u64,
+        choices: Vec<String>,
+        subject: Option<String>,
+        last_choice: Option<String>,
+    ) -> Result<aegis_ipc::AppPickResult, String> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.app_pick_controls
+            .lock()
+            .unwrap()
+            .send(AppPickControlRequest {
+                conn_id,
+                action: AppPickControl::Start {
+                    choices,
+                    subject,
+                    last_choice,
+                    reply: reply_tx,
+                },
+            })
+            .map_err(|_| "compositor is shutting down".to_owned())?;
+        // The reply parks until the user confirms or cancels, exactly like
+        // the file pick; the timeout bounds an abandoned picker and cancels
+        // the chrome so the panel never lingers for a dead requester.
+        match reply_rx.recv_timeout(PICK_TIMEOUT) {
+            Ok(result) => result,
+            Err(_) => {
+                let _ = self
+                    .app_pick_controls
+                    .lock()
+                    .unwrap()
+                    .send(AppPickControlRequest {
+                        conn_id,
+                        action: AppPickControl::Cancel,
+                    });
+                Err("app pick timed out".to_owned())
+            }
+        }
+    }
+
+    fn pick_file(
+        &self,
+        conn_id: u64,
+        options: aegis_ipc::FilePickOptions,
+    ) -> Result<aegis_ipc::FilePickResult, String> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.file_pick_controls
+            .lock()
+            .unwrap()
+            .send(FilePickControlRequest {
+                conn_id,
+                action: FilePickControl::Start {
+                    options,
+                    reply: reply_tx,
+                },
+            })
+            .map_err(|_| "compositor is shutting down".to_owned())?;
+        // The reply parks until the user confirms or cancels, exactly like
+        // the target pick above; the timeout bounds an abandoned picker and
+        // cancels the chrome so the panel never lingers for a dead
+        // requester.
+        match reply_rx.recv_timeout(PICK_TIMEOUT) {
+            Ok(result) => result,
+            Err(_) => {
+                let _ = self
+                    .file_pick_controls
+                    .lock()
+                    .unwrap()
+                    .send(FilePickControlRequest {
+                        conn_id,
+                        action: FilePickControl::Cancel,
+                    });
+                Err("file pick timed out".to_owned())
             }
         }
     }

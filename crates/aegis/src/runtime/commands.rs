@@ -62,6 +62,7 @@ pub(super) fn physical_window_target(
         Command::Focus { id }
         | Command::Minimize { id }
         | Command::SetMaximized { id, .. }
+        | Command::SetAlwaysOnTop { id, .. }
         | Command::Close { id }
         | Command::Move { id }
         | Command::SetWindowGeometry { id, .. } => Some(*id),
@@ -91,6 +92,9 @@ pub(super) fn apply_command(
         Command::Minimize { id } => server.minimize_toplevel(*id),
         Command::SetMaximized { id, maximized } => {
             server.set_toplevel_maximized(*id, *maximized);
+        }
+        Command::SetAlwaysOnTop { id, on_top } => {
+            server.set_toplevel_always_on_top(*id, *on_top);
         }
         Command::Close { id } => server.close_toplevel(*id),
         Command::Move { id } => server.start_interactive_move(*id),
@@ -130,11 +134,13 @@ pub(super) fn apply_command(
             summary,
             body,
             app_id,
+            external_id,
         } => {
-            let n = notif_queue.lock().unwrap().push(
+            let n = notif_queue.lock().unwrap().push_external(
                 summary.clone(),
                 body.clone(),
                 app_id.clone(),
+                external_id.clone(),
                 ts_mono_ms,
             );
             if let Some(s) = ipc.as_ref() {

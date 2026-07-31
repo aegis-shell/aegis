@@ -258,8 +258,8 @@ bash = "ask"
 "mcp__aegis__realm_input" = "allow"
 
 [mcp.aegis]
-command = ["aegis-fuji-mcp"]
-environment = { AEGIS_FUJI_SCOPE = "fuji" }
+command = ["aegis-mcp"]
+environment = { AEGIS_MCP_SCOPE = "desktop-operator" }
 
 [skills]
 paths = ["/opt/skills"]
@@ -277,13 +277,13 @@ paths = ["/opt/skills"]
         let aegis = config.mcp.get("aegis").expect("aegis server");
         assert!(aegis.enabled);
         assert!(!aegis.read_only);
-        assert_eq!(aegis.command, vec!["aegis-fuji-mcp".to_string()]);
+        assert_eq!(aegis.command, vec!["aegis-mcp".to_string()]);
         assert_eq!(
             aegis
                 .environment
-                .get("AEGIS_FUJI_SCOPE")
+                .get("AEGIS_MCP_SCOPE")
                 .map(String::as_str),
-            Some("fuji")
+            Some("desktop-operator")
         );
     }
 

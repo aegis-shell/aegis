@@ -7,6 +7,179 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Idle and locking
+
+- Added two session controls to the command panel's System section
+  (`Super+S`): Lock Now locks the session immediately through the same path
+  as `Super+L`, and Always On holds a session-wide idle inhibitor that
+  keeps automatic dimming, locking, and display power-off suspended until
+  switched off. Always On is a runtime toggle owned by the compositor; it
+  is not persisted and folds into the same effective inhibitor flag as the
+  connection-scoped IPC inhibitors, so neither source can clear the other.
+- Added the development-only `[dev] allow_quit_while_locked` escape hatch
+  (default `false`): while the session is locked, only the `quit` binding
+  (`Super+Ctrl+Q` by default) still matches, so a wedged lock screen cannot
+  trap a development session. This option is planned for removal before
+  release; every other binding stays swallowed while locked.
+
+### Shell and input
+
+- Replaced the interactive top status bar with display-only HUD status
+  chips (ADR-0080): system status (network, Bluetooth, battery), the
+  StatusNotifierItem tray row, the clock, and the notification count on the
+  left, and workspace dots in the center. The chips reserve no space, so
+  tiled and maximized windows now occupy the full output; they accept no
+  pointer input, so clicks fall through to windows even on tray icons; and
+  each chip fades out while the cursor approaches it, honoring the
+  reduced-motion policy. Fullscreen auto-hide is preserved.
+- Added the command panel, a full-screen modal overlay in the Sword Art
+  Online menu language — frosted white floating panels with an amber accent
+  over the standard dark blurred scrim. It hosts the interactions the HUD
+  gave up: quick settings (volume, brightness, Wi-Fi, Bluetooth,
+  do-not-disturb, tiled layout), tray activation with host-rendered
+  dbusmenu context menus, and notification dismissal. Open it with the new
+  `Super+S` binding (configurable as the `command_panel` action in
+  `[[keybind]]`) or a four-finger touchpad swipe down; close with the same
+  binding, Escape, a scrim click, or a four-finger swipe up. Four-finger
+  swipes are now compositor-owned and no longer forwarded to clients.
+- Added configurable touchpad swipe bindings (ADR-0082). New defaults: a
+  three-finger horizontal swipe switches to the next or previous
+  workspace, and a three-finger vertical swipe cycles the current
+  workspace's windows through the live window switcher until the gesture
+  ends; the four-finger command-panel swipe is unchanged. A swipe latches
+  its axis at 30 px and fires one step per 120 px of travel. Finger count
+  and axis pairs rebind or disable through new `[[gesture]]` entries in
+  `config.toml` (`workspace_switch`, `window_cycle`, `command_panel`,
+  `none`), hot-reloaded alongside `[[keybind]]`. Three-finger swipes are
+  now compositor-owned and no longer forwarded to clients, and gesture
+  commands are journaled under the new `Origin::Gesture`.
+- Split the StatusNotifierItem tray service into a shared `aegis-tray`
+  crate, spawned once by the compositor and consumed read-only by the HUD
+  and read-plus-command by the command panel.
+- Renamed the compositor chrome crates and their user-facing identifiers
+  (ADR-0081). `aegis-statusbar` is now `aegis-hud`, and its configuration
+  table is renamed `[statusbar]` → `[hud]` with the same `enabled` key and
+  no legacy alias. `aegis-sao-panel` is now `aegis-command-panel`, and the
+  keybinding action is renamed `sao` / `sao_panel` → `command_panel`
+  (aliases `commandpanel`, `panel`); the default binding stays `Super+S`.
+  Update `config.toml` accordingly — the old names are rejected. The `Sao`
+  design tokens in `aegis-design` keep their name as the internal codename
+  of the panel's visual idiom.
+- Reworked notification presentation (ADR-0083). Toasts are now a
+  frameless, display-only strip at the top-right — plain floating text with
+  no background panel — that captures no pointer input and disappears after
+  three seconds; click-to-dismiss on popups is gone, and dismissal lives in
+  the command panel's Messages section. Notification history is decoupled
+  from popup lifetime: the shared queue retains entries for one hour (was
+  five seconds), so the Messages list, the HUD bell count, and IPC queries
+  keep working after a popup fades. The HUD's right chip is removed (the
+  clock and bell moved into the left chip), and the Agent Workspaces status
+  moved from the HUD to a display-only status row in the command panel's
+  System section.
+- Added per-window always-on-top (ADR-0084). The Dock context menu gains an
+  `Always on Top` / `Not Always on Top` row next to Maximize/Restore that
+  keeps the application's activated window above every normal window but
+  below compositor chrome; the row targets the same window as the Maximize
+  row and is unavailable for read-only mirrors and minimized or fullscreen
+  windows. The flag is compositor-internal and session-scoped — no
+  `xdg_toplevel` state, no configuration key, no keybind, and no
+  `window_rule` action. Scripting uses the new `SetAlwaysOnTop
+  { id, on_top }` IPC command (op class `SetWindowGeometry`) or
+  `aegis-ctl always-on-top <id> <on|off>`.
+
+### Desktop portal
+
+- Added the `org.freedesktop.impl.portal.Secret` v1 backend interface to
+  `aegis-portal`, backed by an encrypted at-rest vault under
+  `$XDG_DATA_HOME/aegis/secrets` (XChaCha20-Poly1305, first run creates a
+  mode-0600 keyfile and unlocks automatically). Sandboxed applications
+  retrieve an HKDF-derived portal secret over the request's file
+  descriptor; the raw vault master key never crosses D-Bus.
+- Added a transitional `org.freedesktop.secrets` (Secret Service API)
+  compatibility layer to the same process so un-sandboxed libsecret clients
+  keep working until portal-native secret retrieval is universal. It is
+  isolated in `secret::compat` and scheduled for removal together with its
+  `org.freedesktop.secrets.service` activation file.
+- Added the `org.freedesktop.impl.portal.FileChooser` v3 backend interface,
+  running the compositor's native file-picker chrome over the new
+  user-consent `PickFile` IPC (protocol 13, fail-closed like `PickTarget`,
+  no screen capture involved). `OpenFile`/`SaveFile`/`SaveFiles` all map to
+  the picker; filters round-trip as the spec's `(sa(us))` structures.
+  GTK stays configured as the fallback while the picker proves itself.
+- Added the `org.freedesktop.impl.portal.Wallpaper` v1 backend interface.
+  `SetWallpaperURI` consents through the compositor's confirmation dialog,
+  then decodes and swaps the image live on the compositor main loop (new
+  synchronous `SetWallpaper` IPC, protocol 17; glTF stays startup-only).
+- Added the `org.freedesktop.impl.portal.DynamicLauncher` v1 backend
+  interface. `PrepareInstall` consents through the compositor's
+  confirmation dialog before echoing the proposed name/icon with a fresh
+  install token; `RequestInstallToken` is always refused, so no install
+  bypasses consent.
+- Added the `org.freedesktop.impl.portal.Account` v1 backend interface.
+  `GetUserInformation` answers only after the compositor's yes/no consent
+  dialog (new generic `PickConfirm` IPC, protocol 16) approves sharing;
+  the identity comes from `getpwuid` plus the canonical avatar locations.
+- Changed the portal routing default from `gtk` to `aegis;gtk`: Aegis is
+  now the default backend for every interface, with GTK as the safety net
+  for the few it does not implement (Access, Print, Location, Background).
+  The frontend only asks Aegis for the interfaces advertised in
+  `aegis.portal`.
+- Added `pam_aegis`, a PAM module caching the just-verified login password
+  to `$XDG_RUNTIME_DIR/aegis-pam-token` (mode 0600, written atomically).
+  Password-mode secret vaults unlock silently at login and after screen
+  unlock (a watcher in `aegis-portal` consumes and deletes the token);
+  the `contrib/pam/aegis-lock` stack includes it as `optional`.
+- Added the masked secret prompt (IPC protocol 15 `PromptSecret`):
+  password-mode vaults now unlock through compositor chrome. The
+  `org.freedesktop.secrets` compat `Unlock` prompts, derives the vault key
+  with the Argon2id KDF, and completes the spec's Prompt object; the typed
+  password is zeroized after use.
+- Added the `org.freedesktop.impl.portal.Notification` v2 backend interface.
+  `AddNotification` posts into the compositor's notification queue (toast,
+  command panel, HUD) carrying the application's own id as `external_id`;
+  `RemoveNotification` matches `(app_id, id)` against the live queue
+  snapshot and dismisses the entry.
+- Added the `org.freedesktop.impl.portal.AppChooser` v2 backend interface,
+  running the compositor's native app-picker chrome over the new
+  user-consent `PickApp` IPC (protocol 14, same fail-closed authorization as
+  `PickFile`). GTK stays configured as the fallback while the picker proves
+  itself.
+- Added the `org.freedesktop.impl.portal.Email` v2 backend interface,
+  handing compose requests to the session mail client via `xdg-email`
+  (`AEGIS_PORTAL_MAILER` overrides it); attachment fds are staged into the
+  portal cache directory and passed as `--attach` paths.
+- Added the stateless `org.freedesktop.impl.portal.Lockdown` backend
+  interface (all flags permissive; no kiosk policy engine exists).
+- Fixed every backend interface to serve the spec-mandated lowercase
+  `version` property. zbus auto-PascalCased it to `Version`, which made
+  `xdg-desktop-portal` skip the Aegis ScreenCast/Screenshot interfaces
+  entirely (no frontend interface was ever exported for them).
+- Fixed `RetrieveSecret` to deliver the secret over any caller-supplied
+  file descriptor. The backend wrote with a socket-only `shutdown(2)`, which
+  fails `ENOTSOCK` on the plain pipe that real clients (Chrome's
+  `SecretPortalKeyProvider`, libportal) pass, so the master secret never
+  reached the app and stored cookies/passwords were undecryptable. A plain
+  `write_all` + close now delivers EOF for both pipes and sockets.
+- Fixed concurrent secret-vault unlockers to each get their own spec
+  `Prompt` object and complete from a single compositor interaction. The old
+  single-flight `is_unlocking` flag returned a shared `/…/prompt/pending`
+  placeholder to all but the first caller, so a second `Unlock` (or a
+  `RetrieveSecret`/`CreateCollection` arriving mid-prompt) never received a
+  `Prompt.Completed` signal and hung. A shared unlock coordinator now queues
+  every caller behind one prompt worker that prompts once and completes the
+  whole batch.
+- Fixed `RetrieveSecret` on a locked (password-mode) vault to prompt for the
+  vault password and then deliver the derived secret, instead of failing
+  outright with `IsLocked`. Portal response code 1 (cancelled) is reported
+  when the user dismisses the unlock prompt.
+- Fixed `CreateCollection` on a locked vault to queue behind the same unlock
+  prompt and create the collection once unlocked (replying with the spec
+  prompt path), so sandboxed clients that create their default collection up
+  front no longer see an empty `/` path and a silent no-op.
+- Fixed `Item.Delete`/`Collection.Delete` to drop the deleted object from
+  the bus, not just tombstone it in the search index. Stale paths now fail
+  on later calls instead of returning the deleted item's secret.
+
 ### Graphics and performance
 
 - Added linux-dmabuf v4 feedback backed by the DRM identity of the Vulkan
@@ -64,6 +237,55 @@ project cuts a tagged release.
   opaque fail-closed scene if the locker exits unexpectedly.
 - Core packaging now includes `aegis-idle`, `aegis-lock`, and the
   `/etc/pam.d/aegis-lock` service profile.
+- Distinguished a genuine wrong password from a misconfigured PAM stack on
+  the lock screen. When PAM rejects an attempt without ever prompting for
+  the credential — the signature of a missing or deny-all `aegis-lock`
+  service profile — the screen now reports *Authentication misconfigured ·
+  Install the aegis-lock PAM profile* instead of looping *Incorrect
+  password*, which previously made every password look wrong.
+- Added the `aegis-avatar` crate, an independent library for user-avatar
+  loading and rendering modelled on `aegis-wallpaper`. It resolves the avatar
+  from XDG-conformant locations (reusing `aegis-desktop-entries`, never
+  hand-rolling `$XDG_DATA_HOME`), and produces a single circle-masked GPU
+  texture. Still images (PNG, JPEG, WebP, GIF, BMP, ICO, TIFF, TGA, QOI, PNM)
+  are cover-fit, analytically circle-masked, and premultiplied. VRM models
+  load through `flux-scene-graph` and render offscreen into the same circular
+  texture, with honest `AnimationSupport` reporting since skins/morph/animation
+  are not yet in the scene graph's supported subset. See ADR-0080.
+- Added user-avatar support to the lock-screen identity orb via `aegis-avatar`.
+  The canonical location is `$XDG_DATA_HOME/aegis/avatars/face.*` (per the
+  Aegis namespace, ADR-0066), with `~/.face` / `~/.face.icon` searched for
+  compatibility. Fixed the orb's gradient leaking square corners past the
+  circular keyline. VRM models render as posed 3D figures.
+- Sharpened the lock wallpaper: raised the atlas cap from 2048 to 3840 px
+  and reduced the defocus blur from σ 14 to σ 6 to remove the smeared look
+  on high-DPI and ultrawide panels.
+
+### System shortcuts
+
+- Changed the default graceful-quit shortcut from `Super+Shift+Q` to
+  `Super+Ctrl+Q`. `Super+Q` still closes the focused toplevel, so the new
+  binding avoids the shifted-uppercase key path and frees `Super+Shift+Q`.
+  The alternate `Super+Shift+Return` quit binding is unchanged.
+
+### Agent integration
+
+- Split the scoped MCP platform bridge out of `aegis-fuji` into the
+  standalone `aegis-mcp` crate (ADR-0087): the bridge is now the platform's
+  standard agent access point rather than a fuji component, and the
+  `aegis-fuji` crate keeps only fuji's agent runtime. The bridge binary is
+  renamed `aegis-fuji-mcp` → `aegis-mcp`, its environment variables
+  `AEGIS_FUJI_*` → `AEGIS_MCP_*` (no aliases), its state directory moves to
+  `$XDG_RUNTIME_DIR/aegis-mcp/` (old Realm recovery records do not
+  migrate), and the `realm_transfer_window` tool's `target` value `fuji`
+  becomes `agent`. fuji's default MCP configuration spawns `aegis-mcp`
+  with an explicit `AEGIS_MCP_SCOPE` naming its declared scope.
+- Changed the default `AEGIS_MCP_SCOPE` value and the documented example
+  scope from `fuji` to `desktop-operator`: a scope names a permission
+  range, not the agent persona (fuji is the agent, not the range).
+  Deployments must rename the matching `[[agent.scope]]` entry in the Aegis
+  configuration and any explicit `AEGIS_MCP_SCOPE` overrides; the bridge
+  refuses the handshake on an undeclared name.
 
 ## [0.0.8] - 2026-07-29
 

@@ -1,6 +1,6 @@
 # How to Connect fuji to Aegis
 
-Use the fuji agent and its MCP bridge to operate the Aegis desktop with scoped
+Use the fuji agent and the `aegis-mcp` platform bridge to operate the Aegis desktop with scoped
 desktop and Agent Realm tools. fuji owns its provider and session
 configuration; Aegis remains the authority for every desktop action.
 
@@ -9,10 +9,10 @@ configuration; Aegis remains the authority for every desktop action.
 From the Aegis repository:
 
 ```bash
-cargo build --locked --release -p aegis-fuji
+cargo build --locked --release -p aegis-mcp -p aegis-fuji
 ```
 
-The binaries are `target/release/aegis-fuji-mcp` and `target/release/fuji`.
+The binaries are `target/release/aegis-mcp` and `target/release/fuji`.
 
 ## Configure the Aegis Scope
 
@@ -20,7 +20,7 @@ Add a named scope to the Aegis configuration:
 
 ```toml
 [[agent.scope]]
-name = "fuji"
+name = "desktop-operator"
 ops = [
   "Focus",
   "Minimize",
@@ -51,7 +51,7 @@ MCP server so fuji discovers the additional tools.
 With Aegis running:
 
 ```bash
-target/release/aegis-fuji-mcp check
+target/release/aegis-mcp check
 ```
 
 The JSON output shows the compositor-granted capabilities, allowlists, and
@@ -63,13 +63,14 @@ before configuring fuji.
 Run a live, reversible smoke test before connecting fuji:
 
 ```bash
-target/release/aegis-fuji-mcp smoke
+target/release/aegis-mcp smoke
 ```
 
 Watch for a fuji notification and a temporary `Fuji · Active` or
-`Fuji · Paused` label in the permanent Agent Workspaces status entry. Click
-the entry. **Agent Workspaces** opens directly, where the temporary Realm id,
-state, and controlled-window count are visible. The entry reports Realm
+`Fuji · Paused` label in the command panel's Agent Workspaces status row
+(`Super+S`, **System** section). Open **Agent Workspaces** from the
+application launcher (`Super+A`), where the temporary Realm id,
+state, and controlled-window count are visible. The row reports Realm
 authority, not whether the fuji process is online.
 
 The command posts a start notification and verifies it by reading it back
@@ -82,7 +83,7 @@ user work. A second verified notification reports completion after cleanup,
 so the visible result remains available after the Agent indicator disappears.
 
 Do Not Disturb may suppress the transient toast. The notification remains
-visible from the status bar bell, and the command still verifies its
+visible from the HUD notification count, and the command still verifies its
 presence in compositor state. A successful command prints a JSON report with
 `"mode": "live"` and `"status": "passed"`.
 
@@ -90,7 +91,7 @@ To verify the real Agent operation feedback path, first open a disposable
 window and find its id with `aegis-ctl windows`, then run:
 
 ```bash
-target/release/aegis-fuji-mcp smoke --input-window <window-id> --observe-seconds 10
+target/release/aegis-mcp smoke --input-window <window-id> --observe-seconds 10
 ```
 
 This opt-in probe temporarily transfers only that window, retains it as a
@@ -120,7 +121,7 @@ kind = "anthropic"
 model = "claude-sonnet-4-5"
 
 [mcp.aegis]
-command = ["/absolute/path/to/aegis/target/release/aegis-fuji-mcp"]
+command = ["/absolute/path/to/aegis/target/release/aegis-mcp"]
 enabled = true
 read_only = false
 
@@ -159,19 +160,19 @@ The capture arrives as MCP image content, which fuji forwards to the model
 directly. When a client exposes only capture metadata, pass the returned
 `image_path` to fuji's built-in `read_image` tool. Stop before coordinate
 input rather than guessing if neither route makes pixels model-visible. See
-[Capture Compatibility](../reference/fuji.md#capture-compatibility).
+[Capture Compatibility](../reference/aegis-mcp.md#capture-compatibility).
 
 ## Recover or Reset
 
-The bridge stores the managed Realm id under `$XDG_RUNTIME_DIR/aegis-fuji/`.
+The bridge stores the managed Realm id under `$XDG_RUNTIME_DIR/aegis-mcp/`.
 If a refresh kills the bridge before a graceful shutdown, the next bridge
 for the same scope recovers that Realm.
 
 Ask fuji to call `realm_reset` only when you want to end the Realm and return
 its controlled windows to the human Realm. Normal graceful EOF also revokes by
-default. Use `AEGIS_FUJI_REVOKE_ON_EXIT=false` only when Realm continuity
+default. Use `AEGIS_MCP_REVOKE_ON_EXIT=false` only when Realm continuity
 across graceful bridge restarts is intentional.
 
 For the complete scope, environment, tool, and exit-status contract, see the
-[fuji Bridge Reference](../reference/fuji.md). For the agent CLI and
+[aegis-mcp Bridge Reference](../reference/aegis-mcp.md). For the agent CLI and
 configuration, see the [fuji Agent Reference](../reference/fuji-agent.md).

@@ -50,8 +50,10 @@ backend, renderer, and shell behind clear seams so the
 | | `aegis-dock` | Bottom-center dock chrome component: pinned and running apps, magnification, pin actions |
 | | `aegis-ai-workspaces` | Compositor-owned Agent Realm lifecycle and authority management |
 | | `aegis-settings` | Standalone modular System Settings application |
-| | `aegis-statusbar` | Top status bar chrome component: workspace state, clock, live-system controls, notifications, and the host-rendered StatusNotifierItem tray |
+| | `aegis-hud` | Display-only HUD status chips: system status, workspace dots, clock, notification count, and the StatusNotifierItem tray row |
+| | `aegis-command-panel` | Full-screen modal command panel: quick settings, tray activation, and notification dismissal |
 | | `aegis-wallpaper` | Background layer: multi-format image and short-video wallpaper |
+| | `aegis-avatar` | User-avatar loading and rendering: still images and VRM models |
 | | `aegis-config` | Declarative configuration: versioned TOML schema, loader, live reload |
 | **Session services** | `aegis-lock` | Multi-output session-lock presentation and PAM authentication |
 | | `aegis-idle` | Ordered inactivity policy, lock-before-sleep coordination, and display-power requests |
@@ -59,7 +61,8 @@ backend, renderer, and shell behind clear seams so the
 | | `aegis-launcher` | Ordinary app detachment and fail-closed Realm namespace/cgroup launch |
 | | `aegis-ipc` | Versioned scoped IPC, sealed capture transport, and introspection over a Unix socket |
 | | `aegis-ctl` | Command-line driver for the aegis IPC (the reference external tool) |
-| **AI integration** | `aegis-fuji` | fuji in one crate: the out-of-process MCP adapter plus its own agent runtime, scoped desktop tools and one bridge-managed Agent Realm |
+| **AI integration** | `aegis-mcp` | The platform's MCP bridge: scoped desktop tools and one bridge-managed Agent Realm for any agent (ADR-0087) |
+| | `aegis-fuji` | fuji, the in-tree agent product: providers, agent loop, tools, MCP client, sessions, skills, permissions |
 | **Binary** | `aegis` | The binary: wires the parts together and runs the event loop |
 
 flux and lens are consumed through separately versioned Rust binding
@@ -77,19 +80,21 @@ hard to read at a glance. For the most common "I want to change what the
 user sees or can do" tasks:
 
 - **"Manage windows"** (focus, close, move, tile, workspace) → `aegis-compositor`.
-- **"Change the chrome / interactions"** (dock, launcher, bars) → `aegis-shell`
-  for the host and contract; the dock and status bar live in the `aegis-dock`
-  and `aegis-statusbar` component crates. The status bar owns live-system
-  controls, Agent Workspaces has an independent compositor-owned component,
-  and persistent settings run as the standalone `aegis-settings` application
+- **"Change the chrome / interactions"** (dock, launcher, HUD, panel) → `aegis-shell`
+  for the host and contract; the HUD and command panel live in the
+  `aegis-hud` and `aegis-command-panel` component crates. The command panel
+  owns live-system controls, Agent Workspaces has an independent
+  compositor-owned component, and persistent settings run as the standalone
+  `aegis-settings` application
   ([ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md),
   [ADR-0069](../adr/0069-documentation-owned-installation-and-throwaway-development-staging.md),
   [ADR-0045](../adr/0045-statusbar-crate-and-sni-tray.md)).
 - **"Add an external control path"** (CLI or scripts) → `aegis-ipc` +
-  `aegis-ctl`; the fuji agent consumes that same IPC through
-  `aegis-fuji-mcp` without entering the compositor process
+  `aegis-ctl`; agents consume that same IPC through the `aegis-mcp` bridge
+  without entering the compositor process
   ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md),
-  [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md)). The
+  [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md),
+  [ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md)). The
   compositor-owned Agent Workspaces surface reports generic Realm authority;
   it does not infer fuji process state
   ([ADR-0074](../adr/0074-generic-agent-workspaces-status-surface.md)).
@@ -120,8 +125,8 @@ Compositor-owned display/input policy uses the Aegis settings IPC.
 
 Volume, brightness, radios, Do Not Disturb, and current-workspace layout are
 immediate service or session controls rather than persistent settings. The
-status bar presents them, external clients use the live-system IPC, and both
-paths converge on one runtime handler. Realm lifecycle is authority
+command panel presents them, external clients use the live-system IPC, and
+both paths converge on one runtime handler. Realm lifecycle is authority
 management rather than configuration and retains the independent AI
 Workspaces surface. The standalone System Settings app remains the canonical
 persistent-settings UI. See

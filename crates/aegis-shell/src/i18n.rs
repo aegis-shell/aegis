@@ -81,6 +81,8 @@ pub enum Message {
     MinimizeAllWindows,
     MaximizeWindow,
     RestoreWindow,
+    AlwaysOnTop,
+    NotAlwaysOnTop,
     CloseWindow,
     CloseAllWindows,
     PinToDock,
@@ -103,6 +105,8 @@ pub enum Message {
     TiledLayout,
     OpenApplications,
     QuitSession,
+    LockNow,
+    AlwaysOn,
     Sound,
     Brightness,
     Display,
@@ -244,6 +248,10 @@ pub enum Message {
     AgentScrollRight,
     AgentKeyboard,
     ScreenshotConfirmHint,
+    CommandPanel,
+    System,
+    Tray,
+    NoTrayItems,
 }
 
 /// Lightweight locale handle passed to chrome components for each frame.
@@ -293,6 +301,8 @@ impl Localizer {
             Message::MinimizeAllWindows => &catalog.minimize_all_windows,
             Message::MaximizeWindow => &catalog.maximize_window,
             Message::RestoreWindow => &catalog.restore_window,
+            Message::AlwaysOnTop => &catalog.always_on_top,
+            Message::NotAlwaysOnTop => &catalog.not_always_on_top,
             Message::CloseWindow => &catalog.close_window,
             Message::CloseAllWindows => &catalog.close_all_windows,
             Message::PinToDock => &catalog.pin_to_dock,
@@ -315,6 +325,8 @@ impl Localizer {
             Message::TiledLayout => &catalog.tiled_layout,
             Message::OpenApplications => &catalog.open_applications,
             Message::QuitSession => &catalog.quit_session,
+            Message::LockNow => &catalog.lock_now,
+            Message::AlwaysOn => &catalog.always_on,
             Message::Sound => &catalog.sound,
             Message::Brightness => &catalog.brightness,
             Message::Display => &catalog.display,
@@ -458,6 +470,10 @@ impl Localizer {
             Message::AgentScrollRight => &catalog.agent_scroll_right,
             Message::AgentKeyboard => &catalog.agent_keyboard,
             Message::ScreenshotConfirmHint => &catalog.screenshot_confirm_hint,
+            Message::CommandPanel => &catalog.command_panel,
+            Message::System => &catalog.system,
+            Message::Tray => &catalog.tray,
+            Message::NoTrayItems => &catalog.no_tray_items,
         }
     }
 
@@ -534,6 +550,8 @@ struct Catalog {
     minimize_all_windows: String,
     maximize_window: String,
     restore_window: String,
+    always_on_top: String,
+    not_always_on_top: String,
     close_window: String,
     close_all_windows: String,
     pin_to_dock: String,
@@ -556,6 +574,8 @@ struct Catalog {
     tiled_layout: String,
     open_applications: String,
     quit_session: String,
+    lock_now: String,
+    always_on: String,
     sound: String,
     brightness: String,
     display: String,
@@ -703,6 +723,10 @@ struct Catalog {
     agent_scroll_right: String,
     agent_keyboard: String,
     screenshot_confirm_hint: String,
+    command_panel: String,
+    system: String,
+    tray: String,
+    no_tray_items: String,
 }
 
 static ENGLISH: OnceLock<Catalog> = OnceLock::new();

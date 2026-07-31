@@ -4,6 +4,7 @@ Task-oriented instructions for operating an aegis session.
 
 ## Guides
 
+- [How to Use the HUD and the Command Panel](hud-and-command-panel.md)
 - [How to Use the Dock, Launcher, and Prism](dock-and-launcher.md)
 - [How to Manage Borderless Windows](window-management.md)
 - [How to Configure Locking and Idle](lock-and-idle.md)

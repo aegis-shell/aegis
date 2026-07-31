@@ -142,11 +142,12 @@ pub(super) fn load_config(path: Option<&std::path::Path>) -> Option<aegis_config
 }
 
 /// Re-load `path` and, on success, swap in the new config and rebuild the
-/// keymap. On failure, keep the previous config and keymap.
+/// keymap and gesture map. On failure, keep the previous config and maps.
 pub(super) fn reload_config(
     path: &std::path::Path,
     config: &mut Option<aegis_config::Config>,
     keymap: &mut aegis_core::keybind::Keymap,
+    gesture_map: &mut aegis_core::gesture::GestureMap,
     server: &mut aegis_compositor::Server,
     shell: &mut aegis_shell::Shell,
     cursor_cache: &mut cursor::CursorCache,
@@ -170,6 +171,7 @@ pub(super) fn reload_config(
             server.set_reduced_motion(preferences.reduced_motion);
             server.set_decoration_policy(c.ui.window_decorations);
             server.set_output_policies(c.output_policies());
+            server.set_allow_quit_while_locked(c.dev.allow_quit_while_locked);
         } else {
             server.set_layout_params(aegis_core::layout::LayoutParams::default());
             server.set_tiling_default(false);
@@ -178,6 +180,7 @@ pub(super) fn reload_config(
             server.set_reduced_motion(preferences.reduced_motion);
             server.set_decoration_policy(aegis_core::window::DecorationPolicy::default());
             server.set_output_policies(std::collections::HashMap::new());
+            server.set_allow_quit_while_locked(false);
         }
         cursor_cache.set_preferences(preferences.cursor_theme, preferences.cursor_size);
     };
@@ -186,6 +189,7 @@ pub(super) fn reload_config(
             log::info!("config: reloaded {}", path.display());
             *config = Some(new_cfg);
             *keymap = build_keymap(config.as_ref());
+            *gesture_map = build_gesture_map(config.as_ref());
             apply(config, server, shell, cursor_cache);
             true
         }
@@ -193,6 +197,7 @@ pub(super) fn reload_config(
             log::warn!("config: {} removed; reverting to defaults", path.display());
             *config = None;
             *keymap = build_keymap(config.as_ref());
+            *gesture_map = build_gesture_map(config.as_ref());
             apply(config, server, shell, cursor_cache);
             true
         }
@@ -222,6 +227,7 @@ pub(super) fn apply_display_settings(
     config_writer: &ConfigWriter,
     config: &mut Option<aegis_config::Config>,
     keymap: &mut aegis_core::keybind::Keymap,
+    gesture_map: &mut aegis_core::gesture::GestureMap,
     server: &mut aegis_compositor::Server,
     shell: &mut aegis_shell::Shell,
     cursor_cache: &mut cursor::CursorCache,
@@ -242,7 +248,15 @@ pub(super) fn apply_display_settings(
     // cannot lose a concurrent edit and the settings reply stays synchronous.
     config_writer.apply_and_wait(aegis_config::ConfigEdit::SetOutput { settings })?;
 
-    if !reload_config(&path, config, keymap, server, shell, cursor_cache) {
+    if !reload_config(
+        &path,
+        config,
+        keymap,
+        gesture_map,
+        server,
+        shell,
+        cursor_cache,
+    ) {
         return Err("the saved display configuration could not be reloaded".into());
     }
     // Reset the watcher baseline after our own atomic replacement so it does
@@ -272,6 +286,7 @@ pub(super) fn apply_desktop_preferences(
     config_writer: &ConfigWriter,
     config: &mut Option<aegis_config::Config>,
     keymap: &mut aegis_core::keybind::Keymap,
+    gesture_map: &mut aegis_core::gesture::GestureMap,
     server: &mut aegis_compositor::Server,
     shell: &mut aegis_shell::Shell,
     cursor_cache: &mut cursor::CursorCache,
@@ -288,7 +303,15 @@ pub(super) fn apply_desktop_preferences(
     config_writer
         .apply_and_wait(aegis_config::ConfigEdit::SetDesktopPreferences { preferences })
         .map_err(|error| format!("failed to persist desktop preferences: {error}"))?;
-    if !reload_config(&path, config, keymap, server, shell, cursor_cache) {
+    if !reload_config(
+        &path,
+        config,
+        keymap,
+        gesture_map,
+        server,
+        shell,
+        cursor_cache,
+    ) {
         return Err("the saved desktop preferences could not be reloaded".into());
     }
     *reload = Some(aegis_config::ReloadWatcher::at(&path));
@@ -344,6 +367,29 @@ pub(super) fn build_keymap(config: Option<&aegis_config::Config>) -> aegis_core:
     }
 }
 
+/// Build the active gesture map from the config file's `[[gesture]]`
+/// entries, layered over the built-in defaults.
+pub(super) fn build_gesture_map(
+    config: Option<&aegis_config::Config>,
+) -> aegis_core::gesture::GestureMap {
+    let mut overrides: Vec<aegis_core::gesture::GestureBinding> = Vec::new();
+
+    if let Some(cfg) = config {
+        let (cfg_binds, errs) = cfg.resolve_gestures();
+        for e in &errs {
+            log::warn!("config: {e}");
+        }
+        overrides.extend(cfg_binds);
+    }
+
+    if overrides.is_empty() {
+        aegis_core::gesture::GestureMap::defaults()
+    } else {
+        log::debug!("gestures: {} override(s) applied", overrides.len());
+        aegis_core::gesture::GestureMap::defaults().with_overrides(overrides)
+    }
+}
+
 /// Compile the trusted named IPC scopes from configuration. Invalid operation
 /// names are ignored inside an explicit allowlist (therefore granting nothing
 /// for that entry) and logged; they never turn into an unrestricted scope.
@@ -366,11 +412,13 @@ pub(super) fn build_ipc_scopes(
                     aegis_ipc::OpClass::CaptureRealm,
                     aegis_ipc::OpClass::LaunchInRealm,
                 ]),
+                ask_ops: None,
             },
         ),
         // The portal backend (ADR-0075; mechanisms ADR-0052/0054) serves Screenshot,
-        // ScreenCast, the Inhibit portal's global idle inhibitor, and the
-        // interactive picker round-trips through exactly four fail-closed
+        // ScreenCast, the Inhibit portal's global idle inhibitor, the
+        // interactive picker round-trips, and the FileChooser portal's
+        // user-consent file picking through exactly five fail-closed
         // operations; `None`-means-all would grant it nothing, so the ops
         // must be listed explicitly here.
         (
@@ -385,7 +433,15 @@ pub(super) fn build_ipc_scopes(
                     aegis_ipc::OpClass::StreamOutput,
                     aegis_ipc::OpClass::IdleInhibit,
                     aegis_ipc::OpClass::PickTarget,
+                    aegis_ipc::OpClass::PickFile,
+                    aegis_ipc::OpClass::PickApp,
+                    aegis_ipc::OpClass::Notify,
+                    aegis_ipc::OpClass::DismissNotification,
+                    aegis_ipc::OpClass::PromptSecret,
+                    aegis_ipc::OpClass::PickConfirm,
+                    aegis_ipc::OpClass::SetWallpaper,
                 ]),
+                ask_ops: None,
             },
         ),
     ]);
@@ -523,6 +579,11 @@ pub(super) fn ipc_op_class(name: &str) -> Option<aegis_ipc::OpClass> {
         "streamoutput" | "stream_output" => Some(OpClass::StreamOutput),
         "idleinhibit" | "idle_inhibit" => Some(OpClass::IdleInhibit),
         "picktarget" | "pick_target" => Some(OpClass::PickTarget),
+        "pickfile" | "pick_file" => Some(OpClass::PickFile),
+        "pickapp" | "pick_app" => Some(OpClass::PickApp),
+        "promptsecret" | "prompt_secret" => Some(OpClass::PromptSecret),
+        "pickconfirm" | "pick_confirm" => Some(OpClass::PickConfirm),
+        "setwallpaper" | "set_wallpaper" => Some(OpClass::SetWallpaper),
         _ => None,
     }
 }

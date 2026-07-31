@@ -282,6 +282,63 @@ pub trait Handler: Send + Sync {
     ) -> Result<crate::schema::PickResult, String> {
         Err("interactive picking unsupported".into())
     }
+    /// Run one user-consent file pick (the FileChooser portal's compositor
+    /// side). Called from a connection thread after capability, lease,
+    /// scope, and lock/VT-gate checks; the implementation forwards to the
+    /// compositor main loop, which opens the file-picker chrome over the
+    /// live scene — no screen freeze, no screen-content capture — and
+    /// answers when the user confirms or cancels. The reply may therefore
+    /// block for as long as the user takes, bounded by the compositor's
+    /// interaction timeout.
+    fn pick_file(
+        &self,
+        _conn_id: u64,
+        _options: crate::schema::FilePickOptions,
+    ) -> Result<crate::schema::FilePickResult, String> {
+        Err("file picking unsupported".into())
+    }
+    /// Run one user-consent application pick (the AppChooser portal's
+    /// compositor side). Same gate and blocking discipline as
+    /// [`Handler::pick_file`].
+    fn pick_app(
+        &self,
+        _conn_id: u64,
+        _choices: Vec<String>,
+        _subject: Option<String>,
+        _last_choice: Option<String>,
+    ) -> Result<crate::schema::AppPickResult, String> {
+        Err("application picking unsupported".into())
+    }
+    /// Run one user-consent secret prompt (the secret vault's password
+    /// unlock). Same gate and blocking discipline as [`Handler::pick_file`];
+    /// the typed secret crosses this channel and the implementation must
+    /// zeroize its copy once answered.
+    fn prompt_secret(
+        &self,
+        _conn_id: u64,
+        _title: String,
+        _reason: Option<String>,
+    ) -> Result<crate::schema::SecretPromptResult, String> {
+        Err("secret prompting unsupported".into())
+    }
+    /// Run one user-consent yes/no confirmation (portal consent dialogs).
+    /// Same gate and blocking discipline as [`Handler::pick_file`].
+    fn pick_confirm(
+        &self,
+        _conn_id: u64,
+        _title: String,
+        _body: String,
+        _accept_label: Option<String>,
+    ) -> Result<crate::schema::ConfirmPickResult, String> {
+        Err("confirmation prompting unsupported".into())
+    }
+    /// Replace the desktop wallpaper (the Wallpaper portal). Called from a
+    /// connection thread after the mutation gate; the implementation
+    /// forwards to the compositor main loop and returns its authoritative
+    /// decode-and-swap receipt.
+    fn set_wallpaper(&self, _conn_id: u64, _path: std::path::PathBuf) -> Result<(), String> {
+        Err("wallpaper setting unsupported".into())
+    }
 }
 
 /// A bound IPC server. The accept thread runs until the handle is dropped
@@ -722,553 +779,850 @@ fn drive_read_loop<H: Handler>(
         let lease_alive = active_lease
             .as_ref()
             .is_some_and(|(_, deadline)| std::time::Instant::now() < *deadline);
-        let resp = match req {
-            Request::Hello { .. } => Response::Error {
-                message: "Hello already exchanged".into(),
-            },
-            Request::GetWindows => {
-                if granted.query {
-                    Response::Windows {
-                        windows: handler.windows(),
-                    }
-                } else {
-                    Response::Error {
-                        message: "GetWindows requires the query capability".into(),
-                    }
-                }
-            }
-            Request::GetWorkspaces => {
-                if granted.query {
-                    Response::Workspaces {
-                        snapshot: handler.workspaces(),
-                    }
-                } else {
-                    Response::Error {
-                        message: "GetWorkspaces requires the query capability".into(),
-                    }
-                }
-            }
-            Request::GetNotifications => {
-                if granted.query {
-                    Response::Notifications {
-                        notifications: handler.notifications(),
-                    }
-                } else {
-                    Response::Error {
-                        message: "GetNotifications requires the query capability".into(),
-                    }
-                }
-            }
-            Request::GetOutputs => {
-                if granted.query {
-                    Response::Outputs {
-                        outputs: handler.outputs(),
-                    }
-                } else {
-                    Response::Error {
-                        message: "GetOutputs requires the query capability".into(),
-                    }
-                }
-            }
-            Request::GetJournal { since } => {
-                if granted.query {
-                    Response::Journal {
-                        snapshot: handler.journal_since(since),
-                    }
-                } else {
-                    Response::Error {
-                        message: "GetJournal requires the query capability".into(),
-                    }
-                }
-            }
-            Request::GetRealms => {
-                if granted.query {
-                    Response::Realms {
-                        snapshot: handler.realms(),
-                    }
-                } else {
-                    Response::Error {
-                        message: "GetRealms requires the query capability".into(),
-                    }
-                }
-            }
-            Request::GetSettings => {
-                if granted.query {
-                    Response::Settings {
-                        snapshot: handler.settings(),
-                    }
-                } else {
-                    Response::Error {
-                        message: "GetSettings requires the query capability".into(),
-                    }
-                }
-            }
-            Request::GetSystemStatus => {
-                if granted.query {
-                    Response::SystemStatus {
-                        snapshot: handler.system_status(),
-                    }
-                } else {
-                    Response::Error {
-                        message: "GetSystemStatus requires the query capability".into(),
-                    }
-                }
-            }
-            Request::Settings {
-                expected_revision,
-                action,
-            } => {
-                let before_revision = handler.settings().revision;
-                let rejection = if !granted.session {
-                    Some("Settings requires the session capability".to_owned())
-                } else if !lease_alive {
-                    Some("privileged capability lease expired".to_owned())
-                } else {
-                    action.validate().err().map(str::to_owned)
-                };
-                if let Some(message) = rejection {
-                    handler.audit_refusal(
-                        conn_id,
-                        JournalMutation::Settings {
-                            action,
-                            before_revision,
-                            after_revision: before_revision,
-                        },
-                        message.clone(),
-                    );
-                    Response::Error { message }
-                } else {
-                    match handler.settings_action(conn_id, expected_revision, action) {
-                        Ok(receipt) => Response::SettingsApplied { receipt },
-                        Err(message) => Response::Error { message },
-                    }
-                }
-            }
-            Request::Realm { action } => {
-                let current_scope = match scope_name.as_deref() {
-                    Some(name) => handler.resolve_scope(name),
-                    None => Some(granted_scope.clone()),
-                };
-                let rejection = if !granted.realm {
-                    Some("Realm requires the realm capability".to_owned())
-                } else if !lease_alive {
-                    Some("privileged capability lease expired".to_owned())
-                } else {
-                    match current_scope.as_ref() {
-                        None => Some("out of scope: named scope was revoked".into()),
-                        Some(scope) => match handler.authorize_realm_action(scope, &action) {
-                            Err(message) => Some(message),
-                            Ok(()) => action.validate().err().map(str::to_owned),
-                        },
-                    }
-                };
-                if let Some(message) = rejection {
-                    let revision = handler.realms().revision;
-                    handler.audit_refusal(
-                        conn_id,
-                        JournalMutation::Realm {
-                            action,
-                            before_revision: revision,
-                            after_revision: revision,
-                        },
-                        message.clone(),
-                    );
-                    Response::Error { message }
-                } else {
-                    match handler.realm_action(conn_id, action) {
-                        Ok(result) => Response::Realm { result },
-                        Err(message) => Response::Error { message },
-                    }
-                }
-            }
-            Request::Do { cmd } => {
-                let need = cmd.required_cap();
-                let allowed = (need.control && granted.control)
-                    || (need.input && granted.input)
-                    || (need.session && granted.session)
-                    || (need.realm && granted.realm);
-                let rejection = if !allowed {
-                    Some("command requires a capability not granted".to_owned())
-                } else if !lease_alive {
-                    Some("privileged capability lease expired".to_owned())
-                } else if !scope_name
-                    .as_deref()
-                    .map(|name| {
-                        handler
-                            .resolve_scope(name)
-                            .is_some_and(|scope| scope.permits(&cmd))
-                    })
-                    .unwrap_or_else(|| granted_scope.permits(&cmd))
-                {
-                    Some("out of scope".to_owned())
-                } else if let Err(message) = cmd.validate() {
-                    Some(message.into())
-                } else {
-                    None
-                };
-                if let Some(message) = rejection {
-                    handler.audit_refusal(
-                        conn_id,
-                        JournalMutation::Command { cmd },
-                        message.clone(),
-                    );
-                    Response::Error { message }
-                } else if let Command::System { action } = cmd {
-                    match handler.system_action(conn_id, action) {
-                        Ok(()) => Response::Ok,
-                        Err(message) => Response::Error { message },
-                    }
-                } else {
-                    handler.command(conn_id, cmd);
-                    Response::Ok
-                }
-            }
-            Request::Subscribe => {
-                if sub_id.is_none() {
-                    let id = next_sub.fetch_add(1, Ordering::Relaxed);
-                    subs.lock().unwrap().insert(id, tx.clone());
-                    sub_id = Some(id);
-                }
-                Response::Subscribed
-            }
-            Request::SubscribeJournal => {
-                if journal_sub_id.is_none() {
-                    let id = next_sub.fetch_add(1, Ordering::Relaxed);
-                    journal_subs.lock().unwrap().insert(id, tx.clone());
-                    journal_sub_id = Some(id);
-                }
-                Response::Subscribed
-            }
-            Request::RenewLease { ttl_ms } => {
-                if !(MIN_LEASE_MS..=MAX_LEASE_MS).contains(&ttl_ms) {
-                    Response::Error {
-                        message: format!(
-                            "lease ttl must be between {MIN_LEASE_MS} and {MAX_LEASE_MS} ms"
-                        ),
-                    }
-                } else if !lease_alive {
-                    Response::Error {
-                        message: "lease is absent or already expired".into(),
-                    }
-                } else {
-                    let (grant, deadline) =
-                        active_lease.as_mut().expect("lease_alive checked presence");
-                    grant.ttl_ms = ttl_ms;
-                    *deadline = std::time::Instant::now()
-                        .checked_add(std::time::Duration::from_millis(ttl_ms))
-                        .expect("bounded lease duration overflowed");
-                    *lease_deadline_shared.lock().unwrap() = *deadline;
-                    Response::LeaseRenewed { lease: *grant }
-                }
-            }
-            Request::CaptureOutput { region } => {
-                // Pixel capture reads the screen back to the client, so it is
-                // fail-closed like InjectInput: `control` plus an explicit
-                // CaptureOutput op in the granted scope — never inherited
-                // through None-means-all (ADR-0034).
-                let current_scope = match scope_name.as_deref() {
-                    Some(name) => handler.resolve_scope(name),
-                    None => Some(granted_scope.clone()),
-                };
-                let op_allowed = current_scope.as_ref().is_some_and(|scope| {
-                    scope
-                        .ops
-                        .as_ref()
-                        .is_some_and(|ops| ops.contains(&crate::schema::OpClass::CaptureOutput))
-                });
-                if !granted.control {
-                    Response::Error {
-                        message: "CaptureOutput requires the control capability".into(),
-                    }
-                } else if !lease_alive {
-                    Response::Error {
-                        message: "privileged capability lease expired".into(),
-                    }
-                } else if !op_allowed {
-                    Response::Error {
-                        message: "out of scope".into(),
-                    }
-                } else {
-                    match handler.capture_output(region) {
-                        Ok(payload) => {
-                            let scope_still_allows = match scope_name.as_deref() {
-                                Some(name) => handler.resolve_scope(name),
-                                None => Some(granted_scope.clone()),
-                            }
-                            .is_some_and(|scope| {
-                                scope.ops.as_ref().is_some_and(|ops| {
-                                    ops.contains(&crate::schema::OpClass::CaptureOutput)
-                                })
-                            });
-                            let lease_deadline = active_lease
-                                .as_ref()
-                                .map(|(_, deadline)| *deadline)
-                                .expect("granted control has an active lease");
-                            if !scope_still_allows {
-                                Response::Error {
-                                    message: "out of scope before capture delivery".into(),
-                                }
-                            } else if std::time::Instant::now() >= lease_deadline {
-                                Response::Error {
-                                    message: "privileged capability lease expired".into(),
-                                }
-                            } else {
-                                if tx
-                                    .send(Outbound::CaptureOutput {
-                                        payload,
-                                        lease_deadline,
-                                        scope_name: scope_name.clone(),
-                                    })
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                                continue;
-                            }
+        let resp =
+            match req {
+                Request::Hello { .. } => Response::Error {
+                    message: "Hello already exchanged".into(),
+                },
+                Request::GetWindows => {
+                    if granted.query {
+                        Response::Windows {
+                            windows: handler.windows(),
                         }
-                        Err(message) => Response::Error { message },
+                    } else {
+                        Response::Error {
+                            message: "GetWindows requires the query capability".into(),
+                        }
                     }
                 }
-            }
-            Request::CaptureRealm { realm, region } => {
-                let current_scope = match scope_name.as_deref() {
-                    Some(name) => handler.resolve_scope(name),
-                    None => Some(granted_scope.clone()),
-                };
-                if !granted.realm {
-                    Response::Error {
-                        message: "CaptureRealm requires the realm capability".into(),
-                    }
-                } else if !lease_alive {
-                    Response::Error {
-                        message: "privileged capability lease expired".into(),
-                    }
-                } else if !current_scope
-                    .as_ref()
-                    .is_some_and(|scope| scope.permits_realm_capture(realm))
-                {
-                    Response::Error {
-                        message: "out of scope".into(),
-                    }
-                } else {
-                    match handler.capture_realm(realm, region) {
-                        Ok(payload) if payload.capture.realm == realm => {
-                            let scope_still_allows = match scope_name.as_deref() {
-                                Some(name) => handler.resolve_scope(name),
-                                None => Some(granted_scope.clone()),
-                            }
-                            .is_some_and(|scope| scope.permits_realm_capture(realm));
-                            let lease_deadline = active_lease
-                                .as_ref()
-                                .map(|(_, deadline)| *deadline)
-                                .expect("granted Realm capability has an active lease");
-                            if !scope_still_allows {
-                                Response::Error {
-                                    message: "out of scope before capture delivery".into(),
-                                }
-                            } else if std::time::Instant::now() >= lease_deadline {
-                                Response::Error {
-                                    message: "privileged capability lease expired".into(),
-                                }
-                            } else {
-                                if tx
-                                    .send(Outbound::CaptureRealm {
-                                        payload,
-                                        lease_deadline,
-                                        scope_name: scope_name.clone(),
-                                    })
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                                continue;
-                            }
+                Request::GetWorkspaces => {
+                    if granted.query {
+                        Response::Workspaces {
+                            snapshot: handler.workspaces(),
                         }
-                        Ok(payload) => Response::Error {
+                    } else {
+                        Response::Error {
+                            message: "GetWorkspaces requires the query capability".into(),
+                        }
+                    }
+                }
+                Request::GetNotifications => {
+                    if granted.query {
+                        Response::Notifications {
+                            notifications: handler.notifications(),
+                        }
+                    } else {
+                        Response::Error {
+                            message: "GetNotifications requires the query capability".into(),
+                        }
+                    }
+                }
+                Request::GetOutputs => {
+                    if granted.query {
+                        Response::Outputs {
+                            outputs: handler.outputs(),
+                        }
+                    } else {
+                        Response::Error {
+                            message: "GetOutputs requires the query capability".into(),
+                        }
+                    }
+                }
+                Request::GetJournal { since } => {
+                    if granted.query {
+                        Response::Journal {
+                            snapshot: handler.journal_since(since),
+                        }
+                    } else {
+                        Response::Error {
+                            message: "GetJournal requires the query capability".into(),
+                        }
+                    }
+                }
+                Request::GetRealms => {
+                    if granted.query {
+                        Response::Realms {
+                            snapshot: handler.realms(),
+                        }
+                    } else {
+                        Response::Error {
+                            message: "GetRealms requires the query capability".into(),
+                        }
+                    }
+                }
+                Request::GetSettings => {
+                    if granted.query {
+                        Response::Settings {
+                            snapshot: handler.settings(),
+                        }
+                    } else {
+                        Response::Error {
+                            message: "GetSettings requires the query capability".into(),
+                        }
+                    }
+                }
+                Request::GetSystemStatus => {
+                    if granted.query {
+                        Response::SystemStatus {
+                            snapshot: handler.system_status(),
+                        }
+                    } else {
+                        Response::Error {
+                            message: "GetSystemStatus requires the query capability".into(),
+                        }
+                    }
+                }
+                Request::Settings {
+                    expected_revision,
+                    action,
+                } => {
+                    let before_revision = handler.settings().revision;
+                    let rejection = if !granted.session {
+                        Some("Settings requires the session capability".to_owned())
+                    } else if !lease_alive {
+                        Some("privileged capability lease expired".to_owned())
+                    } else {
+                        action.validate().err().map(str::to_owned)
+                    };
+                    if let Some(message) = rejection {
+                        handler.audit_refusal(
+                            conn_id,
+                            JournalMutation::Settings {
+                                action,
+                                before_revision,
+                                after_revision: before_revision,
+                            },
+                            message.clone(),
+                        );
+                        Response::Error { message }
+                    } else {
+                        match handler.settings_action(conn_id, expected_revision, action) {
+                            Ok(receipt) => Response::SettingsApplied { receipt },
+                            Err(message) => Response::Error { message },
+                        }
+                    }
+                }
+                Request::Realm { action } => {
+                    let current_scope = match scope_name.as_deref() {
+                        Some(name) => handler.resolve_scope(name),
+                        None => Some(granted_scope.clone()),
+                    };
+                    let rejection = if !granted.realm {
+                        Some("Realm requires the realm capability".to_owned())
+                    } else if !lease_alive {
+                        Some("privileged capability lease expired".to_owned())
+                    } else {
+                        match current_scope.as_ref() {
+                            None => Some("out of scope: named scope was revoked".into()),
+                            Some(scope) => match handler.authorize_realm_action(scope, &action) {
+                                Err(message) => Some(message),
+                                Ok(()) => action.validate().err().map(str::to_owned),
+                            },
+                        }
+                    };
+                    if let Some(message) = rejection {
+                        let revision = handler.realms().revision;
+                        handler.audit_refusal(
+                            conn_id,
+                            JournalMutation::Realm {
+                                action,
+                                before_revision: revision,
+                                after_revision: revision,
+                            },
+                            message.clone(),
+                        );
+                        Response::Error { message }
+                    } else {
+                        match handler.realm_action(conn_id, action) {
+                            Ok(result) => Response::Realm { result },
+                            Err(message) => Response::Error { message },
+                        }
+                    }
+                }
+                Request::Do { cmd } => {
+                    let need = cmd.required_cap();
+                    let allowed = (need.control && granted.control)
+                        || (need.input && granted.input)
+                        || (need.session && granted.session)
+                        || (need.realm && granted.realm);
+                    let rejection = if !allowed {
+                        Some("command requires a capability not granted".to_owned())
+                    } else if !lease_alive {
+                        Some("privileged capability lease expired".to_owned())
+                    } else if !scope_name
+                        .as_deref()
+                        .map(|name| {
+                            handler
+                                .resolve_scope(name)
+                                .is_some_and(|scope| scope.permits(&cmd))
+                        })
+                        .unwrap_or_else(|| granted_scope.permits(&cmd))
+                    {
+                        Some("out of scope".to_owned())
+                    } else if let Err(message) = cmd.validate() {
+                        Some(message.into())
+                    } else {
+                        None
+                    };
+                    if let Some(message) = rejection {
+                        handler.audit_refusal(
+                            conn_id,
+                            JournalMutation::Command { cmd },
+                            message.clone(),
+                        );
+                        Response::Error { message }
+                    } else if let Command::System { action } = cmd {
+                        match handler.system_action(conn_id, action) {
+                            Ok(()) => Response::Ok,
+                            Err(message) => Response::Error { message },
+                        }
+                    } else {
+                        handler.command(conn_id, cmd);
+                        Response::Ok
+                    }
+                }
+                Request::Subscribe => {
+                    if sub_id.is_none() {
+                        let id = next_sub.fetch_add(1, Ordering::Relaxed);
+                        subs.lock().unwrap().insert(id, tx.clone());
+                        sub_id = Some(id);
+                    }
+                    Response::Subscribed
+                }
+                Request::SubscribeJournal => {
+                    if journal_sub_id.is_none() {
+                        let id = next_sub.fetch_add(1, Ordering::Relaxed);
+                        journal_subs.lock().unwrap().insert(id, tx.clone());
+                        journal_sub_id = Some(id);
+                    }
+                    Response::Subscribed
+                }
+                Request::RenewLease { ttl_ms } => {
+                    if !(MIN_LEASE_MS..=MAX_LEASE_MS).contains(&ttl_ms) {
+                        Response::Error {
                             message: format!(
-                                "capture handler returned Realm {} for requested Realm {}",
-                                payload.capture.realm.0, realm.0
+                                "lease ttl must be between {MIN_LEASE_MS} and {MAX_LEASE_MS} ms"
                             ),
-                        },
-                        Err(message) => Response::Error { message },
-                    }
-                }
-            }
-            Request::StreamOutputStart { max_fps, target } => {
-                // Fail-closed exactly like CaptureOutput: `control`, a live
-                // lease, and an explicit StreamOutput op in the granted
-                // scope — never inherited through None-means-all (ADR-0052).
-                let current_scope = match scope_name.as_deref() {
-                    Some(name) => handler.resolve_scope(name),
-                    None => Some(granted_scope.clone()),
-                };
-                let op_allowed = current_scope.as_ref().is_some_and(|scope| {
-                    scope
-                        .ops
-                        .as_ref()
-                        .is_some_and(|ops| ops.contains(&OpClass::StreamOutput))
-                });
-                if !granted.control {
-                    Response::Error {
-                        message: "StreamOutputStart requires the control capability".into(),
-                    }
-                } else if !lease_alive {
-                    Response::Error {
-                        message: "privileged capability lease expired".into(),
-                    }
-                } else if !op_allowed {
-                    Response::Error {
-                        message: "out of scope".into(),
-                    }
-                } else if !handler.capture_security_active() {
-                    Response::Error {
-                        message: "session is locked or inactive".into(),
-                    }
-                } else {
-                    match handler.stream_output_start(conn_id, max_fps, target) {
-                        Ok(info) => {
-                            streams.lock().unwrap().insert(
-                                info.stream_id,
-                                StreamLane {
-                                    conn_id,
-                                    tx: tx.clone(),
-                                    scope_name: scope_name.clone(),
-                                    lease_deadline: Arc::clone(&lease_deadline_shared),
-                                    queued: Arc::new(AtomicU32::new(0)),
-                                },
-                            );
-                            Response::StreamOutputStarted {
-                                stream_id: info.stream_id,
-                                width: info.width,
-                                height: info.height,
-                                format: info.format,
-                            }
                         }
-                        Err(message) => Response::Error { message },
-                    }
-                }
-            }
-            Request::StreamOutputStop { stream_id } => {
-                // A connection may stop only a stream it owns.
-                let owned = streams
-                    .lock()
-                    .unwrap()
-                    .get(&stream_id)
-                    .is_some_and(|lane| lane.conn_id == conn_id);
-                if owned {
-                    streams.lock().unwrap().remove(&stream_id);
-                    handler.stream_output_stop(stream_id);
-                    Response::StreamOutputStopped { stream_id }
-                } else {
-                    Response::Error {
-                        message: format!("unknown stream {stream_id}"),
-                    }
-                }
-            }
-            Request::SetIdleInhibit { inhibit } => {
-                // Fail-closed exactly like StreamOutputStart: `control`, a
-                // live lease, and an explicit IdleInhibit op in the granted
-                // scope — never inherited through None-means-all (ADR-0075).
-                let current_scope = match scope_name.as_deref() {
-                    Some(name) => handler.resolve_scope(name),
-                    None => Some(granted_scope.clone()),
-                };
-                let op_allowed = current_scope.as_ref().is_some_and(|scope| {
-                    scope
-                        .ops
-                        .as_ref()
-                        .is_some_and(|ops| ops.contains(&OpClass::IdleInhibit))
-                });
-                if !granted.control {
-                    Response::Error {
-                        message: "SetIdleInhibit requires the control capability".into(),
-                    }
-                } else if !lease_alive {
-                    Response::Error {
-                        message: "privileged capability lease expired".into(),
-                    }
-                } else if !op_allowed {
-                    Response::Error {
-                        message: "out of scope".into(),
-                    }
-                } else {
-                    match handler.set_idle_inhibit(conn_id, inhibit) {
-                        Ok(inhibited) => {
-                            idle_inhibited = inhibited;
-                            Response::IdleInhibitSet { inhibited }
+                    } else if !lease_alive {
+                        Response::Error {
+                            message: "lease is absent or already expired".into(),
                         }
-                        Err(message) => Response::Error { message },
+                    } else {
+                        let (grant, deadline) =
+                            active_lease.as_mut().expect("lease_alive checked presence");
+                        grant.ttl_ms = ttl_ms;
+                        *deadline = std::time::Instant::now()
+                            .checked_add(std::time::Duration::from_millis(ttl_ms))
+                            .expect("bounded lease duration overflowed");
+                        *lease_deadline_shared.lock().unwrap() = *deadline;
+                        Response::LeaseRenewed { lease: *grant }
                     }
                 }
-            }
-            Request::PickTarget { kind } => {
-                // Fail-closed exactly like StreamOutputStart (ADR-0054):
-                // `control`, a live lease, and an explicit PickTarget op in
-                // the granted scope — never inherited — plus the lock/VT
-                // gate, since a pick presents and reads screen content. The
-                // user's click is the interactive half of the authorization.
-                let current_scope = match scope_name.as_deref() {
-                    Some(name) => handler.resolve_scope(name),
-                    None => Some(granted_scope.clone()),
-                };
-                let op_allowed = current_scope.as_ref().is_some_and(|scope| {
-                    scope
-                        .ops
-                        .as_ref()
-                        .is_some_and(|ops| ops.contains(&OpClass::PickTarget))
-                });
-                if !granted.control {
-                    Response::Error {
-                        message: "PickTarget requires the control capability".into(),
-                    }
-                } else if !lease_alive {
-                    Response::Error {
-                        message: "privileged capability lease expired".into(),
-                    }
-                } else if !op_allowed {
-                    Response::Error {
-                        message: "out of scope".into(),
-                    }
-                } else if !handler.capture_security_active() {
-                    Response::Error {
-                        message: "session is locked or inactive".into(),
-                    }
-                } else {
-                    match handler.pick_target(conn_id, kind) {
-                        Ok(result) => {
-                            // The pick blocked on user interaction; policy may
-                            // have changed meanwhile, so re-check before
-                            // delivering the picked content (ADR-0054).
-                            let scope_still_allows = match scope_name.as_deref() {
-                                Some(name) => handler.resolve_scope(name),
-                                None => Some(granted_scope.clone()),
-                            }
-                            .is_some_and(|scope| {
-                                scope
-                                    .ops
+                Request::CaptureOutput { region } => {
+                    // Pixel capture reads the screen back to the client, so it is
+                    // fail-closed like InjectInput: `control` plus an explicit
+                    // CaptureOutput op in the granted scope — never inherited
+                    // through None-means-all (ADR-0034).
+                    let current_scope = match scope_name.as_deref() {
+                        Some(name) => handler.resolve_scope(name),
+                        None => Some(granted_scope.clone()),
+                    };
+                    let op_allowed = current_scope.as_ref().is_some_and(|scope| {
+                        scope
+                            .ops
+                            .as_ref()
+                            .is_some_and(|ops| ops.contains(&crate::schema::OpClass::CaptureOutput))
+                    });
+                    if !granted.control {
+                        Response::Error {
+                            message: "CaptureOutput requires the control capability".into(),
+                        }
+                    } else if !lease_alive {
+                        Response::Error {
+                            message: "privileged capability lease expired".into(),
+                        }
+                    } else if !op_allowed {
+                        Response::Error {
+                            message: "out of scope".into(),
+                        }
+                    } else {
+                        match handler.capture_output(region) {
+                            Ok(payload) => {
+                                let scope_still_allows = match scope_name.as_deref() {
+                                    Some(name) => handler.resolve_scope(name),
+                                    None => Some(granted_scope.clone()),
+                                }
+                                .is_some_and(|scope| {
+                                    scope.ops.as_ref().is_some_and(|ops| {
+                                        ops.contains(&crate::schema::OpClass::CaptureOutput)
+                                    })
+                                });
+                                let lease_deadline = active_lease
                                     .as_ref()
-                                    .is_some_and(|ops| ops.contains(&OpClass::PickTarget))
-                            });
-                            if !scope_still_allows {
-                                Response::Error {
-                                    message: "out of scope before pick delivery".into(),
+                                    .map(|(_, deadline)| *deadline)
+                                    .expect("granted control has an active lease");
+                                if !scope_still_allows {
+                                    Response::Error {
+                                        message: "out of scope before capture delivery".into(),
+                                    }
+                                } else if std::time::Instant::now() >= lease_deadline {
+                                    Response::Error {
+                                        message: "privileged capability lease expired".into(),
+                                    }
+                                } else {
+                                    if tx
+                                        .send(Outbound::CaptureOutput {
+                                            payload,
+                                            lease_deadline,
+                                            scope_name: scope_name.clone(),
+                                        })
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                    continue;
                                 }
-                            } else if active_lease
-                                .as_ref()
-                                .is_some_and(|(_, deadline)| std::time::Instant::now() >= *deadline)
-                            {
-                                Response::Error {
-                                    message: "privileged capability lease expired".into(),
-                                }
-                            } else {
-                                Response::Picked { result }
                             }
+                            Err(message) => Response::Error { message },
                         }
-                        Err(message) => Response::Error { message },
                     }
                 }
-            }
-        };
+                Request::CaptureRealm { realm, region } => {
+                    let current_scope = match scope_name.as_deref() {
+                        Some(name) => handler.resolve_scope(name),
+                        None => Some(granted_scope.clone()),
+                    };
+                    if !granted.realm {
+                        Response::Error {
+                            message: "CaptureRealm requires the realm capability".into(),
+                        }
+                    } else if !lease_alive {
+                        Response::Error {
+                            message: "privileged capability lease expired".into(),
+                        }
+                    } else if !current_scope
+                        .as_ref()
+                        .is_some_and(|scope| scope.permits_realm_capture(realm))
+                    {
+                        Response::Error {
+                            message: "out of scope".into(),
+                        }
+                    } else {
+                        match handler.capture_realm(realm, region) {
+                            Ok(payload) if payload.capture.realm == realm => {
+                                let scope_still_allows = match scope_name.as_deref() {
+                                    Some(name) => handler.resolve_scope(name),
+                                    None => Some(granted_scope.clone()),
+                                }
+                                .is_some_and(|scope| scope.permits_realm_capture(realm));
+                                let lease_deadline = active_lease
+                                    .as_ref()
+                                    .map(|(_, deadline)| *deadline)
+                                    .expect("granted Realm capability has an active lease");
+                                if !scope_still_allows {
+                                    Response::Error {
+                                        message: "out of scope before capture delivery".into(),
+                                    }
+                                } else if std::time::Instant::now() >= lease_deadline {
+                                    Response::Error {
+                                        message: "privileged capability lease expired".into(),
+                                    }
+                                } else {
+                                    if tx
+                                        .send(Outbound::CaptureRealm {
+                                            payload,
+                                            lease_deadline,
+                                            scope_name: scope_name.clone(),
+                                        })
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                            }
+                            Ok(payload) => Response::Error {
+                                message: format!(
+                                    "capture handler returned Realm {} for requested Realm {}",
+                                    payload.capture.realm.0, realm.0
+                                ),
+                            },
+                            Err(message) => Response::Error { message },
+                        }
+                    }
+                }
+                Request::StreamOutputStart { max_fps, target } => {
+                    // Fail-closed exactly like CaptureOutput: `control`, a live
+                    // lease, and an explicit StreamOutput op in the granted
+                    // scope — never inherited through None-means-all (ADR-0052).
+                    let current_scope = match scope_name.as_deref() {
+                        Some(name) => handler.resolve_scope(name),
+                        None => Some(granted_scope.clone()),
+                    };
+                    let op_allowed = current_scope.as_ref().is_some_and(|scope| {
+                        scope
+                            .ops
+                            .as_ref()
+                            .is_some_and(|ops| ops.contains(&OpClass::StreamOutput))
+                    });
+                    if !granted.control {
+                        Response::Error {
+                            message: "StreamOutputStart requires the control capability".into(),
+                        }
+                    } else if !lease_alive {
+                        Response::Error {
+                            message: "privileged capability lease expired".into(),
+                        }
+                    } else if !op_allowed {
+                        Response::Error {
+                            message: "out of scope".into(),
+                        }
+                    } else if !handler.capture_security_active() {
+                        Response::Error {
+                            message: "session is locked or inactive".into(),
+                        }
+                    } else {
+                        match handler.stream_output_start(conn_id, max_fps, target) {
+                            Ok(info) => {
+                                streams.lock().unwrap().insert(
+                                    info.stream_id,
+                                    StreamLane {
+                                        conn_id,
+                                        tx: tx.clone(),
+                                        scope_name: scope_name.clone(),
+                                        lease_deadline: Arc::clone(&lease_deadline_shared),
+                                        queued: Arc::new(AtomicU32::new(0)),
+                                    },
+                                );
+                                Response::StreamOutputStarted {
+                                    stream_id: info.stream_id,
+                                    width: info.width,
+                                    height: info.height,
+                                    format: info.format,
+                                }
+                            }
+                            Err(message) => Response::Error { message },
+                        }
+                    }
+                }
+                Request::StreamOutputStop { stream_id } => {
+                    // A connection may stop only a stream it owns.
+                    let owned = streams
+                        .lock()
+                        .unwrap()
+                        .get(&stream_id)
+                        .is_some_and(|lane| lane.conn_id == conn_id);
+                    if owned {
+                        streams.lock().unwrap().remove(&stream_id);
+                        handler.stream_output_stop(stream_id);
+                        Response::StreamOutputStopped { stream_id }
+                    } else {
+                        Response::Error {
+                            message: format!("unknown stream {stream_id}"),
+                        }
+                    }
+                }
+                Request::SetIdleInhibit { inhibit } => {
+                    // Fail-closed exactly like StreamOutputStart: `control`, a
+                    // live lease, and an explicit IdleInhibit op in the granted
+                    // scope — never inherited through None-means-all (ADR-0075).
+                    let current_scope = match scope_name.as_deref() {
+                        Some(name) => handler.resolve_scope(name),
+                        None => Some(granted_scope.clone()),
+                    };
+                    let op_allowed = current_scope.as_ref().is_some_and(|scope| {
+                        scope
+                            .ops
+                            .as_ref()
+                            .is_some_and(|ops| ops.contains(&OpClass::IdleInhibit))
+                    });
+                    if !granted.control {
+                        Response::Error {
+                            message: "SetIdleInhibit requires the control capability".into(),
+                        }
+                    } else if !lease_alive {
+                        Response::Error {
+                            message: "privileged capability lease expired".into(),
+                        }
+                    } else if !op_allowed {
+                        Response::Error {
+                            message: "out of scope".into(),
+                        }
+                    } else {
+                        match handler.set_idle_inhibit(conn_id, inhibit) {
+                            Ok(inhibited) => {
+                                idle_inhibited = inhibited;
+                                Response::IdleInhibitSet { inhibited }
+                            }
+                            Err(message) => Response::Error { message },
+                        }
+                    }
+                }
+                Request::PickTarget { kind } => {
+                    // Fail-closed exactly like StreamOutputStart (ADR-0054):
+                    // `control`, a live lease, and an explicit PickTarget op in
+                    // the granted scope — never inherited — plus the lock/VT
+                    // gate, since a pick presents and reads screen content. The
+                    // user's click is the interactive half of the authorization.
+                    let current_scope = match scope_name.as_deref() {
+                        Some(name) => handler.resolve_scope(name),
+                        None => Some(granted_scope.clone()),
+                    };
+                    let op_allowed = current_scope.as_ref().is_some_and(|scope| {
+                        scope
+                            .ops
+                            .as_ref()
+                            .is_some_and(|ops| ops.contains(&OpClass::PickTarget))
+                    });
+                    if !granted.control {
+                        Response::Error {
+                            message: "PickTarget requires the control capability".into(),
+                        }
+                    } else if !lease_alive {
+                        Response::Error {
+                            message: "privileged capability lease expired".into(),
+                        }
+                    } else if !op_allowed {
+                        Response::Error {
+                            message: "out of scope".into(),
+                        }
+                    } else if !handler.capture_security_active() {
+                        Response::Error {
+                            message: "session is locked or inactive".into(),
+                        }
+                    } else {
+                        match handler.pick_target(conn_id, kind) {
+                            Ok(result) => {
+                                // The pick blocked on user interaction; policy may
+                                // have changed meanwhile, so re-check before
+                                // delivering the picked content (ADR-0054).
+                                let scope_still_allows = match scope_name.as_deref() {
+                                    Some(name) => handler.resolve_scope(name),
+                                    None => Some(granted_scope.clone()),
+                                }
+                                .is_some_and(|scope| {
+                                    scope
+                                        .ops
+                                        .as_ref()
+                                        .is_some_and(|ops| ops.contains(&OpClass::PickTarget))
+                                });
+                                if !scope_still_allows {
+                                    Response::Error {
+                                        message: "out of scope before pick delivery".into(),
+                                    }
+                                } else if active_lease.as_ref().is_some_and(|(_, deadline)| {
+                                    std::time::Instant::now() >= *deadline
+                                }) {
+                                    Response::Error {
+                                        message: "privileged capability lease expired".into(),
+                                    }
+                                } else {
+                                    Response::Picked { result }
+                                }
+                            }
+                            Err(message) => Response::Error { message },
+                        }
+                    }
+                }
+                Request::PickFile { options } => {
+                    // Fail-closed exactly like PickTarget (ADR-0054): `control`,
+                    // a live lease, and an explicit PickFile op in the granted
+                    // scope — never inherited — plus the lock/VT gate. The
+                    // user's confirmation is the interactive half of the
+                    // authorization; the picker reveals user-approved
+                    // filesystem names, never screen content.
+                    let current_scope = match scope_name.as_deref() {
+                        Some(name) => handler.resolve_scope(name),
+                        None => Some(granted_scope.clone()),
+                    };
+                    let op_allowed = current_scope.as_ref().is_some_and(|scope| {
+                        scope
+                            .ops
+                            .as_ref()
+                            .is_some_and(|ops| ops.contains(&OpClass::PickFile))
+                    });
+                    if !granted.control {
+                        Response::Error {
+                            message: "PickFile requires the control capability".into(),
+                        }
+                    } else if !lease_alive {
+                        Response::Error {
+                            message: "privileged capability lease expired".into(),
+                        }
+                    } else if !op_allowed {
+                        Response::Error {
+                            message: "out of scope".into(),
+                        }
+                    } else if !handler.capture_security_active() {
+                        Response::Error {
+                            message: "session is locked or inactive".into(),
+                        }
+                    } else {
+                        match handler.pick_file(conn_id, options) {
+                            Ok(result) => {
+                                // The pick blocked on user interaction; policy may
+                                // have changed meanwhile, so re-check before
+                                // delivering the picked paths (ADR-0054).
+                                let scope_still_allows = match scope_name.as_deref() {
+                                    Some(name) => handler.resolve_scope(name),
+                                    None => Some(granted_scope.clone()),
+                                }
+                                .is_some_and(|scope| {
+                                    scope
+                                        .ops
+                                        .as_ref()
+                                        .is_some_and(|ops| ops.contains(&OpClass::PickFile))
+                                });
+                                if !scope_still_allows {
+                                    Response::Error {
+                                        message: "out of scope before pick delivery".into(),
+                                    }
+                                } else if active_lease.as_ref().is_some_and(|(_, deadline)| {
+                                    std::time::Instant::now() >= *deadline
+                                }) {
+                                    Response::Error {
+                                        message: "privileged capability lease expired".into(),
+                                    }
+                                } else {
+                                    Response::FilePicked { result }
+                                }
+                            }
+                            Err(message) => Response::Error { message },
+                        }
+                    }
+                }
+                Request::PickApp {
+                    choices,
+                    subject,
+                    last_choice,
+                } => {
+                    // Fail-closed exactly like PickFile: `control`, a live lease,
+                    // an explicit PickApp op (never inherited), the lock/VT gate,
+                    // and a scope+lease re-check before delivery.
+                    let current_scope = match scope_name.as_deref() {
+                        Some(name) => handler.resolve_scope(name),
+                        None => Some(granted_scope.clone()),
+                    };
+                    let op_allowed = current_scope.as_ref().is_some_and(|scope| {
+                        scope
+                            .ops
+                            .as_ref()
+                            .is_some_and(|ops| ops.contains(&OpClass::PickApp))
+                    });
+                    if !granted.control {
+                        Response::Error {
+                            message: "PickApp requires the control capability".into(),
+                        }
+                    } else if !lease_alive {
+                        Response::Error {
+                            message: "privileged capability lease expired".into(),
+                        }
+                    } else if !op_allowed {
+                        Response::Error {
+                            message: "out of scope".into(),
+                        }
+                    } else if !handler.capture_security_active() {
+                        Response::Error {
+                            message: "session is locked or inactive".into(),
+                        }
+                    } else {
+                        match handler.pick_app(conn_id, choices, subject, last_choice) {
+                            Ok(result) => {
+                                let scope_still_allows = match scope_name.as_deref() {
+                                    Some(name) => handler.resolve_scope(name),
+                                    None => Some(granted_scope.clone()),
+                                }
+                                .is_some_and(|scope| {
+                                    scope
+                                        .ops
+                                        .as_ref()
+                                        .is_some_and(|ops| ops.contains(&OpClass::PickApp))
+                                });
+                                if !scope_still_allows {
+                                    Response::Error {
+                                        message: "out of scope before pick delivery".into(),
+                                    }
+                                } else if active_lease.as_ref().is_some_and(|(_, deadline)| {
+                                    std::time::Instant::now() >= *deadline
+                                }) {
+                                    Response::Error {
+                                        message: "privileged capability lease expired".into(),
+                                    }
+                                } else {
+                                    Response::AppPicked { result }
+                                }
+                            }
+                            Err(message) => Response::Error { message },
+                        }
+                    }
+                }
+                Request::PromptSecret { title, reason } => {
+                    // Fail-closed exactly like PickFile: `control`, a live lease,
+                    // an explicit PromptSecret op (never inherited), the lock/VT
+                    // gate, and a scope+lease re-check before delivery.
+                    let current_scope = match scope_name.as_deref() {
+                        Some(name) => handler.resolve_scope(name),
+                        None => Some(granted_scope.clone()),
+                    };
+                    let op_allowed = current_scope.as_ref().is_some_and(|scope| {
+                        scope
+                            .ops
+                            .as_ref()
+                            .is_some_and(|ops| ops.contains(&OpClass::PromptSecret))
+                    });
+                    if !granted.control {
+                        Response::Error {
+                            message: "PromptSecret requires the control capability".into(),
+                        }
+                    } else if !lease_alive {
+                        Response::Error {
+                            message: "privileged capability lease expired".into(),
+                        }
+                    } else if !op_allowed {
+                        Response::Error {
+                            message: "out of scope".into(),
+                        }
+                    } else if !handler.capture_security_active() {
+                        Response::Error {
+                            message: "session is locked or inactive".into(),
+                        }
+                    } else {
+                        match handler.prompt_secret(conn_id, title, reason) {
+                            Ok(result) => {
+                                let scope_still_allows = match scope_name.as_deref() {
+                                    Some(name) => handler.resolve_scope(name),
+                                    None => Some(granted_scope.clone()),
+                                }
+                                .is_some_and(|scope| {
+                                    scope
+                                        .ops
+                                        .as_ref()
+                                        .is_some_and(|ops| ops.contains(&OpClass::PromptSecret))
+                                });
+                                if !scope_still_allows {
+                                    Response::Error {
+                                        message: "out of scope before prompt delivery".into(),
+                                    }
+                                } else if active_lease.as_ref().is_some_and(|(_, deadline)| {
+                                    std::time::Instant::now() >= *deadline
+                                }) {
+                                    Response::Error {
+                                        message: "privileged capability lease expired".into(),
+                                    }
+                                } else {
+                                    Response::SecretPrompted { result }
+                                }
+                            }
+                            Err(message) => Response::Error { message },
+                        }
+                    }
+                }
+                Request::PickConfirm {
+                    title,
+                    body,
+                    accept_label,
+                } => {
+                    // Fail-closed exactly like the other picks: `control`, a
+                    // live lease, an explicit PickConfirm op (never
+                    // inherited), the lock/VT gate, and a scope+lease
+                    // re-check before delivery.
+                    let current_scope = match scope_name.as_deref() {
+                        Some(name) => handler.resolve_scope(name),
+                        None => Some(granted_scope.clone()),
+                    };
+                    let op_allowed = current_scope.as_ref().is_some_and(|scope| {
+                        scope
+                            .ops
+                            .as_ref()
+                            .is_some_and(|ops| ops.contains(&OpClass::PickConfirm))
+                    });
+                    if !granted.control {
+                        Response::Error {
+                            message: "PickConfirm requires the control capability".into(),
+                        }
+                    } else if !lease_alive {
+                        Response::Error {
+                            message: "privileged capability lease expired".into(),
+                        }
+                    } else if !op_allowed {
+                        Response::Error {
+                            message: "out of scope".into(),
+                        }
+                    } else if !handler.capture_security_active() {
+                        Response::Error {
+                            message: "session is locked or inactive".into(),
+                        }
+                    } else {
+                        match handler.pick_confirm(conn_id, title, body, accept_label) {
+                            Ok(result) => {
+                                let scope_still_allows = match scope_name.as_deref() {
+                                    Some(name) => handler.resolve_scope(name),
+                                    None => Some(granted_scope.clone()),
+                                }
+                                .is_some_and(|scope| {
+                                    scope
+                                        .ops
+                                        .as_ref()
+                                        .is_some_and(|ops| ops.contains(&OpClass::PickConfirm))
+                                });
+                                if !scope_still_allows {
+                                    Response::Error {
+                                        message: "out of scope before confirm delivery".into(),
+                                    }
+                                } else if active_lease.as_ref().is_some_and(|(_, deadline)| {
+                                    std::time::Instant::now() >= *deadline
+                                }) {
+                                    Response::Error {
+                                        message: "privileged capability lease expired".into(),
+                                    }
+                                } else {
+                                    Response::ConfirmPicked { result }
+                                }
+                            }
+                            Err(message) => Response::Error { message },
+                        }
+                    }
+                }
+                Request::SetWallpaper { path } => {
+                    // Mutation gate: `control`, a live lease, an explicit
+                    // SetWallpaper op (never inherited), and the lock/VT
+                    // gate. The reply is the main loop's authoritative
+                    // decode-and-swap receipt.
+                    let current_scope = match scope_name.as_deref() {
+                        Some(name) => handler.resolve_scope(name),
+                        None => Some(granted_scope.clone()),
+                    };
+                    let op_allowed = current_scope.as_ref().is_some_and(|scope| {
+                        scope
+                            .ops
+                            .as_ref()
+                            .is_some_and(|ops| ops.contains(&OpClass::SetWallpaper))
+                    });
+                    if !granted.control {
+                        Response::Error {
+                            message: "SetWallpaper requires the control capability".into(),
+                        }
+                    } else if !lease_alive {
+                        Response::Error {
+                            message: "privileged capability lease expired".into(),
+                        }
+                    } else if !op_allowed {
+                        Response::Error {
+                            message: "out of scope".into(),
+                        }
+                    } else if !handler.capture_security_active() {
+                        Response::Error {
+                            message: "session is locked or inactive".into(),
+                        }
+                    } else {
+                        match handler.set_wallpaper(conn_id, path) {
+                            Ok(()) => Response::WallpaperSet {},
+                            Err(message) => Response::Error { message },
+                        }
+                    }
+                }
+            };
         if tx.send(Outbound::Response(resp)).is_err() {
             break;
         }

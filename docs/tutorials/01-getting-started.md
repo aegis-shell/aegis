@@ -65,7 +65,7 @@ cargo run --locked -p aegis
 ```
 
 Because `WAYLAND_DISPLAY` is set, the default `AEGIS_BACKEND=auto` opens a
-nested Aegis window. The background, status bar, and Dock confirm that the
+nested Aegis window. The background, HUD chips, and Dock confirm that the
 session is ready.
 
 ## Launch System Settings

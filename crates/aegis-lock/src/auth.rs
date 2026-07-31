@@ -76,6 +76,12 @@ unsafe extern "C" {
 struct ConversationData {
     username: CString,
     password: Vec<u8>,
+    /// Set when PAM actually requested the password via the conversation.
+    /// If `pam_authenticate` fails without ever prompting, the service
+    /// profile is misconfigured (commonly: missing `/etc/pam.d/aegis-lock`,
+    /// which falls through to a deny-all `other`), and "wrong password" is a
+    /// misleading message — surface that instead of looping the user.
+    prompted: bool,
 }
 
 pub fn authenticate_async(username: String, secret: Secret, results: Sender<AuthResult>) {
@@ -140,7 +146,11 @@ fn authenticate(username: &str, secret: Secret) -> AuthResult {
             message: localized("Incorrect password", "密码错误"),
         };
     };
-    let mut data = ConversationData { username, password };
+    let mut data = ConversationData {
+        username,
+        password,
+        prompted: false,
+    };
     let conv = PamConv {
         conv: Some(conversation),
         appdata_ptr: ptr::from_mut(&mut data).cast(),
@@ -166,10 +176,22 @@ fn authenticate(username: &str, secret: Secret) -> AuthResult {
 
     match status {
         PAM_SUCCESS => AuthResult::Accepted,
-        PAM_AUTH_ERR | PAM_USER_UNKNOWN | PAM_MAXTRIES => AuthResult::Rejected {
+        // PAM rejected only after asking for the password: a genuine
+        // wrong-password attempt.
+        PAM_AUTH_ERR | PAM_USER_UNKNOWN | PAM_MAXTRIES if data.prompted => AuthResult::Rejected {
             message: localized(
                 "Incorrect password · Please wait before trying again",
                 "密码错误 · 请稍后再试",
+            ),
+        },
+        // PAM rejected without ever prompting: the `aegis-lock` service
+        // profile is absent or deny-all (the common case when the distro
+        // package was not installed). The password is almost certainly fine,
+        // so looping "wrong password" is misleading — point at the fix.
+        PAM_AUTH_ERR | PAM_USER_UNKNOWN | PAM_MAXTRIES => AuthResult::Unavailable {
+            message: localized(
+                "Authentication misconfigured · Install the aegis-lock PAM profile",
+                "认证配置异常 · 请安装 aegis-lock PAM 配置",
             ),
         },
         _ => AuthResult::Unavailable {
@@ -190,7 +212,7 @@ unsafe extern "C" fn conversation(
     let Ok(count) = usize::try_from(count) else {
         return PAM_CONV_ERR;
     };
-    let data = unsafe { &*(appdata.cast::<ConversationData>()) };
+    let data = unsafe { &mut *(appdata.cast::<ConversationData>()) };
     let allocation =
         unsafe { libc::calloc(count, std::mem::size_of::<PamResponse>()) }.cast::<PamResponse>();
     if allocation.is_null() {
@@ -204,8 +226,16 @@ unsafe extern "C" fn conversation(
             return PAM_CONV_ERR;
         }
         let source = match unsafe { (*message).msg_style } {
-            PAM_PROMPT_ECHO_OFF => data.password.as_ptr().cast::<c_char>(),
-            PAM_PROMPT_ECHO_ON => data.username.as_ptr(),
+            // A real prompt means the configured stack is asking for a
+            // credential, so a later rejection is a genuine wrong-password.
+            PAM_PROMPT_ECHO_OFF => {
+                data.prompted = true;
+                data.password.as_ptr().cast::<c_char>()
+            }
+            PAM_PROMPT_ECHO_ON => {
+                data.prompted = true;
+                data.username.as_ptr()
+            }
             PAM_ERROR_MSG | PAM_TEXT_INFO => ptr::null(),
             _ => {
                 unsafe { free_responses(allocation, count) };

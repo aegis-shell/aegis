@@ -52,6 +52,12 @@ pub struct Config {
     #[serde(default, rename = "keybind")]
     pub keybinds: Vec<KeybindEntry>,
 
+    /// Touchpad swipe bindings, an array-of-tables written `[[gesture]]` in
+    /// the file. Resolved against the built-in defaults with
+    /// [`Config::gesture_map`].
+    #[serde(default, rename = "gesture")]
+    pub gestures: Vec<GestureEntry>,
+
     /// Window rules, an array-of-tables written `[[window_rule]]`. Evaluated
     /// on first map; the first match applies (move to workspace, force a
     /// layout role). See [`aegis_core::window_rule::WindowRule`].
@@ -67,10 +73,10 @@ pub struct Config {
     #[serde(default)]
     pub dock: DockConfig,
 
-    /// Status bar configuration, written as a `[statusbar]` table. Controls
-    /// whether the top status bar is registered.
+    /// HUD configuration, written as a `[hud]` table. Controls
+    /// whether the display-only HUD status chips are registered.
     #[serde(default)]
-    pub statusbar: StatusBarConfig,
+    pub hud: HudConfig,
 
     /// Desktop-wide UI and window-presentation policy, written as a `[ui]`
     /// table.
@@ -112,6 +118,25 @@ pub struct Config {
     /// as `[idle]`.
     #[serde(default)]
     pub idle: IdleSettings,
+
+    /// Development-only escape hatches, written as a `[dev]` table.
+    /// Development-only; will be removed before release. Do not rely on it.
+    #[serde(default)]
+    pub dev: DevConfig,
+}
+
+/// The `[dev]` section: development-only escape hatches.
+///
+/// Development-only escape hatch; will be removed before release. Do not
+/// rely on it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DevConfig {
+    /// Allow the `Quit` binding (Super+Ctrl+Q by default) to match while the
+    /// session is locked. Development-only escape hatch; will be removed
+    /// before release. Do not rely on it.
+    #[serde(default)]
+    pub allow_quit_while_locked: bool,
 }
 
 /// The `[appearance]` section: desktop-wide visual and typography policy.
@@ -322,6 +347,11 @@ pub struct AgentScopeEntry {
     /// Operation-class names this scope permits.
     #[serde(default)]
     pub ops: Vec<String>,
+    /// Operation-class names this scope does not pre-grant but that a paired
+    /// agent may request at runtime through an interactive user grant
+    /// (ADR-0088).
+    #[serde(default)]
+    pub ask: Vec<String>,
     /// Window-id allowlist. Empty means unrestricted.
     #[serde(default)]
     pub windows: Vec<u64>,
@@ -358,24 +388,24 @@ fn default_dock_autohide_timeout() -> f32 {
     2.5
 }
 
-/// The `[statusbar]` section. `enabled` controls whether the top status bar
-/// chrome component is registered at startup; it defaults to `true` so an
-/// unconfigured session keeps the bar.
+/// The `[hud]` section. `enabled` controls whether the display-only HUD
+/// status chips are registered at startup; it defaults to `true` so an
+/// unconfigured session keeps the HUD.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StatusBarConfig {
-    #[serde(default = "default_statusbar_enabled")]
+pub struct HudConfig {
+    #[serde(default = "default_hud_enabled")]
     pub enabled: bool,
 }
 
-fn default_statusbar_enabled() -> bool {
+fn default_hud_enabled() -> bool {
     true
 }
 
-impl Default for StatusBarConfig {
-    fn default() -> StatusBarConfig {
-        StatusBarConfig {
-            enabled: default_statusbar_enabled(),
+impl Default for HudConfig {
+    fn default() -> HudConfig {
+        HudConfig {
+            enabled: default_hud_enabled(),
         }
     }
 }
@@ -529,6 +559,25 @@ pub struct KeybindEntry {
     /// `tab`, `f1`..`f12`, `up`/`down`/`left`/`right`, …).
     pub key: String,
     /// Action name: `launcher`, `close`, `cycle`/`next`, `prev`, `quit`.
+    pub action: String,
+}
+
+/// One touchpad swipe binding: a finger count, an axis, and the action it
+/// triggers.
+///
+/// Field names match the [`aegis_core::gesture`] name resolvers. Unknown
+/// names produce a per-entry diagnostic rather than aborting the whole file.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GestureEntry {
+    /// Number of fingers on the touchpad. Swipe gestures require at least
+    /// three fingers; one- and two-finger motion is pointer movement and
+    /// scrolling, not a swipe.
+    pub fingers: u8,
+    /// Swipe axis: `horizontal` or `vertical`.
+    pub axis: String,
+    /// Action name: `workspace_switch`, `window_cycle`, `command_panel`, or
+    /// `none` to shadow the built-in default on this axis.
     pub action: String,
 }
 
@@ -931,6 +980,60 @@ impl Config {
     pub fn keymap(&self) -> (Keymap, Vec<Diagnostic>) {
         let (overrides, errs) = self.resolve_keybinds();
         (Keymap::defaults().with_overrides(overrides), errs)
+    }
+
+    /// Resolve the configured swipe bindings into [`GestureBinding`]s.
+    /// Returns the resolved bindings plus one diagnostic per entry that
+    /// could not resolve (bad finger count, unknown axis, or unknown
+    /// action). Good entries are kept so a file with one typo still yields
+    /// the rest.
+    pub fn resolve_gestures(&self) -> (Vec<aegis_core::gesture::GestureBinding>, Vec<Diagnostic>) {
+        let mut binds = Vec::new();
+        let mut errs = Vec::new();
+        for (i, entry) in self.gestures.iter().enumerate() {
+            let field = format!("gesture[{i}]");
+            if entry.fingers < 3 {
+                errs.push(Diagnostic::new(
+                    Some(field.clone()),
+                    format!(
+                        "swipe gestures need at least 3 fingers, got {}",
+                        entry.fingers
+                    ),
+                ));
+                continue;
+            }
+            let Some(axis) = aegis_core::gesture::gesture_axis_from_name(&entry.axis) else {
+                errs.push(Diagnostic::new(
+                    Some(field.clone()),
+                    format!("unknown axis '{}'", entry.axis),
+                ));
+                continue;
+            };
+            let Some(action) = aegis_core::gesture::gesture_action_from_name(&entry.action) else {
+                errs.push(Diagnostic::new(
+                    Some(field.clone()),
+                    format!("unknown action '{}'", entry.action),
+                ));
+                continue;
+            };
+            binds.push(aegis_core::gesture::GestureBinding {
+                fingers: entry.fingers,
+                axis,
+                action,
+            });
+        }
+        (binds, errs)
+    }
+
+    /// Build the active [`GestureMap`]: built-in defaults overridden by the
+    /// configured entries, plus the diagnostics from resolution. Callers log
+    /// the diagnostics and install the returned map.
+    pub fn gesture_map(&self) -> (aegis_core::gesture::GestureMap, Vec<Diagnostic>) {
+        let (overrides, errs) = self.resolve_gestures();
+        (
+            aegis_core::gesture::GestureMap::defaults().with_overrides(overrides),
+            errs,
+        )
     }
 
     /// Resolve the `[[output]]` entries into per-connector

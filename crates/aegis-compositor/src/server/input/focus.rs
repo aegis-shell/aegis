@@ -125,6 +125,47 @@ impl Server {
                 unsafe { (*ptr).index = index };
             }
         }
+        self.restack_always_on_top_band();
+    }
+
+    /// Move every always-on-top toplevel's whole surface tree to the top of
+    /// the stacking order, keeping each tree contiguous and preserving the
+    /// relative order of both the normal windows and the always-on-top band.
+    /// Called after every raise and after each dispatch batch so a normal
+    /// window can never stack above an always-on-top one and a newly mapped
+    /// but unfocused window cannot land above the band either. Raw
+    /// `SurfaceRec` allocations do not move; only their pointers in the Vec
+    /// do.
+    pub(crate) fn restack_always_on_top_band(&mut self) {
+        if !self.state.live_surfaces().any(|p| {
+            let s = unsafe { &*p };
+            !s.xdg_toplevel.is_null() && s.window.always_on_top
+        }) {
+            return;
+        }
+        let mut rest = Vec::with_capacity(self.state.surfaces.len());
+        let mut band = Vec::new();
+        for ptr in self.state.surfaces.drain(..) {
+            let on_top = !ptr.is_null()
+                && unsafe {
+                    let root = surface_root_toplevel(ptr);
+                    !root.is_null()
+                        && !(*root).xdg_toplevel.is_null()
+                        && (*root).window.always_on_top
+                };
+            if on_top {
+                band.push(ptr);
+            } else {
+                rest.push(ptr);
+            }
+        }
+        rest.append(&mut band);
+        self.state.surfaces = rest;
+        for (index, ptr) in self.state.surfaces.iter().copied().enumerate() {
+            if !ptr.is_null() {
+                unsafe { (*ptr).index = index };
+            }
+        }
     }
 
     /// Flip the `activated` bit on a toplevel and reconfigure it. No-op if

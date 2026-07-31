@@ -64,6 +64,60 @@ impl Default for Design {
     }
 }
 
+/// The SAO command-panel palette (ADR-0080): frosted white floating panels
+/// with an amber accent over the standard dark scrim, after the Sword Art
+/// Online menu language. Kept separate from [`Colors`] because the panel is
+/// a light island inside the dark product appearance.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct Sao {
+    /// Frosted white panel surface.
+    pub surface: Color,
+    /// Slightly deeper white for recessed areas inside a panel.
+    pub surface_dim: Color,
+    /// Panel edge against the dark scrim.
+    pub border: Color,
+    /// Primary text on the white surface.
+    pub text: Color,
+    /// Secondary text on the white surface.
+    pub text_muted: Color,
+    /// The signature amber accent: selected rows, rings, slider fill.
+    pub accent: Color,
+    /// Low-alpha accent tint for hover feedback on rows.
+    pub accent_soft: Color,
+    /// Text/icons drawn on top of a solid accent fill.
+    pub on_accent: Color,
+    /// Slider/checkbox track on the white surface.
+    pub track: Color,
+    /// Control knob on the white surface.
+    pub knob: Color,
+}
+
+impl Sao {
+    /// The canonical SAO palette.
+    #[must_use]
+    pub fn classic() -> Self {
+        Self {
+            surface: Color::rgba(248, 249, 252, 226),
+            surface_dim: Color::rgba(236, 238, 244, 210),
+            border: Color::rgba(255, 255, 255, 110),
+            text: Color::rgba(32, 36, 48, 255),
+            text_muted: Color::rgba(96, 102, 120, 255),
+            accent: Color::rgba(245, 158, 30, 255),
+            accent_soft: Color::rgba(245, 158, 30, 48),
+            on_accent: Color::rgba(255, 255, 255, 255),
+            track: Color::rgba(32, 36, 48, 28),
+            knob: Color::rgba(255, 255, 255, 255),
+        }
+    }
+}
+
+impl Default for Sao {
+    fn default() -> Self {
+        Self::classic()
+    }
+}
+
 /// Semantic color roles shared across compositor chrome.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
@@ -121,5 +175,16 @@ mod tests {
         assert_eq!(design.colors.menu_hover, Color::rgba(255, 255, 255, 22));
         assert_eq!(design.colors.menu_active, Color::rgba(255, 255, 255, 36));
         assert_eq!(design.radii.menu_item, 7.0);
+    }
+
+    #[test]
+    fn sao_palette_is_a_light_island_with_amber_accent() {
+        let sao = Sao::classic();
+        assert_eq!(sao.accent, Color::rgba(245, 158, 30, 255));
+        assert_eq!(sao.on_accent, Color::rgba(255, 255, 255, 255));
+        let (_, _, _, surface_alpha) = sao.surface.components();
+        assert!(surface_alpha > 200);
+        let (r, g, b, _) = sao.text.components();
+        assert!(r < 64 && g < 64 && b < 64);
     }
 }

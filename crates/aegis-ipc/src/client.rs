@@ -12,9 +12,10 @@ use std::time::Duration;
 use crate::codec::{read_msg, write_msg};
 use crate::journal::JournalSnapshot;
 use crate::schema::{
-    Capabilities, Command, Event, LeaseGrant, LeaseRequest, PROTOCOL_VERSION, PickKind, PickResult,
-    RealmAction, RealmActionResult, Request, Response, Scope, SettingsAction, SettingsReceipt,
-    SettingsSnapshot, StreamPixelFormat, StreamTarget, SystemAction, SystemStatus,
+    AppPickResult, Capabilities, Command, ConfirmPickResult, Event, FilePickOptions,
+    FilePickResult, LeaseGrant, LeaseRequest, PROTOCOL_VERSION, PickKind, PickResult, RealmAction,
+    RealmActionResult, Request, Response, Scope, SecretPromptResult, SettingsAction,
+    SettingsReceipt, SettingsSnapshot, StreamPixelFormat, StreamTarget, SystemAction, SystemStatus,
 };
 
 /// Decoded Realm observation returned by [`Client::capture_realm`].
@@ -305,6 +306,25 @@ impl Client {
             summary: summary.into(),
             body: body.into(),
             app_id,
+            external_id: None,
+        })
+    }
+
+    /// Post a notification carrying the sender's own external id (the
+    /// Notification portal's per-application id), so a later withdrawal can
+    /// be matched by `(app_id, external_id)`.
+    pub fn notify_external(
+        &mut self,
+        summary: impl Into<String>,
+        body: impl Into<String>,
+        app_id: Option<String>,
+        external_id: Option<String>,
+    ) -> io::Result<()> {
+        self.command(Command::Notify {
+            summary: summary.into(),
+            body: body.into(),
+            app_id,
+            external_id,
         })
     }
 
@@ -568,6 +588,118 @@ impl Client {
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("expected Picked, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Ask the user to choose filesystem paths through compositor chrome
+    /// (the FileChooser portal's compositor side). Blocks until the user
+    /// confirms or cancels (or the compositor's interaction timeout
+    /// elapses), so this can take arbitrarily longer than any other request.
+    /// Unlike [`Client::pick_target`] the picker never freezes the screen.
+    /// Requires `control` and an explicit `PickFile` op in the connection's
+    /// scope.
+    pub fn pick_file(&mut self, options: FilePickOptions) -> io::Result<FilePickResult> {
+        write_msg(&mut self.stream, &Request::PickFile { options })?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::FilePicked { result } => Ok(result),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected FilePicked, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Ask the user to choose one application out of `choices` through
+    /// compositor chrome (the AppChooser portal's compositor side). Same
+    /// blocking discipline as [`Client::pick_file`]. Requires `control` and
+    /// an explicit `PickApp` op in the connection's scope.
+    pub fn pick_app(
+        &mut self,
+        choices: Vec<String>,
+        subject: Option<String>,
+        last_choice: Option<String>,
+    ) -> io::Result<AppPickResult> {
+        write_msg(
+            &mut self.stream,
+            &Request::PickApp {
+                choices,
+                subject,
+                last_choice,
+            },
+        )?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::AppPicked { result } => Ok(result),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected AppPicked, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Ask the user for a secret (password, PIN, …) through a masked
+    /// compositor prompt (the secret vault's password unlock). Same blocking
+    /// discipline as [`Client::pick_file`]. Requires `control` and an
+    /// explicit `PromptSecret` op in the connection's scope. Zeroize the
+    /// returned value after use.
+    pub fn prompt_secret(
+        &mut self,
+        title: String,
+        reason: Option<String>,
+    ) -> io::Result<SecretPromptResult> {
+        write_msg(&mut self.stream, &Request::PromptSecret { title, reason })?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::SecretPrompted { result } => Ok(result),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected SecretPrompted, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Ask the user a yes/no consent question through compositor chrome
+    /// (portal consent dialogs). Same blocking discipline as
+    /// [`Client::pick_file`]. Requires `control` and an explicit
+    /// `PickConfirm` op in the connection's scope.
+    pub fn pick_confirm(
+        &mut self,
+        title: String,
+        body: String,
+        accept_label: Option<String>,
+    ) -> io::Result<ConfirmPickResult> {
+        write_msg(
+            &mut self.stream,
+            &Request::PickConfirm {
+                title,
+                body,
+                accept_label,
+            },
+        )?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::ConfirmPicked { result } => Ok(result),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected ConfirmPicked, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Replace the desktop wallpaper with the image at `path` (the
+    /// Wallpaper portal). The reply is the compositor's authoritative
+    /// decode-and-swap receipt. Requires `control` and an explicit
+    /// `SetWallpaper` op in the connection's scope.
+    pub fn set_wallpaper(&mut self, path: std::path::PathBuf) -> io::Result<()> {
+        write_msg(&mut self.stream, &Request::SetWallpaper { path })?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::WallpaperSet {} => Ok(()),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected WallpaperSet, got {other:?}"),
             )),
         }
     }

@@ -1,0 +1,16 @@
+[package]
+name = "aegis-pam"
+description = "PAM module caching the login authtok for the aegis secret vault's auto-unlock (token file consumed by aegis-portal)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+name = "pam_aegis"
+
+[dependencies]
+pamsm = { version = "0.4.3", features = ["libpam"] }
+libc = { workspace = true }
+zeroize = { workspace = true }

@@ -101,6 +101,12 @@ impl CompositorRuntime {
             // A pick presents screen content through chrome; the lock must
             // not cover a live picker (ADR-0054).
             self.abandon_pending_pick("session locked before the pick completed");
+            // The file picker reveals user-approved filesystem names; the
+            // lock must not cover it either.
+            self.abandon_pending_file_pick("session locked before the file pick completed");
+            self.abandon_pending_app_pick("session locked before the app pick completed");
+            self.abandon_pending_secret_prompt("session locked before the secret prompt completed");
+            self.abandon_pending_confirm_pick("session locked before the confirmation completed");
         }
         while let Ok(completion) = self.capture_worker.completions.try_recv() {
             match completion {
@@ -347,6 +353,7 @@ impl CompositorRuntime {
         while let Ok(mut detected) = self.status_rx.try_recv() {
             detected.do_not_disturb = self.notif_queue.lock().unwrap().do_not_disturb();
             detected.tiled = self.server.tiling();
+            detected.idle_inhibited = self.system_status.idle_inhibited;
             detected.touchpad = self.host.touchpad_status();
             detected.display = self.system_status.display.clone();
             if detected != self.system_status {
@@ -375,6 +382,7 @@ impl CompositorRuntime {
                 path,
                 &mut self.config,
                 &mut self.keymap,
+                &mut self.gesture_map,
                 &mut self.server,
                 &mut self.shell,
                 &mut self.cursor_cache,
@@ -533,6 +541,10 @@ impl CompositorRuntime {
         }
         self.drain_idle_controls();
         self.drain_pick_controls();
+        self.drain_file_pick_controls();
+        self.drain_app_pick_controls();
+        self.drain_secret_prompt_controls();
+        self.drain_confirm_pick_controls();
         while let Ok(request) = self.stream_control_rx.try_recv() {
             match request.action {
                 StreamControl::Start {
@@ -730,17 +742,20 @@ impl CompositorRuntime {
             );
             let _ = request.reply.send(result);
         }
+        while let Ok(request) = self.wallpaper_control_rx.try_recv() {
+            let result = if self.server.session_locked() {
+                Err("session is locked".into())
+            } else {
+                self.swap_wallpaper(&request.path)
+            };
+            let _ = request.reply.send(result);
+        }
         while let Ok(request) = self.system_control_rx.try_recv() {
             let action = request.action;
             // Correlate every event produced while applying this live-system
             // control request. `debug_span` is elided at the default `info`
             // level, so it is free in production and active under RUST_LOG.
-            let _span = tracing::debug_span!(
-                "ipc",
-                kind = "system_control",
-                ?action
-            )
-            .entered();
+            let _span = tracing::debug_span!("ipc", kind = "system_control", ?action).entered();
             let command = aegis_ipc::Command::System {
                 action: action.clone(),
             };
@@ -754,6 +769,7 @@ impl CompositorRuntime {
                     &mut self.host,
                     &self.notif_queue,
                     &mut self.system_status,
+                    &mut self.ipc_idle_inhibits,
                     action,
                 )
             };
@@ -814,6 +830,7 @@ impl CompositorRuntime {
                     &mut self.host,
                     &self.notif_queue,
                     &mut self.system_status,
+                    &mut self.ipc_idle_inhibits,
                     action.clone(),
                 ) {
                     Ok(()) => {
@@ -948,6 +965,29 @@ impl CompositorRuntime {
             pending_synthetic_input,
             pending_screenshots,
         }))
+    }
+
+    /// Decode `path` and swap the live wallpaper (the Wallpaper portal's
+    /// compositor side). glTF stays startup-only: its decode needs the GPU
+    /// device and surface, which the IPC path deliberately does not touch.
+    pub(super) fn swap_wallpaper(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let is_gltf = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("glb"));
+        if is_gltf {
+            return Err("glTF wallpapers are not supported over IPC".into());
+        }
+        let (width, height) = self.host.physical_size();
+        let wallpaper = aegis_wallpaper::Wallpaper::from_path(path, width, height)
+            .map_err(|error| format!("could not decode {}: {error}", path.display()))?;
+        self.wallpaper = Some(wallpaper);
+        // Full-output repaint for the swap: the damage path has no dedicated
+        // wallpaper hook, so the out-of-band mutation signal stands in (the
+        // same one config reloads and IPC settings use).
+        self.chrome_dirty = true;
+        log::info!("compositor: wallpaper replaced via IPC ({})", path.display());
+        Ok(())
     }
 }
 

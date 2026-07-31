@@ -56,7 +56,7 @@ prefix.
 ## Subcommand Groups
 
 Immediate controls are grouped under `aegis-ctl system`; they use the same
-`SystemStatus` and `SystemAction` IPC model as the status bar:
+`SystemStatus` and `SystemAction` IPC model as the command panel:
 
 ```bash
 aegis-ctl system status

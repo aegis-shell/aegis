@@ -19,8 +19,10 @@ aegis/
     aegis-prism/         compact application-search chrome component
     aegis-ai-workspaces/  Agent Realm lifecycle and authority UI
     aegis-settings/       standalone modular System Settings application
-    aegis-statusbar/     top status bar chrome component (workspaces, live controls, notifications, clock, SNI tray)
+    aegis-hud/           display-only HUD status chips (system status, workspace dots, clock, SNI tray)
+    aegis-command-panel/ full-screen modal command panel (quick settings, tray, notifications)
     aegis-wallpaper/     image and short-video background layer
+    aegis-avatar/        user-avatar loading and rendering: still images and VRM models
     aegis-config/        TOML schema, typed atomic persistence, loader, live reload
     aegis-ipc/           versioned IPC and introspection over a unix socket
     aegis-ctl/       command-line driver for the IPC (reference external tool)
@@ -52,12 +54,15 @@ Cross-repository development uses a
 | [`aegis-prism`](../../crates/aegis-prism/README.md) | Compact Spotlight-style application search component | [ADR-0021](../adr/0021-chrome-component-trait.md), [ADR-0044](../adr/0044-dock-and-control-center-crates.md) |
 | [`aegis-ai-workspaces`](../../crates/aegis-ai-workspaces/README.md) | Compositor-owned Agent Realm lifecycle and authority UI | [ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md) |
 | [`aegis-settings`](../../crates/aegis-settings/README.md) | Standalone modular System Settings application | [ADR-0069](../adr/0069-documentation-owned-installation-and-throwaway-development-staging.md) |
-| [`aegis-statusbar`](../../crates/aegis-statusbar/README.md) | Top status bar chrome component with live-system controls, notifications, and the StatusNotifierItem tray | [ADR-0045](../adr/0045-statusbar-crate-and-sni-tray.md), [ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md) |
+| [`aegis-hud`](../../crates/aegis-hud/README.md) | Display-only HUD status chips with the StatusNotifierItem tray row | [ADR-0080](../adr/0080-hud-status-chips-and-sao-command-panel.md), [ADR-0081](../adr/0081-hud-and-command-panel-naming.md) |
+| [`aegis-command-panel`](../../crates/aegis-command-panel/README.md) | Full-screen modal command panel: quick settings, tray activation, and notifications | [ADR-0080](../adr/0080-hud-status-chips-and-sao-command-panel.md), [ADR-0081](../adr/0081-hud-and-command-panel-naming.md) |
 | [`aegis-wallpaper`](../../crates/aegis-wallpaper/README.md) | Image and short-video background layer | [ADR-0018](../adr/0018-wallpaper-crate.md) |
+| [`aegis-avatar`](../../crates/aegis-avatar/README.md) | User-avatar loading and rendering: still images and VRM models | [ADR-0080](../adr/0080-avatar-crate-xdg-conformant-vrm-aware.md) |
 | [`aegis-config`](../../crates/aegis-config/README.md) | Versioned TOML schema, typed atomic persistence, loader, and mtime-based live reload | [ADR-0026](../adr/0026-configuration-system.md) |
 | [`aegis-ipc`](../../crates/aegis-ipc/README.md) | Versioned schema and codec over a unix socket; the extension/automation surface | [ADR-0027](../adr/0027-ipc-and-introspection.md) |
 | [`aegis-ctl`](../../crates/aegis-ctl/README.md) | Command-line driver for the IPC; the reference external tool | [ADR-0027](../adr/0027-ipc-and-introspection.md) |
-| [`aegis-fuji`](../../crates/aegis-fuji/README.md) | fuji in one crate: scoped MCP bridge plus its self-contained agent runtime (`aegis-fuji-mcp`, `fuji`) | [ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md), [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md) |
+| [`aegis-mcp`](../../crates/aegis-mcp/README.md) | The platform's scoped MCP bridge for any agent (`aegis-mcp`) | [ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md), [ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md) |
+| [`aegis-fuji`](../../crates/aegis-fuji/README.md) | fuji, the in-tree agent product: self-contained agent runtime (`fuji`) | [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md) |
 | [`aegis-desktop-entries`](../../crates/aegis-desktop-entries/README.md) | freedesktop.org desktop-entry enumeration and icon-theme lookup | [ADR-0022](../adr/0022-application-launcher.md) |
 | [`aegis-launcher`](../../crates/aegis-launcher/README.md) | Detached, XDG-environment-aware launching of desktop applications | [ADR-0022](../adr/0022-application-launcher.md) |
 | [`aegis`](../../crates/aegis/README.md) | Process entry point and frame loop | [Architecture](../explanation/architecture.md) |
@@ -84,9 +89,9 @@ Cross-repository development uses a
 - A rendering or texture capability missing from flux is added to flux, not
   worked around in aegis; see
   [ADR-0001](../adr/0001-scope-and-responsibility-boundary.md).
-- Generic agent execution and product policy belong in the agent half of
+- Generic agent execution and product policy belong in
   `aegis-fuji`, fuji's self-contained runtime. Aegis-specific named-scope and
-  Realm adaptation belongs in the separately launched `aegis-fuji-mcp`
+  Realm adaptation belongs in the separately launched `aegis-mcp`
   process, never in the compositor binary or the `fuji` binary.
 - Cross-binding pointer casts (between the `flux` and `lens` `flux_*`
   types) stay localized at the call seam, not spread through the code.

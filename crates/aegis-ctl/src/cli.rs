@@ -51,6 +51,8 @@ pub enum Command {
     Focus { id: u64 },
     /// Minimize a toplevel by id.
     Minimize { id: u64 },
+    /// Set or clear always-on-top for a toplevel by id.
+    AlwaysOnTop { id: u64, state: OnOff },
     /// Request that a toplevel close.
     Close { id: u64 },
     /// Set floating-window geometry in compositor logical pixels.

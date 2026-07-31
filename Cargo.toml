@@ -43,12 +43,14 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
     "registry",
 ] }
 
-# fuji (宓姬) is the in-tree agent product. aegis exposes a narrow MCP platform
-# bridge so the agent can discover scoped desktop and Realm tools without
-# linking the agent stack into the compositor (ADR-0047, ADR-0050).
+# aegis-mcp is the platform's MCP bridge; fuji (宓姬) is the in-tree agent
+# product. aegis exposes the bridge so any agent can discover scoped desktop
+# and Realm tools without linking the agent stack into the compositor
+# (ADR-0047, ADR-0050, ADR-0087).
 base64 = "0.22"
 
-# Session D-Bus for the StatusNotifierItem system tray (aegis-statusbar).
+# Session D-Bus for the StatusNotifierItem system tray (aegis-tray, shared by
+# aegis-hud and aegis-command-panel).
 # Pure-Rust zbus (no libdbus system dep) with the blocking API so the tray
 # worker stays a plain `std::thread`; `async-io` is zbus's smol-based
 # internal executor — tokio stays out of the dependency graph.
@@ -94,8 +96,15 @@ aegis-design = { path = "crates/aegis-design" }
 aegis-dock = { path = "crates/aegis-dock" }
 aegis-prism = { path = "crates/aegis-prism" }
 aegis-ai-workspaces = { path = "crates/aegis-ai-workspaces" }
-aegis-statusbar = { path = "crates/aegis-statusbar" }
+# Display-only floating HUD status chips (ADR-0080).
+aegis-hud = { path = "crates/aegis-hud" }
+# SNI system tray service shared by shell chrome (ADR-0080).
+aegis-tray = { path = "crates/aegis-tray" }
+# Modal command panel (ADR-0080).
+aegis-command-panel = { path = "crates/aegis-command-panel" }
 aegis-wallpaper = { path = "crates/aegis-wallpaper" }
+# User avatar loading and rendering: still images and VRM models (ADR-0080).
+aegis-avatar = { path = "crates/aegis-avatar" }
 # First-party session products. The compositor retains the protocol and
 # fail-closed authority; these packages are ordinary Wayland clients.
 aegis-lock = { path = "crates/aegis-lock" }
@@ -112,9 +121,13 @@ aegis-portal = { path = "crates/aegis-portal" }
 # Launcher: XDG application discovery + detached launch. See ADR-0022.
 aegis-desktop-entries = { path = "crates/aegis-desktop-entries" }
 aegis-launcher = { path = "crates/aegis-launcher" }
-# fuji (宓姬): the scoped Aegis platform bridge and fuji's self-contained agent
-# runtime in one crate (ADR-0047, ADR-0050). The `fuji` binary reaches the
-# desktop only as an MCP client of `aegis-fuji-mcp` — no Praxion, no Neenee.
+# aegis-mcp: the scoped Aegis platform bridge over MCP — the standard agent
+# access point (ADR-0047, ADR-0087). It is an out-of-process adapter any MCP
+# client can spawn; the compositor never links it.
+aegis-mcp = { path = "crates/aegis-mcp" }
+# fuji (宓姬): the in-tree agent product — a self-contained agent runtime
+# (ADR-0050). The `fuji` binary reaches the desktop only as an MCP client of
+# `aegis-mcp` — no Praxion, no Neenee, no `aegis_*` imports.
 aegis-fuji = { path = "crates/aegis-fuji" }
 
 # Declarative configuration (ADR-0026). `serde` drives the schema; `toml` is

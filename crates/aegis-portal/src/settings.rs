@@ -413,7 +413,7 @@ impl SettingsIface {
         read_all_values(&self.store.snapshot(), &namespaces)
     }
 
-    #[zbus(property)]
+    #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
         // This is the backend interface version. The public frontend exposes
         // org.freedesktop.portal.Settings v2 (including ReadOne).

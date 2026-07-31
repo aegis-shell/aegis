@@ -67,7 +67,7 @@ Check the areas affected by the change. A useful general pass is:
 2. Move and click the pointer, type into a client, change focus, and move a
    window with `Super+drag`.
 3. Open a terminal with `Super+A`, launch and close applications, and try the
-   dock, launcher, Prism, overview, status bar controls, and Agent Workspaces.
+   dock, launcher, Prism, overview, HUD, command panel, and Agent Workspaces.
 4. Switch to another VT, wait a few seconds, and switch back. Rendering and
    input should resume without restarting aegis.
 5. If the change affects outputs, test display settings, multiple monitors,
@@ -174,7 +174,7 @@ Request a normal shutdown from a terminal inside aegis:
 ./target/release/aegis-ctl quit
 ```
 
-You can also press `Super+Shift+Q` (or the alternate
+You can also press `Super+Ctrl+Q` (or the alternate
 `Super+Shift+Return` binding). Aegis disables its outputs and releases the
 seat and DRM device before returning to the TTY. See
 [System Shortcuts](../reference/keyboard-shortcuts.md) for the complete

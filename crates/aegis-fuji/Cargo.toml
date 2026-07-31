@@ -1,6 +1,6 @@
 [package]
 name = "aegis-fuji"
-description = "fuji (宓姬) — the Aegis agent: scoped MCP platform bridge and self-contained agent runtime"
+description = "fuji (宓姬) — the Aegis agent: a self-contained agent runtime that drives the desktop through the aegis-mcp bridge"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
@@ -12,19 +12,10 @@ name = "aegis_fuji"
 path = "src/lib.rs"
 
 [[bin]]
-name = "aegis-fuji-mcp"
-path = "src/bin/aegis-fuji-mcp.rs"
-
-[[bin]]
 name = "fuji"
 path = "src/bin/fuji.rs"
 
 [dependencies]
-# Bridge side: the public Aegis model, catalog, and IPC crates.
-aegis-core = { workspace = true, features = ["serde"] }
-aegis-ipc = { workspace = true }
-aegis-desktop-entries = { workspace = true }
-libc = { workspace = true }
 # Agent side: providers, tools, MCP client, sessions. Never any aegis-* crate.
 dirs = { workspace = true }
 tokio = { version = "1", features = [
@@ -47,7 +38,6 @@ futures = "0.3"
 rustyline = "15"
 glob = "0.3"
 regex = "1"
-# Shared.
 base64 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -66,8 +66,8 @@ newest value while a previous transaction is in flight.
 
 | Surface | Built-in identity | Access | Scope |
 |---------|-------------------|--------|-------|
-| Status bar system controls | None; part of compositor chrome | Audio, network, or notification controls in the status bar; also available over IPC | Live volume, brightness, Wi-Fi, Bluetooth, Do Not Disturb, and current-workspace layout |
-| Agent Workspaces | `BuiltInApplication::AiWorkspaces` | Launcher or the permanent Agent Workspaces status entry | Empty Realm creation, pause, resume, revocation, and authority status |
+| Command panel system controls | None; part of compositor chrome | Quick settings in the command panel; also available over IPC | Live volume, brightness, Wi-Fi, Bluetooth, Do Not Disturb, and current-workspace layout |
+| Agent Workspaces | `BuiltInApplication::AiWorkspaces` | Launcher (`Super+A`); the command panel's System section shows a display-only status row | Empty Realm creation, pause, resume, revocation, and authority status |
 
 Neither the live controls nor Agent Workspaces are System Settings modules or
 write persistent configuration.
@@ -79,5 +79,5 @@ their wire schemas,
 application boundary, and
 [ADR-0069](../adr/0069-documentation-owned-installation-and-throwaway-development-staging.md)
 for the canonical namespace and installation model. The separation between
-status-bar controls, IPC, and independent application surfaces is recorded in
+live controls, IPC, and independent application surfaces is recorded in
 [ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md).

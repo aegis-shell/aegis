@@ -9,8 +9,8 @@ as typed intents to the compositor loop.
 - Host pluggable `Chrome` components in a defined render order.
 - Own the shared chrome contract — `Chrome`, `ChromeEvents`, and the
   `AppCatalog` snapshot — consumed by in-crate components and by the
-  separate `aegis-dock`, `aegis-prism`, `aegis-ai-workspaces`, and
-  `aegis-statusbar` component crates. Persistent settings live in the
+  separate `aegis-dock`, `aegis-prism`, `aegis-ai-workspaces`, `aegis-hud`,
+  and `aegis-command-panel` component crates. Persistent settings live in the
   standalone `aegis-settings` crate.
 - Provide the shared modal-application layout and material primitive used by
   compositor-owned application components.

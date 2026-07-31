@@ -18,8 +18,25 @@ pub(super) type WindowEventSignature = Vec<(
     bool,
     bool,
     bool,
+    bool,
     Option<String>,
 )>;
+
+/// Per-gesture state of an in-flight compositor-owned touchpad swipe:
+/// finger count, per-axis pixel accumulators, the latched axis, and the
+/// bookkeeping of bindings that hold state across one gesture.
+#[derive(Default)]
+pub(super) struct SwipeState {
+    pub(super) fingers: u8,
+    pub(super) dx: f32,
+    pub(super) dy: f32,
+    pub(super) axis: Option<aegis_core::gesture::GestureAxis>,
+    /// Whether this swipe opened the window switcher (`WindowCycle`).
+    pub(super) switcher: bool,
+    /// Whether the command-panel binding already fired (`CommandPanel`);
+    /// latches until SwipeEnd so a long swipe cannot oscillate the panel.
+    pub(super) panel_fired: bool,
+}
 
 /// Owns the mutable composition state used by the compositor event loop.
 ///
@@ -56,6 +73,13 @@ pub(super) struct CompositorRuntime {
     pub(super) icon_snapshot: IconSnapshot,
     pub(super) shell: aegis_shell::Shell,
     pub(super) input_acc: InputAccumulator,
+    /// Touchpad swipe bindings: the built-in defaults layered with the
+    /// configuration's `[[gesture]]` entries, consulted when a swipe begins
+    /// (ADR-0080, ADR-0082).
+    pub(super) gesture_map: aegis_core::gesture::GestureMap,
+    /// State of the in-flight compositor-owned swipe; `None` when no claimed
+    /// gesture is running.
+    pub(super) swipe: Option<SwipeState>,
     pub(super) renderer: aegis_render::Renderer,
     pub(super) realm_processes: RealmProcesses,
     pub(super) realm_render_targets:
@@ -93,6 +117,7 @@ pub(super) struct CompositorRuntime {
     pub(super) capture_rx: std::sync::mpsc::Receiver<CaptureRequest>,
     pub(super) realm_control_rx: std::sync::mpsc::Receiver<RealmControlRequest>,
     pub(super) settings_control_rx: std::sync::mpsc::Receiver<SettingsControlRequest>,
+    pub(super) wallpaper_control_rx: std::sync::mpsc::Receiver<WallpaperControlRequest>,
     pub(super) realm_capture_rx: std::sync::mpsc::Receiver<RealmCaptureRequest>,
     pub(super) stream_control_rx: std::sync::mpsc::Receiver<StreamControlRequest>,
     pub(super) idle_control_rx: std::sync::mpsc::Receiver<IdleControlRequest>,
@@ -102,6 +127,18 @@ pub(super) struct CompositorRuntime {
     pub(super) pick_rx: std::sync::mpsc::Receiver<PickControlRequest>,
     pub(super) pending_pick: Option<PendingPick>,
     pub(super) pending_pick_open: Option<aegis_ipc::PickKind>,
+    /// File-pick controls from IPC connection threads (the FileChooser
+    /// portal's compositor side) and the pick waiting for user interaction.
+    /// Unlike the target pick above, the file picker never arms the
+    /// screenshot freeze.
+    pub(super) file_pick_rx: std::sync::mpsc::Receiver<FilePickControlRequest>,
+    pub(super) pending_file_pick: Option<PendingFilePick>,
+    pub(super) app_pick_rx: std::sync::mpsc::Receiver<AppPickControlRequest>,
+    pub(super) pending_app_pick: Option<PendingAppPick>,
+    pub(super) secret_prompt_rx: std::sync::mpsc::Receiver<SecretPromptControlRequest>,
+    pub(super) pending_secret_prompt: Option<PendingSecretPrompt>,
+    pub(super) confirm_pick_rx: std::sync::mpsc::Receiver<ConfirmPickControlRequest>,
+    pub(super) pending_confirm_pick: Option<PendingConfirmPick>,
     /// IPC connections currently holding a surfaceless idle inhibitor.
     pub(super) ipc_idle_inhibits: IdleInhibits,
     pub(super) journal_refusal_rx: std::sync::mpsc::Receiver<JournalRefusalRequest>,

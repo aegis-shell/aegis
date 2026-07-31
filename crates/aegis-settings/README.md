@@ -22,7 +22,7 @@ transport. The application routes compositor-owned settings through confirmed
 IPC transactions. Future system-owned modules use authorized service adapters.
 
 Live volume, brightness, radio, notification, and current-session controls
-use the separate system-control model and appear in the status bar. AI
+use the separate system-control model and appear in the command panel. AI
 Workspace lifecycle is authority management and lives independently in
 `aegis-ai-workspaces`.
 

@@ -26,6 +26,8 @@ pub enum Action {
     TogglePrism,
     /// Open or close the window/workspace overview (M9).
     ToggleOverview,
+    /// Open or close the modal command panel (ADR-0080).
+    ToggleCommandPanel,
     /// Close the currently focused toplevel.
     CloseFocused,
     /// Move keyboard focus to the next mapped toplevel (forward).
@@ -52,13 +54,15 @@ impl Action {
     ///
     /// Modal chrome still receives ordinary navigation and text input, and
     /// actions that mutate obscured desktop state stay suppressed. The
-    /// launcher and Prism toggles, the screenshot selector, and the emergency
-    /// quit path are compositor-level controls that must remain reachable.
+    /// launcher, Prism, and command-panel toggles, the screenshot selector, and
+    /// the emergency quit path are compositor-level controls that must
+    /// remain reachable.
     const fn allowed_during_keyboard_capture(self) -> bool {
         matches!(
             self,
             Action::ToggleLauncher
                 | Action::TogglePrism
+                | Action::ToggleCommandPanel
                 | Action::Screenshot
                 | Action::Lock
                 | Action::Quit
@@ -94,13 +98,14 @@ impl Keymap {
                 kb(Mods::SUPER, b'a' as u32, Action::ToggleLauncher),
                 kb(Mods::SUPER, b' ' as u32, Action::TogglePrism),
                 kb(Mods::SUPER, 0x6f, Action::ToggleOverview), /* 'o' */
+                kb(Mods::SUPER, 0x73, Action::ToggleCommandPanel), /* 's' */
                 kb(Mods::SUPER, 0x71, Action::CloseFocused),   /* 'q' */
                 kb(Mods::SUPER, 0xff53, Action::WorkspaceNext), /* Right */
                 kb(Mods::SUPER, 0xff51, Action::WorkspacePrev), /* Left */
                 kb(Mods::SUPER, 0x74, Action::ToggleTiling),   /* 't' */
                 kb(Mods::SUPER, b'l' as u32, Action::Lock),
                 kb(Mods::NONE, XKB_KEY_Print, Action::Screenshot), /* Print Screen */
-                kb(Mods::SUPER | Mods::SHIFT, b'q' as u32, Action::Quit),
+                kb(Mods::SUPER | Mods::CTRL, b'q' as u32, Action::Quit),
                 kb(Mods::SUPER | Mods::SHIFT, XKB_KEY_Return, Action::Quit),
             ],
         }
@@ -174,6 +179,7 @@ pub fn action_from_name(s: &str) -> Option<Action> {
         "launcher" | "togglelauncher" | "apps" => Action::ToggleLauncher,
         "prism" | "toggleprism" | "spotlight" => Action::TogglePrism,
         "overview" | "toggleoverview" => Action::ToggleOverview,
+        "command_panel" | "commandpanel" | "panel" => Action::ToggleCommandPanel,
         "close" | "closefocused" => Action::CloseFocused,
         "cycle" | "next" => Action::CycleFocus,
         "prev" | "previous" | "cycleback" => Action::CycleFocusBack,
@@ -263,11 +269,16 @@ mod tests {
             km.match_key(Mods::SUPER, b' ' as u32),
             Some(Action::TogglePrism)
         );
+        // Super+S → command panel.
+        assert_eq!(
+            km.match_key(Mods::SUPER, b's' as u32),
+            Some(Action::ToggleCommandPanel)
+        );
         // The old Super+Return default is gone.
         assert_eq!(km.match_key(Mods::SUPER, XKB_KEY_Return), None);
-        // Super+Shift+Q → quit. XKB resolves the shifted letter to uppercase.
+        // Super+Ctrl+Q → quit.
         assert_eq!(
-            km.match_key(Mods::SUPER | Mods::SHIFT, b'Q' as u32),
+            km.match_key(Mods::SUPER | Mods::CTRL, b'q' as u32),
             Some(Action::Quit)
         );
         // Super+Shift+Return remains an alternate quit binding.
@@ -311,7 +322,11 @@ mod tests {
             Some(Action::TogglePrism)
         );
         assert_eq!(
-            km.match_key_during_keyboard_capture(Mods::SUPER | Mods::SHIFT, b'Q' as u32),
+            km.match_key_during_keyboard_capture(Mods::SUPER, b's' as u32),
+            Some(Action::ToggleCommandPanel)
+        );
+        assert_eq!(
+            km.match_key_during_keyboard_capture(Mods::SUPER | Mods::CTRL, b'Q' as u32),
             Some(Action::Quit)
         );
         assert_eq!(
@@ -363,6 +378,19 @@ mod tests {
         assert_eq!(action_from_name("prism"), Some(Action::TogglePrism));
         assert_eq!(action_from_name("toggleprism"), Some(Action::TogglePrism));
         assert_eq!(action_from_name("spotlight"), Some(Action::TogglePrism));
+    }
+
+    #[test]
+    fn command_panel_action_accepts_documented_names() {
+        assert_eq!(
+            action_from_name("command_panel"),
+            Some(Action::ToggleCommandPanel)
+        );
+        assert_eq!(
+            action_from_name("commandpanel"),
+            Some(Action::ToggleCommandPanel)
+        );
+        assert_eq!(action_from_name("panel"), Some(Action::ToggleCommandPanel));
     }
 
     #[test]

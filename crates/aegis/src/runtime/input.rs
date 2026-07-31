@@ -166,6 +166,157 @@ impl CompositorRuntime {
         }
     }
 
+    /// Claim a compositor-owned touchpad swipe per the active gesture map
+    /// (ADR-0080, ADR-0082). Returns true when the event is consumed here
+    /// and must not be forwarded to client pointer-gesture objects. A swipe
+    /// whose finger count has any binding is claimed for its whole duration;
+    /// the axis latches once either accumulator crosses `AXIS_LOCK_PX`, and
+    /// the bound action then fires one step per `STEP_PX` of travel. Which
+    /// action listens on which (fingers, axis) is configuration, not code —
+    /// see `aegis_core::gesture`.
+    fn claim_swipe(&mut self, event: &aegis_core::input::PointerGestureEvent) -> bool {
+        use aegis_core::gesture::{GestureAction, GestureAxis};
+        use aegis_core::input::PointerGestureEvent as G;
+        const AXIS_LOCK_PX: f32 = 30.0;
+        const STEP_PX: f32 = 120.0;
+        if self.server.session_locked() {
+            // Never run gestures on a locked session; drop the state of any
+            // swipe the lock interrupted so the next one starts clean.
+            // `process_input` already finishes any active switcher.
+            self.swipe = None;
+            return false;
+        }
+        match *event {
+            G::SwipeBegin { fingers, .. } => {
+                let Ok(fingers) = u8::try_from(fingers) else {
+                    return false;
+                };
+                if !self.gesture_map.claims(fingers) {
+                    return false;
+                }
+                self.swipe = Some(SwipeState {
+                    fingers,
+                    ..SwipeState::default()
+                });
+                true
+            }
+            G::SwipeUpdate { dx, dy, .. } => {
+                let Some(swipe) = self.swipe.as_mut() else {
+                    return false;
+                };
+                swipe.dx += dx;
+                swipe.dy += dy;
+                if swipe.axis.is_none()
+                    && (swipe.dx.abs() >= AXIS_LOCK_PX || swipe.dy.abs() >= AXIS_LOCK_PX)
+                {
+                    swipe.axis = Some(if swipe.dx.abs() >= swipe.dy.abs() {
+                        GestureAxis::Horizontal
+                    } else {
+                        GestureAxis::Vertical
+                    });
+                }
+                let Some(axis) = swipe.axis else {
+                    return true;
+                };
+                let Some(action) = self.gesture_map.lookup(swipe.fingers, axis) else {
+                    // Claimed finger count with no binding on this axis:
+                    // consume without acting.
+                    return true;
+                };
+                match action {
+                    GestureAction::None => {}
+                    GestureAction::WorkspaceSwitch => {
+                        // Swipe left = next workspace, right = previous. Fast
+                        // swipes can fire several steps in one update.
+                        let mut steps = 0i32;
+                        while swipe.dx <= -STEP_PX {
+                            steps += 1;
+                            swipe.dx += STEP_PX;
+                        }
+                        while swipe.dx >= STEP_PX {
+                            steps -= 1;
+                            swipe.dx -= STEP_PX;
+                        }
+                        let ts = self.start.elapsed().as_millis() as u64;
+                        for _ in 0..steps.unsigned_abs() {
+                            let dir = if steps > 0 {
+                                aegis_core::workspace::Switch::Next
+                            } else {
+                                aegis_core::workspace::Switch::Prev
+                            };
+                            apply_command_and_journal(
+                                &mut self.server,
+                                &self.notif_queue,
+                                &mut self.quit_requested,
+                                aegis_ipc::Command::SwitchWorkspace { dir },
+                                &self.ipc,
+                                &self.journal,
+                                ts,
+                                aegis_ipc::Origin::Gesture,
+                            );
+                        }
+                    }
+                    GestureAction::WindowCycle => {
+                        // Swipe up = next window, down = previous; the
+                        // switcher stays open until SwipeEnd.
+                        let mut steps = 0i32;
+                        while swipe.dy <= -STEP_PX {
+                            steps += 1;
+                            swipe.dy += STEP_PX;
+                        }
+                        while swipe.dy >= STEP_PX {
+                            steps -= 1;
+                            swipe.dy -= STEP_PX;
+                        }
+                        let start_switcher = steps != 0 && !swipe.switcher;
+                        swipe.switcher |= start_switcher;
+                        if start_switcher {
+                            self.shell.start_window_switcher();
+                            self.server.start_window_switcher();
+                        }
+                        let ts = self.start.elapsed().as_millis() as u64;
+                        for _ in 0..steps.unsigned_abs() {
+                            apply_command_and_journal(
+                                &mut self.server,
+                                &self.notif_queue,
+                                &mut self.quit_requested,
+                                aegis_ipc::Command::Cycle { forward: steps > 0 },
+                                &self.ipc,
+                                &self.journal,
+                                ts,
+                                aegis_ipc::Origin::Gesture,
+                            );
+                        }
+                    }
+                    GestureAction::CommandPanel => {
+                        // Down opens the panel, up closes it; fires at most
+                        // once per gesture so a long swipe cannot oscillate
+                        // the panel (ADR-0080).
+                        if !swipe.panel_fired {
+                            let open = self.shell.command_panel_active();
+                            if (!open && swipe.dy > STEP_PX) || (open && swipe.dy < -STEP_PX) {
+                                self.shell.toggle_command_panel();
+                                swipe.panel_fired = true;
+                            }
+                        }
+                    }
+                }
+                true
+            }
+            G::SwipeEnd { .. } => {
+                let Some(swipe) = self.swipe.take() else {
+                    return false;
+                };
+                if swipe.switcher {
+                    self.shell.finish_window_switcher();
+                    self.server.finish_window_switcher();
+                }
+                true
+            }
+            _ => self.swipe.is_some(),
+        }
+    }
+
     pub(super) fn process_input(
         &mut self,
         work: IterationWork,
@@ -206,6 +357,13 @@ impl CompositorRuntime {
         for event in self.host.take_pointer_gestures() {
             had_input = true;
             non_cursor_input = true;
+            // Swipes claimed by the gesture map (built-in defaults plus
+            // `[[gesture]]` overrides, ADR-0082) are compositor-owned and
+            // never reach client pointer-gesture objects; anything else
+            // forwards unchanged.
+            if self.claim_swipe(&event) {
+                continue;
+            }
             self.server.pointer_gesture_event(&event);
         }
         // Drain backend input: forward to clients (via the server's seat) and
@@ -539,7 +697,12 @@ impl CompositorRuntime {
                 .server
                 .depressed_modifiers()
                 .has(aegis_core::input::Mods::SUPER);
-            if (self.shell.window_switcher_active() || self.server.window_switcher_active())
+            // The keyboard path ends the switcher when Super is released.
+            // Yield while a swipe-driven switcher is in flight: no modifier
+            // is held for the gesture, and `claim_swipe` closes the switcher
+            // itself on SwipeEnd.
+            if self.swipe.as_ref().is_none_or(|swipe| !swipe.switcher)
+                && (self.shell.window_switcher_active() || self.server.window_switcher_active())
                 && !super_held
             {
                 self.shell.finish_window_switcher();
@@ -562,6 +725,7 @@ impl CompositorRuntime {
                     Action::ToggleLauncher => self.shell.toggle(),
                     Action::TogglePrism => self.shell.toggle_prism(),
                     Action::ToggleOverview => self.shell.toggle_overview(),
+                    Action::ToggleCommandPanel => self.shell.toggle_command_panel(),
                     Action::CloseFocused => {
                         if let Some(id) = self.server.focused_toplevel_id() {
                             let cmd = aegis_ipc::Command::Close { id };

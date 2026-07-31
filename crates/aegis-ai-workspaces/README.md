@@ -23,7 +23,7 @@ Creating an empty workspace does not start or connect an agent. Agent
 products such as fuji remain out of process and acquire scoped authority
 through IPC.
 
-Immediate service controls are owned by the status bar and the live-system
+Immediate service controls are owned by the command panel and the live-system
 IPC.
 
 ## Runtime Effect

@@ -36,6 +36,7 @@ enum MenuAction {
     Focus(WindowId),
     Minimize(Vec<WindowId>),
     SetMaximized(WindowId, bool),
+    SetAlwaysOnTop(WindowId, bool),
     Close(Vec<WindowId>),
     Page(usize),
     Pin(String),
@@ -134,7 +135,7 @@ impl AppMenu {
         let window_actions = if target.windows.is_empty() {
             0
         } else {
-            2 + usize::from(self.maximize_controls)
+            2 + 2 * usize::from(self.maximize_controls)
         };
         let rows = window_rows + paging + app_row + pin_row + window_actions;
         let groups = usize::from(!target.windows.is_empty())
@@ -285,6 +286,7 @@ impl AppMenu {
                     },
                     action: MenuAction::SetMaximized(window.id, !window.state.maximized),
                 });
+                lifecycle_rows.push(always_on_top_row(window, i18n));
             }
         }
         let visible: Vec<WindowId> = live
@@ -385,6 +387,9 @@ impl AppMenu {
                 MenuAction::SetMaximized(id, maximized) => out
                     .window_actions
                     .push(WindowAction::SetMaximized(id, maximized)),
+                MenuAction::SetAlwaysOnTop(id, on_top) => out
+                    .window_actions
+                    .push(WindowAction::SetAlwaysOnTop(id, on_top)),
                 MenuAction::Close(ids) => out
                     .window_actions
                     .extend(ids.into_iter().map(WindowAction::Close)),
@@ -398,6 +403,19 @@ impl AppMenu {
 
 fn menu_height(rows: usize, separators: usize) -> f32 {
     MENU_PAD * 2.0 + HEADER_HEIGHT + rows as f32 * ROW_HEIGHT + separators as f32 * SECTION_HEIGHT
+}
+
+/// Build the always-on-top lifecycle row for `window`: the label flips with
+/// the current flag and the action carries its negation.
+fn always_on_top_row(window: &Window, i18n: &Localizer) -> Row {
+    Row {
+        label: if window.always_on_top {
+            i18n.text(Message::NotAlwaysOnTop).to_string()
+        } else {
+            i18n.text(Message::AlwaysOnTop).to_string()
+        },
+        action: MenuAction::SetAlwaysOnTop(window.id, !window.always_on_top),
+    }
 }
 
 fn contains(rect: Rect, x: f32, y: f32) -> bool {
@@ -439,5 +457,21 @@ mod tests {
     #[test]
     fn unicode_truncation_preserves_character_boundaries() {
         assert_eq!(truncate("窗口操作", 3), "窗口…");
+    }
+
+    #[test]
+    fn always_on_top_row_label_and_action_flip_with_state() {
+        let i18n = Localizer::new("en-US");
+        let mut window = Window::new(WindowId(7));
+
+        window.always_on_top = false;
+        let row = always_on_top_row(&window, &i18n);
+        assert_eq!(row.label, "Always on Top");
+        assert!(matches!(row.action, MenuAction::SetAlwaysOnTop(id, true) if id == WindowId(7)));
+
+        window.always_on_top = true;
+        let row = always_on_top_row(&window, &i18n);
+        assert_eq!(row.label, "Not Always on Top");
+        assert!(matches!(row.action, MenuAction::SetAlwaysOnTop(id, false) if id == WindowId(7)));
     }
 }

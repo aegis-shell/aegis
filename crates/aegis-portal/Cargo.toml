@@ -15,7 +15,7 @@ aegis-ipc = { workspace = true }
 aegis-core = { workspace = true }
 # Session D-Bus bridge (ADR-0075): pure-Rust zbus with the blocking API so the
 # service stays a plain `std::thread` model — same red line as the SNI tray
-# (crates/aegis-statusbar), no tokio.
+# (crates/aegis-hud), no tokio.
 zbus = { workspace = true }
 async-channel = "2"
 log = { workspace = true }
@@ -25,6 +25,31 @@ thiserror = { workspace = true }
 # scoped IPC frame stream (ADR-0052). Rust binding over the system
 # libpipewire (rust-version 1.80, within the workspace MSRV); no tokio.
 pipewire = "0.10"
+# Secret portal + transitional Secret Service compat layer: at-rest vault
+# crypto (XChaCha20-Poly1305 over serde_json; the Argon2id password KDF is
+# kept for the future password-unlock slice while startup uses keyfile mode),
+# DH-IETF1024 + AES-128-CBC session transport, and HKDF-SHA256 key separation
+# for the portal secret. rand stays on 0.8 to match num-bigint's RandBigInt
+# trait bound.
+zeroize = { workspace = true, features = ["derive"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dirs = { workspace = true }
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+aes = "0.8"
+cbc = "0.1"
+hkdf = "0.12"
+sha2 = "0.10"
+rand = "0.8"
+num-bigint = { version = "0.4", features = ["rand"] }
+# Account portal: getpwuid for the account id and GECOS real name.
+libc = { workspace = true }
+
+[dev-dependencies]
+# Reference HKDF in the DH session tests, matching libsecret's manual HMAC
+# construction step by step.
+hmac = "0.12"
 
 [lib]
 name = "aegis_portal"

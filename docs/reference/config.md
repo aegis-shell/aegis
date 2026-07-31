@@ -32,7 +32,7 @@ untouched.
 | `[[window_rule]]` | array of tables | none | Placement rules applied to newly-mapped toplevels. See [Window Rules](#window-rules). |
 | `[layout]` | table | gaps `8`, master_ratio `0.5` | Tiling policy parameters. See [Layout](#layout). |
 | `[dock]` | table | automatic pins | Applications pinned to the dock. See [Dock](#dock). |
-| `[statusbar]` | table | `enabled = true` | Whether the top status bar is registered at startup. See [Status Bar](#status-bar). |
+| `[hud]` | table | `enabled = true` | Whether the display-only session HUD chips are registered at startup. See [HUD](#hud). |
 | `[ui]` | table | `hicolor` icons, `default` 24 px cursor, borderless windows, full motion | Desktop-wide UI and window-presentation policy. See [UI](#ui). |
 | `[input.touchpad]` | table | touchpad defaults | Touchpad pointing, tapping, and scrolling profile. See [Touchpad](#touchpad). |
 | `[idle]` | table | dim 5 min, lock 10 min, display off 11 min, suspend 30 min | Ordered inactivity, session-lock, display-power, and suspend policy. See [Idle and Locking](#idle-and-locking). |
@@ -41,6 +41,7 @@ untouched.
 | `[appearance]` | table | system color scheme, normal contrast, standard fonts and scale | Desktop-wide color, contrast, and typography preferences. See [Appearance](#appearance). |
 | `[agent]` | table | no scopes | Named automation scopes enforced by the IPC server. See [Agent Scopes](#agent-scopes). |
 | `[realm_sandbox]` | table | default deny | Network, filesystem, and cgroup policy for new Realm application launches. See [Realm Sandbox](#realm-sandbox). |
+| `[dev]` | table | all off | Development-only escape hatches; planned for removal before release. See [Development Options](#development-options). |
 
 ## Environment
 
@@ -191,6 +192,12 @@ Per-surface `zwp_idle_inhibit_v1` inhibitors and authorized portal
 those inhibitors. Activity restores a dimmed backlight and wakes powered-down
 outputs behind the lock.
 
+The command panel's System section (`Super+S`) offers two related controls:
+Lock Now locks the session immediately through the same path as `Super+L`,
+and Always On holds a session-wide idle inhibitor that keeps every stage
+resumed until it is switched off. Always On is a session toggle; it is not
+persisted to this file.
+
 In a nested session, locking remains active but the outer desktop retains
 brightness, physical output-power, and suspend ownership. The dim,
 display-off, and suspend stages are therefore not executed by the nested
@@ -326,30 +333,42 @@ file changes. Raster icons decode in process; SVG icons use `rsvg-convert`
 when it is installed and otherwise fall back to the generic application
 glyph.
 
-## Status Bar
+## HUD
 
-The `[statusbar]` table controls whether the top status bar (workspace state,
-clock, system status, and the registered tray row) is registered at startup
-(ADR-0045). Changes apply on the next launch; the flag is read once during
-compositor startup.
+The `[hud]` table controls whether the session HUD is registered at
+startup. The HUD (ADR-0080, ADR-0081, ADR-0083) is display-only: two
+floating frosted chips composited over the desktop — system status
+(network, Bluetooth, battery), the StatusNotifierItem tray row, the clock,
+and the notification count on the left, and workspace dots in the center.
+The top-right belongs to the frameless notification toast strip, and the
+Agent Workspaces status lives in the command panel's System section. The
+chips reserve no space, so tiled and maximized windows run
+underneath; they accept no pointer input, so clicks fall through to
+windows; and each chip fades out while the cursor is near it. Changes apply
+on the next launch; the flag is read once during compositor startup.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | boolean | `true` | Whether the top status bar is registered. When `false`, the bar's reserved edge and live-control panel are unavailable; the dock, launcher, and Agent Workspaces are unaffected, and live controls remain available over IPC. |
+| `enabled` | boolean | `true` | Whether the HUD chips are registered. When `false`, the chips are unavailable; the dock, launcher, command panel, and Agent Workspaces are unaffected, and live controls remain available in the command panel and over IPC. |
 
 ```toml
-[statusbar]
+[hud]
 enabled = false
 ```
 
-The bar's tray row contains only StatusNotifierItem (SNI) entries explicitly
+Every interaction the old status bar hosted — quick settings, tray
+activation and context menus, notification dismissal — lives in the command
+panel (`Super+S`, or a four-finger touchpad swipe down; see
+[Key Bindings](#key-bindings) and [System Shortcuts](keyboard-shortcuts.md)).
+
+The tray row contains only StatusNotifierItem (SNI) entries explicitly
 registered on the session D-Bus. Ordinary windows do not become tray icons.
 SNI support runs silently: without a session bus, or when another watcher
 already owns the `org.kde.StatusNotifierWatcher` name, no tray icons appear
-and startup is unaffected. SNI items that ship a dbusmenu `Menu` object path
-get a compositor-rendered right-click popover; items without one fall back to
-`SecondaryActivate` per the specification. The row fits a five-slot budget;
-any excess collapses into a `+N` overflow indicator.
+and startup is unaffected. Tray icons in the HUD are display-only;
+activating an item or opening its dbusmenu happens in the command panel's
+Tray section. The row fits a five-slot budget; any excess collapses into a
+`+N` overflow indicator.
 
 ## Window Rules
 
@@ -473,6 +492,21 @@ interaction-group mutation must include every affected window in the window
 allowlist. The Rust reference client uses `Client::connect_scoped` and exposes
 the granted allowlist through `Client::scope`.
 
+## Development Options
+
+The `[dev]` table holds development-only escape hatches. These options are
+not a stable interface: they exist to unblock compositor development, are
+planned for removal before release, and must not be relied upon.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `allow_quit_while_locked` | boolean | `false` | Allow the `quit` binding (`Super+Ctrl+Q` by default) to match while the session is locked, so a wedged lock screen cannot trap a development session. No other binding matches while locked. |
+
+```toml
+[dev]
+allow_quit_while_locked = true
+```
+
 ## Key Bindings
 
 Each `[[keybind]]` table binds a modifier set plus a key to an action.
@@ -523,6 +557,7 @@ Letters (`a`–`z`, lowercased), digits (`0`–`9`), and the common controls:
 | `launcher` | `togglelauncher`, `apps` | Open or close the application launcher |
 | `prism` | `toggleprism`, `spotlight` | Open or close Prism application search |
 | `overview` | `toggleoverview` | Open or close the window and workspace overview |
+| `command_panel` | `commandpanel`, `panel` | Open or close the command panel (quick settings, tray, notifications) |
 | `close` | `closefocused` | Close the focused toplevel |
 | `cycle` | `next` | Move focus to the next toplevel; while `Super` remains held, show the live preview strip |
 | `prev` | `previous`, `cycleback` | Move focus to the previous toplevel; while `Super` remains held, show the live preview strip |
@@ -548,17 +583,61 @@ configured:
 | `Super+A` | `launcher` |
 | `Super+Space` | `prism` |
 | `Super+O` | `overview` |
+| `Super+S` | `command_panel` |
 | `Super+Q` | `close` |
 | `Super+Right` | `workspace_next` |
 | `Super+Left` | `workspace_prev` |
 | `Super+T` | `tiling` |
 | `Super+L` | `lock` |
 | `Print` | `screenshot` |
-| `Super+Shift+Q` | `quit` |
+| `Super+Ctrl+Q` | `quit` |
 | `Super+Shift+Return` | `quit` |
 
 See [System Shortcuts](keyboard-shortcuts.md) for the complete default
 keyboard and pointer shortcut reference.
+
+## Touchpad Gestures
+
+Each `[[gesture]]` table binds a touchpad swipe — a finger count plus an
+axis — to an action. Bindings layer over the
+[built-in defaults](#default-gesture-bindings): a file with one binding
+keeps the rest, and a binding for the same finger count and axis shadows
+its built-in default.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `fingers` | integer | required | Finger count. Swipe gestures require at least 3 fingers. |
+| `axis` | string | required | `horizontal` or `vertical`. |
+| `action` | string | required | Gesture action name. See [Gesture Action Names](#gesture-action-names). |
+
+A swipe whose finger count has any binding is compositor-owned and never
+reaches client `zwp_pointer_gestures_v1` objects, even on an axis with no
+binding. The gesture latches its axis once it travels 30 px, then fires
+one step per 120 px of travel. Gestures do not run while the session is
+locked.
+
+### Gesture Action Names
+
+Unlike key-binding actions, gesture actions are directional pairs: the
+swipe's dominant direction selects the direction inside the action.
+
+| Name | Aliases | Effect |
+|------|---------|--------|
+| `workspace_switch` | `workspaces`, `workspace` | Horizontal: swipe left switches to the next workspace, right to the previous one |
+| `window_cycle` | `cycle_windows`, `windows`, `switcher` | Vertical: swipe up focuses the next toplevel on the current workspace, down the previous one; the live switcher stays open until the gesture ends |
+| `command_panel` | `commandpanel`, `panel` | Vertical: swipe down opens the command panel, up closes it; fires once per gesture |
+| `none` | `unbind`, `disabled` | Consume the swipe without acting; shadows the built-in default on this axis |
+
+### Default Gesture Bindings
+
+These ship as built-in defaults and remain in effect when no override is
+configured:
+
+| Fingers | Axis | Action |
+|---------|------|--------|
+| 3 | horizontal | `workspace_switch` |
+| 3 | vertical | `window_cycle` |
+| 4 | vertical | `command_panel` |
 
 ## Example
 
@@ -579,4 +658,16 @@ action = "quit"
 mods = ["super"]
 key = "right"
 action = "workspace_next"
+
+# Move workspace switching from three fingers to four, and disable the
+# built-in three-finger window cycle.
+[[gesture]]
+fingers = 4
+axis = "horizontal"
+action = "workspace_switch"
+
+[[gesture]]
+fingers = 3
+axis = "vertical"
+action = "none"
 ```

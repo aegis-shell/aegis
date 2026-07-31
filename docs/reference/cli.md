@@ -37,6 +37,7 @@ shell completion scripts for bash, zsh, fish, PowerShell, and elvish.
 | `aegis-ctl realm revoke <realm> [fallback]` | Permanently revoke a Realm and return controlled groups to `fallback` (default Realm `1`). |
 | `aegis-ctl focus <id>` | Focus and raise a toplevel. |
 | `aegis-ctl minimize <id>` | Minimize a toplevel while keeping its client alive. |
+| `aegis-ctl always-on-top <id> <on\|off>` | Set or clear the session-scoped always-on-top flag on a toplevel. |
 | `aegis-ctl close <id>` | Request that a toplevel close. |
 | `aegis-ctl set-geometry <id> <x> <y> <w> <h>` | Set floating-window geometry in compositor logical pixels. Negative coordinates are accepted positionally. |
 | `aegis-ctl switch <next\|prev\|previous>` | Switch to an adjacent workspace. |
@@ -74,8 +75,8 @@ receipt and fail on a stale optimistic authority revision.
 ## Live System Controls
 
 The `system` group is the reference UI-independent path for immediate
-controls. It sends the same typed actions as the status bar and does not write
-persistent compositor settings. Control acknowledgments mean the action was
+controls. It sends the same typed actions as the command panel and does
+not write persistent compositor settings. Control acknowledgments mean the action was
 queued; run `aegis-ctl system status` or subscribe for
 `SystemStatusChanged` to observe the reconciled service state.
 

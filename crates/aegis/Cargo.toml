@@ -23,7 +23,11 @@ aegis-shell = { workspace = true }
 aegis-dock = { workspace = true }
 aegis-prism = { workspace = true }
 aegis-ai-workspaces = { workspace = true }
-aegis-statusbar = { workspace = true }
+aegis-hud = { workspace = true }
+# SNI tray service shared by the HUD and the command panel (ADR-0080).
+aegis-tray = { workspace = true }
+# Modal command panel (ADR-0080).
+aegis-command-panel = { workspace = true }
 aegis-wallpaper = { workspace = true }
 # Declarative configuration: TOML schema + live reload (ADR-0026).
 aegis-config = { workspace = true }

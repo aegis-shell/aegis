@@ -56,7 +56,10 @@ impl CompositorRuntime {
         while let Ok(request) = self.pick_rx.try_recv() {
             match request.action {
                 PickControl::Start { kind, reply } => {
-                    if self.pending_pick.is_some() {
+                    if self.pending_pick.is_some()
+                        || self.pending_file_pick.is_some()
+                        || self.pending_app_pick.is_some()
+                    {
                         let _ =
                             reply.send(Err("another interactive pick is in progress".to_owned()));
                     } else if self.server.session_locked() || !self.host.is_active() {

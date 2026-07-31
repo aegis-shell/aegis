@@ -1358,6 +1358,135 @@ fn raising_a_toplevel_keeps_its_surface_tree_together() {
 }
 
 #[test]
+fn always_on_top_windows_stay_above_raised_normal_windows() {
+    let mut state = State::new(std::ptr::null_mut());
+    let window_a = aegis_core::window::WindowId(1);
+    let window_b = aegis_core::window::WindowId(2);
+    let client = state.authority.register_client(None);
+    state
+        .authority
+        .create_interaction_group(client, &[window_a, window_b], HUMAN_REALM)
+        .unwrap();
+
+    let mut a = Box::new(SurfaceRec::new(0x100usize as *mut ffi::wl_resource));
+    a.xdg_toplevel = a.resource;
+    a.window.id = window_a;
+    let mut a_popup = Box::new(SurfaceRec::new(0x200usize as *mut ffi::wl_resource));
+    a_popup.xdg_popup = a_popup.resource;
+    a_popup.popup_parent = a.as_mut();
+    let mut b = Box::new(SurfaceRec::new(0x300usize as *mut ffi::wl_resource));
+    b.xdg_toplevel = b.resource;
+    b.window.id = window_b;
+
+    state.surfaces = vec![a.as_mut(), a_popup.as_mut(), b.as_mut()];
+    for (index, surface) in state.surfaces.iter().copied().enumerate() {
+        unsafe { (*surface).index = index };
+    }
+    let mut server = std::mem::ManuallyDrop::new(Server {
+        state: Box::new(state),
+        socket: String::new(),
+        realm_portals: Vec::new(),
+        epoch: std::time::Instant::now(),
+    });
+
+    let order = |server: &Server| {
+        server
+            .state
+            .surfaces
+            .iter()
+            .map(|surface| unsafe { (**surface).resource as usize })
+            .collect::<Vec<_>>()
+    };
+    let band_above = vec![
+        b.resource as usize,
+        a.resource as usize,
+        a_popup.resource as usize,
+    ];
+
+    // Enabling always-on-top raises the window's whole tree into the band at
+    // the top of the stacking order.
+    server.set_toplevel_always_on_top(window_a, true);
+    assert!(a.window.always_on_top);
+    assert_eq!(order(&server), band_above);
+
+    // Raising a normal window must not stack it above the always-on-top
+    // band, and the band tree stays contiguous at the Vec tail.
+    server.raise_toplevel(b.resource);
+    assert_eq!(order(&server), band_above);
+    assert_eq!(b.index, 0);
+    assert_eq!(a.index, 1);
+    assert_eq!(a_popup.index, 2);
+
+    // The setter is idempotent: a repeated enable changes nothing.
+    server.set_toplevel_always_on_top(window_a, true);
+    assert_eq!(order(&server), band_above);
+
+    // Disabling only clears the flag; the stacking position is untouched.
+    server.set_toplevel_always_on_top(window_a, false);
+    assert!(!a.window.always_on_top);
+    assert_eq!(order(&server), band_above);
+
+    // Normal raise behavior resumes once the flag is cleared.
+    server.raise_toplevel(b.resource);
+    assert_eq!(
+        order(&server),
+        vec![
+            a.resource as usize,
+            a_popup.resource as usize,
+            b.resource as usize,
+        ]
+    );
+}
+
+#[test]
+fn restack_keeps_unfocused_newcomers_below_the_always_on_top_band() {
+    let mut state = State::new(std::ptr::null_mut());
+    let window_a = aegis_core::window::WindowId(1);
+    let window_c = aegis_core::window::WindowId(3);
+    let client = state.authority.register_client(None);
+    state
+        .authority
+        .create_interaction_group(client, &[window_a, window_c], HUMAN_REALM)
+        .unwrap();
+
+    let mut a = Box::new(SurfaceRec::new(0x100usize as *mut ffi::wl_resource));
+    a.xdg_toplevel = a.resource;
+    a.window.id = window_a;
+    a.window.always_on_top = true;
+    // A window that maps without taking focus (hidden workspace, observation
+    // mirror) keeps its wl_surface creation slot at the Vec tail until the
+    // post-dispatch restack runs.
+    let mut c = Box::new(SurfaceRec::new(0x300usize as *mut ffi::wl_resource));
+    c.xdg_toplevel = c.resource;
+    c.window.id = window_c;
+
+    state.surfaces = vec![a.as_mut(), c.as_mut()];
+    for (index, surface) in state.surfaces.iter().copied().enumerate() {
+        unsafe { (*surface).index = index };
+    }
+    let mut server = std::mem::ManuallyDrop::new(Server {
+        state: Box::new(state),
+        socket: String::new(),
+        realm_portals: Vec::new(),
+        epoch: std::time::Instant::now(),
+    });
+
+    server.restack_always_on_top_band();
+
+    assert_eq!(
+        server
+            .state
+            .surfaces
+            .iter()
+            .map(|surface| unsafe { (**surface).resource as usize })
+            .collect::<Vec<_>>(),
+        vec![c.resource as usize, a.resource as usize]
+    );
+    assert_eq!(c.index, 0);
+    assert_eq!(a.index, 1);
+}
+
+#[test]
 fn client_surface_order_keeps_each_window_tree_occluded_as_a_unit() {
     let mut state = State::new(std::ptr::null_mut());
     let background_window = aegis_core::window::WindowId(10);

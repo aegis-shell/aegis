@@ -8,7 +8,8 @@
 //! [`Shell::add`], and renders itself each frame from the shared snapshot
 //! and input. Larger components live in their own crates on top of the same
 //! contract (the dock in `aegis-dock`, Prism in `aegis-prism`, AI Workspaces
-//! in `aegis-ai-workspaces`, and the status bar in `aegis-statusbar`). Adding
+//! in `aegis-ai-workspaces`, the HUD in `aegis-hud`, and the command panel
+//! in `aegis-command-panel`). Adding
 //! or removing a chrome surface is a component change, not a core change.
 //!
 //! Input the compositor captures is fed here as a snapshot before being routed
@@ -27,21 +28,22 @@ mod popup;
 pub mod system;
 mod text;
 pub use chrome::{
-    AgentFeedback, AppMenu, Launcher, Overview, PickerMode, PinAction, ScreenshotSelector, Toast,
-    WindowSwitcher,
+    AgentFeedback, AppMenu, AppPickParams, AppPicker, ConfirmPickParams, ConfirmPrompt,
+    FilePickParams, FilePicker, Launcher, Overview, PickerMode, PinAction, ScreenshotSelector,
+    SecretPrompt, SecretPromptParams, Toast, WindowSwitcher,
 };
 pub use i18n::{Language, Localizer, Message};
 pub use modal::ModalApplicationSpec;
 pub use popup::{POPUP_GAP, POPUP_MARGIN, place_popup};
 pub use system::{
     BatteryStatus, DisplaySettings, DisplayStatus, NetworkState, SystemAction, SystemStatus,
-    detect_system_status,
+    detect_forked_status, detect_system_status, detect_system_status_lightweight,
 };
 pub use text::truncate;
 
-/// Logical height of the top status bar (the `aegis-statusbar` component).
+/// Logical height of the HUD chips (the `aegis-hud` component).
 /// Defined here, at the shell seam, so shell-resident chrome that must align
-/// with the bar (the notification toast stack) can share the value without
+/// with the chips (the notification toast stack) can share the value without
 /// depending on the component crate.
 pub const HUD_HEIGHT: f32 = 32.0;
 
@@ -207,6 +209,8 @@ pub enum WindowAction {
     Minimize(aegis_core::window::WindowId),
     /// Set or clear compositor-managed maximization.
     SetMaximized(aegis_core::window::WindowId, bool),
+    /// Set or clear the compositor-internal always-on-top flag.
+    SetAlwaysOnTop(aegis_core::window::WindowId, bool),
     /// Ask a client to close one of its toplevels gracefully.
     Close(aegis_core::window::WindowId),
 }
@@ -247,6 +251,10 @@ pub enum RealmIntent {
 pub struct ChromeEvents {
     /// The chrome requested the session to quit.
     pub quit: bool,
+    /// The chrome asked to lock the session immediately (the command panel's
+    /// Lock now row). Drained by the main loop into the same lock path as the
+    /// Super+L binding.
+    pub lock: bool,
     /// Window id a component asked to focus/activate.
     pub clicked: Option<aegis_core::window::WindowId>,
     /// Ordered window actions emitted by popup menus. A queue allows an
@@ -299,6 +307,30 @@ pub struct ChromeEvents {
     /// a confirm with no staged region). The main loop answers the waiting
     /// request with a cancellation.
     pub pick_cancelled: bool,
+    /// Paths the file picker confirmed this frame, plus the active filter
+    /// index into the request's filters (the FileChooser portal's
+    /// compositor side). The main loop answers the waiting `PickFile` IPC
+    /// request with them.
+    pub file_pick_confirmed: Option<(Vec<std::path::PathBuf>, Option<u32>)>,
+    /// The user dismissed the file picker without confirming (Escape, the
+    /// Cancel button, or a click away from the panel).
+    pub file_pick_cancelled: bool,
+    /// The desktop file id the app picker confirmed this frame (the
+    /// AppChooser portal's compositor side). The main loop answers the
+    /// waiting `PickApp` IPC request with it.
+    pub app_pick_confirmed: Option<String>,
+    /// The user dismissed the app picker without confirming.
+    pub app_pick_cancelled: bool,
+    /// The secret value the user confirmed at the secret prompt this frame
+    /// (the vault password unlock's compositor side). The main loop answers
+    /// the waiting `PromptSecret` IPC request with it.
+    pub secret_prompt_confirmed: Option<String>,
+    /// The user dismissed the secret prompt without confirming.
+    pub secret_prompt_cancelled: bool,
+    /// The yes/no answer the user gave at the confirmation dialog this
+    /// frame (portal consent flows). The main loop answers the waiting
+    /// `PickConfirm` IPC request with it.
+    pub confirm_pick_answered: Option<bool>,
     /// Ordered host-system mutations requested by compositor-owned UI.
     pub system_actions: Vec<SystemAction>,
     /// Ordered, idempotent pin mutations requested by application menus.
@@ -450,6 +482,17 @@ pub trait Chrome {
     /// [`Shell::toggle_overview`], mirroring [`Chrome::toggle`].
     fn toggle_overview(&mut self, _out: &mut ChromeEvents) {}
 
+    /// Toggle the component's command panel (ADR-0080). Default no-op;
+    /// the command panel component flips its open state. Fanned out by
+    /// [`Shell::toggle_command_panel`], mirroring [`Chrome::toggle_overview`].
+    fn toggle_command_panel(&mut self, _out: &mut ChromeEvents) {}
+
+    /// Whether the component's command panel is currently open.
+    /// Default `false`.
+    fn command_panel_active(&self) -> bool {
+        false
+    }
+
     /// Whether the component's overview mode is currently open — the main
     /// loop swaps the desktop scene for the overview thumbnail grid.
     /// Default `false`.
@@ -501,6 +544,75 @@ pub trait Chrome {
     /// timeout, disconnect). Must not interrupt the Print-key flow; default
     /// no-op.
     fn cancel_pick(&mut self) {}
+
+    /// Open the user-consent file picker for a `PickFile` IPC request (the
+    /// FileChooser portal's compositor side). Default no-op; the file-picker
+    /// component overrides this to open with the requested options. Results
+    /// arrive through the `file_pick_confirmed`/`file_pick_cancelled`
+    /// events. Unlike [`Chrome::start_pick`] the picker never freezes the
+    /// screen: it is ordinary modal chrome over the live scene.
+    fn start_file_pick(&mut self, _params: FilePickParams) {}
+
+    /// Force-close the file picker whose requester went away (lock,
+    /// timeout, disconnect). Default no-op.
+    fn cancel_file_pick(&mut self) {}
+
+    /// Whether the file picker is currently open. Default `false`; the
+    /// file-picker component overrides this.
+    fn file_pick_active(&self) -> bool {
+        false
+    }
+
+    /// Open the user-consent application picker for a `PickApp` IPC request
+    /// (the AppChooser portal's compositor side). Default no-op; the
+    /// app-picker component overrides this. Results arrive through the
+    /// `app_pick_confirmed`/`app_pick_cancelled` events. Ordinary modal
+    /// chrome over the live scene, like the file picker.
+    fn start_app_pick(&mut self, _params: AppPickParams) {}
+
+    /// Force-close the app picker whose requester went away (lock, timeout,
+    /// disconnect). Default no-op.
+    fn cancel_app_pick(&mut self) {}
+
+    /// Whether the app picker is currently open. Default `false`; the
+    /// app-picker component overrides this.
+    fn app_pick_active(&self) -> bool {
+        false
+    }
+
+    /// Open the masked secret prompt for a `PromptSecret` IPC request (the
+    /// vault password unlock's compositor side). Default no-op; the
+    /// secret-prompt component overrides this. Results arrive through the
+    /// `secret_prompt_confirmed`/`secret_prompt_cancelled` events. Ordinary
+    /// modal chrome over the live scene, like the other pickers.
+    fn start_secret_prompt(&mut self, _params: SecretPromptParams) {}
+
+    /// Force-close the secret prompt whose requester went away (lock,
+    /// timeout, disconnect). Default no-op.
+    fn cancel_secret_prompt(&mut self) {}
+
+    /// Whether the secret prompt is currently open. Default `false`; the
+    /// secret-prompt component overrides this.
+    fn secret_prompt_active(&self) -> bool {
+        false
+    }
+
+    /// Open the yes/no confirmation dialog for a `PickConfirm` IPC request
+    /// (portal consent flows). Default no-op; the confirmation component
+    /// overrides this. The answer arrives through the
+    /// `confirm_pick_answered` event. Ordinary modal chrome over the live
+    /// scene, like the other pickers.
+    fn start_confirm_pick(&mut self, _params: ConfirmPickParams) {}
+
+    /// Force-close the confirmation dialog whose requester went away
+    /// (lock, timeout, disconnect). Default no-op.
+    fn cancel_confirm_pick(&mut self) {}
+
+    /// Whether the confirmation dialog is currently open. Default `false`;
+    /// the confirmation component overrides this.
+    fn confirm_pick_active(&self) -> bool {
+        false
+    }
 
     /// Accessibility reduced-motion policy (ADR-0029). When enabled, every
     /// component transition (springs, fades, slides) resolves to its end
@@ -685,6 +797,12 @@ impl Shell {
         self.events.quit
     }
 
+    /// Drain an immediate-lock request from the chrome (the command panel's
+    /// Lock now row). The main loop feeds it to `IdleProcess::lock_now`.
+    pub fn take_lock(&mut self) -> bool {
+        std::mem::take(&mut self.events.lock)
+    }
+
     /// Replace the host's snapshot of live toplevels. Called once per frame
     /// by the main loop with `server.windows()`.
     pub fn set_windows(&mut self, windows: Vec<Window>) {
@@ -805,6 +923,21 @@ impl Shell {
         self.components.iter().any(|c| c.overview_active())
     }
 
+    /// Toggle the command panel on the component that owns it
+    /// (ADR-0080). Mirrors [`Shell::toggle_overview`]: fanned out to every
+    /// component; static components ignore it.
+    pub fn toggle_command_panel(&mut self) {
+        let events = &mut self.events;
+        for component in self.components.iter_mut() {
+            component.toggle_command_panel(events);
+        }
+    }
+
+    /// Whether the command panel is currently open.
+    pub fn command_panel_active(&self) -> bool {
+        self.components.iter().any(|c| c.command_panel_active())
+    }
+
     /// Open the compositor-owned Super+Tab preview strip.
     pub fn start_window_switcher(&mut self) {
         for component in self.components.iter_mut() {
@@ -908,6 +1041,127 @@ impl Shell {
     /// Whether an IPC picker session was dismissed without a pick this frame.
     pub fn take_pick_cancelled(&mut self) -> bool {
         std::mem::take(&mut self.events.pick_cancelled)
+    }
+
+    /// Open the user-consent file picker for a `PickFile` IPC request.
+    /// No-op if no file-picker component is registered.
+    pub fn start_file_pick(&mut self, params: FilePickParams) {
+        for component in self.components.iter_mut() {
+            component.start_file_pick(params.clone());
+        }
+    }
+
+    /// Force-close the file picker (requester gone: lock, timeout,
+    /// disconnect).
+    pub fn cancel_file_pick(&mut self) {
+        for component in self.components.iter_mut() {
+            component.cancel_file_pick();
+        }
+    }
+
+    /// Whether the file picker is currently open.
+    pub fn file_pick_active(&self) -> bool {
+        self.components.iter().any(|c| c.file_pick_active())
+    }
+
+    /// Paths and active filter index the file picker confirmed this frame,
+    /// if any.
+    pub fn take_file_pick_confirmed(&mut self) -> Option<(Vec<std::path::PathBuf>, Option<u32>)> {
+        self.events.file_pick_confirmed.take()
+    }
+
+    /// Whether the file picker was dismissed without a pick this frame.
+    pub fn take_file_pick_cancelled(&mut self) -> bool {
+        std::mem::take(&mut self.events.file_pick_cancelled)
+    }
+
+    /// Open the user-consent application picker for a `PickApp` IPC request.
+    /// No-op if no app-picker component is registered.
+    pub fn start_app_pick(&mut self, params: AppPickParams) {
+        for component in self.components.iter_mut() {
+            component.start_app_pick(params.clone());
+        }
+    }
+
+    /// Force-close the app picker (requester gone: lock, timeout,
+    /// disconnect).
+    pub fn cancel_app_pick(&mut self) {
+        for component in self.components.iter_mut() {
+            component.cancel_app_pick();
+        }
+    }
+
+    /// Whether the app picker is currently open.
+    pub fn app_pick_active(&self) -> bool {
+        self.components.iter().any(|c| c.app_pick_active())
+    }
+
+    /// The desktop file id the app picker confirmed this frame, if any.
+    pub fn take_app_pick_confirmed(&mut self) -> Option<String> {
+        self.events.app_pick_confirmed.take()
+    }
+
+    /// Whether the app picker was dismissed without a pick this frame.
+    pub fn take_app_pick_cancelled(&mut self) -> bool {
+        std::mem::take(&mut self.events.app_pick_cancelled)
+    }
+
+    /// Open the masked secret prompt for a `PromptSecret` IPC request.
+    /// No-op if no secret-prompt component is registered.
+    pub fn start_secret_prompt(&mut self, params: SecretPromptParams) {
+        for component in self.components.iter_mut() {
+            component.start_secret_prompt(params.clone());
+        }
+    }
+
+    /// Force-close the secret prompt (requester gone: lock, timeout,
+    /// disconnect).
+    pub fn cancel_secret_prompt(&mut self) {
+        for component in self.components.iter_mut() {
+            component.cancel_secret_prompt();
+        }
+    }
+
+    /// Whether the secret prompt is currently open.
+    pub fn secret_prompt_active(&self) -> bool {
+        self.components.iter().any(|c| c.secret_prompt_active())
+    }
+
+    /// The secret value the prompt confirmed this frame, if any.
+    pub fn take_secret_prompt_confirmed(&mut self) -> Option<String> {
+        self.events.secret_prompt_confirmed.take()
+    }
+
+    /// Whether the secret prompt was dismissed without a secret this frame.
+    pub fn take_secret_prompt_cancelled(&mut self) -> bool {
+        std::mem::take(&mut self.events.secret_prompt_cancelled)
+    }
+
+    /// Open the yes/no confirmation dialog for a `PickConfirm` IPC request.
+    /// No-op if no confirmation component is registered.
+    pub fn start_confirm_pick(&mut self, params: ConfirmPickParams) {
+        for component in self.components.iter_mut() {
+            component.start_confirm_pick(params.clone());
+        }
+    }
+
+    /// Force-close the confirmation dialog (requester gone: lock, timeout,
+    /// disconnect).
+    pub fn cancel_confirm_pick(&mut self) {
+        for component in self.components.iter_mut() {
+            component.cancel_confirm_pick();
+        }
+    }
+
+    /// Whether the confirmation dialog is currently open.
+    pub fn confirm_pick_active(&self) -> bool {
+        self.components.iter().any(|c| c.confirm_pick_active())
+    }
+
+    /// The yes/no answer the user gave this frame, if any (`true` =
+    /// confirmed).
+    pub fn take_confirm_pick_answered(&mut self) -> Option<bool> {
+        self.events.confirm_pick_answered.take()
     }
 
     /// Whether the screenshot selector is currently active.

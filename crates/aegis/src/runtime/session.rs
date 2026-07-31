@@ -118,11 +118,7 @@ impl OutputWakeRecovery {
         }
     }
 
-    fn due(
-        &mut self,
-        outputs_powered: bool,
-        now: std::time::Instant,
-    ) -> Option<OutputWakeReason> {
+    fn due(&mut self, outputs_powered: bool, now: std::time::Instant) -> Option<OutputWakeReason> {
         if outputs_powered {
             self.reason = None;
             return None;
@@ -239,10 +235,7 @@ impl IdleProcess {
         self.output_wake.require(reason, std::time::Instant::now());
     }
 
-    pub(super) fn output_wake_due(
-        &mut self,
-        outputs_powered: bool,
-    ) -> Option<OutputWakeReason> {
+    pub(super) fn output_wake_due(&mut self, outputs_powered: bool) -> Option<OutputWakeReason> {
         self.output_wake
             .due(outputs_powered, std::time::Instant::now())
     }

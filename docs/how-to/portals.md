@@ -4,8 +4,10 @@
 Aegis
 ([ADR-0075](../adr/0075-independent-portal-package-and-backend-contract.md)).
 It lets portal-aware and sandboxed (Flatpak) applications read the desktop
-appearance preference, take screenshots, and cast the screen. This guide
-installs the three integration files and verifies the backend end to end.
+appearance preference, take screenshots, cast the screen, choose files and
+applications with native dialogs, post notifications, and retrieve secrets.
+This guide installs the integration files and verifies the backend end to
+end.
 
 Install the `aegis-portal` system package in addition to the core `aegis`
 package. The backend is D-Bus-activated on demand; there is no service to
@@ -13,8 +15,7 @@ enable or start.
 
 ## Install
 
-Install the binary, its license, and the three files shipped under
-`contrib/`:
+Install the binary, its license, and the files shipped under `contrib/`:
 
 | Source | Install to |
 |--------|-----------|
@@ -22,18 +23,24 @@ Install the binary, its license, and the three files shipped under
 | `contrib/xdg-desktop-portal/portals/aegis.portal` | `/usr/share/xdg-desktop-portal/portals/aegis.portal` |
 | `contrib/xdg-desktop-portal/aegis-portals.conf` | `/usr/share/xdg-desktop-portal/aegis-portals.conf` |
 | `contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` |
+| `contrib/dbus-1/services/org.freedesktop.secrets.service` | `/usr/share/dbus-1/services/org.freedesktop.secrets.service` |
 | `LICENSE` | `/usr/share/licenses/aegis-portal/LICENSE` |
 
-For a per-user development install, place the three integration files under
+For a per-user development install, place the integration files under
 `~/.local/share/xdg-desktop-portal/portals/`,
 `~/.config/xdg-desktop-portal/aegis-portals.conf`, and
 `~/.local/share/dbus-1/services/` respectively. Point `Exec=` at the
 development binary; the system package remains the supported installation.
 
-`aegis-portals.conf` keeps GTK as the default and routes only the interfaces
-listed below to Aegis. This prevents an added metadata entry from silently
-making Aegis responsible for an interface it does not implement. Aegis
-currently serves:
+The `org.freedesktop.secrets.service` file is transitional: it activates
+the same `aegis-portal` process for the classic Secret Service API until
+portal-native secret retrieval is universal
+([ADR-0085](../adr/0085-portal-secret-absorption-and-secret-service-compat.md)).
+
+`aegis-portals.conf` defaults to `aegis;gtk`: Aegis is the default backend
+for every interface it advertises, and GTK is the safety net for the rest
+(Access, Print, Location, Background, …). The frontend only asks Aegis for
+the interfaces listed in `aegis.portal`. Aegis currently serves:
 
 - `org.freedesktop.impl.portal.Settings` v1 — the standardized
   `org.freedesktop.appearance` keys `color-scheme`, `accent-color`,
@@ -65,9 +72,51 @@ currently serves:
   does not have and are rejected. Each accepted call remains active until
   the frontend closes its request object; the backend periodically renews
   the scoped IPC lease and reconnects after a compositor restart.
+- `org.freedesktop.impl.portal.Secret` v1 — sandboxed secret retrieval from
+  an encrypted at-rest vault under `$XDG_DATA_HOME/aegis/secrets`. The first
+  run creates a mode-0600 keyfile and unlocks automatically; password-mode
+  vaults unlock through a masked compositor prompt, or silently when the
+  `pam_aegis` PAM module (installed into the login and `aegis-lock` PAM
+  stacks) cached the just-verified password. The classic
+  `org.freedesktop.secrets` API is served too, as a transitional
+  compatibility layer for un-sandboxed libsecret clients
+  ([ADR-0085](../adr/0085-portal-secret-absorption-and-secret-service-compat.md)).
+- `org.freedesktop.impl.portal.Lockdown` — stateless; every restriction
+  flag reads `false` (Aegis has no kiosk policy engine).
+- `org.freedesktop.impl.portal.FileChooser` v3 — `OpenFile`, `SaveFile`,
+  and `SaveFiles` run the compositor's native file-picker chrome
+  ([ADR-0086](../adr/0086-full-stack-portal-via-user-consent-pick-chains.md)):
+  directory navigation, multi-select, file filters, and a filename field
+  for saves. GTK stays configured as the fallback while the picker proves
+  itself.
+- `org.freedesktop.impl.portal.AppChooser` v2 — `ChooseApplication` runs
+  the native app-picker chrome with catalog-resolved names and icons;
+  `last_choice` pre-highlights. GTK fallback as above.
+- `org.freedesktop.impl.portal.Email` v2 — compose requests hand off to
+  the session mail client through `xdg-email`, attachments included. GTK
+  keeps a compose-dialog fallback.
+- `org.freedesktop.impl.portal.Notification` v2 — `AddNotification` posts
+  into the compositor's own notification queue (toast strip, command
+  panel, HUD count); `RemoveNotification` withdraws by the application's
+  own id. Baseline `title`/`body` only; icons and action buttons are not
+  supported yet.
+- `org.freedesktop.impl.portal.Account` v1 — `GetUserInformation` answers
+  only after a yes/no consent dialog approves sharing; identity comes
+  from `getpwuid` plus the canonical avatar locations
+  (`$XDG_DATA_HOME/aegis/avatars/face.*`, `~/.face`). GTK fallback while
+  the consent flow proves itself.
+- `org.freedesktop.impl.portal.DynamicLauncher` v1 — `PrepareInstall`
+  consents through the same dialog, then echoes the proposed name/icon
+  with a fresh install token. `RequestInstallToken` is always refused, so
+  no launcher install bypasses consent. GTK fallback as above.
+- `org.freedesktop.impl.portal.Wallpaper` v1 — `SetWallpaperURI` consents
+  through the confirmation dialog, then decodes and swaps the image live
+  on the compositor main loop. Only `file://` URIs; glTF stays
+  startup-only. GTK fallback as above.
 
-Aegis does not advertise the Background portal. GTK remains the default
-backend for that and other unsupported interfaces.
+Aegis does not advertise the Background portal. GTK serves it and the
+remaining unsupported interfaces (Access, Print, Location) through the
+`aegis;gtk` fallback default.
 
 Restart `xdg-desktop-portal` after installing so it re-scans the portal
 files:
@@ -86,8 +135,19 @@ busctl --user introspect org.freedesktop.impl.portal.desktop.aegis /org/freedesk
 
 The output lists `org.freedesktop.impl.portal.Settings`,
 `org.freedesktop.impl.portal.Screenshot` (version 2),
-`org.freedesktop.impl.portal.ScreenCast` (version 3), and
-`org.freedesktop.impl.portal.Inhibit`.
+`org.freedesktop.impl.portal.ScreenCast` (version 3),
+`org.freedesktop.impl.portal.Inhibit`,
+`org.freedesktop.impl.portal.Secret` (version 1),
+`org.freedesktop.impl.portal.Lockdown`,
+`org.freedesktop.impl.portal.FileChooser` (version 3),
+`org.freedesktop.impl.portal.Email` (version 2),
+`org.freedesktop.impl.portal.AppChooser` (version 2),
+`org.freedesktop.impl.portal.Notification` (version 2),
+`org.freedesktop.impl.portal.Account` (version 1),
+`org.freedesktop.impl.portal.DynamicLauncher` (version 1), and
+`org.freedesktop.impl.portal.Wallpaper` (version 1). Every interface
+reports its `version` property in lowercase exactly; a backend that gets
+this wrong is skipped by the frontend entirely.
 
 Read the appearance setting (with `color_scheme = "dark"` configured this
 prints `variant u 1`; the default prints `u 0`):

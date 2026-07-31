@@ -14,21 +14,29 @@
 //!
 //! Larger components have graduated to their own crates on top of the same
 //! contract (ADR-0021): the dock lives in `aegis-dock`, Prism in
-//! `aegis-prism`, AI Workspaces in `aegis-ai-workspaces`, and status plus
-//! immediate system controls in `aegis-statusbar`.
+//! `aegis-prism`, AI Workspaces in `aegis-ai-workspaces`, the HUD in
+//! `aegis-hud`, and the command panel in `aegis-command-panel`.
 
 mod agent_feedback;
 mod app_menu;
+mod app_picker;
+mod confirm_prompt;
+mod file_picker;
 mod launcher;
 mod overview;
 mod screenshot;
+mod secret_prompt;
 mod toast;
 mod window_switcher;
 
 pub use agent_feedback::AgentFeedback;
 pub use app_menu::{AppMenu, PinAction};
+pub use app_picker::{AppPickParams, AppPicker};
+pub use confirm_prompt::{ConfirmPickParams, ConfirmPrompt};
+pub use file_picker::{FilePickParams, FilePicker};
 pub use launcher::Launcher;
 pub use overview::Overview;
 pub use screenshot::{PickerMode, ScreenshotSelector};
+pub use secret_prompt::{SecretPrompt, SecretPromptParams};
 pub use toast::Toast;
 pub use window_switcher::WindowSwitcher;

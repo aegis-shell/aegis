@@ -154,6 +154,12 @@ pub struct Window {
     /// compositor hides the surface from rendering and input until the user
     /// restores it by focusing it from the window list or dock.
     pub minimized: bool,
+    /// Compositor-internal always-on-top flag. Like `minimized` this is not
+    /// an `xdg_toplevel` configure state (the protocol has no always-on-top
+    /// state); it records that the user pinned the window above normal
+    /// windows through chrome or IPC. The server keeps every always-on-top
+    /// toplevel's surface tree in a band at the top of the stacking order.
+    pub always_on_top: bool,
     /// Whether the tiling policy (ADR-0024) or the floating policy owns this
     /// window's position and size. `Floating` by default; a tiled window
     /// still carries a position and size — the tiling policy sets them.

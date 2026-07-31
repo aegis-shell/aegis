@@ -389,6 +389,7 @@ impl Server {
             self.seat_focuses_window(HUMAN_SEAT, w.id).hash(&mut hasher);
             (!self.state.authority.seat_controls_window(HUMAN_SEAT, w.id)).hash(&mut hasher);
             w.minimized.hash(&mut hasher);
+            w.always_on_top.hash(&mut hasher);
             (w.layout_role as u8).hash(&mut hasher);
             w.position.x.hash(&mut hasher);
             w.position.y.hash(&mut hasher);
@@ -504,6 +505,33 @@ impl Server {
             ffi::wl_display_flush_clients(self.state.display);
         }
         true
+    }
+
+    /// Set or clear the compositor-internal always-on-top flag. Enabling
+    /// raises the window so its surface tree enters the always-on-top band at
+    /// the top of the stacking order; disabling only clears the flag and
+    /// leaves the stacking position untouched. No xdg configure is sent: the
+    /// protocol has no always-on-top state. Idempotent, and a no-op when the
+    /// physical human seat does not control the window.
+    pub fn set_toplevel_always_on_top(
+        &mut self,
+        surface_id: aegis_core::window::WindowId,
+        on_top: bool,
+    ) {
+        if !self.human_controls_window(surface_id) {
+            return;
+        }
+        let rec = self.find_surface_by_window_id(surface_id);
+        if rec.is_null()
+            || unsafe { (*rec).xdg_toplevel.is_null() || (*rec).window.always_on_top == on_top }
+        {
+            return;
+        }
+        unsafe { (*rec).window.always_on_top = on_top };
+        if on_top {
+            let resource = unsafe { (*rec).resource };
+            self.raise_toplevel(resource);
+        }
     }
 
     /// Mark a toplevel as activated (or not) and emit a configure so the

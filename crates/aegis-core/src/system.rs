@@ -46,6 +46,10 @@ pub struct SystemStatus {
     pub touchpad: TouchpadStatus,
     /// Included so one host snapshot can feed both status and settings surfaces.
     pub display: DisplayStatus,
+    /// Session-owned "always on" idle inhibition (the command panel toggle).
+    /// Unlike the connection-scoped IPC inhibitors it survives client
+    /// disconnects; the runtime owns and reconciles it.
+    pub idle_inhibited: bool,
 }
 
 /// An immediate live-system mutation.
@@ -83,6 +87,12 @@ pub enum SystemAction {
     /// been compositor-confirmed.
     SetOutputPower {
         powered: bool,
+    },
+    /// Hold or release the session-owned "always on" idle inhibitor (the
+    /// command panel toggle). While held, idle notifications stay resumed:
+    /// no automatic dimming, locking, or display power-off.
+    SetIdleInhibit {
+        inhibit: bool,
     },
 }
 

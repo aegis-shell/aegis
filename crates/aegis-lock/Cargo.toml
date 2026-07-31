@@ -9,11 +9,13 @@ rust-version.workspace = true
 build = "build.rs"
 
 [dependencies]
+aegis-avatar.workspace = true
 aegis-design.workspace = true
 ash.workspace = true
 aegis-logging.workspace = true
 flux.workspace = true
 flux-sys.workspace = true
+flux-scene-graph-sys.workspace = true
 image.workspace = true
 lens.workspace = true
 lens-sys.workspace = true
@@ -31,4 +33,4 @@ zeroize.workspace = true
 pkg-config = "0.3"
 
 [package.metadata.cargo-machete]
-ignored = ["flux-sys", "lens-sys", "pkg-config", "wayland-backend"]
+ignored = ["flux-sys", "flux-scene-graph-sys", "lens-sys", "pkg-config", "wayland-backend"]

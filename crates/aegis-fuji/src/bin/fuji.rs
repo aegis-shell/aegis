@@ -29,12 +29,12 @@ default = \"ask\"                    # allow | ask | deny
 # bash = \"ask\"
 # \"mcp__aegis__realm_input\" = \"allow\"
 
-# Aegis desktop bridge — build with: cargo build --release -p aegis-fuji
+# Aegis desktop bridge — build with: cargo build --release -p aegis-mcp
 # [mcp.aegis]
-# command = [\"/absolute/path/to/aegis-fuji-mcp\"]
+# command = [\"/absolute/path/to/aegis-mcp\"]
 # enabled = true
 # read_only = false
-# environment = { AEGIS_FUJI_SCOPE = \"fuji\" }
+# environment = { AEGIS_MCP_SCOPE = \"desktop-operator\" }
 
 # [skills]
 # paths = [\"/absolute/path/to/aegis/integrations/fuji/skills\"]

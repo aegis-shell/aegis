@@ -1,11 +1,14 @@
 use crate::*;
 
+mod app_pick;
 mod apps;
 mod capture;
 mod commands;
 mod config;
+mod confirm_pick;
 mod damage;
 mod event_loop;
+mod file_pick;
 mod idle;
 mod input;
 mod ipc;
@@ -15,17 +18,21 @@ mod presentation;
 mod presentation_state;
 mod realm;
 mod rendering;
+mod secret_prompt;
 mod session;
 mod settings;
 mod state;
 mod stream;
 mod system;
 
+use app_pick::*;
 use apps::*;
 use capture::*;
 use commands::*;
 use config::*;
+use confirm_pick::*;
 use damage::*;
+use file_pick::*;
 use idle::*;
 use input::*;
 use ipc::*;
@@ -35,6 +42,7 @@ use presentation::*;
 use presentation_state::*;
 use realm::*;
 use rendering::*;
+use secret_prompt::*;
 use state::*;
 use stream::*;
 use system::*;
@@ -118,11 +126,13 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Notification queue (M9, over the IPC): shared between the IPC handler
     // (reads), the toast chrome component (renders), and this loop (pushes
-    // on `Notify`, expires each frame). Declared early so the toast
-    // component registration below can clone it.
+    // on `Notify`, expires each frame). The TTL is the retention horizon for
+    // the command panel's Messages list, the HUD count, and IPC history —
+    // the toast strip applies its own 3-second presentation window on top.
+    // Declared early so the toast component registration below can clone it.
     let notif_queue: std::sync::Arc<std::sync::Mutex<aegis_core::notify::NotificationQueue>> =
         std::sync::Arc::new(std::sync::Mutex::new(
-            aegis_core::notify::NotificationQueue::new(5_000),
+            aegis_core::notify::NotificationQueue::new(3_600_000),
         ));
 
     // Declarative configuration (ADR-0026). One TOML file at
@@ -278,13 +288,19 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // in the Wayland server, and borderless windows are managed through the
     // Dock, gestures, tiling, and key bindings.
     // Agent input feedback is compositor-owned and non-interactive. Register
-    // it first so it appears above client content but below the status bar,
+    // it first so it appears above client content but below the HUD,
     // notifications, and modal trusted chrome. Directed Realm capture renders
     // client surfaces directly and therefore never includes this layer.
     shell.add(Box::new(aegis_shell::AgentFeedback::new()));
-    if config.as_ref().map(|c| c.statusbar.enabled).unwrap_or(true) {
-        shell.add(Box::new(aegis_statusbar::StatusBar::with_notifications(
+    // The SNI tray service is spawned once and shared: the HUD reads the
+    // snapshot for its display-only tray row, and the command panel additionally
+    // holds the command channel for tray interaction (ADR-0080).
+    let tray = aegis_tray::spawn();
+    if config.as_ref().map(|c| c.hud.enabled).unwrap_or(true) {
+        shell.add(Box::new(aegis_hud::Hud::with_sources(
             &device,
+            tray.as_ref()
+                .map(|(snapshot, _)| std::sync::Arc::clone(snapshot)),
             std::sync::Arc::clone(&notif_queue),
         )));
     }
@@ -305,12 +321,35 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // The overview (M9): a modal window/workspace picker over the same live
     // scene; registered with the modal chrome so it covers ordinary overlays.
     shell.add(Box::new(aegis_shell::Overview::new()));
+    // The command panel (ADR-0080): the interactive counterpart of the
+    // display-only HUD — quick settings, tray activation with dbusmenu
+    // popovers, and notification dismissal in one modal surface, toggled by
+    // the Super+S binding or a four-finger touchpad swipe.
+    shell.add(Box::new(aegis_command_panel::CommandPanel::new(
+        &device,
+        tray,
+        std::sync::Arc::clone(&notif_queue),
+    )));
     // Built-in applications share the launcher catalog with XDG entries but
     // render in-process through optics/lens. Immediate system controls live in
-    // the status bar; Realm authority management remains its own surface.
+    // the command panel (ADR-0080); Realm authority management remains its
+    // own surface.
     shell.add(Box::new(aegis_ai_workspaces::AiWorkspaces::new()));
     // Interactive screenshot region selector, triggered by the Print key.
     shell.add(Box::new(aegis_shell::ScreenshotSelector::new()));
+    // User-consent file picker (the FileChooser portal's compositor side):
+    // ordinary modal chrome over the live scene, opened by PickFile IPC
+    // requests; it never touches the screenshot freeze.
+    shell.add(Box::new(aegis_shell::FilePicker::new()));
+    // User-consent application picker (the AppChooser portal's compositor
+    // side), opened by PickApp IPC requests.
+    shell.add(Box::new(aegis_shell::AppPicker::new()));
+    // Masked secret prompt (the secret vault's password unlock), opened by
+    // PromptSecret IPC requests.
+    shell.add(Box::new(aegis_shell::SecretPrompt::new()));
+    // Yes/no confirmation dialog (portal consent flows), opened by
+    // PickConfirm IPC requests.
+    shell.add(Box::new(aegis_shell::ConfirmPrompt::new()));
     // The dock is registered after the config is loaded below, so the pushed
     // catalog already carries the resolved `[dock]` pinned list.
     let mut input_acc = InputAccumulator::default();
@@ -423,6 +462,9 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // delivering it to the focused client.
     let keymap = build_keymap(config.as_ref());
     log::info!("keybinds: {} active", keymap.len());
+    // Touchpad swipe bindings, same layering: `[[gesture]]` entries over the
+    // built-in defaults (ADR-0082). Rebuilt alongside the keymap on reload.
+    let gesture_map = build_gesture_map(config.as_ref());
     // Seed the window rules from the loaded config (ADR-0026). Re-applied on
     // each reload above.
     server.set_window_rules(
@@ -439,6 +481,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         server.set_remember_window_positions(c.layout.remember_window_positions);
         server.set_decoration_policy(c.ui.window_decorations);
         server.set_output_policies(c.output_policies());
+        server.set_allow_quit_while_locked(c.dev.allow_quit_while_locked);
     }
     shell.set_reduced_motion(desktop_preferences.reduced_motion);
     server.set_reduced_motion(desktop_preferences.reduced_motion);
@@ -481,10 +524,19 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     shell.add(Box::new(aegis_shell::WindowSwitcher::new()));
 
     // One normalized status snapshot feeds compositor chrome and IPC. Host
-    // probes (wpctl fork+exec) run on a helper thread so the compositor never
-    // blocks a frame on a subprocess; the main loop applies the latest
+    // probes (wpctl/nmcli fork+exec) run on a helper thread so the compositor
+    // never blocks a frame on a subprocess; the main loop applies the latest
     // snapshot it finds on the channel.
+    //
+    // The poll is split into two cadences. The cheap poll reads only `/sys`
+    // (battery, brightness, charging, network link) every few seconds to keep
+    // the HUD fresh. The two forked commands — `wpctl get-volume` and
+    // `nmcli radio wifi` — change far more slowly (volume only on user action,
+    // which already triggers an out-of-cycle refresh; the Wi-Fi radio is
+    // toggled rarely), so they run on a longer interval instead of forking
+    // twice every cycle just to re-discover an unchanged answer.
     const SYSTEM_STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+    const FORKED_STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
     let mut system_status = aegis_shell::detect_system_status();
     system_status.do_not_disturb = notif_queue.lock().unwrap().do_not_disturb();
     system_status.tiled = server.tiling();
@@ -503,14 +555,78 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::Builder::new()
         .name("aegis-status".into())
         .spawn(move || {
-            while status_tx.send(aegis_shell::detect_system_status()).is_ok() {
-                // A queued refresh request re-probes out of cycle instead of
-                // waiting out the interval; disconnection means the main
-                // loop is gone.
-                if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) =
-                    status_refresh_rx.recv_timeout(SYSTEM_STATUS_INTERVAL)
-                {
-                    break;
+            // Last-known values for the forked fields; carried across cheap
+            // polls so the snapshot stays coherent between full probes.
+            struct StatusProbe {
+                last_volume: Option<u8>,
+                last_muted: bool,
+                last_wifi: Option<bool>,
+            }
+            impl StatusProbe {
+                fn full(&mut self) -> aegis_shell::SystemStatus {
+                    let (volume, muted, wifi) = aegis_shell::detect_forked_status();
+                    self.last_volume = volume;
+                    self.last_muted = muted;
+                    self.last_wifi = wifi;
+                    aegis_shell::detect_system_status_lightweight(volume, muted, wifi)
+                }
+                fn cheap(&self) -> aegis_shell::SystemStatus {
+                    aegis_shell::detect_system_status_lightweight(
+                        self.last_volume,
+                        self.last_muted,
+                        self.last_wifi,
+                    )
+                }
+            }
+            let mut probe = StatusProbe {
+                last_volume: None,
+                last_muted: false,
+                last_wifi: None,
+            };
+            // Drain any refresh requests queued during the previous probe so a
+            // burst of volume key presses collapses into one full probe.
+            let drain_refresh = || {
+                while status_refresh_rx.try_recv().is_ok() {}
+            };
+            // The inner loop only exits by returning, so the initial probe
+            // send is a one-shot guard, not a loop (clippy: never loops).
+            if status_tx.send(probe.full()).is_ok() {
+                let mut next_forked_deadline = std::time::Instant::now() + FORKED_STATUS_INTERVAL;
+                loop {
+                    // A queued refresh request re-probes out of cycle instead
+                    // of waiting out the interval; disconnection means the main
+                    // loop is gone.
+                    match status_refresh_rx.recv_timeout(SYSTEM_STATUS_INTERVAL) {
+                        Ok(()) => {
+                            // Refresh requested: run a full probe immediately
+                            // so optimistic HUD values reconcile at once, then
+                            // reset the forked cadence.
+                            if status_tx.send(probe.full()).is_err() {
+                                return;
+                            }
+                            next_forked_deadline =
+                                std::time::Instant::now() + FORKED_STATUS_INTERVAL;
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            let now = std::time::Instant::now();
+                            if now >= next_forked_deadline {
+                                if status_tx.send(probe.full()).is_err() {
+                                    return;
+                                }
+                                next_forked_deadline = now + FORKED_STATUS_INTERVAL;
+                            } else {
+                                // Cheap poll: stay off the fork path and reuse
+                                // the last volume/wifi values.
+                                if status_tx.send(probe.cheap()).is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            drain_refresh();
+                            return;
+                        }
+                    }
                 }
             }
         })
@@ -564,10 +680,20 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (realm_control_tx, realm_control_rx) = std::sync::mpsc::channel::<RealmControlRequest>();
     let (settings_control_tx, settings_control_rx) =
         std::sync::mpsc::channel::<SettingsControlRequest>();
+    let (wallpaper_control_tx, wallpaper_control_rx) =
+        std::sync::mpsc::channel::<WallpaperControlRequest>();
     let (realm_capture_tx, realm_capture_rx) = std::sync::mpsc::channel::<RealmCaptureRequest>();
     let (stream_control_tx, stream_control_rx) = std::sync::mpsc::channel::<StreamControlRequest>();
     let (idle_control_tx, idle_control_rx) = std::sync::mpsc::channel::<IdleControlRequest>();
     let (pick_control_tx, pick_control_rx) = std::sync::mpsc::channel::<PickControlRequest>();
+    let (file_pick_control_tx, file_pick_control_rx) =
+        std::sync::mpsc::channel::<FilePickControlRequest>();
+    let (app_pick_control_tx, app_pick_control_rx) =
+        std::sync::mpsc::channel::<AppPickControlRequest>();
+    let (secret_prompt_control_tx, secret_prompt_control_rx) =
+        std::sync::mpsc::channel::<SecretPromptControlRequest>();
+    let (confirm_pick_control_tx, confirm_pick_control_rx) =
+        std::sync::mpsc::channel::<ConfirmPickControlRequest>();
     let (journal_refusal_tx, journal_refusal_rx) =
         std::sync::mpsc::channel::<JournalRefusalRequest>();
     let journal =
@@ -579,10 +705,15 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
             capture: capture_tx,
             realm_controls: realm_control_tx,
             settings_controls: settings_control_tx,
+            wallpaper_controls: wallpaper_control_tx,
             realm_capture: realm_capture_tx,
             stream_controls: stream_control_tx,
             idle_controls: idle_control_tx,
             pick_controls: pick_control_tx,
+            file_pick_controls: file_pick_control_tx,
+            app_pick_controls: app_pick_control_tx,
+            secret_prompt_controls: secret_prompt_control_tx,
+            confirm_pick_controls: confirm_pick_control_tx,
             journal_refusals: journal_refusal_tx,
         },
         capture_worker.delivery_gate(),
@@ -714,6 +845,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         icon_snapshot,
         shell,
         input_acc,
+        gesture_map,
+        swipe: None,
         renderer,
         realm_processes,
         realm_render_targets,
@@ -740,12 +873,21 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         capture_rx,
         realm_control_rx,
         settings_control_rx,
+        wallpaper_control_rx,
         realm_capture_rx,
         stream_control_rx,
         idle_control_rx,
         pick_rx: pick_control_rx,
         pending_pick: None,
         pending_pick_open: None,
+        file_pick_rx: file_pick_control_rx,
+        pending_file_pick: None,
+        app_pick_rx: app_pick_control_rx,
+        pending_app_pick: None,
+        secret_prompt_rx: secret_prompt_control_rx,
+        pending_secret_prompt: None,
+        confirm_pick_rx: confirm_pick_control_rx,
+        pending_confirm_pick: None,
         ipc_idle_inhibits: IdleInhibits::default(),
         journal_refusal_rx,
         journal,

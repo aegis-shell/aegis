@@ -38,13 +38,29 @@ fn cache_dir_from(
 /// returning the final path. `token` is already sanitized to `[A-Za-z0-9_]`
 /// by the option parser, so the filename cannot escape `dir`.
 pub(crate) fn write_capture(dir: &Path, token: &str, png: &[u8]) -> io::Result<PathBuf> {
-    std::fs::create_dir_all(dir)?;
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let name = format!("screenshot-{millis}-{token}.png");
-    let final_path = dir.join(&name);
+    write_atomic(dir, &format!("screenshot-{millis}-{token}.png"), png)
+}
+
+/// Write an arbitrary payload as `blob-<millis>-<token>` under `dir` with the
+/// same atomic, mode-0600 discipline as [`write_capture`] — for payloads
+/// that are not PNGs (email attachment staging).
+pub(crate) fn write_blob(dir: &Path, token: &str, bytes: &[u8]) -> io::Result<PathBuf> {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    write_atomic(dir, &format!("blob-{millis}-{token}"), bytes)
+}
+
+/// Create-temp-then-rename under `dir`, mode 0600, so no consumer observes a
+/// partial payload.
+fn write_atomic(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let final_path = dir.join(name);
     let temporary = dir.join(format!(".{name}.{}.tmp", std::process::id()));
     let result = (|| {
         let mut file = std::fs::OpenOptions::new()
@@ -52,7 +68,7 @@ pub(crate) fn write_capture(dir: &Path, token: &str, png: &[u8]) -> io::Result<P
             .write(true)
             .mode(0o600)
             .open(&temporary)?;
-        file.write_all(png)?;
+        file.write_all(bytes)?;
         file.sync_all()?;
         std::fs::rename(&temporary, &final_path)
     })();

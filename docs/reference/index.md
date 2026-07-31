@@ -15,5 +15,5 @@ see [Explanation](../explanation/index.md).
 | [IPC Reference](ipc.md) | Protocol capabilities, queries, commands, geometry, synthetic input, and scope behavior |
 | [System Settings](settings.md) | Standalone app invocation, module routes, backend availability, and apply behavior |
 | [Session Service Commands](session-services.md) | Lock-screen and idle-coordinator invocation, options, defaults, and exit behavior |
-| [fuji Bridge](fuji.md) | MCP command, environment, named scope, Realm lifecycle, tools, and compatibility |
+| [aegis-mcp Bridge](aegis-mcp.md) | MCP command, environment, named scope, Realm lifecycle, tools, and compatibility |
 | [fuji Agent](fuji-agent.md) | fuji CLI, configuration, permissions, built-in tools, and sessions |

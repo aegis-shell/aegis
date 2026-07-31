@@ -76,13 +76,15 @@ inside the package build root.
 | `target/release/aegis-settings` | `/usr/bin/aegis-settings` | core |
 | `target/release/aegis-ctl` | `/usr/bin/aegis-ctl` | core |
 | `target/release/aegis-portal` | `/usr/lib/aegis/aegis-portal` | portal |
-| `target/release/aegis-fuji-mcp` | `/usr/bin/aegis-fuji-mcp` | agent integration |
+| `target/release/aegis-mcp` | `/usr/bin/aegis-mcp` | agent integration |
 | `target/release/fuji` | `/usr/bin/fuji` | agent integration |
 | `contrib/systemd/user/aegis.service` | `/usr/lib/systemd/user/aegis.service` | core |
 | `contrib/io.github.ming2k.aegis.Settings.desktop` | `/usr/share/applications/io.github.ming2k.aegis.Settings.desktop` | core |
 | `contrib/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg` | `/usr/share/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg` | core |
 | `contrib/pam/aegis-lock` | `/etc/pam.d/aegis-lock` | core |
 | `contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | portal |
+| `contrib/dbus-1/services/org.freedesktop.secrets.service` | `/usr/share/dbus-1/services/org.freedesktop.secrets.service` | portal |
+| `target/release/libpam_aegis.so` | `/lib/security/pam_aegis.so` | portal |
 | `contrib/xdg-desktop-portal/portals/aegis.portal` | `/usr/share/xdg-desktop-portal/portals/aegis.portal` | portal |
 | `contrib/xdg-desktop-portal/aegis-portals.conf` | `/usr/share/xdg-desktop-portal/aegis-portals.conf` | portal |
 | `LICENSE` | `/usr/share/licenses/aegis/LICENSE` | core |
@@ -116,8 +118,8 @@ install -Dm0755 target/release/aegis-ctl \
   "$package_root/usr/bin/aegis-ctl"
 install -Dm0755 target/release/aegis-portal \
   "$package_root/usr/lib/aegis/aegis-portal"
-install -Dm0755 target/release/aegis-fuji-mcp \
-  "$package_root/usr/bin/aegis-fuji-mcp"
+install -Dm0755 target/release/aegis-mcp \
+  "$package_root/usr/bin/aegis-mcp"
 install -Dm0755 target/release/fuji \
   "$package_root/usr/bin/fuji"
 ```
@@ -283,7 +285,7 @@ package_aegis() {
   install -Dm0755 target/release/aegis-lock     "$dest/bin/aegis-lock"
   install -Dm0755 target/release/aegis-settings "$dest/bin/aegis-settings"
   install -Dm0755 target/release/aegis-ctl      "$dest/bin/aegis-ctl"
-  install -Dm0755 target/release/aegis-fuji-mcp "$dest/bin/aegis-fuji-mcp"
+  install -Dm0755 target/release/aegis-mcp "$dest/bin/aegis-mcp"
   install -Dm0755 target/release/fuji           "$dest/bin/fuji"
 
   install -Dm0644 contrib/systemd/user/aegis.service \

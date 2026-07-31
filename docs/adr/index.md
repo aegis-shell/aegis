@@ -86,3 +86,12 @@ background and how the decisions fit together, see
 | [0077](0077-presentation-domain-redraw-state-machine.md) | Presentation-domain redraw state machine (supersedes [0038](0038-frame-pacing.md)) | Accepted |
 | [0078](0078-out-of-process-idle-and-session-lock.md) | Out-of-process idle policy and session lock | Accepted |
 | [0079](0079-tracing-based-observability-seam.md) | Tracing-based observability seam | Accepted |
+| [0080](0080-hud-status-chips-and-sao-command-panel.md) | HUD status chips and the SAO command panel | Accepted |
+| [0080](0080-avatar-crate-xdg-conformant-vrm-aware.md) | Avatar as an independent crate, XDG-conformant, VRM-aware | Accepted |
+| [0081](0081-hud-and-command-panel-naming.md) | HUD and command panel naming (amends [0045](0045-statusbar-crate-and-sni-tray.md), [0080](0080-hud-status-chips-and-sao-command-panel.md)) | Accepted |
+| [0082](0082-configurable-touchpad-swipe-bindings.md) | Configurable touchpad swipe bindings (amends [0080](0080-hud-status-chips-and-sao-command-panel.md)) | Accepted |
+| [0083](0083-frameless-transient-toasts-and-hud-consolidation.md) | Frameless transient toasts and HUD consolidation (amends [0080](0080-hud-status-chips-and-sao-command-panel.md)) | Accepted |
+| [0084](0084-session-scoped-always-on-top-window-band.md) | Session-scoped always-on-top window band (amends [0027](0027-ipc-and-introspection.md)) | Accepted |
+| [0085](0085-portal-secret-absorption-and-secret-service-compat.md) | Portal secret absorption: vault, Secret backend, and a transitional Secret Service compat layer | Accepted |
+| [0086](0086-full-stack-portal-via-user-consent-pick-chains.md) | Full-stack portal via user-consent pick chains | Accepted |
+| [0087](0087-aegis-mcp-standalone-platform-bridge-crate.md) | aegis-mcp as the standalone platform bridge crate (amends [0050](0050-fuji-agent-product-and-bridge-rename.md), [0066](0066-canonical-aegis-namespace.md)) | Accepted |

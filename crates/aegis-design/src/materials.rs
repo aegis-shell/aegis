@@ -43,6 +43,23 @@ pub fn card(design: &Design) -> LayoutOpts {
     }
 }
 
+/// The frosted white floating panel of the SAO command panel (ADR-0080).
+///
+/// Compositor backdrop blur supplies the frost behind it; this layer is the
+/// white tint, edge, and corner. Callers add geometry through struct update
+/// syntax.
+#[must_use]
+pub fn sao_panel(sao: &crate::tokens::Sao) -> OverlayOpts {
+    OverlayOpts {
+        bg: sao.surface,
+        border: sao.border,
+        border_width: 1.0,
+        radius: 16.0,
+        pad: 0.0,
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use lens::Color;
@@ -76,5 +93,16 @@ mod tests {
         assert_eq!(material.radius, 16.0);
         assert_eq!(material.width, 0.0);
         assert_eq!(material.min_height, 0.0);
+    }
+
+    #[test]
+    fn sao_panel_material_uses_the_white_frosted_tokens() {
+        let sao = crate::tokens::Sao::classic();
+        let material = sao_panel(&sao);
+        assert_eq!(material.bg, sao.surface);
+        assert_eq!(material.border, sao.border);
+        assert_eq!(material.border_width, 1.0);
+        assert_eq!(material.radius, 16.0);
+        assert_eq!(material.pad, 0.0);
     }
 }

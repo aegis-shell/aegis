@@ -1,6 +1,6 @@
 # IPC Reference
 
-The aegis IPC is protocol version 12, carried as length-framed JSON over the
+The aegis IPC is protocol version 17, carried as length-framed JSON over the
 owner-only Unix socket at `$XDG_RUNTIME_DIR/aegis.sock`. Every connection starts
 with `Hello`; commands are accepted only after capability and scope checks.
 JSON messages are limited to 16 MiB. Large immutable capture and frame
@@ -83,6 +83,7 @@ live state carry the unchanged revision in both revision fields.
 | `Close { id }` | `control` | `Close` | Window |
 | `Move { id }` | `control` | `Move` | Window |
 | `SetWindowGeometry { id, rect }` | `control` | `SetWindowGeometry` | Window |
+| `SetAlwaysOnTop { id, on_top }` | `control` | `SetWindowGeometry` | Window |
 | `InjectInput { id, actions }` | `input` | `InjectInput` | Window |
 | `InjectRealmInput { realm, id, actions }` | `input` | `InjectRealmInput` | Realm and window |
 | `LaunchInRealm { realm, desktop_id }` | `realm` | `LaunchInRealm` | Realm |
@@ -93,7 +94,7 @@ live state carry the unchanged revision in both revision fields.
 | `ToggleTiling` | `control` | `ToggleTiling` | Current workspace |
 | `System { action }` | `control` | `SystemControl` | Live host or compositor-owned session state |
 | `ToggleOverview` | `control` | `ToggleOverview` | — |
-| `Notify { summary, body, app_id }` | `control` | `Notify` | — |
+| `Notify { summary, body, app_id, external_id }` | `control` | `Notify` | — |
 | `DismissNotification { id }` | `control` | `DismissNotification` | Notification |
 | `Screenshot { path }` | `control` | `Screenshot` | Focused output |
 | `Quit` | `session` | — | Session |
@@ -453,6 +454,27 @@ confirms the state the connection now holds. The inhibitor is
 connection-scoped: disconnecting releases it, so a crashed holder can never
 keep the session out of idle.
 
+## Interactive Picking
+
+The pick requests ask the user to choose something in compositor chrome;
+the connection blocks (bounded by a compositor interaction timeout) until
+the user confirms or cancels. They share one authorization shape, fail-closed
+exactly like `SetIdleInhibit`: the `control` capability, a live lease, an
+explicit entry in the connection's scope `ops` — never inherited — plus a
+lock/VT gate, and a scope+lease re-check before the result is delivered.
+One interactive pick at a time compositor-wide, shared across all kinds; a
+concurrent request is refused. `PickTarget` freezes the screen and reads
+user-approved screen content; the others are ordinary modal chrome over
+the live scene and capture no screen content.
+
+| Request | Reply | Scope op | Purpose |
+|---------|-------|----------|---------|
+| `PickTarget { kind }` | `Picked { result }` | `PickTarget` | Region, pixel, or window picking for Screenshot and ScreenCast ([ADR-0054](../adr/0054-interactive-target-picking.md)) |
+| `PickFile { options }` | `FilePicked { result }` | `PickFile` | FileChooser portal: open/save/directory with filters (protocol 13) |
+| `PickApp { choices, subject, last_choice }` | `AppPicked { result }` | `PickApp` | AppChooser portal: one application out of the candidates (protocol 14) |
+| `PromptSecret { title, reason }` | `SecretPrompted { result }` | `PromptSecret` | Masked credential prompt, e.g. the vault password unlock; both ends zeroize their copies (protocol 15) |
+| `PickConfirm { title, body, accept_label }` | `ConfirmPicked { result }` | `PickConfirm` | Yes/no consent dialogs (Account, DynamicLauncher, Wallpaper, future Access) (protocol 16) |
+
 ## Named Scopes
 
 Named scopes are configured with `[[agent.scope]]`. Every mutation and
@@ -465,11 +487,17 @@ recovery commands. It grants the local user all Realm ids and the explicit
 Realm operation set; it does not weaken the socket's mode `0600` boundary.
 
 `aegis-portal` uses the built-in owner-only `aegis-portal` scope, which
-grants exactly four operations: `CaptureOutput` for Screenshot,
-`StreamOutput` for ScreenCast, `PickTarget` for user-confirmed Screenshot and
-ScreenCast selection, and `IdleInhibit` for Inhibit. It grants no general
+grants exactly these operations: `CaptureOutput` for Screenshot,
+`StreamOutput` for ScreenCast, `IdleInhibit` for Inhibit, `PickTarget` for
+user-confirmed Screenshot and ScreenCast selection, `PickFile` for
+FileChooser, `PickApp` for AppChooser, `Notify` and `DismissNotification`
+for Notification, `PromptSecret` for the vault unlock prompt, and
+`PickConfirm` for the consent dialogs, plus `SetWallpaper` for the Wallpaper
+portal's decode-and-swap mutation (protocol 17). It grants no general
 compositor control. The portal boundary is recorded in
-[ADR-0075](../adr/0075-independent-portal-package-and-backend-contract.md).
+[ADR-0075](../adr/0075-independent-portal-package-and-backend-contract.md)
+and its extension in
+[ADR-0086](../adr/0086-full-stack-portal-via-user-consent-pick-chains.md).
 Both built-in scopes follow the same fail-closed rule as configured scopes.
 
 See the [Configuration Reference](config.md#agent-scopes) for fields and

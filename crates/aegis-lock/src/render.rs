@@ -26,11 +26,49 @@ pub enum RenderError {
     Lens(#[from] lens::Error),
     #[error("built-in lock wallpaper could not be decoded: {0}")]
     Wallpaper(#[from] image::ImageError),
+    #[error("avatar image could not be prepared: {0}")]
+    Avatar(String),
+}
+
+impl RenderError {
+    /// Map an `aegis-avatar` error onto the lock's render error. Flux faults
+    /// are preserved as-is; everything else becomes a descriptive `Avatar`.
+    fn from_avatar(error: aegis_avatar::Error) -> Self {
+        match error {
+            aegis_avatar::Error::Flux(error) => RenderError::Flux(error),
+            other => RenderError::Avatar(other.to_string()),
+        }
+    }
+}
+
+/// Whether the identity orb shows the user's picture, a 3D model, or the
+/// gradient fallback. All three render through the same `draw_image` path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AvatarStatus {
+    /// A still user avatar was loaded and is composited as the orb.
+    Image,
+    /// A VRM 3D model was loaded; `animated` reports whether VRMA clips move.
+    Animated3d { animated: bool },
+    /// No avatar configured (or a decode failure): the gradient orb instead.
+    Fallback,
+}
+
+impl From<aegis_avatar::AvatarKind> for AvatarStatus {
+    fn from(kind: aegis_avatar::AvatarKind) -> Self {
+        match kind {
+            aegis_avatar::AvatarKind::Still => AvatarStatus::Image,
+            aegis_avatar::AvatarKind::Animated3d { animation } => AvatarStatus::Animated3d {
+                animated: animation == aegis_avatar::AnimationSupport::Animated,
+            },
+        }
+    }
 }
 
 pub struct Graphics {
     pub device: flux::Device,
     background: Image,
+    avatar: Image,
+    avatar_status: AvatarStatus,
     ash: AshBridge,
 }
 
@@ -38,10 +76,36 @@ impl Graphics {
     pub fn new(connection: &Connection) -> Result<Self, RenderError> {
         let device = flux::Device::new(true, &INSTANCE_EXTENSIONS, &DEVICE_EXTENSIONS, 2)?;
         let background = load_background(&device)?;
+        // Avatar loading is delegated to aegis-avatar: it resolves the XDG
+        // search path, decodes still images or loads VRM models, and returns a
+        // single circle-masked texture. When nothing is configured, this lock
+        // screen supplies its own procedural gradient orb.
+        let (avatar, avatar_status) = match aegis_avatar::Avatar::load(&device) {
+            Ok(Some(loaded)) => {
+                let kind = loaded.kind;
+                (loaded.texture, AvatarStatus::from(kind))
+            }
+            Ok(None) => (
+                aegis_avatar::procedural_orb(&device).map_err(RenderError::from_avatar)?,
+                AvatarStatus::Fallback,
+            ),
+            // Any avatar error (a corrupt file, a GPU upload fault) is a real
+            // fault worth surfacing; fall back to the procedural orb only for
+            // the benign "no candidate" case handled above.
+            Err(error) => {
+                log::warn!("lock: avatar load failed, using procedural orb: {error}");
+                (
+                    aegis_avatar::procedural_orb(&device).map_err(RenderError::from_avatar)?,
+                    AvatarStatus::Fallback,
+                )
+            }
+        };
         let ash = AshBridge::new(connection, &device)?;
         Ok(Self {
             device,
             background,
+            avatar,
+            avatar_status,
             ash,
         })
     }
@@ -92,7 +156,14 @@ impl Graphics {
         identity: &Identity,
         visual_progress: f32,
     ) -> Result<(), RenderError> {
-        surface.render(&self.background, state, identity, visual_progress)
+        surface.render(
+            &self.background,
+            &self.avatar,
+            self.avatar_status,
+            state,
+            identity,
+            visual_progress,
+        )
     }
 }
 
@@ -145,6 +216,8 @@ impl LockRenderSurface {
     fn render(
         &mut self,
         background: &Image,
+        avatar: &Image,
+        avatar_status: AvatarStatus,
         state: &LockState,
         identity: &Identity,
         visual_progress: f32,
@@ -156,6 +229,8 @@ impl LockRenderSurface {
         draw_background(&self.canvas, background, physical);
         draw_materials(
             &self.canvas,
+            avatar,
+            avatar_status,
             self.logical_size,
             self.scale as f32,
             state,
@@ -246,7 +321,12 @@ fn load_background(device: &flux::Device) -> Result<Image, RenderError> {
     ))?
     .to_rgba8();
     let (width, height) = source.dimensions();
-    let target_width = width.min(2048);
+    // The lock background needs to stay sharp on high-DPI panels, so cap the
+    // atlas at 3840 px (covers 4K @ 1× and 1440p @ 2×) rather than 2048,
+    // which left ultrawide and retina outputs visibly soft. A mild 6.0 sigma
+    // keeps the "defocused wallpaper" aesthetic without the smeared look the
+    // previous 14.0 produced.
+    let target_width = width.min(3840);
     let target_height =
         ((height as f64 * target_width as f64 / width.max(1) as f64).round() as u32).max(1);
     let reduced = if target_width != width {
@@ -259,7 +339,7 @@ fn load_background(device: &flux::Device) -> Result<Image, RenderError> {
     } else {
         source
     };
-    let blurred = image::imageops::blur(&reduced, 14.0);
+    let blurred = image::imageops::blur(&reduced, 6.0);
     Ok(Image::from_bytes(
         device,
         blurred.width(),
@@ -302,6 +382,8 @@ fn draw_background(canvas: &flux::Canvas, image: &Image, output: (u32, u32)) {
 
 fn draw_materials(
     canvas: &flux::Canvas,
+    avatar: &Image,
+    avatar_status: AvatarStatus,
     logical: (u32, u32),
     scale: f32,
     state: &LockState,
@@ -316,23 +398,35 @@ fn draw_materials(
     let avatar_x = (center - layout.avatar_size * 0.5) * scale;
     let avatar_y = (layout.avatar_y + (1.0 - p) * 18.0) * scale;
     let avatar_size = layout.avatar_size * scale;
+    // Soft white halo behind the orb (the only fill that legitimately spans
+    // the full square — it is a translucent disc built from a round rect with
+    // a 50% radius, so it stays circular and never shows square corners).
     canvas.fill_rrect(
         avatar_x - 3.0 * scale,
         avatar_y - 3.0 * scale,
         avatar_size + 6.0 * scale,
         avatar_size + 6.0 * scale,
-        avatar_size * 0.5,
+        avatar_size * 0.5 + 3.0 * scale,
         flux::rgba(255, 255, 255, (48.0 * p) as u8),
     );
-    canvas.fill_rect_radial_gradient(
-        (avatar_x, avatar_y, avatar_size, avatar_size),
-        (avatar_x + avatar_size * 0.36, avatar_y + avatar_size * 0.28),
-        avatar_size * 0.9,
-        &[
-            GradientStop::new(0.0, flux::rgba(158, 195, 255, (245.0 * p) as u8)),
-            GradientStop::new(0.55, flux::rgba(83, 125, 207, (238.0 * p) as u8)),
-            GradientStop::new(1.0, flux::rgba(35, 57, 105, (245.0 * p) as u8)),
-        ],
+    match avatar_status {
+        AvatarStatus::Image | AvatarStatus::Animated3d { .. } | AvatarStatus::Fallback => {
+            // Every avatar kind — a loaded photo, a rendered VRM model, or the
+            // procedural fallback orb — is prepared upstream as a circle-masked,
+            // premultiplied texture. A single draw_image composites a perfect
+            // disc, so no square content can ever leak past the circular
+            // keyline regardless of source aspect ratio or 3D framing.
+            canvas.draw_image(avatar, avatar_x, avatar_y, avatar_size, avatar_size);
+        }
+    }
+    // Crisp circular keyline drawn last so it frames whichever orb was used.
+    canvas.fill_rrect(
+        avatar_x,
+        avatar_y,
+        avatar_size,
+        avatar_size,
+        avatar_size * 0.5,
+        flux::rgba(255, 255, 255, (28.0 * p) as u8),
     );
 
     let field_x = (center - layout.field_width * 0.5) * scale;

@@ -126,6 +126,17 @@ fn dispatch_command(socket: &Path, cli: Cli) -> Result<String, CliError> {
                 .map_err(io_err)?;
             Ok(format!("minimized {id}"))
         }
+        Cmd::AlwaysOnTop { id, state } => {
+            let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
+            let on_top = bool::from(state);
+            client
+                .command(aegis_ipc::Command::SetAlwaysOnTop {
+                    id: aegis_core::window::WindowId(id),
+                    on_top,
+                })
+                .map_err(io_err)?;
+            Ok(format!("always-on-top {on_top} for {id}"))
+        }
         Cmd::Close { id } => {
             let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
             client
@@ -872,6 +883,7 @@ mod tests {
                 summary: "ping".into(),
                 body: "hello".into(),
                 app_id: None,
+                external_id: None,
                 at_ms: 0,
             },
         };
@@ -883,6 +895,7 @@ mod tests {
                 summary: "beep".into(),
                 body: String::new(),
                 app_id: None,
+                external_id: None,
                 at_ms: 0,
             },
         };

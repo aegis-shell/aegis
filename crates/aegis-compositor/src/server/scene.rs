@@ -11,6 +11,94 @@ impl Server {
             .collect()
     }
 
+    /// Toplevel ids whose rendered rectangle is entirely covered by opaque
+    /// windows stacked above them, and which may therefore be skipped by the
+    /// renderer and damage tracker without changing the visible output.
+    ///
+    /// # Correctness model
+    ///
+    /// Only a fully-opaque occluder can hide everything beneath it. Aegis does
+    /// not yet honour `wl_surface.set_opaque_region` (the request is a noop in
+    /// `compositor.rs`), and a normal window may carry client-side decoration,
+    /// rounded corners, or translucent pixels that are not implied by its
+    /// geometry rectangle. To stay conservative only a window that is both
+    /// **fullscreen** and free of an in-flight transition is admitted as an
+    /// occluder: the compositor presents a fullscreen toplevel exactly over its
+    /// whole output with no chrome decoration above it, so its rectangle is a
+    /// faithful opaque region. A transition in flight means the rect is still
+    /// animating; such a window is excluded from both sides of the test until
+    /// it settles, so the enter/leave-occlusion frame is handled by the normal
+    /// full-damage path rather than a mid-animation guess.
+    ///
+    /// The victim side is more permissive: any visible, non-transitioning
+    /// toplevel whose render rect is fully covered by the occluder set is
+    /// reported. Picking the victim by "fully covered" rather than "intersects"
+    /// is the property that keeps partial overlaps — which still expose some of
+    /// the lower window — correct.
+    ///
+    /// This runs once per scene query, mirroring [`visible`](Self::visible);
+    /// the per-frame window count is small and the rectangle algebra is cheap,
+    /// so recomputing keeps every consumer (shm, dma-buf, frame order, and the
+    /// two subsurface passes) in lock-step without a shared cache to invalidate.
+    pub(crate) fn occluded_window_ids(
+        &self,
+    ) -> std::collections::HashSet<aegis_core::window::WindowId> {
+        // Occlusion is a physical-desktop optimization. While the session lock
+        // or overview is active the renderer draws a different scene, and
+        // excluding windows here would starve lock-screen compositing.
+        if self.state.session_lock_phase.is_active() {
+            return std::collections::HashSet::new();
+        }
+        let visible = self.visible();
+        // Collect candidate toplevels in paint order. `state.surfaces` is kept
+        // top-to-bottom by the raise logic, so the last entry is on top.
+        let stacked: Vec<*mut SurfaceRec> = self
+            .state
+            .live_surfaces()
+            .filter(|pointer| {
+                let surface = unsafe { &**pointer };
+                surface.mapped
+                    && !surface.xdg_toplevel.is_null()
+                    && visible.contains(&surface.window.id)
+            })
+            .collect();
+        if stacked.len() < 2 {
+            return std::collections::HashSet::new();
+        }
+        let mut occluded = std::collections::HashSet::new();
+        let mut opaque_coverage: Vec<aegis_core::Rect> = Vec::new();
+        // Walk top-to-bottom (highest window first). A window is an occluder
+        // for every window beneath it, so accumulate opaque rects as we descend.
+        for pointer in stacked.iter().rev() {
+            let surface = unsafe { &**pointer };
+            let render_rect = self
+                .transition_render_rect(surface)
+                .unwrap_or(aegis_core::Rect {
+                    origin: surface.position,
+                    size: surface.window.size,
+                });
+            // A window still animating to its target rect is neither a reliable
+            // victim nor a reliable occluder: skip it on both sides.
+            let in_transition = surface.window.transition.is_some();
+            if !in_transition
+                && surface.window.state.fullscreen
+                && !render_rect.is_empty()
+            {
+                // This window is an opaque occluder for everything below it.
+                opaque_coverage.push(render_rect);
+                continue;
+            }
+            if !in_transition
+                && !occluded.contains(&surface.window.id)
+                && !render_rect.is_empty()
+                && render_rect.fully_covered_by(&opaque_coverage)
+            {
+                occluded.insert(surface.window.id);
+            }
+        }
+        occluded
+    }
+
     /// Compatibility alias for
     /// [`client_surface_frame_order`](Self::client_surface_frame_order).
     ///
@@ -36,7 +124,8 @@ impl Server {
     /// occlusion.
     pub fn client_surface_frame_order(&self) -> Vec<usize> {
         let visible = self.visible();
-        self.client_surface_frame_order_for_realm(HUMAN_REALM, Some(&visible))
+        let occluded = self.occluded_window_ids();
+        self.client_surface_frame_order_for_realm(HUMAN_REALM, Some(&visible), Some(&occluded))
     }
 
     /// Every mapped client surface id in paint order for a directed Realm.
@@ -44,13 +133,14 @@ impl Server {
         if self.state.session_lock_phase.is_active() || self.realm_output(realm).is_none() {
             return Vec::new();
         }
-        self.client_surface_frame_order_for_realm(realm, None)
+        self.client_surface_frame_order_for_realm(realm, None, None)
     }
 
     fn client_surface_frame_order_for_realm(
         &self,
         realm: RealmId,
         visible: Option<&std::collections::HashSet<aegis_core::window::WindowId>>,
+        occluded: Option<&std::collections::HashSet<aegis_core::window::WindowId>>,
     ) -> Vec<usize> {
         let roots = self
             .state
@@ -60,6 +150,8 @@ impl Server {
                 surface.mapped
                     && !surface.xdg_toplevel.is_null()
                     && visible.is_none_or(|visible| visible.contains(&surface.window.id))
+                    && occluded
+                        .is_none_or(|occluded| !occluded.contains(&surface.window.id))
                     && self
                         .state
                         .authority
@@ -97,6 +189,7 @@ impl Server {
     /// Mapped xdg-toplevel and xdg-popup surfaces backed by shm (CPU pixels).
     pub fn toplevel_frames(&self) -> Vec<SurfacePixels<'_>> {
         let visible = self.visible();
+        let occluded = self.occluded_window_ids();
         self.state
             .surfaces
             .iter()
@@ -113,6 +206,7 @@ impl Server {
                     && !s.content_is_dmabuf
                     && !s.pixels.is_empty()
                     && visible.contains(unsafe { &(*root).window.id })
+                    && !occluded.contains(unsafe { &(*root).window.id })
                     && self
                         .state
                         .authority
@@ -166,6 +260,7 @@ impl Server {
     /// the backing buffer is replaced or destroyed.
     pub fn toplevel_dmabuf_frames(&self) -> Vec<SurfaceDmabuf> {
         let visible = self.visible();
+        let occluded = self.occluded_window_ids();
         self.state
             .surfaces
             .iter()
@@ -182,6 +277,7 @@ impl Server {
                     && s.content_is_dmabuf
                     && s.dmabuf.is_some()
                     && visible.contains(unsafe { &(*root).window.id })
+                    && !occluded.contains(unsafe { &(*root).window.id })
                     && self
                         .state
                         .authority
@@ -964,6 +1060,7 @@ impl Server {
 
     pub(crate) fn collect_subsurfaces_shm(&self, want_above: bool) -> Vec<SurfacePixels<'_>> {
         let visible = self.visible();
+        let occluded = self.occluded_window_ids();
         let mut out = Vec::new();
         for role_pointer in self.state.live_surfaces() {
             let role_surface = unsafe { &*role_pointer };
@@ -980,6 +1077,7 @@ impl Server {
             if !root_surface.mapped
                 || root_surface.window.minimized
                 || !visible.contains(&root_surface.window.id)
+                || occluded.contains(&root_surface.window.id)
                 || !self
                     .state
                     .authority
@@ -1076,6 +1174,7 @@ impl Server {
 
     pub(crate) fn collect_subsurfaces_dmabuf(&self, want_above: bool) -> Vec<SurfaceDmabuf> {
         let visible = self.visible();
+        let occluded = self.occluded_window_ids();
         let mut out = Vec::new();
         for role_pointer in self.state.live_surfaces() {
             let role_surface = unsafe { &*role_pointer };
@@ -1092,6 +1191,7 @@ impl Server {
             if !root_surface.mapped
                 || root_surface.window.minimized
                 || !visible.contains(&root_surface.window.id)
+                || occluded.contains(&root_surface.window.id)
                 || !self
                     .state
                     .authority

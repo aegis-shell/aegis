@@ -31,10 +31,11 @@ pub use journal::{
     DEFAULT_CAPACITY, Effect, Journal, JournalEntry, JournalMutation, JournalSnapshot, Origin,
 };
 pub use schema::{
-    Capabilities, Command, Event, LOCAL_PORTAL_SCOPE, LOCAL_REALM_ADMIN_SCOPE, LeaseGrant,
+    AppPickResult, Capabilities, Command, ConfirmPickResult, Event, FileFilter, FilePickMode,
+    FilePickOptions, FilePickResult, LOCAL_PORTAL_SCOPE, LOCAL_REALM_ADMIN_SCOPE, LeaseGrant,
     LeaseRequest, OpClass, PROTOCOL_VERSION, PickKind, PickResult, RealmAction, RealmActionResult,
-    RealmCapture, Request, Response, Scope, SettingsAction, SettingsReceipt, SettingsSnapshot,
-    StreamPixelFormat, StreamTarget, SystemAction, SystemStatus,
+    RealmCapture, Request, Response, Scope, SecretPromptResult, SettingsAction, SettingsReceipt,
+    SettingsSnapshot, StreamPixelFormat, StreamTarget, SystemAction, SystemStatus,
 };
 pub use server::{
     CaptureOutputPayload, CaptureRealmPayload, Handler, Server, StreamFramePayload, StreamInfo,

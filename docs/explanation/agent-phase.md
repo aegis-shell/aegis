@@ -16,10 +16,11 @@ The compositor's job in the agent phase is the same as in the desktop
 phase: own the desktop model, own the IPC, present frames. It does not gain
 an inference model, a prompt, a tool runtime, or a skill layer. Everything
 AI-specific lives out of process, on the other side of the introspection
-IPC. The `aegis-fuji-mcp` integration follows this boundary while shipping
+IPC. The `aegis-mcp` integration follows this boundary while shipping
 the platform adapter in the same distribution
 ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md),
-[ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md)).
+[ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md),
+[ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md)).
 
 The stack, from the rendering layer up:
 
@@ -30,7 +31,7 @@ The stack, from the rendering layer up:
 | The compositor | `aegis-compositor`, `aegis-backend`, `aegis-render`, `aegis-shell` | Wayland, per-Realm input and output, the chrome host |
 | The seam | `aegis-ipc` | Versioned JSON and sealed descriptors over a Unix socket; leases, scope, capture, and the journal |
 | IPC clients | any number, all equal | Status bars, `aegis-ctl`, the agent, future bridges |
-| Platform adapter | `aegis-fuji-mcp` (separate process) | Named-scope Aegis tools and one bridge-managed Agent Realm over MCP |
+| Platform adapter | `aegis-mcp` (separate process and crate) | Named-scope Aegis tools and one bridge-managed Agent Realm over MCP |
 | Agent product | fuji (in-tree `aegis-fuji`) | Providers, credentials, sessions, skills, permissions, and the CLI |
 | Other skill and tool layers | external projects | Other model-specific adapters, prompts, and schemas |
 
@@ -96,7 +97,7 @@ pattern, not a reimplementation per pattern. The compositor stays put.
 | Current pattern | Representatives | Bridge shape |
 |-----------------|-----------------|--------------|
 | Function calling / tool use | Claude, GPT, Gemini, Qwen, Mistral | Each IPC request becomes a tool; the adapter translates between the model's tool-call schema and aegis's JSON. |
-| Model Context Protocol | fuji, Claude Desktop, Cline, Cursor | `aegis-fuji-mcp` exposes snapshots, journals, and operations as scoped tools, with Realm pixels as MCP image content. |
+| Model Context Protocol | fuji, Claude Desktop, Cline, Cursor | `aegis-mcp` exposes snapshots, journals, and operations as scoped tools, with Realm pixels as MCP image content. |
 | Vision-based computer use | Claude Computer Use, OpenAI Operator | Damage-driven Realm capture supplies correlated pixels and window-to-input mappings; bounded target-local actions enter the Realm's independent seat. |
 | Agent SDKs | Claude Agent SDK, LangGraph, custom | The agent process uses an SDK; tools call through the IPC. The SDK is indifferent to the transport. |
 | Local models | Ollama, llama.cpp, MLX | Same tool-calling interface, routed to a local endpoint. Smaller models benefit most from the structured path. |
@@ -187,6 +188,8 @@ without committing to.
   platform bridge that remains outside the compositor.
 - [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md) — the fuji
   rename and the in-tree, self-contained agent runtime.
+- [ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md) —
+  the bridge as the standalone `aegis-mcp` platform crate.
 - [ADR-0048](../adr/0048-compositor-owned-agent-operation-feedback.md) — the
   trusted visual distinction between human and Agent input.
 - [ADR-0032](../adr/0032-durable-window-identifiers.md),

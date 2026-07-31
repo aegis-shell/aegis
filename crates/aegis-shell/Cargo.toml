@@ -13,9 +13,12 @@ aegis-core = { workspace = true }
 aegis-design = { workspace = true }
 lens = { workspace = true }
 lens-sys = { workspace = true }
+log.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+# The secret prompt's edit buffer is zeroized on close (password hygiene).
+zeroize = { workspace = true }
 
 [package.metadata.cargo-machete]
 ignored = ["lens-sys"]

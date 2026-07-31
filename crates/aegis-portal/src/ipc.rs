@@ -110,6 +110,116 @@ impl PortalCapture {
         self.client()?.pick_target(kind)
     }
 
+    /// Run one interactive file pick through compositor chrome (the
+    /// FileChooser portal's compositor side). Same blocking, no-retry
+    /// discipline as [`PortalCapture::pick`].
+    pub(crate) fn pick_file(
+        &mut self,
+        options: aegis_ipc::FilePickOptions,
+    ) -> io::Result<aegis_ipc::FilePickResult> {
+        self.client()?.pick_file(options)
+    }
+
+    /// Run one interactive application pick through compositor chrome (the
+    /// AppChooser portal's compositor side). Same blocking, no-retry
+    /// discipline as [`PortalCapture::pick`].
+    pub(crate) fn pick_app(
+        &mut self,
+        choices: Vec<String>,
+        subject: Option<String>,
+        last_choice: Option<String>,
+    ) -> io::Result<aegis_ipc::AppPickResult> {
+        self.client()?.pick_app(choices, subject, last_choice)
+    }
+
+    /// Replace the desktop wallpaper (the Wallpaper portal). The reply is
+    /// the compositor's authoritative receipt; one automatic reconnect +
+    /// retry on transient failure.
+    pub(crate) fn set_wallpaper(&mut self, path: std::path::PathBuf) -> io::Result<()> {
+        match self.client()?.set_wallpaper(path.clone()) {
+            Ok(()) => Ok(()),
+            Err(first) => {
+                log::info!("portal: wallpaper set failed ({first}); reconnecting IPC");
+                self.client = None;
+                self.client()?.set_wallpaper(path)
+            }
+        }
+    }
+
+    /// Ask the user a yes/no consent question through compositor chrome
+    /// (portal consent dialogs). Same blocking, no-retry discipline as
+    /// [`PortalCapture::pick`].
+    pub(crate) fn pick_confirm(
+        &mut self,
+        title: String,
+        body: String,
+        accept_label: Option<String>,
+    ) -> io::Result<aegis_ipc::ConfirmPickResult> {
+        self.client()?.pick_confirm(title, body, accept_label)
+    }
+
+    /// Ask the user for the vault password through the compositor's masked
+    /// secret prompt (the vault unlock's compositor side). Same blocking,
+    /// no-retry discipline as [`PortalCapture::pick`].
+    pub(crate) fn prompt_secret(
+        &mut self,
+        title: String,
+        reason: Option<String>,
+    ) -> io::Result<aegis_ipc::SecretPromptResult> {
+        self.client()?.prompt_secret(title, reason)
+    }
+
+    /// Post a notification into the compositor's queue (the Notification
+    /// portal), with one automatic reconnect + retry.
+    pub(crate) fn notify_external(
+        &mut self,
+        summary: String,
+        body: String,
+        app_id: Option<String>,
+        external_id: Option<String>,
+    ) -> io::Result<()> {
+        match self.client()?.notify_external(
+            summary.clone(),
+            body.clone(),
+            app_id.clone(),
+            external_id.clone(),
+        ) {
+            Ok(()) => Ok(()),
+            Err(first) => {
+                log::info!("portal: notification post failed ({first}); reconnecting IPC");
+                self.client = None;
+                self.client()?
+                    .notify_external(summary, body, app_id, external_id)
+            }
+        }
+    }
+
+    /// Fetch the live notification queue snapshot, with one automatic
+    /// reconnect + retry.
+    pub(crate) fn notifications(&mut self) -> io::Result<Vec<aegis_core::notify::Notification>> {
+        match self.client()?.notifications() {
+            Ok(notifications) => Ok(notifications),
+            Err(first) => {
+                log::info!("portal: notification query failed ({first}); reconnecting IPC");
+                self.client = None;
+                self.client()?.notifications()
+            }
+        }
+    }
+
+    /// Dismiss a notification by its compositor id, with one automatic
+    /// reconnect + retry.
+    pub(crate) fn dismiss_notification(&mut self, id: u64) -> io::Result<()> {
+        match self.client()?.dismiss_notification(id) {
+            Ok(()) => Ok(()),
+            Err(first) => {
+                log::info!("portal: notification dismiss failed ({first}); reconnecting IPC");
+                self.client = None;
+                self.client()?.dismiss_notification(id)
+            }
+        }
+    }
+
     /// Fetch the live window list (the query capability every scoped
     /// connection holds), with one automatic reconnect + retry.
     pub(crate) fn windows(&mut self) -> io::Result<Vec<aegis_core::window::Window>> {

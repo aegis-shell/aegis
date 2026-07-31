@@ -15,18 +15,7 @@ pub use aegis_core::system::{BatteryStatus, NetworkState, SystemAction, SystemSt
 /// Every source is optional so VMs, nested sessions, and desktops without a
 /// given service still receive a coherent snapshot.
 pub fn detect_system_status() -> SystemStatus {
-    let volume_output = command_output("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"]);
-    let (volume, muted) = volume_output
-        .as_deref()
-        .map(|output| {
-            let value = output
-                .split_whitespace()
-                .find_map(|part| part.parse::<f32>().ok())
-                .map(|value| (value * 100.0).round().clamp(0.0, 100.0) as u8);
-            (value, output.contains("MUTED"))
-        })
-        .unwrap_or((None, false));
-
+    let (volume, muted) = detect_volume();
     SystemStatus {
         volume,
         muted,
@@ -39,7 +28,67 @@ pub fn detect_system_status() -> SystemStatus {
         tiled: false,
         touchpad: aegis_core::input::TouchpadStatus::default(),
         display: DisplayStatus::default(),
+        idle_inhibited: false,
     }
+}
+
+/// Probe every status field whose source is a cheap `/sys` read, deferring the
+/// two fork+exec probes (`wpctl get-volume`, `nmcli radio wifi`) to a separate
+/// full pass.
+///
+/// The status poller wakes on a short cadence to keep the HUD (battery,
+/// brightness, charging, network link) fresh, but neither of the forked
+/// commands changes on that timescale — volume moves only on user action
+/// (which already triggers an out-of-cycle full probe via the refresh signal)
+/// and the Wi-Fi radio toggle is rare. Re-running them every few seconds
+/// spawned one `wpctl` and one `nmcli` per cycle purely to re-discover an
+/// unchanged answer. This light variant keeps the frequent poll off the fork
+/// path entirely; `volume`, `muted`, and `wifi_enabled` are filled in from the
+/// caller's last known values, so a snapshot built from it only diverges where
+/// the sysfs-backed fields actually moved.
+pub fn detect_system_status_lightweight(
+    last_volume: Option<u8>,
+    last_muted: bool,
+    last_wifi_enabled: Option<bool>,
+) -> SystemStatus {
+    SystemStatus {
+        volume: last_volume,
+        muted: last_muted,
+        network: detect_network(),
+        battery: detect_battery(),
+        wifi_enabled: last_wifi_enabled,
+        bluetooth_enabled: detect_bluetooth_radio(),
+        brightness: detect_brightness(),
+        do_not_disturb: false,
+        tiled: false,
+        touchpad: aegis_core::input::TouchpadStatus::default(),
+        display: DisplayStatus::default(),
+        idle_inhibited: false,
+    }
+}
+
+/// Run only the forked probes and return `(volume, muted, wifi_enabled)`.
+///
+/// Called on the long-interval cadence and on out-of-cycle refresh requests,
+/// so the cheap poll stays on the `/sys` path while the expensive commands run
+/// rarely and only when their result may have changed.
+pub fn detect_forked_status() -> (Option<u8>, bool, Option<bool>) {
+    let (volume, muted) = detect_volume();
+    (volume, muted, detect_wifi_radio())
+}
+
+fn detect_volume() -> (Option<u8>, bool) {
+    let volume_output = command_output("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"]);
+    volume_output
+        .as_deref()
+        .map(|output| {
+            let value = output
+                .split_whitespace()
+                .find_map(|part| part.parse::<f32>().ok())
+                .map(|value| (value * 100.0).round().clamp(0.0, 100.0) as u8);
+            (value, output.contains("MUTED"))
+        })
+        .unwrap_or((None, false))
 }
 
 fn detect_network() -> NetworkState {

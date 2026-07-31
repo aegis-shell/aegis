@@ -77,6 +77,7 @@ impl Handler for CtlHandler {
             summary: "Build complete".into(),
             body: "All checks passed".into(),
             app_id: Some("ci".into()),
+            external_id: None,
             at_ms: 10,
         }]
     }
@@ -163,6 +164,7 @@ impl Handler for CtlHandler {
                 aegis_ipc::OpClass::CaptureRealm,
                 aegis_ipc::OpClass::LaunchInRealm,
             ]),
+            ask_ops: None,
         })
     }
 

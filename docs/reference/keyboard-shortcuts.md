@@ -11,6 +11,7 @@ application does not also receive the shortcut.
 | `Super+A` | Open or close the full application launcher |
 | `Super+Space` | Open or close Prism application search |
 | `Super+O` | Open or close the window and workspace overview |
+| `Super+S` | Open or close the command panel (quick settings, tray, notifications) |
 | `Super+Q` | Close the focused toplevel |
 | `Super+Tab` | Focus the next toplevel and show the live switcher while `Super` remains held |
 | `Super+Shift+Tab` | Focus the previous toplevel and show the live switcher while `Super` remains held |
@@ -19,7 +20,7 @@ application does not also receive the shortcut.
 | `Super+T` | Toggle tiling on the current workspace |
 | `Super+L` | Lock the session |
 | `Print` | Open the interactive screenshot region selector |
-| `Super+Shift+Q` | Gracefully quit the current Aegis instance |
+| `Super+Ctrl+Q` | Gracefully quit the current Aegis instance |
 | `Super+Shift+Return` | Gracefully quit the current Aegis instance |
 
 The quit shortcuts stop only the Aegis process that receives the input. The
@@ -27,10 +28,14 @@ normal shutdown path disables its outputs, releases the seat and Direct
 Rendering Manager (DRM) device, and returns control to the terminal. This is
 the preferred exit path during VT testing.
 
-The launcher and Prism toggles, `Super+L`, `Print`, and the quit shortcuts
+The launcher, Prism, and command-panel toggles, `Super+L`, `Print`, and the quit
+shortcuts
 remain available while trusted Aegis chrome owns the keyboard. No global
 shortcut runs while the session is locked or while the focused client has
-active keyboard-shortcut inhibition.
+active keyboard-shortcut inhibition. The development-only
+`[dev] allow_quit_while_locked` option lifts the lock-screen exclusion for
+the quit shortcuts alone; see the
+[Configuration Reference](config.md#development-options).
 
 `Super+L` starts the first-party `ext-session-lock-v1` client. The compositor
 then routes input only to its lock surfaces and retains an opaque fail-closed
@@ -43,6 +48,27 @@ On the DRM backend, `Ctrl+Alt+F1` through `Ctrl+Alt+F12` request a switch to
 the corresponding virtual terminal. These combinations are compositor-owned
 controls and are not configurable `[[keybind]]` entries. The nested backend
 does not perform VT switching.
+
+## Touchpad Gestures
+
+| Gesture | Effect |
+|---------|--------|
+| Three-finger swipe left | Switch to the next workspace |
+| Three-finger swipe right | Switch to the previous workspace |
+| Three-finger swipe up | Focus the next toplevel on the current workspace, showing the live switcher until the gesture ends |
+| Three-finger swipe down | Focus the previous toplevel on the current workspace, showing the live switcher until the gesture ends |
+| Four-finger swipe down | Open the command panel |
+| Four-finger swipe up (panel open) | Close the command panel |
+
+Three- and four-finger swipes are compositor-owned (ADR-0080, ADR-0082):
+they are claimed by Aegis and never forwarded to client
+`zwp_pointer_gestures_v1` objects. A three-finger swipe latches its axis
+once it travels 30 px, then fires one step per 120 px of travel. Swipes
+with any other finger count forward to clients unchanged.
+
+The table shows the built-in defaults. Each finger count and axis pair can
+be rebound or disabled with a `[[gesture]]` entry in `config.toml`; see
+the [Configuration Reference](config.md#touchpad-gestures).
 
 ## Pointer Shortcuts
 

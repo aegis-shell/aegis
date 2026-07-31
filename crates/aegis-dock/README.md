@@ -11,7 +11,8 @@ built on the `Chrome` contract from `aegis-shell` and the shared materials from
   each entry's `Entry::match_keys`.
 - Magnify the tile under the cursor and its neighbours with a damped-spring
   reflow wave, and grow new tiles in from a seed size.
-- Offer the shared application context menu, including pin/unpin actions.
+- Offer the shared application context menu, including pin/unpin actions and
+  the maximize/restore and always-on-top lifecycle rows.
 - Emit launch, focus, and pin-toggle intents through `ChromeEvents`.
 
 ## Boundaries

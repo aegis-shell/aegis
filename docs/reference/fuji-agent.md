@@ -3,8 +3,8 @@
 `fuji` is fuji's agent command line: a streaming chat client with built-in
 file, shell, and image tools, stdio MCP connectivity, sessions, skills, and
 a per-tool permission policy. It reaches Aegis exclusively through
-`aegis-fuji-mcp`; see the [fuji Bridge Reference](fuji.md) for the desktop
-tool contract.
+`aegis-mcp`; see the [aegis-mcp Bridge Reference](aegis-mcp.md) for the
+desktop tool contract.
 
 ## Commands
 

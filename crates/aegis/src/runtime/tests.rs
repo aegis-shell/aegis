@@ -258,6 +258,7 @@ fn realm_scope_expands_atomic_groups_before_authorizing() {
         outputs: None,
         realms: Some(vec![agent.realm]),
         ops: Some(vec![aegis_ipc::OpClass::TransactRealm]),
+        ask_ops: None,
     };
     assert!(one_window.permits_realm_action(&action));
     assert!(

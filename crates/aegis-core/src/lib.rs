@@ -7,6 +7,8 @@
 
 pub mod app;
 pub mod dmabuf;
+pub mod file_picker;
+pub mod gesture;
 pub mod input;
 pub mod keybind;
 pub mod launcher;
@@ -61,6 +63,89 @@ impl Rect {
             && p.y >= self.origin.y
             && p.x < self.origin.x + self.size.w
             && p.y < self.origin.y + self.size.h
+    }
+
+    /// A degenerate (zero-area) rectangle covers no pixels.
+    pub fn is_empty(&self) -> bool {
+        self.size.w <= 0 || self.size.h <= 0
+    }
+
+    /// The largest rectangle shared with `other`, or `None` if they do not
+    /// overlap. Used by occlusion culling to intersect coverage regions.
+    pub fn intersect(&self, other: Rect) -> Option<Rect> {
+        let x0 = self.origin.x.max(other.origin.x);
+        let y0 = self.origin.y.max(other.origin.y);
+        let x1 = (self.origin.x + self.size.w).min(other.origin.x + other.size.w);
+        let y1 = (self.origin.y + self.size.h).min(other.origin.y + other.size.h);
+        if x1 <= x0 || y1 <= y0 {
+            None
+        } else {
+            Some(Rect::new(x0, y0, x1 - x0, y1 - y0))
+        }
+    }
+
+    /// Remove `hole` from this rectangle, returning the (up to four) disjoint
+    /// rectangles that remain. An empty result means `hole` fully covered this
+    /// rectangle. This is the geometric core of occlusion culling: subtracting
+    /// every occluder's coverage from a target window leaves a non-empty set
+    /// exactly when some part of the target is still visible.
+    pub fn subtract(&self, hole: Rect) -> Vec<Rect> {
+        if self.is_empty() || hole.is_empty() {
+            return vec![*self];
+        }
+        let Some(clip) = self.intersect(hole) else {
+            // No overlap: nothing removed.
+            return vec![*self];
+        };
+        let mut out = Vec::with_capacity(4);
+        let Self {
+            origin: Point { x: sx, y: sy },
+            size: Size { w: sw, h: sh },
+        } = *self;
+        let left = clip.origin.x - sx;
+        let top = clip.origin.y - sy;
+        let right = (clip.origin.x + clip.size.w) - (sx + sw);
+        let bottom = (clip.origin.y + clip.size.h) - (sy + sh);
+        if left > 0 {
+            out.push(Rect::new(sx, sy, left, sh));
+        }
+        if right < 0 {
+            let x = clip.origin.x + clip.size.w;
+            out.push(Rect::new(x, sy, -right, sh));
+        }
+        if top > 0 {
+            out.push(Rect::new(clip.origin.x, sy, clip.size.w, top));
+        }
+        if bottom < 0 {
+            let y = clip.origin.y + clip.size.h;
+            out.push(Rect::new(clip.origin.x, y, clip.size.w, -bottom));
+        }
+        out
+    }
+
+    /// Whether `self` is entirely covered by the union of `occluders`. A
+    /// conservative, exact test built on [`Rect::subtract`]: subtracting every
+    /// occluder and exhausting all fragments means no pixel of `self` remains
+    /// uncovered. Occluders may overlap; the subtraction handles that.
+    pub fn fully_covered_by(self, occluders: &[Rect]) -> bool {
+        if self.is_empty() {
+            return true;
+        }
+        let mut fragments = vec![self];
+        for &occluder in occluders {
+            if occluder.is_empty() {
+                continue;
+            }
+            let mut next = Vec::new();
+            for fragment in fragments {
+                next.extend(fragment.subtract(occluder));
+            }
+            fragments = next;
+            if fragments.is_empty() {
+                return true;
+            }
+        }
+        fragments.is_empty()
     }
 }
 

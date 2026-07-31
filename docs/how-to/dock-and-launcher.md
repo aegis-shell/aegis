@@ -90,7 +90,15 @@ selection, empty the list and set `autopopulate = true`.
 3. Select `Open` or `New Window` to start another instance.
 4. Select `Minimize Window` or `Minimize All Windows` to hide windows while
    keeping their clients alive.
-5. Select `Close Window` or `Close All Windows` to request a graceful close.
+5. Select `Always on Top` to keep a window above every normal window, or
+   `Not Always on Top` to release it.
+6. Select `Close Window` or `Close All Windows` to request a graceful close.
+
+The always-on-top row appears only in the Dock menu, next to
+Maximize/Restore, and targets the same window: the application's activated
+window, excluding read-only mirrors and minimized or fullscreen windows. An
+always-on-top window stays above normal windows but below compositor chrome
+such as the Dock, and the flag lasts until you clear it or the session ends.
 
 The menu is anchored to the owning application icon or cell rather than the
 pointer position. A Dock menu opens above its icon when space permits and

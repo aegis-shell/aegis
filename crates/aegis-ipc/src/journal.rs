@@ -23,6 +23,9 @@ pub enum Origin {
     Chrome,
     /// A keybinding match.
     Keybinding,
+    /// A compositor-owned touchpad gesture (e.g., the three-finger
+    /// navigation swipe).
+    Gesture,
     /// An IPC `Do` request from connection `conn_id`.
     Ipc { conn_id: u64 },
     /// Internal compositor cleanup (e.g., closing a window whose client

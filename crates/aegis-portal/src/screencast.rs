@@ -249,7 +249,7 @@ impl ScreenCastIface {
         CURSOR_MODES
     }
 
-    #[zbus(property)]
+    #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
         SCREENCAST_VERSION
     }

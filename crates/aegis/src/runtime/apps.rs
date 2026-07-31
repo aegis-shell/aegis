@@ -23,6 +23,7 @@ pub(super) const HUD_SYMBOLIC_ICON_NAMES: &[&str] = &[
     "network-wireless-signal-excellent-symbolic",
     "network-wired-symbolic",
     "network-offline-symbolic",
+    "bluetooth-symbolic",
     "preferences-system-notifications-symbolic",
     "preferences-system-symbolic",
     "window-close-symbolic",

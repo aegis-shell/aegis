@@ -185,7 +185,7 @@ switching (`Super+Left`/`Super+Right`) drops keyboard focus from a now-hidden
 window, and removal reaps the emptied workspace. The IPC exposes
 `GetWorkspaces`, `SwitchWorkspace`/`SwitchWorkspaceTo`, and a
 `WorkspaceChanged` event (ADR-0027). A top-center workspace indicator
-(`StatusBar` chrome component, hosted by the `aegis-statusbar` crate)
+(HUD chrome component, hosted by the `aegis-hud` crate)
 shows one numbered tile per workspace,
 highlights the current, and switches on click. The tiling policy is
 implemented end to end: a pure `aegis-core::layout` module (`LayoutRole`,
@@ -279,15 +279,24 @@ path (`aegis-ctl screenshot`, scoped `CaptureOutput` pixel capture per
 [ADR-0041](../adr/0041-sealed-file-descriptor-pixel-transport.md)) covers the
 single-frame half of the capture story. The independently packaged
 `aegis-portal` backend now serves Settings v1, Screenshot v2, ScreenCast v3,
-and idle-only Inhibit through the scoped IPC
-([ADR-0075](../adr/0075-independent-portal-package-and-backend-contract.md)).
+idle-only Inhibit, Secret v1 with an at-rest vault plus a transitional
+`org.freedesktop.secrets` compatibility layer
+([ADR-0085](../adr/0085-portal-secret-absorption-and-secret-service-compat.md)),
+Lockdown, FileChooser v3, AppChooser v2, Email v2, Notification v2,
+Account v1, DynamicLauncher v1, and Wallpaper v1 through the scoped IPC
+([ADR-0075](../adr/0075-independent-portal-package-and-backend-contract.md),
+[ADR-0086](../adr/0086-full-stack-portal-via-user-consent-pick-chains.md)).
 Screenshot region selection, color picking, and monitor/window ScreenCast
-selection use one compositor-owned interactive picker. ScreenCast republishes
-the scoped output-frame stream
+selection use one compositor-owned interactive picker; file, application,
+and secret-prompt dialogs are native modal chrome over the same
+user-consent pick chain. ScreenCast republishes the scoped output-frame
+stream
 ([ADR-0052](../adr/0052-scoped-output-frame-streaming.md)) as a PipeWire
 producer. The backend does not advertise Background or persistent ScreenCast
 grants until Aegis has the required policy UI, application tracking, and
-PermissionStore integration; unsupported interfaces fall back to GTK. Still
+PermissionStore integration; the routing default is now `aegis;gtk`, so
+Aegis answers first everywhere and GTK only covers the few unsupported
+interfaces (Access, Print, Location, Background). Still
 planned: window open/close transitions, the workspace-switch slide,
 zero-copy ScreenCast export, and screen-reader accessibility hooks.
 
@@ -318,14 +327,15 @@ The remaining
 desktop-dependent semantic surface (window-content capture per window,
 semantic element trees) stays open.
 
-The `aegis-fuji-mcp` integration now closes the client-side Realm loop:
+The `aegis-mcp` integration now closes the client-side Realm loop:
 fuji discovers scoped tools through MCP, while the bridge manages one
 recoverable Agent Realm across application launch, authority transfer,
 directed capture, bounded input, and revocation. The renamed fuji agent is
 self-contained in this workspace; neither Praxion nor Neenee is required.
 Voice activation and shell-native conversation chrome remain follow-up product
 surfaces ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md),
-[ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md)).
+[ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md),
+[ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md)).
 
 ## Sequencing Rationale
 

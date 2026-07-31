@@ -1,5 +1,5 @@
 //! Stdio MCP client: newline-delimited JSON-RPC against servers such as
-//! `aegis-fuji-mcp`. The transport is generic over async reader/writer pairs
+//! `aegis-mcp`. The transport is generic over async reader/writer pairs
 //! so tests can drive it through an in-memory duplex.
 
 use std::time::Duration;

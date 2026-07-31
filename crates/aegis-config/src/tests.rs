@@ -10,9 +10,23 @@ fn minimal_valid_config_loads() {
 }
 
 #[test]
-fn statusbar_defaults_to_enabled() {
+fn dev_escape_hatches_default_off_and_parse() {
+    let defaults = Config::parse("schema_version = 1\n").unwrap();
+    assert!(!defaults.dev.allow_quit_while_locked);
+
+    let configured = Config::parse(
+        "schema_version = 1\n\
+         [dev]\n\
+         allow_quit_while_locked = true\n",
+    )
+    .unwrap();
+    assert!(configured.dev.allow_quit_while_locked);
+}
+
+#[test]
+fn hud_defaults_to_enabled() {
     let cfg = Config::parse("schema_version = 1\n").unwrap();
-    assert!(cfg.statusbar.enabled);
+    assert!(cfg.hud.enabled);
 }
 
 #[test]
@@ -204,9 +218,9 @@ fn dock_autopopulation_remains_an_explicit_opt_in() {
 }
 
 #[test]
-fn statusbar_can_be_disabled() {
-    let cfg = Config::parse("schema_version = 1\n[statusbar]\nenabled = false\n").unwrap();
-    assert!(!cfg.statusbar.enabled);
+fn hud_can_be_disabled() {
+    let cfg = Config::parse("schema_version = 1\n[hud]\nenabled = false\n").unwrap();
+    assert!(!cfg.hud.enabled);
 }
 
 fn temp_config_path(tag: &str) -> PathBuf {
@@ -587,6 +601,84 @@ fn lock_keybind_action_resolves() {
     let (binds, errs) = cfg.resolve_keybinds();
     assert!(errs.is_empty());
     assert_eq!(binds[0].action, Action::Lock);
+}
+
+#[test]
+fn gesture_entry_resolves_to_gesture_binding() {
+    let cfg = Config::parse(
+        "schema_version = 1\n\
+             [[gesture]]\n\
+             fingers = 4\n\
+             axis = \"horizontal\"\n\
+             action = \"workspace_switch\"\n",
+    )
+    .unwrap();
+    let (binds, errs) = cfg.resolve_gestures();
+    assert!(errs.is_empty(), "{errs:?}");
+    assert_eq!(binds.len(), 1);
+    assert_eq!(binds[0].fingers, 4);
+    assert_eq!(binds[0].axis, aegis_core::gesture::GestureAxis::Horizontal);
+    assert_eq!(
+        binds[0].action,
+        aegis_core::gesture::GestureAction::WorkspaceSwitch
+    );
+}
+
+#[test]
+fn bad_gesture_entries_diagnose_without_aborting() {
+    let cfg = Config::parse(
+        "schema_version = 1\n\
+             [[gesture]]\n\
+             fingers = 2\n\
+             axis = \"vertical\"\n\
+             action = \"command_panel\"\n\
+             [[gesture]]\n\
+             fingers = 3\n\
+             axis = \"diagonal\"\n\
+             action = \"window_cycle\"\n\
+             [[gesture]]\n\
+             fingers = 3\n\
+             axis = \"vertical\"\n\
+             action = \"fly-away\"\n",
+    )
+    .unwrap();
+    let (binds, errs) = cfg.resolve_gestures();
+    // Entry 0 dropped (too few fingers), entry 1 dropped (bad axis),
+    // entry 2 dropped (bad action): no survivors, three diagnostics.
+    assert!(binds.is_empty());
+    assert_eq!(errs.len(), 3);
+    assert!(errs.iter().any(|d| d.message.contains("at least 3")));
+    assert!(errs.iter().any(|d| d.message.contains("diagonal")));
+    assert!(errs.iter().any(|d| d.message.contains("fly-away")));
+    assert!(
+        errs.iter()
+            .all(|d| d.field.as_deref().unwrap_or("").starts_with("gesture["))
+    );
+}
+
+#[test]
+fn gesture_map_layers_overrides_on_defaults() {
+    let cfg = Config::parse(
+        "schema_version = 1\n\
+             [[gesture]]\n\
+             fingers = 3\n\
+             axis = \"vertical\"\n\
+             action = \"command_panel\"\n",
+    )
+    .unwrap();
+    let (gm, errs) = cfg.gesture_map();
+    assert!(errs.is_empty());
+    // Override present.
+    assert_eq!(
+        gm.lookup(3, aegis_core::gesture::GestureAxis::Vertical),
+        Some(aegis_core::gesture::GestureAction::CommandPanel)
+    );
+    // Defaults still present.
+    assert_eq!(
+        gm.lookup(3, aegis_core::gesture::GestureAxis::Horizontal),
+        Some(aegis_core::gesture::GestureAction::WorkspaceSwitch)
+    );
+    assert!(gm.len() >= 4);
 }
 
 #[test]

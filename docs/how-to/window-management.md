@@ -73,6 +73,18 @@ required window action. Follow [How to Use the Dock and
 Launcher](dock-and-launcher.md#use-the-application-menu) for multi-window and
 restore behavior.
 
+## Keep a Window on Top
+
+1. Focus the window to keep above the others.
+2. Right-click the application's Dock icon.
+3. Select `Always on Top`. Select `Not Always on Top` later to release it.
+
+An always-on-top window stacks above every normal window and stays there
+when other windows are raised, but remains below compositor chrome such as
+the Dock. The flag is compositor-internal and session-scoped: it is not
+written to the configuration and clears when the session ends. The Dock row
+is unavailable for minimized and fullscreen windows.
+
 ## Pick a Window in the Overview
 
 Press `Super+O` (or run `aegis-ctl overview`) to open the overview: every
@@ -102,6 +114,7 @@ Query the current ids, then issue a control command:
 aegis-ctl windows
 aegis-ctl focus 42
 aegis-ctl minimize 42
+aegis-ctl always-on-top 42 on
 aegis-ctl close 42
 ```
 

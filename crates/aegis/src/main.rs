@@ -118,7 +118,10 @@ mod cli_tests {
 
     #[test]
     fn version_long_and_short() {
-        assert!(matches!(parse_args(args(&["--version"])), ArgResult::Version));
+        assert!(matches!(
+            parse_args(args(&["--version"])),
+            ArgResult::Version
+        ));
         assert!(matches!(parse_args(args(&["-V"])), ArgResult::Version));
     }
 
