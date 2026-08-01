@@ -18,8 +18,8 @@ impl Chrome for Dock {
 
         // A fullscreen client owns the whole output edge: no animation,
         // handle, hover target, popup, or residual tooltip may surface above
-        // it. Non-fullscreen windows use the geometric intersection policy
-        // below, irrespective of their maximized state bit.
+        // it. Maximized windows force the Dock into its collapsed overlay;
+        // other non-fullscreen windows use the geometric intersection policy.
         if self.fullscreen_locked() {
             self.dismiss_transient_ui();
             self.autohide_reveal = 0.0;
@@ -256,8 +256,9 @@ impl Chrome for Dock {
         }
 
         // The bar and collapsed indicator are the same layer. As it drains,
-        // the glass grows more opaque, loses its border, and becomes the pale
-        // stadium handle while staying anchored to the same bottom edge.
+        // the glass grows more opaque and becomes the pale stadium handle
+        // while staying anchored to the same bottom edge. Edge definition
+        // comes from the compositor's glass rim, not a painted border.
         let dock_material = collapsing_dock_material(surface_progress, panel_rect.h);
         // A layer with an empty body collapses to ~0 (the rect is only an
         // anchor, not a size); a fixed-size child forces it to the bar size.
@@ -538,35 +539,20 @@ impl Chrome for Dock {
         windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<BackdropRegion> {
-        if self.fullscreen_locked() || (self.effective_autohide() && self.autohide_reveal <= 0.05) {
-            return Vec::new();
-        }
-        let expanded = self.visual_panel_bounds(windows, display);
-        let bounds = if self.effective_autohide() {
-            Self::collapsed_panel_rect(display, expanded.w, self.autohide_reveal)
-        } else {
-            expanded
-        };
-        let surface_progress = if self.effective_autohide() {
-            Self::collapse_surface_progress(self.autohide_reveal)
-        } else {
-            1.0
-        };
-        let radius = collapsing_radius(surface_progress, bounds.h);
-        vec![
-            BackdropRegion {
-                x: bounds.x + radius,
-                y: bounds.y,
-                w: (bounds.w - radius * 2.0).max(0.0),
-                h: bounds.h,
-            },
-            BackdropRegion {
-                x: bounds.x,
-                y: bounds.y + radius,
-                w: bounds.w,
-                h: (bounds.h - radius * 2.0).max(0.0),
-            },
-        ]
+        self.liquid_glass_region(display, windows)
+            .map(|region| vec![region.bounds])
+            .unwrap_or_default()
+    }
+
+    fn liquid_glass_regions(
+        &self,
+        display: (f32, f32),
+        windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> Vec<LiquidGlassRegion> {
+        self.liquid_glass_region(display, windows)
+            .into_iter()
+            .collect()
     }
 
     fn captures_keyboard(&self) -> bool {
@@ -654,7 +640,7 @@ impl Chrome for Dock {
 
     fn update_windows(&mut self, windows: &[Window]) {
         let space_use = SpaceUse::from_windows(windows);
-        let was_fullscreen = self.fullscreen_locked();
+        let previous_space_use = self.space_use;
         self.space_use = space_use;
         if space_use == SpaceUse::Fullscreen {
             // Lock immediately; fullscreen must not expose even the
@@ -672,7 +658,21 @@ impl Chrome for Dock {
             let obscured = self.obscured_by_windows(windows, display);
             self.set_dock_obscured(obscured);
         }
-        if was_fullscreen && !self.dock_obscured {
+        if space_use == SpaceUse::Maximized && previous_space_use != SpaceUse::Maximized {
+            // Maximized mode gains the complete work area by default. Start
+            // one uninterrupted collapse so a stationary pointer inside the
+            // old Dock rectangle cannot cancel the transition.
+            self.dismiss_transient_ui();
+            self.autohide_idle = self.autohide_timeout;
+            self.hidden_trigger_armed = false;
+            self.collapse_pending = true;
+            self.anim_active = true;
+        }
+        if space_use == SpaceUse::Available
+            && previous_space_use != SpaceUse::Available
+            && !self.dock_obscured
+        {
+            self.collapse_pending = false;
             self.anim_active = true;
             if !self.autohide {
                 self.autohide_idle = 0.0;
@@ -695,6 +695,43 @@ impl Chrome for Dock {
             .collect();
         self.icons = catalog.icons.clone();
         self.catalog_revision = self.catalog_revision.wrapping_add(1);
+    }
+}
+
+impl Dock {
+    /// Resolve the single animated Dock body once for both capture bounds and
+    /// the analytic glass pass. The foreground material uses the same radius
+    /// through `collapsing_dock_material`, eliminating the old two-rectangle
+    /// blur cross and its hard corner discontinuities.
+    fn liquid_glass_region(
+        &self,
+        display: (f32, f32),
+        windows: &[Window],
+    ) -> Option<LiquidGlassRegion> {
+        if self.fullscreen_locked() || (self.effective_autohide() && self.autohide_reveal <= 0.05) {
+            return None;
+        }
+        let expanded = self.visual_panel_bounds(windows, display);
+        let bounds = if self.effective_autohide() {
+            Self::collapsed_panel_rect(display, expanded.w, self.autohide_reveal)
+        } else {
+            expanded
+        };
+        let surface_progress = if self.effective_autohide() {
+            Self::collapse_surface_progress(self.autohide_reveal)
+        } else {
+            1.0
+        };
+        Some(LiquidGlassRegion {
+            bounds: BackdropRegion {
+                x: bounds.x,
+                y: bounds.y,
+                w: bounds.w,
+                h: bounds.h,
+            },
+            corner_radius: collapsing_radius(surface_progress, bounds.h),
+            opacity: 1.0,
+        })
     }
 }
 
@@ -799,10 +836,8 @@ fn collapsing_dock_material(surface_progress: f32, height: f32) -> OverlayOpts {
         mix_channel(240, 255, surface_progress),
         mix_channel(243, 255, surface_progress),
         mix_channel(252, 255, surface_progress),
-        mix_channel(150, 34, surface_progress),
+        mix_channel(150, 12, surface_progress),
     );
-    material.border = Color::rgba(255, 255, 255, scaled_alpha(64, surface_progress));
-    material.border_width *= surface_progress;
     material.radius = collapsing_radius(surface_progress, height);
     material
 }

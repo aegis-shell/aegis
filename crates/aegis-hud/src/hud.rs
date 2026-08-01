@@ -24,7 +24,7 @@ use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Them
 
 use aegis_shell::{
     AppCatalog, BackdropRegion, BatteryStatus, Chrome, ChromeEvents, HUD_HEIGHT, IconSet,
-    Localizer, NetworkState, SystemStatus,
+    LiquidGlassRegion, Localizer, NetworkState, SystemStatus,
 };
 
 use crate::tray::{TrayIcon, TraySnapshot};
@@ -52,9 +52,6 @@ const BACKDROP_BLUR_SIGMA: f32 = 12.0;
 /// Cursor distance from a chip at which the chip fades out (ADR-0080).
 const FADE_PROXIMITY: f32 = 56.0;
 const FADE_RATE: f32 = 14.0;
-/// Raster images cannot be alpha-faded by lens; they draw only while the
-/// chip fade is above this floor (vector icons and text fade smoothly).
-const IMAGE_FADE_FLOOR: f32 = 0.35;
 
 /// Chip slots in the layout/fade arrays.
 const LEFT: usize = 0;
@@ -101,6 +98,10 @@ pub struct Hud {
     /// Last frame's chip geometry, shared with `backdrop_regions` (the blur
     /// pass runs before the chrome render it feeds).
     layout: ChipLayout,
+    /// True after the compositor backdrop prepass has advanced this frame's
+    /// geometry/fade. Direct previews that call `render` without a prepass
+    /// prepare lazily and then clear this flag.
+    frame_prepared: bool,
     /// Notification list cache keyed by the queue's revision; re-cloned only
     /// when the queue actually changes.
     notification_cache: Option<(u64, Arc<Vec<Notification>>)>,
@@ -180,6 +181,7 @@ impl Hud {
             chip_fade: [1.0, 1.0],
             chip_target: [1.0, 1.0],
             layout: ChipLayout::default(),
+            frame_prepared: false,
             notification_cache: None,
         }
     }
@@ -376,6 +378,23 @@ impl Hud {
             }
         }
     }
+
+    fn prepare_frame_state(&mut self, input: &Input, workspaces: &WorkspaceSnapshot) {
+        self.refresh_status();
+        let raw = input.as_raw();
+        let notifications = self.notification_snapshot().len();
+        let tray = self.sni_cells();
+        let fold = fold_tray(tray.len(), MAX_TRAY_ITEMS);
+        self.layout = self.chip_layout(
+            (raw.display_size.x, raw.display_size.y),
+            workspaces,
+            notifications,
+            fold.visible,
+            fold.hidden,
+        );
+        self.advance_fade(raw.dt_seconds.max(0.0), (raw.cursor.x, raw.cursor.y));
+        self.frame_prepared = true;
+    }
 }
 
 impl Default for Hud {
@@ -394,14 +413,15 @@ impl Chrome for Hud {
         _i18n: &Localizer,
         _out: &mut ChromeEvents,
     ) {
-        let raw = input.as_raw();
         if self.fullscreen_active {
+            self.frame_prepared = false;
             return;
         }
 
-        self.refresh_status();
-        let display = (raw.display_size.x, raw.display_size.y);
-        let cursor = (raw.cursor.x, raw.cursor.y);
+        if !self.frame_prepared {
+            self.prepare_frame_state(input, workspaces);
+        }
+        self.frame_prepared = false;
         let notifications = self.notification_snapshot();
         let sni = self.sni_cells();
         // Only applications that explicitly registered a StatusNotifierItem
@@ -409,15 +429,7 @@ impl Chrome for Hud {
         // synthetic tray entries.
         let fold = fold_tray(sni.len(), MAX_TRAY_ITEMS);
         let sni = &sni[..fold.visible];
-        self.layout = self.chip_layout(
-            display,
-            workspaces,
-            notifications.len(),
-            sni.len(),
-            fold.hidden,
-        );
         let layout = self.layout;
-        self.advance_fade(raw.dt_seconds.max(0.0), cursor);
 
         let original_theme = f.theme();
 
@@ -456,9 +468,7 @@ impl Chrome for Hud {
                 // Themed-icon-only cell (lens has no Bluetooth vector glyph);
                 // dimmed to a whisper while the radio is off.
                 let bt_fade = fade * if enabled { 1.0 } else { 0.35 };
-                if bt_fade > IMAGE_FADE_FLOOR
-                    && let Some(icon) = self.themed_icon("bluetooth-symbolic")
-                {
+                if let Some(icon) = self.themed_icon("bluetooth-symbolic") {
                     f.layer("aegis-hud-bluetooth", rect, &centered_layer(), |f| {
                         f.row_ex(
                             &LayoutOpts {
@@ -467,7 +477,14 @@ impl Chrome for Hud {
                                 cross: Align::Center,
                                 ..Default::default()
                             },
-                            |f| unsafe { f.image(icon as *mut lens::sys::flux_image, 16.0, 16.0) },
+                            |f| unsafe {
+                                f.image_tinted(
+                                    icon as *mut lens::sys::flux_image,
+                                    16.0,
+                                    16.0,
+                                    Color::rgba(255, 255, 255, fade_alpha(255, bt_fade)),
+                                )
+                            },
                         );
                     });
                 }
@@ -506,20 +523,26 @@ impl Chrome for Hud {
                             cross: Align::Center,
                             ..Default::default()
                         },
-                        |f| {
-                            if fade > IMAGE_FADE_FLOOR {
-                                match texture {
-                                    Some(texture) => unsafe {
-                                        f.image(texture as *mut lens::sys::flux_image, 18.0, 18.0)
-                                    },
-                                    None => match fallback {
-                                        Some(icon) => unsafe {
-                                            f.image(icon as *mut lens::sys::flux_image, 18.0, 18.0)
-                                        },
-                                        None => f.icon(Icon::FileText, 16.0),
-                                    },
-                                }
-                            }
+                        |f| match texture {
+                            Some(texture) => unsafe {
+                                f.image_tinted(
+                                    texture as *mut lens::sys::flux_image,
+                                    18.0,
+                                    18.0,
+                                    Color::rgba(255, 255, 255, fade_alpha(255, fade)),
+                                )
+                            },
+                            None => match fallback {
+                                Some(icon) => unsafe {
+                                    f.image_tinted(
+                                        icon as *mut lens::sys::flux_image,
+                                        18.0,
+                                        18.0,
+                                        Color::rgba(255, 255, 255, fade_alpha(255, fade)),
+                                    )
+                                },
+                                None => f.icon(Icon::FileText, 16.0),
+                            },
                         },
                     );
                 });
@@ -621,6 +644,19 @@ impl Chrome for Hud {
         self.fullscreen_active = SpaceUse::from_windows(windows) == SpaceUse::Fullscreen;
     }
 
+    fn prepare_backdrop(
+        &mut self,
+        input: &Input,
+        _windows: &[Window],
+        workspaces: &WorkspaceSnapshot,
+    ) {
+        if self.fullscreen_active {
+            self.frame_prepared = false;
+        } else {
+            self.prepare_frame_state(input, workspaces);
+        }
+    }
+
     fn anim_pending(&self) -> bool {
         if self.fullscreen_active {
             return false;
@@ -675,6 +711,34 @@ impl Chrome for Hud {
                 y: chip.y,
                 w: chip.w,
                 h: chip.h,
+            })
+            .collect()
+    }
+
+    fn liquid_glass_regions(
+        &self,
+        _display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> Vec<LiquidGlassRegion> {
+        if self.fullscreen_active {
+            return Vec::new();
+        }
+        self.layout
+            .chips
+            .iter()
+            .zip(self.layout.visible.iter())
+            .zip(self.chip_fade.iter())
+            .filter(|((_, visible), fade)| **visible && **fade > 0.01)
+            .map(|((chip, _), fade)| LiquidGlassRegion {
+                bounds: BackdropRegion {
+                    x: chip.x,
+                    y: chip.y,
+                    w: chip.w,
+                    h: chip.h,
+                },
+                corner_radius: CHIP_RADIUS,
+                opacity: *fade,
             })
             .collect()
     }

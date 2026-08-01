@@ -6,8 +6,8 @@
 //!
 //! 1. **Still images** — the canonical Aegis location first, then the
 //!    freedesktop `~/.face` convention that GNOME/SDDM/LightDM already write.
-//! 2. **VRM models** — only the canonical Aegis location; a 3D avatar is an
-//!    explicit Aegis configuration, not something other desktops write for us.
+//! 2. **VRM models** — the canonical Aegis location, plus an explicitly
+//!    enabled source-tree debug fixture in debug builds.
 //!
 //! `$XDG_DATA_HOME/aegis/avatars/` follows the canonical-namespace decision
 //! (ADR-0066) and keeps user-chosen art out of the cache directory, which is
@@ -39,14 +39,48 @@ fn candidate_paths_from(aegis: PathBuf, home: Option<PathBuf>) -> Vec<PathBuf> {
     paths
 }
 
-/// Candidate VRM model paths, in lookup precedence. Only the canonical Aegis
-/// data location is searched; 3D avatars are an Aegis-specific configuration.
+/// Candidate VRM model paths, in lookup precedence. The opt-in local debug
+/// fixture precedes the canonical Aegis data location when enabled.
 pub fn vrm_candidate_paths() -> Vec<PathBuf> {
-    let aegis = aegis_avatar_dir();
-    ["avatar.vrm", "avatar.vrma"]
+    vrm_candidate_paths_from(aegis_avatar_dir(), enabled_debug_asset_dir())
+}
+
+fn vrm_candidate_paths_from(aegis: PathBuf, debug: Option<PathBuf>) -> Vec<PathBuf> {
+    debug
         .into_iter()
-        .map(|name| aegis.join(name))
+        .map(|dir| dir.join("avatar.vrm"))
+        .chain(std::iter::once(aegis.join("avatar.vrm")))
         .collect()
+}
+
+/// Candidate VRMA clips paired positionally with [`vrm_candidate_paths`]. A
+/// `.vrma` contains animation only; it is never passed to the model loader as
+/// if it contained renderable meshes.
+pub fn vrma_candidate_paths() -> Vec<PathBuf> {
+    vrma_candidate_paths_from(aegis_avatar_dir(), enabled_debug_asset_dir())
+}
+
+fn vrma_candidate_paths_from(aegis: PathBuf, debug: Option<PathBuf>) -> Vec<PathBuf> {
+    debug
+        .into_iter()
+        .map(|dir| dir.join("avatar.vrma"))
+        .chain(std::iter::once(aegis.join("avatar.vrma")))
+        .collect()
+}
+
+/// Source-tree fixtures are opt-in and compiled out of release builds. This
+/// avoids making a developer's ignored files an accidental release default.
+fn enabled_debug_asset_dir() -> Option<PathBuf> {
+    debug_assets_enabled()
+        .then(|| std::env::var_os("AEGIS_AVATAR_DEBUG_ASSETS"))
+        .flatten()
+        .filter(|value| !value.is_empty())
+        .map(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("debug-assets"))
+}
+
+pub(crate) fn debug_assets_enabled() -> bool {
+    cfg!(debug_assertions)
+        && std::env::var_os("AEGIS_AVATAR_DEBUG_ASSETS").is_some_and(|value| !value.is_empty())
 }
 
 /// File names tried under `$XDG_DATA_HOME/aegis/avatars/`, in order. The bare
@@ -104,18 +138,17 @@ mod tests {
     }
 
     #[test]
-    fn vrm_candidates_are_only_aegis_namespaced() {
-        let paths = vrm_candidate_paths();
-        assert!(
-            paths
-                .iter()
-                .all(|p| p.to_string_lossy().contains("aegis/avatars"))
-        );
-        assert!(
-            paths
-                .iter()
-                .any(|p| p.to_string_lossy().ends_with("avatar.vrm"))
-        );
+    fn vrm_and_vrma_candidates_stay_paired() {
+        let aegis = PathBuf::from("/data/aegis/avatars");
+        let debug = Some(PathBuf::from("/src/aegis-avatar/debug-assets"));
+        let models = vrm_candidate_paths_from(aegis.clone(), debug.clone());
+        let motions = vrma_candidate_paths_from(aegis, debug);
+        assert_eq!(models.len(), 2);
+        assert_eq!(motions.len(), models.len());
+        assert!(models[0].ends_with("debug-assets/avatar.vrm"));
+        assert!(motions[0].ends_with("debug-assets/avatar.vrma"));
+        assert!(models[1].ends_with("aegis/avatars/avatar.vrm"));
+        assert!(motions[1].ends_with("aegis/avatars/avatar.vrma"));
     }
 
     #[test]

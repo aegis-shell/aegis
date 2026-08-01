@@ -17,13 +17,18 @@ pub fn popover(design: &Design) -> OverlayOpts {
     }
 }
 
-/// The persistent frosted-glass surface behind the bottom dock.
+/// The persistent glass surface behind the bottom dock.
+///
+/// The compositor's analytic liquid-glass pass supplies the physical body —
+/// refraction, adaptive tint and rim light — so this painted layer stays
+/// deliberately minimal: a whisper of white for cohesion and no painted
+/// border (the glass rim provides the edge definition, not an outline).
 #[must_use]
 pub fn dock(design: &Design) -> OverlayOpts {
     OverlayOpts {
         bg: design.colors.dock_surface,
         border: design.colors.dock_border,
-        border_width: design.strokes.hairline,
+        border_width: 0.0,
         radius: design.radii.dock,
         pad: 0.0,
         cross: Align::Center,
@@ -77,11 +82,11 @@ mod tests {
     }
 
     #[test]
-    fn dock_material_preserves_the_existing_panel_values() {
+    fn dock_material_keeps_the_painted_layer_minimal() {
         let material = dock(&Design::dark());
-        assert_eq!(material.bg, Color::rgba(255, 255, 255, 34));
-        assert_eq!(material.border, Color::rgba(255, 255, 255, 64));
-        assert_eq!(material.border_width, 1.0);
+        assert_eq!(material.bg, Color::rgba(255, 255, 255, 12));
+        assert_eq!(material.border, Color::rgba(255, 255, 255, 0));
+        assert_eq!(material.border_width, 0.0);
         assert_eq!(material.radius, 18.0);
         assert_eq!(material.cross, Align::Center);
     }

@@ -10,7 +10,7 @@ repository root:
 
 ```bash
 meson compile -C ../optics/build
-cargo build --locked --release -p aegis -p aegis-settings -p aegis-cli
+cargo build --locked --release -p aegis -p aegis-settings
 ```
 
 Do not compile on the test VT. Building first keeps compiler latency and build
@@ -96,9 +96,9 @@ From a terminal running inside aegis, inspect the live state and take a
 screenshot:
 
 ```bash
-./target/release/aegis-cli outputs
-./target/release/aegis-cli windows
-./target/release/aegis-cli screenshot /tmp/aegis-vt.png
+./target/release/aegis display
+./target/release/aegis window
+./target/release/aegis display capture /tmp/aegis-vt.png
 ```
 
 Open `/tmp/aegis-vt.png` after leaving the session and confirm that it matches
@@ -171,7 +171,7 @@ device identity.
 Request a normal shutdown from a terminal inside aegis:
 
 ```bash
-./target/release/aegis-cli quit
+./target/release/aegis quit
 ```
 
 You can also press `Super+Ctrl+Q` (or the alternate

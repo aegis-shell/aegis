@@ -1,17 +1,16 @@
 //! User avatar loading and rendering for Aegis.
 //!
 //! Resolves an avatar source from XDG-conformant locations, then produces a
-//! GPU-ready circular texture that any chrome surface (the lock screen, a
-//! settings page) composites with a single alpha-aware `draw_image`.
+//! GPU-ready portrait texture that any chrome surface (the lock screen, a
+//! settings page) composites with one analytic rounded-image draw.
 //!
 //! Two source kinds are handled:
 //!
 //! - **Still images** — any format the workspace `image` crate decodes.
 //!   Cover-fit to a square, masked to a circle, premultiplied, uploaded once.
 //! - **VRM models** — VRM 0.x / VRM 1.0 (`.glb` containers) loaded through
-//!   `flux-scene-graph` and rendered offscreen to the same circular texture.
-//!   VRMA animation is carried by the API but motion requires skinning/morph
-//!   support in the scene graph that is not yet present; see [`AvatarKind`].
+//!   `flux-scene-graph` and rendered offscreen to the same portrait atlas.
+//!   A companion `.vrma` is retargeted and rendered into a persistent texture.
 //!
 //! The crate owns decode and GPU state only. It has no Wayland connection and
 //! no presentation loop. See ADR-0080.
@@ -21,7 +20,7 @@ mod resolve;
 mod still;
 mod vrm;
 
-pub use resolve::{candidate_paths, vrm_candidate_paths};
+pub use resolve::{candidate_paths, vrm_candidate_paths, vrma_candidate_paths};
 pub use vrm::AnimationSupport;
 
 use std::path::{Path, PathBuf};
@@ -56,12 +55,17 @@ pub enum AvatarKind {
     Animated3d { animation: AnimationSupport },
 }
 
-/// A prepared avatar: a GPU texture ready to composite, plus metadata about
-/// its source kind. Built once (at startup or when the source file changes)
-/// and drawn every frame by the caller.
+enum Content {
+    Still(Image),
+    Model(vrm::Model),
+}
+
+/// A prepared avatar. Still images own one immutable texture; VRM avatars own
+/// their scene, clip, clock, and reusable offscreen texture for zero-readback
+/// animation.
 pub struct Avatar {
-    pub texture: flux::Image,
-    pub kind: AvatarKind,
+    content: Content,
+    kind: AvatarKind,
 }
 
 impl Avatar {
@@ -74,32 +78,43 @@ impl Avatar {
     /// missing or in a format this build cannot decode is skipped in favour
     /// of the next candidate.
     pub fn load(device: &Device) -> Result<Option<Self>, Error> {
-        // Still images take precedence: a user with both a photo and a model
-        // almost certainly wants the photo as their identity orb.
-        for candidate in candidate_paths() {
-            match still::build(device, &candidate) {
-                Ok(texture) => {
-                    return Ok(Some(Self {
-                        texture,
-                        kind: AvatarKind::Still,
-                    }));
+        let load_still = || -> Result<Option<Self>, Error> {
+            for candidate in candidate_paths() {
+                match still::build(device, &candidate) {
+                    Ok(texture) => {
+                        return Ok(Some(Self {
+                            content: Content::Still(texture),
+                            kind: AvatarKind::Still,
+                        }));
+                    }
+                    Err(Error::Io(path, _)) if path == candidate => continue,
+                    Err(Error::Decode(path, _)) if path == candidate => continue,
+                    Err(error) => return Err(error),
                 }
-                Err(Error::Io(path, _)) if path == candidate => continue,
-                Err(Error::Decode(path, _)) if path == candidate => continue,
-                Err(error) => return Err(error),
             }
+            Ok(None)
+        };
+
+        // Still images take precedence: a user with both a photo and a model
+        // almost certainly wants the photo as their identity orb. The explicit
+        // debug override is the exception: it must win so it reliably previews
+        // the ignored source-tree fixture on machines that already have a face.
+        let debug_override = resolve::debug_assets_enabled();
+        if !debug_override && let Some(avatar) = load_still()? {
+            return Ok(Some(avatar));
         }
-        // VRM is the deliberate second choice: heavier to render and, until
-        // skinning lands, cannot animate.
-        for candidate in vrm_candidate_paths() {
-            match vrm::Model::build(device, &candidate) {
+        // VRM is the deliberate second choice: heavier to render than a photo.
+        for (candidate, motion) in vrm_candidate_paths()
+            .into_iter()
+            .zip(vrma_candidate_paths())
+        {
+            let motion = motion.is_file().then_some(motion.as_path());
+            match vrm::Model::build(device, &candidate, motion) {
                 Ok(model) => {
-                    let texture = model.render_to_circle(device)?;
+                    let animation = model.animation_support();
                     return Ok(Some(Self {
-                        texture,
-                        kind: AvatarKind::Animated3d {
-                            animation: model.animation_support(),
-                        },
+                        content: Content::Model(model),
+                        kind: AvatarKind::Animated3d { animation },
                     }));
                 }
                 Err(vrm::VrmError::Io(path, _)) if path == candidate => continue,
@@ -107,18 +122,60 @@ impl Avatar {
                 Err(error) => return Err(error.into()),
             }
         }
-        Ok(None)
+        if debug_override {
+            load_still()
+        } else {
+            Ok(None)
+        }
+    }
+
+    #[must_use]
+    pub fn kind(&self) -> AvatarKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub fn texture(&self) -> &Image {
+        match &self.content {
+            Content::Still(texture) => texture,
+            Content::Model(model) => model.texture(),
+        }
+    }
+
+    /// Advance an animated avatar and refresh its texture. Static images and
+    /// VRMs without a companion clip return `Ok(false)` without GPU work.
+    pub fn advance(&mut self, delta_seconds: f32) -> Result<bool, Error> {
+        match &mut self.content {
+            Content::Still(_) => Ok(false),
+            Content::Model(model) => model.advance(delta_seconds).map_err(Error::Vrm),
+        }
+    }
+
+    #[must_use]
+    pub fn is_animated(&self) -> bool {
+        matches!(
+            self.kind,
+            AvatarKind::Animated3d {
+                animation: AnimationSupport::Animated
+            }
+        )
     }
 }
 
-/// True when `path` names a VRM model by extension. Used by resolvers and
-/// tests; VRM 0.x and 1.0 both ship as `.glb`, `.vrm` is the conventional
-/// alias, and `.vrma` is a VRM Animation clip (treated as a model source so
-/// the loader can report its animation status).
+/// True when `path` names a VRM model by extension. VRM 0.x and 1.0 both use
+/// a binary glTF container with the conventional `.vrm` extension.
 pub fn is_vrm_path(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("vrm") || ext.eq_ignore_ascii_case("vrma"))
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("vrm"))
+}
+
+/// True when `path` names a VRM Animation clip. A VRMA is paired with a VRM
+/// model and never loaded as a renderable scene by itself.
+pub fn is_vrma_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("vrma"))
 }
 
 /// Build the procedural gradient orb as a circle-masked texture, used when no
@@ -199,9 +256,11 @@ mod tests {
     #[test]
     fn vrm_extensions_are_recognised() {
         assert!(is_vrm_path(Path::new("/home/me/avatar.vrm")));
-        assert!(is_vrm_path(Path::new("/home/me/idle.VRMA")));
         assert!(is_vrm_path(Path::new("/tmp/glb-named-like-this.vrm")));
+        assert!(!is_vrm_path(Path::new("/home/me/idle.VRMA")));
         assert!(!is_vrm_path(Path::new("/home/me/.face")));
         assert!(!is_vrm_path(Path::new("/home/me/photo.png")));
+        assert!(is_vrma_path(Path::new("/home/me/idle.VRMA")));
+        assert!(!is_vrma_path(Path::new("/home/me/avatar.vrm")));
     }
 }

@@ -34,8 +34,8 @@ use aegis_core::input::{KeyAction, KeyChar, key_action};
 use aegis_core::window::{SpaceUse, Window};
 use aegis_core::workspace::WorkspaceSnapshot;
 use aegis_shell::{
-    AppCatalog, AppMenu, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet, Localizer,
-    Message, PinAction, Reserved, truncate,
+    AppCatalog, AppMenu, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet,
+    LiquidGlassRegion, Localizer, Message, PinAction, Reserved, truncate,
 };
 
 /// Visual height of the dock bar. Tiles rest inside it; magnified tiles pop
@@ -316,7 +316,11 @@ impl Dock {
     /// Set whether the dock automatically hides after an inactivity period.
     pub fn set_autohide(&mut self, autohide: bool) {
         self.autohide = autohide;
-        if !autohide && !self.dock_obscured && !self.fullscreen_locked() {
+        if !autohide
+            && self.space_use == SpaceUse::Available
+            && !self.dock_obscured
+            && !self.fullscreen_locked()
+        {
             self.autohide_reveal = 1.0;
             self.autohide_idle = 0.0;
         }
@@ -339,12 +343,12 @@ impl Dock {
         self.space_use == SpaceUse::Fullscreen
     }
 
-    /// A user preference or an actual window/Dock intersection enables the
-    /// same overlay mechanics. Maximized state alone is deliberately not a
-    /// proxy: a maximized window that respects the reserved edge has not
-    /// invaded the Dock.
+    /// Maximized windows, an explicit user preference, and actual window/Dock
+    /// intersections all enable the same overlay mechanics. Maximized mode is
+    /// forced independently of the user preference so it gains the complete
+    /// work area by default.
     fn effective_autohide(&self) -> bool {
-        self.autohide || self.dock_obscured
+        self.autohide || self.space_use == SpaceUse::Maximized || self.dock_obscured
     }
 
     /// Cubic easing with zero velocity at both ends. The reveal state remains
@@ -437,7 +441,7 @@ impl Dock {
             self.collapse_pending = true;
         } else {
             self.collapse_pending = false;
-            if !self.autohide && !self.fullscreen_locked() {
+            if !self.effective_autohide() && !self.fullscreen_locked() {
                 self.autohide_idle = 0.0;
                 self.hidden_trigger_armed = true;
             }

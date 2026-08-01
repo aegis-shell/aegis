@@ -379,6 +379,11 @@ impl CompositorRuntime {
         // `stat` per frame is cheap and keeps the reload on this loop, where
         // the keymap rebuild must happen anyway. A failed reload keeps the
         // previous configuration rather than reverting silently.
+        let wallpaper_before_reload = self
+            .config
+            .as_ref()
+            .map(|config| config.wallpaper.clone())
+            .unwrap_or_default();
         if let Some(path) = self.config_path.as_deref()
             && self.reload.as_mut().is_some_and(|w| w.changed(path))
             && reload_config(
@@ -392,6 +397,40 @@ impl CompositorRuntime {
             )
         {
             self.chrome_dirty = true;
+            let wallpaper_after_reload = self
+                .config
+                .as_ref()
+                .map(|config| config.wallpaper.clone())
+                .unwrap_or_default();
+            if wallpaper_before_reload != wallpaper_after_reload && !wallpaper_source_overridden() {
+                let size = self.host.physical_size();
+                match load_wallpaper(
+                    self.config.as_ref(),
+                    self.config_path.as_deref(),
+                    &self.device,
+                    &self.surface,
+                    size,
+                    DEFAULT_WALLPAPER,
+                ) {
+                    Ok((wallpaper, label)) => {
+                        self.wallpaper = Some(wallpaper);
+                        self.force_full_redraw = true;
+                        log::info!("wallpaper: reloaded ({label})");
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "wallpaper: configured reload failed; keeping previous scene: {error}"
+                        );
+                    }
+                }
+            }
+            if let Some(wallpaper) = self.wallpaper.as_mut() {
+                wallpaper.set_reduced_motion(
+                    self.config
+                        .as_ref()
+                        .is_some_and(|config| config.ui.reduced_motion),
+                );
+            }
             self.screenshot_dir = self
                 .config
                 .as_ref()

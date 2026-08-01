@@ -1,21 +1,20 @@
-//! Command-line structure: typed [`Cli`] parsed by `clap` derive.
+//! Domain-oriented command structure parsed by `clap` derive.
 //!
 //! Defining the surface here lets `clap` generate help, version, shell
-//! completions, and per-subcommand usage. The dispatcher in [`crate::lib`]
+//! completions, and per-subcommand usage. The dispatcher in [`super`]
 //! matches on [`Command`] / [`RealmCmd`] instead of raw strings.
 
 use std::str::FromStr;
 
 use aegis_core::Rect;
 
-/// Top-level parser. `--json` is global so any query subcommand accepts it in
-/// any position; the dispatcher decides whether the subcommand actually
-/// produces structured output.
+/// Aegis compositor and session management.
 #[derive(Debug, clap::Parser)]
 #[command(
-    name = "aegis-cli",
+    name = "aegis",
     version,
-    about = "Query and control a running aegis compositor through its IPC socket"
+    about = "Aegis compositor and session management",
+    long_about = None,
 )]
 pub struct Cli {
     /// Emit query results and receipts as JSON instead of human-readable text.
@@ -23,90 +22,159 @@ pub struct Cli {
     pub json: bool,
 
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
-/// The top-level subcommands. Realm administration is grouped under
-/// [`Command::Realm`] so the capability negotiation and admin-scope lease can
-/// be handled in one arm of the dispatcher.
+impl Cli {
+    /// Whether this invocation starts the compositor rather than contacting a
+    /// running session.
+    pub fn runs_compositor(&self) -> bool {
+        self.command
+            .as_ref()
+            .is_none_or(|command| matches!(command, Command::Run))
+    }
+}
+
+/// Top-level domains. Transport details stay internal: users address displays,
+/// windows, workspaces, notifications, Realms, and session services directly.
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {
-    /// List visible toplevels.
-    Windows,
-    /// List outputs, their workspaces, and window counts.
-    Workspaces,
-    /// List output modes, scales, transforms, and logical sizes.
-    Outputs,
-    /// List active notifications.
-    Notifications,
-    /// List mutation-journal entries with a sequence greater than `since`.
-    Journal { since: Option<u64> },
-    /// Manage isolated AI workspaces (Realm lifecycle and capture).
-    #[command(subcommand)]
-    Realm(RealmCmd),
-    /// Manage agent principals, ceilings, and recorded runtime grants
-    /// (ADR-0088).
-    #[command(subcommand)]
-    Permissions(PermissionsCmd),
-    /// Inspect and control immediate live-system state.
-    #[command(subcommand)]
-    System(SystemCmd),
-    /// Focus and raise a toplevel by id.
-    Focus { id: u64 },
-    /// Minimize a toplevel by id.
-    Minimize { id: u64 },
-    /// Set or clear always-on-top for a toplevel by id.
-    AlwaysOnTop { id: u64, state: OnOff },
-    /// Request that a toplevel close.
-    Close { id: u64 },
-    /// Set floating-window geometry in compositor logical pixels.
-    ///
-    /// `allow_hyphen_values` is set so negative coordinates (e.g. `-20,30`)
-    /// parse positionally instead of being mistaken for flags.
-    #[command(allow_hyphen_values = true)]
-    SetGeometry {
-        id: u64,
-        x: i32,
-        y: i32,
-        w: i32,
-        h: i32,
+    /// Start the compositor explicitly.
+    Run,
+    /// Inspect displays and capture the focused display; lists by default.
+    Display {
+        #[command(subcommand)]
+        command: Option<DisplayCmd>,
     },
-    /// Switch to an adjacent workspace on the focused output.
-    Switch { direction: SwitchDir },
-    /// Switch directly to a workspace by id.
-    SwitchTo { id: u64 },
-    /// Move a toplevel to a workspace by id.
-    MoveTo { window: u64, workspace: u64 },
-    /// Toggle tiling on the current workspace.
-    Tiling,
-    /// Post a notification.
-    Notify {
-        summary: String,
-        body: Option<String>,
+    /// Inspect and control windows; lists by default.
+    Window {
+        #[command(subcommand)]
+        command: Option<WindowCmd>,
     },
-    /// Dismiss an active notification by id.
-    Dismiss { id: u64 },
-    /// Capture the focused output to a PNG file.
-    Screenshot {
-        /// Destination path. Defaults to a timestamped PNG in the screenshot directory.
-        path: Option<String>,
-        /// Capture a region instead of the full output, formatted `x,y,w,h`.
-        #[arg(long, value_name = "X,Y,W,H")]
-        region: Option<Region>,
+    /// Inspect and control workspaces; lists by default.
+    Workspace {
+        #[command(subcommand)]
+        command: Option<WorkspaceCmd>,
+    },
+    /// Inspect and post notifications; lists by default.
+    Notification {
+        #[command(subcommand)]
+        command: Option<NotificationCmd>,
+    },
+    /// Inspect or follow the mutation journal; lists by default.
+    Journal {
+        #[command(subcommand)]
+        command: Option<JournalCmd>,
+    },
+    /// Manage Agent Workspaces and Realm authority; lists by default.
+    Realm {
+        #[command(subcommand)]
+        command: Option<RealmCmd>,
+    },
+    /// Manage agent permissions and grants; lists by default.
+    Permissions {
+        #[command(subcommand)]
+        command: Option<PermissionsCmd>,
+    },
+    /// Inspect and control immediate live-system state; shows status by default.
+    System {
+        #[command(subcommand)]
+        command: Option<SystemCmd>,
     },
     /// Toggle the window/workspace overview.
     Overview,
     /// Stream coarse compositor state-change events until disconnected.
-    Subscribe,
-    /// Stream detailed mutation-journal events until disconnected.
-    SubscribeJournal,
+    Events,
     /// Print shell completions for the given shell to stdout.
     Completions { shell: clap_complete::Shell },
     /// Request compositor shutdown.
     Quit,
 }
 
-/// Subcommands grouped under `aegis-cli system`.
+/// Commands grouped under `aegis display`. With no command, displays are
+/// listed, matching the inspect-first behavior of every resource domain.
+#[derive(Debug, clap::Subcommand)]
+pub enum DisplayCmd {
+    /// List display modes, scales, transforms, and logical sizes.
+    List,
+    /// Capture the focused display to a PNG file.
+    Capture {
+        /// Destination path. Defaults to a timestamped PNG in the screenshot directory.
+        path: Option<String>,
+        /// Capture a region instead of the full display, formatted `x,y,w,h`.
+        #[arg(long, value_name = "X,Y,W,H")]
+        region: Option<Region>,
+    },
+}
+
+/// Commands grouped under `aegis window`. With no command, visible windows
+/// are listed.
+#[derive(Debug, clap::Subcommand)]
+pub enum WindowCmd {
+    /// List visible windows.
+    List,
+    /// Focus and raise a window by id.
+    Focus { id: u64 },
+    /// Minimize a window by id.
+    Minimize { id: u64 },
+    /// Set or clear always-on-top for a window by id.
+    AlwaysOnTop { id: u64, state: OnOff },
+    /// Request that a window close.
+    Close { id: u64 },
+    /// Set floating-window geometry in compositor logical pixels.
+    #[command(allow_hyphen_values = true)]
+    Geometry {
+        id: u64,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    },
+}
+
+/// Commands grouped under `aegis workspace`. With no command, workspaces are
+/// listed.
+#[derive(Debug, clap::Subcommand)]
+pub enum WorkspaceCmd {
+    /// List displays, their workspaces, and window counts.
+    List,
+    /// Switch to `next`, `prev`, `previous`, or a workspace id.
+    Switch { target: WorkspaceTarget },
+    /// Move a window to a workspace id.
+    MoveWindow { window: u64, workspace: u64 },
+    /// Set or toggle the current workspace layout.
+    Layout { state: LayoutState },
+}
+
+/// Commands grouped under `aegis notification`. With no command, active
+/// notifications are listed.
+#[derive(Debug, clap::Subcommand)]
+pub enum NotificationCmd {
+    /// List active notifications.
+    List,
+    /// Post a notification.
+    Send {
+        summary: String,
+        body: Option<String>,
+    },
+    /// Dismiss an active notification by id.
+    Dismiss { id: u64 },
+}
+
+/// Mutation-journal commands. With no command, the complete retained journal
+/// is listed.
+#[derive(Debug, clap::Subcommand)]
+pub enum JournalCmd {
+    /// List retained entries after an optional sequence number.
+    List {
+        #[arg(long)]
+        since: Option<u64>,
+    },
+    /// Stream detailed mutation-journal events until disconnected.
+    Follow,
+}
+
+/// Subcommands grouped under `aegis system`.
 #[derive(Debug, clap::Subcommand)]
 pub enum SystemCmd {
     /// Show the normalized live-system snapshot.
@@ -135,11 +203,9 @@ pub enum SystemCmd {
     Bluetooth { state: OnOff },
     /// Enable or disable notification suppression.
     DoNotDisturb { state: OnOff },
-    /// Set the current workspace layout mode.
-    Tiling { state: OnOff },
 }
 
-/// Subcommands grouped under `aegis-cli realm`. They all share the
+/// Subcommands grouped under `aegis realm`. They all share the
 /// owner-only admin scope and lease negotiation in the dispatcher.
 #[derive(Debug, clap::Subcommand)]
 pub enum RealmCmd {
@@ -183,7 +249,7 @@ pub enum RealmCmd {
     },
 }
 
-/// Subcommands grouped under `aegis-cli permissions`: agent principals,
+/// Subcommands grouped under `aegis permissions`: agent principals,
 /// ceilings, and recorded runtime grants (ADR-0088).
 #[derive(Debug, clap::Subcommand)]
 pub enum PermissionsCmd {
@@ -230,14 +296,34 @@ fn op_class(value: &str) -> Result<aegis_ipc::OpClass, String> {
     aegis_ipc::OpClass::from_name(value).ok_or_else(|| format!("unknown operation '{value}'"))
 }
 
-/// Adjacent-workspace switch direction. `previous` is accepted as an alias
-/// for `prev` so abbreviated and spelled-out forms both work.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum SwitchDir {
+/// A workspace switch target: an adjacent direction or a concrete id.
+#[derive(Debug, Clone, Copy)]
+pub enum WorkspaceTarget {
     Next,
-    /// Accept `previous` as a long form.
-    #[value(alias = "previous")]
-    Prev,
+    Previous,
+    Id(u64),
+}
+
+impl FromStr for WorkspaceTarget {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "next" => Ok(Self::Next),
+            "prev" | "previous" => Ok(Self::Previous),
+            value => value.parse::<u64>().map(Self::Id).map_err(|_| {
+                format!("invalid workspace target '{value}'; expected next, prev, or an id")
+            }),
+        }
+    }
+}
+
+/// Requested layout state for the current workspace.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum LayoutState {
+    Toggle,
+    Tiled,
+    Floating,
 }
 
 /// Explicit boolean state accepted by live-system controls.
@@ -253,11 +339,14 @@ impl From<OnOff> for bool {
     }
 }
 
-impl From<SwitchDir> for aegis_core::workspace::Switch {
-    fn from(value: SwitchDir) -> Self {
+impl From<WorkspaceTarget> for aegis_core::workspace::Switch {
+    fn from(value: WorkspaceTarget) -> Self {
         match value {
-            SwitchDir::Next => aegis_core::workspace::Switch::Next,
-            SwitchDir::Prev => aegis_core::workspace::Switch::Prev,
+            WorkspaceTarget::Next => aegis_core::workspace::Switch::Next,
+            WorkspaceTarget::Previous => aegis_core::workspace::Switch::Prev,
+            WorkspaceTarget::Id(_) => {
+                unreachable!("concrete workspace ids do not use adjacent switching")
+            }
         }
     }
 }

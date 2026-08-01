@@ -74,7 +74,6 @@ inside the package build root.
 | `target/release/aegis-idle` | `/usr/bin/aegis-idle` | core |
 | `target/release/aegis-lock` | `/usr/bin/aegis-lock` | core |
 | `target/release/aegis-settings` | `/usr/bin/aegis-settings` | core |
-| `target/release/aegis-cli` | `/usr/bin/aegis-cli` | core |
 | `target/release/aegis-portal` | `/usr/lib/aegis/aegis-portal` | portal |
 | `target/release/aegis-mcp` | `/usr/bin/aegis-mcp` | agent integration |
 | `target/release/fuji` | `/usr/bin/fuji` | agent integration |
@@ -114,8 +113,6 @@ install -Dm0755 target/release/aegis-lock \
   "$package_root/usr/bin/aegis-lock"
 install -Dm0755 target/release/aegis-settings \
   "$package_root/usr/bin/aegis-settings"
-install -Dm0755 target/release/aegis-cli \
-  "$package_root/usr/bin/aegis-cli"
 install -Dm0755 target/release/aegis-portal \
   "$package_root/usr/lib/aegis/aegis-portal"
 install -Dm0755 target/release/aegis-mcp \
@@ -191,9 +188,9 @@ systemctl --user start aegis.service
 Confirm that System Settings appears with its icon, the Power Management page
 persists an idle policy, `Super+L` authenticates through the installed PAM
 stack, `aegis-portal` activates through D-Bus, the preferred portal
-configuration is selected for an Aegis session, and `aegis-cli` reaches the
-compositor. Run the Realm sandbox test through the packaged service topology
-as described in [Setup](setup.md#tests).
+configuration is selected for an Aegis session, and `aegis window` reaches
+the compositor. Run the Realm sandbox test through the packaged service
+topology as described in [Setup](setup.md#tests).
 
 ## Distribution recipes
 
@@ -293,7 +290,6 @@ package_aegis() {
   install -Dm0755 target/release/aegis-idle     "$dest/bin/aegis-idle"
   install -Dm0755 target/release/aegis-lock     "$dest/bin/aegis-lock"
   install -Dm0755 target/release/aegis-settings "$dest/bin/aegis-settings"
-  install -Dm0755 target/release/aegis-cli      "$dest/bin/aegis-cli"
   install -Dm0755 target/release/aegis-mcp "$dest/bin/aegis-mcp"
   install -Dm0755 target/release/fuji           "$dest/bin/fuji"
 

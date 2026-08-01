@@ -1,6 +1,6 @@
 [package]
 name = "aegis-wallpaper"
-description = "Compositor wallpaper: multi-format image and short-video backgrounds"
+description = "Compositor wallpaper: image, video, 3D, and multi-plane parallax backgrounds"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true

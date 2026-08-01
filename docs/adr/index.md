@@ -99,3 +99,6 @@ background and how the decisions fit together, see
 | [0089](0089-aegis-agent-product-and-fuji-identity-rename.md) | aegis-agent Crate, CLI, and Fuji Identity Preservation (amends [0050](0050-fuji-agent-product-and-bridge-rename.md), [0066](0066-canonical-aegis-namespace.md)) | Accepted |
 | [0090](0090-native-capability-broker-and-stateless-mcp-edge.md) | Native capability broker and stateless MCP edge (supersedes [0088](0088-agent-capability-borrowing-and-runtime-grants.md)) | Accepted |
 | [0091](0091-agent-controlled-window-physical-mirrors-and-guard.md) | Agent-controlled window physical mirrors and guard (amends [0040](0040-realms-seats-and-transferable-interaction-authority.md), [0048](0048-compositor-owned-agent-operation-feedback.md)) | Accepted |
+| [0092](0092-explicit-wallpaper-modes-and-continuous-parallax.md) | Explicit wallpaper modes and continuous pointer parallax (amends [0018](0018-wallpaper-crate.md)) | Accepted |
+| [0093](0093-unified-domain-oriented-aegis-command-surface.md) | Unified domain-oriented Aegis command surface (amends [0027](0027-ipc-and-introspection.md), [0066](0066-canonical-aegis-namespace.md)) | Accepted |
+| [0094](0094-liquid-glass-lens-model-and-full-resolution-capture.md) | Liquid glass lens model and full-resolution backdrop capture (amends [0046](0046-design-system-crate.md)) | Accepted |

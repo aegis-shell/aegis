@@ -167,6 +167,17 @@ impl Server {
         (self.state.pointer_x, self.state.pointer_y)
     }
 
+    /// Whether a logical output point is occupied by client content or its
+    /// compositor-owned resize affordance. Consumers that react only to
+    /// exposed desktop background use this semantic query instead of
+    /// inferring visibility from the current Wayland focus pointer.
+    pub fn client_occupies_point(&self, x: f32, y: f32) -> bool {
+        !self.hit_test_focus(x, y).is_null()
+            || self
+                .resize_target_at(x, y, aegis_core::window::RESIZE_OUTER_MARGIN)
+                .is_some()
+    }
+
     /// Current depressed keyboard modifiers after the most recently routed
     /// key event. The composition root uses this to keep held-modifier chrome
     /// (notably Super+Tab) open until the modifier is actually released.

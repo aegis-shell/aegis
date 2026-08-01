@@ -16,8 +16,8 @@ portal.
 The command-line equivalent is:
 
 ```bash
-aegis-cli realm create "Research"
-aegis-cli realm list
+aegis realm create "Research"
+aegis realm list
 ```
 
 ## Transfer a Running Window
@@ -42,8 +42,8 @@ Drag the mirror to **Physical desktop** in Overview to return control.
 Use the CLI when the graphical shell is unavailable:
 
 ```bash
-aegis-cli realm transfer 42 2
-aegis-cli realm transfer 42 1
+aegis realm transfer 42 2
+aegis realm transfer 42 1
 ```
 
 Add `--no-mirror` to remove the source presentation after transfer.
@@ -64,7 +64,7 @@ Launch a desktop entry directly inside a Realm when the application process
 also needs isolation:
 
 ```bash
-aegis-cli realm launch 2 org.mozilla.firefox.desktop
+aegis realm launch 2 org.mozilla.firefox.desktop
 ```
 
 The new window appears on the physical desktop as the same guarded read-only
@@ -109,25 +109,25 @@ Capture the directed virtual output without exposing physical-desktop chrome
 or another Realm:
 
 ```bash
-aegis-cli realm capture 2
-aegis-cli realm capture 2 /tmp/research.png
+aegis realm capture 2
+aegis realm capture 2 /tmp/research.png
 ```
 
 Realm captures are refused while the session is locked, the seat is inactive,
 or the Realm is paused or revoked. In-flight captures are invalidated when
 the security state changes.
 
-Long-running observers can use `aegis-cli subscribe`. A `RealmDamaged` event
+Long-running observers can use `aegis events`. A `RealmDamaged` event
 identifies the changed Realm and virtual-output damage; request
-`realm capture` only after that event instead of polling continuously.
+`aegis realm capture` only after that event instead of polling continuously.
 
 ## Pause or Revoke a Workspace
 
 Use **Pause** in Agent Workspaces, or run:
 
 ```bash
-aegis-cli realm pause 2
-aegis-cli realm resume 2
+aegis realm pause 2
+aegis realm resume 2
 ```
 
 Pausing disables the Realm seat and freezes every compositor-managed sandbox
@@ -137,7 +137,7 @@ suspension automatically.
 Use **Revoke**, confirm the destructive action, or run:
 
 ```bash
-aegis-cli realm revoke 2
+aegis realm revoke 2
 ```
 
 Revocation is permanent. It transfers controlled interaction groups back to

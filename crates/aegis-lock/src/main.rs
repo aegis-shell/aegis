@@ -379,6 +379,18 @@ impl AppData {
         };
         let elapsed = now.duration_since(self.last_update).as_secs_f32();
         self.last_update = now;
+        let avatar_visible = self.lock_state.presentation() == PresentationMode::Engaged
+            || self.visual_progress > 0.02;
+        if avatar_visible {
+            match self.graphics.advance_avatar(elapsed) {
+                Ok(true) => self.dirty = true,
+                Ok(false) => {}
+                Err(error) => {
+                    self.fail(error.to_string());
+                    return;
+                }
+            }
+        }
         if (self.visual_progress - target).abs() > 0.001 {
             let step = elapsed / 0.24;
             if target > self.visual_progress {
@@ -401,7 +413,10 @@ impl AppData {
         } else {
             0.0
         };
+        let avatar_visible = self.lock_state.presentation() == PresentationMode::Engaged
+            || self.visual_progress > 0.02;
         (self.visual_progress - target).abs() > 0.001
+            || (avatar_visible && self.graphics.avatar_is_animated())
     }
 
     fn render_all(&mut self) {

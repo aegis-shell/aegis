@@ -30,7 +30,7 @@ The stack, from the rendering layer up:
 | The model | `aegis-core` | Windows, workspaces, outputs, Realms, seats, authority, layout — the one truth |
 | The compositor | `aegis-compositor`, `aegis-backend`, `aegis-render`, `aegis-shell` | Wayland, per-Realm input and output, the chrome host |
 | The seam | `aegis-ipc` | Versioned JSON and sealed descriptors over a Unix socket; leases, scopes, pairing, runtime grants, capture, and the journal |
-| IPC clients | any number, all equal | Status bars, `aegis-cli`, the agent, future bridges |
+| IPC clients | any number, all equal | Native `aegis` commands, the agent, future bridges |
 | Platform adapter | `aegis-mcp` (separate process and crate) | Scoped Aegis tools and one bridge-managed Agent Realm over MCP |
 | Agent product | `aegis-agent` (in-tree `aegis-agent`) | Providers, credentials, sessions, skills, permissions, and the CLI |
 

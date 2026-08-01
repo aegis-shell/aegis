@@ -114,7 +114,7 @@ use, however the ceiling was approved:
 - **Always allow** persists in `$XDG_DATA_HOME/aegis/grants.json` until
   revoked.
 
-Manage everything with `aegis-cli permissions` (`list`, `revoke`, `forget`,
+Manage everything with `aegis permissions` (`list`, `revoke`, `forget`,
 `rename`, `set-ceiling`, `register`) or the Permissions section of the Agent
 Workspaces application. Pairings, grants, revocations, and renames are
 recorded in the mutation journal.

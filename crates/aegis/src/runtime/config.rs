@@ -77,6 +77,177 @@ pub(super) fn effective_desktop_preferences(
     resolve_desktop_preferences(config, &PreferenceOverrides::from_env())
 }
 
+/// Whether the legacy source override makes the persistent `[wallpaper]`
+/// section inactive for this process. The optional model override is
+/// field-specific and can still be layered over a configured 2D source.
+pub(super) fn wallpaper_source_overridden() -> bool {
+    nonempty_env("AEGIS_WALLPAPER").is_some()
+}
+
+/// Build the effective wallpaper from the persistent mode model plus the
+/// backwards-compatible process environment. Relative configured paths are
+/// resolved beside `config.toml`; environment paths retain their historical
+/// current-working-directory semantics.
+pub(super) fn load_wallpaper(
+    config: Option<&aegis_config::Config>,
+    config_path: Option<&std::path::Path>,
+    device: &flux::Device,
+    surface: &flux::Surface,
+    target_size: (u32, u32),
+    bundled_image: &[u8],
+) -> Result<(aegis_wallpaper::Wallpaper, String), aegis_wallpaper::Error> {
+    let source_override = nonempty_env("AEGIS_WALLPAPER");
+    let model_override = nonempty_env("AEGIS_WALLPAPER_MODEL");
+    let override_is_gltf = source_override
+        .as_deref()
+        .is_some_and(|path| has_extension(path, "glb"));
+    let configured_is_parallax = source_override.is_none()
+        && config
+            .is_some_and(|config| config.wallpaper.mode == aegis_config::WallpaperMode::Parallax);
+
+    let (mut wallpaper, mut label) = if let Some(path) = source_override.as_deref() {
+        let wallpaper = if override_is_gltf {
+            aegis_wallpaper::Wallpaper::from_gltf(device, surface, path)?
+        } else {
+            aegis_wallpaper::Wallpaper::from_path(path, target_size.0, target_size.1)?
+        };
+        (wallpaper, format!("environment source {path}"))
+    } else {
+        load_configured_wallpaper(
+            config.map(|config| &config.wallpaper),
+            config_path,
+            device,
+            surface,
+            target_size,
+            bundled_image,
+        )?
+    };
+
+    if !override_is_gltf
+        && !configured_is_parallax
+        && let Some(model) = model_override.as_deref()
+    {
+        if model == "builtin" {
+            wallpaper.set_builtin_model(device, surface)?;
+        } else {
+            wallpaper.set_model_from_gltf(device, surface, model)?;
+        }
+        label.push_str(&format!(" + environment model {model}"));
+    } else if configured_is_parallax && model_override.is_some() {
+        log::warn!("wallpaper: AEGIS_WALLPAPER_MODEL ignored for explicit parallax mode");
+    }
+    Ok((wallpaper, label))
+}
+
+fn load_configured_wallpaper(
+    config: Option<&aegis_config::WallpaperConfig>,
+    config_path: Option<&std::path::Path>,
+    device: &flux::Device,
+    surface: &flux::Surface,
+    target_size: (u32, u32),
+    bundled_image: &[u8],
+) -> Result<(aegis_wallpaper::Wallpaper, String), aegis_wallpaper::Error> {
+    let defaults = aegis_config::WallpaperConfig::default();
+    let config = config.unwrap_or(&defaults);
+    use aegis_config::WallpaperMode;
+
+    match config.mode {
+        WallpaperMode::Image => {
+            if let Some(path) = config.source.as_deref() {
+                let path = configured_asset_path(config_path, path);
+                let wallpaper = aegis_wallpaper::Wallpaper::from_image_path(&path)?;
+                Ok((wallpaper, format!("image {}", path.display())))
+            } else {
+                Ok((
+                    aegis_wallpaper::Wallpaper::from_static_image_bytes(
+                        bundled_image,
+                        "bundled procedural-generation.png",
+                    )?,
+                    "bundled image".into(),
+                ))
+            }
+        }
+        WallpaperMode::Video => {
+            let path = configured_asset_path(
+                config_path,
+                config
+                    .source
+                    .as_deref()
+                    .expect("validated video wallpaper source"),
+            );
+            let wallpaper =
+                aegis_wallpaper::Wallpaper::from_video_path(&path, target_size.0, target_size.1)?;
+            Ok((wallpaper, format!("video {}", path.display())))
+        }
+        WallpaperMode::ThreeD => {
+            let model = config
+                .source
+                .as_deref()
+                .expect("validated 3D wallpaper source");
+            let mut wallpaper = if let Some(background) = config.background.as_deref() {
+                let background = configured_asset_path(config_path, background);
+                aegis_wallpaper::Wallpaper::from_path(&background, target_size.0, target_size.1)?
+            } else if model == "builtin" {
+                return Ok((
+                    aegis_wallpaper::Wallpaper::from_builtin_model(device, surface)?,
+                    "3d builtin".into(),
+                ));
+            } else {
+                let path = configured_asset_path(config_path, model);
+                return Ok((
+                    aegis_wallpaper::Wallpaper::from_gltf(device, surface, &path)?,
+                    format!("3d {}", path.display()),
+                ));
+            };
+            if model == "builtin" {
+                wallpaper.set_builtin_model(device, surface)?;
+            } else {
+                let path = configured_asset_path(config_path, model);
+                wallpaper.set_model_from_gltf(device, surface, &path)?;
+            }
+            Ok((wallpaper, format!("3d {model} with background")))
+        }
+        WallpaperMode::Parallax => {
+            let layers = config
+                .layers
+                .iter()
+                .map(|layer| {
+                    aegis_wallpaper::ParallaxLayerSpec::new(
+                        configured_asset_path(config_path, &layer.path),
+                        layer.depth,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let wallpaper = aegis_wallpaper::Wallpaper::from_parallax_layers(
+                &layers,
+                aegis_wallpaper::ParallaxOptions {
+                    max_shift: config.max_shift,
+                    transition: std::time::Duration::from_millis(config.transition_ms.into()),
+                },
+            )?;
+            Ok((wallpaper, format!("parallax ({} layers)", layers.len())))
+        }
+    }
+}
+
+fn configured_asset_path(config_path: Option<&std::path::Path>, value: &str) -> std::path::PathBuf {
+    let path = std::path::Path::new(value);
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    config_path
+        .and_then(std::path::Path::parent)
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(path)
+}
+
+fn has_extension(path: &str, wanted: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(wanted))
+}
+
 /// Resolve `$AEGIS_BACKEND`, defaulting to `auto`.
 ///
 /// Backend selection is process environment because it describes the launch

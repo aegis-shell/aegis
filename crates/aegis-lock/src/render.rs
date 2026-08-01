@@ -67,9 +67,34 @@ impl From<aegis_avatar::AvatarKind> for AvatarStatus {
 pub struct Graphics {
     pub device: flux::Device,
     background: Image,
-    avatar: Image,
+    avatar: AvatarResource,
     avatar_status: AvatarStatus,
     ash: AshBridge,
+}
+
+enum AvatarResource {
+    Loaded(aegis_avatar::Avatar),
+    Fallback(Image),
+}
+
+impl AvatarResource {
+    fn texture(&self) -> &Image {
+        match self {
+            Self::Loaded(avatar) => avatar.texture(),
+            Self::Fallback(texture) => texture,
+        }
+    }
+
+    fn is_animated(&self) -> bool {
+        matches!(self, Self::Loaded(avatar) if avatar.is_animated())
+    }
+
+    fn advance(&mut self, delta_seconds: f32) -> Result<bool, aegis_avatar::Error> {
+        match self {
+            Self::Loaded(avatar) => avatar.advance(delta_seconds),
+            Self::Fallback(_) => Ok(false),
+        }
+    }
 }
 
 impl Graphics {
@@ -82,22 +107,22 @@ impl Graphics {
         // screen supplies its own procedural gradient orb.
         let (avatar, avatar_status) = match aegis_avatar::Avatar::load(&device) {
             Ok(Some(loaded)) => {
-                let kind = loaded.kind;
-                (loaded.texture, AvatarStatus::from(kind))
+                let kind = loaded.kind();
+                (AvatarResource::Loaded(loaded), AvatarStatus::from(kind))
             }
-            Ok(None) => (
-                aegis_avatar::procedural_orb(&device).map_err(RenderError::from_avatar)?,
-                AvatarStatus::Fallback,
-            ),
+            Ok(None) => {
+                let texture =
+                    aegis_avatar::procedural_orb(&device).map_err(RenderError::from_avatar)?;
+                (AvatarResource::Fallback(texture), AvatarStatus::Fallback)
+            }
             // Any avatar error (a corrupt file, a GPU upload fault) is a real
             // fault worth surfacing; fall back to the procedural orb only for
             // the benign "no candidate" case handled above.
             Err(error) => {
                 log::warn!("lock: avatar load failed, using procedural orb: {error}");
-                (
-                    aegis_avatar::procedural_orb(&device).map_err(RenderError::from_avatar)?,
-                    AvatarStatus::Fallback,
-                )
+                let texture =
+                    aegis_avatar::procedural_orb(&device).map_err(RenderError::from_avatar)?;
+                (AvatarResource::Fallback(texture), AvatarStatus::Fallback)
             }
         };
         let ash = AshBridge::new(connection, &device)?;
@@ -158,12 +183,23 @@ impl Graphics {
     ) -> Result<(), RenderError> {
         surface.render(
             &self.background,
-            &self.avatar,
+            self.avatar.texture(),
             self.avatar_status,
             state,
             identity,
             visual_progress,
         )
+    }
+
+    pub fn advance_avatar(&mut self, delta_seconds: f32) -> Result<bool, RenderError> {
+        self.avatar
+            .advance(delta_seconds)
+            .map_err(RenderError::from_avatar)
+    }
+
+    #[must_use]
+    pub fn avatar_is_animated(&self) -> bool {
+        self.avatar.is_animated()
     }
 }
 
@@ -411,12 +447,17 @@ fn draw_materials(
     );
     match avatar_status {
         AvatarStatus::Image | AvatarStatus::Animated3d { .. } | AvatarStatus::Fallback => {
-            // Every avatar kind — a loaded photo, a rendered VRM model, or the
-            // procedural fallback orb — is prepared upstream as a circle-masked,
-            // premultiplied texture. A single draw_image composites a perfect
-            // disc, so no square content can ever leak past the circular
-            // keyline regardless of source aspect ratio or 3D framing.
-            canvas.draw_image(avatar, avatar_x, avatar_y, avatar_size, avatar_size);
+            // GPU-rendered VRM frames stay square internally; the analytic
+            // rounded-image clip keeps every source a perfect disc without a
+            // readback/re-upload on each animation frame.
+            canvas.draw_image_rrect(
+                avatar,
+                avatar_x,
+                avatar_y,
+                avatar_size,
+                avatar_size,
+                avatar_size * 0.5,
+            );
         }
     }
     // Crisp circular keyline drawn last so it frames whichever orb was used.

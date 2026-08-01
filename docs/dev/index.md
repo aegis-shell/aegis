@@ -14,5 +14,6 @@ the other `docs/` sections; see the [documentation index](../index.md).
 | [Distribution Packaging](packaging.md) | Reproducible build inputs, complete install manifest, package integration, and validation |
 | [VT/DRM Manual Testing](vt-drm-testing.md) | Run and try the compositor on real display and input hardware |
 | [Project Layout](project-layout.md) | Source tree map and ownership boundaries |
+| [Design Language](design/index.md) | Normative visual rules for chrome: principles, Liquid Glass, and surface materials |
 | [Observability](observability.md) | The tracing-based logging seam, log levels, and `RUST_LOG` workflow |
 | [Documentation Governance](documentation/index.md) | Rules for writing and routing docs |

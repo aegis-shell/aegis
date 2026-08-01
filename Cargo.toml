@@ -115,6 +115,8 @@ aegis-settings = { path = "crates/aegis-settings" }
 aegis-config = { path = "crates/aegis-config" }
 # IPC: versioned schema over a unix socket (ADR-0027).
 aegis-ipc = { path = "crates/aegis-ipc" }
+# Domain-oriented native command implementation used by the `aegis` binary.
+aegis-commands = { path = "crates/aegis-commands" }
 # Independently packaged xdg-desktop-portal backend: D-Bus bridge over the
 # scoped IPC (ADR-0075).
 aegis-portal = { path = "crates/aegis-portal" }

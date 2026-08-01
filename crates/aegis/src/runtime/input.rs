@@ -1034,6 +1034,25 @@ impl CompositorRuntime {
             input.set_display_size(logical.0, logical.1);
         }
 
+        // Parallax samples only exposed wallpaper. Crossing a client window
+        // deliberately withholds intermediate targets; the wallpaper's
+        // time-based filter then connects the two exposed samples smoothly
+        // when the pointer emerges on the other side.
+        let pointer = self.input_acc.cursor;
+        let pointer_over_wallpaper = !session_locked
+            && !self
+                .shell
+                .captures_pointer_at(pointer.0, pointer.1, self.input_acc.display_size)
+            && !self.server.client_occupies_point(pointer.0, pointer.1)
+            && self.server.interactive().is_none()
+            && !self.server.drag_active();
+        if let Some(wallpaper) = self.wallpaper.as_mut() {
+            wallpaper.set_pointer_position(
+                pointer_over_wallpaper.then_some(pointer),
+                self.input_acc.display_size,
+            );
+        }
+
         // Chrome owns the host cursor while it owns pointer routing. This is
         // what gives the launcher's search field a text caret and interactive
         // HUD/dock controls a pointing hand; leaving chrome restores the
@@ -1059,7 +1078,11 @@ impl CompositorRuntime {
             )
             && self.server.interactive().is_none()
             && !self.server.drag_active()
-            && !self.server.client_cursor_surface_active();
+            && !self.server.client_cursor_surface_active()
+            && !self
+                .wallpaper
+                .as_ref()
+                .is_some_and(aegis_wallpaper::Wallpaper::parallax_pointer_active);
         if cursor_plane_only {
             had_input = false;
         }

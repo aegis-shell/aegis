@@ -703,7 +703,7 @@ fn build_cursor_plane(card: &Card, handle: plane::Handle) -> Result<CursorPlane,
 
 /// The connector's advertised modes, deduplicated by (width, height,
 /// refresh) and sorted by pixel count then refresh rate, highest first — the
-/// order `aegis-cli outputs` presents them in.
+/// order `aegis display` presents them in.
 pub(super) fn advertised_modes(info: &connector::Info) -> Vec<OutputMode> {
     let mut modes: Vec<OutputMode> = info
         .modes()

@@ -32,3 +32,4 @@ let popover = aegis_design::materials::popover(&design);
 
 - [Architecture](../../docs/explanation/architecture.md)
 - [Design system decision](../../docs/adr/0046-design-system-crate.md)
+- [Design language](../../docs/dev/design/index.md)

@@ -21,11 +21,11 @@ aegis/
     aegis-settings/       standalone modular System Settings application
     aegis-hud/           display-only HUD status chips (system status, workspace dots, clock, SNI tray)
     aegis-command-panel/ full-screen modal command panel (quick settings, tray, notifications)
-    aegis-wallpaper/     image and short-video background layer
+    aegis-wallpaper/     image, video, 3D, and parallax background layer
     aegis-avatar/        user-avatar loading and rendering: still images and VRM models
     aegis-config/        TOML schema, typed atomic persistence, loader, live reload
     aegis-ipc/           versioned IPC and introspection over a unix socket
-    aegis-cli/       command-line driver for the IPC (reference external tool)
+    aegis-commands/    domain command parser and IPC dispatcher (lib-only)
     aegis-agent/         the in-tree agent runtime CLI (`aegis-agent`), internal persona: fuji (宓姬)
 
     aegis-desktop-entries/          freedesktop.org desktop-entry enumeration + icon lookup
@@ -57,17 +57,17 @@ Cross-repository development uses a
 | [`aegis-settings`](../../crates/aegis-settings/README.md) | Standalone modular System Settings application | [ADR-0069](../adr/0069-documentation-owned-installation-and-throwaway-development-staging.md) |
 | [`aegis-hud`](../../crates/aegis-hud/README.md) | Display-only HUD status chips with the StatusNotifierItem tray row | [ADR-0080](../adr/0080-hud-status-chips-and-sao-command-panel.md), [ADR-0081](../adr/0081-hud-and-command-panel-naming.md) |
 | [`aegis-command-panel`](../../crates/aegis-command-panel/README.md) | Full-screen modal command panel: quick settings, tray activation, and notifications | [ADR-0080](../adr/0080-hud-status-chips-and-sao-command-panel.md), [ADR-0081](../adr/0081-hud-and-command-panel-naming.md) |
-| [`aegis-wallpaper`](../../crates/aegis-wallpaper/README.md) | Image and short-video background layer | [ADR-0018](../adr/0018-wallpaper-crate.md) |
+| [`aegis-wallpaper`](../../crates/aegis-wallpaper/README.md) | Image, video, 3D, and parallax background layer | [ADR-0018](../adr/0018-wallpaper-crate.md), [ADR-0092](../adr/0092-explicit-wallpaper-modes-and-continuous-parallax.md) |
 | [`aegis-avatar`](../../crates/aegis-avatar/README.md) | User-avatar loading and rendering: still images and VRM models | [ADR-0080](../adr/0080-avatar-crate-xdg-conformant-vrm-aware.md) |
 | [`aegis-config`](../../crates/aegis-config/README.md) | Versioned TOML schema, typed atomic persistence, loader, and mtime-based live reload | [ADR-0026](../adr/0026-configuration-system.md) |
 | [`aegis-ipc`](../../crates/aegis-ipc/README.md) | Versioned schema and codec over a unix socket; the extension/automation surface | [ADR-0027](../adr/0027-ipc-and-introspection.md) |
-| [`aegis-cli`](../../crates/aegis-cli/README.md) | Command-line driver for the IPC; the reference external tool | [ADR-0027](../adr/0027-ipc-and-introspection.md) |
+| [`aegis-commands`](../../crates/aegis-commands/README.md) | Domain command parser, IPC dispatcher, and output formatter; no installed binary | [ADR-0093](../adr/0093-unified-domain-oriented-aegis-command-surface.md) |
 | [`aegis-mcp`](../../crates/aegis-mcp/README.md) | The platform's scoped MCP bridge for any agent (`aegis-mcp`) | [ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md), [ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md) |
 | [`aegis-agent`](../../crates/aegis-agent/README.md) | Aegis agent runtime: self-contained agent CLI (`aegis-agent`), internal persona fuji | [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md), [ADR-0089](../adr/0089-aegis-agent-product-and-fuji-identity-rename.md) |
 
 | [`aegis-desktop-entries`](../../crates/aegis-desktop-entries/README.md) | freedesktop.org desktop-entry enumeration and icon-theme lookup | [ADR-0022](../adr/0022-application-launcher.md) |
 | [`aegis-launcher`](../../crates/aegis-launcher/README.md) | Detached, XDG-environment-aware launching of desktop applications | [ADR-0022](../adr/0022-application-launcher.md) |
-| [`aegis`](../../crates/aegis/README.md) | Process entry point and frame loop | [Architecture](../explanation/architecture.md) |
+| [`aegis`](../../crates/aegis/README.md) | Unified process entry point, native command entry, and compositor frame loop | [Architecture](../explanation/architecture.md) |
 
 ## Placement Rules
 

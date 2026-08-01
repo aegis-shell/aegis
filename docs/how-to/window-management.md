@@ -87,7 +87,7 @@ is unavailable for minimized and fullscreen windows.
 
 ## Pick a Window in the Overview
 
-Press `Super+O` (or run `aegis-cli overview`) to open the overview: every
+Press `Super+O` (or run `aegis overview`) to open the overview: every
 window on the current workspace appears as a live thumbnail, with a
 workspace rail on the left. Click a thumbnail to focus that window and
 close the overview; click a rail tile to switch workspaces while the
@@ -111,11 +111,11 @@ when `Super` is released.
 Query the current ids, then issue a control command:
 
 ```bash
-aegis-cli windows
-aegis-cli focus 42
-aegis-cli minimize 42
-aegis-cli always-on-top 42 on
-aegis-cli close 42
+aegis window
+aegis window focus 42
+aegis window minimize 42
+aegis window always-on-top 42 on
+aegis window close 42
 ```
 
 See the [Command-Line Reference](../reference/cli.md) for the complete command

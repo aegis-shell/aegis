@@ -1,0 +1,7 @@
+# Local-only fixtures; keep the source files out of Git.
+# Expected names: avatar.vrm and optional companion avatar.vrma.
+# Enable with AEGIS_AVATAR_DEBUG_ASSETS=1. Set
+# AEGIS_AVATAR_DEBUG_DUMP=/tmp/aegis-avatar.png to save one preview frame.
+# AEGIS_AVATAR_DEBUG_TIME=2.5 selects the sampled animation time in seconds.
+*
+!.gitignore

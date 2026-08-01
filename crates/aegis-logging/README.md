@@ -2,7 +2,7 @@
 
 Shared tracing-based observability init for Aegis processes.
 
-Every first-party binary (`aegis`, `aegis-cli`, `aegis-idle`, `aegis-lock`,
+Every first-party binary (`aegis`, `aegis-idle`, `aegis-lock`,
 `aegis-portal`, `aegis-settings`) calls `aegis_logging::init` before doing
 work. Crates keep using the `log` facade; this crate installs a
 `tracing`-based subscriber and bridges `log::` records into it, so structured
@@ -13,7 +13,8 @@ every callsite.
 
 - `RUST_LOG` — a `tracing_subscriber::EnvFilter` directive, e.g.
   `info,aegis_backend::drm=debug`. Defaults to the filter passed to `init`
-  (`info` for services, `warn` for the one-shot CLI client).
+  (`info` when `aegis` runs the compositor and `warn` for one-shot management
+  commands).
 - `AEGIS_LOG_FORMAT=json` — emit machine-readable JSON instead of text.
 - `NO_COLOR` — disable ANSI color.
 

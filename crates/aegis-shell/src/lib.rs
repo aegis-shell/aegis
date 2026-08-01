@@ -110,6 +110,16 @@ pub struct BackdropRegion {
     pub h: f32,
 }
 
+/// One analytic liquid-glass body backed by a [`BackdropRegion`] capture.
+/// Radius and opacity participate in the same SDF composite as refraction,
+/// blur and edge lighting, so rounded corners and visibility cannot diverge.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct LiquidGlassRegion {
+    pub bounds: BackdropRegion,
+    pub corner_radius: f32,
+    pub opacity: f32,
+}
+
 /// One live preview target in the compositor-owned window switcher.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WindowSwitcherCard {
@@ -659,6 +669,18 @@ pub trait Chrome {
     /// [`Shell::set_windows`] and seeded by [`Shell::add`].
     fn update_windows(&mut self, _windows: &[Window]) {}
 
+    /// Prepare geometry/visibility that the backdrop capture must consume in
+    /// the same frame as [`Chrome::render`]. Components with cursor-driven
+    /// glass animations use this prepass so their SDF opacity never trails
+    /// foreground content by one frame.
+    fn prepare_backdrop(
+        &mut self,
+        _input: &Input,
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) {
+    }
+
     /// Edge space this component reserves; tiled windows avoid it (ADR-0024).
     /// Default none; overridden by chrome that should not be covered (the
     /// dock reserves the bottom edge). Summed by [`Shell::reserved`].
@@ -700,6 +722,17 @@ pub trait Chrome {
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<BackdropRegion> {
+        Vec::new()
+    }
+
+    /// Subset of [`Chrome::backdrop_regions`] that should use the analytic
+    /// thick-glass compositor instead of a rectangular frosted-blur clip.
+    fn liquid_glass_regions(
+        &self,
+        _display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> Vec<LiquidGlassRegion> {
         Vec::new()
     }
 }
@@ -1383,6 +1416,20 @@ impl Shell {
             .fold(0.0_f32, f32::max)
     }
 
+    /// Run the backdrop prepass for the components eligible to render this
+    /// frame. Call once after input is built and before querying blur regions.
+    pub fn prepare_backdrop(&mut self, input: &Input) {
+        let modal_active = self
+            .components
+            .iter()
+            .any(|component| component.modal_active());
+        for component in &mut self.components {
+            if !modal_active || component.visible_during_modal() {
+                component.prepare_backdrop(input, &self.windows, &self.workspaces);
+            }
+        }
+    }
+
     /// Glass regions contributed by components that will render this frame.
     /// Ordinary chrome is excluded while a modal is active, matching the
     /// render path below.
@@ -1407,6 +1454,28 @@ impl Shell {
                     });
                 }
                 regions.extend(requested);
+            }
+        }
+        regions
+    }
+
+    /// Analytic liquid-glass bodies contributed by components that will
+    /// render this frame. Visibility filtering mirrors [`Self::backdrop_regions`].
+    pub fn liquid_glass_regions(&self, display: (f32, f32)) -> Vec<LiquidGlassRegion> {
+        let modal_active = self
+            .components
+            .iter()
+            .any(|component| component.modal_active());
+        let mut regions = Vec::new();
+        for component in &self.components {
+            if (!modal_active || component.visible_during_modal())
+                && component.backdrop_blur_sigma() > 0.0
+            {
+                regions.extend(component.liquid_glass_regions(
+                    display,
+                    &self.windows,
+                    &self.workspaces,
+                ));
             }
         }
         regions

@@ -1,0 +1,18 @@
+schema_version = 1
+
+[wallpaper]
+mode = "parallax"
+max_shift = 36.0
+transition_ms = 260
+
+[[wallpaper.layer]]
+path = "../../../assets/wallpapers/parallax-alpine/far.png"
+depth = 0.0
+
+[[wallpaper.layer]]
+path = "../../../assets/wallpapers/parallax-alpine/mid.png"
+depth = 0.45
+
+[[wallpaper.layer]]
+path = "../../../assets/wallpapers/parallax-alpine/near.png"
+depth = 1.0

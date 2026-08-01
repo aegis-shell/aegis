@@ -1,9 +1,12 @@
 use super::*;
 
-/// Backdrop effects are evaluated at quarter resolution, then upsampled behind
-/// the launcher. Dual-Kawase removes the lost high-frequency detail, while the
-/// 16x pixel reduction bounds the cost of live 2D + 3D wallpaper capture.
-pub(super) const BACKDROP_DOWNSAMPLE: u32 = 4;
+/// Backdrop effects are evaluated at full physical resolution. Liquid-glass
+/// lensing samples the sharp capture directly, so a downsampled capture would
+/// read as a low-resolution smear behind every glass body. The capture is
+/// still clamped to the union of the declared regions (plus blur footprint),
+/// and the blur itself stays cheap through the fixed-cost dual-Kawase
+/// pyramid, so the full-resolution target only costs the region render.
+pub(super) const BACKDROP_DOWNSAMPLE: u32 = 1;
 
 /// Begin a compositor canvas pass without Flux's clear-triggered 4x MSAA.
 ///
@@ -86,7 +89,7 @@ pub(super) fn begin_opaque_target(
 }
 
 /// Union of the declared backdrop regions in physical pixels, expanded by
-/// the blur footprint and aligned to the downsample factor.
+/// the blur footprint and aligned to the capture grid.
 ///
 /// The backdrop capture only needs to cover what the blur can sample: the
 /// regions themselves plus a 3σ margin on every side (dual-Kawase gathers
@@ -137,6 +140,34 @@ pub(super) fn blur_capture_bounds(
     ((ox as u32, oy as u32), ((ex - ox) as u32, (ey - oy) as u32))
 }
 
+/// Convert output-logical liquid-glass declarations into coordinates of the
+/// capture image consumed by Optics. This is the single mapping
+/// used for shape, corner radius, refraction and the final image draw.
+pub(super) fn liquid_glass_groups(
+    regions: &[aegis_shell::LiquidGlassRegion],
+    capture_origin: (u32, u32),
+    scale: f32,
+    capture_ratio: f32,
+) -> Vec<flux::LiquidGlassGroup> {
+    let capture_scale = scale * capture_ratio;
+    regions
+        .iter()
+        .filter(|region| region.bounds.w > 0.0 && region.bounds.h > 0.0 && region.opacity > 0.0)
+        .map(|region| flux::LiquidGlassGroup {
+            primary: flux::LiquidGlassShape {
+                x: region.bounds.x * capture_scale - capture_origin.0 as f32 * capture_ratio,
+                y: region.bounds.y * capture_scale - capture_origin.1 as f32 * capture_ratio,
+                width: region.bounds.w * capture_scale,
+                height: region.bounds.h * capture_scale,
+                corner_radius: region.corner_radius * capture_scale,
+            },
+            merged: None,
+            blend_radius: 0.0,
+            opacity: region.opacity.clamp(0.0, 1.0),
+        })
+        .collect()
+}
+
 pub(super) struct BackdropCapture {
     image: flux::Image,
     size: (u32, u32),
@@ -150,10 +181,19 @@ pub(super) struct BackdropCapture {
 /// device-wide stalls while a 3D wallpaper continues animating.
 pub(super) struct LauncherBackdrop {
     blur: flux::BlurFilter,
+    glass: flux::LiquidGlassFilter,
     captures: Vec<Option<BackdropCapture>>,
     was_active: bool,
     failed_session: bool,
     unsupported: bool,
+}
+
+/// Borrowed composites produced from one shared backdrop capture. Frosted
+/// regions sample `blurred`; analytic glass regions are already SDF-masked in
+/// `liquid` and can be drawn once without rectangular clipping.
+pub(super) struct BackdropImages<'filter> {
+    pub(super) blurred: flux::BlurredImage<'filter>,
+    pub(super) liquid: Option<flux::LiquidGlassImage<'filter>>,
 }
 
 #[derive(Clone, Copy)]
@@ -166,6 +206,7 @@ impl LauncherBackdrop {
     pub(super) fn new(device: &flux::Device) -> Result<Self, flux::Error> {
         Ok(Self {
             blur: flux::BlurFilter::new(device)?,
+            glass: flux::LiquidGlassFilter::new(device)?,
             captures: Vec::new(),
             was_active: false,
             failed_session: false,
@@ -176,6 +217,7 @@ impl LauncherBackdrop {
     /// `extent` is the physical-pixel area the capture must cover (the blur
     /// regions' padded union, or the full surface for a live 3D wallpaper);
     /// the capture target is allocated at `extent / BACKDROP_DOWNSAMPLE`.
+    /// With full-resolution captures the quotient is the extent itself.
     pub(super) fn prepare(
         &mut self,
         active: bool,
@@ -276,17 +318,40 @@ impl LauncherBackdrop {
             .map(|capture| capture.size)
     }
 
-    pub(super) fn end_capture_and_blur<'backdrop>(
+    pub(super) fn end_capture_and_compose<'backdrop>(
         &'backdrop mut self,
         canvas: &flux::Canvas,
         frame: &flux::Frame<'_>,
         sigma: f32,
-    ) -> Option<flux::BlurredImage<'backdrop>> {
+        glass_groups: &[flux::LiquidGlassGroup],
+        glass_params: flux::LiquidGlassParams,
+    ) -> Option<BackdropImages<'backdrop>> {
         canvas.end_target();
         let slot = frame.index() as usize;
         let capture = self.captures.get(slot)?.as_ref()?;
         match self.blur.apply(frame, &capture.image, sigma) {
-            Ok(image) => Some(image),
+            Ok(blurred) => {
+                let liquid = if glass_groups.is_empty() {
+                    None
+                } else {
+                    match self.glass.apply(
+                        frame,
+                        &capture.image,
+                        &blurred,
+                        glass_groups,
+                        glass_params,
+                    ) {
+                        Ok(image) => Some(image),
+                        Err(error) => {
+                            log::warn!(
+                                "launcher: liquid-glass dispatch failed ({error}); using frost fallback"
+                            );
+                            None
+                        }
+                    }
+                };
+                Some(BackdropImages { blurred, liquid })
+            }
             Err(error) => {
                 log::warn!(
                     "launcher: realtime backdrop dispatch failed ({error}); using translucent fallback"
@@ -961,7 +1026,8 @@ mod tests {
     #[test]
     fn capture_bounds_align_to_downsample() {
         // A floating region: origin/size land on BACKDROP_DOWNSAMPLE
-        // multiples so the capture scale stays exactly 1/4.
+        // multiples so the capture grid stays exact. With a full-resolution
+        // capture the bounds are the exact padded region union.
         let (origin, size) = blur_capture_bounds(
             &[region(100.0, 100.0, 200.0, 50.0)],
             (1920, 1080),
@@ -970,7 +1036,7 @@ mod tests {
             12.0,
         );
         assert_eq!(origin, (64, 64));
-        assert_eq!(size, (272, 124));
+        assert_eq!(size, (272, 122));
         assert_eq!(origin.0 % BACKDROP_DOWNSAMPLE, 0);
         assert_eq!(origin.1 % BACKDROP_DOWNSAMPLE, 0);
         assert_eq!(size.0 % BACKDROP_DOWNSAMPLE, 0);
@@ -990,6 +1056,26 @@ mod tests {
         );
         assert_eq!(origin, (0, 0));
         assert_eq!(size, (1920, 104));
+    }
+
+    #[test]
+    fn liquid_glass_geometry_maps_to_the_downsampled_capture_once() {
+        let source = aegis_shell::LiquidGlassRegion {
+            bounds: region(400.0, 100.0, 320.0, 74.0),
+            corner_radius: 18.0,
+            opacity: 0.4,
+        };
+        // Output scale 2, capture downsample 1/2, physical capture origin
+        // (600, 120): capture coordinates are logical*1 - origin*0.5.
+        let groups = liquid_glass_groups(&[source], (600, 120), 2.0, 0.5);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].primary.x, 100.0);
+        assert_eq!(groups[0].primary.y, 40.0);
+        assert_eq!(groups[0].primary.width, 320.0);
+        assert_eq!(groups[0].primary.height, 74.0);
+        assert_eq!(groups[0].primary.corner_radius, 18.0);
+        assert_eq!(groups[0].opacity, 0.4);
+        assert!(groups[0].merged.is_none());
     }
 
     #[test]

@@ -87,6 +87,12 @@ pub struct Config {
     #[serde(default)]
     pub input: InputConfig,
 
+    /// Desktop wallpaper source and presentation mode. Environment overrides
+    /// are resolved by the compositor runtime and take precedence over this
+    /// persistent configuration.
+    #[serde(default)]
+    pub wallpaper: WallpaperConfig,
+
     /// Per-output display policy (ADR-0028), written as `[[output]]`
     /// array-of-tables. Each entry overrides the backend-reported mode,
     /// scale, position, transform, or primary-output selection for one connector.
@@ -438,6 +444,74 @@ pub struct InputConfig {
     pub touchpad: TouchpadConfig,
 }
 
+/// The wallpaper rendering strategy selected by [`WallpaperConfig`]. Keeping
+/// the four user-facing modes explicit prevents source-specific options from
+/// accumulating as ambiguous combinations of booleans.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WallpaperMode {
+    #[default]
+    Image,
+    Video,
+    #[serde(rename = "3d")]
+    ThreeD,
+    Parallax,
+}
+
+/// One image in a parallax wallpaper, ordered from farthest to nearest.
+/// `depth` is normalized: `0.0` remains fixed and `1.0` receives the full
+/// configured pointer displacement.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WallpaperLayerConfig {
+    pub path: String,
+    pub depth: f32,
+}
+
+/// The `[wallpaper]` section.
+///
+/// Image and video modes use `source`; 3D uses `source` for `builtin` or a
+/// `.glb` and may place it over `background`; parallax uses two to eight
+/// `[[wallpaper.layer]]` images. Relative paths are resolved beside the
+/// configuration file by the compositor.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WallpaperConfig {
+    #[serde(default)]
+    pub mode: WallpaperMode,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub background: Option<String>,
+    #[serde(default = "default_wallpaper_max_shift")]
+    pub max_shift: f32,
+    #[serde(default = "default_wallpaper_transition_ms")]
+    pub transition_ms: u32,
+    #[serde(default, rename = "layer")]
+    pub layers: Vec<WallpaperLayerConfig>,
+}
+
+const fn default_wallpaper_max_shift() -> f32 {
+    32.0
+}
+
+const fn default_wallpaper_transition_ms() -> u32 {
+    240
+}
+
+impl Default for WallpaperConfig {
+    fn default() -> Self {
+        Self {
+            mode: WallpaperMode::Image,
+            source: None,
+            background: None,
+            max_shift: default_wallpaper_max_shift(),
+            transition_ms: default_wallpaper_transition_ms(),
+            layers: Vec::new(),
+        }
+    }
+}
+
 /// One `[[output]]` entry: per-connector display policy (ADR-0028). Only
 /// `connector` is required; every other field overrides one aspect of the
 /// backend-reported geometry.
@@ -708,6 +782,7 @@ impl Config {
                 "must be between 0.0 and 1.0",
             ));
         }
+        validate_wallpaper(&cfg.wallpaper, &mut diagnostics);
         for (index, output) in cfg.outputs.iter().enumerate() {
             if output.connector.trim().is_empty() {
                 diagnostics.push(Diagnostic::new(
@@ -1053,6 +1128,132 @@ impl Config {
             );
         }
         policies
+    }
+}
+
+fn validate_wallpaper(config: &WallpaperConfig, diagnostics: &mut Vec<Diagnostic>) {
+    let nonempty = |value: &Option<String>| {
+        value
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    };
+    let reject_layers = |diagnostics: &mut Vec<Diagnostic>| {
+        if !config.layers.is_empty() {
+            diagnostics.push(Diagnostic::new(
+                Some("wallpaper.layer".into()),
+                "is only valid when wallpaper.mode is 'parallax'",
+            ));
+        }
+    };
+
+    match config.mode {
+        WallpaperMode::Image => {
+            if config
+                .source
+                .as_ref()
+                .is_some_and(|path| path.trim().is_empty())
+            {
+                diagnostics.push(Diagnostic::new(
+                    Some("wallpaper.source".into()),
+                    "must not be empty",
+                ));
+            }
+            if config.background.is_some() {
+                diagnostics.push(Diagnostic::new(
+                    Some("wallpaper.background".into()),
+                    "is only valid when wallpaper.mode is '3d'",
+                ));
+            }
+            reject_layers(diagnostics);
+        }
+        WallpaperMode::Video => {
+            if !nonempty(&config.source) {
+                diagnostics.push(Diagnostic::new(
+                    Some("wallpaper.source".into()),
+                    "is required when wallpaper.mode is 'video'",
+                ));
+            }
+            if config.background.is_some() {
+                diagnostics.push(Diagnostic::new(
+                    Some("wallpaper.background".into()),
+                    "is only valid when wallpaper.mode is '3d'",
+                ));
+            }
+            reject_layers(diagnostics);
+        }
+        WallpaperMode::ThreeD => {
+            if !nonempty(&config.source) {
+                diagnostics.push(Diagnostic::new(
+                    Some("wallpaper.source".into()),
+                    "is required when wallpaper.mode is '3d'",
+                ));
+            }
+            if config
+                .background
+                .as_ref()
+                .is_some_and(|path| path.trim().is_empty())
+            {
+                diagnostics.push(Diagnostic::new(
+                    Some("wallpaper.background".into()),
+                    "must not be empty",
+                ));
+            }
+            reject_layers(diagnostics);
+        }
+        WallpaperMode::Parallax => {
+            if config.source.is_some() {
+                diagnostics.push(Diagnostic::new(
+                    Some("wallpaper.source".into()),
+                    "is not used when wallpaper.mode is 'parallax'; use [[wallpaper.layer]]",
+                ));
+            }
+            if config.background.is_some() {
+                diagnostics.push(Diagnostic::new(
+                    Some("wallpaper.background".into()),
+                    "is not used when wallpaper.mode is 'parallax'; use [[wallpaper.layer]]",
+                ));
+            }
+            if !(2..=8).contains(&config.layers.len()) {
+                diagnostics.push(Diagnostic::new(
+                    Some("wallpaper.layer".into()),
+                    "parallax requires between 2 and 8 layers",
+                ));
+            }
+            if !config.max_shift.is_finite() || !(1.0..=256.0).contains(&config.max_shift) {
+                diagnostics.push(Diagnostic::new(
+                    Some("wallpaper.max_shift".into()),
+                    "must be between 1 and 256 logical pixels",
+                ));
+            }
+            if !(80..=2_000).contains(&config.transition_ms) {
+                diagnostics.push(Diagnostic::new(
+                    Some("wallpaper.transition_ms".into()),
+                    "must be between 80 and 2000 milliseconds",
+                ));
+            }
+            let mut previous_depth = f32::NEG_INFINITY;
+            for (index, layer) in config.layers.iter().enumerate() {
+                let prefix = format!("wallpaper.layer.{index}");
+                if layer.path.trim().is_empty() {
+                    diagnostics.push(Diagnostic::new(
+                        Some(format!("{prefix}.path")),
+                        "must not be empty",
+                    ));
+                }
+                if !layer.depth.is_finite() || !(0.0..=1.0).contains(&layer.depth) {
+                    diagnostics.push(Diagnostic::new(
+                        Some(format!("{prefix}.depth")),
+                        "must be between 0.0 (fixed/far) and 1.0 (nearest)",
+                    ));
+                } else if layer.depth < previous_depth {
+                    diagnostics.push(Diagnostic::new(
+                        Some(format!("{prefix}.depth")),
+                        "layers must be ordered from farthest to nearest (ascending depth)",
+                    ));
+                }
+                previous_depth = previous_depth.max(layer.depth);
+            }
+        }
     }
 }
 

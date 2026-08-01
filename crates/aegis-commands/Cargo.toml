@@ -1,24 +1,18 @@
 [package]
-name = "aegis-cli"
-description = "Command-line driver for the aegis IPC (the reference external tool)"
-readme = "README.md"
+name = "aegis-commands"
+description = "Domain-oriented management commands for a running Aegis session"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [lib]
-name = "aegis_cli"
+name = "aegis_commands"
 path = "src/lib.rs"
-
-[[bin]]
-name = "aegis-cli"
-path = "src/main.rs"
 
 [dependencies]
 aegis-ipc = { workspace = true }
 aegis-core = { workspace = true, features = ["serde"] }
-aegis-logging.workspace = true
 aegis-config = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

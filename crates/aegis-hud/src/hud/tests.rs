@@ -97,6 +97,22 @@ fn chip_fade_eases_toward_the_target_and_snaps_under_reduced_motion() {
 }
 
 #[test]
+fn backdrop_prepass_advances_glass_and_content_on_the_same_frame() {
+    let mut bar = Hud::new();
+    let workspaces = workspaces_empty();
+    let mut input = Input::new((1920.0, 1080.0), 0.016);
+    input.set_cursor(10.0, 10.0);
+
+    bar.prepare_backdrop(&input, &[], &workspaces);
+
+    assert!(bar.frame_prepared);
+    assert!(bar.chip_fade[LEFT] < 1.0 && bar.chip_fade[LEFT] > 0.0);
+    let glass = bar.liquid_glass_regions((1920.0, 1080.0), &[], &workspaces);
+    assert_eq!(glass.len(), 1);
+    assert_eq!(glass[0].opacity, bar.chip_fade[LEFT]);
+}
+
+#[test]
 fn backdrop_regions_cover_only_the_visible_chips() {
     let mut bar = Hud::new();
     bar.layout.visible = [true, true];
@@ -120,12 +136,22 @@ fn backdrop_regions_cover_only_the_visible_chips() {
     assert_eq!(regions[0].x, 8.0);
     assert_eq!(regions[1].x, 1600.0);
     assert_eq!(bar.backdrop_blur_sigma(), BACKDROP_BLUR_SIGMA);
+    let glass = bar.liquid_glass_regions((1920.0, 1080.0), &[], &workspaces);
+    assert_eq!(glass.len(), 2);
+    assert_eq!(glass[0].bounds, regions[0]);
+    assert_eq!(glass[0].corner_radius, CHIP_RADIUS);
+    assert_eq!(glass[0].opacity, 1.0);
+    assert_eq!(glass[1].opacity, 0.5);
 
     // Every chip faded: no blur work at all (an empty region list with a
     // nonzero sigma would be treated as full-screen).
     bar.chip_fade = [0.0, 0.0];
     let regions = bar.backdrop_regions((1920.0, 1080.0), &[], &workspaces);
     assert!(regions.is_empty());
+    assert!(
+        bar.liquid_glass_regions((1920.0, 1080.0), &[], &workspaces)
+            .is_empty()
+    );
     assert_eq!(bar.backdrop_blur_sigma(), 0.0);
 }
 

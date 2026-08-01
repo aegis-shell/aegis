@@ -290,8 +290,11 @@ impl CompositorRuntime {
                     logical_size,
                     scale,
                 };
+                self.shell.prepare_backdrop(&input);
                 let blur_sigma = self.shell.backdrop_blur_sigma();
                 let backdrop_regions = self.shell.backdrop_regions(self.input_acc.display_size);
+                let liquid_glass_regions =
+                    self.shell.liquid_glass_regions(self.input_acc.display_size);
                 let model_active = self
                     .wallpaper
                     .as_ref()
@@ -398,10 +401,24 @@ impl CompositorRuntime {
                             capture_scale,
                         );
                         self.canvas.restore();
-                        let blurred = self.launcher_backdrop.end_capture_and_blur(
+                        let glass_groups = liquid_glass_groups(
+                            &liquid_glass_regions,
+                            capture_origin,
+                            scale,
+                            capture_ratio,
+                        );
+                        let capture_pixel_scale = scale * capture_ratio;
+                        let composites = self.launcher_backdrop.end_capture_and_compose(
                             &self.canvas,
                             &frame,
                             blur_sigma * capture_scale,
+                            &glass_groups,
+                            flux::LiquidGlassParams {
+                                refraction: 8.0 * capture_pixel_scale,
+                                chromatic_aberration: 1.25 * capture_pixel_scale,
+                                edge_width: 18.0 * capture_pixel_scale,
+                                ..Default::default()
+                            },
                         );
                         begin_opaque_frame(&self.canvas, &frame, self.clear)?;
                         // Preserve the live desktop everywhere, then replace
@@ -420,8 +437,19 @@ impl CompositorRuntime {
                             overview_active,
                             window_switcher.as_ref(),
                         )?;
-                        if let Some(image) = blurred {
+                        if let Some(images) = composites {
+                            let liquid_available = images.liquid.is_some();
                             for region in &backdrop_regions {
+                                // Optics already applied the exact rounded SDF
+                                // and alpha to liquid bodies. Only legacy frost
+                                // regions still need a rectangular clip.
+                                if liquid_available
+                                    && liquid_glass_regions
+                                        .iter()
+                                        .any(|glass| glass.bounds == *region)
+                                {
+                                    continue;
+                                }
                                 let x = region.x.max(0.0) * scale;
                                 let y = region.y.max(0.0) * scale;
                                 let w = region
@@ -443,7 +471,7 @@ impl CompositorRuntime {
                                 // capture bounds; stretching it over that
                                 // rect (instead of the full frame) keeps the
                                 // scene-to-blur sampling identity.
-                                image.draw(
+                                images.blurred.draw(
                                     &self.canvas,
                                     capture_origin.0 as f32,
                                     capture_origin.1 as f32,
@@ -451,6 +479,18 @@ impl CompositorRuntime {
                                     capture_extent.1 as f32,
                                 );
                                 self.canvas.restore();
+                            }
+                            if let Some(image) = images.liquid.as_ref() {
+                                // Transparent outside every analytic body; a
+                                // single draw composites all Dock/HUD shapes
+                                // with no clip rectangle and no dead corners.
+                                image.draw(
+                                    &self.canvas,
+                                    capture_origin.0 as f32,
+                                    capture_origin.1 as f32,
+                                    capture_extent.0 as f32,
+                                    capture_extent.1 as f32,
+                                );
                             }
                         }
                     }

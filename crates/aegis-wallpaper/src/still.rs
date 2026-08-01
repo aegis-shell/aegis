@@ -1,7 +1,7 @@
 //! Still and animated image sources, decoded via the `image` crate.
 //!
-//! Each emitted frame is tightly packed BGRA8 at the source's full canvas
-//! size. Animated GIF/WebP frames that cover only a sub-rect of the
+//! Each emitted frame is tightly packed premultiplied BGRA8 at the source's
+//! full canvas size. Animated GIF/WebP frames that cover only a sub-rect of the
 //! canvas are composited onto the previous frame's contents during
 //! decode, so consumers always see uniformly-sized buffers and can pass
 //! them straight to `flux::Image::from_bytes`.
@@ -36,7 +36,7 @@ pub(super) struct StillSource {
 }
 
 struct Frame {
-    /// Tightly packed BGRA8, `width * height * 4` bytes.
+    /// Tightly packed premultiplied BGRA8, `width * height * 4` bytes.
     pixels: Vec<u8>,
     /// How long this frame should be shown before advancing.
     duration: Duration,
@@ -91,7 +91,7 @@ impl StillSource {
         let rgba = img.to_rgba8();
         let (w, h) = (rgba.width(), rgba.height());
         let mut pixels = rgba.into_raw();
-        rgba_to_bgra_inplace(&mut pixels);
+        rgba_to_premultiplied_bgra_inplace(&mut pixels);
         StillSource {
             frames: vec![Frame {
                 pixels,
@@ -237,10 +237,18 @@ fn frame_duration(f: &image::Frame) -> Duration {
     Duration::from_nanos(nanos).max(Duration::from_millis(16))
 }
 
-/// Swap R and B in tightly packed RGBA8 to produce BGRA8 in place.
-fn rgba_to_bgra_inplace(buf: &mut [u8]) {
+/// Convert tightly packed straight RGBA8 to premultiplied BGRA8. Flux canvas
+/// image draws use premultiplied source-over blending, so retaining straight
+/// RGB on a partially transparent edge would produce a bright fringe.
+fn rgba_to_premultiplied_bgra_inplace(buf: &mut [u8]) {
     for chunk in buf.chunks_exact_mut(4) {
-        chunk.swap(0, 2);
+        let red = chunk[0] as u32;
+        let green = chunk[1] as u32;
+        let blue = chunk[2] as u32;
+        let alpha = chunk[3] as u32;
+        chunk[0] = ((blue * alpha + 127) / 255) as u8;
+        chunk[1] = ((green * alpha + 127) / 255) as u8;
+        chunk[2] = ((red * alpha + 127) / 255) as u8;
     }
 }
 
@@ -291,10 +299,10 @@ mod tests {
     }
 
     #[test]
-    fn rgba_to_bgra_swaps_channels() {
-        let mut buf = [10u8, 20, 30, 40];
-        rgba_to_bgra_inplace(&mut buf);
-        assert_eq!(buf, [30, 20, 10, 40]);
+    fn rgba_to_bgra_swaps_channels_and_premultiplies_alpha() {
+        let mut buf = [64u8, 128, 192, 128];
+        rgba_to_premultiplied_bgra_inplace(&mut buf);
+        assert_eq!(buf, [96, 64, 32, 128]);
     }
 
     #[test]

@@ -11,7 +11,7 @@ see [Explanation](../explanation/index.md).
 |------|---------|
 | [Configuration](config.md) | The `config.toml` schema: fields, key names, modifier names, action names, and defaults |
 | [System Shortcuts](keyboard-shortcuts.md) | Default global keyboard, pointer, quit, and VT controls |
-| [Command-Line Reference](cli.md) | `aegis-cli` query, control, event-stream, JSON, and exit-status reference |
+| [Command-Line Reference](cli.md) | Native `aegis` startup, resource commands, event streams, JSON, and exit-status reference |
 | [IPC Reference](ipc.md) | Protocol capabilities, queries, commands, geometry, synthetic input, and scope behavior |
 | [System Settings](settings.md) | Standalone app invocation, module routes, backend availability, and apply behavior |
 | [Session Service Commands](session-services.md) | Lock-screen and idle-coordinator invocation, options, defaults, and exit behavior |

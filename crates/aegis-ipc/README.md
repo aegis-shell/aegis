@@ -53,8 +53,8 @@ require a named scope, an explicit operation, and a live connection-bound
 lease. An unknown explicit name is refused, and hot-reloaded restrictions
 apply to existing named connections on their next operation and again before
 capture descriptors are sent. Interaction-group Realm mutations authorize
-every affected window, not only the nominated member. Prefer `aegis-cli` for
-shell scripts and interactive inspection.
+every affected window, not only the nominated member. Prefer native `aegis`
+resource commands for shell scripts and interactive inspection.
 
 Persistent-settings clients call `Client::settings`, then submit a typed
 action through `Client::apply_settings` with the revision they observed. The

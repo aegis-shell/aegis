@@ -81,9 +81,8 @@ pub(super) fn render_text(f: &mut Frame, id: &str, rect: Rect, text: &str, size:
 }
 
 /// One display-only status cell: a themed raster icon (or vector fallback)
-/// plus an optional compact label. Raster images cannot be alpha-faded by
-/// lens, so they draw only above the image-fade floor while vector content
-/// fades smoothly with the chip theme.
+/// plus an optional compact label. The raster tint follows the exact same
+/// fade as the chip theme and compositor glass body.
 pub(super) fn render_status_cell(
     f: &mut Frame,
     id: &str,
@@ -103,13 +102,16 @@ pub(super) fn render_status_cell(
                 ..Default::default()
             },
             |f| {
-                if fade > IMAGE_FADE_FLOOR {
-                    match themed_icon {
-                        Some(icon) => unsafe {
-                            f.image(icon as *mut lens::sys::flux_image, 16.0, 16.0)
-                        },
-                        None => f.icon(fallback, 15.0),
-                    }
+                match themed_icon {
+                    Some(icon) => unsafe {
+                        f.image_tinted(
+                            icon as *mut lens::sys::flux_image,
+                            16.0,
+                            16.0,
+                            Color::rgba(255, 255, 255, fade_alpha(255, fade)),
+                        )
+                    },
+                    None => f.icon(fallback, 15.0),
                 }
                 if !label.is_empty() {
                     f.label_compact_sized(label, 11.0);
@@ -119,15 +121,14 @@ pub(super) fn render_status_cell(
     });
 }
 
-/// The floating HUD chip material: the same frosted tint the full-width bar
-/// used, reshaped into a pill with a hairline edge. The desktop capture
-/// underneath provides the blur; `fade` scales the whole material for the
-/// cursor-proximity fade.
+/// The floating HUD chip foreground tint. The compositor's SDF glass pass now
+/// supplies the body, refraction and rim; this intentionally stays subtle so
+/// it does not turn the physical glass back into an opaque dark pill.
 pub(super) fn chip_opts(fade: f32) -> OverlayOpts {
     OverlayOpts {
-        bg: fade_color(Color::rgba(24, 26, 36, 148), fade),
-        border: fade_color(Color::rgba(255, 255, 255, 26), fade),
-        border_width: 1.0,
+        bg: fade_color(Color::rgba(24, 26, 36, 42), fade),
+        border: fade_color(Color::rgba(255, 255, 255, 18), fade),
+        border_width: 0.75,
         radius: CHIP_RADIUS,
         pad: 0.0,
         ..Default::default()

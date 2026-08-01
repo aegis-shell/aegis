@@ -52,7 +52,7 @@ backend, renderer, and shell behind clear seams so the
 | | `aegis-settings` | Standalone modular System Settings application |
 | | `aegis-hud` | Display-only HUD status chips: system status, workspace dots, clock, notification count, and the StatusNotifierItem tray row |
 | | `aegis-command-panel` | Full-screen modal command panel: quick settings, tray activation, and notification dismissal |
-| | `aegis-wallpaper` | Background layer: multi-format image and short-video wallpaper |
+| | `aegis-wallpaper` | Background layer: image, video, 3D, and multi-plane parallax wallpaper |
 | | `aegis-avatar` | User-avatar loading and rendering: still images and VRM models |
 | | `aegis-config` | Declarative configuration: versioned TOML schema, loader, live reload |
 | **Session services** | `aegis-lock` | Multi-output session-lock presentation and PAM authentication |
@@ -60,7 +60,7 @@ backend, renderer, and shell behind clear seams so the
 | **Convenience channels** | `aegis-desktop-entries` | freedesktop.org desktop-entry enumeration and icon-theme lookup |
 | | `aegis-launcher` | Ordinary app detachment and fail-closed Realm namespace/cgroup launch |
 | | `aegis-ipc` | Native capability broker contract: versioned identity, scopes, leases, Realm authority, sealed capture transport, and introspection over a Unix socket |
-| | `aegis-cli` | Command-line driver for the aegis IPC (the reference external tool) |
+| | `aegis-commands` | Domain-oriented parser and IPC dispatcher behind native `aegis` management commands |
 | **AI integration** | `aegis-mcp` | Stateless MCP `2026-07-28` adapter over the native broker, with one subject-bound Agent Realm per connector instance (ADR-0090) |
 | | `aegis-agent` | Aegis agent runtime: providers, agent loop, tools, MCP client, sessions, skills, permissions (Persona: fuji) |
 
@@ -91,7 +91,8 @@ user sees or can do" tasks:
   [ADR-0069](../adr/0069-documentation-owned-installation-and-throwaway-development-staging.md),
   [ADR-0045](../adr/0045-statusbar-crate-and-sni-tray.md)).
 - **"Add an external control path"** (CLI or scripts) → `aegis-ipc` +
-  `aegis-cli`; agents consume that same IPC through the `aegis-mcp` bridge
+  native `aegis` resource commands; agents consume that same IPC through the
+  `aegis-mcp` bridge
   without entering the compositor process
   ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md),
   [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md),

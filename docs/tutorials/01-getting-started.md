@@ -80,8 +80,8 @@ connectivity together.
 From a second terminal in the same user session, run:
 
 ```bash
-cargo run --locked -p aegis-cli -- outputs
-cargo run --locked -p aegis-cli -- windows
+cargo run --locked -p aegis -- display
+cargo run --locked -p aegis -- window
 ```
 
 Both commands print state from the running compositor. Stop Aegis with

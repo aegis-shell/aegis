@@ -2328,7 +2328,7 @@ fn builtin_scope_connections_do_not_pair() {
         Capabilities::QUERY,
         Some(aegis_ipc::LOCAL_REALM_ADMIN_SCOPE.to_string()),
         aegis_ipc::AgentHello {
-            label: Some("aegis-cli".into()),
+            label: Some("aegis".into()),
             requested: vec![],
             credential: None,
         },

@@ -1,23 +1,25 @@
 //! Compositor wallpaper for aegis.
 //!
-//! Loads an image (PNG, JPEG, GIF, WebP, BMP, TIFF, …) or a short video
-//! (anything `ffmpeg` can decode) and renders it as the bottom-most layer
-//! of the frame. Multi-frame sources (animated GIF/WebP, video) advance
-//! per-frame inside [`Wallpaper::draw`].
+//! Renders image, short-video, glTF, or multi-plane pointer-parallax scenes as
+//! the bottom-most frame layers. Multi-frame sources (animated GIF/WebP and
+//! video) and parallax transitions advance inside [`Wallpaper::draw`].
 //!
-//! The crate owns decode state only — like `aegis_render::Renderer`, it
-//! does not hold a reference to the flux device or canvas. Each frame the
-//! main loop calls [`Wallpaper::draw`] with the current device, canvas,
-//! and output size. See ADR-0018 for the design.
+//! The crate owns decode, GPU scene-resource, and animation state, but it does
+//! not retain the flux device or canvas. Each frame the main loop calls
+//! [`Wallpaper::draw`] with the current device, canvas, and output size. See
+//! ADR-0018 and ADR-0092 for the design.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 mod model;
+mod parallax;
 mod still;
 mod video;
 
 use model::ModelLayer;
+use parallax::ParallaxScene;
+pub use parallax::{ParallaxLayerSpec, ParallaxOptions};
 use still::StillSource;
 use video::VideoSource;
 
@@ -40,6 +42,8 @@ pub enum Error {
     GltfBounds(PathBuf),
     #[error("wallpaper: 3D render resource: {0}")]
     Flux(#[from] flux::Error),
+    #[error("wallpaper: parallax configuration: {0}")]
+    Parallax(String),
 }
 
 /// Per-source decode + pacing state. Each implementation owns its pixels
@@ -87,6 +91,9 @@ pub struct Wallpaper {
     /// Optional depth-tested model layer drawn between the media background
     /// and compositor client surfaces.
     model: Option<ModelLayer>,
+    /// A parallax scene replaces the single 2D source while retaining the
+    /// same bottom-layer draw contract.
+    parallax: Option<ParallaxScene>,
 }
 
 impl Wallpaper {
@@ -130,6 +137,7 @@ impl Wallpaper {
                 flux_image: None,
                 last_uploaded_gen: u64::MAX,
                 model: None,
+                parallax: None,
             });
         }
 
@@ -149,6 +157,68 @@ impl Wallpaper {
             flux_image: None,
             last_uploaded_gen: u64::MAX,
             model: None,
+            parallax: None,
+        })
+    }
+
+    /// Load only an image source. Unlike [`Wallpaper::from_path`], this does
+    /// not fall back to ffmpeg when image decoding fails.
+    pub fn from_image_path(path: impl AsRef<Path>) -> Result<Self, Error> {
+        let path = path.as_ref();
+        let metadata =
+            std::fs::metadata(path).map_err(|error| Error::Open(path.to_path_buf(), error))?;
+        if !metadata.is_file() {
+            return Err(Error::Open(
+                path.to_path_buf(),
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "wallpaper source is not a regular file",
+                ),
+            ));
+        }
+        let still = StillSource::load(path)?;
+        let (width, height) = still.dimensions();
+        log::info!("wallpaper: image loaded {:?} ({}x{})", path, width, height);
+        Ok(Self {
+            source: SourceKind::Still(still),
+            width,
+            height,
+            flux_image: None,
+            last_uploaded_gen: u64::MAX,
+            model: None,
+            parallax: None,
+        })
+    }
+
+    /// Load only a video source through ffmpeg.
+    pub fn from_video_path(
+        path: impl AsRef<Path>,
+        target_w: u32,
+        target_h: u32,
+    ) -> Result<Self, Error> {
+        let path = path.as_ref();
+        let metadata =
+            std::fs::metadata(path).map_err(|error| Error::Open(path.to_path_buf(), error))?;
+        if !metadata.is_file() {
+            return Err(Error::Open(
+                path.to_path_buf(),
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "wallpaper source is not a regular file",
+                ),
+            ));
+        }
+        let video = VideoSource::open(path, target_w, target_h)?;
+        let (width, height) = video.dimensions();
+        log::info!("wallpaper: video loaded {:?} ({}x{})", path, width, height);
+        Ok(Self {
+            source: SourceKind::Video(video),
+            width,
+            height,
+            flux_image: None,
+            last_uploaded_gen: u64::MAX,
+            model: None,
+            parallax: None,
         })
     }
 
@@ -166,6 +236,7 @@ impl Wallpaper {
             flux_image: None,
             last_uploaded_gen: u64::MAX,
             model: None,
+            parallax: None,
         })
     }
 
@@ -185,6 +256,43 @@ impl Wallpaper {
             flux_image: None,
             last_uploaded_gen: u64::MAX,
             model: Some(model),
+            parallax: None,
+        })
+    }
+
+    /// Construct a model-only wallpaper with the built-in procedural scene.
+    pub fn from_builtin_model(
+        device: &flux::Device,
+        surface: &flux::Surface,
+    ) -> Result<Self, Error> {
+        let model = ModelLayer::builtin(device, surface)?;
+        Ok(Self {
+            source: SourceKind::Still(StillSource::transparent_pixel()),
+            width: 1,
+            height: 1,
+            flux_image: None,
+            last_uploaded_gen: u64::MAX,
+            model: Some(model),
+            parallax: None,
+        })
+    }
+
+    /// Load a back-to-front stack of image planes as a pointer-driven
+    /// parallax wallpaper.
+    pub fn from_parallax_layers(
+        layers: &[ParallaxLayerSpec],
+        options: ParallaxOptions,
+    ) -> Result<Self, Error> {
+        let parallax = ParallaxScene::load(layers, options)?;
+        let (width, height) = parallax.dimensions();
+        Ok(Self {
+            source: SourceKind::Still(StillSource::transparent_pixel()),
+            width,
+            height,
+            flux_image: None,
+            last_uploaded_gen: u64::MAX,
+            model: None,
+            parallax: Some(parallax),
         })
     }
 
@@ -213,11 +321,44 @@ impl Wallpaper {
         self.model.is_some()
     }
 
+    pub fn has_parallax(&self) -> bool {
+        self.parallax.is_some()
+    }
+
+    /// Whether an exposed-wallpaper pointer sample currently drives the
+    /// parallax target. Callers use this to avoid taking a cursor-plane-only
+    /// presentation path when the wallpaper itself must redraw.
+    pub fn parallax_pointer_active(&self) -> bool {
+        self.parallax
+            .as_ref()
+            .is_some_and(ParallaxScene::pointer_active)
+    }
+
+    /// Update the parallax target from a logical-output pointer sample.
+    /// `None` means the pointer is over a client/chrome surface or outside the
+    /// output; the last target is retained and any existing transition can
+    /// settle normally.
+    pub fn set_pointer_position(&mut self, position: Option<(f32, f32)>, viewport: (f32, f32)) {
+        if let Some(parallax) = self.parallax.as_mut() {
+            parallax.set_pointer(position, viewport);
+        }
+    }
+
+    /// Apply the desktop-wide accessibility motion policy.
+    pub fn set_reduced_motion(&mut self, reduced: bool) {
+        if let Some(parallax) = self.parallax.as_mut() {
+            parallax.set_reduced_motion(reduced);
+        }
+    }
+
     /// Delay after which the wallpaper's visible frame changes, if the
     /// source animates (video or multi-frame image). `None` for single-frame
     /// sources; the 3D model layer is paced by the caller's animation tick
     /// and does not count here.
     pub fn next_frame_in(&self) -> Option<Duration> {
+        if let Some(parallax) = self.parallax.as_ref() {
+            return parallax.next_frame_in();
+        }
         match &self.source {
             SourceKind::Still(s) => s.next_frame_in(),
             SourceKind::Video(v) => v.next_frame_in(),
@@ -268,6 +409,10 @@ impl Wallpaper {
     /// are drawn. For animated/video sources the per-source pacing is
     /// advanced here using wall-clock time.
     pub fn draw(&mut self, device: &flux::Device, canvas: &flux::Canvas, dst_w: f32, dst_h: f32) {
+        if let Some(parallax) = self.parallax.as_mut() {
+            parallax.draw(device, canvas, dst_w, dst_h);
+            return;
+        }
         let now = Instant::now();
         let (pixels, r#gen) = match &mut self.source {
             SourceKind::Still(s) => s.poll(now),

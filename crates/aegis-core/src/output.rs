@@ -196,7 +196,7 @@ pub struct OutputInfo {
     pub connector: String,
     pub geometry: OutputGeometry,
     /// Modes the connector advertises (deduplicated, highest resolution
-    /// first), so `aegis-cli outputs` and agents can see what `mode` requests
+    /// first), so `aegis display` and agents can see what `mode` requests
     /// are valid. Empty where the backend cannot enumerate (nested).
     /// `serde(default)` keeps pre-field IPC peers compatible.
     #[cfg_attr(feature = "serde", serde(default))]

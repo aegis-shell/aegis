@@ -1,10 +1,10 @@
-//! Typed CLI errors and exit-code mapping.
+//! Typed command errors and exit-code mapping.
 //!
 //! Replaces the previous `Result<_, String>` surface with a structured enum.
 //! The dispatcher returns [`CliError`]; the binary maps each variant to a
 //! stable process exit code (0 success, 1 runtime, 2 usage).
 
-/// All failures surfaced through `aegis-cli`.
+/// All failures surfaced through native `aegis` domain commands.
 ///
 /// `clap::Error` is wrapped verbatim because clap already renders an
 /// appropriate `error: ... \n\nUsage: ...` message; we just need to forward

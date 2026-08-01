@@ -7,6 +7,8 @@ Wayland compositor built on flux and lens.
 
 - Initialize logging, configuration, the presentation backend, and the
   graphics stack.
+- Select compositor mode or a native domain command before initializing the
+  corresponding runtime.
 - Construct the Wayland server, renderer, shell components, wallpaper, and
   IPC server.
 - Run the frame loop and route input, window actions, application launches,
@@ -27,6 +29,15 @@ and serves the control socket at `$XDG_RUNTIME_DIR/aegis.sock`. Realm
 application launch additionally requires the packaged systemd user service
 with delegated `cpu`, `memory`, and `pids` controllers; other compositor
 functions remain available when that preflight fails.
+
+Running `aegis` with a resource subcommand instead connects to an existing
+session without entering the compositor runtime. For example:
+
+```bash
+aegis display
+aegis window
+aegis workspace switch next
+```
 
 ## Use
 

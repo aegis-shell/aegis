@@ -17,7 +17,7 @@ is the bare-metal bring-up and smoke checklist.
 Build the release binary before leaving the graphical session:
 
 ```bash
-cargo build --locked --release -p aegis -p aegis-settings -p aegis-cli
+cargo build --locked --release -p aegis -p aegis-settings
 ```
 
 ## Start
@@ -74,7 +74,7 @@ card to:
 The change is written atomically to `~/.config/aegis/config.toml`. Direct DRM
 sessions apply it after the current page flip retires. In a nested session the
 card is read-only because the outer compositor owns the physical monitors.
-Run `aegis-cli outputs` to inspect exact connector names, advertised modes,
+Run `aegis display` to inspect exact connector names, advertised modes,
 and the effective scale. The DRM startup log includes the validated physical
 size, calculated PPI, output kind, and automatic scale.
 
@@ -102,15 +102,15 @@ First bare-metal run, in order:
    is reprobed, the surface recreated if the modifier set changed, and
    workspaces return to their home connector (ADR-0025).
 7. **Session lock.** Lock, confirm the screen shows only the lock client,
-   and unlock. While locked, `aegis-cli` commands are refused.
-8. **Screenshot.** `aegis-cli screenshot /tmp/tty.png` produces a PNG of the
+   and unlock. While locked, native `aegis` management commands are refused.
+8. **Screenshot.** `aegis display capture /tmp/tty.png` produces a PNG of the
    desktop (also exercises the CPU readback path).
 
 ## Stop
 
 Request a graceful compositor shutdown with one of these methods:
 
-- Run `aegis-cli quit` from a terminal inside aegis.
+- Run `aegis quit` from a terminal inside aegis.
 - Press `Super+Ctrl+Q` or the alternate `Super+Shift+Return` binding.
 
 The compositor disables its outputs, releases the seat and DRM device, and

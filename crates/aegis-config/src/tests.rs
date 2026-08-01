@@ -736,6 +736,68 @@ fn ui_reduced_motion_parses_and_defaults_false() {
 }
 
 #[test]
+fn wallpaper_modes_parse_with_safe_defaults() {
+    let default = Config::parse("schema_version = 1\n").unwrap();
+    assert_eq!(default.wallpaper, WallpaperConfig::default());
+
+    let parallax = Config::parse(
+        "schema_version = 1\n\
+         [wallpaper]\n\
+         mode = \"parallax\"\n\
+         max_shift = 40.0\n\
+         transition_ms = 300\n\
+         [[wallpaper.layer]]\n\
+         path = \"wallpapers/sky.png\"\n\
+         depth = 0.0\n\
+         [[wallpaper.layer]]\n\
+         path = \"wallpapers/trees.png\"\n\
+         depth = 1.0\n",
+    )
+    .unwrap();
+    assert_eq!(parallax.wallpaper.mode, WallpaperMode::Parallax);
+    assert_eq!(parallax.wallpaper.layers.len(), 2);
+    assert_eq!(parallax.wallpaper.max_shift, 40.0);
+
+    let model = Config::parse(
+        "schema_version = 1\n\
+         [wallpaper]\n\
+         mode = \"3d\"\n\
+         source = \"builtin\"\n\
+         background = \"wallpapers/sky.png\"\n",
+    )
+    .unwrap();
+    assert_eq!(model.wallpaper.mode, WallpaperMode::ThreeD);
+}
+
+#[test]
+fn wallpaper_parallax_rejects_discrete_or_ambiguous_configs() {
+    for text in [
+        "schema_version = 1\n[wallpaper]\nmode = \"parallax\"\n",
+        "schema_version = 1\n[wallpaper]\nmode = \"video\"\n",
+        "schema_version = 1\n[wallpaper]\nmode = \"image\"\n[[wallpaper.layer]]\npath = \"a.png\"\ndepth = 0.0\n",
+        "schema_version = 1\n[wallpaper]\nmode = \"parallax\"\ntransition_ms = 0\n[[wallpaper.layer]]\npath = \"near.png\"\ndepth = 1.0\n[[wallpaper.layer]]\npath = \"far.png\"\ndepth = 0.0\n",
+    ] {
+        assert!(Config::parse(text).is_err(), "unexpectedly accepted {text}");
+    }
+}
+
+#[test]
+fn bundled_parallax_example_and_its_layers_stay_valid() {
+    let text = include_str!("../../../examples/parallax-wallpaper/aegis/config.toml");
+    let config = Config::parse(text).expect("example config parses");
+    assert_eq!(config.wallpaper.mode, WallpaperMode::Parallax);
+    let config_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/parallax-wallpaper/aegis");
+    for layer in &config.wallpaper.layers {
+        assert!(
+            config_dir.join(&layer.path).is_file(),
+            "missing example layer {}",
+            layer.path
+        );
+    }
+}
+
+#[test]
 fn ui_window_decorations_default_to_borderless_and_accept_client_side() {
     let default = Config::parse("schema_version = 1\n").unwrap();
     assert_eq!(

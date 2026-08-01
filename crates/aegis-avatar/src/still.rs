@@ -16,7 +16,7 @@ pub fn build(device: &Device, path: &Path) -> Result<Image, Error> {
     // A VRM file reaching this path is a configuration mistake (it belongs in
     // the VRM search order); skip it rather than trying to decode glTF as a
     // raster image.
-    if crate::is_vrm_path(path) {
+    if crate::is_vrm_path(path) || crate::is_vrma_path(path) {
         return Err(Error::Io(
             path.to_path_buf(),
             std::io::Error::new(
@@ -68,7 +68,7 @@ mod tests {
         // as a raster image. The extension check is a pure function, so no GPU
         // device is needed to exercise the rejection.
         assert!(crate::is_vrm_path(Path::new("/x/avatar.vrm")));
-        assert!(crate::is_vrm_path(Path::new("/x/idle.VRMA")));
+        assert!(crate::is_vrma_path(Path::new("/x/idle.VRMA")));
         assert!(!crate::is_vrm_path(Path::new("/x/face.png")));
     }
 }

@@ -1,16 +1,17 @@
-//! aegis-cli: the command-line driver for the aegis IPC.
+//! Native domain commands for inspecting and controlling a running Aegis session.
 //!
-//! The reference external tool (ADR-0027): it connects to a running
-//! compositor's IPC socket and drives it — list windows/workspaces, focus,
-//! minimize, close, switch workspace, inspect and control live-system state,
-//! post a notification, quit. The [`run`] entry point is unit-testable against
-//! a loopback server; the thin binary in `main.rs` parses argv via `clap` and
-//! prints the result.
+//! Domain commands remain an external IPC client at runtime even though they
+//! share the `aegis` executable with the compositor. The [`run`] entry point is
+//! unit-testable against a loopback server; the binary selects client or
+//! compositor mode before initializing either runtime.
 
 mod cli;
 mod error;
 
-pub use cli::{Cli, Command, OnOff, PermissionsCmd, RealmCmd, Region, SwitchDir, SystemCmd};
+pub use cli::{
+    Cli, Command, DisplayCmd, JournalCmd, LayoutState, NotificationCmd, OnOff, PermissionsCmd,
+    RealmCmd, Region, SystemCmd, WindowCmd, WorkspaceCmd, WorkspaceTarget,
+};
 pub use error::CliError;
 
 use std::path::Path;
@@ -22,7 +23,16 @@ use aegis_ipc::{Capabilities, Client, Event, RealmAction, RealmActionResult};
 use clap::{CommandFactory, Parser};
 use serde::Serialize;
 
-use crate::cli::Command as Cmd;
+use self::cli::Command as Cmd;
+
+/// Parse the current process arguments into the unified Aegis command model.
+///
+/// The executable calls this before initializing logging or either runtime;
+/// keeping the `clap` dependency here preserves the command crate's ownership
+/// of parsing and generated help.
+pub fn parse_env() -> Result<Cli, clap::Error> {
+    Cli::try_parse()
+}
 
 /// Connect to `socket`, parse `args` into a typed [`Cli`] via `clap`, and
 /// return the formatted output. Errors are typed ([`CliError`]); the binary
@@ -62,7 +72,7 @@ fn parse_cli(args: &[String]) -> Result<ParseOutcome, CliError> {
     // name so clap's "Usage:" line is consistent regardless of how the
     // caller collected `args`.
     let mut full = Vec::with_capacity(args.len() + 1);
-    full.push("aegis-cli".to_string());
+    full.push("aegis".to_string());
     full.extend(args.iter().cloned());
     match Cli::try_parse_from(full) {
         Ok(cli) => Ok(ParseOutcome::Cli(cli)),
@@ -80,54 +90,107 @@ fn parse_cli(args: &[String]) -> Result<ParseOutcome, CliError> {
 /// directly to stdout).
 fn dispatch_command(socket: &Path, cli: Cli) -> Result<String, CliError> {
     let Cli { json, command } = cli;
+    let command = command.ok_or_else(client_command_required)?;
     match command {
-        Cmd::Windows => {
-            let mut client = Client::connect_with(socket, query_caps()).map_err(connect_err)?;
-            let wins = client.windows().map_err(io_err)?;
-            Ok(render(&wins, json, |v| format_windows(v)))
+        Cmd::Run => Err(client_command_required()),
+        Cmd::Display { command } => dispatch_display(socket, command, json),
+        Cmd::Window { command } => dispatch_window(socket, command, json),
+        Cmd::Workspace { command } => dispatch_workspace(socket, command, json),
+        Cmd::Notification { command } => dispatch_notification(socket, command, json),
+        Cmd::Journal { command } => dispatch_journal(socket, command, json),
+        Cmd::Realm { command } => dispatch_realm(socket, command.unwrap_or(RealmCmd::List), json),
+        Cmd::Permissions { command } => {
+            dispatch_permissions(socket, command.unwrap_or(PermissionsCmd::List), json)
         }
-        Cmd::Workspaces => {
-            let mut client = Client::connect_with(socket, query_caps()).map_err(connect_err)?;
-            let snap = client.workspaces().map_err(io_err)?;
-            Ok(render(&snap, json, format_workspaces))
+        Cmd::System { command } => {
+            dispatch_system(socket, command.unwrap_or(SystemCmd::Status), json)
         }
-        Cmd::Outputs => {
-            let mut client = Client::connect_with(socket, query_caps()).map_err(connect_err)?;
-            let outs = client.outputs().map_err(io_err)?;
-            Ok(render(&outs, json, |v| format_outputs(v)))
+        Cmd::Overview => {
+            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
+            client
+                .command(aegis_ipc::Command::ToggleOverview)
+                .map_err(io_err)?;
+            Ok(receipt("toggled overview", json))
         }
-        Cmd::Notifications => {
-            let mut client = Client::connect_with(socket, query_caps()).map_err(connect_err)?;
-            let notifications = client.notifications().map_err(io_err)?;
-            Ok(render(&notifications, json, |v| format_notifications(v)))
+        Cmd::Events => {
+            run_stream(socket, false, json)?;
+            Ok(String::new())
         }
-        Cmd::Journal { since } => {
-            let mut client = Client::connect_with(socket, query_caps()).map_err(connect_err)?;
-            let snapshot = client.journal(since.unwrap_or(0)).map_err(io_err)?;
-            Ok(render(&snapshot, json, format_journal))
+        Cmd::Completions { shell } => {
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "aegis", &mut std::io::stdout());
+            Ok(String::new())
         }
-        Cmd::Realm(action) => dispatch_realm(socket, action, json),
-        Cmd::Permissions(action) => dispatch_permissions(socket, action, json),
-        Cmd::System(action) => dispatch_system(socket, action, json),
-        Cmd::Focus { id } => {
+        Cmd::Quit => {
+            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
+            client.command(aegis_ipc::Command::Quit).map_err(io_err)?;
+            Ok(receipt("quit requested", json))
+        }
+    }
+}
+
+fn client_command_required() -> CliError {
+    CliError::Usage(Cli::command().error(
+        clap::error::ErrorKind::MissingSubcommand,
+        "a domain command is required when using the IPC client",
+    ))
+}
+
+fn dispatch_display(
+    socket: &Path,
+    command: Option<DisplayCmd>,
+    json: bool,
+) -> Result<String, CliError> {
+    match command.unwrap_or(DisplayCmd::List) {
+        DisplayCmd::List => {
+            let mut client = Client::connect_with(socket, query_caps()).map_err(connect_err)?;
+            let displays = client.outputs().map_err(io_err)?;
+            Ok(render(&displays, json, |value| format_outputs(value)))
+        }
+        DisplayCmd::Capture { path, region } => {
+            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
+            let path = match path {
+                Some(path) => path,
+                None => screenshot_path(&aegis_config::default_screenshot_dir())?,
+            };
+            client
+                .screenshot_region(path.clone(), region.map(Into::into))
+                .map_err(io_err)?;
+            Ok(receipt(format!("display capture queued → {path}"), json))
+        }
+    }
+}
+
+fn dispatch_window(
+    socket: &Path,
+    command: Option<WindowCmd>,
+    json: bool,
+) -> Result<String, CliError> {
+    match command.unwrap_or(WindowCmd::List) {
+        WindowCmd::List => {
+            let mut client = Client::connect_with(socket, query_caps()).map_err(connect_err)?;
+            let windows = client.windows().map_err(io_err)?;
+            Ok(render(&windows, json, |value| format_windows(value)))
+        }
+        WindowCmd::Focus { id } => {
             let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client
                 .command(aegis_ipc::Command::Focus {
                     id: aegis_core::window::WindowId(id),
                 })
                 .map_err(io_err)?;
-            Ok(format!("focused {id}"))
+            Ok(receipt(format!("focused {id}"), json))
         }
-        Cmd::Minimize { id } => {
+        WindowCmd::Minimize { id } => {
             let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client
                 .command(aegis_ipc::Command::Minimize {
                     id: aegis_core::window::WindowId(id),
                 })
                 .map_err(io_err)?;
-            Ok(format!("minimized {id}"))
+            Ok(receipt(format!("minimized {id}"), json))
         }
-        Cmd::AlwaysOnTop { id, state } => {
+        WindowCmd::AlwaysOnTop { id, state } => {
             let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             let on_top = bool::from(state);
             client
@@ -136,38 +199,64 @@ fn dispatch_command(socket: &Path, cli: Cli) -> Result<String, CliError> {
                     on_top,
                 })
                 .map_err(io_err)?;
-            Ok(format!("always-on-top {on_top} for {id}"))
+            Ok(receipt(format!("always-on-top {on_top} for {id}"), json))
         }
-        Cmd::Close { id } => {
+        WindowCmd::Close { id } => {
             let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client
                 .command(aegis_ipc::Command::Close {
                     id: aegis_core::window::WindowId(id),
                 })
                 .map_err(io_err)?;
-            Ok(format!("close requested for {id}"))
+            Ok(receipt(format!("close requested for {id}"), json))
         }
-        Cmd::SetGeometry { id, x, y, w, h } => {
+        WindowCmd::Geometry {
+            id,
+            x,
+            y,
+            width,
+            height,
+        } => {
             let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
-            let rect = aegis_core::Rect::new(x, y, w, h);
+            let rect = aegis_core::Rect::new(x, y, width, height);
             client
                 .set_window_geometry(aegis_core::window::WindowId(id), rect)
                 .map_err(io_err)?;
-            Ok(format!("set window {id} geometry to {x},{y} {w}x{h}",))
+            Ok(receipt(
+                format!("set window {id} geometry to {x},{y} {width}x{height}"),
+                json,
+            ))
         }
-        Cmd::Switch { direction } => {
+    }
+}
+
+fn dispatch_workspace(
+    socket: &Path,
+    command: Option<WorkspaceCmd>,
+    json: bool,
+) -> Result<String, CliError> {
+    match command.unwrap_or(WorkspaceCmd::List) {
+        WorkspaceCmd::List => {
+            let mut client = Client::connect_with(socket, query_caps()).map_err(connect_err)?;
+            let workspaces = client.workspaces().map_err(io_err)?;
+            Ok(render(&workspaces, json, format_workspaces))
+        }
+        WorkspaceCmd::Switch {
+            target: WorkspaceTarget::Id(id),
+        } => {
             let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
-            let dir: aegis_core::workspace::Switch = direction.into();
-            client.switch_workspace(dir).map_err(io_err)?;
-            Ok(format!("switched {dir:?}"))
+            client
+                .switch_workspace_to(aegis_core::workspace::WorkspaceId(id))
+                .map_err(io_err)?;
+            Ok(receipt(format!("switched to workspace {id}"), json))
         }
-        Cmd::SwitchTo { id } => {
+        WorkspaceCmd::Switch { target } => {
             let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
-            let ws = aegis_core::workspace::WorkspaceId(id);
-            client.switch_workspace_to(ws).map_err(io_err)?;
-            Ok(format!("switched to workspace {id}"))
+            let direction: aegis_core::workspace::Switch = target.into();
+            client.switch_workspace(direction).map_err(io_err)?;
+            Ok(receipt(format!("switched {direction:?}"), json))
         }
-        Cmd::MoveTo { window, workspace } => {
+        WorkspaceCmd::MoveWindow { window, workspace } => {
             let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client
                 .command(aegis_ipc::Command::MoveToWorkspace {
@@ -175,60 +264,77 @@ fn dispatch_command(socket: &Path, cli: Cli) -> Result<String, CliError> {
                     workspace: aegis_core::workspace::WorkspaceId(workspace),
                 })
                 .map_err(io_err)?;
-            Ok(format!("moved window {window} to workspace {workspace}"))
+            Ok(receipt(
+                format!("moved window {window} to workspace {workspace}"),
+                json,
+            ))
         }
-        Cmd::Tiling => {
+        WorkspaceCmd::Layout {
+            state: LayoutState::Toggle,
+        } => {
             let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client.toggle_tiling().map_err(io_err)?;
-            Ok("toggled tiling".into())
+            Ok(receipt("toggled workspace layout", json))
         }
-        Cmd::Notify { summary, body } => {
+        WorkspaceCmd::Layout { state } => {
+            let enabled = matches!(state, LayoutState::Tiled);
+            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
+            client
+                .apply_system_action(aegis_ipc::SystemAction::SetTiling { enabled })
+                .map_err(io_err)?;
+            Ok(receipt(
+                format!(
+                    "workspace layout changed to {}",
+                    if enabled { "tiled" } else { "floating" }
+                ),
+                json,
+            ))
+        }
+    }
+}
+
+fn dispatch_notification(
+    socket: &Path,
+    command: Option<NotificationCmd>,
+    json: bool,
+) -> Result<String, CliError> {
+    match command.unwrap_or(NotificationCmd::List) {
+        NotificationCmd::List => {
+            let mut client = Client::connect_with(socket, query_caps()).map_err(connect_err)?;
+            let notifications = client.notifications().map_err(io_err)?;
+            Ok(render(&notifications, json, |value| {
+                format_notifications(value)
+            }))
+        }
+        NotificationCmd::Send { summary, body } => {
             let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client
                 .notify(summary, body.unwrap_or_default(), None)
                 .map_err(io_err)?;
-            Ok("notified".into())
+            Ok(receipt("notification sent", json))
         }
-        Cmd::Dismiss { id } => {
+        NotificationCmd::Dismiss { id } => {
             let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client.dismiss_notification(id).map_err(io_err)?;
-            Ok(format!("dismissed {id}"))
+            Ok(receipt(format!("dismissed {id}"), json))
         }
-        Cmd::Screenshot { path, region } => {
-            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
-            let path = match path {
-                Some(p) => p,
-                None => screenshot_path(&aegis_config::default_screenshot_dir())?,
-            };
-            client
-                .screenshot_region(path.clone(), region.map(Into::into))
-                .map_err(io_err)?;
-            Ok(format!("screenshot queued → {path}"))
+    }
+}
+
+fn dispatch_journal(
+    socket: &Path,
+    command: Option<JournalCmd>,
+    json: bool,
+) -> Result<String, CliError> {
+    match command.unwrap_or(JournalCmd::List { since: None }) {
+        JournalCmd::List { since } => {
+            let mut client = Client::connect_with(socket, query_caps()).map_err(connect_err)?;
+            let snapshot = client.journal(since.unwrap_or(0)).map_err(io_err)?;
+            Ok(render(&snapshot, json, format_journal))
         }
-        Cmd::Overview => {
-            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
-            client
-                .command(aegis_ipc::Command::ToggleOverview)
-                .map_err(io_err)?;
-            Ok("toggled overview".into())
-        }
-        Cmd::Subscribe => {
-            run_stream(socket, false)?;
+        JournalCmd::Follow => {
+            run_stream(socket, true, json)?;
             Ok(String::new())
-        }
-        Cmd::SubscribeJournal => {
-            run_stream(socket, true)?;
-            Ok(String::new())
-        }
-        Cmd::Completions { shell } => {
-            let mut cmd = Cli::command();
-            clap_complete::generate(shell, &mut cmd, "aegis-cli", &mut std::io::stdout());
-            Ok(String::new())
-        }
-        Cmd::Quit => {
-            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
-            client.command(aegis_ipc::Command::Quit).map_err(io_err)?;
-            Ok("quit requested".into())
         }
     }
 }
@@ -273,16 +379,10 @@ fn dispatch_system(socket: &Path, command: SystemCmd, json: bool) -> Result<Stri
             },
             "Do Not Disturb change queued",
         ),
-        SystemCmd::Tiling { state } => (
-            aegis_ipc::SystemAction::SetTiling {
-                enabled: state.into(),
-            },
-            "layout change queued",
-        ),
     };
     let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
     client.apply_system_action(action).map_err(io_err)?;
-    Ok(acknowledgement.into())
+    Ok(receipt(acknowledgement, json))
 }
 
 fn dispatch_permissions(
@@ -312,14 +412,17 @@ fn dispatch_permissions(
                 Client::connect_scoped(socket, control_caps(), aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE)
                     .map_err(connect_err)?;
             client.revoke_agent_grant(&principal, op).map_err(io_err)?;
-            Ok(format!("revoked the {op:?} grant for {principal}"))
+            Ok(receipt(
+                format!("revoked the {op:?} grant for {principal}"),
+                json,
+            ))
         }
         PermissionsCmd::Forget { principal } => {
             let mut client =
                 Client::connect_scoped(socket, control_caps(), aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE)
                     .map_err(connect_err)?;
             client.forget_agent_principal(&principal).map_err(io_err)?;
-            Ok(format!("forgot principal {principal}"))
+            Ok(receipt(format!("forgot principal {principal}"), json))
         }
         PermissionsCmd::Rename { principal, label } => {
             let mut client =
@@ -328,10 +431,11 @@ fn dispatch_permissions(
             client
                 .rename_agent_principal(&principal, label.as_deref())
                 .map_err(io_err)?;
-            Ok(match label {
+            let message = match label {
                 Some(label) => format!("renamed {principal} to '{label}'"),
                 None => format!("cleared the label of {principal}"),
-            })
+            };
+            Ok(receipt(message, json))
         }
         PermissionsCmd::SetCeiling {
             principal,
@@ -344,7 +448,10 @@ fn dispatch_permissions(
             client
                 .set_agent_ceiling(&principal, pregrant, gated)
                 .map_err(io_err)?;
-            Ok(format!("replaced the ceiling of {principal}"))
+            Ok(receipt(
+                format!("replaced the ceiling of {principal}"),
+                json,
+            ))
         }
         PermissionsCmd::Register {
             label,
@@ -500,9 +607,9 @@ fn dispatch_realm(socket: &Path, action: RealmCmd, json: bool) -> Result<String,
             client
                 .launch_in_realm(realm, desktop_id.clone())
                 .map_err(io_err)?;
-            Ok(format!(
-                "launch of {desktop_id} queued in Realm {}",
-                realm.0
+            Ok(receipt(
+                format!("launch of {desktop_id} queued in Realm {}", realm.0),
+                json,
             ))
         }
         RealmCmd::Capture {
@@ -567,16 +674,16 @@ fn dispatch_realm(socket: &Path, action: RealmCmd, json: bool) -> Result<String,
 /// Subscribe to the event stream and print each event as a line until the
 /// connection closes. Returns the error that ended the stream.
 pub fn run_subscribe(socket: &Path) -> Result<(), CliError> {
-    run_stream(socket, false)
+    run_stream(socket, false, false)
 }
 
 /// Subscribe to the detailed mutation journal and print entries until the
 /// connection closes.
 pub fn run_subscribe_journal(socket: &Path) -> Result<(), CliError> {
-    run_stream(socket, true)
+    run_stream(socket, true, false)
 }
 
-fn run_stream(socket: &Path, journal: bool) -> Result<(), CliError> {
+fn run_stream(socket: &Path, journal: bool, json: bool) -> Result<(), CliError> {
     let caps = Capabilities {
         query: true,
         control: false,
@@ -598,7 +705,14 @@ fn run_stream(socket: &Path, journal: bool) -> Result<(), CliError> {
         let ev = client
             .next_event()
             .map_err(|e| CliError::Io(format!("event stream ended: {e}")))?;
-        println!("{}", format_event(&ev));
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string(&ev).map_err(|error| CliError::Io(error.to_string()))?
+            );
+        } else {
+            println!("{}", format_event(&ev));
+        }
     }
 }
 
@@ -652,6 +766,18 @@ fn render<T: Serialize>(value: &T, json: bool, human: impl FnOnce(&T) -> String)
         serde_json::to_string(value).unwrap_or_else(|e| format!("{{\"error\":\"serialize: {e}\"}}"))
     } else {
         human(value)
+    }
+}
+
+/// Render a successful mutation in the same global output mode as queries.
+/// A small stable envelope keeps script output machine-readable while the
+/// human acknowledgement remains concise.
+fn receipt(message: impl Into<String>, json: bool) -> String {
+    let message = message.into();
+    if json {
+        serde_json::json!({ "ok": true, "message": message }).to_string()
+    } else {
+        message
     }
 }
 
@@ -803,11 +929,11 @@ fn format_windows(wins: &[aegis_core::window::Window]) -> String {
 
 fn format_workspaces(snap: &aegis_core::workspace::WorkspaceSnapshot) -> String {
     if snap.outputs.is_empty() {
-        return "no outputs".into();
+        return "no displays".into();
     }
     let mut out = String::new();
     for o in &snap.outputs {
-        out.push_str(&format!("output {} ({})\n", o.id.0, o.connector));
+        out.push_str(&format!("display {} ({})\n", o.id.0, o.connector));
         for (i, ws) in o.workspaces.iter().enumerate() {
             let cur = if o.current == Some(ws.id) { "*" } else { " " };
             out.push_str(&format!(
@@ -823,7 +949,7 @@ fn format_workspaces(snap: &aegis_core::workspace::WorkspaceSnapshot) -> String 
 
 fn format_outputs(outs: &[aegis_core::output::OutputInfo]) -> String {
     if outs.is_empty() {
-        return "no outputs".into();
+        return "no displays".into();
     }
     let mut out = String::new();
     for o in outs {
@@ -1095,7 +1221,7 @@ mod tests {
     #[test]
     fn screenshot_path_uses_lowercase_directory_and_creates_it() {
         let dir = std::env::temp_dir().join(format!(
-            "aegis-cli-screenshots-{}-{}",
+            "aegis-command-screenshots-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

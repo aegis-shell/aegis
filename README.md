@@ -64,7 +64,7 @@ systemctl --user enable --now aegis.service
 | Open Applications | Click Launchpad or press `Super` |
 | Open System Settings | Select it in Applications or run `aegis-settings` |
 | Lock the session | Press `Super+L` |
-| Inspect compositor state | Run `aegis-cli --help` |
+| Inspect compositor state | Run `aegis window` |
 
 ## Documentation
 

@@ -101,8 +101,8 @@ this override connects to the outer desktop instead. Keep the existing
 Run the in-tree IPC client from another terminal:
 
 ```bash
-cargo run --locked -p aegis-cli -- windows
-cargo run --locked -p aegis-cli -- outputs
+cargo run --locked -p aegis -- window
+cargo run --locked -p aegis -- display
 ```
 
 Only one aegis IPC server can own an `aegis.sock` path. A manually started
@@ -190,10 +190,10 @@ checks the file each frame and applies a valid change without restarting.
 Invalid configuration leaves the previous configuration active and writes a
 diagnostic to the log.
 
-Wallpaper environment variables are read at process startup. Restart the
-process after changing them. See the
-[Configuration Reference](../reference/config.md) for the complete reload
-contract.
+The `[wallpaper]` table follows configuration hot reload. Wallpaper
+environment overrides are read at process startup, so restart after changing
+an override. See the [Configuration Reference](../reference/config.md) for
+the complete reload contract.
 
 ### Rust Code Changes
 

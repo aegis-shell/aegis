@@ -35,6 +35,7 @@ untouched.
 | `[hud]` | table | `enabled = true` | Whether the display-only session HUD chips are registered at startup. See [HUD](#hud). |
 | `[ui]` | table | `hicolor` icons, `default` 24 px cursor, borderless windows, full motion | Desktop-wide UI and window-presentation policy. See [UI](#ui). |
 | `[input.touchpad]` | table | touchpad defaults | Touchpad pointing, tapping, and scrolling profile. See [Touchpad](#touchpad). |
+| `[wallpaper]` | table | built-in image | Image, video, 3D, or multi-plane parallax wallpaper. See [Wallpaper](#wallpaper). |
 | `[idle]` | table | dim 5 min, lock 10 min, display off 11 min, suspend 30 min | Ordered inactivity, session-lock, display-power, and suspend policy. See [Idle and Locking](#idle-and-locking). |
 | `[[output]]` | array of tables | none | Per-connector display policy: mode, scale, position, transform, primary. See [Outputs](#outputs). |
 | `[screenshot]` | table | XDG Pictures directory, cursor included | Screenshot output policy. See [Screenshots](#screenshots). |
@@ -45,24 +46,73 @@ untouched.
 
 ## Environment
 
-Wallpaper sources and explicit desktop-preference overrides are selected at
-process startup. Configuration remains the persistent source; overrides
-appear in the compositor's effective settings snapshot but are not written
-back to TOML.
+Wallpaper and desktop-preference environment overrides are selected at
+process startup. Configuration remains the persistent source; overrides are
+not written back to TOML.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AEGIS_ICON_THEME` | `[ui] icon_theme`, then `hicolor` | Highest-precedence icon theme override used by the Dock, launcher, and exported toolkit preference. No GNOME or KDE settings database is consulted. |
 | `XCURSOR_THEME` | `[ui] cursor_theme`, then `default` | Highest-precedence cursor-theme override used by compositor rendering and exported toolkit preferences. |
 | `XCURSOR_SIZE` | `[ui] cursor_size`, then `24` | Highest-precedence cursor size override. Values outside 8–128 are ignored. |
-| `AEGIS_WALLPAPER` | bundled `procedural-generation.png` | Image, animated image, short-video, or model-only `.glb` source. An image or video is shown without a 3D overlay unless `AEGIS_WALLPAPER_MODEL` is also set. |
-| `AEGIS_WALLPAPER_MODEL` | unset | Optional 3D model drawn over an image or video with an orbiting camera and animated directional light. Set to `builtin` for the bundled procedural knot or to a `.glb` path for a custom model. Ignored when `AEGIS_WALLPAPER` is itself a `.glb`. |
+| `AEGIS_WALLPAPER` | `[wallpaper]`, then bundled image | Process-start source override. Accepts an image, animated image, short video, or model-only `.glb` and disables the configured source mode for that process. |
+| `AEGIS_WALLPAPER_MODEL` | configured model, then unset | Process-start 3D-model override. Set to `builtin` for the procedural knot or to a `.glb` path. Ignored when `AEGIS_WALLPAPER` is a `.glb` or the configured mode is parallax. |
 
 The launcher captures image/video, 3D, and client layers into one quarter-scale
 RGBA8 offscreen scene and updates a fixed-cost Dual-Kawase backdrop every
 frame. Animation is capped at 60 frames per second. Allocation or
 unsupported-format failures fall back to the launcher's translucent overlay
 for that session.
+
+## Wallpaper
+
+The `[wallpaper]` table selects one explicit rendering mode. It hot-reloads
+with the rest of the file. Relative asset paths resolve from the directory
+containing `config.toml`; a load failure keeps the previous live scene.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `mode` | string | `"image"` | `"image"`, `"video"`, `"3d"`, or `"parallax"`. |
+| `source` | string | built-in image | Image path in image mode; required video path in video mode; required `builtin` or `.glb` path in 3D mode; invalid in parallax mode. |
+| `background` | string | none | Optional image or video behind a 3D model. Invalid in other modes. |
+| `max_shift` | float | `32.0` | Maximum logical-pixel displacement for a parallax layer at depth `1.0`; `1.0`–`256.0`. |
+| `transition_ms` | integer | `240` | Approximate 95% parallax settle time after a target change; `80`–`2000` ms. |
+| `[[wallpaper.layer]]` | array of tables | none | Two to eight image planes for parallax mode, ordered back-to-front by ascending `depth`. |
+
+Each parallax layer has these fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `path` | string | Image path. The first plane is normally opaque; later planes normally carry alpha. |
+| `depth` | float | Relative distance from `0.0` (fixed/farthest) to `1.0` (nearest/full displacement). |
+
+```toml
+[wallpaper]
+mode = "parallax"
+max_shift = 36.0
+transition_ms = 260
+
+[[wallpaper.layer]]
+path = "wallpapers/sky.png"
+depth = 0.0
+
+[[wallpaper.layer]]
+path = "wallpapers/ridge.png"
+depth = 0.45
+
+[[wallpaper.layer]]
+path = "wallpapers/foreground.png"
+depth = 1.0
+```
+
+Every plane uses cover scaling with enough overscan for its maximum movement.
+Pointer targets update only on exposed wallpaper; the scene interpolates
+between samples separated by windows or shell chrome. Setting
+`reduced_motion = true` under `[ui]` centers the scene and disables pointer
+parallax.
+See
+[How to Configure the Wallpaper](../how-to/configure-wallpaper.md) for all
+four mode examples.
 
 ## Layout
 
@@ -276,7 +326,7 @@ Nested sessions retain the scale reported by the outer compositor.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `connector` | string | required | The backend's connector name, as shown by `aegis-cli outputs` (e.g. `"DP-1"`, `"HDMI-A-1"`, `"nested"`). |
+| `connector` | string | required | The backend's connector name, as shown by `aegis display` (e.g. `"DP-1"`, `"HDMI-A-1"`, `"nested"`). |
 | `scale` | float | automatic on DRM; host-reported when nested | Output scale override, 0.25–4.0. Integer scales advertise through `wl_output`; fractional scales through `wp_fractional_scale_v1`. Applied live on reload. |
 | `mode` | string | highest pixel count and refresh rate | Requested display mode, `"WxH"` or `"WxH@Hz"` (e.g. `"2560x1440@144"`). Without `@Hz` the highest-refresh mode of that size is used. A mode the connector does not advertise falls back to the highest-pixel mode at its highest refresh rate with a log warning. Direct DRM sessions apply changes live after the current page flip retires; nested sessions remain host-managed. |
 | `position` | table | backend arrangement | Top-left of the output in the global logical layout, written `position = { x = 1920, y = 0 }`. Applied live on reload. |
@@ -296,7 +346,7 @@ mode = "1920x1080"
 position = { x = 1707, y = 0 }
 ```
 
-Run `aegis-cli outputs` to see the modes each connector advertises; the
+Run `aegis display` to see the modes each connector advertises; the
 `mode` value must match one of them (resolution exactly, refresh to the
 nearest whole hertz).
 
@@ -454,7 +504,7 @@ The `[agent]` table holds runtime authorization policy for
 capability-borrowing agents (ADR-0088). Capability ceilings, pairing
 records, and remembered grants live in the compositor-held principal
 registry and grant store under `$XDG_DATA_HOME/aegis/` — never in this
-file. Manage them with `aegis-cli permissions`; the Agent Workspaces
+file. Manage them with `aegis permissions`; the Agent Workspaces
 application shows the same state. The `[[agent.scope]]` declarations from
 earlier versions were removed in protocol v18 and are rejected as unknown
 fields.

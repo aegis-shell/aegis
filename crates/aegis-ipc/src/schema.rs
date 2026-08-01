@@ -49,21 +49,22 @@ use crate::journal::{JournalEntry, JournalSnapshot};
 /// ADR-0052). Version 4 adds revisioned desktop-settings snapshots,
 /// subscriptions, and confirmed settings transactions.
 pub const PROTOCOL_VERSION: u32 = 19;
-/// Built-in owner-only scope used by the compositor's reference CLI for
-/// Realm recovery and administration. The Unix socket remains user-private;
-/// naming this scope opts the connection into the high-risk Realm operation
-/// allowlist and its time-bounded lease.
-pub const LOCAL_REALM_ADMIN_SCOPE: &str = "aegis-cli-realm-admin";
+/// Built-in owner-only scope used by native `aegis` commands for Realm
+/// recovery and administration. The Unix socket remains user-private; naming
+/// this scope opts the connection into the high-risk Realm operation allowlist
+/// and its time-bounded lease.
+pub const LOCAL_REALM_ADMIN_SCOPE: &str = "aegis-realm-admin";
 /// Built-in owner-only scope dedicated to agent identity and grant
 /// administration. Keeping this separate from ordinary query/control
 /// connections prevents ambient local clients from enumerating credentials'
 /// metadata or changing capability ceilings.
-pub const LOCAL_AGENT_ADMIN_SCOPE: &str = "aegis-cli-agent-admin";
-/// Built-in scope for explicitly trusted owner tools such as `aegis-cli`.
+pub const LOCAL_AGENT_ADMIN_SCOPE: &str = "aegis-agent-admin";
+/// Built-in scope for explicitly trusted owner tools such as native `aegis`
+/// domain commands.
 /// Anonymous connections are query-only when agent lockdown is enabled;
 /// naming this scope opts a local owner tool into the ordinary desktop and
 /// session capability surface.
-pub const LOCAL_OWNER_ADMIN_SCOPE: &str = "aegis-cli-owner-admin";
+pub const LOCAL_OWNER_ADMIN_SCOPE: &str = "aegis-owner-admin";
 /// Built-in owner-only scope used by the xdg-desktop-portal backend
 /// (`aegis-portal`, ADR-0075). It resolves to an explicit allowlist covering
 /// capture and streaming, idle inhibition, user-consent pickers and prompts,

@@ -1,138 +1,82 @@
 //! aegis — autonomous surface shell.
 //!
-//! The process composition root: selects a presentation host, creates the Wayland server,
-//! renderer, shell, wallpaper, configuration, and IPC surfaces, then runs the
-//! compositor event and presentation loop.
+//! With no subcommand, the process composition root selects a presentation
+//! host, creates the Wayland server, renderer, shell, wallpaper,
+//! configuration, and IPC surfaces, then runs the compositor loop. Resource
+//! subcommands dispatch to a running session without entering that runtime.
 
 use aegis_backend::Backend;
 use aegis_backend::drm::DrmError;
 use aegis_backend::host::{BackendKind, HardwareCursor, Host, HostError};
-use std::ffi::OsString;
 use std::os::fd::AsRawFd;
+use std::process::ExitCode;
 
 mod cursor;
 mod runtime;
 
-/// Compositor usage. `aegis` takes no operational arguments; presentation,
-/// configuration, and control are driven by environment variables and the
-/// configuration file, and a running session is driven through `aegis-cli`.
-const USAGE: &str = "\
-Usage: aegis [OPTIONS]
-
-Aegis — autonomous surface shell, a Wayland compositor and desktop shell.
-
-The compositor takes no operational command-line arguments; presentation,
-configuration, and session control are driven by environment variables, the
-configuration file, and the `aegis-cli` IPC client.
-
-Options:
-  -h, --help     Print this help and exit
-  -V, --version  Print version information and exit
-
-Environment:
-  AEGIS_BACKEND=auto|drm|nested   Select the presentation backend (default: auto)
-  AEGIS_WALLPAPER=PATH            Override the desktop wallpaper image
-  RUST_LOG=filter                 Log filter (default: info)
-
-Repository: <https://github.com/ming2k/aegis>";
-
-fn main() {
-    // Handle the few informational options before logging so `--help` and
-    // `--version` produce clean output and never touch the display backend.
-    match parse_args(std::env::args_os().skip(1)) {
-        ArgResult::Run => {}
-        ArgResult::Help => {
-            println!("{USAGE}");
-            std::process::exit(0);
+fn main() -> ExitCode {
+    // Parse before logging or backend initialization so help, version, and
+    // client commands never touch compositor runtime state.
+    let cli = match aegis_commands::parse_env() {
+        Ok(cli) => cli,
+        Err(error) => {
+            let use_stderr = error.use_stderr();
+            error.print().expect("print clap message");
+            return ExitCode::from(if use_stderr { 2 } else { 0 });
         }
-        ArgResult::Version => {
-            println!("aegis {}", env!("CARGO_PKG_VERSION"));
-            std::process::exit(0);
+    };
+
+    if cli.runs_compositor() {
+        if cli.json {
+            eprintln!("error: --json requires a session-management command");
+            return ExitCode::from(2);
         }
-        ArgResult::Error(message) => {
-            eprintln!("aegis: {message}");
-            eprintln!("See `aegis --help`.");
-            std::process::exit(2);
-        }
+        return run_compositor();
     }
 
-    // Initialize before anything logs. `RUST_LOG` controls verbosity; the
-    // shared subscriber defaults to `info` so the bring-up sequence is visible
-    // without configuration. See aegis-logging (ADR-0079).
+    run_session_command(cli)
+}
+
+fn run_compositor() -> ExitCode {
+    // `RUST_LOG` controls verbosity; compositor bring-up is visible by default.
     aegis_logging::init("info");
-
-    if let Err(e) = runtime::run() {
-        log::error!("aegis: {e}");
-        std::process::exit(1);
-    }
-}
-
-/// Outcome of scanning `argv`. Matches the `aegis-idle` convention: the only
-/// accepted arguments are the informational pair, and any other token is an
-/// error that points the user at `--help`.
-#[derive(Debug)]
-enum ArgResult {
-    Run,
-    Help,
-    Version,
-    Error(String),
-}
-
-fn parse_args(mut args: impl Iterator<Item = OsString>) -> ArgResult {
-    // Only the first token matters: the compositor takes no operational
-    // arguments, so any leading option is help/version or an error.
-    if let Some(argument) = args.next() {
-        match argument.to_string_lossy().as_ref() {
-            "--help" | "-h" => ArgResult::Help,
-            "--version" | "-V" => ArgResult::Version,
-            other => ArgResult::Error(format!(
-                "unexpected argument `{other}`; aegis takes no operational options \
-                 (set AEGIS_BACKEND=auto|drm|nested to select a backend)"
-            )),
+    match runtime::run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            log::error!("aegis: {error}");
+            ExitCode::from(1)
         }
-    } else {
-        ArgResult::Run
     }
 }
 
-#[cfg(test)]
-mod cli_tests {
-    use std::ffi::OsString;
-
-    use super::{ArgResult, parse_args};
-
-    fn args<'a>(slice: &'a [&str]) -> impl Iterator<Item = OsString> + 'a {
-        slice.iter().map(OsString::from)
-    }
-
-    #[test]
-    fn no_arguments_runs() {
-        assert!(matches!(parse_args(args(&[])), ArgResult::Run));
-    }
-
-    #[test]
-    fn help_long_and_short() {
-        assert!(matches!(parse_args(args(&["--help"])), ArgResult::Help));
-        assert!(matches!(parse_args(args(&["-h"])), ArgResult::Help));
-    }
-
-    #[test]
-    fn version_long_and_short() {
-        assert!(matches!(
-            parse_args(args(&["--version"])),
-            ArgResult::Version
-        ));
-        assert!(matches!(parse_args(args(&["-V"])), ArgResult::Version));
-    }
-
-    #[test]
-    fn unknown_argument_is_an_error() {
-        match parse_args(args(&["--backend", "drm"])) {
-            ArgResult::Error(message) => {
-                assert!(message.contains("unexpected argument"));
-                assert!(message.contains("AEGIS_BACKEND"));
+fn run_session_command(cli: aegis_commands::Cli) -> ExitCode {
+    // One-shot commands print results, not a log stream.
+    aegis_logging::init("warn");
+    let local_only = matches!(
+        cli.command.as_ref(),
+        Some(aegis_commands::Command::Completions { .. })
+    );
+    let socket = if local_only {
+        std::path::PathBuf::new()
+    } else {
+        match std::env::var_os("XDG_RUNTIME_DIR") {
+            Some(directory) => std::path::PathBuf::from(directory).join("aegis.sock"),
+            None => {
+                eprintln!("aegis: $XDG_RUNTIME_DIR is unset; cannot locate the running session");
+                return ExitCode::from(2);
             }
-            other => panic!("expected error, got {other:?}"),
+        }
+    };
+
+    match aegis_commands::run_with(&socket, cli) {
+        Ok(output) if !output.is_empty() => {
+            println!("{output}");
+            ExitCode::SUCCESS
+        }
+        Ok(_) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("aegis: {error}");
+            ExitCode::from(error.exit_code() as u8)
         }
     }
 }

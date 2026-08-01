@@ -7,6 +7,39 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Liquid glass
+
+- Redesigned the analytic liquid-glass material after Apple's WWDC25 design
+  language: a convex-lens rim model with magnifying refraction and chromatic
+  dispersion confined to the rim band, a thin directional key light instead
+  of the old broad white rim wash, luminance-adaptive pearl/smoke body tint,
+  shadow-side darkening and a transmitted-light trough. The Dock's painted
+  foreground layer is now minimal and borderless; the glass rim supplies the
+  edge definition.
+- Backdrop captures for glass regions now render at full physical
+  resolution instead of quarter resolution, eliminating the low-resolution
+  smear behind glass bodies.
+
+### Lock screen
+
+- Added animated VRM lock-screen avatars. Companion VRM Animation 1.0 clips
+  retarget onto VRM 0.x or 1.0 humanoid rigs, use GPU skinning, and retain a
+  head-tracking portrait crop without per-frame texture readback.
+
+### Wallpaper
+
+- Added explicit `image`, `video`, `3d`, and `parallax` wallpaper modes under
+  the hot-reloaded `[wallpaper]` configuration table. Parallax scenes accept
+  two to eight back-to-front image planes with normalized relative depth,
+  displacement, and settle-time controls.
+- Added continuous, frame-rate-independent pointer parallax (ADR-0092).
+  Targets update only on exposed wallpaper, so crossings behind client
+  windows and shell chrome interpolate between the two visible samples
+  instead of snapping. Cover overscan prevents exposed edges, and
+  `reduced_motion` centers and disables the effect.
+- Added an original three-plane Alpine example, including alpha-separated
+  assets and a ready-to-run source-checkout configuration.
+
 ### Agent capability broker and MCP production baseline
 
 - Promoted the compositor IPC to the native agent capability broker and kept
@@ -27,10 +60,21 @@ project cuts a tagged release.
   bounded frame handling. Managed Realms persist across normal connector
   restarts by default.
 
-### Command-line tool renamed to `aegis-cli`
+### Unified native command surface
 
-- The reference IPC client and crate have been renamed from `aegis-ctl` to `aegis-cli` to align with the project's full-word naming convention (`aegis-control-center`, `aegis-settings`, `aegis-launcher`).
-- The binary name, crate directory (`crates/aegis-cli`), crate library (`aegis_cli`), and built-in recovery scope (`aegis-cli-realm-admin`) have been updated accordingly across all documentation, tests, and scripts.
+- Removed the separate `aegis-cli` executable. `aegis` with no subcommand, or
+  `aegis run`, starts the compositor; resource commands such as
+  `aegis display`, `aegis window focus 42`, and
+  `aegis workspace switch next` operate a running session through the same
+  versioned IPC boundary.
+- Grouped queries and mutations under display, window, workspace,
+  notification, journal, Realm, permission, and system domains. Resource
+  nouns list by default, `aegis events` streams session changes, and shell
+  completions now target the unified executable.
+- Added the flux-free, lib-only `aegis-commands` crate for parsing, IPC
+  dispatch, formatting, and loopback tests. Renamed the first-party recovery
+  scopes to `aegis-owner-admin`, `aegis-realm-admin`, and
+  `aegis-agent-admin`.
 
 ### Idle and locking
 
@@ -110,7 +154,7 @@ project cuts a tagged release.
   `xdg_toplevel` state, no configuration key, no keybind, and no
   `window_rule` action. Scripting uses the new `SetAlwaysOnTop
   { id, on_top }` IPC command (op class `SetWindowGeometry`) or
-  `aegis-ctl always-on-top <id> <on|off>`.
+  `aegis window always-on-top <id> <on|off>`.
 
 ### Desktop portal
 
@@ -233,9 +277,10 @@ project cuts a tagged release.
 ### Reliability
 
 - Unified observability across every first-party process through a shared
-  tracing-based subscriber. `RUST_LOG` now controls all of `aegis`,
-  `aegis-ctl`, `aegis-idle`, `aegis-lock`, `aegis-portal`, and `aegis-settings`
-  with one filter syntax (default `info`, `warn` for the one-shot CLI);
+  tracing-based subscriber. `RUST_LOG` now controls `aegis` compositor and
+  command modes, `aegis-idle`, `aegis-lock`, `aegis-portal`, and
+  `aegis-settings` with one filter syntax (default `info`, `warn` for
+  one-shot management commands);
   `AEGIS_LOG_FORMAT=json` switches to machine-readable output, and per-request
   traffic that previously ran at `info` is downgraded to `debug`. See ADR-0079.
 - Distinguish powered-off scanout, a temporarily absent output target, and
@@ -324,7 +369,7 @@ project cuts a tagged release.
   use with *Deny / Allow once / Allow session / Always allow*; persisted
   grants live in `$XDG_DATA_HOME/aegis/grants.json` and are journaled along
   with pairings, revocations, and renames. Manage principals with the new
-  `aegis-ctl permissions` command or the Agent Workspaces application; the
+  `aegis permissions` command or the Agent Workspaces application; the
   new `[agent] lockdown` configuration option strips privileged capabilities
   from unpaired connections. IPC protocol version 18 carries the pairing
   handshake, runtime-grant decisions, agent-management requests, and
@@ -542,9 +587,10 @@ which the locked Git dependency now points.)
 
 ### Dock interaction
 
-- The Dock now collapses only when a visible window intersects its stable
-  resting rectangle. A maximized window that respects the reserved edge keeps
-  the Dock visible; an actual overlap hides it behind the local reveal handle.
+- Maximized windows now collapse the Dock into its local reveal handle by
+  default and gain the complete work area without requiring `autohide`
+  configuration. Other visible windows collapse it only when they intersect
+  its stable resting rectangle.
 - Normal Dock hover, click, and pointer-capture bounds now remain fixed to
   the unmagnified panel. Icon animation no longer expands chrome ownership
   into application content, while the visual glass backdrop still follows

@@ -254,7 +254,7 @@ fn window_invading_rest_bounds_starts_an_animated_collapse() {
 }
 
 #[test]
-fn maximized_state_without_geometric_invasion_keeps_the_dock_reserved() {
+fn maximized_state_forces_an_animated_collapse_without_geometric_invasion() {
     let mut dock = dock_with(vec![app("org.example.Game.desktop")]);
     let display = (1920.0, 1080.0);
     dock.last_display = Some(display);
@@ -262,16 +262,44 @@ fn maximized_state_without_geometric_invasion_keeps_the_dock_reserved() {
     maximized.state.maximized = true;
     maximized.position = aegis_core::Point { x: 100, y: 100 };
     maximized.size = aegis_core::Size { w: 1000, h: 700 };
-    dock.update_windows(&[maximized]);
+    dock.update_windows(std::slice::from_ref(&maximized));
 
     assert_eq!(dock.space_use, SpaceUse::Maximized);
     assert!(!dock.dock_obscured);
+    assert!(dock.effective_autohide());
+    assert_eq!(dock.autohide_reveal, 1.0);
+    assert!(dock.collapse_pending);
+    assert!(!dock.hidden_trigger_armed);
+    assert!(dock.anim_pending());
+    assert_eq!(dock.reserved(), Reserved::default());
+    assert_eq!(dock.backdrop_blur_sigma(), 12.0);
+
+    let mut restored = maximized;
+    restored.state.maximized = false;
+    dock.update_windows(&[restored]);
+    assert_eq!(dock.space_use, SpaceUse::Available);
     assert!(!dock.effective_autohide());
+    assert!(!dock.collapse_pending);
     assert_eq!(
         dock.reserved().bottom,
         (DOCK_PANEL_HEIGHT + DOCK_BOTTOM_MARGIN) as i32
     );
-    assert_eq!(dock.backdrop_blur_sigma(), 12.0);
+}
+
+#[test]
+fn disabling_user_autohide_does_not_override_maximized_collapse() {
+    let mut dock = Dock::new();
+    let mut maximized = window(7, "org.example.Game", true);
+    maximized.state.maximized = true;
+    dock.update_windows(&[maximized]);
+    dock.autohide_reveal = 0.0;
+
+    dock.set_autohide(true);
+    dock.set_autohide(false);
+
+    assert!(dock.effective_autohide());
+    assert_eq!(dock.autohide_reveal, 0.0);
+    assert_eq!(dock.reserved(), Reserved::default());
 }
 
 #[test]
@@ -381,6 +409,22 @@ fn fullscreen_window_locks_dock_hidden_without_hot_edge() {
             .is_empty()
     );
     assert!(!dock.captures_pointer(960.0, 1079.0, (1920.0, 1080.0), &[], &workspace_snapshot(),));
+}
+
+#[test]
+fn dock_backdrop_is_one_analytic_rounded_body() {
+    let dock = dock_with(vec![app("org.example.Editor.desktop")]);
+    let display = (1920.0, 1080.0);
+    let workspaces = workspace_snapshot();
+
+    let backdrop = dock.backdrop_regions(display, &[], &workspaces);
+    let glass = dock.liquid_glass_regions(display, &[], &workspaces);
+
+    assert_eq!(backdrop.len(), 1);
+    assert_eq!(glass.len(), 1);
+    assert_eq!(glass[0].bounds, backdrop[0]);
+    assert_eq!(glass[0].corner_radius, Design::dark().radii.dock);
+    assert_eq!(glass[0].opacity, 1.0);
 }
 
 #[test]

@@ -33,6 +33,8 @@ aegis-wallpaper = { workspace = true }
 aegis-config = { workspace = true }
 # IPC and introspection surface (ADR-0027).
 aegis-ipc = { workspace = true }
+# Native resource commands dispatched through the same executable.
+aegis-commands = { workspace = true }
 # Launcher: enumerate `.desktop` entries and spawn them detached (ADR-0022).
 # Only the binary wires these; aegis-shell and aegis-render stay free of them.
 aegis-desktop-entries = { workspace = true }
@@ -63,3 +65,6 @@ lens-sys = { workspace = true }
 
 [package.metadata.cargo-machete]
 ignored = ["flux-scene-graph-sys", "lens-sys"]
+
+[dev-dependencies]
+tempfile = "3"

@@ -175,13 +175,18 @@ PNG, JPEG, WebP, GIF, BMP, ICO, TIFF, TGA, QOI, and PNM images are accepted.
 The image is cover-fit and circle-masked. An invalid or absent image falls
 back to the built-in gradient identity disc.
 
-A static VRM 0.x or 1.0 model can instead be placed at:
+A VRM 0.x or 1.0 model can instead be placed at:
 
 - `$XDG_DATA_HOME/aegis/avatars/avatar.vrm`
+
+To animate it, add the companion VRM Animation 1.0 clip at:
+
 - `$XDG_DATA_HOME/aegis/avatars/avatar.vrma`
 
-A still image takes precedence over a VRM model. The current renderer shows a
-posed static figure; full VRMA humanoid animation is not implemented.
+A still image takes precedence over a VRM model. Aegis retargets the VRMA
+humanoid motion onto VRM 0.x or 1.0 bones, loops it while the avatar is
+visible, and keeps the animated head and shoulders inside the identity disc.
+Without the companion clip, the VRM remains in its rest pose.
 
 See [How to Configure Locking and Idle](lock-and-idle.md) for automatic
 timeouts and the [Session Service Commands](../reference/session-services.md)

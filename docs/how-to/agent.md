@@ -30,8 +30,8 @@ windows, Realm capture, Realm input, Realm management, sandboxed launches —
 ask once more at first use, with *Deny / Allow once / Allow session / Always
 allow* options; "Always" is remembered until you revoke it.
 
-Review or change everything later with `aegis-cli permissions list`, revoke a
-remembered grant with `aegis-cli permissions revoke <principal> <op>`, trim
+Review or change everything later with `aegis permissions list`, revoke a
+remembered grant with `aegis permissions revoke <principal> <op>`, trim
 the ceiling with `set-ceiling`, rename the principal, or `forget` it entirely
 to force re-pairing. The same state appears in the Agent Workspaces
 application.
@@ -80,7 +80,7 @@ presence in compositor state. A successful command prints a JSON report with
 `"mode": "live"` and `"status": "passed"`.
 
 To verify the real Agent operation feedback path, first open a disposable
-window and find its id with `aegis-cli windows`, then run:
+window and find its id with `aegis window`, then run:
 
 ```bash
 target/release/aegis-mcp smoke --input-window <window-id> --observe-seconds 10

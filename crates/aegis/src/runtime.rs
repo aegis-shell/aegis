@@ -51,6 +51,9 @@ use state::*;
 use stream::*;
 use system::*;
 
+const DEFAULT_WALLPAPER: &[u8] =
+    include_bytes!("../../../assets/wallpapers/procedural-generation.png");
+
 #[cfg(test)]
 mod tests;
 
@@ -392,65 +395,30 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let realm_damage_sequence = 0u64;
     let start = std::time::Instant::now();
 
-    // Wallpaper: a still image (png/jpg/webp/gif/…) or a short video decoded by
-    // an external ffmpeg. `$AEGIS_WALLPAPER` selects the image; with it unset we
-    // fall back to a bundled demo wallpaper so a bare `cargo run` and an
-    // installed binary both show a desktop rather than the bare clear colour.
-    // The default bytes are embedded at compile time; no build-tree path leaks
-    // into a packaged executable. A missing/failed override is not fatal — the
-    // clear colour shows through.
+    // Wallpaper modes are persistent configuration: image, video, 3D, or a
+    // back-to-front parallax image stack. The historical environment source
+    // and model remain explicit startup overrides. With no source configured,
+    // embedded bytes keep installed builds independent of build-tree paths.
     //
     // The decode resolution is seeded from the initial *physical* host size so
     // the wallpaper is decoded at the framebuffer's true resolution; later
     // resizes GPU-scale the wallpaper on draw without re-decoding.
-    const DEFAULT_WALLPAPER: &[u8] =
-        include_bytes!("../../../assets/wallpapers/procedural-generation.png");
     let (init_w, init_h) = host.physical_size();
-    let wallpaper_override = std::env::var("AEGIS_WALLPAPER")
-        .ok()
-        .filter(|value| !value.is_empty());
-    let is_gltf = wallpaper_override.as_deref().is_some_and(|path| {
-        std::path::Path::new(path)
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("glb"))
-    });
-    let (loaded, wallpaper_label) = if let Some(path) = wallpaper_override.as_deref() {
-        let loaded = if is_gltf {
-            aegis_wallpaper::Wallpaper::from_gltf(&device, &surface, path)
-        } else {
-            aegis_wallpaper::Wallpaper::from_path(path, init_w, init_h)
-        };
-        (loaded, path.to_owned())
-    } else {
-        (
-            aegis_wallpaper::Wallpaper::from_static_image_bytes(
-                DEFAULT_WALLPAPER,
-                "bundled procedural-generation.png",
-            ),
-            "bundled procedural-generation.png".to_owned(),
-        )
-    };
-    let wallpaper = match loaded {
-        Ok(mut wallpaper) => {
-            if !is_gltf {
-                let model_override = std::env::var("AEGIS_WALLPAPER_MODEL")
-                    .ok()
-                    .filter(|value| !value.is_empty());
-                let model_result = match model_override.as_deref() {
-                    Some("builtin") => wallpaper.set_builtin_model(&device, &surface),
-                    Some(path) => wallpaper.set_model_from_gltf(&device, &surface, path),
-                    None => Ok(()),
-                };
-                if let Err(error) = model_result {
-                    log::warn!("wallpaper: 3D model disabled: {error}");
-                }
-            }
-            log::info!("wallpaper: enabled ({wallpaper_label})");
+    let wallpaper = match load_wallpaper(
+        config.as_ref(),
+        config_path.as_deref(),
+        &device,
+        &surface,
+        (init_w, init_h),
+        DEFAULT_WALLPAPER,
+    ) {
+        Ok((mut wallpaper, label)) => {
+            wallpaper.set_reduced_motion(desktop_preferences.reduced_motion);
+            log::info!("wallpaper: enabled ({label})");
             Some(wallpaper)
         }
-        Err(e) => {
-            log::warn!("wallpaper: load failed for {wallpaper_label}: {e}");
+        Err(error) => {
+            log::warn!("wallpaper: load failed: {error}");
             None
         }
     };

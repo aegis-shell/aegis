@@ -375,7 +375,7 @@ change the detached snapshot. Captures include the overview grid while
 overview mode is active.
 
 `Command::Screenshot { path, region }` is a journaled `control` command that writes
-the focused output as a PNG file; `aegis-cli screenshot` is its reference
+the focused output as a PNG file; `aegis display capture` is its reference
 frontend. `Request::CaptureOutput` is a synchronous query returning
 `Response::CaptureOutput { width, height, png_bytes }` followed by one sealed
 PNG `memfd` transferred with `SCM_RIGHTS`. The request requires the `control`
@@ -492,8 +492,8 @@ the live scene and capture no screen content.
 Named scopes survive only as hardcoded trusted-component grants (ADR-0090);
 config-declared `[[agent.scope]]` entries were removed in protocol 18.
 
-`aegis-cli` uses separate `aegis-cli-owner-admin`,
-`aegis-cli-realm-admin`, and `aegis-cli-agent-admin` scopes for ordinary
+Native `aegis` commands use separate `aegis-owner-admin`,
+`aegis-realm-admin`, and `aegis-agent-admin` scopes for ordinary
 owner mutations, Realm recovery, and agent-registry administration.
 
 `aegis-portal` uses the built-in owner-only `aegis-portal` scope, which
