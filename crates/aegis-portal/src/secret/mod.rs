@@ -362,7 +362,11 @@ pub(crate) fn enqueue_unlock_request(
 /// then complete every queued caller. Callers that queued during a
 /// successful prompt complete against the now-unlocked vault without a
 /// second interaction.
-fn unlock_worker(conn: zbus::blocking::Connection, state: Arc<Mutex<SecretState>>, socket: PathBuf) {
+fn unlock_worker(
+    conn: zbus::blocking::Connection,
+    state: Arc<Mutex<SecretState>>,
+    socket: PathBuf,
+) {
     loop {
         let requests = {
             let mut state = state.lock().unwrap();

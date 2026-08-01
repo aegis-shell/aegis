@@ -41,8 +41,8 @@ pub fn init(default_filter: &str) {
     // log::{info,warn,...} callsites are captured with span context.
     let _ = tracing_log::LogTracer::init();
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_filter));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
     let use_json = env::var(FORMAT_ENV)
         .map(|value| value.eq_ignore_ascii_case("json"))

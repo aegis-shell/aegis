@@ -38,7 +38,7 @@ All output is written to stderr so journal capture is uniform.
 
 Each binary passes a sensible default used when `RUST_LOG` is unset: `info`
 for long-running services (`aegis`, `aegis-idle`, `aegis-lock`,
-`aegis-portal`, `aegis-settings`) and `warn` for the one-shot `aegis-ctl`
+`aegis-portal`, `aegis-settings`) and `warn` for the one-shot `aegis-cli`
 client.
 
 ## Nested workflow

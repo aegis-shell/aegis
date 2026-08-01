@@ -932,25 +932,34 @@ impl CompositorRuntime {
                         .reply
                         .send(Ok(aegis_ipc::SecretPromptResult::Cancelled));
                 }
-                // Confirmation delivery (portal consent dialogs), same
-                // shape as the other picks above.
-                if let Some(confirmed) = self.shell.take_confirm_pick_answered()
+                // Confirmation delivery (portal consent dialogs and
+                // ADR-0088 runtime grants), same shape as the other picks
+                // above.
+                if let Some(answer) = self.shell.take_confirm_pick_answered()
                     && let Some(pick) = self.pending_confirm_pick.take()
                 {
-                    let result = if confirmed {
-                        aegis_ipc::ConfirmPickResult::Confirmed
-                    } else {
-                        aegis_ipc::ConfirmPickResult::Cancelled
-                    };
-                    let _ = pick.reply.send(Ok(result));
+                    let _ = pick.reply.send(Ok(answer));
                 }
                 if self.pending_confirm_pick.is_some()
                     && !self.shell.confirm_pick_active()
                     && let Some(pick) = self.pending_confirm_pick.take()
                 {
+                    let _ = pick.reply.send(Ok(aegis_shell::ConfirmAnswer::Cancelled));
+                }
+                // Capability-checklist delivery (ADR-0088 agent pairing),
+                // same shape as the other picks above.
+                if let Some(result) = self.shell.take_capability_pick_answered()
+                    && let Some(pick) = self.pending_capability_pick.take()
+                {
+                    let _ = pick.reply.send(Ok(result));
+                }
+                if self.pending_capability_pick.is_some()
+                    && !self.shell.capability_pick_active()
+                    && let Some(pick) = self.pending_capability_pick.take()
+                {
                     let _ = pick
                         .reply
-                        .send(Ok(aegis_ipc::ConfirmPickResult::Cancelled));
+                        .send(Ok(aegis_shell::CapabilityPickResult { approved: None }));
                 }
                 // The selector closed this frame (confirmed above or
                 // cancelled). This frame still presented the frozen
@@ -1094,7 +1103,7 @@ impl CompositorRuntime {
                 for intent in self.shell.take_realm_intents() {
                     let action = realm_intent_to_action(intent);
                     let before_revision = self.server.realm_snapshot().revision;
-                    let result = apply_realm_action(&mut self.server, action.clone());
+                    let result = apply_realm_action(&mut self.server, None, action.clone());
                     match &result {
                         Ok(_) => {
                             for realm in realms_explicitly_stopped(&action) {

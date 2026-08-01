@@ -61,10 +61,7 @@ fn cursor_proximity_targets_zero_and_distance_targets_full_visibility() {
     };
     // On the chip and inside the proximity margin: hidden.
     assert_eq!(Hud::fade_target(chip, (100.0, 20.0)), 0.0);
-    assert_eq!(
-        Hud::fade_target(chip, (100.0, 8.0 + 32.0 + 40.0)),
-        0.0
-    );
+    assert_eq!(Hud::fade_target(chip, (100.0, 8.0 + 32.0 + 40.0)), 0.0);
     // Beyond the inflated rect: shown.
     assert_eq!(Hud::fade_target(chip, (100.0, 200.0)), 1.0);
     assert_eq!(Hud::fade_target(chip, (500.0, 20.0)), 1.0);

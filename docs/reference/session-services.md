@@ -46,5 +46,7 @@ disable backlight dimming, physical output power, logind integration, and
 suspend while retaining the lock stage.
 
 See the [Configuration Reference](config.md#idle-and-locking) for persistent
-policy and [How to Configure Locking and Idle](../how-to/lock-and-idle.md) for
-the user workflow.
+policy, [How to Install and Verify the Lock Screen](../how-to/lock-screen.md)
+for installation and PAM validation, and
+[How to Configure Locking and Idle](../how-to/lock-and-idle.md) for the user
+workflow.

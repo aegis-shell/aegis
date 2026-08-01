@@ -125,10 +125,10 @@ aegis-launcher = { path = "crates/aegis-launcher" }
 # access point (ADR-0047, ADR-0087). It is an out-of-process adapter any MCP
 # client can spawn; the compositor never links it.
 aegis-mcp = { path = "crates/aegis-mcp" }
-# fuji (宓姬): the in-tree agent product — a self-contained agent runtime
-# (ADR-0050). The `fuji` binary reaches the desktop only as an MCP client of
-# `aegis-mcp` — no Praxion, no Neenee, no `aegis_*` imports.
-aegis-fuji = { path = "crates/aegis-fuji" }
+# aegis-agent: the in-tree agent product — a self-contained agent runtime
+# (ADR-0050, ADR-0089). The `aegis-agent` binary reaches the desktop only as an MCP client of
+# `aegis-mcp` — no Praxion, no Neenee, no `aegis_*` imports. Persona/identity remains fuji (宓姬).
+aegis-agent = { path = "crates/aegis-agent" }
 
 # Declarative configuration (ADR-0026). `serde` drives the schema; `toml` is
 # the chosen file format over KDL/YAML/INI for tooling maturity and an

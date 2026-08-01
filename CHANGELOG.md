@@ -7,6 +7,31 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Agent capability broker and MCP production baseline
+
+- Promoted the compositor IPC to the native agent capability broker and kept
+  MCP as a replaceable northbound protocol adapter (ADR-0090). Agent
+  Realms now bind to authenticated principals; lifecycle, capture, launch,
+  input, and recovery reject cross-principal Realm access even when labels
+  collide.
+- Added stable connector instance ids, live ceiling reauthorization,
+  dedicated owner/Realm/agent-admin scopes, default-on lockdown, and strict
+  dangerous-operation ceiling validation. Authorization and bridge identity
+  files now use crash-durable atomic replacement and memory rollback on
+  persistence failure.
+- Implemented only stateless MCP `2026-07-28`: side-effect-free
+  `server/discover`, per-request metadata, cache hints, and complete-result
+  envelopes, with no connection-level negotiation or version downgrade.
+  Connector instance ids are explicit and required. The bridge uses standard
+  stdio EOF shutdown, refreshed tool catalogs, aligned consent timeouts, and
+  bounded frame handling. Managed Realms persist across normal connector
+  restarts by default.
+
+### Command-line tool renamed to `aegis-cli`
+
+- The reference IPC client and crate have been renamed from `aegis-ctl` to `aegis-cli` to align with the project's full-word naming convention (`aegis-control-center`, `aegis-settings`, `aegis-launcher`).
+- The binary name, crate directory (`crates/aegis-cli`), crate library (`aegis_cli`), and built-in recovery scope (`aegis-cli-realm-admin`) have been updated accordingly across all documentation, tests, and scripts.
+
 ### Idle and locking
 
 - Added two session controls to the command panel's System section
@@ -182,6 +207,12 @@ project cuts a tagged release.
 
 ### Graphics and performance
 
+- Direct DRM outputs now derive their default scale from the selected mode
+  and the connector's validated EDID physical dimensions. Internal
+  eDP/LVDS/DSI panels and external displays use viewing-distance-aware target
+  densities, rounded to quarter-step fractional scales; missing or
+  implausible dimensions fall back to 100%, and an explicit `scale` in
+  `[[output]]` remains authoritative.
 - Added linux-dmabuf v4 feedback backed by the DRM identity of the Vulkan
   physical device selected by Flux. Mesa OpenGL clients, including Flatpak
   applications, can now select the compositor GPU instead of falling back to
@@ -270,6 +301,35 @@ project cuts a tagged release.
 
 ### Agent integration
 
+- Agent-launched windows now appear on the physical desktop as guarded
+  read-only observer mirrors by default (ADR-0091), while the Agent Realm's
+  independent seat remains their only input authority. A persistent subdued
+  overlay names the controlling Realm, paused mirrors remain protected, and
+  hovering anywhere in the window uses the standard `not-allowed` cursor.
+  Physical pointer, keyboard, touch, tablet, focus, and window-control paths
+  remain blocked in the compositor; guarded mirrors also prevent
+  click-through to lower windows. Agent-only groups without a human observer
+  stay absent from physical presentation and window snapshots.
+- Added agent capability borrowing and runtime grants (ADR-0088), replacing
+  config-declared `[[agent.scope]]` entries — which are removed and now
+  rejected as unknown fields — with a compositor-held principal registry.
+  Agents self-declare at the handshake; first contact opens a
+  capability-checklist pairing prompt in compositor chrome, and the approved
+  set becomes the principal's ceiling. The compositor issues a pairing
+  credential the bridge persists in its data directory (`AEGIS_MCP_DATA_DIR`,
+  default `$XDG_DATA_HOME/aegis-mcp`), so restarts and upgrades never
+  re-prompt; a look-alike label on a different installation triggers a
+  warning. A platform-owned dangerous set (closing windows, Realm capture,
+  Realm input, Realm lifecycle, sandboxed launches) always prompts on first
+  use with *Deny / Allow once / Allow session / Always allow*; persisted
+  grants live in `$XDG_DATA_HOME/aegis/grants.json` and are journaled along
+  with pairings, revocations, and renames. Manage principals with the new
+  `aegis-ctl permissions` command or the Agent Workspaces application; the
+  new `[agent] lockdown` configuration option strips privileged capabilities
+  from unpaired connections. IPC protocol version 18 carries the pairing
+  handshake, runtime-grant decisions, agent-management requests, and
+  authorization journal events; `AEGIS_MCP_SCOPE` is removed and
+  `AEGIS_MCP_LABEL` is added, with no compatibility aliases (ADR-0066).
 - Split the scoped MCP platform bridge out of `aegis-fuji` into the
   standalone `aegis-mcp` crate (ADR-0087): the bridge is now the platform's
   standard agent access point rather than a fuji component, and the
@@ -279,13 +339,8 @@ project cuts a tagged release.
   `$XDG_RUNTIME_DIR/aegis-mcp/` (old Realm recovery records do not
   migrate), and the `realm_transfer_window` tool's `target` value `fuji`
   becomes `agent`. fuji's default MCP configuration spawns `aegis-mcp`
-  with an explicit `AEGIS_MCP_SCOPE` naming its declared scope.
-- Changed the default `AEGIS_MCP_SCOPE` value and the documented example
-  scope from `fuji` to `desktop-operator`: a scope names a permission
-  range, not the agent persona (fuji is the agent, not the range).
-  Deployments must rename the matching `[[agent.scope]]` entry in the Aegis
-  configuration and any explicit `AEGIS_MCP_SCOPE` overrides; the bridge
-  refuses the handshake on an undeclared name.
+  with no environment overrides; pairing (ADR-0088) replaces the declared
+  scope entirely.
 
 ## [0.0.8] - 2026-07-29
 

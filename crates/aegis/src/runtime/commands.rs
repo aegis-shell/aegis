@@ -157,6 +157,7 @@ pub(super) fn apply_command(
 
 pub(super) fn apply_realm_action(
     server: &mut aegis_compositor::Server,
+    subject: Option<String>,
     action: aegis_ipc::RealmAction,
 ) -> Result<aegis_ipc::RealmActionResult, String> {
     match action {
@@ -166,7 +167,7 @@ pub(super) fn apply_realm_action(
             output,
         } => {
             let bundle = server
-                .create_agent_realm(label, capabilities)
+                .create_agent_realm_for_subject(label, capabilities, subject)
                 .map_err(|error| error.to_string())?;
             if let Some(output) = output
                 && let Err(error) = server.configure_realm_output(bundle.realm, output)

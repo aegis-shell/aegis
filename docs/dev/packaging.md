@@ -74,7 +74,7 @@ inside the package build root.
 | `target/release/aegis-idle` | `/usr/bin/aegis-idle` | core |
 | `target/release/aegis-lock` | `/usr/bin/aegis-lock` | core |
 | `target/release/aegis-settings` | `/usr/bin/aegis-settings` | core |
-| `target/release/aegis-ctl` | `/usr/bin/aegis-ctl` | core |
+| `target/release/aegis-cli` | `/usr/bin/aegis-cli` | core |
 | `target/release/aegis-portal` | `/usr/lib/aegis/aegis-portal` | portal |
 | `target/release/aegis-mcp` | `/usr/bin/aegis-mcp` | agent integration |
 | `target/release/fuji` | `/usr/bin/fuji` | agent integration |
@@ -114,8 +114,8 @@ install -Dm0755 target/release/aegis-lock \
   "$package_root/usr/bin/aegis-lock"
 install -Dm0755 target/release/aegis-settings \
   "$package_root/usr/bin/aegis-settings"
-install -Dm0755 target/release/aegis-ctl \
-  "$package_root/usr/bin/aegis-ctl"
+install -Dm0755 target/release/aegis-cli \
+  "$package_root/usr/bin/aegis-cli"
 install -Dm0755 target/release/aegis-portal \
   "$package_root/usr/lib/aegis/aegis-portal"
 install -Dm0755 target/release/aegis-mcp \
@@ -133,9 +133,18 @@ management. Omitting or misnaming this profile leaves a securely locked
 session unable to authenticate.
 
 `aegis-portal` is a separate runtime component: its package owns the private
-backend executable and all three activation/configuration files. The core
-package must not own those files or require the portal frontend and PipeWire
-solely for this backend.
+backend executable, both D-Bus activation files, the `.portal` metadata, the
+backend-selection file, and the optional `pam_aegis.so` secret auto-unlock
+module. The core package must not own those files or require the portal
+frontend and PipeWire solely for this backend.
+
+Install `pam_aegis.so` in the distribution's canonical PAM module directory.
+The supplied `aegis-lock` profile loads it as `optional`, so the module never
+becomes the screen authenticator. A distribution that enables login-time
+vault auto-unlock must add the same optional line after its primary login
+authentication stack through the distribution's normal PAM integration
+mechanism; do not replace or take ownership of another package's login
+profile.
 
 The supplied systemd user service executes `aegis` from `/usr/bin`; the D-Bus
 activation file executes the private portal backend from
@@ -182,7 +191,7 @@ systemctl --user start aegis.service
 Confirm that System Settings appears with its icon, the Power Management page
 persists an idle policy, `Super+L` authenticates through the installed PAM
 stack, `aegis-portal` activates through D-Bus, the preferred portal
-configuration is selected for an Aegis session, and `aegis-ctl` reaches the
+configuration is selected for an Aegis session, and `aegis-cli` reaches the
 compositor. Run the Realm sandbox test through the packaged service topology
 as described in [Setup](setup.md#tests).
 
@@ -284,7 +293,7 @@ package_aegis() {
   install -Dm0755 target/release/aegis-idle     "$dest/bin/aegis-idle"
   install -Dm0755 target/release/aegis-lock     "$dest/bin/aegis-lock"
   install -Dm0755 target/release/aegis-settings "$dest/bin/aegis-settings"
-  install -Dm0755 target/release/aegis-ctl      "$dest/bin/aegis-ctl"
+  install -Dm0755 target/release/aegis-cli      "$dest/bin/aegis-cli"
   install -Dm0755 target/release/aegis-mcp "$dest/bin/aegis-mcp"
   install -Dm0755 target/release/fuji           "$dest/bin/fuji"
 
@@ -309,7 +318,7 @@ package_aegis() {
 package_aegis-portal() {
   pkgdesc='xdg-desktop-portal backend for the Aegis compositor'
   license=(MIT)
-  depends=("aegis=$pkgver-$pkgrel" pipewire xdg-desktop-portal)
+  depends=("aegis=$pkgver-$pkgrel" pam pipewire xdg-desktop-portal)
   optdepends=(
     'xdg-desktop-portal-gtk: fallback for portal interfaces Aegis does not implement'
   )
@@ -322,6 +331,10 @@ package_aegis-portal() {
   install -Dm0644 \
     contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service \
     "$dest/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service"
+  install -Dm0644 contrib/dbus-1/services/org.freedesktop.secrets.service \
+    "$dest/share/dbus-1/services/org.freedesktop.secrets.service"
+  install -Dm0755 target/release/libpam_aegis.so \
+    "$dest/lib/security/pam_aegis.so"
   install -Dm0644 contrib/xdg-desktop-portal/portals/aegis.portal \
     "$dest/share/xdg-desktop-portal/portals/aegis.portal"
   install -Dm0644 contrib/xdg-desktop-portal/aegis-portals.conf \

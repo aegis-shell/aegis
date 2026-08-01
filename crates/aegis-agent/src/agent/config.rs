@@ -9,7 +9,7 @@ const DEFAULT_MAX_TURNS: u32 = 32;
 const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
-/// fuji product configuration loaded from `$XDG_CONFIG_HOME/fuji/config.toml`.
+/// Agent product configuration loaded from `$XDG_CONFIG_HOME/aegis/agent.toml`.
 ///
 /// Every section is optional; a missing file yields the documented defaults.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -23,25 +23,27 @@ pub struct FujiConfig {
 }
 
 impl FujiConfig {
-    /// Configuration file path: `$FUJI_CONFIG`, else
-    /// `$XDG_CONFIG_HOME/fuji/config.toml`.
+    /// Configuration file path: `$AEGIS_AGENT_CONFIG` (or `$FUJI_CONFIG`), else
+    /// `$XDG_CONFIG_HOME/aegis/agent.toml`.
     pub fn path() -> PathBuf {
-        if let Some(path) = std::env::var_os("FUJI_CONFIG")
+        if let Some(path) =
+            std::env::var_os("AEGIS_AGENT_CONFIG").or_else(|| std::env::var_os("FUJI_CONFIG"))
             && !path.is_empty()
         {
             return PathBuf::from(path);
         }
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("fuji")
-            .join("config.toml")
+            .join("aegis")
+            .join("agent.toml")
     }
 
-    /// Session storage root: `$XDG_DATA_HOME/fuji`.
+    /// Session storage root: `$XDG_DATA_HOME/aegis/agent`.
     pub fn data_dir() -> PathBuf {
         dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("fuji")
+            .join("aegis")
+            .join("agent")
     }
 
     /// Load [`FujiConfig::path`]; a missing file is not an error.
@@ -259,7 +261,6 @@ bash = "ask"
 
 [mcp.aegis]
 command = ["aegis-mcp"]
-environment = { AEGIS_MCP_SCOPE = "desktop-operator" }
 
 [skills]
 paths = ["/opt/skills"]
@@ -278,13 +279,6 @@ paths = ["/opt/skills"]
         assert!(aegis.enabled);
         assert!(!aegis.read_only);
         assert_eq!(aegis.command, vec!["aegis-mcp".to_string()]);
-        assert_eq!(
-            aegis
-                .environment
-                .get("AEGIS_MCP_SCOPE")
-                .map(String::as_str),
-            Some("desktop-operator")
-        );
     }
 
     #[test]

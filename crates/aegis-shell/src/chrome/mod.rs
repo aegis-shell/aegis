@@ -20,7 +20,9 @@
 mod agent_feedback;
 mod app_menu;
 mod app_picker;
+mod capability_prompt;
 mod confirm_prompt;
+mod controlled_window_guard;
 mod file_picker;
 mod launcher;
 mod overview;
@@ -32,7 +34,11 @@ mod window_switcher;
 pub use agent_feedback::AgentFeedback;
 pub use app_menu::{AppMenu, PinAction};
 pub use app_picker::{AppPickParams, AppPicker};
-pub use confirm_prompt::{ConfirmPickParams, ConfirmPrompt};
+pub use capability_prompt::{
+    CapabilityGroup, CapabilityPickParams, CapabilityPickResult, CapabilityPrompt,
+};
+pub use confirm_prompt::{ConfirmAnswer, ConfirmPickParams, ConfirmPickStyle, ConfirmPrompt};
+pub use controlled_window_guard::ControlledWindowGuard;
 pub use file_picker::{FilePickParams, FilePicker};
 pub use launcher::Launcher;
 pub use overview::Overview;

@@ -9,6 +9,21 @@
 
 use crate::{Point, Rect, Size, Transform};
 
+const MILLIMETERS_PER_INCH: f32 = 25.4;
+const INTERNAL_TARGET_PPI: f32 = 125.0;
+const EXTERNAL_TARGET_PPI: f32 = 110.0;
+const AUTO_SCALE_STEP: f32 = 0.25;
+const MAX_AUTO_SCALE: f32 = 4.0;
+
+/// Physical placement class used to select a comfortable logical density.
+/// Internal panels are normally viewed closer than external displays, so
+/// they retain a slightly higher effective PPI after scaling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputKind {
+    Internal,
+    External,
+}
+
 /// A display mode: physical resolution and refresh rate.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -125,6 +140,53 @@ impl Default for Scale {
     }
 }
 
+/// Calculate the diagonal pixel density from a mode and the display's
+/// physical dimensions. Dimensions with an implausible size, density, or
+/// pixel-to-millimeter aspect ratio are rejected because EDID data is not
+/// universally reliable.
+pub fn physical_ppi(mode: OutputMode, physical_size_mm: (u32, u32)) -> Option<f32> {
+    let (pixel_width, pixel_height) = (mode.width as f32, mode.height as f32);
+    let (mm_width, mm_height) = (physical_size_mm.0 as f32, physical_size_mm.1 as f32);
+    if pixel_width <= 0.0
+        || pixel_height <= 0.0
+        || !(40.0..=3_000.0).contains(&mm_width)
+        || !(40.0..=3_000.0).contains(&mm_height)
+    {
+        return None;
+    }
+
+    let ppi_x = pixel_width * MILLIMETERS_PER_INCH / mm_width;
+    let ppi_y = pixel_height * MILLIMETERS_PER_INCH / mm_height;
+    let axis_ratio = ppi_x.max(ppi_y) / ppi_x.min(ppi_y);
+    if !axis_ratio.is_finite() || axis_ratio > 1.1 {
+        return None;
+    }
+
+    let diagonal_pixels = pixel_width.hypot(pixel_height);
+    let diagonal_inches = mm_width.hypot(mm_height) / MILLIMETERS_PER_INCH;
+    let ppi = diagonal_pixels / diagonal_inches;
+    (ppi.is_finite() && (40.0..=1_000.0).contains(&ppi)).then_some(ppi)
+}
+
+/// Recommend an automatic output scale from physical pixel density.
+/// Recommendations use quarter-step fractional scales and never shrink
+/// below 100%. Callers retain an explicit per-output scale as the final
+/// authority and use this only as the hardware-derived default.
+pub fn automatic_scale(
+    mode: OutputMode,
+    physical_size_mm: (u32, u32),
+    kind: OutputKind,
+) -> Option<Scale> {
+    let ppi = physical_ppi(mode, physical_size_mm)?;
+    let target_ppi = match kind {
+        OutputKind::Internal => INTERNAL_TARGET_PPI,
+        OutputKind::External => EXTERNAL_TARGET_PPI,
+    };
+    let raw = (ppi / target_ppi).clamp(1.0, MAX_AUTO_SCALE);
+    let quantized = (raw / AUTO_SCALE_STEP).round() * AUTO_SCALE_STEP;
+    Some(Scale(quantized.clamp(1.0, MAX_AUTO_SCALE)))
+}
+
 /// One output's identity + geometry — the wire shape the IPC exposes for an
 /// output. The connector is the stable identity; the geometry is its current
 /// mode, scale, transform, and position.
@@ -134,7 +196,7 @@ pub struct OutputInfo {
     pub connector: String,
     pub geometry: OutputGeometry,
     /// Modes the connector advertises (deduplicated, highest resolution
-    /// first), so `aegis-ctl outputs` and agents can see what `mode` requests
+    /// first), so `aegis-cli outputs` and agents can see what `mode` requests
     /// are valid. Empty where the backend cannot enumerate (nested).
     /// `serde(default)` keeps pre-field IPC peers compatible.
     #[cfg_attr(feature = "serde", serde(default))]
@@ -306,6 +368,51 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(g.logical_size(), Size { w: 100, h: 50 });
+    }
+
+    #[test]
+    fn physical_ppi_uses_mode_and_millimeter_dimensions() {
+        let ppi = physical_ppi(mode(3072, 1920), (312, 195)).unwrap();
+        assert!((ppi - 250.09).abs() < 0.01, "{ppi}");
+    }
+
+    #[test]
+    fn automatic_scale_selects_two_for_hidpi_laptop_panel() {
+        assert_eq!(
+            automatic_scale(mode(3072, 1920), (312, 195), OutputKind::Internal),
+            Some(Scale(2.0))
+        );
+    }
+
+    #[test]
+    fn automatic_scale_uses_output_kind_and_quarter_steps() {
+        // A typical 15.6-inch 1080p laptop panel is about 141 PPI.
+        assert_eq!(
+            automatic_scale(mode(1920, 1080), (344, 194), OutputKind::Internal),
+            Some(Scale(1.25))
+        );
+        // A 27-inch 4K external display is about 163 PPI and is normally
+        // viewed farther away, yielding a lower target logical density.
+        assert_eq!(
+            automatic_scale(mode(3840, 2160), (598, 336), OutputKind::External),
+            Some(Scale(1.5))
+        );
+        assert_eq!(
+            automatic_scale(mode(1920, 1080), (509, 286), OutputKind::External),
+            Some(Scale::IDENTITY)
+        );
+    }
+
+    #[test]
+    fn automatic_scale_rejects_missing_or_inconsistent_physical_size() {
+        assert_eq!(
+            automatic_scale(mode(3072, 1920), (0, 0), OutputKind::Internal),
+            None
+        );
+        assert_eq!(
+            automatic_scale(mode(1920, 1080), (300, 100), OutputKind::Internal),
+            None
+        );
     }
 
     #[test]

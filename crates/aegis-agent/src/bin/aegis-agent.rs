@@ -1,16 +1,16 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use aegis_fuji::agent::config::{ConfigError, FujiConfig};
-use aegis_fuji::agent::mcp_client::McpClient;
-use aegis_fuji::agent::provider::AnyProvider;
-use aegis_fuji::agent::session::{Session, SessionError};
-use aegis_fuji::agent::skills;
-use aegis_fuji::agent::{Agent, AgentError, AgentEvent};
+use aegis_agent::agent::config::{ConfigError, FujiConfig};
+use aegis_agent::agent::mcp_client::McpClient;
+use aegis_agent::agent::provider::AnyProvider;
+use aegis_agent::agent::session::{Session, SessionError};
+use aegis_agent::agent::skills;
+use aegis_agent::agent::{Agent, AgentError, AgentEvent};
 use clap::{Parser, Subcommand};
 
 const SAMPLE_CONFIG: &str = "\
-# fuji (宓姬) configuration — $XDG_CONFIG_HOME/fuji/config.toml
+# aegis-agent configuration — $XDG_CONFIG_HOME/aegis/agent.toml
 # A missing file is valid: defaults are anthropic + claude-sonnet-4-5.
 
 [provider]
@@ -34,17 +34,17 @@ default = \"ask\"                    # allow | ask | deny
 # command = [\"/absolute/path/to/aegis-mcp\"]
 # enabled = true
 # read_only = false
-# environment = { AEGIS_MCP_SCOPE = \"desktop-operator\" }
+# environment = { AEGIS_MCP_INSTANCE_ID = \"replace-with-a-stable-random-id\" }
 
 # [skills]
-# paths = [\"/absolute/path/to/aegis/integrations/fuji/skills\"]
+# paths = [\"/absolute/path/to/aegis/integrations/agent/skills\"]
 ";
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "fuji",
+    name = "aegis-agent",
     version,
-    about = "fuji (宓姬) — the Aegis desktop agent"
+    about = "aegis-agent — the Aegis desktop agent CLI (Persona: fuji / 宓姬)"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -68,7 +68,7 @@ enum Command {
     /// Resume a stored session; with a prompt it runs non-interactively,
     /// without one it enters chat with the loaded history.
     Resume {
-        /// Session id from `fuji run` output, or "latest".
+        /// Session id from `aegis-agent run` output, or "latest".
         id: String,
         /// Optional prompt; joined with spaces.
         prompt: Vec<String>,
@@ -99,7 +99,7 @@ async fn main() -> ExitCode {
     match entry(Cli::parse()).await {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("fuji: {error}");
+            eprintln!("aegis-agent: {error}");
             ExitCode::FAILURE
         }
     }
@@ -188,9 +188,9 @@ async fn run_turn(
 
 async fn chat(mut agent: Agent<AnyProvider>, mut session: Session) -> Result<(), CliError> {
     let mut editor = rustyline::DefaultEditor::new().map_err(CliError::Readline)?;
-    eprintln!("fuji — type /help for commands, /quit to exit");
+    eprintln!("aegis-agent — type /help for commands, /quit to exit");
     loop {
-        match editor.readline("fuji> ") {
+        match editor.readline("aegis-agent> ") {
             Ok(line) => {
                 let line = line.trim();
                 if line.is_empty() {
@@ -207,14 +207,14 @@ async fn chat(mut agent: Agent<AnyProvider>, mut session: Session) -> Result<(),
                             session = fresh;
                             eprintln!("[new session {}]", session.id());
                         }
-                        Err(error) => eprintln!("fuji: cannot start a new session: {error}"),
+                        Err(error) => eprintln!("aegis-agent: cannot start a new session: {error}"),
                     },
                     _ => {
                         let _ = editor.add_history_entry(line);
                         if let Err(error) =
                             run_turn(&mut agent, &mut session, line.to_string()).await
                         {
-                            eprintln!("fuji: {error}");
+                            eprintln!("aegis-agent: {error}");
                         }
                     }
                 }

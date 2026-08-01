@@ -14,7 +14,7 @@ that path in the contributor and tutorial material.
 
 The installer mixed two incompatible audiences in one script. For a
 distribution packager it hid the real install contract behind shell logic and
-under-installed it: the script staged `aegis`, `aegis-settings`, `aegis-ctl`,
+under-installed it: the script staged `aegis`, `aegis-settings`, `aegis-cli`,
 and `aegis-fuji-mcp` but omitted `aegis-portal`, `fuji`, and the portal
 configuration. For a contributor it wrote development artifacts into the
 user's `~/.local` prefix, so stale metadata leaked between checkouts, branches,

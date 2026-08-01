@@ -183,6 +183,17 @@ pub struct Principal {
     pub id: PrincipalId,
     pub kind: PrincipalKind,
     pub label: String,
+    /// Authenticated agent-registry subject bound to this authority.
+    ///
+    /// `None` is reserved for compositor-local principals such as the human
+    /// desktop and legacy/admin-created Realms. Agent IPC connections bind
+    /// their opaque authenticated principal here when creating a Realm, so
+    /// later operations can be authorized independently of display labels.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub subject: Option<String>,
 }
 
 /// One authority and presentation domain.
@@ -502,6 +513,7 @@ impl RealmModel {
             id: HUMAN_PRINCIPAL,
             kind: PrincipalKind::Human,
             label: "Human".into(),
+            subject: None,
         };
         let realm = Realm {
             id: HUMAN_REALM,
@@ -581,6 +593,21 @@ impl RealmModel {
         label: impl Into<String>,
         capabilities: SeatCapabilities,
     ) -> RealmBundle {
+        self.create_agent_realm_for_subject(label, capabilities, None)
+    }
+
+    /// Create an agent Realm owned by an authenticated registry subject.
+    ///
+    /// The subject is distinct from the cosmetic Realm label and is copied
+    /// into the Realm's controlling principal as part of the same model
+    /// revision. It is never accepted from an untrusted wire field; the IPC
+    /// server supplies it from the credential-bound connection context.
+    pub fn create_agent_realm_for_subject(
+        &mut self,
+        label: impl Into<String>,
+        capabilities: SeatCapabilities,
+        subject: Option<String>,
+    ) -> RealmBundle {
         let label = label.into();
         let principal = self.alloc_principal();
         let realm = self.alloc_realm();
@@ -591,6 +618,7 @@ impl RealmModel {
                 id: principal,
                 kind: PrincipalKind::Agent,
                 label: label.clone(),
+                subject,
             },
         );
         self.realms.insert(
@@ -638,6 +666,7 @@ impl RealmModel {
                 id,
                 kind,
                 label: label.into(),
+                subject: None,
             },
         );
         self.bump_revision();
@@ -1349,6 +1378,23 @@ mod tests {
             Some(bundle.realm)
         );
         assert!(model.validate().is_ok());
+    }
+
+    #[test]
+    fn authenticated_subject_is_bound_to_the_controlling_principal() {
+        let mut model = RealmModel::new();
+        let bundle = model.create_agent_realm_for_subject(
+            "Agent",
+            SeatCapabilities::POINTER_KEYBOARD,
+            Some("prin_test".into()),
+        );
+        let realm = model.realm(bundle.realm).expect("realm");
+        let principal = model.principal(realm.controller).expect("controller");
+        assert_eq!(principal.subject.as_deref(), Some("prin_test"));
+        assert_eq!(
+            model.snapshot().principals[1].subject.as_deref(),
+            Some("prin_test")
+        );
     }
 
     #[test]

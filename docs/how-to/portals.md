@@ -1,224 +1,239 @@
 # How to Install and Verify the Portal Backend
 
-`aegis-portal` is the independently packaged xdg-desktop-portal backend for
-Aegis
-([ADR-0075](../adr/0075-independent-portal-package-and-backend-contract.md)).
-It lets portal-aware and sandboxed (Flatpak) applications read the desktop
-appearance preference, take screenshots, cast the screen, choose files and
-applications with native dialogs, post notifications, and retrieve secrets.
-This guide installs the integration files and verifies the backend end to
-end.
+Install `aegis-portal` when portal-aware and sandboxed applications must use
+Aegis settings, screenshots, screen sharing, native pickers, notifications,
+and secrets. The compositor works without this package. Installing only the
+backend executable is not enough: xdg-desktop-portal must discover its
+metadata, select it for an Aegis session, and activate it on the session bus.
 
-Install the `aegis-portal` system package in addition to the core `aegis`
-package. The backend is D-Bus-activated on demand; there is no service to
-enable or start.
+## Prepare the Runtime
 
-## Install
+Install these runtime components:
 
-Install the binary, its license, and the files shipped under `contrib/`:
+- `aegis` and `aegis-portal` from the exact same release;
+- `xdg-desktop-portal` as the public frontend;
+- `xdg-desktop-portal-gtk` as the fallback for interfaces that Aegis does not
+  implement; and
+- PipeWire for screen sharing.
 
-| Source | Install to |
-|--------|-----------|
+The matching-release requirement is strict. The backend connects to the
+compositor through the versioned socket at
+`$XDG_RUNTIME_DIR/aegis.sock`; independently upgrading either side can make
+that private protocol incompatible.
+
+## Install the System Package
+
+Use the distribution package when one is available. The `aegis-portal`
+package must install all of these files:
+
+| Source | Destination |
+|--------|-------------|
 | `target/release/aegis-portal` | `/usr/lib/aegis/aegis-portal` |
+| `contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` |
 | `contrib/xdg-desktop-portal/portals/aegis.portal` | `/usr/share/xdg-desktop-portal/portals/aegis.portal` |
 | `contrib/xdg-desktop-portal/aegis-portals.conf` | `/usr/share/xdg-desktop-portal/aegis-portals.conf` |
-| `contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` |
 | `contrib/dbus-1/services/org.freedesktop.secrets.service` | `/usr/share/dbus-1/services/org.freedesktop.secrets.service` |
 | `LICENSE` | `/usr/share/licenses/aegis-portal/LICENSE` |
 
-For a per-user development install, place the integration files under
-`~/.local/share/xdg-desktop-portal/portals/`,
-`~/.config/xdg-desktop-portal/aegis-portals.conf`, and
-`~/.local/share/dbus-1/services/` respectively. Point `Exec=` at the
-development binary; the system package remains the supported installation.
+The first D-Bus service file activates the portal backend. The second is a
+transitional activation path for un-sandboxed Secret Service clients. The
+`aegis.portal` file declares the interfaces that the backend implements, and
+`aegis-portals.conf` selects `aegis;gtk` for an Aegis desktop.
 
-The `org.freedesktop.secrets.service` file is transitional: it activates
-the same `aegis-portal` process for the classic Secret Service API until
-portal-native secret retrieval is universal
-([ADR-0085](../adr/0085-portal-secret-absorption-and-secret-service-compat.md)).
+There is no `aegis-portal.service` to enable. D-Bus starts the private helper
+on demand.
 
-`aegis-portals.conf` defaults to `aegis;gtk`: Aegis is the default backend
-for every interface it advertises, and GTK is the safety net for the rest
-(Access, Print, Location, Background, …). The frontend only asks Aegis for
-the interfaces listed in `aegis.portal`. Aegis currently serves:
+### Install a source build system-wide
 
-- `org.freedesktop.impl.portal.Settings` v1 — the standardized
-  `org.freedesktop.appearance` keys `color-scheme`, `accent-color`,
-  `contrast`, and `reduced-motion`, plus a curated
-  `org.gnome.desktop.interface` projection for GTK color, fonts, text scale,
-  icons, cursors, and animation policy. The backend reads the compositor's
-  effective IPC snapshot and subscribes to `SettingsChanged`; it does not
-  read TOML, GSettings, dconf, or KDE configuration. See the
-  [Configuration Reference](../reference/config.md#appearance) and
-  [ADR-0072](../adr/0072-desktop-preference-authority-and-toolkit-compatibility.md).
-  The backend interface remains v1; the public
-  `org.freedesktop.portal.Settings` frontend is v2 and provides `ReadOne`.
-- `org.freedesktop.impl.portal.Screenshot` v2 — focused-output screenshots,
-  interactive region selection, and `PickColor`. The interactive operations
-  use the compositor's picker and can be cancelled with Escape.
-- `org.freedesktop.impl.portal.ScreenCast` v3 — monitor and window sources
-  with a hidden cursor. Source selection always uses the compositor's
-  interactive picker. Each cast republishes the
-  compositor's scoped output-frame stream
-  ([ADR-0052](../adr/0052-scoped-output-frame-streaming.md)) as a PipeWire
-  producer, so a running PipeWire session is required. Window sharing crops
-  the selected window's visible region from its output; occluding windows
-  remain visible in the stream. Persistence is not advertised because the
-  version 4 `restore_data` contract requires a compatible PermissionStore.
-- `org.freedesktop.impl.portal.Inhibit` — flag 8 (idle) only, held
-  through the compositor's scoped `SetIdleInhibit` IPC op
-  ([ADR-0075](../adr/0075-independent-portal-package-and-backend-contract.md)).
-  Flags 1/2/4 (logout, user switch, suspend) require a session manager Aegis
-  does not have and are rejected. Each accepted call remains active until
-  the frontend closes its request object; the backend periodically renews
-  the scoped IPC lease and reconnects after a compositor restart.
-- `org.freedesktop.impl.portal.Secret` v1 — sandboxed secret retrieval from
-  an encrypted at-rest vault under `$XDG_DATA_HOME/aegis/secrets`. The first
-  run creates a mode-0600 keyfile and unlocks automatically; password-mode
-  vaults unlock through a masked compositor prompt, or silently when the
-  `pam_aegis` PAM module (installed into the login and `aegis-lock` PAM
-  stacks) cached the just-verified password. The classic
-  `org.freedesktop.secrets` API is served too, as a transitional
-  compatibility layer for un-sandboxed libsecret clients
-  ([ADR-0085](../adr/0085-portal-secret-absorption-and-secret-service-compat.md)).
-- `org.freedesktop.impl.portal.Lockdown` — stateless; every restriction
-  flag reads `false` (Aegis has no kiosk policy engine).
-- `org.freedesktop.impl.portal.FileChooser` v3 — `OpenFile`, `SaveFile`,
-  and `SaveFiles` run the compositor's native file-picker chrome
-  ([ADR-0086](../adr/0086-full-stack-portal-via-user-consent-pick-chains.md)):
-  directory navigation, multi-select, file filters, and a filename field
-  for saves. GTK stays configured as the fallback while the picker proves
-  itself.
-- `org.freedesktop.impl.portal.AppChooser` v2 — `ChooseApplication` runs
-  the native app-picker chrome with catalog-resolved names and icons;
-  `last_choice` pre-highlights. GTK fallback as above.
-- `org.freedesktop.impl.portal.Email` v2 — compose requests hand off to
-  the session mail client through `xdg-email`, attachments included. GTK
-  keeps a compose-dialog fallback.
-- `org.freedesktop.impl.portal.Notification` v2 — `AddNotification` posts
-  into the compositor's own notification queue (toast strip, command
-  panel, HUD count); `RemoveNotification` withdraws by the application's
-  own id. Baseline `title`/`body` only; icons and action buttons are not
-  supported yet.
-- `org.freedesktop.impl.portal.Account` v1 — `GetUserInformation` answers
-  only after a yes/no consent dialog approves sharing; identity comes
-  from `getpwuid` plus the canonical avatar locations
-  (`$XDG_DATA_HOME/aegis/avatars/face.*`, `~/.face`). GTK fallback while
-  the consent flow proves itself.
-- `org.freedesktop.impl.portal.DynamicLauncher` v1 — `PrepareInstall`
-  consents through the same dialog, then echoes the proposed name/icon
-  with a fresh install token. `RequestInstallToken` is always refused, so
-  no launcher install bypasses consent. GTK fallback as above.
-- `org.freedesktop.impl.portal.Wallpaper` v1 — `SetWallpaperURI` consents
-  through the confirmation dialog, then decodes and swaps the image live
-  on the compositor main loop. Only `file://` URIs; glTF stays
-  startup-only. GTK fallback as above.
+Build the backend from the same checkout as the installed compositor:
 
-Aegis does not advertise the Background portal. GTK serves it and the
-remaining unsupported interfaces (Access, Print, Location) through the
-`aegis;gtk` fallback default.
-
-Restart `xdg-desktop-portal` after installing so it re-scans the portal
-files:
-
-```sh
-systemctl --user restart xdg-desktop-portal
+```bash
+cargo build --locked --release -p aegis-portal
+sudo install -Dm0755 target/release/aegis-portal \
+  /usr/lib/aegis/aegis-portal
+sudo install -Dm0644 LICENSE \
+  /usr/share/licenses/aegis-portal/LICENSE
 ```
 
-## Verify
+Install its discovery and activation metadata:
 
-The backend is D-Bus-activated, so query it and the bus starts it:
-
-```sh
-busctl --user introspect org.freedesktop.impl.portal.desktop.aegis /org/freedesktop/portal/desktop
+```bash
+sudo install -Dm0644 \
+  contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service \
+  /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service
+sudo install -Dm0644 contrib/dbus-1/services/org.freedesktop.secrets.service \
+  /usr/share/dbus-1/services/org.freedesktop.secrets.service
+sudo install -Dm0644 contrib/xdg-desktop-portal/portals/aegis.portal \
+  /usr/share/xdg-desktop-portal/portals/aegis.portal
+sudo install -Dm0644 contrib/xdg-desktop-portal/aegis-portals.conf \
+  /usr/share/xdg-desktop-portal/aegis-portals.conf
 ```
 
-The output lists `org.freedesktop.impl.portal.Settings`,
-`org.freedesktop.impl.portal.Screenshot` (version 2),
-`org.freedesktop.impl.portal.ScreenCast` (version 3),
-`org.freedesktop.impl.portal.Inhibit`,
-`org.freedesktop.impl.portal.Secret` (version 1),
-`org.freedesktop.impl.portal.Lockdown`,
-`org.freedesktop.impl.portal.FileChooser` (version 3),
-`org.freedesktop.impl.portal.Email` (version 2),
-`org.freedesktop.impl.portal.AppChooser` (version 2),
-`org.freedesktop.impl.portal.Notification` (version 2),
-`org.freedesktop.impl.portal.Account` (version 1),
-`org.freedesktop.impl.portal.DynamicLauncher` (version 1), and
-`org.freedesktop.impl.portal.Wallpaper` (version 1). Every interface
-reports its `version` property in lowercase exactly; a backend that gets
-this wrong is skipped by the frontend entirely.
+Keep `/usr/lib/aegis/aegis-portal` synchronized with both D-Bus files'
+`Exec=` value when using another installation prefix.
 
-Read the appearance setting (with `color_scheme = "dark"` configured this
-prints `variant u 1`; the default prints `u 0`):
+## Stage a Per-User Development Build
 
-```sh
-busctl --user call org.freedesktop.impl.portal.desktop.aegis \
-  /org/freedesktop/portal/desktop org.freedesktop.impl.portal.Settings \
-  Read ss org.freedesktop.appearance color-scheme
+Use a per-user installation to exercise backend changes without replacing
+the system package. Run these commands from the repository root:
+
+```bash
+portal_data=${XDG_DATA_HOME:-"$HOME/.local/share"}
+portal_config=${XDG_CONFIG_HOME:-"$HOME/.config"}
+portal_lib="$HOME/.local/lib/aegis"
+cargo build --locked -p aegis-portal
+install -Dm0755 target/debug/aegis-portal "$portal_lib/aegis-portal"
+install -Dm0644 contrib/xdg-desktop-portal/portals/aegis.portal \
+  "$portal_data/xdg-desktop-portal/portals/aegis.portal"
+install -Dm0644 contrib/xdg-desktop-portal/aegis-portals.conf \
+  "$portal_config/xdg-desktop-portal/aegis-portals.conf"
 ```
 
-Read the GTK-compatible effective icon theme:
+Install copies of the D-Bus files, then replace their system `Exec=` path
+with the absolute per-user path:
 
-```sh
-busctl --user call org.freedesktop.impl.portal.desktop.aegis \
-  /org/freedesktop/portal/desktop org.freedesktop.impl.portal.Settings \
-  Read ss org.gnome.desktop.interface icon-theme
+```bash
+install -Dm0644 \
+  contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service \
+  "$portal_data/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service"
+install -Dm0644 contrib/dbus-1/services/org.freedesktop.secrets.service \
+  "$portal_data/dbus-1/services/org.freedesktop.secrets.service"
+sed -i "s|^Exec=.*|Exec=${portal_lib:?}/aegis-portal|" \
+  "$portal_data/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service" \
+  "$portal_data/dbus-1/services/org.freedesktop.secrets.service"
 ```
 
-Change a value in the Appearance page or in `config.toml`, then repeat the
-calls. The backend receives the replacement snapshot over IPC and emits
-`SettingChanged` for each affected exported key.
+D-Bus does not expand `~`, `$HOME`, or shell expressions in `Exec=`. Inspect
+the installed files and confirm that both values are absolute paths.
 
-Exercise the Screenshot path through the frontend, the same call a
-sandboxed app makes:
+This staging changes the user's normal portal selection. Remove or rename the
+per-user files after testing to return to the system configuration.
 
-```sh
+## Publish the Aegis Session Environment
+
+Start a direct Aegis session before restarting the portal frontend. At
+startup, Aegis publishes `WAYLAND_DISPLAY`, `XDG_SESSION_TYPE=wayland`, and
+`XDG_CURRENT_DESKTOP=aegis` to the D-Bus activation environment and the
+systemd user manager.
+
+For the packaged session, run:
+
+```bash
+systemctl --user start aegis.service
+systemctl --user show-environment | \
+  grep -E '^(WAYLAND_DISPLAY|XDG_SESSION_TYPE|XDG_CURRENT_DESKTOP)='
+systemctl --user restart xdg-desktop-portal.service
+```
+
+Do not continue until the output includes `XDG_CURRENT_DESKTOP=aegis` and the
+Aegis `WAYLAND_DISPLAY`. Otherwise the frontend can select another desktop's
+configuration or activate the backend against the wrong Wayland socket.
+
+A nested Aegis session deliberately does not replace the outer desktop's
+D-Bus or systemd activation environment. Direct backend calls can still test
+that build, but the shared `org.freedesktop.portal.Desktop` frontend remains
+owned by the outer desktop. Use a direct Aegis session or an isolated session
+bus for an end-to-end nested portal test.
+
+## Verify Backend Activation
+
+Inspect the private backend name. This call asks the session bus to activate
+the process:
+
+```bash
+busctl --user introspect org.freedesktop.impl.portal.desktop.aegis \
+  /org/freedesktop/portal/desktop
+```
+
+The output must list the interfaces in the
+[Portal Backend Reference](../reference/portal.md). Each interface must expose
+the properties defined by its backend ABI. Every versioned interface must
+spell its `version` property in lowercase; incorrect casing makes the frontend
+skip that interface.
+
+This private call proves D-Bus activation, but it does not prove that the
+public frontend selected Aegis. Make a public Settings request next:
+
+```bash
+gdbus call --session \
+  --dest org.freedesktop.portal.Desktop \
+  --object-path /org/freedesktop/portal/desktop \
+  --method org.freedesktop.portal.Settings.ReadOne \
+  org.freedesktop.appearance color-scheme
+```
+
+The default returns `uint32 0`; a configured dark preference returns
+`uint32 1`. Change the color scheme in System Settings and repeat the call to
+verify the frontend, backend, and compositor IPC chain together.
+
+## Verify an Interactive Request
+
+Request a screenshot through the public frontend:
+
+```bash
 gdbus call --session \
   --dest org.freedesktop.portal.Desktop \
   --object-path /org/freedesktop/portal/desktop \
   --method org.freedesktop.portal.Screenshot.Screenshot "" {}
 ```
 
-The result contains a `file://` URI under
-`$XDG_CACHE_HOME/aegis-portal/` (or `$XDG_RUNTIME_DIR/aegis-portal/` when the
-cache directory is unset). The capture fails closed — response code 2 —
-while the session is locked or the seat is inactive, exactly like
-`aegis-ctl screenshot`.
+Complete the Aegis picker. A successful response contains a `file://` URI
+under `$XDG_CACHE_HOME/aegis-portal/`, or under
+`$XDG_RUNTIME_DIR/aegis-portal/` when the cache directory is unset. The
+request fails closed while the session is locked or its seat is inactive.
 
-Exercise the ScreenCast path the way applications do: share a screen or
-window from a portal-aware client (for example `getDisplayMedia()` in
-Firefox or Chromium). The chooser accepts an eligible monitor or window;
-once sharing starts, the stream appears as a PipeWire node named
-`aegis-portal-screencast`:
+Verify screen sharing from a portal-aware browser or conferencing client.
+After choosing an Aegis monitor or window, inspect the PipeWire producer:
 
-```sh
+```bash
 pw-dump | grep -A5 aegis-portal-screencast
-```
-
-Confirm that the node exposes an output port:
-
-```sh
 pw-link -o | grep aegis-portal-screencast
 ```
 
-OBS and other capture consumers link this output port to receive frames. If
-the node appears only as an input, replace the installed `aegis-portal`
-binary with the current build and restart `xdg-desktop-portal`.
+The stream pauses while the session is locked or inactive and resumes after
+unlock. Window sharing captures the selected window's visible output region,
+including any occlusion.
 
-Sharing pauses while the session is locked or the seat is inactive and
-resumes afterwards; it ends when the app stops sharing, the app exits, or
-the portal session is closed.
+## Enable Secret Auto-Unlock Separately
 
-Exercise the Inhibit path by requesting idle inhibition from a test client
-(for example `gdbus` against the frontend's
-`org.freedesktop.portal.Inhibit.Inhibit` with the frontend's idle flag), then
-confirm the backend receives flag `8` and the
-compositor no longer reports idle: a client subscribed to
-`ext-idle-notify-v1` sees no `idled` event past its timeout while the
-inhibiting application is alive, and sees it again once that application
-exits.
+Portal activation and secret prompting do not require `pam_aegis.so`.
+`pam_aegis` is an optional, independently built PAM module that caches a
+just-verified password in an owner-only runtime token. The portal consumes
+and deletes that token to unlock a password-mode secret vault without a
+second prompt.
 
-If the name does not activate, check that the `.service` file's `Exec=`
-path exists and that the compositor is running: the backend captures through
-the aegis IPC socket at `$XDG_RUNTIME_DIR/aegis.sock`.
+Install the matching `aegis-pam` build in the distribution's PAM module
+directory, then add this line *after* the primary authentication stack in
+the login and `aegis-lock` service profiles:
+
+```text
+auth optional pam_aegis.so
+```
+
+The supplied `/etc/pam.d/aegis-lock` profile already contains the optional
+line. The module is not the screen authenticator; missing it must not prevent
+PAM from unlocking the session. Follow
+[How to Install and Verify the Lock Screen](lock-screen.md) before changing a
+PAM stack.
+
+## Troubleshoot Activation
+
+Inspect both the frontend and compositor journals:
+
+```bash
+journalctl --user -b -u xdg-desktop-portal.service --no-pager
+journalctl --user -b -u aegis.service --no-pager
+```
+
+| Symptom | Check |
+|---------|-------|
+| The private bus name does not activate | Confirm that the D-Bus `.service` file is visible and its absolute `Exec=` target exists and is executable. |
+| The backend activates but public interfaces are absent | Confirm `XDG_CURRENT_DESKTOP=aegis`, inspect `aegis-portals.conf`, then restart `xdg-desktop-portal.service`. |
+| Settings work but capture or pickers fail | Confirm that the matching compositor is running and owns `$XDG_RUNTIME_DIR/aegis.sock`. |
+| Screen sharing opens a chooser but produces no node | Confirm that the PipeWire user session is running and inspect the portal journal. |
+| Unsupported interfaces disappear | Install `xdg-desktop-portal-gtk`; it is the configured fallback. |
+| `org.freedesktop.secrets` is owned by another service | This is allowed. Aegis keeps its portal-native Secret interface and leaves the classic compatibility name with the existing provider. |
+| A nested test reaches the outer desktop | Use a direct session or isolate the session bus; nested Aegis intentionally does not overwrite the host activation environment. |
+
+See the [Portal Backend Reference](../reference/portal.md) for interface
+versions, dependencies, paths, and current limitations.

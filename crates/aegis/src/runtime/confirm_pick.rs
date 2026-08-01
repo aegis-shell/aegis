@@ -24,7 +24,8 @@ pub(super) enum ConfirmPickControl {
         title: String,
         body: String,
         accept_label: Option<String>,
-        reply: std::sync::mpsc::Sender<Result<aegis_ipc::ConfirmPickResult, String>>,
+        style: aegis_shell::ConfirmPickStyle,
+        reply: std::sync::mpsc::Sender<Result<aegis_shell::ConfirmAnswer, String>>,
     },
     /// The IPC handler stopped waiting (interaction timeout): close the
     /// dialog if it is still open for this connection.
@@ -34,7 +35,7 @@ pub(super) enum ConfirmPickControl {
 /// A confirmation waiting for user interaction, owned by the main loop.
 pub(super) struct PendingConfirmPick {
     pub(super) conn_id: u64,
-    pub(super) reply: std::sync::mpsc::Sender<Result<aegis_ipc::ConfirmPickResult, String>>,
+    pub(super) reply: std::sync::mpsc::Sender<Result<aegis_shell::ConfirmAnswer, String>>,
 }
 
 impl CompositorRuntime {
@@ -48,6 +49,7 @@ impl CompositorRuntime {
                     title,
                     body,
                     accept_label,
+                    style,
                     reply,
                 } => {
                     if self.pending_confirm_pick.is_some()
@@ -70,6 +72,7 @@ impl CompositorRuntime {
                                 title,
                                 body,
                                 accept_label,
+                                style,
                             });
                     }
                 }

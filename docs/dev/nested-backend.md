@@ -101,8 +101,8 @@ this override connects to the outer desktop instead. Keep the existing
 Run the in-tree IPC client from another terminal:
 
 ```bash
-cargo run --locked -p aegis-ctl -- windows
-cargo run --locked -p aegis-ctl -- outputs
+cargo run --locked -p aegis-cli -- windows
+cargo run --locked -p aegis-cli -- outputs
 ```
 
 Only one aegis IPC server can own an `aegis.sock` path. A manually started

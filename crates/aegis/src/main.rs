@@ -15,7 +15,7 @@ mod runtime;
 
 /// Compositor usage. `aegis` takes no operational arguments; presentation,
 /// configuration, and control are driven by environment variables and the
-/// configuration file, and a running session is driven through `aegis-ctl`.
+/// configuration file, and a running session is driven through `aegis-cli`.
 const USAGE: &str = "\
 Usage: aegis [OPTIONS]
 
@@ -23,7 +23,7 @@ Aegis — autonomous surface shell, a Wayland compositor and desktop shell.
 
 The compositor takes no operational command-line arguments; presentation,
 configuration, and session control are driven by environment variables, the
-configuration file, and the `aegis-ctl` IPC client.
+configuration file, and the `aegis-cli` IPC client.
 
 Options:
   -h, --help     Print this help and exit

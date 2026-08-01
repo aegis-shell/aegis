@@ -93,7 +93,7 @@ impl Agent<AnyProvider> {
                     mcp.insert(name.clone(), client);
                 }
                 Err(error) => {
-                    eprintln!("fuji: MCP server {name:?} failed to start: {error}");
+                    eprintln!("aegis-agent: MCP server {name:?} failed to start: {error}");
                 }
             }
         }

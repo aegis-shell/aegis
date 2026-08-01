@@ -274,8 +274,8 @@ itself: non-interactive window geometry changes (tiling, IPC geometry)
 record previous and target rectangles, publish them in the snapshot, and
 interpolate at draw time, with subsurface trees glued to their root. The
 unified overview (window grid + workspace rail, live thumbnails, click to
-focus, `Super+O` or `aegis-ctl overview`) is in daily use, and a screenshot
-path (`aegis-ctl screenshot`, scoped `CaptureOutput` pixel capture per
+focus, `Super+O` or `aegis-cli overview`) is in daily use, and a screenshot
+path (`aegis-cli screenshot`, scoped `CaptureOutput` pixel capture per
 [ADR-0041](../adr/0041-sealed-file-descriptor-pixel-transport.md)) covers the
 single-frame half of the capture story. The independently packaged
 `aegis-portal` backend now serves Settings v1, Screenshot v2, ScreenCast v3,

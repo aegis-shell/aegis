@@ -29,18 +29,19 @@ The stack, from the rendering layer up:
 | Rendering and UI | flux, lens (out of tree) | Vulkan presentation; immediate-mode chrome drawing |
 | The model | `aegis-core` | Windows, workspaces, outputs, Realms, seats, authority, layout — the one truth |
 | The compositor | `aegis-compositor`, `aegis-backend`, `aegis-render`, `aegis-shell` | Wayland, per-Realm input and output, the chrome host |
-| The seam | `aegis-ipc` | Versioned JSON and sealed descriptors over a Unix socket; leases, scope, capture, and the journal |
-| IPC clients | any number, all equal | Status bars, `aegis-ctl`, the agent, future bridges |
-| Platform adapter | `aegis-mcp` (separate process and crate) | Named-scope Aegis tools and one bridge-managed Agent Realm over MCP |
-| Agent product | fuji (in-tree `aegis-fuji`) | Providers, credentials, sessions, skills, permissions, and the CLI |
+| The seam | `aegis-ipc` | Versioned JSON and sealed descriptors over a Unix socket; leases, scopes, pairing, runtime grants, capture, and the journal |
+| IPC clients | any number, all equal | Status bars, `aegis-cli`, the agent, future bridges |
+| Platform adapter | `aegis-mcp` (separate process and crate) | Scoped Aegis tools and one bridge-managed Agent Realm over MCP |
+| Agent product | `aegis-agent` (in-tree `aegis-agent`) | Providers, credentials, sessions, skills, permissions, and the CLI |
+
 | Other skill and tool layers | external projects | Other model-specific adapters, prompts, and schemas |
 
 The line that matters is between the seam and the clients. Above that line,
 every consumer is equal: a status bar holding `query`, a CLI tool holding
-`control`, an agent holding `control` under a named scope. There is no
-"agent" code path inside the compositor. An agent connecting to the socket
-is indistinguishable from any other client except by the capabilities and
-scope it negotiated at the handshake.
+`control`, an agent borrowing capabilities under its approved ceiling. There
+is no "agent" code path inside the compositor. An agent connecting to the
+socket is indistinguishable from any other client except by the capabilities
+it negotiated and the principal it paired as (ADR-0088).
 
 This is the deliberate inversion of most "AI desktop" projects, which bake
 the model into the shell. aegis bets the other way: the compositor is the

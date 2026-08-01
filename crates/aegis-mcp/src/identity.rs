@@ -1,0 +1,201 @@
+//! The bridge's durable pairing identity (ADR-0088): the compositor-issued
+//! principal and credential this installation presents on every connection.
+//!
+//! The identity file lives under a private data directory with owner-only
+//! permissions and is replaced atomically. A missing or invalid file means
+//! "not paired yet" — the next connection pairs again and a fresh credential
+//! replaces the file.
+
+use std::io::Write as _;
+use std::path::PathBuf;
+
+use crate::realm::scope_key;
+
+const IDENTITY_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct StoredIdentity {
+    version: u32,
+    principal: String,
+    credential: String,
+}
+
+/// A loaded pairing identity plus its persistence location.
+pub(crate) struct IdentityStore {
+    path: Option<PathBuf>,
+    identity: std::sync::Mutex<Option<StoredIdentity>>,
+}
+
+impl IdentityStore {
+    /// Load the identity for a connector-instance `key` from `dir`. `dir` of
+    /// `None` keeps the identity session-only.
+    pub(crate) fn load(dir: Option<PathBuf>, key: &str) -> Self {
+        let Some(dir) = dir else {
+            return Self {
+                path: None,
+                identity: std::sync::Mutex::new(None),
+            };
+        };
+        let path = dir.join(format!("identity-{}.json", scope_key(key)));
+        let identity = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<StoredIdentity>(&bytes).ok())
+            .filter(|identity| identity.version == IDENTITY_VERSION);
+        Self {
+            path: Some(path),
+            identity: std::sync::Mutex::new(identity),
+        }
+    }
+
+    /// The credential to present at the handshake, if paired.
+    pub(crate) fn credential(&self) -> Option<String> {
+        self.identity
+            .lock()
+            .expect("identity lock")
+            .as_ref()
+            .map(|identity| identity.credential.clone())
+    }
+
+    /// The authenticated principal bound by the compositor handshake.
+    pub(crate) fn principal(&self) -> Option<String> {
+        self.identity
+            .lock()
+            .expect("identity lock")
+            .as_ref()
+            .map(|identity| identity.principal.clone())
+    }
+
+    /// Record a newly issued credential. When durable identity was requested,
+    /// persistence is part of establishing the identity: failing it aborts
+    /// startup rather than creating authority that the next process cannot
+    /// safely recover.
+    pub(crate) fn store(&self, principal: &str, credential: &str) -> Result<(), String> {
+        let identity = StoredIdentity {
+            version: IDENTITY_VERSION,
+            principal: principal.to_owned(),
+            credential: credential.to_owned(),
+        };
+        let Some(path) = &self.path else {
+            *self.identity.lock().expect("identity lock") = Some(identity);
+            return Ok(());
+        };
+        persist(path, &identity)?;
+        *self.identity.lock().expect("identity lock") = Some(identity);
+        Ok(())
+    }
+
+    /// Confirm that an existing credential was recognized as the same
+    /// principal. A mismatch fails closed; it indicates corrupted local
+    /// state or a credential/registry continuity violation.
+    pub(crate) fn confirm_principal(&self, principal: &str) -> Result<(), String> {
+        let identity = self.identity.lock().expect("identity lock");
+        let Some(identity) = identity.as_ref() else {
+            return Err("compositor recognized an identity that is absent locally".into());
+        };
+        if identity.principal != principal {
+            return Err(format!(
+                "credential principal changed from {} to {principal}",
+                identity.principal
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn persist(path: &PathBuf, identity: &StoredIdentity) -> Result<(), String> {
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent", path.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("protect {}: {error}", parent.display()))?;
+    let bytes = serde_json::to_vec_pretty(identity).map_err(|error| error.to_string())?;
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    match std::fs::remove_file(&tmp) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("remove stale {}: {error}", tmp.display())),
+    }
+    {
+        let mut handle = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+            .map_err(|error| format!("create {}: {error}", tmp.display()))?;
+        handle
+            .write_all(&bytes)
+            .map_err(|error| format!("write {}: {error}", tmp.display()))?;
+        handle
+            .sync_all()
+            .map_err(|error| format!("sync {}: {error}", tmp.display()))?;
+    }
+    std::fs::rename(&tmp, path).map_err(|error| format!("replace {}: {error}", path.display()))?;
+    let parent_handle = std::fs::File::open(parent)
+        .map_err(|error| format!("open {}: {error}", parent.display()))?;
+    parent_handle
+        .sync_all()
+        .map_err(|error| format!("sync {}: {error}", parent.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch() -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!("aegis-mcp-identity-{}-{n}", std::process::id()))
+    }
+
+    #[test]
+    fn store_then_load_round_trips() {
+        let dir = scratch();
+        let store = IdentityStore::load(Some(dir.clone()), "Codex");
+        assert!(store.credential().is_none());
+        store.store("prin_1", "cred_1").unwrap();
+        assert_eq!(store.credential().as_deref(), Some("cred_1"));
+
+        let reloaded = IdentityStore::load(Some(dir.clone()), "Codex");
+        assert_eq!(reloaded.credential().as_deref(), Some("cred_1"));
+        let mode = std::os::unix::fs::PermissionsExt::mode(
+            &std::fs::metadata(dir.join(format!(
+                "identity-{}.json",
+                crate::realm::scope_key("Codex")
+            )))
+            .unwrap()
+            .permissions(),
+        );
+        assert_eq!(mode & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_identity_means_unpaired() {
+        let dir = scratch();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("identity-Codex.json"), b"not json").unwrap();
+        let store = IdentityStore::load(Some(dir.clone()), "Codex");
+        assert!(store.credential().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn labels_with_unsafe_characters_get_safe_keys() {
+        let dir = scratch();
+        let store = IdentityStore::load(Some(dir.clone()), "a/b");
+        store.store("prin_1", "cred_1").unwrap();
+        let reloaded = IdentityStore::load(Some(dir.clone()), "a/b");
+        assert_eq!(reloaded.credential().as_deref(), Some("cred_1"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_only_store_keeps_memory_identity() {
+        let store = IdentityStore::load(None, "Codex");
+        store.store("prin_1", "cred_1").unwrap();
+        assert_eq!(store.credential().as_deref(), Some("cred_1"));
+    }
+}

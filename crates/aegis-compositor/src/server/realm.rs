@@ -206,6 +206,18 @@ impl Server {
         label: impl Into<String>,
         capabilities: SeatCapabilities,
     ) -> Result<RealmBundle, RealmRuntimeError> {
+        self.create_agent_realm_for_subject(label, capabilities, None)
+    }
+
+    /// Create an agent Realm and bind it to the authenticated IPC subject
+    /// that requested it. The subject comes from compositor-owned connection
+    /// state, never from the Realm action payload.
+    pub fn create_agent_realm_for_subject(
+        &mut self,
+        label: impl Into<String>,
+        capabilities: SeatCapabilities,
+        subject: Option<String>,
+    ) -> Result<RealmBundle, RealmRuntimeError> {
         let keyboard = if capabilities.keyboard {
             Some(
                 keyboard::Keyboard::new()
@@ -214,7 +226,10 @@ impl Server {
         } else {
             None
         };
-        let bundle = self.state.authority.create_agent_realm(label, capabilities);
+        let bundle =
+            self.state
+                .authority
+                .create_agent_realm_for_subject(label, capabilities, subject);
         let mut runtime = Box::new(SeatRuntime::new(
             bundle.seat,
             bundle.realm,

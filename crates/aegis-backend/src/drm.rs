@@ -30,7 +30,7 @@ use aegis_core::input::{
     PointerAxisSource, PointerGestureEvent, TabletEvent, TabletToolInfo, TouchpadCapabilities,
     TouchpadConfig, TouchpadScrollMethod, TouchpadStatus,
 };
-use aegis_core::output::{ModeSpec, OutputMode};
+use aegis_core::output::{ModeSpec, OutputKind, OutputMode, Scale, automatic_scale, physical_ppi};
 use drm::buffer::{Buffer, DrmFourcc, DrmModifier, Handle as BufferHandle, PlanarBuffer};
 use drm::control::{
     self, AtomicCommitFlags, Device as ControlDevice, FbCmd2Flags, Mode, ModeTypeFlags,
@@ -345,6 +345,15 @@ struct Output {
     mode_blob_id: u64,
     x: u32,
     y: u32,
+    /// Physical display dimensions reported by the DRM connector/EDID.
+    physical_size_mm: Option<(u32, u32)>,
+    /// Validated diagonal density for diagnostics. `None` means the physical
+    /// dimensions were absent or failed the plausibility checks.
+    ppi: Option<f32>,
+    kind: OutputKind,
+    /// Hardware-derived default. A `[[output]] scale` policy can still
+    /// override this after the backend snapshot reaches the compositor.
+    scale: Scale,
     props: AtomicProperties,
     /// Dedicated ARGB8888 KMS cursor plane for this CRTC. Direct scanout may
     /// keep running with a visible cursor only when every output has one.
@@ -370,7 +379,7 @@ struct DisplaySet {
     scanout_formats: HashMap<u32, Vec<u64>>,
 }
 
-type OutputSignature = (String, u32, u32, u32, u32, u32);
+type OutputSignature = (String, u32, u32, u32, u32, u32, u32);
 type DisplaySignature = (
     DrmFourcc,
     Vec<u64>,
@@ -677,7 +686,7 @@ impl Backend for DrmBackend {
                             height: height as i32,
                             refresh_mhz: output.mode.vrefresh().saturating_mul(1_000),
                         },
-                        scale: aegis_core::output::Scale::IDENTITY,
+                        scale: output.scale,
                         transform: aegis_core::Transform::Normal,
                         logical_origin: aegis_core::Point {
                             x: output.x as i32,
@@ -996,6 +1005,10 @@ mod tests {
                 connector: connector::Handle::from(raw(1)),
                 name: "A".into(),
                 mode,
+                physical_size_mm: None,
+                ppi: None,
+                kind: OutputKind::External,
+                scale: Scale::IDENTITY,
                 choices: vec![
                     OutputChoice {
                         crtc: crtc::Handle::from(raw(10)),
@@ -1014,6 +1027,10 @@ mod tests {
                 connector: connector::Handle::from(raw(2)),
                 name: "B".into(),
                 mode,
+                physical_size_mm: None,
+                ppi: None,
+                kind: OutputKind::External,
+                scale: Scale::IDENTITY,
                 choices: vec![OutputChoice {
                     crtc: crtc::Handle::from(raw(10)),
                     plane: plane::Handle::from(raw(20)),

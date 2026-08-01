@@ -80,10 +80,7 @@ impl Server {
             // A window still animating to its target rect is neither a reliable
             // victim nor a reliable occluder: skip it on both sides.
             let in_transition = surface.window.transition.is_some();
-            if !in_transition
-                && surface.window.state.fullscreen
-                && !render_rect.is_empty()
-            {
+            if !in_transition && surface.window.state.fullscreen && !render_rect.is_empty() {
                 // This window is an opaque occluder for everything below it.
                 opaque_coverage.push(render_rect);
                 continue;
@@ -150,8 +147,7 @@ impl Server {
                 surface.mapped
                     && !surface.xdg_toplevel.is_null()
                     && visible.is_none_or(|visible| visible.contains(&surface.window.id))
-                    && occluded
-                        .is_none_or(|occluded| !occluded.contains(&surface.window.id))
+                    && occluded.is_none_or(|occluded| !occluded.contains(&surface.window.id))
                     && self
                         .state
                         .authority

@@ -93,9 +93,10 @@ pub struct Config {
     #[serde(default, rename = "output")]
     pub outputs: Vec<OutputConfig>,
 
-    /// Agent scope declarations (ADR-0034), written as `[[agent.scope]]`
-    /// array-of-tables. Each entry names a scope the compositor resolves
-    /// when an IPC client presents the name at the Hello handshake.
+    /// Agent authorization policy (ADR-0088). Capability ceilings for
+    /// borrowing agents live in the compositor-held principal registry, not
+    /// in this file; the old `[[agent.scope]]` declarations were removed in
+    /// protocol v18.
     #[serde(default)]
     pub agent: AgentConfig,
 
@@ -166,14 +167,29 @@ pub struct AppearanceConfig {
     pub text_scale: Option<f64>,
 }
 
-/// The `[agent]` section (ADR-0034). Named scopes that bound what an agent
-/// IPC client may do: which operations, which windows, which workspaces.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+/// The `[agent]` section (ADR-0088): runtime authorization policy for
+/// capability-borrowing agents. Capability ceilings live in the
+/// compositor-held principal registry, not in configuration; the named
+/// `[[agent.scope]]` declarations from ADR-0034 were removed in protocol
+/// v18 and are rejected here as unknown fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
-    /// One named scope per `[[agent.scope]]` entry.
-    #[serde(default, rename = "scope")]
-    pub scopes: Vec<AgentScopeEntry>,
+    /// Strip privileged capabilities from connections that neither present a
+    /// built-in scope nor pair as an agent. Defaults to `true`; owner tools
+    /// use an explicit built-in scope instead of ambient privilege.
+    #[serde(default = "default_true")]
+    pub lockdown: bool,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self { lockdown: true }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// The `[realm_sandbox]` policy and `[[realm_sandbox.app]]` overrides.
@@ -334,33 +350,6 @@ impl Default for ScreenshotConfig {
             include_cursor: default_screenshot_include_cursor(),
         }
     }
-}
-
-/// One declared agent scope. `ops` lists `OpClass` names (`Focus`,
-/// `Close`, …); resource lists are id allowlists (empty or omitted means
-/// unrestricted at that axis).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentScopeEntry {
-    /// The scope name an IPC client presents at Hello.
-    pub name: String,
-    /// Operation-class names this scope permits.
-    #[serde(default)]
-    pub ops: Vec<String>,
-    /// Operation-class names this scope does not pre-grant but that a paired
-    /// agent may request at runtime through an interactive user grant
-    /// (ADR-0088).
-    #[serde(default)]
-    pub ask: Vec<String>,
-    /// Window-id allowlist. Empty means unrestricted.
-    #[serde(default)]
-    pub windows: Vec<u64>,
-    /// Workspace-id allowlist. Empty means unrestricted.
-    #[serde(default)]
-    pub workspaces: Vec<u64>,
-    /// Realm-id allowlist. Empty means unrestricted.
-    #[serde(default)]
-    pub realms: Vec<u64>,
 }
 
 /// The `[dock]` section. `pinned` lists the apps to keep on the dock in order;
@@ -982,7 +971,8 @@ impl Config {
         (Keymap::defaults().with_overrides(overrides), errs)
     }
 
-    /// Resolve the configured swipe bindings into [`GestureBinding`]s.
+    /// Resolve the configured swipe bindings into
+    /// [`aegis_core::gesture::GestureBinding`]s.
     /// Returns the resolved bindings plus one diagnostic per entry that
     /// could not resolve (bad finger count, unknown axis, or unknown
     /// action). Good entries are kept so a file with one typo still yields
@@ -1025,9 +1015,9 @@ impl Config {
         (binds, errs)
     }
 
-    /// Build the active [`GestureMap`]: built-in defaults overridden by the
-    /// configured entries, plus the diagnostics from resolution. Callers log
-    /// the diagnostics and install the returned map.
+    /// Build the active [`aegis_core::gesture::GestureMap`]: built-in defaults
+    /// overridden by the configured entries, plus the diagnostics from
+    /// resolution. Callers log the diagnostics and install the returned map.
     pub fn gesture_map(&self) -> (aegis_core::gesture::GestureMap, Vec<Diagnostic>) {
         let (overrides, errs) = self.resolve_gestures();
         (

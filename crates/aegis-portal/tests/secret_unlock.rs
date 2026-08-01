@@ -160,10 +160,7 @@ fn unlock_flow(answer: SecretPromptResult) -> String {
     write_password_vault(&data_dir.join("aegis/secrets"));
     let runtime_dir = temp_dir("runtime");
 
-    let fake = Arc::new(FakeCompositor {
-        answer,
-        gate: None,
-    });
+    let fake = Arc::new(FakeCompositor { answer, gate: None });
     let _server = Server::start(&runtime_dir.join("aegis.sock"), Arc::clone(&fake))
         .expect("bind fake compositor IPC");
 
@@ -349,9 +346,7 @@ fn expected_portal_secret_password_mode() -> [u8; 32] {
 
 /// Run RetrieveSecret against a locked vault, returning `(response, bytes)`.
 /// `None` means the private bus was unavailable and the caller must skip.
-fn retrieve_secret_while_locked(
-    answer: SecretPromptResult,
-) -> Option<(u32, Vec<u8>)> {
+fn retrieve_secret_while_locked(answer: SecretPromptResult) -> Option<(u32, Vec<u8>)> {
     let bus = private_bus()?;
     let conn = bus.connect();
 
@@ -359,10 +354,7 @@ fn retrieve_secret_while_locked(
     write_password_vault(&data_dir.join("aegis/secrets"));
     let runtime_dir = temp_dir("runtime");
 
-    let fake = Arc::new(FakeCompositor {
-        answer,
-        gate: None,
-    });
+    let fake = Arc::new(FakeCompositor { answer, gate: None });
     let _server = Server::start(&runtime_dir.join("aegis.sock"), Arc::clone(&fake))
         .expect("bind fake compositor IPC");
 
@@ -380,18 +372,20 @@ fn retrieve_secret_while_locked(
     let fd: Fd<'_> = Fd::from(write_end);
     let handle = ObjectPath::try_from("/org/freedesktop/portal/desktop/request/1/locked")
         .expect("request handle path");
-    let (response, _): (u32, std::collections::HashMap<String, zbus::zvariant::OwnedValue>) =
-        portal
-            .call(
-                "RetrieveSecret",
-                &(
-                    handle,
-                    "dev.aegis.locked",
-                    fd,
-                    std::collections::HashMap::<String, Value<'_>>::new(),
-                ),
-            )
-            .expect("RetrieveSecret call");
+    let (response, _): (
+        u32,
+        std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+    ) = portal
+        .call(
+            "RetrieveSecret",
+            &(
+                handle,
+                "dev.aegis.locked",
+                fd,
+                std::collections::HashMap::<String, Value<'_>>::new(),
+            ),
+        )
+        .expect("RetrieveSecret call");
     let bytes = read_all_with_timeout(read_end, Duration::from_secs(5));
 
     let _ = std::fs::remove_dir_all(&data_dir);
@@ -401,15 +395,16 @@ fn retrieve_secret_while_locked(
 
 #[test]
 fn retrieve_secret_while_locked_prompts_then_delivers() {
-    let Some((response, bytes)) =
-        retrieve_secret_while_locked(SecretPromptResult::Secret {
-            value: PASSWORD.to_string(),
-        })
-    else {
+    let Some((response, bytes)) = retrieve_secret_while_locked(SecretPromptResult::Secret {
+        value: PASSWORD.to_string(),
+    }) else {
         eprintln!("retrieve secret locked: no dbus-daemon, skipping");
         return;
     };
-    assert_eq!(response, 0, "RetrieveSecret must report success after unlock");
+    assert_eq!(
+        response, 0,
+        "RetrieveSecret must report success after unlock"
+    );
     assert_eq!(
         bytes.as_slice(),
         &expected_portal_secret_password_mode(),
@@ -424,7 +419,10 @@ fn retrieve_secret_dismissed_reports_cancelled() {
         eprintln!("retrieve secret dismissed: no dbus-daemon, skipping");
         return;
     };
-    assert_eq!(response, 1, "a dismissed unlock prompt must report cancelled");
+    assert_eq!(
+        response, 1,
+        "a dismissed unlock prompt must report cancelled"
+    );
     assert!(
         bytes.is_empty(),
         "nothing must be written to the fd on dismissal"
@@ -467,7 +465,8 @@ fn create_collection_while_locked_prompts_and_creates() {
     // CreateCollection on a locked vault hands back an empty path and a
     // prompt in flight, exactly like Unlock; the collection is created once
     // the single prompt completes.
-    let mut properties: std::collections::HashMap<&str, Value<'_>> = std::collections::HashMap::new();
+    let mut properties: std::collections::HashMap<&str, Value<'_>> =
+        std::collections::HashMap::new();
     properties.insert(
         "org.freedesktop.Secret.Collection.Label",
         Value::from("Default"),
@@ -535,9 +534,8 @@ fn concurrent_unlocks_each_get_a_live_prompt_and_complete_from_one_interaction()
     let (_u1, p1): (Vec<OwnedObjectPath>, OwnedObjectPath) = service
         .call("Unlock", &(vec![login.clone()],))
         .expect("Unlock 1");
-    let (_u2, p2): (Vec<OwnedObjectPath>, OwnedObjectPath) = service
-        .call("Unlock", &(vec![login],))
-        .expect("Unlock 2");
+    let (_u2, p2): (Vec<OwnedObjectPath>, OwnedObjectPath) =
+        service.call("Unlock", &(vec![login],)).expect("Unlock 2");
     assert_ne!(p1.as_str(), "/", "Unlock 1 gets a prompt");
     assert_ne!(p2.as_str(), "/", "Unlock 2 gets a prompt");
     assert_ne!(p1, p2, "each concurrent Unlock gets its own prompt object");

@@ -151,11 +151,9 @@ pub(crate) async fn queue_prompt(
     socket: &std::path::Path,
     kind: super::CompatUnlockKind,
 ) -> zbus::fdo::Result<OwnedObjectPath> {
-    let prompt_path = OwnedObjectPath::try_from(format!(
-        "{SERVICE_PATH}/prompt/p{}",
-        generate_id()
-    ))
-    .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+    let prompt_path =
+        OwnedObjectPath::try_from(format!("{SERVICE_PATH}/prompt/p{}", generate_id()))
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
     server
         .at(
             prompt_path.clone(),

@@ -39,7 +39,7 @@ untouched.
 | `[[output]]` | array of tables | none | Per-connector display policy: mode, scale, position, transform, primary. See [Outputs](#outputs). |
 | `[screenshot]` | table | XDG Pictures directory, cursor included | Screenshot output policy. See [Screenshots](#screenshots). |
 | `[appearance]` | table | system color scheme, normal contrast, standard fonts and scale | Desktop-wide color, contrast, and typography preferences. See [Appearance](#appearance). |
-| `[agent]` | table | no scopes | Named automation scopes enforced by the IPC server. See [Agent Scopes](#agent-scopes). |
+| `[agent]` | table | lockdown on | Agent authorization policy: whether unpaired connections keep privileged capabilities. See [Agent Authorization](#agent-authorization). |
 | `[realm_sandbox]` | table | default deny | Network, filesystem, and cgroup policy for new Realm application launches. See [Realm Sandbox](#realm-sandbox). |
 | `[dev]` | table | all off | Development-only escape hatches; planned for removal before release. See [Development Options](#development-options). |
 
@@ -267,10 +267,17 @@ whose connector is not currently plugged in is ignored until the
 connector appears. Duplicate entries for one connector resolve
 last-wins.
 
+Direct DRM sessions calculate the backend scale automatically from the
+selected mode and validated EDID physical dimensions. Internal eDP, LVDS,
+and DSI panels target 125 logical PPI; external displays target 110 logical
+PPI. The result is rounded to the nearest 0.25 and clamped to 1.0–4.0.
+Missing, inconsistent, or implausible physical dimensions fall back to 1.0.
+Nested sessions retain the scale reported by the outer compositor.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `connector` | string | required | The backend's connector name, as shown by `aegis-ctl outputs` (e.g. `"DP-1"`, `"HDMI-A-1"`, `"nested"`). |
-| `scale` | float | backend-reported | Output scale factor, 0.25–4.0. Integer scales advertise through `wl_output`; fractional scales through `wp_fractional_scale_v1`. Applied live on reload. |
+| `connector` | string | required | The backend's connector name, as shown by `aegis-cli outputs` (e.g. `"DP-1"`, `"HDMI-A-1"`, `"nested"`). |
+| `scale` | float | automatic on DRM; host-reported when nested | Output scale override, 0.25–4.0. Integer scales advertise through `wl_output`; fractional scales through `wp_fractional_scale_v1`. Applied live on reload. |
 | `mode` | string | highest pixel count and refresh rate | Requested display mode, `"WxH"` or `"WxH@Hz"` (e.g. `"2560x1440@144"`). Without `@Hz` the highest-refresh mode of that size is used. A mode the connector does not advertise falls back to the highest-pixel mode at its highest refresh rate with a log warning. Direct DRM sessions apply changes live after the current page flip retires; nested sessions remain host-managed. |
 | `position` | table | backend arrangement | Top-left of the output in the global logical layout, written `position = { x = 1920, y = 0 }`. Applied live on reload. |
 | `transform` | string | `normal` | Output transform: `normal`, `90`, `180`, `270`, `flipped`, `flipped-90`, `flipped-180`, `flipped-270` (the `wl_output` underscore spellings are also accepted). Parsed and validated now, but not yet applied: until renderer output-transform support lands, a configured transform logs a warning and the output renders untransformed. |
@@ -289,7 +296,7 @@ mode = "1920x1080"
 position = { x = 1707, y = 0 }
 ```
 
-Run `aegis-ctl outputs` to see the modes each connector advertises; the
+Run `aegis-cli outputs` to see the modes each connector advertises; the
 `mode` value must match one of them (resolution exactly, refresh to the
 nearest whole hertz).
 
@@ -441,56 +448,29 @@ cgroup v2, and an Aegis systemd user service with delegated `cpu`, `memory`,
 and `pids` controllers. Missing isolation or controller support rejects the
 launch.
 
-## Agent Scopes
+## Agent Authorization
 
-Each `[[agent.scope]]` table names an IPC mutation allowlist. An IPC client
-requests the name during its handshake; an explicit unknown name is refused.
-Connections without a scope name remain unrestricted within their granted
-capability classes.
+The `[agent]` table holds runtime authorization policy for
+capability-borrowing agents (ADR-0088). Capability ceilings, pairing
+records, and remembered grants live in the compositor-held principal
+registry and grant store under `$XDG_DATA_HOME/aegis/` — never in this
+file. Manage them with `aegis-cli permissions`; the Agent Workspaces
+application shows the same state. The `[[agent.scope]]` declarations from
+earlier versions were removed in protocol v18 and are rejected as unknown
+fields.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name` | string | required | Scope name presented by an IPC client. Duplicate and empty names are ignored. |
-| `ops` | array of strings | unrestricted ordinary operations | Allowed operation classes. High-risk input, capture, picking, and Realm operations must be listed explicitly. An explicit array containing only unknown values grants no operations. |
-| `windows` | array of integers | unrestricted | Allowed durable window IDs. |
-| `workspaces` | array of integers | unrestricted | Allowed workspace IDs. |
-| `realms` | array of integers | unrestricted | Allowed Realm IDs. |
-
-Operation names are `Focus`, `Minimize`, `Close`, `Move`,
-`SetWindowGeometry`, `InjectInput`, `InjectRealmInput`, `Cycle`,
-`SwitchWorkspace`, `SwitchWorkspaceTo`, `MoveToWorkspace`, `ToggleTiling`,
-`ToggleOverview`, `SystemControl`, `Notify`, `DismissNotification`,
-`Screenshot`, `ScreenshotRegion`, `CaptureOutput`, `StreamOutput`,
-`IdleInhibit`, `PickTarget`, `CreateRealm`, `TransactRealm`, `RevokeRealm`,
-`CaptureRealm`, and `LaunchInRealm`. Names are case-insensitive; snake-case
-forms are also accepted. Invalid names are logged and grant nothing. Input,
-capture, interactive-picking, and Realm operations must be listed explicitly
-and require their separately negotiated capability; omitting `ops` never
-grants them.
+| `lockdown` | boolean | `true` | Strip privileged capabilities from connections that neither present a built-in scope nor pair as an agent. First-party owner tools use explicit built-in scopes. Set `false` only for compatibility with legacy unnamed local clients. |
 
 ```toml
-[[agent.scope]]
-name = "browser-helper"
-ops = ["Focus", "Minimize", "Close"]
-windows = [7, 9]
-
-[[agent.scope]]
-name = "window-input"
-ops = ["InjectInput"]
-windows = [7]
-
-[[agent.scope]]
-name = "workspace-rover"
-ops = ["SwitchWorkspace", "SwitchWorkspaceTo", "MoveToWorkspace"]
-workspaces = [2, 3]
+[agent]
+lockdown = true
 ```
 
-Scope changes are hot-reloaded. Named connections resolve their scope again
-for every mutation and capture, including final descriptor delivery, so
-narrowing or removing a scope applies without reconnecting. A Realm
-interaction-group mutation must include every affected window in the window
-allowlist. The Rust reference client uses `Client::connect_scoped` and exposes
-the granted allowlist through `Client::scope`.
+Pairing prompts, capability ceilings, and runtime grants are enforced per
+request by the IPC server. See the [aegis-mcp Bridge
+Reference](aegis-mcp.md) for the agent-side contract.
 
 ## Development Options
 

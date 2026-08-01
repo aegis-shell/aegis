@@ -107,6 +107,9 @@ impl CompositorRuntime {
             self.abandon_pending_app_pick("session locked before the app pick completed");
             self.abandon_pending_secret_prompt("session locked before the secret prompt completed");
             self.abandon_pending_confirm_pick("session locked before the confirmation completed");
+            self.abandon_pending_capability_pick(
+                "session locked before the capability pick completed",
+            );
         }
         while let Ok(completion) = self.capture_worker.completions.try_recv() {
             match completion {
@@ -435,7 +438,6 @@ impl CompositorRuntime {
                     .unwrap_or_default(),
             );
             self.publish_settings();
-            self.live.set_scopes(build_ipc_scopes(self.config.as_ref()));
             let pinned = resolve_pinned(
                 &self.launcher_apps,
                 &self.icon_cache.map,
@@ -539,12 +541,25 @@ impl CompositorRuntime {
                 },
             );
         }
+        // Positive agent-authorization lifecycle events (ADR-0088), the
+        // applied counterpart of the refusals above.
+        for event in self.auth_event_rx.try_iter() {
+            journal_mutation_effect_and_broadcast(
+                &self.journal,
+                &self.ipc,
+                self.start.elapsed().as_millis() as u64,
+                event.origin,
+                event.mutation,
+                aegis_ipc::Effect::Applied,
+            );
+        }
         self.drain_idle_controls();
         self.drain_pick_controls();
         self.drain_file_pick_controls();
         self.drain_app_pick_controls();
         self.drain_secret_prompt_controls();
         self.drain_confirm_pick_controls();
+        self.drain_capability_pick_controls();
         while let Ok(request) = self.stream_control_rx.try_recv() {
             match request.action {
                 StreamControl::Start {
@@ -631,7 +646,7 @@ impl CompositorRuntime {
             let result = if self.server.session_locked() && !allowed_while_locked {
                 Err("session is locked".into())
             } else {
-                apply_realm_action(&mut self.server, request.action)
+                apply_realm_action(&mut self.server, request.subject, request.action)
             };
             if result.is_ok() {
                 // This path updates the realm snapshot and `last_realm_revision`
@@ -986,7 +1001,10 @@ impl CompositorRuntime {
         // wallpaper hook, so the out-of-band mutation signal stands in (the
         // same one config reloads and IPC settings use).
         self.chrome_dirty = true;
-        log::info!("compositor: wallpaper replaced via IPC ({})", path.display());
+        log::info!(
+            "compositor: wallpaper replaced via IPC ({})",
+            path.display()
+        );
         Ok(())
     }
 }

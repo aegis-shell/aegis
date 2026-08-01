@@ -1,6 +1,6 @@
-# aegis-ctl
+# aegis-cli
 
-`aegis-ctl` is the reference command-line client for querying and
+`aegis-cli` is the reference command-line client for querying and
 controlling a running aegis session through `aegis-ipc`.
 
 ## Responsibilities
@@ -33,58 +33,58 @@ local and do not require a running compositor.
 ## Use
 
 ```bash
-cargo run --locked -p aegis-ctl -- help
-cargo run --locked -p aegis-ctl -- windows
-cargo run --locked -p aegis-ctl -- windows --json
-cargo run --locked -p aegis-ctl -- focus 42
-cargo run --locked -p aegis-ctl -- minimize 42
-cargo run --locked -p aegis-ctl -- system status
-cargo run --locked -p aegis-ctl -- system volume 50
-cargo run --locked -p aegis-ctl -- system wifi off
-cargo run --locked -p aegis-ctl -- realm create "Research"
-cargo run --locked -p aegis-ctl -- realm transfer 42 2
-cargo run --locked -p aegis-ctl -- realm capture 2
-cargo run --locked -p aegis-ctl -- realm capture 2 --region 0,0,1280,720 out.png
-cargo run --locked -p aegis-ctl -- subscribe
-cargo run --locked -p aegis-ctl -- completions bash
+cargo run --locked -p aegis-cli -- help
+cargo run --locked -p aegis-cli -- windows
+cargo run --locked -p aegis-cli -- windows --json
+cargo run --locked -p aegis-cli -- focus 42
+cargo run --locked -p aegis-cli -- minimize 42
+cargo run --locked -p aegis-cli -- system status
+cargo run --locked -p aegis-cli -- system volume 50
+cargo run --locked -p aegis-cli -- system wifi off
+cargo run --locked -p aegis-cli -- realm create "Research"
+cargo run --locked -p aegis-cli -- realm transfer 42 2
+cargo run --locked -p aegis-cli -- realm capture 2
+cargo run --locked -p aegis-cli -- realm capture 2 --region 0,0,1280,720 out.png
+cargo run --locked -p aegis-cli -- subscribe
+cargo run --locked -p aegis-cli -- completions bash
 ```
 
 Installed binaries use the same commands without
-`cargo run --locked -p aegis-ctl --`
+`cargo run --locked -p aegis-cli --`
 prefix.
 
 ## Subcommand Groups
 
-Immediate controls are grouped under `aegis-ctl system`; they use the same
+Immediate controls are grouped under `aegis-cli system`; they use the same
 `SystemStatus` and `SystemAction` IPC model as the command panel:
 
 ```bash
-aegis-ctl system status
-aegis-ctl system mute
-aegis-ctl system step-volume -2
-aegis-ctl system volume 50
-aegis-ctl system brightness 75
-aegis-ctl system wifi on
-aegis-ctl system bluetooth off
-aegis-ctl system do-not-disturb on
-aegis-ctl system tiling off
+aegis-cli system status
+aegis-cli system mute
+aegis-cli system step-volume -2
+aegis-cli system volume 50
+aegis-cli system brightness 75
+aegis-cli system wifi on
+aegis-cli system bluetooth off
+aegis-cli system do-not-disturb on
+aegis-cli system tiling off
 ```
 
-Realm administration is grouped under `aegis-ctl realm` so the
+Realm administration is grouped under `aegis-cli realm` so the
 owner-only admin scope and lease negotiation happen in one place:
 
 ```bash
-aegis-ctl realm list
-aegis-ctl realm create [label]
-aegis-ctl realm pause <id>
-aegis-ctl realm resume <id>
-aegis-ctl realm transfer <window> <realm> [--no-mirror]
-aegis-ctl realm launch <realm> <desktop-id>
-aegis-ctl realm capture <realm> [path] [--region x,y,w,h]
-aegis-ctl realm revoke <realm> [fallback]
+aegis-cli realm list
+aegis-cli realm create [label]
+aegis-cli realm pause <id>
+aegis-cli realm resume <id>
+aegis-cli realm transfer <window> <realm> [--no-mirror]
+aegis-cli realm launch <realm> <desktop-id>
+aegis-cli realm capture <realm> [path] [--region x,y,w,h]
+aegis-cli realm revoke <realm> [fallback]
 ```
 
-Run `aegis-ctl realm --help` for the per-subcommand usage.
+Run `aegis-cli realm --help` for the per-subcommand usage.
 
 ## Related Documentation
 

@@ -199,35 +199,39 @@ fn icon_raster_scale_uses_effective_output_policy() {
 }
 
 #[test]
-fn config_agent_scopes_compile_to_fail_closed_ipc_allowlists() {
-    let config = aegis_config::Config::parse(
-        "schema_version = 1\n\
-             [[agent.scope]]\n\
-             name = \"focus-one\"\n\
-             ops = [\"Focus\", \"NotARealOperation\"]\n\
-             windows = [7]\n\
-             workspaces = [3]\n",
-    )
-    .unwrap();
-    let scopes = build_ipc_scopes(Some(&config));
-    let scope = scopes.get("focus-one").expect("compiled scope");
+fn builtin_scopes_are_fail_closed_allowlists() {
+    let scopes = builtin_ipc_scopes();
+    assert_eq!(scopes.len(), 4, "only the four built-in component scopes");
 
-    assert_eq!(scope.ops, Some(vec![aegis_ipc::OpClass::Focus]));
-    assert!(scope.permits(&aegis_ipc::Command::Focus {
-        id: aegis_core::window::WindowId(7),
+    let owner = scopes
+        .get(aegis_ipc::LOCAL_OWNER_ADMIN_SCOPE)
+        .expect("built-in owner scope");
+    assert!(owner.permits(&aegis_ipc::Command::Focus {
+        id: aegis_core::window::WindowId(9),
     }));
-    assert!(!scope.permits(&aegis_ipc::Command::Focus {
-        id: aegis_core::window::WindowId(8),
+    assert!(!owner.permits(&aegis_ipc::Command::LaunchInRealm {
+        realm: aegis_core::realm::RealmId(9),
+        desktop_id: "foot.desktop".into(),
     }));
-    assert!(!scope.permits(&aegis_ipc::Command::Close {
-        id: aegis_core::window::WindowId(7),
-    }));
+
+    let agent_admin = scopes
+        .get(aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE)
+        .expect("built-in agent administration scope");
+    assert_eq!(agent_admin.ops.as_deref(), Some([].as_slice()));
+
     let admin = scopes
         .get(aegis_ipc::LOCAL_REALM_ADMIN_SCOPE)
         .expect("built-in Realm recovery scope");
     assert!(admin.permits(&aegis_ipc::Command::LaunchInRealm {
         realm: aegis_core::realm::RealmId(9),
         desktop_id: "foot.desktop".into(),
+    }));
+
+    let portal = scopes
+        .get(aegis_ipc::LOCAL_PORTAL_SCOPE)
+        .expect("built-in portal scope");
+    assert!(!portal.permits(&aegis_ipc::Command::System {
+        action: aegis_ipc::SystemAction::ToggleMute,
     }));
 }
 
@@ -291,19 +295,19 @@ fn realm_scope_expands_atomic_groups_before_authorizing() {
 #[test]
 fn automation_operation_names_accept_canonical_and_snake_case() {
     assert_eq!(
-        ipc_op_class("SetWindowGeometry"),
+        aegis_ipc::OpClass::from_name("SetWindowGeometry"),
         Some(aegis_ipc::OpClass::SetWindowGeometry)
     );
     assert_eq!(
-        ipc_op_class("set_window_geometry"),
+        aegis_ipc::OpClass::from_name("set_window_geometry"),
         Some(aegis_ipc::OpClass::SetWindowGeometry)
     );
     assert_eq!(
-        ipc_op_class("inject_input"),
+        aegis_ipc::OpClass::from_name("inject_input"),
         Some(aegis_ipc::OpClass::InjectInput)
     );
     assert_eq!(
-        ipc_op_class("system_control"),
+        aegis_ipc::OpClass::from_name("system_control"),
         Some(aegis_ipc::OpClass::SystemControl)
     );
 }

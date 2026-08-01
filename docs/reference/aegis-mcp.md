@@ -2,8 +2,8 @@
 
 `aegis-mcp` is the scoped Aegis platform bridge: the standard MCP access
 point for any agent operating the desktop. It is an MCP stdio server, not
-a model runtime: agent products such as fuji own providers, credentials,
-sessions, and user interaction on their side of the connection.
+a model runtime: agent products such as `aegis-agent` own providers,
+credentials, sessions, and user interaction on their side of the connection.
 
 ## Commands
 
@@ -15,16 +15,21 @@ aegis-mcp print-config
 ```
 
 With no subcommand, `serve` reads one JSON-RPC object per stdin line and
-writes one response per stdout line. Stdout contains protocol messages only;
-diagnostics go to stderr.
+writes one response per stdout line. It implements only MCP `2026-07-28`:
+`server/discover` and every request use per-request metadata, with no
+connection-level negotiation or version downgrade. Discovery is side-effect
+free: the bridge does not connect, pair, prompt, or acquire Realm authority
+until `tools/list` or `tools/call`. Stdout contains protocol messages only;
+diagnostics go to stderr. Closing stdin is the standard graceful shutdown
+signal.
 
 | Exit status | Meaning |
 |-------------|---------|
 | `0` | The command completed or the MCP client closed normally. |
-| `1` | IPC, Realm recovery, smoke verification, protocol I/O, or graceful cleanup failed. |
+| `1` | IPC, Realm recovery, smoke verification, protocol I/O, or explicitly requested cleanup failed. |
 | `2` | Required environment configuration is invalid. |
 
-`check` probes the compositor, prints the effective scope and advertised tool
+`check` probes the compositor, prints the effective ceiling and advertised tool
 names as JSON, and does not create a Realm. `print-config` prints an MCP client
 `[mcp.aegis]` entry using the current executable path.
 
@@ -35,7 +40,7 @@ bar for the observation interval, then revokes it and verifies cleanup. A
 second notification is posted and verified after completion. The default
 interval is 8 seconds. A pre-existing managed Realm is observed and preserved.
 The command requires `Notify`, `CreateRealm`, `TransactRealm`, and
-`RevokeRealm` in the named scope and prints both notification ids in a JSON
+`RevokeRealm` in the approved ceiling and prints both notification ids in a JSON
 evidence report.
 
 With `--input-window`, `smoke` additionally requires `TransactRealm` and
@@ -64,85 +69,92 @@ toast or a queued response alone is not proof that an operation was applied.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AEGIS_MCP_SOCKET` | `$XDG_RUNTIME_DIR/aegis.sock` | Aegis IPC socket. |
-| `AEGIS_MCP_SCOPE` | `desktop-operator` | Named `[[agent.scope]]` presented during the IPC handshake. |
-| `AEGIS_MCP_REALM_LABEL` | `Fuji` | Unique label used to create and recover this bridge's Agent Realm; 1–128 bytes. |
-| `AEGIS_MCP_IPC_TIMEOUT_SECS` | `5` | Per-connection handshake and I/O timeout; valid range `1..=60`. |
-| `AEGIS_MCP_REVOKE_ON_EXIT` | `true` | Revoke the managed Realm after a graceful MCP EOF or shutdown request. |
+| `AEGIS_MCP_LABEL` | the Realm label | Cosmetic display label presented at pairing; set it per agent product so principals stay distinguishable. 1–128 bytes. |
+| `AEGIS_MCP_INSTANCE_ID` | required | Stable connector-installation namespace for the credential, lock, and recovery state. `print-config` emits a random value; keep it stable and unique per MCP entry. 1–128 bytes. |
+| `AEGIS_MCP_REALM_LABEL` | `Aegis Agent` | Cosmetic label used for this bridge's Agent Realm; 1–128 bytes. Recovery also requires the authenticated subject binding. |
+| `AEGIS_MCP_DATA_DIR` | `$XDG_DATA_HOME/aegis-mcp` | Durable directory for the pairing identity. Without a resolvable data directory the identity is session-only and every start re-pairs. |
+| `AEGIS_MCP_IPC_TIMEOUT_SECS` | `5` | Per-connection handshake and I/O timeout for query calls; valid range `1..=60`. Mutation calls that may block on a grant prompt use a 360-second bound. |
+| `AEGIS_MCP_REVOKE_ON_EXIT` | `false` | Revoke the managed Realm after graceful MCP EOF. Prefer explicit `realm_reset`; enabling this may wait for runtime consent during shutdown. |
 
 The connector has no provider or credential variables. Realm recovery files
-and the per-scope process lock live in the owner-only
-`$XDG_RUNTIME_DIR/aegis-mcp/` directory.
+and the per-instance process lock live in the owner-only
+`$XDG_RUNTIME_DIR/aegis-mcp/` directory; the pairing identity lives in the
+owner-only data directory.
 
-## Named Scope
+## Capability Borrowing and Pairing
 
-The bridge never falls back to an unnamed privileged connection. A complete
-scope is:
+The bridge never falls back to an unnamed privileged connection, and there
+is nothing to configure on the Aegis side. On first contact the bridge
+declares its display label and the operation families it can use; the
+compositor opens the **pairing prompt**, a capability checklist in
+compositor chrome:
 
-```toml
-[[agent.scope]]
-name = "desktop-operator"
-ops = [
-  "Focus",
-  "Minimize",
-  "Close",
-  "MoveToWorkspace",
-  "SwitchWorkspace",
-  "SwitchWorkspaceTo",
-  "SetWindowGeometry",
-  "ToggleTiling",
-  "ToggleOverview",
-  "Notify",
-  "InjectRealmInput",
-  "CreateRealm",
-  "TransactRealm",
-  "RevokeRealm",
-  "CaptureRealm",
-  "LaunchInRealm",
-]
-```
+> **"Aegis Agent" wants to borrow desktop capabilities**
+> ☐ window management ☐ workspaces ☐ notifications
+> ☐ sensitive (confirmed again on first use): close windows, Realm capture,
+> Realm input, Realm management, sandboxed launch
 
-Remove operations the product should not have. In particular, omit `Close`
-unless the agent may close windows, and omit `InjectRealmInput` for an
-observation-only deployment. `CreateRealm`, `TransactRealm`, `RevokeRealm`,
-`CaptureRealm`, `LaunchInRealm`, and `InjectRealmInput` are fail-closed and
-must be named explicitly.
+The set approved here becomes the principal's **ceiling**, stored in the
+compositor-held registry. The compositor then issues the principal id and
+credential; the bridge persists the credential in its data directory and
+presents it on every later connection, so restarts, upgrades, and script
+edits never re-prompt. A label is cosmetic: it authenticates nothing, the
+user may rename principals, and a different installation reusing a known
+label triggers a warning in the prompt.
 
-Do not set a `realms` allowlist for a bridge that creates its Realm at runtime:
-the new durable id cannot be known in advance. A `windows` allowlist may be
-used, but it also limits which windows can be transferred or receive input.
-See [Configuration](config.md#agent-scopes).
+A platform-owned **dangerous set** — `Close`, `InjectRealmInput`,
+`CreateRealm`, `TransactRealm`, `RevokeRealm`, `CaptureRealm`,
+`LaunchInRealm` — always requires an interactive **runtime grant** on first
+use, however the ceiling was approved:
 
-The bridge probes the grant for `tools/list`. Scope narrowing applies on the
-next tool call because each call reconnects. Restart the MCP connector after
-broadening a scope so the new tools are advertised.
+- **Deny** refuses and is remembered for the session (no prompt spam).
+- **Allow once** applies to that single call.
+- **Allow session** applies until the compositor restarts or the decision is
+  revoked by the user.
+- **Always allow** persists in `$XDG_DATA_HOME/aegis/grants.json` until
+  revoked.
+
+Manage everything with `aegis-cli permissions` (`list`, `revoke`, `forget`,
+`rename`, `set-ceiling`, `register`) or the Permissions section of the Agent
+Workspaces application. Pairings, grants, revocations, and renames are
+recorded in the mutation journal.
+
+The bridge refreshes the credential-bound ceiling for every `tools/list`,
+and the IPC server reauthorizes the principal for every live request.
+Forgetting a principal or narrowing its ceiling therefore applies to both
+new and already connected clients. Gated tools remain advertised because
+calling one opens the runtime-grant path.
 
 ## MCP Client Configuration
 
 An MCP client loads the connector as a write-capable server because one
-catalog contains both observation and mutation tools. A fuji configuration
-entry is:
+catalog contains both observation and mutation tools. An `aegis-agent`
+configuration entry is:
 
 ```toml
 [mcp.aegis]
 command = ["/absolute/path/to/aegis-mcp"]
 enabled = true
 read_only = false
-environment = { AEGIS_MCP_SCOPE = "desktop-operator" }
+environment = { AEGIS_MCP_INSTANCE_ID = "stable-random-connector-id" }
 ```
 
-With the server key `aegis`, fuji prefixes the public tool names as
+With the server key `aegis`, aegis-agent prefixes the public tool names as
 `mcp__aegis__<tool>`.
 
 ## Tools
 
+Operations marked ▲ are in the platform dangerous set: the first use of the
+tool prompts for a runtime grant (once / session / always).
+
 | Connector-local name | Required capability / operation | Contract |
 |----------------------|---------------------------------|----------|
-| `desktop_snapshot` | `query` | Windows, workspaces, outputs, all Realms, and the granted scope. |
+| `desktop_snapshot` | `query` | Windows, workspaces, outputs, all Realms, and the granted ceiling. |
 | `desktop_journal` | `query` | Up to 200 ordered mutations and a pagination cursor. |
 | `apps_list` | `query` | Filtered XDG applications with trusted `desktop_id` values. |
 | `focus_window` | `control` / `Focus` | Queue focus. |
 | `minimize_window` | `control` / `Minimize` | Queue minimization. |
-| `close_window` | `control` / `Close` | Queue an explicit close request. |
+| `close_window` ▲ | `control` / `Close` | Queue an explicit close request. |
 | `move_window_to_workspace` | `control` / `MoveToWorkspace` | Queue a move by durable ids. |
 | `switch_workspace` | `control` / `SwitchWorkspace` | Queue an adjacent switch. |
 | `switch_workspace_to` | `control` / `SwitchWorkspaceTo` | Queue a switch by id. |
@@ -151,13 +163,13 @@ With the server key `aegis`, fuji prefixes the public tool names as
 | `toggle_overview` | `control` / `ToggleOverview` | Queue the overview. |
 | `post_notification` | `control` / `Notify` | Queue an agent notification. |
 | `realm_status` | `query` | Inspect the bridge-managed Realm without creating it. |
-| `realm_ensure` | `realm` / `CreateRealm` | Create or recover the private Agent Realm. |
-| `realm_launch_app` | `realm` / `LaunchInRealm` | Launch a catalogued application in its sandbox. |
-| `realm_transfer_window` | `realm` / `TransactRealm` | Transfer authority only to the agent or the human Realm. |
-| `realm_set_state` | `realm` / `TransactRealm` | Pause or resume with an optimistic receipt. |
-| `realm_capture` | `realm` / `CaptureRealm` | Return directed PNG image content, an owner-only compatibility path, placements, and revision. |
-| `realm_input` | `input` / `InjectRealmInput` | Queue at most 64 target-local actions through the Realm seat. |
-| `realm_reset` | `realm` / `RevokeRealm` | Revoke and atomically return controlled groups to the human Realm. |
+| `realm_ensure` ▲ | `realm` / `CreateRealm` | Create or recover the private Agent Realm. |
+| `realm_launch_app` ▲ | `realm` / `LaunchInRealm` | Launch a catalogued application in its sandbox. |
+| `realm_transfer_window` ▲ | `realm` / `TransactRealm` | Transfer authority only to the agent or the human Realm. |
+| `realm_set_state` ▲ | `realm` / `TransactRealm` | Pause or resume with an optimistic receipt. |
+| `realm_capture` ▲ | `realm` / `CaptureRealm` | Return directed PNG image content, an owner-only compatibility path, placements, and revision. |
+| `realm_input` ▲ | `input` / `InjectRealmInput` | Queue at most 64 target-local actions through the Realm seat. |
+| `realm_reset` ▲ | `realm` / `RevokeRealm` | Revoke and atomically return controlled groups to the human Realm. |
 
 `realm_transfer_window` accepts `agent` or `human` as its `target`.
 `realm_input` accepts `pointer_move`, `click`, `scroll`, and `key_press`.
@@ -173,10 +185,10 @@ Realm lifecycle and authority transactions return committed receipts.
 ## Capture Compatibility
 
 The connector emits standard MCP `image` content and JSON metadata, which
-fuji forwards to the model as image input. It also atomically stores the
+`aegis-agent` forwards to the model as image input. It also atomically stores the
 same directed PNG in the owner-only runtime directory and returns
 `image_path`. Clients whose MCP adapter renders only text can pass that path
-to fuji's built-in `read_image` tool. If neither route makes pixels
+to the agent's built-in `read_image` tool. If neither route makes pixels
 model-visible, the agent must not guess coordinates or use visual input.
 Inline MCP images are capped at 32 MiB; larger captures set
 `image_attached = false` and remain available through `image_path`. The

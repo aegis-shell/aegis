@@ -12,10 +12,11 @@ use std::time::Duration;
 use crate::codec::{read_msg, write_msg};
 use crate::journal::JournalSnapshot;
 use crate::schema::{
-    AppPickResult, Capabilities, Command, ConfirmPickResult, Event, FilePickOptions,
-    FilePickResult, LeaseGrant, LeaseRequest, PROTOCOL_VERSION, PickKind, PickResult, RealmAction,
-    RealmActionResult, Request, Response, Scope, SecretPromptResult, SettingsAction,
-    SettingsReceipt, SettingsSnapshot, StreamPixelFormat, StreamTarget, SystemAction, SystemStatus,
+    AgentGrantInfo, AgentHello, AgentIssued, AgentPrincipalInfo, AppPickResult, Capabilities,
+    Command, ConfirmPickResult, Event, FilePickOptions, FilePickResult, LeaseGrant, LeaseRequest,
+    OpClass, PROTOCOL_VERSION, PickKind, PickResult, RealmAction, RealmActionResult, Request,
+    Response, Scope, SecretPromptResult, SettingsAction, SettingsReceipt, SettingsSnapshot,
+    StreamPixelFormat, StreamTarget, SystemAction, SystemStatus,
 };
 
 /// Decoded Realm observation returned by [`Client::capture_realm`].
@@ -74,6 +75,7 @@ pub struct Client {
     caps: Capabilities,
     scope: Scope,
     lease: Option<LeaseGrant>,
+    agent: Option<AgentIssued>,
 }
 
 impl Client {
@@ -96,7 +98,7 @@ impl Client {
         requested: Capabilities,
         timeout: Duration,
     ) -> io::Result<Client> {
-        Self::connect_inner_with_timeout(path, requested, None, Some(timeout))
+        Self::connect_inner_with_timeout(path, requested, None, None, Some(timeout))
     }
 
     /// Connect requesting capabilities under a named, compositor-configured
@@ -119,7 +121,24 @@ impl Client {
         scope: impl Into<String>,
         timeout: Duration,
     ) -> io::Result<Client> {
-        Self::connect_inner_with_timeout(path, requested, Some(scope.into()), Some(timeout))
+        Self::connect_inner_with_timeout(path, requested, Some(scope.into()), None, Some(timeout))
+    }
+
+    /// Connect as a capability-borrowing agent (ADR-0088): present the
+    /// self-declaration (display label, requested operation families, and
+    /// the credential from an earlier pairing when held), optionally under a
+    /// named built-in scope. The handshake may block on the interactive
+    /// pairing prompt, so `timeout` should leave the user time to answer.
+    /// When the server issues a new credential it is available through
+    /// [`Client::agent_issued`].
+    pub fn connect_agent_with_timeout(
+        path: &Path,
+        requested: Capabilities,
+        scope: Option<String>,
+        agent: AgentHello,
+        timeout: Duration,
+    ) -> io::Result<Client> {
+        Self::connect_inner_with_timeout(path, requested, scope, Some(agent), Some(timeout))
     }
 
     fn connect_inner(
@@ -127,13 +146,14 @@ impl Client {
         requested: Capabilities,
         scope_name: Option<String>,
     ) -> io::Result<Client> {
-        Self::connect_inner_with_timeout(path, requested, scope_name, None)
+        Self::connect_inner_with_timeout(path, requested, scope_name, None, None)
     }
 
     fn connect_inner_with_timeout(
         path: &Path,
         requested: Capabilities,
         scope_name: Option<String>,
+        agent: Option<AgentHello>,
         timeout: Option<Duration>,
     ) -> io::Result<Client> {
         let mut stream = UnixStream::connect(path)?;
@@ -146,16 +166,18 @@ impl Client {
                 caps: requested,
                 scope: scope_name,
                 lease: requested.privileged().then(LeaseRequest::default),
+                agent,
             },
         )?;
         let resp: Response = read_msg(&mut stream)?;
-        let (caps, scope, lease) = match resp {
+        let (caps, scope, lease, agent) = match resp {
             Response::Hello {
                 version,
                 caps,
                 scope,
                 lease,
-            } if version == PROTOCOL_VERSION => (caps, scope, lease),
+                agent,
+            } if version == PROTOCOL_VERSION => (caps, scope, lease, agent),
             Response::Error { message } => {
                 return Err(io::Error::new(io::ErrorKind::ConnectionRefused, message));
             }
@@ -171,6 +193,7 @@ impl Client {
             caps,
             scope,
             lease,
+            agent,
         })
     }
 
@@ -186,6 +209,13 @@ impl Client {
 
     pub fn lease(&self) -> Option<LeaseGrant> {
         self.lease
+    }
+
+    /// The pairing outcome when this client connected with an `AgentHello`
+    /// (ADR-0088). A present `credential` was newly issued and must be
+    /// persisted by the caller.
+    pub fn agent_issued(&self) -> Option<&AgentIssued> {
+        self.agent.as_ref()
     }
     /// Bound blocking reads and writes on this connection.
     ///
@@ -208,6 +238,153 @@ impl Client {
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("expected LeaseRenewed, got {other:?}"),
+            )),
+        }
+    }
+
+    /// List paired agent principals (ADR-0088).
+    pub fn agent_principals(&mut self) -> io::Result<Vec<AgentPrincipalInfo>> {
+        write_msg(&mut self.stream, &Request::GetAgentPrincipals)?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::AgentPrincipals { principals } => Ok(principals),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected AgentPrincipals, got {other:?}"),
+            )),
+        }
+    }
+
+    /// List recorded runtime grants, optionally filtered to one principal
+    /// (ADR-0088).
+    pub fn agent_grants(&mut self, principal: Option<&str>) -> io::Result<Vec<AgentGrantInfo>> {
+        write_msg(
+            &mut self.stream,
+            &Request::GetAgentGrants {
+                principal: principal.map(str::to_owned),
+            },
+        )?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::AgentGrants { grants } => Ok(grants),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected AgentGrants, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Rename a principal's display label (`None` clears it).
+    pub fn rename_agent_principal(
+        &mut self,
+        principal: &str,
+        label: Option<&str>,
+    ) -> io::Result<()> {
+        write_msg(
+            &mut self.stream,
+            &Request::RenameAgentPrincipal {
+                principal: principal.to_owned(),
+                label: label.map(str::to_owned),
+            },
+        )?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::Ok => Ok(()),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected Ok, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Forget a principal: its credential dies and its grants are dropped.
+    pub fn forget_agent_principal(&mut self, principal: &str) -> io::Result<()> {
+        write_msg(
+            &mut self.stream,
+            &Request::ForgetAgentPrincipal {
+                principal: principal.to_owned(),
+            },
+        )?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::Ok => Ok(()),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected Ok, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Replace a principal's approved ceiling.
+    pub fn set_agent_ceiling(
+        &mut self,
+        principal: &str,
+        pregranted: Vec<OpClass>,
+        gated: Vec<OpClass>,
+    ) -> io::Result<()> {
+        write_msg(
+            &mut self.stream,
+            &Request::SetAgentCeiling {
+                principal: principal.to_owned(),
+                pregranted,
+                gated,
+            },
+        )?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::Ok => Ok(()),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected Ok, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Register a principal ahead of time (administrator pre-provisioning),
+    /// returning the issued principal id and credential to plant in the
+    /// agent's identity store.
+    pub fn register_agent(
+        &mut self,
+        label: Option<&str>,
+        pregranted: Vec<OpClass>,
+        gated: Vec<OpClass>,
+    ) -> io::Result<(String, String)> {
+        write_msg(
+            &mut self.stream,
+            &Request::RegisterAgent {
+                label: label.map(str::to_owned),
+                pregranted,
+                gated,
+            },
+        )?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::AgentRegistered {
+                principal,
+                credential,
+            } => Ok((principal, credential)),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected AgentRegistered, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Drop one recorded runtime grant.
+    pub fn revoke_agent_grant(&mut self, principal: &str, op: OpClass) -> io::Result<()> {
+        write_msg(
+            &mut self.stream,
+            &Request::RevokeAgentGrant {
+                principal: principal.to_owned(),
+                op,
+            },
+        )?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::Ok => Ok(()),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected Ok, got {other:?}"),
             )),
         }
     }

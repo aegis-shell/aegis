@@ -62,6 +62,7 @@ mod tests {
             caps: crate::schema::Capabilities::QUERY,
             scope: None,
             lease: None,
+            agent: None,
         };
         let mut buf = Vec::new();
         write_msg(&mut buf, &req).unwrap();

@@ -72,5 +72,5 @@ Absorb secret storage into `aegis-portal` as one all-in-one process:
   portal-native retrieval is universal; its service file is documented as
   transitional.
 - Follow-up: PAM-cached login-password auto-unlock (the wssp-pam token
-  pattern), password set/change via `aegis-ctl`, and re-lock on screen
+  pattern), password set/change via `aegis-cli`, and re-lock on screen
   lock once a policy exists.

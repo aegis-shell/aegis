@@ -28,9 +28,11 @@ mod popup;
 pub mod system;
 mod text;
 pub use chrome::{
-    AgentFeedback, AppMenu, AppPickParams, AppPicker, ConfirmPickParams, ConfirmPrompt,
-    FilePickParams, FilePicker, Launcher, Overview, PickerMode, PinAction, ScreenshotSelector,
-    SecretPrompt, SecretPromptParams, Toast, WindowSwitcher,
+    AgentFeedback, AppMenu, AppPickParams, AppPicker, CapabilityGroup, CapabilityPickParams,
+    CapabilityPickResult, CapabilityPrompt, ConfirmAnswer, ConfirmPickParams, ConfirmPickStyle,
+    ConfirmPrompt, ControlledWindowGuard, FilePickParams, FilePicker, Launcher, Overview,
+    PickerMode, PinAction, ScreenshotSelector, SecretPrompt, SecretPromptParams, Toast,
+    WindowSwitcher,
 };
 pub use i18n::{Language, Localizer, Message};
 pub use modal::ModalApplicationSpec;
@@ -178,6 +180,7 @@ pub enum CursorShape {
     Pointer = 4,
     Crosshair = 3,
     Text = 9,
+    NotAllowed = 15,
 }
 
 impl Reserved {
@@ -327,10 +330,15 @@ pub struct ChromeEvents {
     pub secret_prompt_confirmed: Option<String>,
     /// The user dismissed the secret prompt without confirming.
     pub secret_prompt_cancelled: bool,
-    /// The yes/no answer the user gave at the confirmation dialog this
-    /// frame (portal consent flows). The main loop answers the waiting
-    /// `PickConfirm` IPC request with it.
-    pub confirm_pick_answered: Option<bool>,
+    /// The answer the user gave at the confirmation dialog this frame
+    /// (portal consent flows, or the ADR-0088 runtime-grant consent). The
+    /// main loop answers the waiting `PickConfirm` IPC request or grant
+    /// request with it.
+    pub confirm_pick_answered: Option<ConfirmAnswer>,
+    /// The checklist answer the user gave at the capability-borrowing
+    /// dialog this frame (ADR-0088 agent pairing). The main loop answers
+    /// the waiting `PairAgent` IPC request with it.
+    pub capability_pick_answered: Option<CapabilityPickResult>,
     /// Ordered host-system mutations requested by compositor-owned UI.
     pub system_actions: Vec<SystemAction>,
     /// Ordered, idempotent pin mutations requested by application menus.
@@ -611,6 +619,23 @@ pub trait Chrome {
     /// Whether the confirmation dialog is currently open. Default `false`;
     /// the confirmation component overrides this.
     fn confirm_pick_active(&self) -> bool {
+        false
+    }
+
+    /// Open the capability-borrowing checklist for a `PairAgent` IPC
+    /// request (ADR-0088 agent pairing). Default no-op; the
+    /// capability-prompt component overrides this. The answer arrives
+    /// through the `capability_pick_answered` event. Ordinary modal chrome
+    /// over the live scene, like the other pickers.
+    fn start_capability_pick(&mut self, _params: CapabilityPickParams) {}
+
+    /// Force-close the capability checklist whose requester went away
+    /// (lock, timeout, disconnect). Default no-op.
+    fn cancel_capability_pick(&mut self) {}
+
+    /// Whether the capability checklist is currently open. Default `false`;
+    /// the capability-prompt component overrides this.
+    fn capability_pick_active(&self) -> bool {
         false
     }
 
@@ -1158,10 +1183,37 @@ impl Shell {
         self.components.iter().any(|c| c.confirm_pick_active())
     }
 
-    /// The yes/no answer the user gave this frame, if any (`true` =
-    /// confirmed).
-    pub fn take_confirm_pick_answered(&mut self) -> Option<bool> {
+    /// The answer the user gave at the confirmation dialog this frame, if
+    /// any.
+    pub fn take_confirm_pick_answered(&mut self) -> Option<ConfirmAnswer> {
         self.events.confirm_pick_answered.take()
+    }
+
+    /// Open the capability-borrowing checklist for a `PairAgent` IPC
+    /// request. No-op if no capability-prompt component is registered.
+    pub fn start_capability_pick(&mut self, params: CapabilityPickParams) {
+        for component in self.components.iter_mut() {
+            component.start_capability_pick(params.clone());
+        }
+    }
+
+    /// Force-close the capability checklist (requester gone: lock, timeout,
+    /// disconnect).
+    pub fn cancel_capability_pick(&mut self) {
+        for component in self.components.iter_mut() {
+            component.cancel_capability_pick();
+        }
+    }
+
+    /// Whether the capability checklist is currently open.
+    pub fn capability_pick_active(&self) -> bool {
+        self.components.iter().any(|c| c.capability_pick_active())
+    }
+
+    /// The checklist answer the user gave this frame, if any (`approved`
+    /// carries the checked group keys; `None` = denied).
+    pub fn take_capability_pick_answered(&mut self) -> Option<CapabilityPickResult> {
+        self.events.capability_pick_answered.take()
     }
 
     /// Whether the screenshot selector is currently active.

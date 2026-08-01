@@ -139,9 +139,12 @@ pub(super) struct CompositorRuntime {
     pub(super) pending_secret_prompt: Option<PendingSecretPrompt>,
     pub(super) confirm_pick_rx: std::sync::mpsc::Receiver<ConfirmPickControlRequest>,
     pub(super) pending_confirm_pick: Option<PendingConfirmPick>,
+    pub(super) capability_pick_rx: std::sync::mpsc::Receiver<CapabilityPickControlRequest>,
+    pub(super) pending_capability_pick: Option<PendingCapabilityPick>,
     /// IPC connections currently holding a surfaceless idle inhibitor.
     pub(super) ipc_idle_inhibits: IdleInhibits,
     pub(super) journal_refusal_rx: std::sync::mpsc::Receiver<JournalRefusalRequest>,
+    pub(super) auth_event_rx: std::sync::mpsc::Receiver<AuthEventRequest>,
     pub(super) journal: std::sync::Arc<std::sync::Mutex<aegis_ipc::Journal>>,
     pub(super) live: std::sync::Arc<LiveState>,
     pub(super) ipc: Option<aegis_ipc::Server>,

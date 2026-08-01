@@ -12,9 +12,13 @@ use crate::agent::config::McpServerConfig;
 use crate::agent::provider::{ImageData, ToolSpec};
 use crate::agent::tools::ToolOutput;
 
-const PROTOCOL_VERSION: &str = "2024-11-05";
-const CALL_TIMEOUT: Duration = Duration::from_secs(120);
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+const PROTOCOL_VERSION: &str = "2026-07-28";
+const CALL_TIMEOUT: Duration = Duration::from_secs(370);
+const CATALOG_TIMEOUT: Duration = Duration::from_secs(370);
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_RESPONSE_BYTES: usize = 300 * 1024 * 1024;
+
+type ChildConn = JsonRpcConn<BufReader<ChildStdout>, ChildStdin>;
 
 /// One tool advertised by the server, under its connector-local name.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,36 +32,23 @@ pub struct McpTool {
 /// A live stdio MCP server process with its tool catalog cached.
 pub struct McpClient {
     server: String,
-    conn: JsonRpcConn<BufReader<ChildStdout>, ChildStdin>,
+    conn: ChildConn,
     child: Child,
     tools: Vec<McpTool>,
 }
 
 impl McpClient {
-    /// Spawn the server, run `initialize` + `tools/list`, and cache tools.
+    /// Spawn a 2026-07-28 server, validate discovery, and cache its tool
+    /// catalog.
     pub async fn spawn(server: &str, config: &McpServerConfig) -> Result<Self, McpError> {
         let (program, args) = config.command.split_first().ok_or(McpError::EmptyCommand)?;
-        let mut command = Command::new(program);
-        command
-            .args(args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .envs(&config.environment);
-        let mut child = command.spawn().map_err(|source| McpError::Spawn {
-            program: program.clone(),
-            source,
-        })?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| McpError::Protocol("child stdin unavailable".into()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| McpError::Protocol("child stdout unavailable".into()))?;
-        let mut conn = JsonRpcConn::new(BufReader::new(stdout), stdin);
-        let tools = conn.handshake().await?;
+        let (child, mut conn) = spawn_transport(program, args, config)?;
+        tokio::time::timeout(DISCOVERY_TIMEOUT, conn.discover())
+            .await
+            .map_err(|_| McpError::Timeout(DISCOVERY_TIMEOUT))??;
+        let tools = tokio::time::timeout(CATALOG_TIMEOUT, conn.list_tools())
+            .await
+            .map_err(|_| McpError::Timeout(CATALOG_TIMEOUT))??;
         Ok(Self {
             server: server.to_string(),
             conn,
@@ -95,25 +86,57 @@ impl McpClient {
 
     /// Call one connector-local tool.
     pub async fn call(&mut self, name: &str, arguments: Value) -> Result<ToolOutput, McpError> {
-        let result = tokio::time::timeout(
-            CALL_TIMEOUT,
-            self.conn
-                .request("tools/call", json!({"name": name, "arguments": arguments})),
-        )
-        .await
-        .map_err(|_| McpError::Timeout(CALL_TIMEOUT))??;
+        let result = self
+            .conn
+            .request_with_timeout(
+                "tools/call",
+                json!({"name": name, "arguments": arguments}),
+                CALL_TIMEOUT,
+            )
+            .await?;
         Ok(parse_tool_result(&result))
     }
 
-    /// Best-effort graceful shutdown: request, close stdin, wait, then kill.
+    /// Best-effort standard stdio shutdown: close stdin, wait, then terminate.
+    /// MCP does not define a `shutdown` JSON-RPC method.
     pub async fn shutdown(&mut self) {
-        let _ = tokio::time::timeout(Duration::from_secs(2), async {
-            let _ = self.conn.request("shutdown", json!({})).await;
+        let _ = self.conn.close_writer().await;
+        if tokio::time::timeout(Duration::from_secs(10), self.child.wait())
+            .await
+            .is_err()
+        {
+            let _ = self.child.kill().await;
             let _ = self.child.wait().await;
-        })
-        .await;
-        let _ = self.child.kill().await;
+        }
     }
+}
+
+fn spawn_transport(
+    program: &str,
+    args: &[String],
+    config: &McpServerConfig,
+) -> Result<(Child, ChildConn), McpError> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .envs(&config.environment)
+        .kill_on_drop(true);
+    let mut child = command.spawn().map_err(|source| McpError::Spawn {
+        program: program.to_string(),
+        source,
+    })?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| McpError::Protocol("child stdin unavailable".into()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| McpError::Protocol("child stdout unavailable".into()))?;
+    Ok((child, JsonRpcConn::new(BufReader::new(stdout), stdin)))
 }
 
 /// Newline-delimited JSON-RPC over any async reader/writer pair.
@@ -136,29 +159,59 @@ where
         }
     }
 
-    /// `initialize` + `notifications/initialized` + `tools/list`.
-    pub(crate) async fn handshake(&mut self) -> Result<Vec<McpTool>, McpError> {
-        tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
-            self.request(
-                "initialize",
-                json!({
-                    "protocolVersion": PROTOCOL_VERSION,
-                    "capabilities": {},
-                    "clientInfo": {"name": "fuji", "version": env!("CARGO_PKG_VERSION")},
-                }),
-            )
-            .await?;
-            self.notify("notifications/initialized").await?;
-            let result = self.request("tools/list", json!({})).await?;
-            parse_tools(&result)
-        })
-        .await
-        .map_err(|_| McpError::Timeout(HANDSHAKE_TIMEOUT))?
+    /// Discover the stateless server and require the exact protocol version
+    /// used for every subsequent request.
+    async fn discover(&mut self) -> Result<(), McpError> {
+        let discovered = self.request("server/discover", json!({})).await?;
+        let supported = discovered["supportedVersions"].as_array().ok_or_else(|| {
+            McpError::Protocol("server/discover result has no supportedVersions array".into())
+        })?;
+        if !supported
+            .iter()
+            .any(|version| version.as_str() == Some(PROTOCOL_VERSION))
+        {
+            return Err(McpError::Protocol(format!(
+                "server/discover does not advertise {PROTOCOL_VERSION}"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn list_tools(&mut self) -> Result<Vec<McpTool>, McpError> {
+        let result = self.request("tools/list", json!({})).await?;
+        parse_tools(&result)
     }
 
     pub(crate) async fn request(&mut self, method: &str, params: Value) -> Result<Value, McpError> {
-        self.next_id += 1;
+        let id = self.send_request(method, params).await?;
+        self.wait_response(id).await
+    }
+
+    async fn request_with_timeout(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, McpError> {
+        let id = self.send_request(method, params).await?;
+        match tokio::time::timeout(timeout, self.wait_response(id)).await {
+            Ok(result) => result,
+            Err(_) => {
+                let _ = self
+                    .notify_with_params("notifications/cancelled", json!({"requestId": id}))
+                    .await;
+                Err(McpError::Timeout(timeout))
+            }
+        }
+    }
+
+    async fn send_request(&mut self, method: &str, params: Value) -> Result<u64, McpError> {
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or_else(|| McpError::Protocol("request id space exhausted".into()))?;
         let id = self.next_id;
+        let params = self.decorate_params(params)?;
         self.write_json(&json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -166,6 +219,36 @@ where
             "params": params,
         }))
         .await?;
+        Ok(id)
+    }
+
+    fn decorate_params(&self, mut params: Value) -> Result<Value, McpError> {
+        let params_object = params
+            .as_object_mut()
+            .ok_or_else(|| McpError::Protocol("MCP request params must be an object".into()))?;
+        let mut meta_value = params_object.remove("_meta").unwrap_or_else(|| json!({}));
+        {
+            let meta = meta_value.as_object_mut().ok_or_else(|| {
+                McpError::Protocol("MCP request params._meta must be an object".into())
+            })?;
+            meta.insert(
+                "io.modelcontextprotocol/protocolVersion".into(),
+                Value::String(PROTOCOL_VERSION.into()),
+            );
+            meta.insert(
+                "io.modelcontextprotocol/clientInfo".into(),
+                json!({"name": "aegis-agent", "version": env!("CARGO_PKG_VERSION")}),
+            );
+            meta.insert(
+                "io.modelcontextprotocol/clientCapabilities".into(),
+                json!({}),
+            );
+        }
+        params_object.insert("_meta".into(), meta_value);
+        Ok(params)
+    }
+
+    async fn wait_response(&mut self, id: u64) -> Result<Value, McpError> {
         loop {
             let line = self.read_line().await?;
             let message: Value = serde_json::from_str(&line)?;
@@ -178,9 +261,16 @@ where
                                 .as_str()
                                 .unwrap_or("unknown MCP error")
                                 .to_string(),
+                            data: error.get("data").cloned(),
                         });
                     }
-                    return Ok(message.get("result").cloned().unwrap_or(Value::Null));
+                    let result = message.get("result").cloned().unwrap_or(Value::Null);
+                    if result.get("resultType").and_then(Value::as_str) != Some("complete") {
+                        return Err(McpError::Protocol(
+                            "MCP response is not a complete result".into(),
+                        ));
+                    }
+                    return Ok(result);
                 }
                 // Notifications and stale responses carry no reply we await.
                 _ => continue,
@@ -188,9 +278,18 @@ where
         }
     }
 
-    pub(crate) async fn notify(&mut self, method: &str) -> Result<(), McpError> {
-        self.write_json(&json!({"jsonrpc": "2.0", "method": method}))
+    async fn notify_with_params(
+        &mut self,
+        method: &str,
+        mut params: Value,
+    ) -> Result<(), McpError> {
+        params = self.decorate_params(params)?;
+        self.write_json(&json!({"jsonrpc": "2.0", "method": method, "params": params}))
             .await
+    }
+
+    async fn close_writer(&mut self) -> Result<(), McpError> {
+        self.writer.shutdown().await.map_err(Into::into)
     }
 
     async fn write_json(&mut self, value: &Value) -> Result<(), McpError> {
@@ -203,14 +302,49 @@ where
 
     async fn read_line(&mut self) -> Result<String, McpError> {
         loop {
-            let mut line = String::new();
-            let bytes = self.reader.read_line(&mut line).await?;
-            if bytes == 0 {
-                return Err(McpError::Eof);
+            let mut line = Vec::new();
+            loop {
+                let available = self.reader.fill_buf().await?;
+                if available.is_empty() {
+                    if line.is_empty() {
+                        return Err(McpError::Eof);
+                    }
+                    break;
+                }
+                let newline = available.iter().position(|byte| *byte == b'\n');
+                let consumed = newline.map_or(available.len(), |position| position + 1);
+                let remaining = MAX_RESPONSE_BYTES
+                    .saturating_add(1)
+                    .saturating_sub(line.len());
+                line.extend_from_slice(&available[..consumed.min(remaining)]);
+                self.reader.consume(consumed);
+                if line.len() > MAX_RESPONSE_BYTES {
+                    if newline.is_none() {
+                        loop {
+                            let available = self.reader.fill_buf().await?;
+                            if available.is_empty() {
+                                break;
+                            }
+                            let newline = available.iter().position(|byte| *byte == b'\n');
+                            let consumed = newline.map_or(available.len(), |position| position + 1);
+                            self.reader.consume(consumed);
+                            if newline.is_some() {
+                                break;
+                            }
+                        }
+                    }
+                    return Err(McpError::ResponseTooLarge(MAX_RESPONSE_BYTES));
+                }
+                if newline.is_some() {
+                    break;
+                }
             }
-            let trimmed = line.trim_end();
-            if !trimmed.is_empty() {
-                return Ok(trimmed.to_string());
+            while matches!(line.last(), Some(b'\n' | b'\r')) {
+                line.pop();
+            }
+            if !line.is_empty() {
+                return String::from_utf8(line)
+                    .map_err(|_| McpError::Protocol("MCP response is not UTF-8".into()));
             }
         }
     }
@@ -287,10 +421,16 @@ pub enum McpError {
     Json(#[from] serde_json::Error),
     #[error("MCP server closed the connection")]
     Eof,
+    #[error("MCP response exceeds the {0}-byte limit")]
+    ResponseTooLarge(usize),
     #[error("MCP call timed out after {0:?}")]
     Timeout(Duration),
     #[error("MCP error {code}: {message}")]
-    Rpc { code: i64, message: String },
+    Rpc {
+        code: i64,
+        message: String,
+        data: Option<Value>,
+    },
     #[error("MCP protocol violation: {0}")]
     Protocol(String),
 }
@@ -303,9 +443,8 @@ mod tests {
 
     type TestConn = JsonRpcConn<BufReader<ReadHalf<DuplexStream>>, WriteHalf<DuplexStream>>;
 
-    /// A scripted server: answers initialize/tools/list/tools/call and one
-    /// `failing_method` with an RPC error. Interleaves a notification before
-    /// every response to exercise skipping.
+    /// A scripted server. It interleaves a notification before every
+    /// response to exercise response correlation.
     fn fake_server() -> (TestConn, tokio::task::JoinHandle<()>) {
         let (client_end, server_end) = duplex(64 * 1024);
         let (server_read, mut server_write) = tokio::io::split(server_end);
@@ -326,23 +465,37 @@ mod tests {
                 };
                 let method = request["method"].as_str().unwrap_or("");
                 let response = match method {
-                    "initialize" => json!({
+                    "server/discover" => json!({
                         "jsonrpc": "2.0", "id": id,
-                        "result": {"protocolVersion": "2024-11-05", "capabilities": {},
-                                   "serverInfo": {"name": "fake", "version": "0"}},
+                        "result": {
+                            "resultType": "complete",
+                            "supportedVersions": [PROTOCOL_VERSION],
+                            "capabilities": {"tools": {"listChanged": false}},
+                            "ttlMs": 0,
+                            "cacheScope": "private",
+                            "_meta": {"io.modelcontextprotocol/serverInfo": {
+                                "name": "fake", "version": "0"
+                            }}
+                        },
                     }),
                     "tools/list" => json!({
                         "jsonrpc": "2.0", "id": id,
-                        "result": {"tools": [{
-                            "name": "echo",
-                            "description": "echo back",
-                            "inputSchema": {"type": "object"},
-                            "annotations": {"readOnlyHint": true},
-                        }]},
+                        "result": {
+                            "resultType": "complete",
+                            "tools": [{
+                                "name": "echo",
+                                "description": "echo back",
+                                "inputSchema": {"type": "object"},
+                                "annotations": {"readOnlyHint": true},
+                            }],
+                            "ttlMs": 0,
+                            "cacheScope": "private"
+                        },
                     }),
                     "tools/call" => json!({
                         "jsonrpc": "2.0", "id": id,
                         "result": {
+                            "resultType": "complete",
                             "content": [
                                 {"type": "text", "text": "hi"},
                                 {"type": "image", "data": "aGk=", "mimeType": "image/png"},
@@ -374,9 +527,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handshake_caches_tools_with_annotations() {
+    async fn discovery_caches_tools_with_annotations() {
         let (mut conn, _server) = fake_server();
-        let tools = conn.handshake().await.expect("handshake");
+        conn.discover().await.expect("discovery");
+        let tools = conn.list_tools().await.expect("tools");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "echo");
         assert!(tools[0].read_only);
@@ -386,6 +540,7 @@ mod tests {
     #[tokio::test]
     async fn tool_call_parses_text_and_image_content() {
         let (mut conn, _server) = fake_server();
+        conn.discover().await.expect("discovery");
         let result = conn
             .request("tools/call", json!({"name": "echo", "arguments": {}}))
             .await
@@ -401,6 +556,7 @@ mod tests {
     #[tokio::test]
     async fn rpc_errors_surface_code_and_message() {
         let (mut conn, _server) = fake_server();
+        conn.discover().await.expect("discovery");
         let error = conn
             .request("bogus", json!({}))
             .await

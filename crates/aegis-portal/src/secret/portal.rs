@@ -157,9 +157,7 @@ impl SecretIface {
             .and_then(|owned| super::write_secret_fd(owned, &secret));
         secret.zeroize();
         match written {
-            Ok(()) => {
-                (0, HashMap::new())
-            }
+            Ok(()) => (0, HashMap::new()),
             Err(error) => {
                 log::warn!("portal: could not write the secret to the RetrieveSecret fd: {error}");
                 (2, HashMap::new())

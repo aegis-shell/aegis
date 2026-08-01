@@ -16,7 +16,7 @@ receive fuji process presence, session state, or a stable owner identity for
 each Realm. Presenting an empty snapshot as "Fuji Ready" therefore claims
 liveness that the compositor cannot verify. Aggregating every Agent Realm
 under the Fuji name also makes a first-party agent product appear to own
-workspaces created by the user, `aegis-ctl`, or another scoped client.
+workspaces created by the user, `aegis-cli`, or another scoped client.
 
 The compositor-owned manager must remain reachable when an agent is stopped
 or broken so the user can inspect and revoke interaction authority.

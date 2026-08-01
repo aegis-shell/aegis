@@ -461,7 +461,7 @@ fn scaled_alpha(alpha: u8, numerator: u16, denominator: u16) -> u8 {
     u8::try_from(scaled.min(255)).unwrap_or(255)
 }
 
-fn realm_color(realm: RealmId) -> Color {
+pub(super) fn realm_color(realm: RealmId) -> Color {
     const PALETTE: [(u8, u8, u8); 6] = [
         (92, 214, 255),
         (255, 184, 76),

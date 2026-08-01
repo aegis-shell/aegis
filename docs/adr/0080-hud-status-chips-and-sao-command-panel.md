@@ -90,7 +90,7 @@ actions.
 - Pointer interactions formerly on the bar — workspace-dot switching,
   volume scroll-step, bell/network toggles, tray clicks — no longer exist
   there. Equivalents live in the SAO panel, existing keybindings, the
-  overview, and IPC (`aegis-ctl`).
+  overview, and IPC (`aegis-cli`).
 - Four-finger touchpad swipes are compositor-owned and never reach
   `zwp_pointer_gestures_v1` clients; three-finger swipes still forward.
 - New crates `aegis-tray` and `aegis-sao-panel`; `aegis-statusbar` shrinks

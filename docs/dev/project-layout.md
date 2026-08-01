@@ -25,8 +25,9 @@ aegis/
     aegis-avatar/        user-avatar loading and rendering: still images and VRM models
     aegis-config/        TOML schema, typed atomic persistence, loader, live reload
     aegis-ipc/           versioned IPC and introspection over a unix socket
-    aegis-ctl/       command-line driver for the IPC (reference external tool)
-    aegis-fuji/          fuji in one crate: scoped MCP platform bridge + its own agent runtime
+    aegis-cli/       command-line driver for the IPC (reference external tool)
+    aegis-agent/         the in-tree agent runtime CLI (`aegis-agent`), internal persona: fuji (宓姬)
+
     aegis-desktop-entries/          freedesktop.org desktop-entry enumeration + icon lookup
     aegis-launcher/        detached, XDG-environment-aware app launching
     aegis/             the binary: wiring and event loop
@@ -60,9 +61,10 @@ Cross-repository development uses a
 | [`aegis-avatar`](../../crates/aegis-avatar/README.md) | User-avatar loading and rendering: still images and VRM models | [ADR-0080](../adr/0080-avatar-crate-xdg-conformant-vrm-aware.md) |
 | [`aegis-config`](../../crates/aegis-config/README.md) | Versioned TOML schema, typed atomic persistence, loader, and mtime-based live reload | [ADR-0026](../adr/0026-configuration-system.md) |
 | [`aegis-ipc`](../../crates/aegis-ipc/README.md) | Versioned schema and codec over a unix socket; the extension/automation surface | [ADR-0027](../adr/0027-ipc-and-introspection.md) |
-| [`aegis-ctl`](../../crates/aegis-ctl/README.md) | Command-line driver for the IPC; the reference external tool | [ADR-0027](../adr/0027-ipc-and-introspection.md) |
+| [`aegis-cli`](../../crates/aegis-cli/README.md) | Command-line driver for the IPC; the reference external tool | [ADR-0027](../adr/0027-ipc-and-introspection.md) |
 | [`aegis-mcp`](../../crates/aegis-mcp/README.md) | The platform's scoped MCP bridge for any agent (`aegis-mcp`) | [ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md), [ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md) |
-| [`aegis-fuji`](../../crates/aegis-fuji/README.md) | fuji, the in-tree agent product: self-contained agent runtime (`fuji`) | [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md) |
+| [`aegis-agent`](../../crates/aegis-agent/README.md) | Aegis agent runtime: self-contained agent CLI (`aegis-agent`), internal persona fuji | [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md), [ADR-0089](../adr/0089-aegis-agent-product-and-fuji-identity-rename.md) |
+
 | [`aegis-desktop-entries`](../../crates/aegis-desktop-entries/README.md) | freedesktop.org desktop-entry enumeration and icon-theme lookup | [ADR-0022](../adr/0022-application-launcher.md) |
 | [`aegis-launcher`](../../crates/aegis-launcher/README.md) | Detached, XDG-environment-aware launching of desktop applications | [ADR-0022](../adr/0022-application-launcher.md) |
 | [`aegis`](../../crates/aegis/README.md) | Process entry point and frame loop | [Architecture](../explanation/architecture.md) |
@@ -89,10 +91,10 @@ Cross-repository development uses a
 - A rendering or texture capability missing from flux is added to flux, not
   worked around in aegis; see
   [ADR-0001](../adr/0001-scope-and-responsibility-boundary.md).
-- Generic agent execution and product policy belong in
-  `aegis-fuji`, fuji's self-contained runtime. Aegis-specific named-scope and
-  Realm adaptation belongs in the separately launched `aegis-mcp`
-  process, never in the compositor binary or the `fuji` binary.
+- Generic agent execution and product policy belong in `aegis-agent`, the
+  self-contained runtime whose internal persona remains fuji. Aegis-specific
+  capability borrowing and Realm adaptation belong in the separately
+  launched `aegis-mcp` process, never in the agent or compositor binary.
 - Cross-binding pointer casts (between the `flux` and `lens` `flux_*`
   types) stay localized at the call seam, not spread through the code.
 

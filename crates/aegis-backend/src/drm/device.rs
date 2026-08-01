@@ -136,14 +136,36 @@ impl DrmBackend {
         for output in &displays.outputs {
             let mode = output.mode.size();
             log::info!(
-                "drm: {} at {},{}: {}x{} @ {} Hz",
+                "drm: {} at {},{}: {}x{} @ {} Hz, {:?}, auto scale {:.2}",
                 output.name,
                 output.x,
                 output.y,
                 mode.0,
                 mode.1,
-                output.mode.vrefresh()
+                output.mode.vrefresh(),
+                output.kind,
+                output.scale.as_f32()
             );
+            match (output.physical_size_mm, output.ppi) {
+                (Some((width, height)), Some(ppi)) => log::info!(
+                    "drm: {} physical size {}x{} mm, {:.1} PPI",
+                    output.name,
+                    width,
+                    height,
+                    ppi
+                ),
+                (Some((width, height)), None) => log::warn!(
+                    "drm: {} reported implausible physical size {}x{} mm; using scale 1.00",
+                    output.name,
+                    width,
+                    height
+                ),
+                (None, None) => log::info!(
+                    "drm: {} has no physical-size metadata; using scale 1.00",
+                    output.name
+                ),
+                (None, Some(_)) => unreachable!("PPI requires physical dimensions"),
+            }
         }
         let cursor_planes = displays
             .outputs

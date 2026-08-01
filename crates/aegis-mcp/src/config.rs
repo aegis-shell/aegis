@@ -3,8 +3,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const DEFAULT_SCOPE: &str = "desktop-operator";
-const DEFAULT_REALM_LABEL: &str = "Fuji";
+const DEFAULT_REALM_LABEL: &str = "Aegis Agent";
 const DEFAULT_IPC_TIMEOUT_SECS: u64 = 5;
 
 /// Runtime policy for one aegis-mcp bridge process.
@@ -12,8 +11,19 @@ const DEFAULT_IPC_TIMEOUT_SECS: u64 = 5;
 pub struct BridgeConfig {
     pub socket_path: PathBuf,
     pub runtime_dir: PathBuf,
-    pub scope: String,
+    /// Display label presented to the compositor when pairing (ADR-0088).
+    /// Cosmetic only: it authenticates nothing and the user may rename the
+    /// principal at any time.
+    pub label: String,
+    /// Stable connector installation namespace. Unlike `label`, this value
+    /// is never cosmetic: it partitions credentials, recovery locks, and
+    /// local Realm state so unrelated MCP hosts cannot accidentally share an
+    /// agent identity.
+    pub instance_id: String,
     pub realm_label: String,
+    /// Durable directory for the pairing identity. `None` keeps the
+    /// identity session-only, which re-prompts at every start.
+    pub data_dir: Option<PathBuf>,
     pub io_timeout: Duration,
     /// Revoke the managed Realm on a graceful stdio shutdown. A process killed
     /// during connector refresh leaves a recovery record for the successor.
@@ -26,8 +36,10 @@ impl fmt::Debug for BridgeConfig {
             .debug_struct("BridgeConfig")
             .field("socket_path", &self.socket_path)
             .field("runtime_dir", &self.runtime_dir)
-            .field("scope", &self.scope)
+            .field("label", &self.label)
+            .field("instance_id", &self.instance_id)
             .field("realm_label", &self.realm_label)
+            .field("data_dir", &self.data_dir)
             .field("io_timeout", &self.io_timeout)
             .field("revoke_on_exit", &self.revoke_on_exit)
             .finish()
@@ -38,16 +50,18 @@ impl BridgeConfig {
     pub fn new(
         socket_path: impl Into<PathBuf>,
         runtime_dir: impl Into<PathBuf>,
-        scope: impl Into<String>,
+        label: impl Into<String>,
         realm_label: impl Into<String>,
     ) -> Result<Self, ConfigError> {
         let config = Self {
             socket_path: socket_path.into(),
             runtime_dir: runtime_dir.into(),
-            scope: scope.into(),
+            label: label.into(),
+            instance_id: "embedded".into(),
             realm_label: realm_label.into(),
+            data_dir: None,
             io_timeout: Duration::from_secs(DEFAULT_IPC_TIMEOUT_SECS),
-            revoke_on_exit: true,
+            revoke_on_exit: false,
         };
         config.validate()?;
         Ok(config)
@@ -63,10 +77,13 @@ impl BridgeConfig {
         let socket_path = get("AEGIS_MCP_SOCKET")
             .map(PathBuf::from)
             .unwrap_or_else(|| runtime_dir.join("aegis.sock"));
-        let scope = optional_string(&mut get, "AEGIS_MCP_SCOPE")?
-            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
         let realm_label = optional_string(&mut get, "AEGIS_MCP_REALM_LABEL")?
             .unwrap_or_else(|| DEFAULT_REALM_LABEL.to_string());
+        let label =
+            optional_string(&mut get, "AEGIS_MCP_LABEL")?.unwrap_or_else(|| realm_label.clone());
+        let instance_id = optional_string(&mut get, "AEGIS_MCP_INSTANCE_ID")?
+            .ok_or(ConfigError::Missing("AEGIS_MCP_INSTANCE_ID"))?;
+        let data_dir = bridge_data_dir(&mut get);
         let io_timeout = Duration::from_secs(parse_number(
             &mut get,
             "AEGIS_MCP_IPC_TIMEOUT_SECS",
@@ -74,12 +91,14 @@ impl BridgeConfig {
             1,
             60,
         )?);
-        let revoke_on_exit = parse_bool(&mut get, "AEGIS_MCP_REVOKE_ON_EXIT", true)?;
+        let revoke_on_exit = parse_bool(&mut get, "AEGIS_MCP_REVOKE_ON_EXIT", false)?;
         let config = Self {
             socket_path,
             runtime_dir,
-            scope,
+            label,
+            instance_id,
             realm_label,
+            data_dir,
             io_timeout,
             revoke_on_exit,
         };
@@ -97,17 +116,33 @@ impl BridgeConfig {
                 "path must be absolute so Realm recovery state is private and unambiguous",
             ));
         }
-        if self.scope.trim().is_empty() || self.scope.len() > 128 {
+        let label = self.label.trim();
+        if label.is_empty() || label.len() > 128 {
             return Err(invalid(
-                "AEGIS_MCP_SCOPE",
+                "AEGIS_MCP_LABEL",
                 "length must be from 1 through 128 bytes",
             ));
         }
-        let label = self.realm_label.trim();
-        if label.is_empty() || label.len() > 128 {
+        let realm_label = self.realm_label.trim();
+        if realm_label.is_empty() || realm_label.len() > 128 {
             return Err(invalid(
                 "AEGIS_MCP_REALM_LABEL",
                 "length must be from 1 through 128 bytes",
+            ));
+        }
+        let instance_id = self.instance_id.trim();
+        if instance_id.is_empty() || instance_id.len() > 128 {
+            return Err(invalid(
+                "AEGIS_MCP_INSTANCE_ID",
+                "length must be from 1 through 128 bytes",
+            ));
+        }
+        if let Some(data_dir) = &self.data_dir
+            && !data_dir.is_absolute()
+        {
+            return Err(invalid(
+                "AEGIS_MCP_DATA_DIR",
+                "path must be absolute so the pairing identity is private and unambiguous",
             ));
         }
         if !(Duration::from_secs(1)..=Duration::from_secs(60)).contains(&self.io_timeout) {
@@ -122,6 +157,18 @@ impl BridgeConfig {
     pub(crate) fn state_dir(&self) -> PathBuf {
         self.runtime_dir.join("aegis-mcp")
     }
+}
+
+/// Resolve the durable identity directory: an explicit override, else the
+/// XDG data home, else `$HOME/.local/share`, else session-only.
+fn bridge_data_dir(get: &mut impl FnMut(&str) -> Option<OsString>) -> Option<PathBuf> {
+    if let Some(dir) = get("AEGIS_MCP_DATA_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    let base = get("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| get("HOME").map(|home| PathBuf::from(home).join(".local/share")));
+    base.map(|base| base.join("aegis-mcp"))
 }
 
 fn required_os(
@@ -215,20 +262,60 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_product_scoped_and_have_no_provider_credentials() {
-        let config = load(&[("XDG_RUNTIME_DIR", "/run/user/1000")]).expect("config");
-        assert_eq!(config.scope, "desktop-operator");
-        assert_eq!(config.realm_label, "Fuji");
+    fn defaults_have_no_provider_credentials_and_label_falls_back_to_realm_label() {
+        let config = load(&[
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+            ("AEGIS_MCP_INSTANCE_ID", "test"),
+        ])
+        .expect("config");
+        assert_eq!(config.label, "Aegis Agent");
+        assert_eq!(config.realm_label, "Aegis Agent");
         assert_eq!(
             config.socket_path,
             PathBuf::from("/run/user/1000/aegis.sock")
         );
-        assert!(config.revoke_on_exit);
+        assert!(!config.revoke_on_exit);
+    }
+
+    #[test]
+    fn label_override_and_data_dir_resolution() {
+        let config = load(&[
+            ("XDG_RUNTIME_DIR", "/tmp/runtime"),
+            ("AEGIS_MCP_INSTANCE_ID", "test"),
+            ("AEGIS_MCP_LABEL", "Codex"),
+            ("AEGIS_MCP_DATA_DIR", "/tmp/identity"),
+        ])
+        .expect("config");
+        assert_eq!(config.label, "Codex");
+        assert_eq!(config.data_dir, Some(PathBuf::from("/tmp/identity")));
+
+        let config = load(&[
+            ("XDG_RUNTIME_DIR", "/tmp/runtime"),
+            ("AEGIS_MCP_INSTANCE_ID", "test"),
+            ("XDG_DATA_HOME", "/data"),
+        ])
+        .expect("config");
+        assert_eq!(config.data_dir, Some(PathBuf::from("/data/aegis-mcp")));
+
+        let config = load(&[
+            ("XDG_RUNTIME_DIR", "/tmp/runtime"),
+            ("AEGIS_MCP_INSTANCE_ID", "test"),
+            ("HOME", "/home/u"),
+        ])
+        .expect("config");
+        assert_eq!(
+            config.data_dir,
+            Some(PathBuf::from("/home/u/.local/share/aegis-mcp"))
+        );
     }
 
     #[test]
     fn rejects_relative_runtime_directory() {
-        let error = load(&[("XDG_RUNTIME_DIR", "relative")]).expect_err("invalid");
+        let error = load(&[
+            ("XDG_RUNTIME_DIR", "relative"),
+            ("AEGIS_MCP_INSTANCE_ID", "test"),
+        ])
+        .expect_err("invalid");
         assert!(matches!(
             error,
             ConfigError::Invalid {
@@ -242,6 +329,7 @@ mod tests {
     fn parses_explicit_shutdown_policy() {
         let config = load(&[
             ("XDG_RUNTIME_DIR", "/tmp/runtime"),
+            ("AEGIS_MCP_INSTANCE_ID", "test"),
             ("AEGIS_MCP_REVOKE_ON_EXIT", "off"),
         ])
         .expect("config");
@@ -249,23 +337,50 @@ mod tests {
     }
 
     #[test]
-    fn bounds_scope_name_used_for_recovery_identity() {
+    fn bounds_label_length() {
         let long = "x".repeat(129);
         let values = HashMap::from([
             (
                 "XDG_RUNTIME_DIR".to_string(),
                 OsString::from("/tmp/runtime"),
             ),
-            ("AEGIS_MCP_SCOPE".to_string(), OsString::from(long)),
+            ("AEGIS_MCP_INSTANCE_ID".to_string(), OsString::from("test")),
+            ("AEGIS_MCP_LABEL".to_string(), OsString::from(long)),
         ]);
         let error =
-            BridgeConfig::from_lookup(|name| values.get(name).cloned()).expect_err("long scope");
+            BridgeConfig::from_lookup(|name| values.get(name).cloned()).expect_err("long label");
         assert!(matches!(
             error,
             ConfigError::Invalid {
-                name: "AEGIS_MCP_SCOPE",
+                name: "AEGIS_MCP_LABEL",
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn rejects_relative_data_dir() {
+        let error = load(&[
+            ("XDG_RUNTIME_DIR", "/tmp/runtime"),
+            ("AEGIS_MCP_INSTANCE_ID", "test"),
+            ("AEGIS_MCP_DATA_DIR", "relative"),
+        ])
+        .expect_err("invalid");
+        assert!(matches!(
+            error,
+            ConfigError::Invalid {
+                name: "AEGIS_MCP_DATA_DIR",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn requires_an_explicit_connector_instance_id() {
+        let error = load(&[("XDG_RUNTIME_DIR", "/run/user/1000")]).expect_err("missing id");
+        assert!(matches!(
+            error,
+            ConfigError::Missing("AEGIS_MCP_INSTANCE_ID")
         ));
     }
 }

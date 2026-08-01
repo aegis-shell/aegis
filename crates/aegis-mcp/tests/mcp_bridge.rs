@@ -9,7 +9,7 @@ use aegis_core::realm::{HUMAN_REALM, RealmModel};
 use aegis_core::window::{Window, WindowId};
 use aegis_ipc::{
     Capabilities, Effect, Handler, Journal, JournalMutation, OpClass, Origin, RealmAction,
-    RealmActionResult, Scope, Server,
+    RealmActionResult, Server,
 };
 use serde_json::{Value, json};
 
@@ -23,10 +23,31 @@ struct TestHandler {
     realms: Mutex<RealmModel>,
     journal: Mutex<Journal>,
     notifications: Mutex<Vec<aegis_core::notify::Notification>>,
-    scope: Scope,
 }
 
 impl Handler for TestHandler {
+    fn pair_agent(
+        &self,
+        _conn_id: u64,
+        _label: Option<&str>,
+        _requested: &[OpClass],
+    ) -> Result<aegis_ipc::PairedAgent, String> {
+        Ok(aegis_ipc::PairedAgent {
+            principal: "prin_test".into(),
+            credential: "cred_test".into(),
+            pregranted: vec![
+                OpClass::CreateRealm,
+                OpClass::TransactRealm,
+                OpClass::RevokeRealm,
+                OpClass::CaptureRealm,
+                OpClass::LaunchInRealm,
+                OpClass::InjectRealmInput,
+                OpClass::Notify,
+            ],
+            gated: vec![],
+        })
+    }
+
     fn policy_caps(&self) -> Capabilities {
         Capabilities {
             query: true,
@@ -100,6 +121,7 @@ impl Handler for TestHandler {
     fn realm_action(
         &self,
         _conn_id: u64,
+        subject: Option<&str>,
         action: RealmAction,
     ) -> Result<RealmActionResult, String> {
         let mut realms = self.realms.lock().expect("realm lock");
@@ -109,7 +131,11 @@ impl Handler for TestHandler {
                 capabilities,
                 output,
             } => {
-                let bundle = realms.create_agent_realm(label, capabilities);
+                let bundle = realms.create_agent_realm_for_subject(
+                    label,
+                    capabilities,
+                    subject.map(str::to_owned),
+                );
                 if let Some(output) = output {
                     realms
                         .configure_virtual_output(bundle.realm, output)
@@ -145,10 +171,6 @@ impl Handler for TestHandler {
         }
     }
 
-    fn resolve_scope(&self, name: &str) -> Option<Scope> {
-        (name == "bridge-test").then(|| self.scope.clone())
-    }
-
     fn capture_security_active(&self) -> bool {
         true
     }
@@ -181,18 +203,6 @@ fn stdio_discovers_manages_captures_and_revokes_realm() {
     let runtime_dir = scratch();
     std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
     let socket = runtime_dir.join("aegis.sock");
-    let scope = Scope {
-        ops: Some(vec![
-            OpClass::CreateRealm,
-            OpClass::TransactRealm,
-            OpClass::RevokeRealm,
-            OpClass::CaptureRealm,
-            OpClass::LaunchInRealm,
-            OpClass::InjectRealmInput,
-            OpClass::Notify,
-        ]),
-        ..Scope::default()
-    };
     let mut realms = RealmModel::new();
     let client = realms.register_client(Some("visual-smoke.test".into()));
     realms
@@ -202,28 +212,31 @@ fn stdio_discovers_manages_captures_and_revokes_realm() {
         realms: Mutex::new(realms),
         journal: Mutex::new(Journal::default_capacity()),
         notifications: Mutex::new(vec![]),
-        scope,
     });
     let server = Server::start(&socket, Arc::clone(&handler)).expect("server");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_aegis-mcp"))
         .arg("serve")
         .env("XDG_RUNTIME_DIR", &runtime_dir)
-        .env("AEGIS_MCP_SCOPE", "bridge-test")
+        .env("AEGIS_MCP_DATA_DIR", runtime_dir.join("data"))
+        .env("AEGIS_MCP_INSTANCE_ID", "bridge-integration-test")
         .env("AEGIS_MCP_REALM_LABEL", "Bridge integration test")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn bridge");
+    let meta = json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "integration-test", "version": "1"},
+        "io.modelcontextprotocol/clientCapabilities": {}
+    });
     let requests = [
-        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-        json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}),
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
-        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"realm_ensure","arguments":{}}}),
-        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"realm_capture","arguments":{}}}),
-        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"realm_reset","arguments":{}}}),
-        json!({"jsonrpc":"2.0","id":6,"method":"shutdown","params":{}}),
+        json!({"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":meta.clone()}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":meta.clone()}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"realm_ensure","arguments":{},"_meta":meta.clone()}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"realm_capture","arguments":{},"_meta":meta.clone()}}),
+        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"realm_reset","arguments":{},"_meta":meta}}),
     ];
     {
         let stdin = child.stdin.as_mut().expect("child stdin");
@@ -244,7 +257,8 @@ fn stdio_discovers_manages_captures_and_revokes_realm() {
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("response json"))
         .collect::<Vec<_>>();
-    assert_eq!(responses.len(), 6);
+    assert_eq!(responses.len(), 5);
+    assert_eq!(responses[0]["result"]["supportedVersions"][0], "2026-07-28");
     let names = responses[1]["result"]["tools"]
         .as_array()
         .expect("tools")
@@ -267,13 +281,9 @@ fn stdio_discovers_manages_captures_and_revokes_realm() {
             .any(|realm| realm.state == aegis_core::realm::RealmState::Revoked)
     );
 
-    let config = aegis_mcp::BridgeConfig::new(
-        &socket,
-        &runtime_dir,
-        "bridge-test",
-        "Bridge smoke test",
-    )
-    .expect("smoke config");
+    let config =
+        aegis_mcp::BridgeConfig::new(&socket, &runtime_dir, "bridge-test", "Bridge smoke test")
+            .expect("smoke config");
     let mut platform = aegis_mcp::AegisPlatform::connect(config).expect("smoke platform");
     let report = platform
         .smoke_with_input(Duration::ZERO, Some(WindowId(7)))

@@ -1,5 +1,5 @@
-//! End-to-end exercise of aegis-ctl against a loopback aegis-ipc server. Each
-//! test starts a server with a fixed handler, invokes `aegis_ctl::run` with a
+//! End-to-end exercise of aegis-cli against a loopback aegis-ipc server. Each
+//! test starts a server with a fixed handler, invokes `aegis_cli::run` with a
 //! command, and asserts on the output or the recorded command.
 
 use std::path::PathBuf;
@@ -16,7 +16,7 @@ static N: AtomicU64 = AtomicU64::new(0);
 fn scratch() -> PathBuf {
     let n = N.fetch_add(1, Ordering::Relaxed);
     let mut p = std::env::temp_dir();
-    p.push(format!("aegis-ctl-{}-{n}.sock", std::process::id()));
+    p.push(format!("aegis-cli-{}-{n}.sock", std::process::id()));
     p
 }
 
@@ -24,6 +24,7 @@ fn scratch() -> PathBuf {
 struct CtlHandler {
     commands: Mutex<Vec<Command>>,
     realm_actions: Mutex<Vec<RealmAction>>,
+    management_log: Mutex<Vec<String>>,
 }
 
 impl CtlHandler {
@@ -31,6 +32,7 @@ impl CtlHandler {
         CtlHandler {
             commands: Mutex::new(Vec::new()),
             realm_actions: Mutex::new(Vec::new()),
+            management_log: Mutex::new(Vec::new()),
         }
     }
 }
@@ -152,6 +154,15 @@ impl Handler for CtlHandler {
     }
 
     fn resolve_scope(&self, name: &str) -> Option<aegis_ipc::Scope> {
+        if name == aegis_ipc::LOCAL_OWNER_ADMIN_SCOPE {
+            return Some(aegis_ipc::Scope::unscoped());
+        }
+        if name == aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE {
+            return Some(aegis_ipc::Scope {
+                ops: Some(Vec::new()),
+                ..aegis_ipc::Scope::default()
+            });
+        }
         (name == aegis_ipc::LOCAL_REALM_ADMIN_SCOPE).then(|| aegis_ipc::Scope {
             windows: None,
             workspaces: None,
@@ -180,6 +191,7 @@ impl Handler for CtlHandler {
     fn realm_action(
         &self,
         _conn_id: u64,
+        _subject: Option<&str>,
         action: RealmAction,
     ) -> Result<RealmActionResult, String> {
         self.realm_actions.lock().unwrap().push(action.clone());
@@ -238,13 +250,86 @@ impl Handler for CtlHandler {
             png: b"png".to_vec(),
         })
     }
+
+    fn agent_principals(&self) -> Vec<aegis_ipc::AgentPrincipalInfo> {
+        vec![aegis_ipc::AgentPrincipalInfo {
+            principal: "prin_1".into(),
+            label: Some("Codex".into()),
+            pregranted: vec![aegis_ipc::OpClass::Focus],
+            gated: vec![aegis_ipc::OpClass::Close],
+            created_at: 1,
+        }]
+    }
+
+    fn agent_grants(&self, principal: Option<&str>) -> Vec<aegis_ipc::AgentGrantInfo> {
+        vec![aegis_ipc::AgentGrantInfo {
+            principal: "prin_1".into(),
+            op: aegis_ipc::OpClass::Close,
+            decision: aegis_ipc::AgentGrantDecision::Allow,
+            granted_at: 2,
+        }]
+        .into_iter()
+        .filter(|grant| principal.is_none_or(|p| grant.principal == p))
+        .collect()
+    }
+
+    fn rename_agent_principal(&self, principal: &str, label: Option<&str>) -> Result<(), String> {
+        self.management_log
+            .lock()
+            .unwrap()
+            .push(format!("rename:{principal}:{label:?}"));
+        Ok(())
+    }
+
+    fn forget_agent_principal(&self, principal: &str) -> Result<(), String> {
+        self.management_log
+            .lock()
+            .unwrap()
+            .push(format!("forget:{principal}"));
+        Ok(())
+    }
+
+    fn set_agent_ceiling(
+        &self,
+        principal: &str,
+        pregranted: &[aegis_ipc::OpClass],
+        gated: &[aegis_ipc::OpClass],
+    ) -> Result<(), String> {
+        self.management_log.lock().unwrap().push(format!(
+            "ceiling:{principal}:{}+{}",
+            pregranted.len(),
+            gated.len()
+        ));
+        Ok(())
+    }
+
+    fn register_agent(
+        &self,
+        label: Option<&str>,
+        _pregranted: &[aegis_ipc::OpClass],
+        _gated: &[aegis_ipc::OpClass],
+    ) -> Result<(String, String), String> {
+        self.management_log
+            .lock()
+            .unwrap()
+            .push(format!("register:{label:?}"));
+        Ok(("prin_9".into(), "cred_9".into()))
+    }
+
+    fn revoke_agent_grant(&self, principal: &str, op: aegis_ipc::OpClass) -> Result<(), String> {
+        self.management_log
+            .lock()
+            .unwrap()
+            .push(format!("revoke:{principal}:{op:?}"));
+        Ok(())
+    }
 }
 
 #[test]
 fn windows_command_lists_the_fixed_window() {
     let path = scratch();
     let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
-    let out = aegis_ctl::run(&path, &["windows".into()]).unwrap();
+    let out = aegis_cli::run(&path, &["windows".into()]).unwrap();
     assert!(out.contains("foot"), "{out}");
     assert!(out.contains("(foot)"), "{out}");
 }
@@ -253,7 +338,7 @@ fn windows_command_lists_the_fixed_window() {
 fn json_flag_emits_parseable_json_for_windows() {
     let path = scratch();
     let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
-    let out = aegis_ctl::run(&path, &["windows".into(), "--json".into()]).unwrap();
+    let out = aegis_cli::run(&path, &["windows".into(), "--json".into()]).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
     let arr = parsed.as_array().expect("a JSON array");
     assert_eq!(arr.len(), 1);
@@ -265,7 +350,7 @@ fn json_flag_emits_parseable_json_for_windows() {
 fn workspaces_command_shows_output_and_workspace() {
     let path = scratch();
     let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
-    let out = aegis_ctl::run(&path, &["workspaces".into()]).unwrap();
+    let out = aegis_cli::run(&path, &["workspaces".into()]).unwrap();
     assert!(out.contains("nested"), "{out}");
     assert!(out.contains("1 window"), "{out}");
 }
@@ -274,7 +359,7 @@ fn workspaces_command_shows_output_and_workspace() {
 fn outputs_command_lists_advertised_modes_and_marks_current() {
     let path = scratch();
     let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
-    let out = aegis_ctl::run(&path, &["outputs".into()]).unwrap();
+    let out = aegis_cli::run(&path, &["outputs".into()]).unwrap();
     assert!(out.contains("nested 1280x720@60.000Hz"), "{out}");
     assert!(out.contains("1280x720@60.000Hz (current)"), "{out}");
     assert!(out.contains("1920x1080@60.000Hz"), "{out}");
@@ -284,7 +369,7 @@ fn outputs_command_lists_advertised_modes_and_marks_current() {
 fn notifications_command_lists_active_notifications() {
     let path = scratch();
     let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
-    let out = aegis_ctl::run(&path, &["notifications".into()]).unwrap();
+    let out = aegis_cli::run(&path, &["notifications".into()]).unwrap();
     assert!(out.contains("Build complete"), "{out}");
     assert!(out.contains("All checks passed"), "{out}");
 }
@@ -293,13 +378,13 @@ fn notifications_command_lists_active_notifications() {
 fn system_status_command_formats_human_and_json_snapshots() {
     let path = scratch();
     let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
-    let out = aegis_ctl::run(&path, &["system".into(), "status".into()]).unwrap();
+    let out = aegis_cli::run(&path, &["system".into(), "status".into()]).unwrap();
     assert!(out.contains("audio: 42% (muted)"), "{out}");
     assert!(out.contains("wifi: on; bluetooth: off"), "{out}");
     assert!(out.contains("battery: 81% charging"), "{out}");
     assert!(out.contains("do not disturb: on"), "{out}");
 
-    let json = aegis_ctl::run(&path, &["--json".into(), "system".into(), "status".into()]).unwrap();
+    let json = aegis_cli::run(&path, &["--json".into(), "system".into(), "status".into()]).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).expect("system status JSON");
     assert_eq!(value["volume"], 42);
     assert_eq!(value["brightness"], 73);
@@ -311,9 +396,9 @@ fn system_control_commands_send_typed_actions() {
     let path = scratch();
     let handler = Arc::new(CtlHandler::new());
     let _s = Server::start(&path, Arc::clone(&handler)).unwrap();
-    aegis_ctl::run(&path, &["system".into(), "volume".into(), "55".into()]).unwrap();
-    aegis_ctl::run(&path, &["system".into(), "step-volume".into(), "-2".into()]).unwrap();
-    aegis_ctl::run(&path, &["system".into(), "wifi".into(), "off".into()]).unwrap();
+    aegis_cli::run(&path, &["system".into(), "volume".into(), "55".into()]).unwrap();
+    aegis_cli::run(&path, &["system".into(), "step-volume".into(), "-2".into()]).unwrap();
+    aegis_cli::run(&path, &["system".into(), "wifi".into(), "off".into()]).unwrap();
     assert_eq!(
         handler.commands.lock().unwrap().as_slice(),
         &[
@@ -332,7 +417,7 @@ fn system_control_commands_send_typed_actions() {
 
 #[test]
 fn system_control_cli_rejects_out_of_range_levels() {
-    let error = aegis_ctl::run(
+    let error = aegis_cli::run(
         std::path::Path::new(""),
         &["system".into(), "brightness".into(), "0".into()],
     )
@@ -345,7 +430,7 @@ fn system_control_cli_rejects_out_of_range_levels() {
 fn journal_command_lists_entries() {
     let path = scratch();
     let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
-    let out = aegis_ctl::run(&path, &["journal".into(), "2".into()]).unwrap();
+    let out = aegis_cli::run(&path, &["journal".into(), "2".into()]).unwrap();
     assert!(out.contains("#3"), "{out}");
     assert!(out.contains("Focus"), "{out}");
 }
@@ -354,7 +439,7 @@ fn journal_command_lists_entries() {
 fn realms_command_uses_admin_scope_and_lists_agent_realm() {
     let path = scratch();
     let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
-    let out = aegis_ctl::run(&path, &["realm".into(), "list".into()]).unwrap();
+    let out = aegis_cli::run(&path, &["realm".into(), "list".into()]).unwrap();
     assert!(out.contains("Test Agent"), "{out}");
     assert!(out.contains("agent-2"), "{out}");
 }
@@ -365,9 +450,9 @@ fn realm_create_and_transfer_use_optimistic_actions() {
     let handler = Arc::new(CtlHandler::new());
     let _s = Server::start(&path, Arc::clone(&handler)).unwrap();
     let created =
-        aegis_ctl::run(&path, &["realm".into(), "create".into(), "Builder".into()]).unwrap();
+        aegis_cli::run(&path, &["realm".into(), "create".into(), "Builder".into()]).unwrap();
     assert!(created.contains("created Realm 2"), "{created}");
-    let transferred = aegis_ctl::run(
+    let transferred = aegis_cli::run(
         &path,
         &["realm".into(), "transfer".into(), "1".into(), "2".into()],
     )
@@ -400,7 +485,7 @@ fn realm_capture_is_committed_atomically_to_requested_path() {
     let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let capture = dir.path().join("realm.png");
-    let out = aegis_ctl::run(
+    let out = aegis_cli::run(
         &path,
         &[
             "realm".into(),
@@ -420,7 +505,7 @@ fn realm_capture_json_exposes_pixel_to_input_mapping() {
     let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let capture = dir.path().join("realm.png");
-    let out = aegis_ctl::run(
+    let out = aegis_cli::run(
         &path,
         &[
             "--json".into(),
@@ -445,7 +530,7 @@ fn focus_command_sends_focus() {
     let path = scratch();
     let h = Arc::new(CtlHandler::new());
     let _s = Server::start(&path, Arc::clone(&h)).unwrap();
-    let out = aegis_ctl::run(&path, &["focus".into(), "1".into()]).unwrap();
+    let out = aegis_cli::run(&path, &["focus".into(), "1".into()]).unwrap();
     assert!(out.contains("focused 1"), "{out}");
     assert!(
         h.commands
@@ -463,7 +548,7 @@ fn minimize_command_sends_minimize() {
     let path = scratch();
     let h = Arc::new(CtlHandler::new());
     let _s = Server::start(&path, Arc::clone(&h)).unwrap();
-    let out = aegis_ctl::run(&path, &["minimize".into(), "1".into()]).unwrap();
+    let out = aegis_cli::run(&path, &["minimize".into(), "1".into()]).unwrap();
     assert!(out.contains("minimized 1"), "{out}");
     assert!(
         h.commands
@@ -478,7 +563,7 @@ fn set_geometry_command_sends_logical_rectangle() {
     let path = scratch();
     let h = Arc::new(CtlHandler::new());
     let _s = Server::start(&path, Arc::clone(&h)).unwrap();
-    let out = aegis_ctl::run(
+    let out = aegis_cli::run(
         &path,
         &[
             "set-geometry".into(),
@@ -507,7 +592,7 @@ fn switch_command_sends_workspace_switch() {
     let path = scratch();
     let h = Arc::new(CtlHandler::new());
     let _s = Server::start(&path, Arc::clone(&h)).unwrap();
-    aegis_ctl::run(&path, &["switch".into(), "next".into()]).unwrap();
+    aegis_cli::run(&path, &["switch".into(), "next".into()]).unwrap();
     assert!(
         h.commands
             .lock()
@@ -522,7 +607,7 @@ fn switch_to_command_sends_direct_workspace_switch() {
     let path = scratch();
     let h = Arc::new(CtlHandler::new());
     let _s = Server::start(&path, Arc::clone(&h)).unwrap();
-    let out = aegis_ctl::run(&path, &["switch-to".into(), "9".into()]).unwrap();
+    let out = aegis_cli::run(&path, &["switch-to".into(), "9".into()]).unwrap();
     assert!(out.contains("workspace 9"), "{out}");
     assert!(h.commands.lock().unwrap().iter().any(|c| matches!(
         c,
@@ -533,14 +618,14 @@ fn switch_to_command_sends_direct_workspace_switch() {
 #[test]
 fn binary_prints_query_output() {
     let root = std::env::temp_dir().join(format!(
-        "aegis-ctl-bin-{}-{}",
+        "aegis-cli-bin-{}-{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&root).unwrap();
     let socket = root.join("aegis.sock");
     let _s = Server::start(&socket, Arc::new(CtlHandler::new())).unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aegis-ctl"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aegis-cli"))
         .env("XDG_RUNTIME_DIR", &root)
         .arg("windows")
         .output()
@@ -553,7 +638,7 @@ fn binary_prints_query_output() {
 
 #[test]
 fn binary_help_needs_no_runtime_directory() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aegis-ctl"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aegis-cli"))
         .env_remove("XDG_RUNTIME_DIR")
         .arg("--help")
         .output()
@@ -568,7 +653,7 @@ fn notify_command_sends_notify_with_body() {
     let path = scratch();
     let h = Arc::new(CtlHandler::new());
     let _s = Server::start(&path, Arc::clone(&h)).unwrap();
-    aegis_ctl::run(&path, &["notify".into(), "Hello".into(), "world".into()]).unwrap();
+    aegis_cli::run(&path, &["notify".into(), "Hello".into(), "world".into()]).unwrap();
     assert!(
         h.commands.lock().unwrap().iter().any(|c| matches!(
             c,
@@ -584,7 +669,7 @@ fn dismiss_command_sends_dismiss_notification() {
     let path = scratch();
     let h = Arc::new(CtlHandler::new());
     let _s = Server::start(&path, Arc::clone(&h)).unwrap();
-    let out = aegis_ctl::run(&path, &["dismiss".into(), "7".into()]).unwrap();
+    let out = aegis_cli::run(&path, &["dismiss".into(), "7".into()]).unwrap();
     assert!(out.contains("dismissed 7"), "{out}");
     assert!(
         h.commands
@@ -602,7 +687,7 @@ fn tiling_command_sends_toggle() {
     let path = scratch();
     let h = Arc::new(CtlHandler::new());
     let _s = Server::start(&path, Arc::clone(&h)).unwrap();
-    aegis_ctl::run(&path, &["tiling".into()]).unwrap();
+    aegis_cli::run(&path, &["tiling".into()]).unwrap();
     assert!(
         h.commands
             .lock()
@@ -617,7 +702,7 @@ fn move_to_command_sends_move_to_workspace() {
     let path = scratch();
     let h = Arc::new(CtlHandler::new());
     let _s = Server::start(&path, Arc::clone(&h)).unwrap();
-    let out = aegis_ctl::run(&path, &["move-to".into(), "42".into(), "3".into()]).unwrap();
+    let out = aegis_cli::run(&path, &["move-to".into(), "42".into(), "3".into()]).unwrap();
     assert!(out.contains("moved window 42 to workspace 3"), "{out}");
     assert!(
         h.commands.lock().unwrap().iter().any(|c| matches!(
@@ -633,7 +718,7 @@ fn move_to_command_sends_move_to_workspace() {
 fn unknown_command_errors_with_usage() {
     let path = scratch();
     let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
-    let err = aegis_ctl::run(&path, &["bogus".into()]).unwrap_err();
+    let err = aegis_cli::run(&path, &["bogus".into()]).unwrap_err();
     let rendered = err.to_string();
     assert!(
         rendered.contains("unrecognized subcommand 'bogus'"),
@@ -647,6 +732,144 @@ fn unknown_command_errors_with_usage() {
 fn help_command_returns_usage() {
     let path = scratch();
     let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
-    let out = aegis_ctl::run(&path, &["help".into()]).unwrap();
+    let out = aegis_cli::run(&path, &["help".into()]).unwrap();
     assert!(out.contains("Commands:"), "{out}");
+}
+
+#[test]
+fn permissions_list_renders_principals_and_grants() {
+    let path = scratch();
+    let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
+    let out = aegis_cli::run(&path, &["permissions".into(), "list".into()]).unwrap();
+    assert!(out.contains("Codex (prin_1)"), "{out}");
+    assert!(out.contains("ceiling: Focus (gated: Close)"), "{out}");
+    assert!(out.contains("Close: Allow"), "{out}");
+}
+
+#[test]
+fn permissions_list_json_emits_parseable_json() {
+    let path = scratch();
+    let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
+    let out = aegis_cli::run(
+        &path,
+        &["permissions".into(), "list".into(), "--json".into()],
+    )
+    .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+    assert_eq!(parsed["principals"][0]["principal"], "prin_1");
+    assert_eq!(parsed["principals"][0]["label"], "Codex");
+    assert_eq!(parsed["grants"][0]["op"]["type"], "Close");
+    assert_eq!(parsed["grants"][0]["decision"]["type"], "Allow");
+}
+
+#[test]
+fn permissions_revoke_parses_op_names_and_confirms() {
+    let path = scratch();
+    let handler = Arc::new(CtlHandler::new());
+    let _s = Server::start(&path, Arc::clone(&handler)).unwrap();
+    let out = aegis_cli::run(
+        &path,
+        &[
+            "permissions".into(),
+            "revoke".into(),
+            "prin_1".into(),
+            "capture_realm".into(),
+        ],
+    )
+    .unwrap();
+    assert!(
+        out.contains("revoked the CaptureRealm grant for prin_1"),
+        "{out}"
+    );
+    assert_eq!(
+        handler.management_log.lock().unwrap().as_slice(),
+        &["revoke:prin_1:CaptureRealm".to_string()][..]
+    );
+}
+
+#[test]
+fn permissions_revoke_rejects_unknown_op_names() {
+    let path = scratch();
+    let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
+    let error = aegis_cli::run(
+        &path,
+        &[
+            "permissions".into(),
+            "revoke".into(),
+            "prin_1".into(),
+            "NotARealOperation".into(),
+        ],
+    )
+    .expect_err("unknown op is a usage error");
+    assert!(matches!(error, aegis_cli::CliError::Usage(_)));
+}
+
+#[test]
+fn permissions_forget_rename_and_ceiling_confirm() {
+    let path = scratch();
+    let handler = Arc::new(CtlHandler::new());
+    let _s = Server::start(&path, Arc::clone(&handler)).unwrap();
+
+    let out = aegis_cli::run(
+        &path,
+        &[
+            "permissions".into(),
+            "rename".into(),
+            "prin_1".into(),
+            "OpenCode".into(),
+        ],
+    )
+    .unwrap();
+    assert!(out.contains("renamed prin_1 to 'OpenCode'"), "{out}");
+
+    let out = aegis_cli::run(
+        &path,
+        &["permissions".into(), "forget".into(), "prin_2".into()],
+    )
+    .unwrap();
+    assert!(out.contains("forgot principal prin_2"), "{out}");
+
+    let out = aegis_cli::run(
+        &path,
+        &[
+            "permissions".into(),
+            "set-ceiling".into(),
+            "prin_1".into(),
+            "--pregrant".into(),
+            "Focus,Notify".into(),
+            "--gated".into(),
+            "Close".into(),
+        ],
+    )
+    .unwrap();
+    assert!(out.contains("replaced the ceiling of prin_1"), "{out}");
+
+    let log = handler.management_log.lock().unwrap();
+    assert_eq!(
+        log.as_slice(),
+        &[
+            "rename:prin_1:Some(\"OpenCode\")".to_string(),
+            "forget:prin_2".to_string(),
+            "ceiling:prin_1:2+1".to_string(),
+        ][..]
+    );
+}
+
+#[test]
+fn permissions_register_prints_the_issued_credential() {
+    let path = scratch();
+    let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
+    let out = aegis_cli::run(
+        &path,
+        &[
+            "permissions".into(),
+            "register".into(),
+            "Fleet".into(),
+            "--pregrant".into(),
+            "Focus".into(),
+        ],
+    )
+    .unwrap();
+    assert!(out.contains("registered prin_9"), "{out}");
+    assert!(out.contains("credential: cred_9"), "{out}");
 }

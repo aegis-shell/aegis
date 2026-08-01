@@ -29,6 +29,9 @@ pub(super) struct SystemControlRequest {
 
 pub(super) struct RealmControlRequest {
     pub(super) origin: aegis_ipc::Origin,
+    /// Credential-bound agent principal. `None` denotes a trusted built-in
+    /// or compositor-local caller.
+    pub(super) subject: Option<String>,
     pub(super) action: aegis_ipc::RealmAction,
     pub(super) reply: std::sync::mpsc::Sender<Result<aegis_ipc::RealmActionResult, String>>,
 }
@@ -51,6 +54,14 @@ pub(super) struct JournalRefusalRequest {
     pub(super) origin: aegis_ipc::Origin,
     pub(super) mutation: aegis_ipc::JournalMutation,
     pub(super) reason: String,
+}
+
+/// One positive agent-authorization lifecycle event (ADR-0088) from an IPC
+/// connection thread, journaled on the main loop with `Effect::Applied` —
+/// the applied counterpart of [`JournalRefusalRequest`].
+pub(super) struct AuthEventRequest {
+    pub(super) origin: aegis_ipc::Origin,
+    pub(super) mutation: aegis_ipc::JournalMutation,
 }
 
 #[derive(Default)]

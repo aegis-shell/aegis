@@ -41,7 +41,7 @@ longer remembers pinning.
 
 4. **External control uses one new IPC command.** `SetAlwaysOnTop
    { id, on_top }` sits in the `control` capability under the
-   `SetWindowGeometry` operation class, and `aegis-ctl always-on-top
+   `SetWindowGeometry` operation class, and `aegis-cli always-on-top
    <id> <on|off>` wraps it. There is no default keybind.
 
 ## Alternatives
@@ -62,7 +62,7 @@ longer remembers pinning.
 ## Consequences
 
 - The IPC seam gains a durable command: renaming or removing
-  `SetAlwaysOnTop` would break `aegis-ctl` and other scoped clients, and
+  `SetAlwaysOnTop` would break `aegis-cli` and other scoped clients, and
   its authorization reuses the `SetWindowGeometry` operation class rather
   than adding a new one.
 - Every raise and dispatch batch pays a restack pass, which returns early
@@ -70,4 +70,4 @@ longer remembers pinning.
 - There is no configuration, keybind, or persistence surface to maintain;
   the feature ships as the flag, the Dock row, and the IPC command.
 - The state is observable to IPC clients only through the window snapshot;
-  scripting reads it back with `aegis-ctl windows`.
+  scripting reads it back with `aegis-cli windows`.

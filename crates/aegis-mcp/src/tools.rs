@@ -34,7 +34,7 @@ pub struct ToolGrant {
 pub struct SmokeReport {
     pub status: &'static str,
     pub mode: &'static str,
-    pub scope: String,
+    pub label: String,
     pub notification: SmokeNotificationReport,
     pub realm: SmokeRealmReport,
     pub visual: SmokeVisualReport,
@@ -101,6 +101,11 @@ impl ToolDefinition {
     }
 }
 
+/// Per-request bound for mutation calls that may block on an interactive
+/// runtime grant (ADR-0088): the compositor's interaction timeout is 300 s,
+/// plus margin.
+const GRANT_TIMEOUT: Duration = Duration::from_secs(360);
+
 /// Successful platform call plus optional MCP image content.
 #[derive(Debug)]
 pub(crate) struct ToolCallResult {
@@ -122,21 +127,28 @@ pub struct AegisPlatform {
     config: BridgeConfig,
     grant: ToolGrant,
     realm: RealmSession,
+    identity: crate::identity::IdentityStore,
 }
 
 impl AegisPlatform {
     /// Probe the compositor grant and acquire the per-scope Realm recovery lock.
     pub fn connect(config: BridgeConfig) -> Result<Self, PlatformError> {
         config.validate()?;
-        let client = connect_with(&config)?;
+        let identity =
+            crate::identity::IdentityStore::load(config.data_dir.clone(), &config.instance_id);
+        let client = connect_with(&config, &identity, config.io_timeout)?;
+        let principal = identity
+            .principal()
+            .ok_or(PlatformError::MissingAuthenticatedIdentity)?;
         let grant = ToolGrant {
             capabilities: client.caps(),
             scope: client.scope().clone(),
         };
         Ok(Self {
-            realm: RealmSession::acquire(&config)?,
+            realm: RealmSession::acquire(&config, &principal)?,
             config,
             grant,
+            identity,
         })
     }
 
@@ -190,7 +202,7 @@ impl AegisPlatform {
             }
         }
 
-        let mut client = self.connect_ipc()?;
+        let mut client = self.connect_ipc_grant()?;
         let (_, existing) = self.realm.locate(&mut client)?;
         let marker = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -329,7 +341,7 @@ impl AegisPlatform {
         Ok(SmokeReport {
             status: "passed",
             mode: "live",
-            scope: self.config.scope.clone(),
+            label: self.config.label.clone(),
             notification: SmokeNotificationReport {
                 started_id: started_notification.id,
                 id: notification.id,
@@ -486,6 +498,18 @@ impl AegisPlatform {
             .collect()
     }
 
+    /// Refresh the credential-bound ceiling before publishing a catalog.
+    /// This makes administrative ceiling changes visible on the next
+    /// `tools/list` instead of retaining the process-start snapshot.
+    pub(crate) fn refreshed_definitions(&mut self) -> Result<Vec<ToolDefinition>, PlatformError> {
+        let client = self.connect_ipc()?;
+        self.grant = ToolGrant {
+            capabilities: client.caps(),
+            scope: client.scope().clone(),
+        };
+        Ok(self.definitions())
+    }
+
     pub(crate) fn call(
         &mut self,
         name: &str,
@@ -505,7 +529,7 @@ impl AegisPlatform {
         if !self.config.revoke_on_exit {
             return Ok(());
         }
-        let mut client = self.connect_ipc()?;
+        let mut client = self.connect_ipc_grant()?;
         let (_, managed) = self.realm.locate(&mut client)?;
         if managed.is_none() {
             return Ok(());
@@ -641,7 +665,15 @@ impl AegisPlatform {
     }
 
     fn connect_ipc(&self) -> Result<Client, PlatformError> {
-        connect_with(&self.config)
+        connect_with(&self.config, &self.identity, self.config.io_timeout)
+    }
+
+    /// Connect for a mutation call that may block on an interactive runtime
+    /// grant (ADR-0088). The compositor's interaction timeout is 300 s, so
+    /// these calls get a bound beyond it; query calls keep the configured
+    /// I/O timeout.
+    fn connect_ipc_grant(&self) -> Result<Client, PlatformError> {
+        connect_with(&self.config, &self.identity, GRANT_TIMEOUT)
     }
 
     fn wait_for_notification(
@@ -652,7 +684,8 @@ impl AegisPlatform {
         let deadline = Instant::now() + self.config.io_timeout;
         loop {
             if let Some(notification) = client.notifications()?.into_iter().find(|notification| {
-                notification.summary == summary && notification.app_id.as_deref() == Some("aegis-mcp")
+                notification.summary == summary
+                    && notification.app_id.as_deref() == Some("aegis-mcp")
             }) {
                 return Ok(notification);
             }
@@ -712,7 +745,7 @@ impl AegisPlatform {
         command: Command,
         operation: &'static str,
     ) -> Result<ToolCallResult, PlatformError> {
-        let mut client = self.connect_ipc()?;
+        let mut client = self.connect_ipc_grant()?;
         client.command(command)?;
         Ok(ToolCallResult::json(json!({
             "status": "queued",
@@ -790,7 +823,7 @@ impl AegisPlatform {
 
     fn realm_ensure(&mut self, arguments: Value) -> Result<ToolCallResult, PlatformError> {
         parse::<NoArgs>(arguments)?;
-        let mut client = self.connect_ipc()?;
+        let mut client = self.connect_ipc_grant()?;
         let managed = self.ensure_realm(&mut client)?;
         Ok(ToolCallResult::json(json!({
             "status": "active_or_recovered",
@@ -814,7 +847,7 @@ impl AegisPlatform {
                 args.desktop_id
             )));
         }
-        let mut client = self.connect_ipc()?;
+        let mut client = self.connect_ipc_grant()?;
         let managed = self.ensure_realm(&mut client)?;
         client.launch_in_realm(managed.id, &args.desktop_id)?;
         Ok(ToolCallResult::json(json!({
@@ -829,7 +862,7 @@ impl AegisPlatform {
     fn realm_transfer(&mut self, arguments: Value) -> Result<ToolCallResult, PlatformError> {
         let args: TransferArgs = parse(arguments)?;
         let window = window_id(args.window_id)?;
-        let mut client = self.connect_ipc()?;
+        let mut client = self.connect_ipc_grant()?;
         let (target, retain_source_as_observer) = match args.target.as_str() {
             "agent" => {
                 let managed = self.ensure_realm(&mut client)?;
@@ -870,7 +903,7 @@ impl AegisPlatform {
             "paused" => RealmState::Paused,
             _ => return Err(invalid("state must be `active` or `paused`")),
         };
-        let mut client = self.connect_ipc()?;
+        let mut client = self.connect_ipc_grant()?;
         let managed = self.existing_realm(&mut client)?;
         let result = client.realm_action(RealmAction::Transact {
             expected_revision: Some(managed.revision),
@@ -892,7 +925,7 @@ impl AegisPlatform {
     fn realm_capture(&mut self, arguments: Value) -> Result<ToolCallResult, PlatformError> {
         let args: CaptureArgs = parse(arguments)?;
         let region = args.region.map(TryInto::try_into).transpose()?;
-        let mut client = self.connect_ipc()?;
+        let mut client = self.connect_ipc_grant()?;
         let managed = self.existing_realm(&mut client)?;
         let capture = client.capture_realm(managed.id, region)?;
         let image_path = self.realm.store_capture(&capture.png)?;
@@ -927,7 +960,7 @@ impl AegisPlatform {
             .into_iter()
             .map(TryInto::try_into)
             .collect::<Result<Vec<_>, PlatformError>>()?;
-        let mut client = self.connect_ipc()?;
+        let mut client = self.connect_ipc_grant()?;
         let managed = self.existing_realm(&mut client)?;
         client.inject_realm_input(managed.id, window_id(args.window_id)?, actions)?;
         Ok(ToolCallResult::json(json!({
@@ -941,7 +974,7 @@ impl AegisPlatform {
 
     fn realm_reset(&mut self, arguments: Value) -> Result<ToolCallResult, PlatformError> {
         parse::<NoArgs>(arguments)?;
-        let mut client = self.connect_ipc()?;
+        let mut client = self.connect_ipc_grant()?;
         let revoked = self.realm.revoke(&mut client)?;
         Ok(ToolCallResult::json(json!({
             "status": if revoked { "revoked" } else { "not_initialized" },
@@ -966,13 +999,9 @@ impl AegisPlatform {
     }
 
     fn realm_op_allowed(&self, op: OpClass) -> bool {
+        let listed = |ops: &Option<Vec<OpClass>>| ops.as_ref().is_some_and(|ops| ops.contains(&op));
         self.grant.capabilities.realm
-            && self
-                .grant
-                .scope
-                .ops
-                .as_ref()
-                .is_some_and(|ops| ops.contains(&op))
+            && (listed(&self.grant.scope.ops) || listed(&self.grant.scope.ask_ops))
     }
 
     fn can_revoke_realm(&self) -> bool {
@@ -980,8 +1009,16 @@ impl AegisPlatform {
     }
 }
 
-fn connect_with(config: &BridgeConfig) -> Result<Client, PlatformError> {
-    Client::connect_scoped_with_timeout(
+fn connect_with(
+    config: &BridgeConfig,
+    identity: &crate::identity::IdentityStore,
+    post_timeout: Duration,
+) -> Result<Client, PlatformError> {
+    // The first connection may block on the interactive pairing prompt, so
+    // the handshake gets a generous bound; per-request I/O falls back to the
+    // configured timeout right after.
+    let handshake_timeout = config.io_timeout.max(GRANT_TIMEOUT);
+    let client = Client::connect_agent_with_timeout(
         &config.socket_path,
         Capabilities {
             query: true,
@@ -990,14 +1027,62 @@ fn connect_with(config: &BridgeConfig) -> Result<Client, PlatformError> {
             session: false,
             realm: true,
         },
-        config.scope.clone(),
-        config.io_timeout,
+        None,
+        aegis_ipc::AgentHello {
+            label: Some(config.label.clone()),
+            requested: catalog_ops(),
+            credential: identity.credential(),
+        },
+        handshake_timeout,
     )
     .map_err(|source| PlatformError::Connect {
         socket: config.socket_path.clone(),
-        scope: config.scope.clone(),
+        label: config.label.clone(),
         source,
-    })
+    })?;
+    client
+        .set_io_timeout(Some(post_timeout))
+        .map_err(|source| PlatformError::Connect {
+            socket: config.socket_path.clone(),
+            label: config.label.clone(),
+            source,
+        })?;
+    if let Some(issued) = client.agent_issued() {
+        if let Some(credential) = &issued.credential {
+            identity
+                .store(&issued.principal, credential)
+                .map_err(PlatformError::Identity)?;
+        } else {
+            identity
+                .confirm_principal(&issued.principal)
+                .map_err(PlatformError::Identity)?;
+        }
+    }
+    Ok(client)
+}
+
+/// The operation families this bridge can ever request: the catalog the
+/// pairing prompt shows and the compositor-approved ceiling is checked
+/// against (ADR-0088).
+fn catalog_ops() -> Vec<OpClass> {
+    vec![
+        OpClass::Focus,
+        OpClass::Minimize,
+        OpClass::Close,
+        OpClass::MoveToWorkspace,
+        OpClass::SwitchWorkspace,
+        OpClass::SwitchWorkspaceTo,
+        OpClass::SetWindowGeometry,
+        OpClass::ToggleTiling,
+        OpClass::ToggleOverview,
+        OpClass::Notify,
+        OpClass::CreateRealm,
+        OpClass::TransactRealm,
+        OpClass::RevokeRealm,
+        OpClass::CaptureRealm,
+        OpClass::LaunchInRealm,
+        OpClass::InjectRealmInput,
+    ]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1087,8 +1172,9 @@ impl ToolKind {
                 unreachable!("query tools returned above")
             }
         };
+        let listed = |ops: &Option<Vec<OpClass>>| ops.as_ref().is_some_and(|ops| ops.contains(&op));
+        let requestable = listed(&grant.scope.ops) || listed(&grant.scope.ask_ops);
         capability
-            && grant.scope.ops.as_ref().is_none_or(|ops| ops.contains(&op))
             && if matches!(
                 self,
                 Self::RealmEnsure
@@ -1100,14 +1186,12 @@ impl ToolKind {
                     | Self::RealmReset
             ) {
                 // Realm and input operations are never inherited from an
-                // omitted op allowlist; mirror the compositor's fail-closed rule.
-                grant
-                    .scope
-                    .ops
-                    .as_ref()
-                    .is_some_and(|ops| ops.contains(&op))
+                // omitted op allowlist; mirror the compositor's fail-closed
+                // rule. Runtime-gated operations stay advertised: calling
+                // them asks the user first (ADR-0088).
+                requestable
             } else {
-                true
+                grant.scope.ops.is_none() || requestable
             }
     }
 
@@ -1536,10 +1620,10 @@ impl TryFrom<InputActionArgs> for SyntheticInputAction {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {
-    #[error("cannot connect to Aegis IPC socket {socket:?} with named scope {scope:?}: {source}")]
+    #[error("cannot connect to Aegis IPC socket {socket:?} as agent {label:?}: {source}")]
     Connect {
         socket: PathBuf,
-        scope: String,
+        label: String,
         #[source]
         source: std::io::Error,
     },
@@ -1559,6 +1643,10 @@ pub enum PlatformError {
     RealmCleanupNotGranted,
     #[error("Aegis returned an unexpected Realm action response")]
     UnexpectedResponse,
+    #[error("the compositor handshake did not bind an authenticated agent identity")]
+    MissingAuthenticatedIdentity,
+    #[error("agent identity continuity failed: {0}")]
+    Identity(String),
     #[error("live smoke verification failed: {0}")]
     SmokeVerification(String),
     #[error(transparent)]

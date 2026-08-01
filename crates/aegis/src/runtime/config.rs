@@ -390,13 +390,48 @@ pub(super) fn build_gesture_map(
     }
 }
 
-/// Compile the trusted named IPC scopes from configuration. Invalid operation
-/// names are ignored inside an explicit allowlist (therefore granting nothing
-/// for that entry) and logged; they never turn into an unrestricted scope.
-pub(super) fn build_ipc_scopes(
-    config: Option<&aegis_config::Config>,
-) -> std::collections::HashMap<String, aegis_ipc::Scope> {
-    let mut scopes = std::collections::HashMap::from([
+/// Built-in trusted named IPC scopes for ordinary owner control, agent
+/// administration, Realm administration, and portal consent (ADR-0090).
+/// Config-declared agent scopes were removed in protocol v18 (ADR-0088);
+/// agent capability ceilings now come from the compositor-held principal
+/// registry.
+pub(super) fn builtin_ipc_scopes() -> std::collections::HashMap<String, aegis_ipc::Scope> {
+    std::collections::HashMap::from([
+        (
+            aegis_ipc::LOCAL_OWNER_ADMIN_SCOPE.to_string(),
+            aegis_ipc::Scope {
+                windows: None,
+                workspaces: None,
+                outputs: None,
+                realms: None,
+                ops: Some(vec![
+                    aegis_ipc::OpClass::Focus,
+                    aegis_ipc::OpClass::Minimize,
+                    aegis_ipc::OpClass::Close,
+                    aegis_ipc::OpClass::SetWindowGeometry,
+                    aegis_ipc::OpClass::SwitchWorkspace,
+                    aegis_ipc::OpClass::SwitchWorkspaceTo,
+                    aegis_ipc::OpClass::MoveToWorkspace,
+                    aegis_ipc::OpClass::ToggleTiling,
+                    aegis_ipc::OpClass::SystemControl,
+                    aegis_ipc::OpClass::Notify,
+                    aegis_ipc::OpClass::DismissNotification,
+                    aegis_ipc::OpClass::Screenshot,
+                    aegis_ipc::OpClass::ScreenshotRegion,
+                    aegis_ipc::OpClass::ToggleOverview,
+                ]),
+                ask_ops: None,
+            },
+        ),
+        (
+            aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE.to_string(),
+            aegis_ipc::Scope {
+                // Agent administration is authorized by the dedicated scope
+                // name in the IPC server, not by a reusable operation family.
+                ops: Some(Vec::new()),
+                ..aegis_ipc::Scope::default()
+            },
+        ),
         (
             aegis_ipc::LOCAL_REALM_ADMIN_SCOPE.to_string(),
             aegis_ipc::Scope {
@@ -419,8 +454,7 @@ pub(super) fn build_ipc_scopes(
         // ScreenCast, the Inhibit portal's global idle inhibitor, the
         // interactive picker round-trips, and the FileChooser portal's
         // user-consent file picking through exactly five fail-closed
-        // operations; `None`-means-all would grant it nothing, so the ops
-        // must be listed explicitly here.
+        // operations; the ops must be listed explicitly here.
         (
             aegis_ipc::LOCAL_PORTAL_SCOPE.to_string(),
             aegis_ipc::Scope {
@@ -444,75 +478,7 @@ pub(super) fn build_ipc_scopes(
                 ask_ops: None,
             },
         ),
-    ]);
-    let Some(config) = config else {
-        return scopes;
-    };
-
-    for declared in &config.agent.scopes {
-        let name = declared.name.trim();
-        if name.is_empty() {
-            log::warn!("config: ignoring agent scope with an empty name");
-            continue;
-        }
-        if scopes.contains_key(name) {
-            log::warn!("config: duplicate agent scope '{name}' ignored");
-            continue;
-        }
-
-        let ops = if declared.ops.is_empty() {
-            None
-        } else {
-            Some(
-                declared
-                    .ops
-                    .iter()
-                    .filter_map(|op| match ipc_op_class(op) {
-                        Some(op) => Some(op),
-                        None => {
-                            log::warn!("config: agent scope '{name}' has unknown operation '{op}'");
-                            None
-                        }
-                    })
-                    .collect(),
-            )
-        };
-        let windows = (!declared.windows.is_empty()).then(|| {
-            declared
-                .windows
-                .iter()
-                .copied()
-                .map(aegis_core::window::WindowId)
-                .collect()
-        });
-        let workspaces = (!declared.workspaces.is_empty()).then(|| {
-            declared
-                .workspaces
-                .iter()
-                .copied()
-                .map(aegis_core::workspace::WorkspaceId)
-                .collect()
-        });
-        let realms = (!declared.realms.is_empty()).then(|| {
-            declared
-                .realms
-                .iter()
-                .copied()
-                .map(aegis_core::realm::RealmId)
-                .collect()
-        });
-        scopes.insert(
-            name.to_string(),
-            aegis_ipc::Scope {
-                windows,
-                workspaces,
-                outputs: None,
-                realms,
-                ops,
-            },
-        );
-    }
-    scopes
+    ])
 }
 
 pub(super) fn authorize_realm_action_against_snapshot(
@@ -523,6 +489,34 @@ pub(super) fn authorize_realm_action_against_snapshot(
     if !scope.permits_realm_action(action) {
         return Err("out of scope".into());
     }
+    authorize_realm_action_groups_against_snapshot(scope, action, snapshot)
+}
+
+/// Reauthorization for a Realm action whose operation family was approved
+/// by a runtime grant (ADR-0088): identical to
+/// [`authorize_realm_action_against_snapshot`] except the operation
+/// allowlist is already satisfied by the grant, so only the resource
+/// allowlists (and the interaction-group smuggling guard) apply.
+pub(super) fn authorize_realm_action_granted_against_snapshot(
+    scope: &aegis_ipc::Scope,
+    action: &aegis_ipc::RealmAction,
+    snapshot: &aegis_core::realm::RealmSnapshot,
+) -> Result<(), String> {
+    if !scope.permits_realm_action_resources(action) {
+        return Err("out of scope".into());
+    }
+    authorize_realm_action_groups_against_snapshot(scope, action, snapshot)
+}
+
+/// The interaction-group smuggling guard shared by both Realm
+/// reauthorization paths: a group-level mutation expands to every affected
+/// window, so an allowlisted member cannot smuggle sibling windows across
+/// realms.
+fn authorize_realm_action_groups_against_snapshot(
+    scope: &aegis_ipc::Scope,
+    action: &aegis_ipc::RealmAction,
+    snapshot: &aegis_core::realm::RealmSnapshot,
+) -> Result<(), String> {
     let aegis_ipc::RealmAction::Transact { mutations, .. } = action else {
         return Ok(());
     };
@@ -551,39 +545,4 @@ pub(super) fn authorize_realm_action_against_snapshot(
         }
     }
     Ok(())
-}
-
-pub(super) fn ipc_op_class(name: &str) -> Option<aegis_ipc::OpClass> {
-    use aegis_ipc::OpClass;
-    match name.trim().to_ascii_lowercase().as_str() {
-        "focus" => Some(OpClass::Focus),
-        "minimize" => Some(OpClass::Minimize),
-        "close" => Some(OpClass::Close),
-        "move" => Some(OpClass::Move),
-        "setwindowgeometry" | "set_window_geometry" => Some(OpClass::SetWindowGeometry),
-        "injectinput" | "inject_input" => Some(OpClass::InjectInput),
-        "injectrealminput" | "inject_realm_input" => Some(OpClass::InjectRealmInput),
-        "createrealm" | "create_realm" => Some(OpClass::CreateRealm),
-        "transactrealm" | "transact_realm" => Some(OpClass::TransactRealm),
-        "revokerealm" | "revoke_realm" => Some(OpClass::RevokeRealm),
-        "capturerealm" | "capture_realm" => Some(OpClass::CaptureRealm),
-        "launchinrealm" | "launch_in_realm" => Some(OpClass::LaunchInRealm),
-        "cycle" => Some(OpClass::Cycle),
-        "switchworkspace" | "switch_workspace" => Some(OpClass::SwitchWorkspace),
-        "switchworkspaceto" | "switch_workspace_to" => Some(OpClass::SwitchWorkspaceTo),
-        "movetoworkspace" | "move_to_workspace" => Some(OpClass::MoveToWorkspace),
-        "toggletiling" | "toggle_tiling" => Some(OpClass::ToggleTiling),
-        "systemcontrol" | "system_control" => Some(OpClass::SystemControl),
-        "notify" => Some(OpClass::Notify),
-        "dismissnotification" | "dismiss_notification" => Some(OpClass::DismissNotification),
-        "streamoutput" | "stream_output" => Some(OpClass::StreamOutput),
-        "idleinhibit" | "idle_inhibit" => Some(OpClass::IdleInhibit),
-        "picktarget" | "pick_target" => Some(OpClass::PickTarget),
-        "pickfile" | "pick_file" => Some(OpClass::PickFile),
-        "pickapp" | "pick_app" => Some(OpClass::PickApp),
-        "promptsecret" | "prompt_secret" => Some(OpClass::PromptSecret),
-        "pickconfirm" | "pick_confirm" => Some(OpClass::PickConfirm),
-        "setwallpaper" | "set_wallpaper" => Some(OpClass::SetWallpaper),
-        _ => None,
-    }
 }

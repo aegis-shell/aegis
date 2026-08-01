@@ -1,11 +1,13 @@
-//! The user-consent yes/no confirmation dialog: a modal, centered panel
-//! asking one question with Cancel and affirmative buttons (portal consent
-//! flows: Account, Access, DynamicLauncher).
+//! The user-consent confirmation dialog: a modal, centered panel asking
+//! one question. The yes/no style offers Cancel and an affirmative button
+//! (portal consent flows: Account, Access, DynamicLauncher); the grant
+//! style offers the four runtime-grant persistences (ADR-0088): Deny,
+//! Allow once, This session, Always.
 //!
 //! The flow mirrors the other pickers: [`Chrome::start_confirm_pick`] opens
 //! the panel, and the user's answer travels back through
-//! [`ChromeEvents::confirm_pick_answered`] (`true` = confirmed). Ordinary
-//! modal chrome over the live scene: no freeze, no screen-content capture.
+//! [`ChromeEvents::confirm_pick_answered`]. Ordinary modal chrome over the
+//! live scene: no freeze, no screen-content capture.
 
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
@@ -22,6 +24,45 @@ const BUTTON_H: f32 = 30.0;
 const BUTTON_W: f32 = 96.0;
 const BACKDROP_BLUR_SIGMA: f32 = 18.0;
 
+/// Grant-style buttons, left to right (ADR-0088). "Allow once" — the least
+/// persistent affirmative — is the accented, keyboard-default choice.
+const GRANT_LABELS: [&str; 4] = ["Deny", "Allow once", "This session", "Always"];
+const GRANT_ANSWERS: [ConfirmAnswer; 4] = [
+    ConfirmAnswer::Cancelled,
+    ConfirmAnswer::AllowOnce,
+    ConfirmAnswer::AllowSession,
+    ConfirmAnswer::AllowAlways,
+];
+const GRANT_ACCENT: usize = 1;
+
+/// The dialog style: a plain yes/no consent, or the four-option
+/// runtime-grant consent (ADR-0088).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConfirmPickStyle {
+    /// Cancel plus one affirmative button (portal consent flows).
+    #[default]
+    YesNo,
+    /// Deny / Allow once / This session / Always (agent runtime grants).
+    Grant,
+}
+
+/// The answer the user gave at the confirmation dialog. The yes/no style
+/// only ever yields `Confirmed`/`Cancelled`; the grant style yields
+/// `Cancelled` or one of the three persistence levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmAnswer {
+    /// Yes/no style: the affirmative button (or Enter).
+    Confirmed,
+    /// Either style: Deny/Cancel, Escape, or a click outside the panel.
+    Cancelled,
+    /// Grant style: allow this one operation only; nothing is recorded.
+    AllowOnce,
+    /// Grant style: allow until the compositor exits.
+    AllowSession,
+    /// Grant style: allow and remember durably.
+    AllowAlways,
+}
+
 /// Parameters of one user-consent confirmation, mapped from the IPC
 /// request by the compositor runtime.
 #[derive(Debug, Clone)]
@@ -31,8 +72,10 @@ pub struct ConfirmPickParams {
     /// Explanation of what is requested and by whom.
     pub body: String,
     /// Affirmative button label override ("Allow", "Share", …); the
-    /// default is "OK".
+    /// default is "OK". Only used by the yes/no style.
     pub accept_label: Option<String>,
+    /// Dialog style; the default is the plain yes/no consent.
+    pub style: ConfirmPickStyle,
 }
 
 /// The resolved geometry of the panel for one frame.
@@ -43,6 +86,7 @@ struct PromptLayout {
     body: Rect,
     cancel: Rect,
     accept: Rect,
+    grant: [Rect; 4],
 }
 
 impl PromptLayout {
@@ -88,12 +132,20 @@ impl PromptLayout {
             w: BUTTON_W,
             h: BUTTON_H,
         };
+        let grant_w = ((inner_w - 3.0 * 8.0) / 4.0).floor();
+        let grant = std::array::from_fn(|index| Rect {
+            x: inner_x + index as f32 * (grant_w + 8.0),
+            y: buttons_y,
+            w: grant_w,
+            h: BUTTON_H,
+        });
         PromptLayout {
             panel,
             title,
             body,
             cancel,
             accept,
+            grant,
         }
     }
 }
@@ -105,6 +157,7 @@ pub struct ConfirmPrompt {
     title: String,
     body: String,
     accept_label: String,
+    style: ConfirmPickStyle,
     modal_reserved: Reserved,
 }
 
@@ -115,14 +168,42 @@ impl ConfirmPrompt {
             title: String::new(),
             body: String::new(),
             accept_label: "OK".to_string(),
+            style: ConfirmPickStyle::YesNo,
             modal_reserved: Reserved::default(),
         }
     }
 
     /// Answer the dialog and close.
-    fn answer(&mut self, confirmed: bool, out: &mut ChromeEvents) {
-        out.confirm_pick_answered = Some(confirmed);
+    fn answer(&mut self, answer: ConfirmAnswer, out: &mut ChromeEvents) {
+        out.confirm_pick_answered = Some(answer);
         self.active = false;
+    }
+
+    /// Handle one primary-button press at output-space `(x, y)`: answers on
+    /// the style's buttons, or cancels on a click outside the panel.
+    fn press_at(&mut self, x: f32, y: f32, display: (f32, f32), out: &mut ChromeEvents) {
+        let layout = PromptLayout::for_display(display, self.modal_reserved);
+        if !contains(layout.panel, x, y) {
+            self.answer(ConfirmAnswer::Cancelled, out);
+            return;
+        }
+        match self.style {
+            ConfirmPickStyle::YesNo => {
+                if contains(layout.cancel, x, y) {
+                    self.answer(ConfirmAnswer::Cancelled, out);
+                } else if contains(layout.accept, x, y) {
+                    self.answer(ConfirmAnswer::Confirmed, out);
+                }
+            }
+            ConfirmPickStyle::Grant => {
+                for (rect, answer) in layout.grant.iter().zip(GRANT_ANSWERS) {
+                    if contains(*rect, x, y) {
+                        self.answer(answer, out);
+                        return;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -208,61 +289,92 @@ impl Chrome for ConfirmPrompt {
             },
         );
 
-        let cancel_hovered = contains(layout.cancel, cursor.x, cursor.y);
-        let accept_hovered = contains(layout.accept, cursor.x, cursor.y);
-        let clicked_cancel = pressed && cancel_hovered;
-        let clicked_accept = pressed && accept_hovered;
-        frame.layer(
-            "aegis-confirm-prompt-cancel",
-            layout.cancel,
-            &OverlayOpts {
-                bg: if cancel_hovered {
-                    design.colors.application_hover
-                } else {
-                    design.colors.card_surface
-                },
-                border: design.colors.application_border,
-                border_width: design.strokes.hairline,
-                radius: design.radii.control,
-                pad: 0.0,
-                cross: Align::Center,
-                ..Default::default()
-            },
-            |frame| {
-                frame.column_ex(&stretch(layout.cancel), |frame| {
-                    frame.label_sized("Cancel", 13.0);
-                });
-            },
-        );
-        frame.layer(
-            "aegis-confirm-prompt-accept",
-            layout.accept,
-            &OverlayOpts {
-                bg: design.colors.application_accent,
-                radius: design.radii.control,
-                pad: 0.0,
-                cross: Align::Center,
-                ..Default::default()
-            },
-            |frame| {
-                frame.column_ex(&stretch(layout.accept), |frame| {
-                    frame.label_sized(&self.accept_label.clone(), 13.0);
-                });
-            },
-        );
+        match self.style {
+            ConfirmPickStyle::YesNo => {
+                let cancel_hovered = contains(layout.cancel, cursor.x, cursor.y);
+                frame.layer(
+                    "aegis-confirm-prompt-cancel",
+                    layout.cancel,
+                    &OverlayOpts {
+                        bg: if cancel_hovered {
+                            design.colors.application_hover
+                        } else {
+                            design.colors.card_surface
+                        },
+                        border: design.colors.application_border,
+                        border_width: design.strokes.hairline,
+                        radius: design.radii.control,
+                        pad: 0.0,
+                        cross: Align::Center,
+                        ..Default::default()
+                    },
+                    |frame| {
+                        frame.column_ex(&stretch(layout.cancel), |frame| {
+                            frame.label_sized("Cancel", 13.0);
+                        });
+                    },
+                );
+                frame.layer(
+                    "aegis-confirm-prompt-accept",
+                    layout.accept,
+                    &OverlayOpts {
+                        bg: design.colors.application_accent,
+                        radius: design.radii.control,
+                        pad: 0.0,
+                        cross: Align::Center,
+                        ..Default::default()
+                    },
+                    |frame| {
+                        frame.column_ex(&stretch(layout.accept), |frame| {
+                            frame.label_sized(&self.accept_label.clone(), 13.0);
+                        });
+                    },
+                );
+            }
+            ConfirmPickStyle::Grant => {
+                for (index, (rect, label)) in layout.grant.iter().zip(GRANT_LABELS).enumerate() {
+                    let hovered = contains(*rect, cursor.x, cursor.y);
+                    let opts = if index == GRANT_ACCENT {
+                        OverlayOpts {
+                            bg: design.colors.application_accent,
+                            radius: design.radii.control,
+                            pad: 0.0,
+                            cross: Align::Center,
+                            ..Default::default()
+                        }
+                    } else {
+                        OverlayOpts {
+                            bg: if hovered {
+                                design.colors.application_hover
+                            } else {
+                                design.colors.card_surface
+                            },
+                            border: design.colors.application_border,
+                            border_width: design.strokes.hairline,
+                            radius: design.radii.control,
+                            pad: 0.0,
+                            cross: Align::Center,
+                            ..Default::default()
+                        }
+                    };
+                    frame.layer(
+                        &format!("aegis-confirm-prompt-grant-{index}"),
+                        *rect,
+                        &opts,
+                        |frame| {
+                            frame.column_ex(&stretch(*rect), |frame| {
+                                frame.label_sized(label, 13.0);
+                            });
+                        },
+                    );
+                }
+            }
+        }
 
         frame.set_theme(original_theme);
 
-        if pressed && !contains(layout.panel, cursor.x, cursor.y) {
-            self.answer(false, out);
-            return;
-        }
-        if clicked_cancel {
-            self.answer(false, out);
-            return;
-        }
-        if clicked_accept {
-            self.answer(true, out);
+        if pressed {
+            self.press_at(cursor.x, cursor.y, display, out);
         }
     }
 
@@ -305,13 +417,17 @@ impl Chrome for ConfirmPrompt {
             return None;
         }
         let layout = PromptLayout::for_display(display, self.modal_reserved);
-        Some(
-            if contains(layout.accept, x, y) || contains(layout.cancel, x, y) {
-                CursorShape::Pointer
-            } else {
-                CursorShape::Default
-            },
-        )
+        let over_button = match self.style {
+            ConfirmPickStyle::YesNo => {
+                contains(layout.accept, x, y) || contains(layout.cancel, x, y)
+            }
+            ConfirmPickStyle::Grant => layout.grant.iter().any(|rect| contains(*rect, x, y)),
+        };
+        Some(if over_button {
+            CursorShape::Pointer
+        } else {
+            CursorShape::Default
+        })
     }
 
     fn set_modal_reserved(&mut self, reserved: Reserved) {
@@ -323,8 +439,12 @@ impl Chrome for ConfirmPrompt {
             return;
         }
         match key_action(key.keysym, key.ch) {
-            KeyAction::Enter => self.answer(true, out),
-            KeyAction::Escape => self.answer(false, out),
+            KeyAction::Enter => match self.style {
+                ConfirmPickStyle::YesNo => self.answer(ConfirmAnswer::Confirmed, out),
+                // The least persistent affirmative is the keyboard default.
+                ConfirmPickStyle::Grant => self.answer(ConfirmAnswer::AllowOnce, out),
+            },
+            KeyAction::Escape => self.answer(ConfirmAnswer::Cancelled, out),
             _ => {}
         }
     }
@@ -333,6 +453,7 @@ impl Chrome for ConfirmPrompt {
         self.title = params.title;
         self.body = params.body;
         self.accept_label = params.accept_label.unwrap_or_else(|| "OK".to_string());
+        self.style = params.style;
         self.active = true;
     }
 
@@ -421,6 +542,32 @@ mod tests {
             title: "Share personal information?".to_string(),
             body: "The application 'mail' wants your name and avatar.".to_string(),
             accept_label: Some("Share".to_string()),
+            style: ConfirmPickStyle::YesNo,
+        }
+    }
+
+    fn grant_params() -> ConfirmPickParams {
+        ConfirmPickParams {
+            title: "Allow Codex to borrow a sensitive capability?".to_string(),
+            body: "Close windows".to_string(),
+            accept_label: None,
+            style: ConfirmPickStyle::Grant,
+        }
+    }
+
+    fn enter() -> KeyChar {
+        KeyChar {
+            keysym: aegis_core::input::XKB_KEY_Return,
+            ch: None,
+            mods: aegis_core::input::Mods::NONE,
+        }
+    }
+
+    fn escape() -> KeyChar {
+        KeyChar {
+            keysym: aegis_core::input::XKB_KEY_Escape,
+            ch: None,
+            mods: aegis_core::input::Mods::NONE,
         }
     }
 
@@ -430,15 +577,8 @@ mod tests {
         prompt.start_confirm_pick(params());
         assert_eq!(prompt.accept_label, "Share");
         let mut out = ChromeEvents::default();
-        prompt.key_char(
-            &KeyChar {
-                keysym: aegis_core::input::XKB_KEY_Return,
-                ch: None,
-                mods: aegis_core::input::Mods::NONE,
-            },
-            &mut out,
-        );
-        assert_eq!(out.confirm_pick_answered, Some(true));
+        prompt.key_char(&enter(), &mut out);
+        assert_eq!(out.confirm_pick_answered, Some(ConfirmAnswer::Confirmed));
         assert!(!prompt.confirm_pick_active());
     }
 
@@ -447,15 +587,8 @@ mod tests {
         let mut prompt = ConfirmPrompt::new();
         prompt.start_confirm_pick(params());
         let mut out = ChromeEvents::default();
-        prompt.key_char(
-            &KeyChar {
-                keysym: aegis_core::input::XKB_KEY_Escape,
-                ch: None,
-                mods: aegis_core::input::Mods::NONE,
-            },
-            &mut out,
-        );
-        assert_eq!(out.confirm_pick_answered, Some(false));
+        prompt.key_char(&escape(), &mut out);
+        assert_eq!(out.confirm_pick_answered, Some(ConfirmAnswer::Cancelled));
         assert!(!prompt.confirm_pick_active());
     }
 
@@ -466,7 +599,50 @@ mod tests {
             title: "t".to_string(),
             body: "b".to_string(),
             accept_label: None,
+            style: ConfirmPickStyle::YesNo,
         });
         assert_eq!(prompt.accept_label, "OK");
+    }
+
+    #[test]
+    fn grant_enter_allows_once() {
+        let mut prompt = ConfirmPrompt::new();
+        prompt.start_confirm_pick(grant_params());
+        let mut out = ChromeEvents::default();
+        prompt.key_char(&enter(), &mut out);
+        assert_eq!(out.confirm_pick_answered, Some(ConfirmAnswer::AllowOnce));
+        assert!(!prompt.confirm_pick_active());
+    }
+
+    #[test]
+    fn grant_buttons_cover_all_four_persistences() {
+        let display = (1280.0, 800.0);
+        for (index, expected) in GRANT_ANSWERS.iter().enumerate() {
+            let mut prompt = ConfirmPrompt::new();
+            prompt.start_confirm_pick(grant_params());
+            let rect = PromptLayout::for_display(display, Reserved::default()).grant[index];
+            let mut out = ChromeEvents::default();
+            prompt.press_at(rect.x + 4.0, rect.y + 4.0, display, &mut out);
+            assert_eq!(out.confirm_pick_answered, Some(*expected), "button {index}");
+            assert!(!prompt.confirm_pick_active());
+        }
+    }
+
+    #[test]
+    fn grant_escape_denies() {
+        let mut prompt = ConfirmPrompt::new();
+        prompt.start_confirm_pick(grant_params());
+        let mut out = ChromeEvents::default();
+        prompt.key_char(&escape(), &mut out);
+        assert_eq!(out.confirm_pick_answered, Some(ConfirmAnswer::Cancelled));
+    }
+
+    #[test]
+    fn grant_click_outside_denies() {
+        let mut prompt = ConfirmPrompt::new();
+        prompt.start_confirm_pick(grant_params());
+        let mut out = ChromeEvents::default();
+        prompt.press_at(4.0, 4.0, (1280.0, 800.0), &mut out);
+        assert_eq!(out.confirm_pick_answered, Some(ConfirmAnswer::Cancelled));
     }
 }

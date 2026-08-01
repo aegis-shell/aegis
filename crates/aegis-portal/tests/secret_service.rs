@@ -74,7 +74,12 @@ fn pipe_pair() -> (std::fs::File, OwnedFd) {
     // SAFETY: fds is a valid out-array; on success both ends are owned fds.
     assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe(2)");
     // SAFETY: each raw fd is wrapped exactly once.
-    unsafe { (std::fs::File::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+    unsafe {
+        (
+            std::fs::File::from_raw_fd(fds[0]),
+            OwnedFd::from_raw_fd(fds[1]),
+        )
+    }
 }
 
 #[test]

@@ -5,14 +5,14 @@
 
 ## Context
 
-Aegis had grown to six first-party processes (`aegis`, `aegis-ctl`,
+Aegis had grown to six first-party processes (`aegis`, `aegis-cli`,
 `aegis-idle`, `aegis-lock`, `aegis-portal`, `aegis-settings`). Observability
 was inconsistent and weak:
 
 - The compositor initialized `env_logger` with a custom `info` default and
   second-granularity timestamps; `aegis-idle`, `aegis-lock`, and
   `aegis-portal` called bare `env_logger::init()` (defaulting to `error`); and
-  `aegis-ctl` and `aegis-settings` installed no subscriber at all. Bring-up of
+  `aegis-cli` and `aegis-settings` installed no subscriber at all. Bring-up of
   the supervised session clients was therefore invisible by default.
 - Every record was unstructured text. Concurrent frame, capture, IPC, realm,
   and session-lock work could not be correlated, which made the timing and
@@ -38,7 +38,7 @@ Keep the `log` facade in crates and move the binary-side impl to a
   stderr for uniform journal capture.
 - Filtering honors `RUST_LOG` (an `EnvFilter` directive such as
   `info,aegis_backend::drm=debug`). Each binary passes a sensible default:
-  `info` for services, `warn` for the one-shot `aegis-ctl` client.
+  `info` for services, `warn` for the one-shot `aegis-cli` client.
 - Crates keep using `log::{error,warn,info,debug}` for events. Structured
   spans are introduced with the `tracing` crate only where request or
   lifecycle correlation is worth it (for example the live-system IPC apply

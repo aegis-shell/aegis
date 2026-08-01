@@ -17,7 +17,7 @@ is the bare-metal bring-up and smoke checklist.
 Build the release binary before leaving the graphical session:
 
 ```bash
-cargo build --locked --release -p aegis -p aegis-settings -p aegis-ctl
+cargo build --locked --release -p aegis -p aegis-settings -p aegis-cli
 ```
 
 ## Start
@@ -64,7 +64,8 @@ card to:
 
 1. Select a connected monitor.
 2. Choose one of its advertised resolution and refresh-rate modes.
-3. Set the logical scale.
+3. Keep the automatically detected logical scale, or override it when the
+   physical-size metadata is wrong or a different UI size is preferred.
 4. Select the primary display when needed.
 5. Place an extended display relative to the primary display, or enter custom
    logical X and Y coordinates.
@@ -73,7 +74,9 @@ card to:
 The change is written atomically to `~/.config/aegis/config.toml`. Direct DRM
 sessions apply it after the current page flip retires. In a nested session the
 card is read-only because the outer compositor owns the physical monitors.
-Run `aegis-ctl outputs` to inspect exact connector names and advertised modes.
+Run `aegis-cli outputs` to inspect exact connector names, advertised modes,
+and the effective scale. The DRM startup log includes the validated physical
+size, calculated PPI, output kind, and automatic scale.
 
 ## Smoke checklist
 
@@ -99,15 +102,15 @@ First bare-metal run, in order:
    is reprobed, the surface recreated if the modifier set changed, and
    workspaces return to their home connector (ADR-0025).
 7. **Session lock.** Lock, confirm the screen shows only the lock client,
-   and unlock. While locked, `aegis-ctl` commands are refused.
-8. **Screenshot.** `aegis-ctl screenshot /tmp/tty.png` produces a PNG of the
+   and unlock. While locked, `aegis-cli` commands are refused.
+8. **Screenshot.** `aegis-cli screenshot /tmp/tty.png` produces a PNG of the
    desktop (also exercises the CPU readback path).
 
 ## Stop
 
 Request a graceful compositor shutdown with one of these methods:
 
-- Run `aegis-ctl quit` from a terminal inside aegis.
+- Run `aegis-cli quit` from a terminal inside aegis.
 - Press `Super+Ctrl+Q` or the alternate `Super+Shift+Return` binding.
 
 The compositor disables its outputs, releases the seat and DRM device, and

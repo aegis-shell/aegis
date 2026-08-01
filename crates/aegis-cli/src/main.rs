@@ -1,14 +1,14 @@
-//! aegis-ctl entry point: parse argv via `clap`, dispatch, and exit with
+//! aegis-cli entry point: parse argv via `clap`, dispatch, and exit with
 //! the contract documented in `docs/reference/cli.md` (0 success, 1 runtime
 //! failure, 2 usage / argument error).
 
 use std::process::ExitCode;
 
-use aegis_ctl::Cli;
+use aegis_cli::Cli;
 
 fn main() -> ExitCode {
     // Quiet by default: a one-shot CLI prints results on stdout, not a log
-    // stream. `RUST_LOG=aegis_ctl=debug` reveals diagnostics when needed.
+    // stream. `RUST_LOG=aegis_cli=debug` reveals diagnostics when needed.
     aegis_logging::init("warn");
     use clap::Parser;
     let cli = match Cli::try_parse() {
@@ -23,18 +23,18 @@ fn main() -> ExitCode {
     let socket = match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(d) => std::path::PathBuf::from(d).join("aegis.sock"),
         None => {
-            eprintln!("aegis-ctl: $XDG_RUNTIME_DIR is unset; cannot locate aegis.sock");
+            eprintln!("aegis-cli: $XDG_RUNTIME_DIR is unset; cannot locate aegis.sock");
             return ExitCode::from(2);
         }
     };
-    match aegis_ctl::run_with(&socket, cli) {
+    match aegis_cli::run_with(&socket, cli) {
         Ok(output) if !output.is_empty() => {
             println!("{output}");
             ExitCode::SUCCESS
         }
         Ok(_) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("aegis-ctl: {error}");
+            eprintln!("aegis-cli: {error}");
             ExitCode::from(error.exit_code() as u8)
         }
     }

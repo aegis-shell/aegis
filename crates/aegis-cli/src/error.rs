@@ -4,7 +4,7 @@
 //! The dispatcher returns [`CliError`]; the binary maps each variant to a
 //! stable process exit code (0 success, 1 runtime, 2 usage).
 
-/// All failures surfaced through `aegis-ctl`.
+/// All failures surfaced through `aegis-cli`.
 ///
 /// `clap::Error` is wrapped verbatim because clap already renders an
 /// appropriate `error: ... \n\nUsage: ...` message; we just need to forward

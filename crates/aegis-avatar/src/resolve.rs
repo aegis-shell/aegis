@@ -24,12 +24,15 @@ use aegis_desktop_entries::xdg_data_dirs;
 /// compatibility locations. The Aegis location wins because a user who placed
 /// a file there made an explicit Aegis choice.
 pub fn candidate_paths() -> Vec<PathBuf> {
+    candidate_paths_from(aegis_avatar_dir(), home_dir())
+}
+
+fn candidate_paths_from(aegis: PathBuf, home: Option<PathBuf>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    let aegis = aegis_avatar_dir();
     for name in still_names() {
         paths.push(aegis.join(name));
     }
-    if let Some(home) = home_dir() {
+    if let Some(home) = home {
         paths.push(home.join(".face"));
         paths.push(home.join(".face.icon"));
     }
@@ -68,12 +71,15 @@ fn aegis_avatar_dir() -> PathBuf {
 /// `$HOME` as an absolute path, or `None` when unset/relative, matching the
 /// base-directory spec's "ignore invalid HOME" rule.
 fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|home| {
-            let path = PathBuf::from(home);
-            !path.as_os_str().is_empty() && path.is_absolute()
-        })
-        .map(PathBuf::from)
+    home_dir_from(std::env::var_os("HOME"))
+}
+
+fn home_dir_from(home: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    home.filter(|home| {
+        let path = PathBuf::from(home);
+        !path.as_os_str().is_empty() && path.is_absolute()
+    })
+    .map(PathBuf::from)
 }
 
 #[cfg(test)]
@@ -82,15 +88,10 @@ mod tests {
 
     #[test]
     fn still_candidates_include_freedesktop_face_when_home_is_set() {
-        // Set an absolute HOME so the ~/.face compatibility path is emitted.
-        // SAFETY: single-threaded test; HOME is restored at the end.
-        unsafe {
-            std::env::set_var("HOME", "/tmp/aegis-avatar-test-home");
-        }
-        let paths = candidate_paths();
-        unsafe {
-            std::env::remove_var("HOME");
-        }
+        let paths = candidate_paths_from(
+            PathBuf::from("/tmp/aegis-avatar-test-home/.local/share/aegis/avatars"),
+            Some(PathBuf::from("/tmp/aegis-avatar-test-home")),
+        );
         // The canonical Aegis location is always first.
         assert!(paths[0].to_string_lossy().contains("aegis/avatars"));
         // The freedesktop ~/.face compatibility location is present.
@@ -119,15 +120,8 @@ mod tests {
 
     #[test]
     fn home_dir_ignores_relative_home() {
-        // A relative HOME is invalid per the base-directory spec and must not
-        // produce a relative ~/.face candidate.
-        // SAFETY: this is a single-threaded unit test; no other code reads
-        // HOME concurrently while it is mutated and restored here.
-        unsafe {
-            std::env::set_var("HOME", "relative/home");
-            assert!(home_dir().is_none());
-            // Restore so other tests are not affected.
-            std::env::remove_var("HOME");
-        }
+        assert!(home_dir_from(Some("relative/home".into())).is_none());
+        assert!(home_dir_from(Some("/absolute/home".into())).is_some());
+        assert!(home_dir_from(None).is_none());
     }
 }

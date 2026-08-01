@@ -29,8 +29,9 @@ impl PermissionGate {
     /// Decide using the interactive stdin prompt for `Ask`.
     pub fn check(&self, tool: &str, detail: &str) -> Decision {
         self.check_with(tool, detail, &mut |tool, detail| {
-            eprintln!("\nfuji wants to run `{tool}`: {detail}");
+            eprintln!("\naegis-agent wants to run `{tool}`: {detail}");
             eprint!("allow? [y/N] ");
+
             let _ = std::io::stderr().flush();
             let mut line = String::new();
             match std::io::stdin().lock().read_line(&mut line) {

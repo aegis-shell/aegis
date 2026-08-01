@@ -19,7 +19,7 @@ struct Cli {
 enum Command {
     /// Serve MCP over newline-delimited JSON-RPC on stdin/stdout (default).
     Serve,
-    /// Probe the configured Aegis scope and print the effective tool grant.
+    /// Probe the granted capability ceiling and print the effective tool grant.
     Check,
     /// Run a live, reversible notification and Agent Realm smoke test.
     Smoke {
@@ -63,7 +63,24 @@ fn main() -> ExitCode {
             );
             Ok::<(), aegis_mcp::PlatformError>(())
         }),
-        Command::Serve => with_platform(aegis_mcp::serve),
+        Command::Serve => with_config(aegis_mcp::serve_config),
+    }
+}
+
+fn with_config<E: std::fmt::Display>(run: impl FnOnce(BridgeConfig) -> Result<(), E>) -> ExitCode {
+    let config = match BridgeConfig::from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("aegis-mcp: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    match run(config) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("aegis-mcp: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -101,7 +118,21 @@ fn print_config() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let mut random = [0_u8; 16];
+    if let Err(error) = std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut random))
+    {
+        eprintln!("aegis-mcp: cannot generate connector instance id: {error}");
+        return ExitCode::FAILURE;
+    }
+    let instance_id = random
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     let command = serde_json::to_string(&executable.to_string_lossy()).expect("string JSON");
-    println!("[mcp.aegis]\ncommand = [{command}]\nenabled = true\nread_only = false");
+    println!(
+        "[mcp.aegis]\ncommand = [{command}]\nenabled = true\nread_only = false\n\
+         environment = {{ AEGIS_MCP_INSTANCE_ID = \"{instance_id}\" }}"
+    );
     ExitCode::SUCCESS
 }

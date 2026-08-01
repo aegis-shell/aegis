@@ -38,14 +38,14 @@ jobs:
         run: >-
           cargo clippy --locked
           -p aegis-core -p aegis-config -p aegis-ipc -p aegis-desktop-entries
-          -p aegis-launcher -p aegis-ctl -p aegis-fuji -p aegis-mcp -p aegis-idle
+          -p aegis-launcher -p aegis-cli -p aegis-agent -p aegis-mcp -p aegis-idle
           -p aegis-protocols -p aegis-compositor -p aegis-portal
           --all-targets -- -D warnings
       - name: Doc check (flux-free crates)
         run: >-
           cargo doc --locked --no-deps
           -p aegis-core -p aegis-config -p aegis-ipc -p aegis-desktop-entries
-          -p aegis-launcher -p aegis-ctl -p aegis-fuji -p aegis-mcp -p aegis-idle
+          -p aegis-launcher -p aegis-cli -p aegis-agent -p aegis-mcp -p aegis-idle
           -p aegis-protocols -p aegis-compositor -p aegis-portal
 
   flux-free-tests:
@@ -64,7 +64,7 @@ jobs:
         run: >-
           cargo test --locked
           -p aegis-core -p aegis-config -p aegis-ipc -p aegis-desktop-entries
-          -p aegis-launcher -p aegis-ctl -p aegis-fuji -p aegis-mcp -p aegis-idle
+          -p aegis-launcher -p aegis-cli -p aegis-agent -p aegis-mcp -p aegis-idle
           -p aegis-compositor -p aegis-portal
       - name: Build aegis-protocols
         run: cargo build --locked -p aegis-protocols

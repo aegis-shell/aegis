@@ -49,7 +49,9 @@ impl ItemIface {
         // path fail instead of reading the tombstone.
         let path = format!(
             "{}/collection/{}/{}",
-            super::SERVICE_PATH, self.collection_id, self.item_id
+            super::SERVICE_PATH,
+            self.collection_id,
+            self.item_id
         );
         if let Err(error) = server.remove::<ItemIface, _>(path).await {
             log::warn!(

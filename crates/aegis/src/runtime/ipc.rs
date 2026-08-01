@@ -22,7 +22,9 @@ pub(super) struct LiveChannels {
     pub(super) app_pick_controls: std::sync::mpsc::Sender<AppPickControlRequest>,
     pub(super) secret_prompt_controls: std::sync::mpsc::Sender<SecretPromptControlRequest>,
     pub(super) confirm_pick_controls: std::sync::mpsc::Sender<ConfirmPickControlRequest>,
+    pub(super) capability_pick_controls: std::sync::mpsc::Sender<CapabilityPickControlRequest>,
     pub(super) journal_refusals: std::sync::mpsc::Sender<JournalRefusalRequest>,
+    pub(super) auth_events: std::sync::mpsc::Sender<AuthEventRequest>,
 }
 
 pub(super) struct LiveState {
@@ -48,9 +50,19 @@ pub(super) struct LiveState {
     app_pick_controls: std::sync::Mutex<std::sync::mpsc::Sender<AppPickControlRequest>>,
     secret_prompt_controls: std::sync::Mutex<std::sync::mpsc::Sender<SecretPromptControlRequest>>,
     confirm_pick_controls: std::sync::Mutex<std::sync::mpsc::Sender<ConfirmPickControlRequest>>,
+    capability_pick_controls:
+        std::sync::Mutex<std::sync::mpsc::Sender<CapabilityPickControlRequest>>,
     journal_refusals: std::sync::mpsc::Sender<JournalRefusalRequest>,
+    auth_events: std::sync::mpsc::Sender<AuthEventRequest>,
     capture_delivery_gate: std::sync::Arc<std::sync::atomic::AtomicBool>,
     scopes: std::sync::RwLock<std::collections::HashMap<String, aegis_ipc::Scope>>,
+    /// Pairing registry for capability-borrowing agents (ADR-0088).
+    agent_auth: std::sync::RwLock<PrincipalRegistry>,
+    /// Runtime-grant decisions for paired agents (ADR-0088).
+    grants: std::sync::RwLock<GrantStore>,
+    /// `[agent] lockdown`: strip privileged capabilities from connections
+    /// that neither present a built-in scope nor pair as an agent.
+    lockdown: bool,
 }
 
 impl LiveState {
@@ -60,6 +72,9 @@ impl LiveState {
         notifications: std::sync::Arc<std::sync::Mutex<aegis_core::notify::NotificationQueue>>,
         journal: std::sync::Arc<std::sync::Mutex<aegis_ipc::Journal>>,
         scopes: std::collections::HashMap<String, aegis_ipc::Scope>,
+        agent_auth: PrincipalRegistry,
+        grants: GrantStore,
+        lockdown: bool,
     ) -> LiveState {
         LiveState {
             windows: std::sync::RwLock::new(Vec::new()),
@@ -86,10 +101,37 @@ impl LiveState {
             app_pick_controls: std::sync::Mutex::new(channels.app_pick_controls),
             secret_prompt_controls: std::sync::Mutex::new(channels.secret_prompt_controls),
             confirm_pick_controls: std::sync::Mutex::new(channels.confirm_pick_controls),
+            capability_pick_controls: std::sync::Mutex::new(channels.capability_pick_controls),
             journal_refusals: channels.journal_refusals,
+            auth_events: channels.auth_events,
             capture_delivery_gate,
             scopes: std::sync::RwLock::new(scopes),
+            agent_auth: std::sync::RwLock::new(agent_auth),
+            grants: std::sync::RwLock::new(grants),
+            lockdown,
         }
+    }
+
+    /// Enqueue one positive agent-authorization lifecycle event
+    /// (ADR-0088) for the main loop to journal with `Effect::Applied`.
+    /// Best-effort, like [`aegis_ipc::Handler::audit_refusal`]: a send
+    /// fails only when the compositor is shutting down.
+    fn auth_event(
+        &self,
+        conn_id: Option<u64>,
+        principal: &str,
+        action: aegis_ipc::AgentAuthAction,
+    ) {
+        let origin = conn_id
+            .map(|conn_id| aegis_ipc::Origin::Ipc { conn_id })
+            .unwrap_or(aegis_ipc::Origin::Internal);
+        let _ = self.auth_events.send(AuthEventRequest {
+            origin,
+            mutation: aegis_ipc::JournalMutation::AgentAuth {
+                principal: principal.to_owned(),
+                action,
+            },
+        });
     }
 
     pub(super) fn set_windows(&self, windows: Vec<aegis_core::window::Window>) {
@@ -114,10 +156,6 @@ impl LiveState {
 
     pub(super) fn set_system_status(&self, snapshot: aegis_ipc::SystemStatus) {
         *self.system_status.write().unwrap() = snapshot;
-    }
-
-    pub(super) fn set_scopes(&self, scopes: std::collections::HashMap<String, aegis_ipc::Scope>) {
-        *self.scopes.write().unwrap() = scopes;
     }
 }
 
@@ -219,6 +257,305 @@ impl aegis_ipc::Handler for LiveState {
         self.scopes.read().unwrap().get(name).cloned()
     }
 
+    fn agent_lookup(&self, credential: &str) -> Option<aegis_ipc::AgentIdentity> {
+        self.agent_auth.read().unwrap().lookup(credential)
+    }
+
+    fn refresh_agent_identity(
+        &self,
+        principal: &str,
+    ) -> Result<Option<aegis_ipc::AgentIdentity>, String> {
+        self.agent_auth
+            .read()
+            .unwrap()
+            .identity_for_principal(principal)
+            .map(Some)
+            .ok_or_else(|| "agent principal was forgotten".into())
+    }
+
+    fn lockdown(&self) -> bool {
+        self.lockdown
+    }
+
+    fn pair_agent(
+        &self,
+        conn_id: u64,
+        label: Option<&str>,
+        requested: &[aegis_ipc::OpClass],
+    ) -> Result<aegis_ipc::PairedAgent, String> {
+        {
+            let auth = self.agent_auth.read().unwrap();
+            if auth.is_denied(label) {
+                return Err("agent pairing was denied earlier in this session".into());
+            }
+        }
+        let collision = label
+            .map(|label| self.agent_auth.read().unwrap().label_collision(label))
+            .unwrap_or(false);
+        let title = format!(
+            "{} wants to borrow desktop capabilities",
+            label.unwrap_or("An agent")
+        );
+        let warning = collision
+            .then(|| "A different installation already registered under this name.".to_owned());
+        let groups = capability_groups(requested)
+            .into_iter()
+            .map(|group| aegis_shell::CapabilityGroup {
+                key: group.key.to_owned(),
+                label: group.label.to_owned(),
+                gated: group.gated,
+                enabled: true,
+            })
+            .collect();
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.capability_pick_controls
+            .lock()
+            .unwrap()
+            .send(CapabilityPickControlRequest {
+                conn_id,
+                action: CapabilityPickControl::Start {
+                    params: aegis_shell::CapabilityPickParams {
+                        title,
+                        warning,
+                        groups,
+                    },
+                    reply: reply_tx,
+                },
+            })
+            .map_err(|_| "compositor is shutting down".to_owned())?;
+        // The pairing prompt parks like the picks; the timeout closes the
+        // chrome so it never lingers for a dead requester.
+        match reply_rx.recv_timeout(PICK_TIMEOUT) {
+            Ok(Ok(aegis_shell::CapabilityPickResult {
+                approved: Some(keys),
+            })) => {
+                let ops: Vec<aegis_ipc::OpClass> = keys
+                    .iter()
+                    .filter_map(|key| aegis_ipc::OpClass::from_name(key))
+                    .collect();
+                let paired = self.agent_auth.write().unwrap().issue(label, &ops)?;
+                self.auth_event(
+                    Some(conn_id),
+                    &paired.principal,
+                    aegis_ipc::AgentAuthAction::Paired,
+                );
+                Ok(paired)
+            }
+            Ok(Ok(aegis_shell::CapabilityPickResult { approved: None })) => {
+                self.agent_auth.write().unwrap().deny(label);
+                Err("pairing denied by the user".into())
+            }
+            Ok(Err(message)) => Err(message),
+            Err(_) => {
+                let _ = self.capability_pick_controls.lock().unwrap().send(
+                    CapabilityPickControlRequest {
+                        conn_id,
+                        action: CapabilityPickControl::Cancel,
+                    },
+                );
+                Err("pairing timed out".into())
+            }
+        }
+    }
+
+    fn grant_for(&self, principal: &str, op: aegis_ipc::OpClass) -> Option<bool> {
+        self.grants.read().unwrap().decision_for(principal, op)
+    }
+
+    fn request_grant(
+        &self,
+        conn_id: u64,
+        principal: &str,
+        op: aegis_ipc::OpClass,
+    ) -> Result<bool, String> {
+        let label = self
+            .agent_auth
+            .read()
+            .unwrap()
+            .principals()
+            .iter()
+            .find(|record| record.id == principal)
+            .and_then(|record| record.label.clone());
+        let title = format!(
+            "Allow {} to borrow a sensitive capability?",
+            label.as_deref().unwrap_or(principal)
+        );
+        let body = format!(
+            "{}\n\nAllow once: just this time.\nThis session: until you log out.\nAlways: \
+             remembered across sessions.\nDeny: refused for this session.",
+            op.label()
+        );
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.confirm_pick_controls
+            .lock()
+            .unwrap()
+            .send(ConfirmPickControlRequest {
+                conn_id,
+                action: ConfirmPickControl::Start {
+                    title,
+                    body,
+                    accept_label: None,
+                    style: aegis_shell::ConfirmPickStyle::Grant,
+                    reply: reply_tx,
+                },
+            })
+            .map_err(|_| "compositor is shutting down".to_owned())?;
+        // The grant prompt parks like the picks; the timeout closes the
+        // chrome so it never lingers for a dead requester.
+        match reply_rx.recv_timeout(PICK_TIMEOUT) {
+            Ok(Ok(aegis_shell::ConfirmAnswer::AllowOnce)) => {
+                self.auth_event(
+                    Some(conn_id),
+                    principal,
+                    aegis_ipc::AgentAuthAction::Granted {
+                        op,
+                        persistence: aegis_ipc::GrantPersistence::Once,
+                    },
+                );
+                Ok(true)
+            }
+            Ok(Ok(aegis_shell::ConfirmAnswer::AllowSession)) => {
+                self.grants
+                    .write()
+                    .unwrap()
+                    .record(principal, op, true, true)?;
+                self.auth_event(
+                    Some(conn_id),
+                    principal,
+                    aegis_ipc::AgentAuthAction::Granted {
+                        op,
+                        persistence: aegis_ipc::GrantPersistence::Session,
+                    },
+                );
+                Ok(true)
+            }
+            Ok(Ok(aegis_shell::ConfirmAnswer::AllowAlways)) => {
+                self.grants
+                    .write()
+                    .unwrap()
+                    .record(principal, op, true, false)?;
+                self.auth_event(
+                    Some(conn_id),
+                    principal,
+                    aegis_ipc::AgentAuthAction::Granted {
+                        op,
+                        persistence: aegis_ipc::GrantPersistence::Always,
+                    },
+                );
+                Ok(true)
+            }
+            Ok(Ok(_)) => {
+                self.grants
+                    .write()
+                    .unwrap()
+                    .record(principal, op, false, true)?;
+                self.auth_event(
+                    Some(conn_id),
+                    principal,
+                    aegis_ipc::AgentAuthAction::Granted {
+                        op,
+                        persistence: aegis_ipc::GrantPersistence::DeniedSession,
+                    },
+                );
+                Ok(false)
+            }
+            Ok(Err(message)) => Err(message),
+            Err(_) => {
+                let _ =
+                    self.confirm_pick_controls
+                        .lock()
+                        .unwrap()
+                        .send(ConfirmPickControlRequest {
+                            conn_id,
+                            action: ConfirmPickControl::Cancel,
+                        });
+                Err("grant request timed out".into())
+            }
+        }
+    }
+
+    fn authorize_realm_action_granted(
+        &self,
+        scope: &aegis_ipc::Scope,
+        action: &aegis_ipc::RealmAction,
+    ) -> Result<(), String> {
+        let snapshot = self.realms.read().unwrap();
+        authorize_realm_action_granted_against_snapshot(scope, action, &snapshot)
+    }
+
+    fn agent_principals(&self) -> Vec<aegis_ipc::AgentPrincipalInfo> {
+        self.agent_auth
+            .read()
+            .unwrap()
+            .principals()
+            .iter()
+            .map(|record| aegis_ipc::AgentPrincipalInfo {
+                principal: record.id.clone(),
+                label: record.label.clone(),
+                pregranted: record.pregranted.clone(),
+                gated: record.gated.clone(),
+                created_at: record.created_at,
+            })
+            .collect()
+    }
+
+    fn agent_grants(&self, principal: Option<&str>) -> Vec<aegis_ipc::AgentGrantInfo> {
+        self.grants.read().unwrap().list(principal)
+    }
+
+    fn rename_agent_principal(&self, principal: &str, label: Option<&str>) -> Result<(), String> {
+        self.agent_auth.write().unwrap().rename(principal, label)?;
+        self.auth_event(None, principal, aegis_ipc::AgentAuthAction::Renamed);
+        Ok(())
+    }
+
+    fn forget_agent_principal(&self, principal: &str) -> Result<(), String> {
+        self.agent_auth.write().unwrap().forget(principal)?;
+        self.grants.write().unwrap().forget_principal(principal);
+        self.auth_event(None, principal, aegis_ipc::AgentAuthAction::Forgotten);
+        Ok(())
+    }
+
+    fn set_agent_ceiling(
+        &self,
+        principal: &str,
+        pregranted: &[aegis_ipc::OpClass],
+        gated: &[aegis_ipc::OpClass],
+    ) -> Result<(), String> {
+        self.agent_auth.write().unwrap().set_ceiling(
+            principal,
+            pregranted.to_vec(),
+            gated.to_vec(),
+        )?;
+        self.auth_event(None, principal, aegis_ipc::AgentAuthAction::CeilingChanged);
+        Ok(())
+    }
+
+    fn register_agent(
+        &self,
+        label: Option<&str>,
+        pregranted: &[aegis_ipc::OpClass],
+        gated: &[aegis_ipc::OpClass],
+    ) -> Result<(String, String), String> {
+        let (principal, credential) = self.agent_auth.write().unwrap().register(
+            label,
+            pregranted.to_vec(),
+            gated.to_vec(),
+        )?;
+        self.auth_event(None, &principal, aegis_ipc::AgentAuthAction::Paired);
+        Ok((principal, credential))
+    }
+
+    fn revoke_agent_grant(&self, principal: &str, op: aegis_ipc::OpClass) -> Result<(), String> {
+        self.grants.write().unwrap().revoke(principal, op)?;
+        self.auth_event(
+            None,
+            principal,
+            aegis_ipc::AgentAuthAction::GrantRevoked { op },
+        );
+        Ok(())
+    }
+
     fn capture_output(
         &self,
         region: Option<aegis_core::Rect>,
@@ -242,6 +579,7 @@ impl aegis_ipc::Handler for LiveState {
     fn realm_action(
         &self,
         conn_id: u64,
+        subject: Option<&str>,
         action: aegis_ipc::RealmAction,
     ) -> Result<aegis_ipc::RealmActionResult, String> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
@@ -250,6 +588,7 @@ impl aegis_ipc::Handler for LiveState {
             .unwrap()
             .send(RealmControlRequest {
                 origin: aegis_ipc::Origin::Ipc { conn_id },
+                subject: subject.map(str::to_owned),
                 action,
                 reply: reply_tx,
             })
@@ -437,6 +776,7 @@ impl aegis_ipc::Handler for LiveState {
                     title,
                     body,
                     accept_label,
+                    style: aegis_shell::ConfirmPickStyle::YesNo,
                     reply: reply_tx,
                 },
             })
@@ -444,18 +784,23 @@ impl aegis_ipc::Handler for LiveState {
         // The reply parks until the user confirms or cancels, exactly like
         // the other picks; the timeout bounds an abandoned dialog and
         // cancels the chrome so the panel never lingers for a dead
-        // requester.
+        // requester. The yes/no style only ever answers Confirmed or
+        // Cancelled; map defensively anyway.
         match reply_rx.recv_timeout(PICK_TIMEOUT) {
-            Ok(result) => result,
+            Ok(Ok(aegis_shell::ConfirmAnswer::Confirmed)) => {
+                Ok(aegis_ipc::ConfirmPickResult::Confirmed)
+            }
+            Ok(Ok(_)) => Ok(aegis_ipc::ConfirmPickResult::Cancelled),
+            Ok(Err(message)) => Err(message),
             Err(_) => {
-                let _ = self
-                    .confirm_pick_controls
-                    .lock()
-                    .unwrap()
-                    .send(ConfirmPickControlRequest {
-                        conn_id,
-                        action: ConfirmPickControl::Cancel,
-                    });
+                let _ =
+                    self.confirm_pick_controls
+                        .lock()
+                        .unwrap()
+                        .send(ConfirmPickControlRequest {
+                            conn_id,
+                            action: ConfirmPickControl::Cancel,
+                        });
                 Err("confirmation timed out".to_owned())
             }
         }

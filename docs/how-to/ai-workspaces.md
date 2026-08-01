@@ -16,8 +16,8 @@ portal.
 The command-line equivalent is:
 
 ```bash
-aegis-ctl realm create "Research"
-aegis-ctl realm list
+aegis-cli realm create "Research"
+aegis-cli realm list
 ```
 
 ## Transfer a Running Window
@@ -32,13 +32,18 @@ a read-only mirror by default, so the window stays visible but does not
 receive physical clicks or keystrokes. The mirror is also an input barrier:
 clicks do not pass through it to a window underneath.
 
+Identify the mirror by its subdued guard and Realm status label. Hover over
+it to see the `not-allowed` cursor. The guard remains visible between Agent
+operations and while the Realm is paused; the Agent's short-lived movement,
+click, scroll, or keyboard feedback appears separately above it.
+
 Drag the mirror to **Physical desktop** in Overview to return control.
 
 Use the CLI when the graphical shell is unavailable:
 
 ```bash
-aegis-ctl realm transfer 42 2
-aegis-ctl realm transfer 42 1
+aegis-cli realm transfer 42 2
+aegis-cli realm transfer 42 1
 ```
 
 Add `--no-mirror` to remove the source presentation after transfer.
@@ -59,8 +64,15 @@ Launch a desktop entry directly inside a Realm when the application process
 also needs isolation:
 
 ```bash
-aegis-ctl realm launch 2 org.mozilla.firefox.desktop
+aegis-cli realm launch 2 org.mozilla.firefox.desktop
 ```
+
+The new window appears on the physical desktop as the same guarded read-only
+mirror used for transferred windows. The Agent Realm's independent seat owns
+its pointer, keyboard, focus, modifiers, and grabs from the first toplevel.
+Physical clicks, typing, window gestures, and Dock window actions cannot
+operate it. Return control by opening Overview and dragging the mirror to
+**Physical desktop**.
 
 Realm launches deny network and host-file access by default. They expose only
 the sandbox's mount-scoped Wayland portal and GPU render nodes, and run
@@ -97,15 +109,15 @@ Capture the directed virtual output without exposing physical-desktop chrome
 or another Realm:
 
 ```bash
-aegis-ctl realm capture 2
-aegis-ctl realm capture 2 /tmp/research.png
+aegis-cli realm capture 2
+aegis-cli realm capture 2 /tmp/research.png
 ```
 
 Realm captures are refused while the session is locked, the seat is inactive,
 or the Realm is paused or revoked. In-flight captures are invalidated when
 the security state changes.
 
-Long-running observers can use `aegis-ctl subscribe`. A `RealmDamaged` event
+Long-running observers can use `aegis-cli subscribe`. A `RealmDamaged` event
 identifies the changed Realm and virtual-output damage; request
 `realm capture` only after that event instead of polling continuously.
 
@@ -114,8 +126,8 @@ identifies the changed Realm and virtual-output damage; request
 Use **Pause** in Agent Workspaces, or run:
 
 ```bash
-aegis-ctl realm pause 2
-aegis-ctl realm resume 2
+aegis-cli realm pause 2
+aegis-cli realm resume 2
 ```
 
 Pausing disables the Realm seat and freezes every compositor-managed sandbox
@@ -125,7 +137,7 @@ suspension automatically.
 Use **Revoke**, confirm the destructive action, or run:
 
 ```bash
-aegis-ctl realm revoke 2
+aegis-cli realm revoke 2
 ```
 
 Revocation is permanent. It transfers controlled interaction groups back to

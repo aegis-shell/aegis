@@ -12,7 +12,7 @@
 //!
 //! See [ADR-0033](../../docs/adr/0033-mutation-journal.md).
 
-use crate::schema::{Command, RealmAction, SettingsAction};
+use crate::schema::{Command, OpClass, RealmAction, SettingsAction};
 
 /// Who caused a mutation. The agent filters its own echoes and models user
 /// intent from the origin.
@@ -66,6 +66,49 @@ pub enum JournalMutation {
         before_revision: u64,
         after_revision: u64,
     },
+    /// Agent authorization lifecycle (ADR-0088): pairing, runtime grants,
+    /// and principal management.
+    AgentAuth {
+        principal: String,
+        action: AgentAuthAction,
+    },
+}
+
+/// One agent-authorization lifecycle event (ADR-0088), carried by
+/// [`JournalMutation::AgentAuth`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum AgentAuthAction {
+    /// A principal was issued (interactive pairing or pre-provisioning).
+    Paired,
+    /// A runtime grant was answered interactively; `persistence` records
+    /// how long the decision lives.
+    Granted {
+        op: OpClass,
+        persistence: GrantPersistence,
+    },
+    /// A recorded runtime grant was revoked by the user.
+    GrantRevoked { op: OpClass },
+    /// A principal was forgotten; its credential and grants died with it.
+    Forgotten,
+    /// A principal's display label was changed.
+    Renamed,
+    /// A principal's approved capability ceiling was replaced.
+    CeilingChanged,
+}
+
+/// How long an interactively answered runtime grant lives (ADR-0088).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum GrantPersistence {
+    /// Allowed for this one operation only; nothing was recorded.
+    Once,
+    /// Allowed until the compositor exits; recorded in memory only.
+    Session,
+    /// Allowed durably; recorded on disk.
+    Always,
+    /// Refused until the compositor exits; recorded in memory only.
+    DeniedSession,
 }
 
 /// One record in the mutation journal. Entries are append-only and ordered
@@ -342,5 +385,27 @@ mod tests {
             let back: Effect = serde_json::from_str(&json).unwrap();
             assert_eq!(&back, e);
         }
+    }
+
+    #[test]
+    fn agent_auth_mutation_round_trips() {
+        let mutation = JournalMutation::AgentAuth {
+            principal: "prin_ab12".into(),
+            action: AgentAuthAction::Granted {
+                op: OpClass::Close,
+                persistence: GrantPersistence::Always,
+            },
+        };
+        let mut journal = Journal::new(4);
+        let entry = journal.append(
+            3,
+            Origin::Ipc { conn_id: 5 },
+            mutation.clone(),
+            Effect::Applied,
+        );
+        assert_eq!(entry.mutation, mutation);
+        let encoded = serde_json::to_string(&entry).unwrap();
+        let decoded: JournalEntry = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, entry);
     }
 }

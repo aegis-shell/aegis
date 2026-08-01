@@ -256,6 +256,10 @@ pub(super) struct OutputCandidate {
     pub(super) connector: connector::Handle,
     pub(super) name: String,
     pub(super) mode: Mode,
+    pub(super) physical_size_mm: Option<(u32, u32)>,
+    pub(super) ppi: Option<f32>,
+    pub(super) kind: OutputKind,
+    pub(super) scale: Scale,
     pub(super) choices: Vec<OutputChoice>,
     pub(super) available_modes: Vec<OutputMode>,
 }
@@ -325,6 +329,27 @@ pub(super) fn select_outputs(
                 }
             };
             let mode = connector.modes()[picked];
+            let (mode_width, mode_height) = mode.size();
+            let selected_mode = OutputMode {
+                width: mode_width as i32,
+                height: mode_height as i32,
+                refresh_mhz: mode.vrefresh().saturating_mul(1_000),
+            };
+            let physical_size_mm = connector.size();
+            let kind = if matches!(
+                connector.interface(),
+                connector::Interface::EmbeddedDisplayPort
+                    | connector::Interface::LVDS
+                    | connector::Interface::DSI
+            ) {
+                OutputKind::Internal
+            } else {
+                OutputKind::External
+            };
+            let ppi = physical_size_mm.and_then(|size| physical_ppi(selected_mode, size));
+            let scale = physical_size_mm
+                .and_then(|size| automatic_scale(selected_mode, size, kind))
+                .unwrap_or(Scale::IDENTITY);
             let mut crtcs = Vec::new();
             if let Some(current) = connector
                 .current_encoder()
@@ -367,6 +392,10 @@ pub(super) fn select_outputs(
                 connector: connector.handle(),
                 name,
                 mode,
+                physical_size_mm,
+                ppi,
+                kind,
+                scale,
                 choices,
                 available_modes: advertised_modes(connector),
             });
@@ -642,6 +671,10 @@ pub(super) fn build_output(
         mode_blob_id,
         x,
         y: 0,
+        physical_size_mm: candidate.physical_size_mm,
+        ppi: candidate.ppi,
+        kind: candidate.kind,
+        scale: candidate.scale,
         props,
         cursor: None,
         full_damage_blob,
@@ -670,7 +703,7 @@ fn build_cursor_plane(card: &Card, handle: plane::Handle) -> Result<CursorPlane,
 
 /// The connector's advertised modes, deduplicated by (width, height,
 /// refresh) and sorted by pixel count then refresh rate, highest first — the
-/// order `aegis-ctl outputs` presents them in.
+/// order `aegis-cli outputs` presents them in.
 pub(super) fn advertised_modes(info: &connector::Info) -> Vec<OutputMode> {
     let mut modes: Vec<OutputMode> = info
         .modes()
@@ -745,6 +778,7 @@ pub(super) fn display_signature(displays: &DisplaySet) -> DisplaySignature {
                     width as u32,
                     height as u32,
                     output.mode.vrefresh(),
+                    output.scale.as_f32().to_bits(),
                     output.x,
                     output.y,
                 )

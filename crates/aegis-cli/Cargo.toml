@@ -1,5 +1,5 @@
 [package]
-name = "aegis-ctl"
+name = "aegis-cli"
 description = "Command-line driver for the aegis IPC (the reference external tool)"
 readme = "README.md"
 version.workspace = true
@@ -8,11 +8,11 @@ license.workspace = true
 rust-version.workspace = true
 
 [lib]
-name = "aegis_ctl"
+name = "aegis_cli"
 path = "src/lib.rs"
 
 [[bin]]
-name = "aegis-ctl"
+name = "aegis-cli"
 path = "src/main.rs"
 
 [dependencies]

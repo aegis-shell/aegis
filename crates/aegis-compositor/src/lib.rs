@@ -1457,8 +1457,21 @@ impl State {
                 .get(&client)
                 .copied()
                 .unwrap_or(HUMAN_REALM);
-            self.authority
-                .create_interaction_group(client, &[window], initial_realm)?;
+            let group =
+                self.authority
+                    .create_interaction_group(client, &[window], initial_realm)?;
+            // A client launched through an Agent Realm owns its independent
+            // seat from the first toplevel onward, but the physical desktop
+            // still presents a read-only mirror. This is presentation policy,
+            // not shared input authority: the human Realm is an observer and
+            // therefore can never deliver events to this interaction group.
+            if self
+                .authority
+                .realm(initial_realm)
+                .is_some_and(|realm| realm.kind == aegis_core::realm::RealmKind::Agent)
+            {
+                self.authority.set_observer(group, HUMAN_REALM, true)?;
+            }
         }
         self.queue_realm_layouts_for_window(window);
         Ok(())

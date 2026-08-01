@@ -1093,6 +1093,22 @@ fn realm_window_registration_schedules_layout_and_damage_observation() {
         .state
         .register_window(client, window)
         .expect("register Realm window");
+    let group = server
+        .state
+        .authority
+        .interaction_group_for_window(window)
+        .expect("registered interaction group");
+    assert_eq!(group.control_realm, bundle.realm);
+    assert!(
+        group.observer_realms.contains(&HUMAN_REALM),
+        "Agent-launched windows are visible physical mirrors without sharing input authority"
+    );
+    assert!(
+        !server
+            .state
+            .authority
+            .seat_controls_window(HUMAN_SEAT, window)
+    );
     assert!(server.state.pending_realm_layouts.contains(&bundle.realm));
 
     server.dispatch();
@@ -1282,6 +1298,11 @@ fn physical_observer_mirror_blocks_click_through_without_taking_focus() {
 fn window_snapshot_drops_an_unmapped_toplevel() {
     let mut state = State::new(std::ptr::null_mut());
     let window = aegis_core::window::WindowId(77);
+    let client = state.authority.register_client(None);
+    state
+        .authority
+        .create_interaction_group(client, &[window], HUMAN_REALM)
+        .expect("register physical window authority");
     let workspace = state
         .workspaces
         .current_workspace(state.output)
@@ -1313,6 +1334,52 @@ fn window_snapshot_drops_an_unmapped_toplevel() {
     surface.mapped = false;
     assert!(server.windows().is_empty());
     assert_ne!(server.windows_signature(), mapped_signature);
+}
+
+#[test]
+fn physical_window_snapshot_contains_only_controlled_or_observed_windows() {
+    let mut state = State::new(std::ptr::null_mut());
+    let agent = state
+        .authority
+        .create_agent_realm("agent", SeatCapabilities::POINTER_KEYBOARD);
+    let window = aegis_core::window::WindowId(78);
+    let client = state.authority.register_client(Some("agent".into()));
+    let group = state
+        .authority
+        .create_interaction_group(client, &[window], agent.realm)
+        .expect("register Agent window authority");
+    let workspace = state
+        .workspaces
+        .current_workspace(state.output)
+        .expect("bootstrap workspace");
+    state.workspaces.place_toplevel(workspace, window);
+
+    let mut surface = Box::new(SurfaceRec::new(0x300usize as *mut ffi::wl_resource));
+    surface.mapped = true;
+    surface.xdg_toplevel = 0x400usize as *mut ffi::wl_resource;
+    surface.window.id = window;
+    surface.window.size = aegis_core::Size { w: 100, h: 100 };
+    state.surfaces = vec![surface.as_mut()];
+
+    let mut server = std::mem::ManuallyDrop::new(Server {
+        state: Box::new(state),
+        socket: String::new(),
+        realm_portals: Vec::new(),
+        epoch: std::time::Instant::now(),
+    });
+
+    assert!(
+        server.windows().is_empty(),
+        "an Agent-only window must not leak into physical chrome"
+    );
+    server
+        .state
+        .authority
+        .set_observer(group, HUMAN_REALM, true)
+        .expect("present physical mirror");
+    let windows = server.windows();
+    assert_eq!(windows.len(), 1);
+    assert!(windows[0].read_only);
 }
 
 #[test]

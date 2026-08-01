@@ -7,6 +7,7 @@ fn minimal_valid_config_loads() {
     let cfg = Config::parse("schema_version = 1\n").unwrap();
     assert_eq!(cfg.schema_version, 1);
     assert!(cfg.keybinds.is_empty());
+    assert!(cfg.agent.lockdown, "agent IPC must fail closed by default");
 }
 
 #[test]

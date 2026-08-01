@@ -34,13 +34,16 @@ aegis is a Wayland compositor for Linux, written in Rust on
   [How to Use the Dock, Launcher, and Prism](how-to/dock-and-launcher.md).
 - Managing a borderless window: read
   [How to Manage Borderless Windows](how-to/window-management.md).
+- Installing the lock client and validating PAM safely: read
+  [How to Install and Verify the Lock Screen](how-to/lock-screen.md).
 - Isolating agent input and applications: read
   [How to Use Agent Workspaces](how-to/ai-workspaces.md).
-- Connecting the fuji agent to scoped desktop and Realm tools: read
-  [Connect fuji to Aegis](how-to/fuji.md).
+- Connecting the agent CLI to scoped desktop and Realm tools: read
+  [Connect aegis-agent to Aegis](how-to/agent.md).
 - Booting from a TTY and smoke-testing real hardware: read
   [How to Run aegis on Bare Metal (DRM/KMS)](how-to/bare-metal-drm.md).
-- Enabling portal-aware and Flatpak apps (settings, screenshots): read
+- Enabling portal-aware and Flatpak apps through the independently installed
+  backend: read
   [How to Install and Verify the Portal Backend](how-to/portals.md).
 - Setting up a build: read [Setup](dev/setup.md).
 - Iterating on compositor code inside an existing Wayland session: read

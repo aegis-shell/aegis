@@ -1,6 +1,6 @@
 [package]
-name = "aegis-fuji"
-description = "fuji (宓姬) — the Aegis agent: a self-contained agent runtime that drives the desktop through the aegis-mcp bridge"
+name = "aegis-agent"
+description = "Aegis agent runtime: self-contained agent driving the desktop through aegis-mcp (Persona: fuji / 宓姬)"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
@@ -8,12 +8,13 @@ license.workspace = true
 rust-version.workspace = true
 
 [lib]
-name = "aegis_fuji"
+name = "aegis_agent"
 path = "src/lib.rs"
 
 [[bin]]
-name = "fuji"
-path = "src/bin/fuji.rs"
+name = "aegis-agent"
+path = "src/bin/aegis-agent.rs"
+
 
 [dependencies]
 # Agent side: providers, tools, MCP client, sessions. Never any aegis-* crate.

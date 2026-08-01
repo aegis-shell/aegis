@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::BridgeConfig;
 
-const STATE_SCHEMA: u32 = 1;
+const STATE_SCHEMA: u32 = 2;
 
 /// One bridge-owned Realm and its latest model revision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,15 +24,20 @@ pub(crate) struct ManagedRealm {
 /// Process-local lifecycle manager with crash-recovery metadata.
 pub(crate) struct RealmSession {
     label: String,
+    subject: String,
     store: StateStore,
     managed: Option<RealmId>,
 }
 
 impl RealmSession {
-    pub fn acquire(config: &BridgeConfig) -> Result<Self, RealmSessionError> {
+    pub fn acquire(config: &BridgeConfig, subject: &str) -> Result<Self, RealmSessionError> {
         Ok(Self {
             label: config.realm_label.clone(),
-            store: StateStore::acquire(&config.state_dir(), &config.scope)?,
+            subject: subject.to_owned(),
+            store: StateStore::acquire(
+                &config.state_dir(),
+                &format!("{}:{subject}", config.instance_id),
+            )?,
             managed: None,
         })
     }
@@ -45,7 +50,7 @@ impl RealmSession {
         let snapshot = client.realms()?;
 
         if let Some(id) = self.managed
-            && realm_is_managed(&snapshot, id, &self.label)
+            && realm_is_managed(&snapshot, id, &self.label, &self.subject)
         {
             return Ok((
                 snapshot.clone(),
@@ -59,7 +64,8 @@ impl RealmSession {
 
         if let Some(record) = self.store.read()?
             && record.label == self.label
-            && realm_is_managed(&snapshot, RealmId(record.realm), &self.label)
+            && record.subject == self.subject
+            && realm_is_managed(&snapshot, RealmId(record.realm), &self.label, &self.subject)
         {
             let id = RealmId(record.realm);
             self.managed = Some(id);
@@ -79,6 +85,12 @@ impl RealmSession {
                 realm.kind == RealmKind::Agent
                     && realm.label == self.label
                     && realm.state != RealmState::Revoked
+                    && snapshot
+                        .principals
+                        .iter()
+                        .find(|principal| principal.id == realm.controller)
+                        .and_then(|principal| principal.subject.as_deref())
+                        == Some(self.subject.as_str())
             })
             .map(|realm| realm.id)
             .collect::<Vec<_>>();
@@ -89,7 +101,7 @@ impl RealmSession {
             }
             [id] => {
                 self.managed = Some(*id);
-                self.store.write(*id, &self.label)?;
+                self.store.write(*id, &self.label, &self.subject)?;
                 Ok((
                     snapshot.clone(),
                     Some(ManagedRealm {
@@ -120,7 +132,7 @@ impl RealmSession {
             return Err(RealmSessionError::UnexpectedResponse);
         };
         self.managed = Some(bundle.realm);
-        self.store.write(bundle.realm, &self.label)?;
+        self.store.write(bundle.realm, &self.label, &self.subject)?;
         Ok(ManagedRealm {
             id: bundle.realm,
             revision: bundle.revision,
@@ -154,12 +166,18 @@ impl RealmSession {
     }
 }
 
-fn realm_is_managed(snapshot: &RealmSnapshot, id: RealmId, label: &str) -> bool {
+fn realm_is_managed(snapshot: &RealmSnapshot, id: RealmId, label: &str, subject: &str) -> bool {
     snapshot.realms.iter().any(|realm| {
         realm.id == id
             && realm.kind == RealmKind::Agent
             && realm.label == label
             && realm.state != RealmState::Revoked
+            && snapshot
+                .principals
+                .iter()
+                .find(|principal| principal.id == realm.controller)
+                .and_then(|principal| principal.subject.as_deref())
+                == Some(subject)
     })
 }
 
@@ -169,12 +187,14 @@ struct RecoveryRecord {
     schema: u32,
     realm: u64,
     label: String,
+    #[serde(default)]
+    subject: String,
 }
 
 struct StateStore {
     /// Holding this descriptor holds the non-blocking advisory lock for the
-    /// bridge lifetime. It also prevents two bridge processes sharing a scope
-    /// and injecting input through the same Realm concurrently.
+    /// bridge lifetime. It also prevents two processes sharing a connector
+    /// instance and authenticated subject from driving the same Realm.
     _lock: File,
     state_path: PathBuf,
     temp_path: PathBuf,
@@ -231,17 +251,24 @@ impl StateStore {
             Err(error) => return Err(error.into()),
         };
         let record: RecoveryRecord = serde_json::from_slice(&bytes)?;
-        if record.schema != STATE_SCHEMA || record.realm == 0 {
+        // Schema 1 keyed recovery only by a cosmetic label. It cannot prove
+        // ownership and is deliberately ignored; the live snapshot may still
+        // recover the Realm by its authenticated subject binding.
+        if record.schema == 1 {
+            return Ok(None);
+        }
+        if record.schema != STATE_SCHEMA || record.realm == 0 || record.subject.is_empty() {
             return Err(RealmSessionError::InvalidState);
         }
         Ok(Some(record))
     }
 
-    fn write(&self, realm: RealmId, label: &str) -> Result<(), RealmSessionError> {
+    fn write(&self, realm: RealmId, label: &str, subject: &str) -> Result<(), RealmSessionError> {
         let bytes = serde_json::to_vec(&RecoveryRecord {
             schema: STATE_SCHEMA,
             realm: realm.0,
             label: label.to_string(),
+            subject: subject.to_string(),
         })?;
         match fs::remove_file(&self.temp_path) {
             Ok(()) => {}
@@ -256,12 +283,18 @@ impl StateStore {
         file.write_all(&bytes)?;
         file.sync_all()?;
         fs::rename(&self.temp_path, &self.state_path)?;
+        if let Some(parent) = self.state_path.parent() {
+            File::open(parent)?.sync_all()?;
+        }
         Ok(())
     }
 
     fn clear(&self) -> Result<(), RealmSessionError> {
         remove_if_exists(&self.state_path)?;
         remove_if_exists(&self.capture_path)?;
+        if let Some(parent) = self.state_path.parent() {
+            File::open(parent)?.sync_all()?;
+        }
         Ok(())
     }
 
@@ -275,6 +308,9 @@ impl StateStore {
         file.write_all(png)?;
         file.sync_all()?;
         fs::rename(&self.capture_temp_path, &self.capture_path)?;
+        if let Some(parent) = self.capture_path.parent() {
+            File::open(parent)?.sync_all()?;
+        }
         Ok(self.capture_path.clone())
     }
 }
@@ -287,7 +323,7 @@ fn remove_if_exists(path: &Path) -> Result<(), io::Error> {
     }
 }
 
-fn scope_key(scope: &str) -> String {
+pub(crate) fn scope_key(scope: &str) -> String {
     let readable = scope
         .chars()
         .take(48)

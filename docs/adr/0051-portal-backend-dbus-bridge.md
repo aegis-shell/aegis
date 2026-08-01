@@ -55,7 +55,7 @@ The backend serves at `/org/freedesktop/portal/desktop` under
 
 The IPC grant uses a **built-in owner-only named scope** `aegis-portal`
 (`aegis_ipc::LOCAL_PORTAL_SCOPE`) resolved by the compositor to exactly one
-operation, `CaptureOutput` — mirroring the `aegis-ctl-realm-admin`
+operation, `CaptureOutput` — mirroring the `aegis-cli-realm-admin`
 precedent. The user configures nothing; the socket's owner-only `0600`
 boundary stays the real perimeter, and the fail-closed rule (explicit op,
 never `None`-means-all) is preserved.
@@ -105,7 +105,7 @@ The interactive halves (screenshot dialog, source selection) remain open.
 - `crates/aegis-portal` is flux-free and joins the CI clippy/doc/test
   allowlists; zbus stays confined to bridge-style crates (statusbar, portal).
 - `aegis-ipc` gains `LOCAL_PORTAL_SCOPE`; the compositor registers the built-in
-  scope alongside `aegis-ctl-realm-admin`, so every `CaptureOutput` from
+  scope alongside `aegis-cli-realm-admin`, so every `CaptureOutput` from
   the portal is journaled and revocable by the same machinery as any scoped
   client.
 - `aegis-config` gains `[appearance] color_scheme`, documented in

@@ -59,10 +59,11 @@ backend, renderer, and shell behind clear seams so the
 | | `aegis-idle` | Ordered inactivity policy, lock-before-sleep coordination, and display-power requests |
 | **Convenience channels** | `aegis-desktop-entries` | freedesktop.org desktop-entry enumeration and icon-theme lookup |
 | | `aegis-launcher` | Ordinary app detachment and fail-closed Realm namespace/cgroup launch |
-| | `aegis-ipc` | Versioned scoped IPC, sealed capture transport, and introspection over a Unix socket |
-| | `aegis-ctl` | Command-line driver for the aegis IPC (the reference external tool) |
-| **AI integration** | `aegis-mcp` | The platform's MCP bridge: scoped desktop tools and one bridge-managed Agent Realm for any agent (ADR-0087) |
-| | `aegis-fuji` | fuji, the in-tree agent product: providers, agent loop, tools, MCP client, sessions, skills, permissions |
+| | `aegis-ipc` | Native capability broker contract: versioned identity, scopes, leases, Realm authority, sealed capture transport, and introspection over a Unix socket |
+| | `aegis-cli` | Command-line driver for the aegis IPC (the reference external tool) |
+| **AI integration** | `aegis-mcp` | Stateless MCP `2026-07-28` adapter over the native broker, with one subject-bound Agent Realm per connector instance (ADR-0090) |
+| | `aegis-agent` | Aegis agent runtime: providers, agent loop, tools, MCP client, sessions, skills, permissions (Persona: fuji) |
+
 | **Binary** | `aegis` | The binary: wires the parts together and runs the event loop |
 
 flux and lens are consumed through separately versioned Rust binding
@@ -90,7 +91,7 @@ user sees or can do" tasks:
   [ADR-0069](../adr/0069-documentation-owned-installation-and-throwaway-development-staging.md),
   [ADR-0045](../adr/0045-statusbar-crate-and-sni-tray.md)).
 - **"Add an external control path"** (CLI or scripts) → `aegis-ipc` +
-  `aegis-ctl`; agents consume that same IPC through the `aegis-mcp` bridge
+  `aegis-cli`; agents consume that same IPC through the `aegis-mcp` bridge
   without entering the compositor process
   ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md),
   [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md),
@@ -253,19 +254,34 @@ live window between Realms changes authority and scene selection; it does not
 recreate or reparent the `wl_surface`.
 
 The human desktop is Realm `1`. An agent Realm has an independent seat and
-directed virtual output. A physical read-only mirror is rendered but excluded
-from hit-testing and all window-control command paths. Clients without proven
-native multi-seat behavior move as a complete interaction group, so a normal
-single-instance application needs no app-side changes.
+directed virtual output. A window launched directly in an Agent Realm is
+presented to the human Realm as a read-only observer mirror by default. A
+transferred window keeps the same physical mirror unless the transfer
+explicitly removes it. Visibility does not grant control: the human seat
+remains excluded from client input and every window-control command path.
+
+The physical mirror carries a compositor-owned controlled-window guard. Its
+subdued presentation, authority label, and `not-allowed` pointer communicate
+that the window is visible for supervision rather than available for use.
+The server-side Realm model remains the authority boundary; the guard is a
+trusted explanation of that state and an additional physical pointer barrier.
+Successful Agent operations use a separate ephemeral marker above the guard,
+so persistent ownership and recent activity remain distinct signals.
+
+Clients without proven native multi-seat behavior move as a complete
+interaction group, so a normal single-instance application needs no app-side
+changes. Removing the human observer hides the complete group from the
+physical scene and physical window snapshot rather than leaving inert chrome.
 
 Applications started inside a Realm additionally receive a mount-scoped
 Wayland portal and namespace/cgroup sandbox. That process boundary is
 separate from transferring an already-running surface: compositor authority
 can move immediately, while Linux namespaces cannot be applied
 retroactively. See
-[ADR-0040](../adr/0040-realms-seats-and-transferable-interaction-authority.md)
-and
-[ADR-0042](../adr/0042-mount-scoped-realm-portals-and-cgroup-sandboxes.md).
+[ADR-0040](../adr/0040-realms-seats-and-transferable-interaction-authority.md),
+[ADR-0042](../adr/0042-mount-scoped-realm-portals-and-cgroup-sandboxes.md),
+[ADR-0048](../adr/0048-compositor-owned-agent-operation-feedback.md), and
+[ADR-0091](../adr/0091-agent-controlled-window-physical-mirrors-and-guard.md).
 
 ## Dependency Gaps
 

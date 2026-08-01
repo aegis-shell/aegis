@@ -1,22 +1,21 @@
-# fuji Agent Reference
+# Aegis Agent Reference
 
-`fuji` is fuji's agent command line: a streaming chat client with built-in
+`aegis-agent` is the Aegis agent command line: a streaming chat client with built-in
 file, shell, and image tools, stdio MCP connectivity, sessions, skills, and
-a per-tool permission policy. It reaches Aegis exclusively through
-`aegis-mcp`; see the [aegis-mcp Bridge Reference](aegis-mcp.md) for the
-desktop tool contract.
+a per-tool permission policy. The internal agent persona identity is fuji (宓姬).
+It reaches Aegis exclusively through `aegis-mcp`; see the [aegis-mcp Bridge Reference](aegis-mcp.md) for the desktop tool contract.
 
 ## Commands
 
 ```text
-fuji [chat] [--model <name>] [--max-turns <n>] [--yes]
-fuji run <prompt...> [--model <name>] [--max-turns <n>] [--yes]
-fuji resume <id|latest> [prompt...] [--model <name>] [--max-turns <n>] [--yes]
-fuji print-config
-fuji check
+aegis-agent [chat] [--model <name>] [--max-turns <n>] [--yes]
+aegis-agent run <prompt...> [--model <name>] [--max-turns <n>] [--yes]
+aegis-agent resume <id|latest> [prompt...] [--model <name>] [--max-turns <n>] [--yes]
+aegis-agent print-config
+aegis-agent check
 ```
 
-With no subcommand, `fuji` starts an interactive chat REPL on a fresh
+With no subcommand, `aegis-agent` starts an interactive chat REPL on a fresh
 session. `run` executes one prompt and prints the final answer; assistant
 text streams to stdout while tool activity and diagnostics go to stderr.
 `resume` loads a stored session and either runs the given prompt or enters
@@ -44,8 +43,8 @@ non-zero when any of them fails.
 
 ## Configuration
 
-The configuration file is `$XDG_CONFIG_HOME/fuji/config.toml` (override with
-`FUJI_CONFIG`). Every section is optional; a missing file is valid and uses
+The configuration file is `$XDG_CONFIG_HOME/aegis/agent.toml` (override with
+`AEGIS_AGENT_CONFIG` or fallback `FUJI_CONFIG`). Every section is optional; a missing file is valid and uses
 the documented defaults.
 
 ### `[provider]`
@@ -66,7 +65,7 @@ DeepSeek, Qwen, and local endpoints that speak Chat Completions.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `max_turns` | `32` | Provider round-trips before the loop stops. |
-| `system_prompt_append` | unset | Text appended to fuji's system prompt. |
+| `system_prompt_append` | unset | Text appended to the agent's system prompt. |
 
 ### `[permissions]`
 
@@ -115,12 +114,12 @@ flat `name:` and `description:` scalars only.
 | `read_image` | yes | PNG/JPEG/GIF/WebP up to 20 MiB as model-visible image content. |
 | `skill_read` | yes | Full instructions of one discovered skill by name. |
 
-Paths are interpreted against fuji's working directory.
+Paths are interpreted against `aegis-agent`'s working directory.
 
 ## Sessions
 
 Each conversation is appended as JSONL to
-`$XDG_DATA_HOME/fuji/sessions/<id>.jsonl`, where the id is
-`YYYYMMDD-HHMMSS-<pid>` in UTC. `fuji run` prints its session id to stderr;
-`fuji resume latest` continues the newest one. Sessions persist full message
+`$XDG_DATA_HOME/aegis/agent/sessions/<id>.jsonl`, where the id is
+`YYYYMMDD-HHMMSS-<pid>` in UTC. `aegis-agent run` prints its session id to stderr;
+`aegis-agent resume latest` continues the newest one. Sessions persist full message
 history, including tool results.

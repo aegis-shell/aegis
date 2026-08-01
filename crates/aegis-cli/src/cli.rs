@@ -13,7 +13,7 @@ use aegis_core::Rect;
 /// produces structured output.
 #[derive(Debug, clap::Parser)]
 #[command(
-    name = "aegis-ctl",
+    name = "aegis-cli",
     version,
     about = "Query and control a running aegis compositor through its IPC socket"
 )]
@@ -44,6 +44,10 @@ pub enum Command {
     /// Manage isolated AI workspaces (Realm lifecycle and capture).
     #[command(subcommand)]
     Realm(RealmCmd),
+    /// Manage agent principals, ceilings, and recorded runtime grants
+    /// (ADR-0088).
+    #[command(subcommand)]
+    Permissions(PermissionsCmd),
     /// Inspect and control immediate live-system state.
     #[command(subcommand)]
     System(SystemCmd),
@@ -102,7 +106,7 @@ pub enum Command {
     Quit,
 }
 
-/// Subcommands grouped under `aegis-ctl system`.
+/// Subcommands grouped under `aegis-cli system`.
 #[derive(Debug, clap::Subcommand)]
 pub enum SystemCmd {
     /// Show the normalized live-system snapshot.
@@ -135,7 +139,7 @@ pub enum SystemCmd {
     Tiling { state: OnOff },
 }
 
-/// Subcommands grouped under `aegis-ctl realm`. They all share the
+/// Subcommands grouped under `aegis-cli realm`. They all share the
 /// owner-only admin scope and lease negotiation in the dispatcher.
 #[derive(Debug, clap::Subcommand)]
 pub enum RealmCmd {
@@ -177,6 +181,53 @@ pub enum RealmCmd {
         #[arg(default_value = "1")]
         fallback: u64,
     },
+}
+
+/// Subcommands grouped under `aegis-cli permissions`: agent principals,
+/// ceilings, and recorded runtime grants (ADR-0088).
+#[derive(Debug, clap::Subcommand)]
+pub enum PermissionsCmd {
+    /// List paired principals, their ceilings, and their recorded grants.
+    List,
+    /// Drop one recorded runtime grant; the next use asks the user again.
+    Revoke {
+        principal: String,
+        #[arg(value_parser = op_class)]
+        op: aegis_ipc::OpClass,
+    },
+    /// Forget a principal: its credential dies and its grants are dropped.
+    Forget { principal: String },
+    /// Rename a principal's display label (omit the label to clear it).
+    Rename {
+        principal: String,
+        label: Option<String>,
+    },
+    /// Replace a principal's approved ceiling.
+    SetCeiling {
+        principal: String,
+        /// Operations usable immediately (comma-separated names).
+        #[arg(long, value_delimiter = ',', value_parser = op_class)]
+        pregrant: Vec<aegis_ipc::OpClass>,
+        /// Operations gated by the interactive runtime grant.
+        #[arg(long, value_delimiter = ',', value_parser = op_class)]
+        gated: Vec<aegis_ipc::OpClass>,
+    },
+    /// Register a principal ahead of time (administrator pre-provisioning)
+    /// and print the credential to plant in the agent's identity store.
+    Register {
+        label: Option<String>,
+        /// Operations usable immediately (comma-separated names).
+        #[arg(long, value_delimiter = ',', value_parser = op_class)]
+        pregrant: Vec<aegis_ipc::OpClass>,
+        /// Operations gated by the interactive runtime grant.
+        #[arg(long, value_delimiter = ',', value_parser = op_class)]
+        gated: Vec<aegis_ipc::OpClass>,
+    },
+}
+
+/// Parse an operation-family name for `permissions` arguments.
+fn op_class(value: &str) -> Result<aegis_ipc::OpClass, String> {
+    aegis_ipc::OpClass::from_name(value).ok_or_else(|| format!("unknown operation '{value}'"))
 }
 
 /// Adjacent-workspace switch direction. `previous` is accepted as an alias

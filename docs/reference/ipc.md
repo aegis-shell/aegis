@@ -1,6 +1,6 @@
 # IPC Reference
 
-The aegis IPC is protocol version 17, carried as length-framed JSON over the
+The aegis IPC is protocol version 19, carried as length-framed JSON over the
 owner-only Unix socket at `$XDG_RUNTIME_DIR/aegis.sock`. Every connection starts
 with `Hello`; commands are accepted only after capability and scope checks.
 JSON messages are limited to 16 MiB. Large immutable capture and frame
@@ -13,13 +13,24 @@ payloads use a separate sealed-file-descriptor transfer described under
 |------------|-----------|---------|
 | `query` | Read snapshots and subscribe to events or the journal. | Always granted. |
 | `control` | Mutate windows, workspaces, live-system state, layout, and notifications. | Server policy. |
-| `input` | Inject bounded actions into a target window. | Named scope required. |
+| `input` | Inject bounded actions into a target window. | Named scope or paired agent required. |
 | `session` | Quit, persist compositor settings, or perform other session-level operations. | Server policy. |
-| `realm` | Create, configure, capture, pause, transfer, launch into, and revoke Realms. | Named scope and explicit operation required. |
+| `realm` | Create, configure, capture, pause, transfer, launch into, and revoke Realms. | Named scope or paired agent with the operation in its ceiling. |
 
-Absent `input` and `realm` fields are `false`. An unscoped connection never
-receives `input`; Realm operations also require an explicit operation in a
-named scope.
+Absent `input` and `realm` fields are `false`. An anonymous connection never
+receives `input`; Realm operations also require an explicit operation in the
+connection's ceiling. `[agent] lockdown` defaults on and strips every
+privileged capability from unpaired, unnamed connections. First-party owner,
+Realm, agent-administration, and portal clients use separate built-in scopes.
+These scope names are trusted-component selectors on the owner-only socket,
+not cryptographic identity against a compromised Unix account.
+
+An Agent Realm's controlling principal carries the authenticated registry
+subject that created it. Every Realm mutation, capture, launch, and directed
+input request rechecks that binding. The human Realm may be one side of an
+authority transfer, but an agent cannot target or recover another subject's
+Realm. Existing connections refresh their live ceiling before use, so a
+forgotten principal or narrowed ceiling fails closed immediately.
 
 Every privileged connection supplies `lease: { ttl_ms }` in `Hello`.
 Omitting it strips `control`, `input`, `session`, and `realm`. The allowed
@@ -142,7 +153,7 @@ chrome and external IPC clients:
 | `SetOutputPower` | `powered` | Power all physical outputs on or off. Power-off is accepted only after a secure lock frame is confirmed; wake is always safe. Used by `aegis-idle`. |
 
 The command requires `control`, a live privileged lease, and permission for
-the `SystemControl` operation when a named scope restricts `ops`. The server
+the `SystemControl` operation when the connection's scope restricts `ops`. The server
 validates bounds before dispatch and returns only after the compositor main
 loop applies or refuses the action. Host-service commands are still spawned
 without blocking for the external service's eventual state change. A
@@ -307,10 +318,11 @@ cgroup v2, controller delegation, or portal setup refuses the launch.
 
 ## Synthetic Input
 
-`InjectInput` requires a named scope that contains `InjectInput` and the target
-window id. The operation must be listed explicitly: an omitted `ops` field does
-not grant synthetic input. Coordinates are logical pixels relative to the
-target window's top-left corner.
+`InjectInput` requires the operation in the connection's ceiling — a named
+scope or a paired agent's approved set — and the target window id in the
+resource allowlist. The operation must be listed explicitly: an omitted `ops`
+field does not grant synthetic input. Coordinates are logical pixels relative
+to the target window's top-left corner.
 
 | Action | Fields | Effect |
 |--------|--------|--------|
@@ -363,7 +375,7 @@ change the detached snapshot. Captures include the overview grid while
 overview mode is active.
 
 `Command::Screenshot { path, region }` is a journaled `control` command that writes
-the focused output as a PNG file; `aegis-ctl screenshot` is its reference
+the focused output as a PNG file; `aegis-cli screenshot` is its reference
 frontend. `Request::CaptureOutput` is a synchronous query returning
 `Response::CaptureOutput { width, height, png_bytes }` followed by one sealed
 PNG `memfd` transferred with `SCM_RIGHTS`. The request requires the `control`
@@ -475,16 +487,14 @@ the live scene and capture no screen content.
 | `PromptSecret { title, reason }` | `SecretPrompted { result }` | `PromptSecret` | Masked credential prompt, e.g. the vault password unlock; both ends zeroize their copies (protocol 15) |
 | `PickConfirm { title, body, accept_label }` | `ConfirmPicked { result }` | `PickConfirm` | Yes/no consent dialogs (Account, DynamicLauncher, Wallpaper, future Access) (protocol 16) |
 
-## Named Scopes
+## Scopes and Agent Authorization
 
-Named scopes are configured with `[[agent.scope]]`. Every mutation and
-capture resolves the named scope again, including final pixel delivery, so a
-configuration reload can narrow or revoke authority without reconnecting. An
-explicit unknown or removed scope fails closed.
+Named scopes survive only as hardcoded trusted-component grants (ADR-0090);
+config-declared `[[agent.scope]]` entries were removed in protocol 18.
 
-`aegis-ctl` uses the built-in owner-only `aegis-ctl-realm-admin` scope for Realm
-recovery commands. It grants the local user all Realm ids and the explicit
-Realm operation set; it does not weaken the socket's mode `0600` boundary.
+`aegis-cli` uses separate `aegis-cli-owner-admin`,
+`aegis-cli-realm-admin`, and `aegis-cli-agent-admin` scopes for ordinary
+owner mutations, Realm recovery, and agent-registry administration.
 
 `aegis-portal` uses the built-in owner-only `aegis-portal` scope, which
 grants exactly these operations: `CaptureOutput` for Screenshot,
@@ -498,7 +508,34 @@ compositor control. The portal boundary is recorded in
 [ADR-0075](../adr/0075-independent-portal-package-and-backend-contract.md)
 and its extension in
 [ADR-0086](../adr/0086-full-stack-portal-via-user-consent-pick-chains.md).
-Both built-in scopes follow the same fail-closed rule as configured scopes.
+The built-in high-risk scopes are fail-closed explicit allowlists.
 
-See the [Configuration Reference](config.md#agent-scopes) for fields and
-operation names.
+**Agent authorization** (protocol 19, ADR-0090) replaces configured scopes
+for agents. `Hello.agent` carries a self-declaration: a cosmetic `label`,
+the `requested` operation families, and an optional `credential` from an
+earlier pairing. Unrecognized agents are paired interactively through
+compositor chrome; the user-approved set becomes the principal's ceiling,
+and `Hello.agent` in the reply carries the issued `principal` and a new
+`credential` to persist. The connection's effective scope is synthesized
+from the ceiling: ordinary approved operations are pregranted, and the
+platform dangerous set (`Close`, `InjectRealmInput`, `CreateRealm`,
+`TransactRealm`, `RevokeRealm`, `CaptureRealm`, `LaunchInRealm`) lands in
+`ask_ops`, where every use routes through an interactive runtime grant
+(Deny / Allow once / Allow session / Always allow) before dispatch.
+
+Principal and grant management requires the agent-admin scope (plus
+`control` and a live lease for mutations):
+
+| Request | Response | Purpose |
+|---------|----------|---------|
+| `GetAgentPrincipals` | `AgentPrincipals { principals }` | Agent-admin scope: list paired principals with their ceilings. |
+| `GetAgentGrants { principal? }` | `AgentGrants { grants }` | Agent-admin scope: list recorded grants, optionally for one principal. |
+| `RenameAgentPrincipal { principal, label? }` | `Ok` | Rename the cosmetic display label. |
+| `ForgetAgentPrincipal { principal }` | `Ok` | Kill a credential and drop its grants. |
+| `SetAgentCeiling { principal, pregranted, gated }` | `Ok` | Replace a principal's approved ceiling. |
+| `RegisterAgent { label?, pregranted, gated }` | `AgentRegistered { principal, credential }` | Pre-provision a principal; plant the credential in the agent. |
+| `RevokeAgentGrant { principal, op }` | `Ok` | Drop one recorded grant; the next use asks again. |
+
+See the [Configuration Reference](config.md#agent-authorization) for the
+`[agent]` policy table, and the [aegis-mcp Bridge Reference](aegis-mcp.md)
+for the agent-side contract.

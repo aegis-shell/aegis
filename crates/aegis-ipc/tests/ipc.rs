@@ -27,6 +27,9 @@ fn scratch() -> PathBuf {
     p
 }
 
+/// One recorded pairing invocation: connection, display label, requested set.
+type PairCall = (u64, Option<String>, Vec<OpClass>);
+
 /// A handler returning a fixed window snapshot and recording the commands it
 /// receives. `policy` selects what it grants.
 struct TestHandler {
@@ -59,6 +62,17 @@ struct TestHandler {
     wallpapers: Mutex<Vec<(u64, std::path::PathBuf)>>,
     idle_inhibits: Mutex<Vec<(u64, bool)>>,
     idle_disconnects: Mutex<Vec<u64>>,
+    pair_result: Mutex<Result<aegis_ipc::PairedAgent, String>>,
+    pair_calls: Mutex<Vec<PairCall>>,
+    lookup_result: Mutex<Option<aegis_ipc::AgentIdentity>>,
+    lockdown_flag: std::sync::atomic::AtomicBool,
+    grants: Mutex<Vec<(String, OpClass, bool)>>,
+    grant_calls: Mutex<Vec<(u64, String, OpClass)>>,
+    request_grant_result: Mutex<Result<bool, String>>,
+    principal_infos: Mutex<Vec<aegis_ipc::AgentPrincipalInfo>>,
+    grant_infos: Mutex<Vec<aegis_ipc::AgentGrantInfo>>,
+    management_log: Mutex<Vec<String>>,
+    register_result: Mutex<Result<(String, String), String>>,
 }
 
 impl TestHandler {
@@ -101,6 +115,17 @@ impl TestHandler {
             wallpapers: Mutex::new(Vec::new()),
             idle_inhibits: Mutex::new(Vec::new()),
             idle_disconnects: Mutex::new(Vec::new()),
+            pair_result: Mutex::new(Err("pairing not offered".into())),
+            pair_calls: Mutex::new(Vec::new()),
+            lookup_result: Mutex::new(None),
+            lockdown_flag: std::sync::atomic::AtomicBool::new(false),
+            grants: Mutex::new(Vec::new()),
+            grant_calls: Mutex::new(Vec::new()),
+            request_grant_result: Mutex::new(Err("no interactive grant".into())),
+            principal_infos: Mutex::new(Vec::new()),
+            grant_infos: Mutex::new(Vec::new()),
+            management_log: Mutex::new(Vec::new()),
+            register_result: Mutex::new(Err("no register".into())),
         }
     }
     /// Grants control and session, so command tests can exercise them.
@@ -148,6 +173,17 @@ impl TestHandler {
             wallpapers: Mutex::new(Vec::new()),
             idle_inhibits: Mutex::new(Vec::new()),
             idle_disconnects: Mutex::new(Vec::new()),
+            pair_result: Mutex::new(Err("pairing not offered".into())),
+            pair_calls: Mutex::new(Vec::new()),
+            lookup_result: Mutex::new(None),
+            lockdown_flag: std::sync::atomic::AtomicBool::new(false),
+            grants: Mutex::new(Vec::new()),
+            grant_calls: Mutex::new(Vec::new()),
+            request_grant_result: Mutex::new(Err("no interactive grant".into())),
+            principal_infos: Mutex::new(Vec::new()),
+            grant_infos: Mutex::new(Vec::new()),
+            management_log: Mutex::new(Vec::new()),
+            register_result: Mutex::new(Err("no register".into())),
         }
     }
 }
@@ -244,7 +280,12 @@ impl Handler for TestHandler {
             revision: snapshot.revision,
         })
     }
-    fn realm_action(&self, conn_id: u64, action: RealmAction) -> Result<RealmActionResult, String> {
+    fn realm_action(
+        &self,
+        conn_id: u64,
+        _subject: Option<&str>,
+        action: RealmAction,
+    ) -> Result<RealmActionResult, String> {
         self.realm_connections.lock().unwrap().push(conn_id);
         self.realm_actions.lock().unwrap().push(action.clone());
         match action {
@@ -290,6 +331,99 @@ impl Handler for TestHandler {
     }
     fn resolve_scope(&self, name: &str) -> Option<Scope> {
         self.scopes.lock().unwrap().get(name).cloned()
+    }
+    fn agent_lookup(&self, _credential: &str) -> Option<aegis_ipc::AgentIdentity> {
+        self.lookup_result.lock().unwrap().clone()
+    }
+    fn pair_agent(
+        &self,
+        conn_id: u64,
+        label: Option<&str>,
+        requested: &[OpClass],
+    ) -> Result<aegis_ipc::PairedAgent, String> {
+        self.pair_calls.lock().unwrap().push((
+            conn_id,
+            label.map(str::to_owned),
+            requested.to_vec(),
+        ));
+        self.pair_result.lock().unwrap().clone()
+    }
+    fn lockdown(&self) -> bool {
+        self.lockdown_flag.load(Ordering::Relaxed)
+    }
+    fn grant_for(&self, principal: &str, op: OpClass) -> Option<bool> {
+        self.grants
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(p, o, _)| p == principal && *o == op)
+            .map(|(_, _, decision)| *decision)
+    }
+    fn request_grant(&self, conn_id: u64, principal: &str, op: OpClass) -> Result<bool, String> {
+        self.grant_calls
+            .lock()
+            .unwrap()
+            .push((conn_id, principal.to_owned(), op));
+        self.request_grant_result.lock().unwrap().clone()
+    }
+    fn agent_principals(&self) -> Vec<aegis_ipc::AgentPrincipalInfo> {
+        self.principal_infos.lock().unwrap().clone()
+    }
+    fn agent_grants(&self, principal: Option<&str>) -> Vec<aegis_ipc::AgentGrantInfo> {
+        self.grant_infos
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|grant| principal.is_none_or(|p| grant.principal == p))
+            .cloned()
+            .collect()
+    }
+    fn rename_agent_principal(&self, principal: &str, label: Option<&str>) -> Result<(), String> {
+        self.management_log
+            .lock()
+            .unwrap()
+            .push(format!("rename:{principal}:{label:?}"));
+        Ok(())
+    }
+    fn forget_agent_principal(&self, principal: &str) -> Result<(), String> {
+        self.management_log
+            .lock()
+            .unwrap()
+            .push(format!("forget:{principal}"));
+        Ok(())
+    }
+    fn set_agent_ceiling(
+        &self,
+        principal: &str,
+        pregranted: &[OpClass],
+        gated: &[OpClass],
+    ) -> Result<(), String> {
+        self.management_log.lock().unwrap().push(format!(
+            "ceiling:{principal}:{}+{}",
+            pregranted.len(),
+            gated.len()
+        ));
+        Ok(())
+    }
+    fn register_agent(
+        &self,
+        label: Option<&str>,
+        pregranted: &[OpClass],
+        gated: &[OpClass],
+    ) -> Result<(String, String), String> {
+        self.management_log.lock().unwrap().push(format!(
+            "register:{label:?}:{}+{}",
+            pregranted.len(),
+            gated.len()
+        ));
+        self.register_result.lock().unwrap().clone()
+    }
+    fn revoke_agent_grant(&self, principal: &str, op: OpClass) -> Result<(), String> {
+        self.management_log
+            .lock()
+            .unwrap()
+            .push(format!("revoke:{principal}:{op:?}"));
+        Ok(())
     }
     fn audit_refusal(&self, conn_id: u64, mutation: aegis_ipc::JournalMutation, reason: String) {
         self.refusals
@@ -419,6 +553,13 @@ impl Handler for TestHandler {
 
 fn test_scopes() -> HashMap<String, Scope> {
     HashMap::from([
+        (
+            aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE.into(),
+            Scope {
+                ops: Some(Vec::new()),
+                ..Scope::default()
+            },
+        ),
         (
             "focus-first".into(),
             Scope {
@@ -1622,6 +1763,7 @@ fn wrong_protocol_version_is_refused_at_handshake() {
         caps: Capabilities::QUERY,
         scope: None,
         lease: None,
+        agent: None,
     };
     aegis_ipc::codec::write_msg(&mut s, &bad).unwrap();
     let resp: aegis_ipc::Response = aegis_ipc::codec::read_msg(&mut s).unwrap();
@@ -1718,7 +1860,7 @@ fn session_command_quit_is_accepted() {
     let handler = Arc::new(TestHandler::permissive(vec![]));
     let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
 
-    let mut client = Client::connect_with(
+    let mut client = Client::connect_scoped(
         &path,
         Capabilities {
             query: true,
@@ -1727,6 +1869,7 @@ fn session_command_quit_is_accepted() {
             session: true,
             realm: false,
         },
+        aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE,
     )
     .expect("connect");
     client.command(Command::Quit).expect("quit command");
@@ -2064,4 +2207,527 @@ fn set_wallpaper_requires_control_and_an_explicit_scope_op() {
     let mut query_only = Client::connect(&path).expect("query connect");
     let err = query_only.set_wallpaper(image).unwrap_err();
     assert!(err.to_string().contains("control capability"), "{err}");
+}
+
+#[test]
+fn pairing_issues_credential_and_synthetic_scope() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(vec![]));
+    *handler.pair_result.lock().unwrap() = Ok(aegis_ipc::PairedAgent {
+        principal: "prin_1".into(),
+        credential: "cred_1".into(),
+        pregranted: vec![OpClass::Focus],
+        gated: vec![OpClass::CaptureRealm],
+    });
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+
+    let client = Client::connect_agent_with_timeout(
+        &path,
+        Capabilities {
+            query: true,
+            control: true,
+            input: true,
+            session: false,
+            realm: true,
+        },
+        None,
+        aegis_ipc::AgentHello {
+            label: Some("Codex".into()),
+            requested: vec![OpClass::Focus, OpClass::CaptureRealm],
+            credential: None,
+        },
+        Duration::from_secs(5),
+    )
+    .expect("pairing connects");
+    let issued = client.agent_issued().expect("pairing outcome");
+    assert_eq!(issued.principal, "prin_1");
+    assert_eq!(issued.credential.as_deref(), Some("cred_1"));
+    assert_eq!(client.scope().ops, Some(vec![OpClass::Focus]));
+    assert_eq!(client.scope().ask_ops, Some(vec![OpClass::CaptureRealm]));
+    assert!(
+        client.caps().input,
+        "a paired agent keeps the input capability class"
+    );
+    let calls = handler.pair_calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].1.as_deref(), Some("Codex"));
+    assert_eq!(calls[0].2, vec![OpClass::Focus, OpClass::CaptureRealm]);
+}
+
+#[test]
+fn pairing_denial_refuses_the_handshake() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(vec![]));
+    *handler.pair_result.lock().unwrap() = Err("the user declined".into());
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+
+    let error = match Client::connect_agent_with_timeout(
+        &path,
+        Capabilities::QUERY,
+        None,
+        aegis_ipc::AgentHello {
+            label: None,
+            requested: vec![],
+            credential: None,
+        },
+        Duration::from_secs(5),
+    ) {
+        Ok(_) => panic!("denied pairing must refuse the connection"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
+    assert!(error.to_string().contains("the user declined"));
+}
+
+#[test]
+fn recognized_credential_binds_without_pairing() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(vec![]));
+    *handler.lookup_result.lock().unwrap() = Some(aegis_ipc::AgentIdentity {
+        principal: "prin_9".into(),
+        pregranted: vec![OpClass::Notify],
+        gated: vec![],
+    });
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+
+    let client = Client::connect_agent_with_timeout(
+        &path,
+        Capabilities::QUERY,
+        None,
+        aegis_ipc::AgentHello {
+            label: Some("Codex".into()),
+            requested: vec![OpClass::Notify],
+            credential: Some("cred_9".into()),
+        },
+        Duration::from_secs(5),
+    )
+    .expect("recognized credential connects");
+    assert!(handler.pair_calls.lock().unwrap().is_empty());
+    let issued = client.agent_issued().expect("pairing outcome");
+    assert_eq!(issued.principal, "prin_9");
+    assert!(issued.credential.is_none());
+    assert_eq!(client.scope().ops, Some(vec![OpClass::Notify]));
+    assert_eq!(client.scope().ask_ops, Some(vec![]));
+}
+
+#[test]
+fn builtin_scope_connections_do_not_pair() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(vec![]));
+    handler.scopes.lock().unwrap().insert(
+        aegis_ipc::LOCAL_REALM_ADMIN_SCOPE.to_string(),
+        Scope {
+            ops: Some(vec![OpClass::Notify]),
+            ..Scope::default()
+        },
+    );
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+
+    let client = Client::connect_agent_with_timeout(
+        &path,
+        Capabilities::QUERY,
+        Some(aegis_ipc::LOCAL_REALM_ADMIN_SCOPE.to_string()),
+        aegis_ipc::AgentHello {
+            label: Some("aegis-cli".into()),
+            requested: vec![],
+            credential: None,
+        },
+        Duration::from_secs(5),
+    )
+    .expect("built-in scope connects without pairing");
+    assert!(handler.pair_calls.lock().unwrap().is_empty());
+    assert!(client.agent_issued().is_none());
+    assert_eq!(client.scope().ops, Some(vec![OpClass::Notify]));
+}
+
+#[test]
+fn declared_scope_pairs_but_keeps_the_configured_ceiling() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(vec![]));
+    *handler.pair_result.lock().unwrap() = Ok(aegis_ipc::PairedAgent {
+        principal: "prin_2".into(),
+        credential: "cred_2".into(),
+        pregranted: vec![OpClass::Close],
+        gated: vec![],
+    });
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+
+    let client = Client::connect_agent_with_timeout(
+        &path,
+        Capabilities::QUERY,
+        Some("focus-first".to_string()),
+        aegis_ipc::AgentHello {
+            label: Some("Codex".into()),
+            requested: vec![OpClass::Close],
+            credential: None,
+        },
+        Duration::from_secs(5),
+    )
+    .expect("declared scope connects");
+    // The ceiling stays the configured scope, not the registry split.
+    assert_eq!(client.scope().ops, Some(vec![OpClass::Focus]));
+    assert_eq!(client.scope().windows, Some(vec![WindowId(1)]));
+    assert!(client.agent_issued().is_some());
+    assert_eq!(handler.pair_calls.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn lockdown_strips_privileges_from_unpaired_connections() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(vec![]));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+
+    let privileged = Capabilities {
+        query: true,
+        control: true,
+        input: false,
+        session: false,
+        realm: false,
+    };
+    let open = Client::connect_with(&path, privileged).expect("anonymous connect");
+    assert!(open.caps().control, "default policy grants control");
+
+    handler.lockdown_flag.store(true, Ordering::Relaxed);
+    let locked = Client::connect_with(&path, privileged).expect("lockdown connect");
+    assert!(
+        !locked.caps().control,
+        "lockdown strips privileged capabilities from unpaired connections"
+    );
+    assert!(locked.caps().query);
+}
+
+fn grant_paired_handler(
+    pregranted: Vec<OpClass>,
+    gated: Vec<OpClass>,
+) -> (Arc<TestHandler>, PathBuf) {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(vec![]));
+    *handler.pair_result.lock().unwrap() = Ok(aegis_ipc::PairedAgent {
+        principal: "prin_g".into(),
+        credential: "cred_g".into(),
+        pregranted,
+        gated,
+    });
+    (handler, path)
+}
+
+fn grant_client(path: &std::path::Path, caps: Capabilities) -> Client {
+    Client::connect_agent_with_timeout(
+        path,
+        caps,
+        None,
+        aegis_ipc::AgentHello {
+            label: Some("Codex".into()),
+            requested: vec![],
+            credential: None,
+        },
+        Duration::from_secs(5),
+    )
+    .expect("pairing connects")
+}
+
+#[test]
+fn askable_command_prompts_and_proceeds_on_grant() {
+    let (handler, path) = grant_paired_handler(vec![OpClass::Focus], vec![OpClass::Close]);
+    *handler.request_grant_result.lock().unwrap() = Ok(true);
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let mut client = grant_client(
+        &path,
+        Capabilities {
+            query: true,
+            control: true,
+            input: false,
+            session: false,
+            realm: false,
+        },
+    );
+
+    client
+        .command(Command::Close { id: WindowId(1) })
+        .expect("granted command proceeds");
+    let grant_calls = handler.grant_calls.lock().unwrap();
+    assert_eq!(grant_calls.len(), 1);
+    assert_eq!(grant_calls[0].1, "prin_g");
+    assert_eq!(grant_calls[0].2, OpClass::Close);
+    assert!(
+        handler
+            .commands
+            .lock()
+            .unwrap()
+            .contains(&Command::Close { id: WindowId(1) })
+    );
+}
+
+#[test]
+fn askable_command_denied_stays_out_of_scope() {
+    let (handler, path) = grant_paired_handler(vec![OpClass::Focus], vec![OpClass::Close]);
+    *handler.request_grant_result.lock().unwrap() = Ok(false);
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let mut client = grant_client(
+        &path,
+        Capabilities {
+            query: true,
+            control: true,
+            input: false,
+            session: false,
+            realm: false,
+        },
+    );
+
+    let error = client
+        .command(Command::Close { id: WindowId(1) })
+        .expect_err("denied command is refused");
+    assert!(error.to_string().contains("denied"));
+    assert!(handler.commands.lock().unwrap().is_empty());
+}
+
+#[test]
+fn recorded_grant_short_circuits_the_prompt() {
+    let (handler, path) = grant_paired_handler(vec![OpClass::Focus], vec![OpClass::Close]);
+    handler
+        .grants
+        .lock()
+        .unwrap()
+        .push(("prin_g".into(), OpClass::Close, true));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let mut client = grant_client(
+        &path,
+        Capabilities {
+            query: true,
+            control: true,
+            input: false,
+            session: false,
+            realm: false,
+        },
+    );
+
+    client
+        .command(Command::Close { id: WindowId(1) })
+        .expect("recorded grant proceeds");
+    assert!(handler.grant_calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn recorded_denial_refuses_without_prompting() {
+    let (handler, path) = grant_paired_handler(vec![OpClass::Focus], vec![OpClass::Close]);
+    handler
+        .grants
+        .lock()
+        .unwrap()
+        .push(("prin_g".into(), OpClass::Close, false));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let mut client = grant_client(
+        &path,
+        Capabilities {
+            query: true,
+            control: true,
+            input: false,
+            session: false,
+            realm: false,
+        },
+    );
+
+    let error = client
+        .command(Command::Close { id: WindowId(1) })
+        .expect_err("recorded denial refuses");
+    assert!(error.to_string().contains("denied"));
+    assert!(handler.grant_calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn declared_scope_without_pairing_cannot_use_askable_operations() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(vec![]));
+    handler.scopes.lock().unwrap().insert(
+        "ask-close".to_string(),
+        Scope {
+            ops: Some(vec![OpClass::Focus]),
+            ask_ops: Some(vec![OpClass::Close]),
+            ..Scope::default()
+        },
+    );
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+
+    let mut client = Client::connect_scoped(
+        &path,
+        Capabilities {
+            query: true,
+            control: true,
+            input: false,
+            session: false,
+            realm: false,
+        },
+        "ask-close",
+    )
+    .expect("declared scope connects");
+    client
+        .command(Command::Focus { id: WindowId(1) })
+        .expect("pregranted operations work without pairing");
+    let error = client
+        .command(Command::Close { id: WindowId(1) })
+        .expect_err("askable operations require a paired agent");
+    assert!(error.to_string().contains("paired agent"));
+}
+
+#[test]
+fn realm_action_proceeds_through_the_grant_path() {
+    let (handler, path) = grant_paired_handler(vec![], vec![OpClass::CreateRealm]);
+    *handler.request_grant_result.lock().unwrap() = Ok(true);
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let mut client = grant_client(
+        &path,
+        Capabilities {
+            query: true,
+            control: false,
+            input: false,
+            session: false,
+            realm: true,
+        },
+    );
+
+    let result = client
+        .realm_action(RealmAction::Create {
+            label: "agent".into(),
+            capabilities: aegis_core::realm::SeatCapabilities::POINTER_KEYBOARD,
+            output: None,
+        })
+        .expect("granted realm action");
+    assert!(matches!(result, RealmActionResult::Created { .. }));
+    assert_eq!(handler.realm_actions.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn agent_management_round_trips() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(vec![]));
+    handler
+        .principal_infos
+        .lock()
+        .unwrap()
+        .push(aegis_ipc::AgentPrincipalInfo {
+            principal: "prin_1".into(),
+            label: Some("Codex".into()),
+            pregranted: vec![OpClass::Focus],
+            gated: vec![OpClass::Close],
+            created_at: 1,
+        });
+    handler.grant_infos.lock().unwrap().extend([
+        aegis_ipc::AgentGrantInfo {
+            principal: "prin_1".into(),
+            op: OpClass::Close,
+            decision: aegis_ipc::AgentGrantDecision::Allow,
+            granted_at: 2,
+        },
+        aegis_ipc::AgentGrantInfo {
+            principal: "prin_2".into(),
+            op: OpClass::Notify,
+            decision: aegis_ipc::AgentGrantDecision::Deny,
+            granted_at: 3,
+        },
+    ]);
+    *handler.register_result.lock().unwrap() = Ok(("prin_9".into(), "cred_9".into()));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let mut client = Client::connect_scoped(
+        &path,
+        Capabilities {
+            query: true,
+            control: true,
+            input: false,
+            session: false,
+            realm: false,
+        },
+        aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE,
+    )
+    .expect("connect");
+
+    let principals = client.agent_principals().expect("principals");
+    assert_eq!(principals.len(), 1);
+    assert_eq!(principals[0].label.as_deref(), Some("Codex"));
+    assert_eq!(principals[0].gated, vec![OpClass::Close]);
+
+    assert_eq!(client.agent_grants(None).expect("grants").len(), 2);
+    let filtered = client.agent_grants(Some("prin_1")).expect("filtered");
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].op, OpClass::Close);
+
+    client
+        .rename_agent_principal("prin_1", Some("New name"))
+        .expect("rename");
+    client.forget_agent_principal("prin_2").expect("forget");
+    client
+        .set_agent_ceiling(
+            "prin_1",
+            vec![OpClass::Focus, OpClass::Notify],
+            vec![OpClass::Close],
+        )
+        .expect("ceiling");
+    let (principal, credential) = client
+        .register_agent(Some("Fleet"), vec![OpClass::Focus], vec![])
+        .expect("register");
+    assert_eq!(
+        (principal.as_str(), credential.as_str()),
+        ("prin_9", "cred_9")
+    );
+    client
+        .revoke_agent_grant("prin_1", OpClass::Close)
+        .expect("revoke");
+
+    let log = handler.management_log.lock().unwrap();
+    assert_eq!(log.len(), 5);
+    assert!(log.iter().any(|entry| entry.starts_with("rename:prin_1:")));
+    assert!(log.iter().any(|entry| entry == "forget:prin_2"));
+    assert!(log.iter().any(|entry| entry == "ceiling:prin_1:2+1"));
+    assert!(
+        log.iter()
+            .any(|entry| entry.starts_with("register:Some(\"Fleet\")"))
+    );
+    assert!(log.iter().any(|entry| entry.starts_with("revoke:prin_1:")));
+}
+
+#[test]
+fn agent_management_requires_the_control_capability() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(vec![]));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let mut client = Client::connect_scoped(
+        &path,
+        Capabilities::QUERY,
+        aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE,
+    )
+    .expect("query connect");
+
+    let error = client
+        .forget_agent_principal("prin_1")
+        .expect_err("query-only management is refused");
+    assert!(error.to_string().contains("control capability"));
+    assert!(handler.management_log.lock().unwrap().is_empty());
+}
+
+#[test]
+fn lockdown_exempts_builtin_scope_connections() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(vec![]));
+    handler.lockdown_flag.store(true, Ordering::Relaxed);
+    handler.scopes.lock().unwrap().insert(
+        aegis_ipc::LOCAL_PORTAL_SCOPE.to_string(),
+        Scope {
+            ops: Some(vec![OpClass::Notify]),
+            ..Scope::default()
+        },
+    );
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+
+    let privileged = Capabilities {
+        query: true,
+        control: true,
+        input: false,
+        session: false,
+        realm: false,
+    };
+    let portal = Client::connect_scoped(&path, privileged, aegis_ipc::LOCAL_PORTAL_SCOPE)
+        .expect("built-in scope connects under lockdown");
+    assert!(
+        portal.caps().control,
+        "built-in platform components keep privileges under lockdown"
+    );
 }

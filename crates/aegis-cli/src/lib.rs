@@ -1,4 +1,4 @@
-//! aegis-ctl: the command-line driver for the aegis IPC.
+//! aegis-cli: the command-line driver for the aegis IPC.
 //!
 //! The reference external tool (ADR-0027): it connects to a running
 //! compositor's IPC socket and drives it — list windows/workspaces, focus,
@@ -10,7 +10,7 @@
 mod cli;
 mod error;
 
-pub use cli::{Cli, Command, OnOff, RealmCmd, Region, SwitchDir, SystemCmd};
+pub use cli::{Cli, Command, OnOff, PermissionsCmd, RealmCmd, Region, SwitchDir, SystemCmd};
 pub use error::CliError;
 
 use std::path::Path;
@@ -62,7 +62,7 @@ fn parse_cli(args: &[String]) -> Result<ParseOutcome, CliError> {
     // name so clap's "Usage:" line is consistent regardless of how the
     // caller collected `args`.
     let mut full = Vec::with_capacity(args.len() + 1);
-    full.push("aegis-ctl".to_string());
+    full.push("aegis-cli".to_string());
     full.extend(args.iter().cloned());
     match Cli::try_parse_from(full) {
         Ok(cli) => Ok(ParseOutcome::Cli(cli)),
@@ -107,9 +107,10 @@ fn dispatch_command(socket: &Path, cli: Cli) -> Result<String, CliError> {
             Ok(render(&snapshot, json, format_journal))
         }
         Cmd::Realm(action) => dispatch_realm(socket, action, json),
+        Cmd::Permissions(action) => dispatch_permissions(socket, action, json),
         Cmd::System(action) => dispatch_system(socket, action, json),
         Cmd::Focus { id } => {
-            let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
+            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client
                 .command(aegis_ipc::Command::Focus {
                     id: aegis_core::window::WindowId(id),
@@ -118,7 +119,7 @@ fn dispatch_command(socket: &Path, cli: Cli) -> Result<String, CliError> {
             Ok(format!("focused {id}"))
         }
         Cmd::Minimize { id } => {
-            let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
+            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client
                 .command(aegis_ipc::Command::Minimize {
                     id: aegis_core::window::WindowId(id),
@@ -127,7 +128,7 @@ fn dispatch_command(socket: &Path, cli: Cli) -> Result<String, CliError> {
             Ok(format!("minimized {id}"))
         }
         Cmd::AlwaysOnTop { id, state } => {
-            let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
+            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             let on_top = bool::from(state);
             client
                 .command(aegis_ipc::Command::SetAlwaysOnTop {
@@ -138,7 +139,7 @@ fn dispatch_command(socket: &Path, cli: Cli) -> Result<String, CliError> {
             Ok(format!("always-on-top {on_top} for {id}"))
         }
         Cmd::Close { id } => {
-            let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
+            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client
                 .command(aegis_ipc::Command::Close {
                     id: aegis_core::window::WindowId(id),
@@ -147,7 +148,7 @@ fn dispatch_command(socket: &Path, cli: Cli) -> Result<String, CliError> {
             Ok(format!("close requested for {id}"))
         }
         Cmd::SetGeometry { id, x, y, w, h } => {
-            let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
+            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             let rect = aegis_core::Rect::new(x, y, w, h);
             client
                 .set_window_geometry(aegis_core::window::WindowId(id), rect)
@@ -155,19 +156,19 @@ fn dispatch_command(socket: &Path, cli: Cli) -> Result<String, CliError> {
             Ok(format!("set window {id} geometry to {x},{y} {w}x{h}",))
         }
         Cmd::Switch { direction } => {
-            let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
+            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             let dir: aegis_core::workspace::Switch = direction.into();
             client.switch_workspace(dir).map_err(io_err)?;
             Ok(format!("switched {dir:?}"))
         }
         Cmd::SwitchTo { id } => {
-            let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
+            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             let ws = aegis_core::workspace::WorkspaceId(id);
             client.switch_workspace_to(ws).map_err(io_err)?;
             Ok(format!("switched to workspace {id}"))
         }
         Cmd::MoveTo { window, workspace } => {
-            let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
+            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client
                 .command(aegis_ipc::Command::MoveToWorkspace {
                     window: aegis_core::window::WindowId(window),
@@ -177,24 +178,24 @@ fn dispatch_command(socket: &Path, cli: Cli) -> Result<String, CliError> {
             Ok(format!("moved window {window} to workspace {workspace}"))
         }
         Cmd::Tiling => {
-            let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
+            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client.toggle_tiling().map_err(io_err)?;
             Ok("toggled tiling".into())
         }
         Cmd::Notify { summary, body } => {
-            let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
+            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client
                 .notify(summary, body.unwrap_or_default(), None)
                 .map_err(io_err)?;
             Ok("notified".into())
         }
         Cmd::Dismiss { id } => {
-            let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
+            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client.dismiss_notification(id).map_err(io_err)?;
             Ok(format!("dismissed {id}"))
         }
         Cmd::Screenshot { path, region } => {
-            let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
+            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             let path = match path {
                 Some(p) => p,
                 None => screenshot_path(&aegis_config::default_screenshot_dir())?,
@@ -205,7 +206,7 @@ fn dispatch_command(socket: &Path, cli: Cli) -> Result<String, CliError> {
             Ok(format!("screenshot queued → {path}"))
         }
         Cmd::Overview => {
-            let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
+            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client
                 .command(aegis_ipc::Command::ToggleOverview)
                 .map_err(io_err)?;
@@ -221,11 +222,11 @@ fn dispatch_command(socket: &Path, cli: Cli) -> Result<String, CliError> {
         }
         Cmd::Completions { shell } => {
             let mut cmd = Cli::command();
-            clap_complete::generate(shell, &mut cmd, "aegis-ctl", &mut std::io::stdout());
+            clap_complete::generate(shell, &mut cmd, "aegis-cli", &mut std::io::stdout());
             Ok(String::new())
         }
         Cmd::Quit => {
-            let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
+            let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client.command(aegis_ipc::Command::Quit).map_err(io_err)?;
             Ok("quit requested".into())
         }
@@ -279,9 +280,146 @@ fn dispatch_system(socket: &Path, command: SystemCmd, json: bool) -> Result<Stri
             "layout change queued",
         ),
     };
-    let mut client = Client::connect_with(socket, control_caps()).map_err(connect_err)?;
+    let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
     client.apply_system_action(action).map_err(io_err)?;
     Ok(acknowledgement.into())
+}
+
+fn dispatch_permissions(
+    socket: &Path,
+    action: PermissionsCmd,
+    json: bool,
+) -> Result<String, CliError> {
+    match action {
+        PermissionsCmd::List => {
+            let mut client =
+                Client::connect_scoped(socket, query_caps(), aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE)
+                    .map_err(connect_err)?;
+            let principals = client.agent_principals().map_err(io_err)?;
+            let grants = client.agent_grants(None).map_err(io_err)?;
+            #[derive(Serialize)]
+            struct PermissionsView {
+                principals: Vec<aegis_ipc::AgentPrincipalInfo>,
+                grants: Vec<aegis_ipc::AgentGrantInfo>,
+            }
+            let view = PermissionsView { principals, grants };
+            Ok(render(&view, json, |view| {
+                format_permissions(&view.principals, &view.grants)
+            }))
+        }
+        PermissionsCmd::Revoke { principal, op } => {
+            let mut client =
+                Client::connect_scoped(socket, control_caps(), aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE)
+                    .map_err(connect_err)?;
+            client.revoke_agent_grant(&principal, op).map_err(io_err)?;
+            Ok(format!("revoked the {op:?} grant for {principal}"))
+        }
+        PermissionsCmd::Forget { principal } => {
+            let mut client =
+                Client::connect_scoped(socket, control_caps(), aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE)
+                    .map_err(connect_err)?;
+            client.forget_agent_principal(&principal).map_err(io_err)?;
+            Ok(format!("forgot principal {principal}"))
+        }
+        PermissionsCmd::Rename { principal, label } => {
+            let mut client =
+                Client::connect_scoped(socket, control_caps(), aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE)
+                    .map_err(connect_err)?;
+            client
+                .rename_agent_principal(&principal, label.as_deref())
+                .map_err(io_err)?;
+            Ok(match label {
+                Some(label) => format!("renamed {principal} to '{label}'"),
+                None => format!("cleared the label of {principal}"),
+            })
+        }
+        PermissionsCmd::SetCeiling {
+            principal,
+            pregrant,
+            gated,
+        } => {
+            let mut client =
+                Client::connect_scoped(socket, control_caps(), aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE)
+                    .map_err(connect_err)?;
+            client
+                .set_agent_ceiling(&principal, pregrant, gated)
+                .map_err(io_err)?;
+            Ok(format!("replaced the ceiling of {principal}"))
+        }
+        PermissionsCmd::Register {
+            label,
+            pregrant,
+            gated,
+        } => {
+            let mut client =
+                Client::connect_scoped(socket, control_caps(), aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE)
+                    .map_err(connect_err)?;
+            let (principal, credential) = client
+                .register_agent(label.as_deref(), pregrant, gated)
+                .map_err(io_err)?;
+            #[derive(Serialize)]
+            struct Registered {
+                principal: String,
+                credential: String,
+            }
+            let registered = Registered {
+                principal,
+                credential,
+            };
+            Ok(render(&registered, json, |registered| {
+                format!(
+                    "registered {}\ncredential: {}\nplant it in the agent identity store",
+                    registered.principal, registered.credential
+                )
+            }))
+        }
+    }
+}
+
+fn format_permissions(
+    principals: &[aegis_ipc::AgentPrincipalInfo],
+    grants: &[aegis_ipc::AgentGrantInfo],
+) -> String {
+    if principals.is_empty() {
+        return "no paired agents".into();
+    }
+    let mut out = String::new();
+    for principal in principals {
+        match &principal.label {
+            Some(label) => out.push_str(&format!("{label} ({})\n", principal.principal)),
+            None => out.push_str(&format!("{}\n", principal.principal)),
+        }
+        let pregranted = op_names(&principal.pregranted);
+        let gated = op_names(&principal.gated);
+        out.push_str(&format!(
+            "  ceiling: {pregranted}{}\n",
+            if gated.is_empty() {
+                String::new()
+            } else {
+                format!(" (gated: {gated})")
+            }
+        ));
+        let own = grants
+            .iter()
+            .filter(|grant| grant.principal == principal.principal)
+            .collect::<Vec<_>>();
+        if own.is_empty() {
+            out.push_str("  grants: none\n");
+        } else {
+            out.push_str("  grants:\n");
+            for grant in own {
+                out.push_str(&format!("    {:?}: {:?}\n", grant.op, grant.decision));
+            }
+        }
+    }
+    out.trim_end().to_string()
+}
+
+fn op_names(ops: &[aegis_ipc::OpClass]) -> String {
+    ops.iter()
+        .map(|op| format!("{op:?}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn dispatch_realm(socket: &Path, action: RealmCmd, json: bool) -> Result<String, CliError> {
@@ -484,6 +622,10 @@ fn control_caps() -> Capabilities {
         session: true,
         realm: false,
     }
+}
+
+fn owner_client(socket: &Path, caps: Capabilities) -> std::io::Result<Client> {
+    Client::connect_scoped(socket, caps, aegis_ipc::LOCAL_OWNER_ADMIN_SCOPE)
 }
 
 fn connect_err(e: std::io::Error) -> CliError {
@@ -795,15 +937,50 @@ fn format_journal(snapshot: &aegis_ipc::JournalSnapshot) -> String {
     let mut out = String::new();
     for entry in &snapshot.entries {
         out.push_str(&format!(
-            "#{:<6} {:<8} {:?} {:?} => {:?}\n",
+            "#{:<6} {:<8} {:?} {} => {:?}\n",
             entry.seq,
             format!("{}ms", entry.ts_mono_ms),
             entry.origin,
-            entry.mutation,
+            format_mutation(&entry.mutation),
             entry.effect,
         ));
     }
     out
+}
+
+/// Human-readable one-liner for a journal mutation. Agent-authorization
+/// lifecycle events (ADR-0088) get a readable summary; everything else
+/// keeps the debug form.
+fn format_mutation(mutation: &aegis_ipc::JournalMutation) -> String {
+    match mutation {
+        aegis_ipc::JournalMutation::AgentAuth { principal, action } => {
+            let action = match action {
+                aegis_ipc::AgentAuthAction::Paired => "paired".to_owned(),
+                aegis_ipc::AgentAuthAction::Granted { op, persistence } => {
+                    let scope = match persistence {
+                        aegis_ipc::GrantPersistence::Once => "once",
+                        aegis_ipc::GrantPersistence::Session => "for this session",
+                        aegis_ipc::GrantPersistence::Always => "always",
+                        aegis_ipc::GrantPersistence::DeniedSession => {
+                            return format!(
+                                "agent {principal}: denied \"{}\" for this session",
+                                op.label()
+                            );
+                        }
+                    };
+                    format!("granted \"{}\" {scope}", op.label())
+                }
+                aegis_ipc::AgentAuthAction::GrantRevoked { op } => {
+                    format!("revoked grant for \"{}\"", op.label())
+                }
+                aegis_ipc::AgentAuthAction::Forgotten => "forgotten".to_owned(),
+                aegis_ipc::AgentAuthAction::Renamed => "renamed".to_owned(),
+                aegis_ipc::AgentAuthAction::CeilingChanged => "ceiling changed".to_owned(),
+            };
+            format!("agent {principal}: {action}")
+        }
+        other => format!("{other:?}"),
+    }
 }
 
 /// Format one server-pushed event as a single line for `subscribe`.
@@ -821,8 +998,10 @@ pub fn format_event(ev: &Event) -> String {
         }
         Event::Journal { entry } => {
             format!(
-                "journal #{} {:?}: {:?}",
-                entry.seq, entry.origin, entry.mutation
+                "journal #{} {:?}: {}",
+                entry.seq,
+                entry.origin,
+                format_mutation(&entry.mutation)
             )
         }
         Event::RealmsChanged { revision } => format!("realms changed r{revision}"),
@@ -916,7 +1095,7 @@ mod tests {
     #[test]
     fn screenshot_path_uses_lowercase_directory_and_creates_it() {
         let dir = std::env::temp_dir().join(format!(
-            "aegis-ctl-screenshots-{}-{}",
+            "aegis-cli-screenshots-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

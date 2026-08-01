@@ -1,7 +1,9 @@
 use crate::*;
 
+mod agent_auth;
 mod app_pick;
 mod apps;
+mod capability_pick;
 mod capture;
 mod commands;
 mod config;
@@ -25,8 +27,10 @@ mod state;
 mod stream;
 mod system;
 
+use agent_auth::*;
 use app_pick::*;
 use apps::*;
+use capability_pick::*;
 use capture::*;
 use commands::*;
 use config::*;
@@ -287,8 +291,12 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Per-window chrome is intentionally absent: decoration ownership lives
     // in the Wayland server, and borderless windows are managed through the
     // Dock, gestures, tiling, and key bindings.
+    // Read-only physical mirrors get one compositor-owned guard responsible
+    // for their disabled presentation and pointer ownership. The independent
+    // Realm seat remains the actual input-authority boundary in the server.
+    shell.add(Box::new(aegis_shell::ControlledWindowGuard::new()));
     // Agent input feedback is compositor-owned and non-interactive. Register
-    // it first so it appears above client content but below the HUD,
+    // it above the mirror guard so activity remains legible, but below the HUD,
     // notifications, and modal trusted chrome. Directed Realm capture renders
     // client surfaces directly and therefore never includes this layer.
     shell.add(Box::new(aegis_shell::AgentFeedback::new()));
@@ -350,6 +358,9 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Yes/no confirmation dialog (portal consent flows), opened by
     // PickConfirm IPC requests.
     shell.add(Box::new(aegis_shell::ConfirmPrompt::new()));
+    // Capability-borrowing checklist (ADR-0088 agent pairing), opened by
+    // PairAgent IPC requests.
+    shell.add(Box::new(aegis_shell::CapabilityPrompt::new()));
     // The dock is registered after the config is loaded below, so the pushed
     // catalog already carries the resolved `[dock]` pinned list.
     let mut input_acc = InputAccumulator::default();
@@ -694,10 +705,30 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::sync::mpsc::channel::<SecretPromptControlRequest>();
     let (confirm_pick_control_tx, confirm_pick_control_rx) =
         std::sync::mpsc::channel::<ConfirmPickControlRequest>();
+    let (capability_pick_control_tx, capability_pick_control_rx) =
+        std::sync::mpsc::channel::<CapabilityPickControlRequest>();
     let (journal_refusal_tx, journal_refusal_rx) =
         std::sync::mpsc::channel::<JournalRefusalRequest>();
+    let (auth_event_tx, auth_event_rx) = std::sync::mpsc::channel::<AuthEventRequest>();
     let journal =
         std::sync::Arc::new(std::sync::Mutex::new(aegis_ipc::Journal::default_capacity()));
+    let (agent_registry, grant_store) = match std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/share"))
+        }) {
+        Some(base) => (
+            PrincipalRegistry::load(base.join("aegis/principals.json")),
+            GrantStore::load(base.join("aegis/grants.json")),
+        ),
+        None => {
+            log::warn!(
+                "no XDG_DATA_HOME/HOME: agent principal registry and grants are session-only"
+            );
+            (PrincipalRegistry::in_memory(), GrantStore::in_memory())
+        }
+    };
+    let agent_lockdown = config.as_ref().map_or(true, |config| config.agent.lockdown);
     let live = std::sync::Arc::new(LiveState::new(
         LiveChannels {
             commands: ipc_cmd_tx,
@@ -714,12 +745,17 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
             app_pick_controls: app_pick_control_tx,
             secret_prompt_controls: secret_prompt_control_tx,
             confirm_pick_controls: confirm_pick_control_tx,
+            capability_pick_controls: capability_pick_control_tx,
             journal_refusals: journal_refusal_tx,
+            auth_events: auth_event_tx,
         },
         capture_worker.delivery_gate(),
         std::sync::Arc::clone(&notif_queue),
         std::sync::Arc::clone(&journal),
-        build_ipc_scopes(config.as_ref()),
+        builtin_ipc_scopes(),
+        agent_registry,
+        grant_store,
+        agent_lockdown,
     ));
     let settings_revision = 0;
     live.set_settings(aegis_ipc::SettingsSnapshot {
@@ -888,8 +924,11 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         pending_secret_prompt: None,
         confirm_pick_rx: confirm_pick_control_rx,
         pending_confirm_pick: None,
+        capability_pick_rx: capability_pick_control_rx,
+        pending_capability_pick: None,
         ipc_idle_inhibits: IdleInhibits::default(),
         journal_refusal_rx,
+        auth_event_rx,
         journal,
         live,
         ipc,

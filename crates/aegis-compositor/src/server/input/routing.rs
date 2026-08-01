@@ -336,7 +336,15 @@ impl Server {
         self.state
             .live_surfaces()
             .map(|p| unsafe { &*p })
-            .filter(|s| s.mapped && !s.xdg_toplevel.is_null() && visible.contains(&s.window.id))
+            .filter(|s| {
+                s.mapped
+                    && !s.xdg_toplevel.is_null()
+                    && visible.contains(&s.window.id)
+                    && self
+                        .state
+                        .authority
+                        .realm_observes_window(HUMAN_REALM, s.window.id)
+            })
             .map(|s| {
                 let mut w = s.window.clone();
                 w.read_only = !self.state.authority.seat_controls_window(HUMAN_SEAT, w.id);
@@ -371,7 +379,15 @@ impl Server {
             .state
             .live_surfaces()
             .map(|p| unsafe { &*p })
-            .filter(|s| s.mapped && !s.xdg_toplevel.is_null() && visible.contains(&s.window.id))
+            .filter(|s| {
+                s.mapped
+                    && !s.xdg_toplevel.is_null()
+                    && visible.contains(&s.window.id)
+                    && self
+                        .state
+                        .authority
+                        .realm_observes_window(HUMAN_REALM, s.window.id)
+            })
         {
             let w = &s.window;
             w.id.hash(&mut hasher);
