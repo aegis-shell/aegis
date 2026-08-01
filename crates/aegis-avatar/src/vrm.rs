@@ -1,5 +1,5 @@
 //! VRM avatar path: load the `.glb`-backed model and render it offscreen to a
-//! portrait texture for analytic circular compositing.
+//! portrait texture already circle-masked in its alpha channel.
 //!
 //! VRM 0.x and VRM 1.0 are both binary glTF containers, so the model loads
 //! through `flux_scene_graph::Scene::from_glb`. Companion VRMA clips are bound
@@ -7,17 +7,16 @@
 //! the CPU, and skinned on the GPU.
 //!
 //! Rendering follows the established offscreen pattern: a depth-tested scene
-//! pass updates one reusable sampleable render target. The lock compositor
-//! applies the circular analytic clip, so animation never performs a GPU→CPU
-//! readback or texture re-upload.
+//! pass updates one reusable sampleable render target, which a Canvas pass
+//! then blits through an analytic rounded-rect clip into the published
+//! texture. Hosts composite it directly without their own clip; animation
+//! never performs a GPU→CPU readback or texture re-upload.
 
 use std::path::{Path, PathBuf};
 
-#[cfg(debug_assertions)]
-use flux::Canvas;
 use flux::{
-    Camera, Format, Image, Material, MaterialDesc, MaterialKind, SceneColorLoad, SceneLight,
-    Surface, Target,
+    Camera, Canvas, Format, Image, Material, MaterialDesc, MaterialKind, SceneColorLoad,
+    SceneLight, Surface, Target,
 };
 use flux_scene_graph::{Animation, Bounds, Scene};
 
@@ -63,9 +62,13 @@ pub struct Model {
     bounds: Bounds,
     rest_head: Option<[f32; 3]>,
     surface: Surface,
-    #[cfg(debug_assertions)]
-    debug_canvas: Option<Canvas>,
+    /// One canvas serves both the circular mask blit and the debug dump.
+    canvas: Canvas,
     depth: Target,
+    /// Raw scene-pass output, before the circular mask.
+    rendered: Image,
+    /// `rendered` re-rendered through an analytic circular clip; this is the
+    /// texture hosts composite.
     texture: Image,
     elapsed: f32,
     source_path: PathBuf,
@@ -119,16 +122,11 @@ impl Model {
         };
         let surface = Surface::offscreen(device, ATLAS_SIZE, ATLAS_SIZE)
             .map_err(|error| VrmError::Render(path.to_path_buf(), error))?;
-        #[cfg(debug_assertions)]
-        let debug_canvas = if std::env::var_os("AEGIS_AVATAR_DEBUG_DUMP").is_some() {
-            Some(
-                Canvas::new(&surface)
-                    .map_err(|error| VrmError::Render(path.to_path_buf(), error))?,
-            )
-        } else {
-            None
-        };
+        let canvas = Canvas::new(&surface)
+            .map_err(|error| VrmError::Render(path.to_path_buf(), error))?;
         let depth = Target::depth(device, ATLAS_SIZE, ATLAS_SIZE, DEPTH_FORMAT)
+            .map_err(|error| VrmError::Render(path.to_path_buf(), error))?;
+        let rendered = Image::render_target(device, ATLAS_SIZE, ATLAS_SIZE, TARGET_FORMAT)
             .map_err(|error| VrmError::Render(path.to_path_buf(), error))?;
         let texture = Image::render_target(device, ATLAS_SIZE, ATLAS_SIZE, TARGET_FORMAT)
             .map_err(|error| VrmError::Render(path.to_path_buf(), error))?;
@@ -139,9 +137,9 @@ impl Model {
             bounds,
             rest_head,
             surface,
-            #[cfg(debug_assertions)]
-            debug_canvas,
+            canvas,
             depth,
+            rendered,
             texture,
             elapsed: 0.0,
             source_path: path.to_path_buf(),
@@ -161,6 +159,11 @@ impl Model {
         }
     }
 
+    /// The circle-masked portrait texture. Every avatar texture — stills via
+    /// the CPU mask, VRM via the analytic rrect blit — is masked in its alpha
+    /// channel, so hosts composite directly without their own clip. The lock
+    /// screen still applies its own circular clip on top; masking twice is
+    /// harmless.
     #[must_use]
     pub fn texture(&self) -> &Image {
         &self.texture
@@ -205,7 +208,7 @@ impl Model {
             .begin_frame()
             .map_err(|error| VrmError::Render(self.source_path.clone(), error))?;
         let pass = frame
-            .begin_image_scene_pass(&self.texture, &self.depth, SceneColorLoad::Clear([0.0; 4]))
+            .begin_image_scene_pass(&self.rendered, &self.depth, SceneColorLoad::Clear([0.0; 4]))
             .map_err(|error| VrmError::Render(self.source_path.clone(), error))?;
         let head_offset = self
             .rest_head
@@ -230,22 +233,38 @@ impl Model {
         self.scene
             .draw(&pass, &camera, &self.material, Some(&light));
         pass.end();
-        // The lock screen samples `texture` directly. Only an explicitly
+        // Blit the scene through an analytic circular clip into the published
+        // texture, so hosts (including the lens-based command panel, which
+        // cannot clip images to a circle) composite it without their own
+        // mask. The radius of half the edge makes the rrect a full circle.
+        self.canvas
+            .begin_target(&frame, &self.texture, Some(flux::rgba(0, 0, 0, 0)))
+            .map_err(|error| VrmError::Render(self.source_path.clone(), error))?;
+        self.canvas.draw_image_rrect(
+            &self.rendered,
+            0.0,
+            0.0,
+            ATLAS_SIZE as f32,
+            ATLAS_SIZE as f32,
+            ATLAS_SIZE as f32 * 0.5,
+        );
+        self.canvas.end_target();
+        // The lock screen samples `texture()` directly. Only an explicitly
         // requested debug dump adds the GPU copy to the readable surface;
         // release builds have neither this pass nor a CPU readback path.
         #[cfg(debug_assertions)]
-        if let Some(canvas) = &self.debug_canvas {
-            canvas
+        if std::env::var_os("AEGIS_AVATAR_DEBUG_DUMP").is_some() {
+            self.canvas
                 .begin(&frame, Some(flux::rgba(0, 0, 0, 0)))
                 .map_err(|error| VrmError::Render(self.source_path.clone(), error))?;
-            canvas.draw_image(
-                &self.texture,
+            self.canvas.draw_image(
+                &self.rendered,
                 0.0,
                 0.0,
                 ATLAS_SIZE as f32,
                 ATLAS_SIZE as f32,
             );
-            canvas.end();
+            self.canvas.end();
         }
         frame
             .submit()

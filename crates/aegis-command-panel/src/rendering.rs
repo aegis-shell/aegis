@@ -1,5 +1,7 @@
 use super::*;
 
+use std::collections::VecDeque;
+
 /// A deferred row click captured during the menu frame's column closure.
 pub(super) enum MenuRowAction {
     Back,
@@ -276,4 +278,141 @@ pub(super) fn agent_workspace_state_label(
         AgentWorkspaceState::Paused => i18n.text(Message::RealmPaused),
         AgentWorkspaceState::PartiallyPaused => i18n.text(Message::AgentWorkspacesPartiallyPaused),
     }
+}
+
+// ---- header-band gauges ----------------------------------------------------
+
+/// Fixed-capacity ring of utilization samples for the header sparklines:
+/// pushing past `cap` evicts the oldest sample.
+pub(super) struct History {
+    samples: VecDeque<f32>,
+    cap: usize,
+}
+
+impl History {
+    pub(super) fn new(cap: usize) -> History {
+        History {
+            samples: VecDeque::with_capacity(cap),
+            cap,
+        }
+    }
+
+    pub(super) fn push(&mut self, value: f32) {
+        if self.cap == 0 {
+            return;
+        }
+        while self.samples.len() >= self.cap {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(value);
+    }
+
+    #[cfg(test)]
+    pub(super) fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn newest(&self) -> Option<f32> {
+        self.samples.back().copied()
+    }
+
+    pub(super) fn samples(&self) -> impl Iterator<Item = f32> + '_ {
+        self.samples.iter().copied()
+    }
+}
+
+/// A thin horizontal gauge: rounded track with an accent fill of
+/// `fraction * width`, both faded with the reveal progress.
+pub(super) fn gauge_bar(f: &mut Frame, id: &str, rect: Rect, fraction: f32, progress: f32) {
+    let sao = Sao::classic();
+    f.layer(
+        id,
+        rect,
+        &OverlayOpts {
+            bg: fade_color(sao.track, progress),
+            border: Color::TRANSPARENT,
+            radius: rect.h * 0.5,
+            pad: 0.0,
+            ..Default::default()
+        },
+        |_| {},
+    );
+    let fill_w = rect.w * fraction.clamp(0.0, 1.0);
+    if fill_w >= 0.5 {
+        f.layer(
+            &format!("{id}-fill"),
+            Rect { w: fill_w, ..rect },
+            &OverlayOpts {
+                bg: fade_color(sao.accent, progress),
+                border: Color::TRANSPARENT,
+                radius: rect.h * 0.5,
+                pad: 0.0,
+                ..Default::default()
+            },
+            |_| {},
+        );
+    }
+}
+
+/// A btop-style history strip: thin vertical bars right-aligned in `rect`,
+/// newest sample at the right, height proportional to the 0..=100 sample.
+pub(super) fn render_sparkline(
+    f: &mut Frame,
+    metric: &str,
+    history: &History,
+    rect: Rect,
+    progress: f32,
+) {
+    const BAR_W: f32 = 2.0;
+    const BAR_GAP: f32 = 1.5;
+    let sao = Sao::classic();
+    let max_bars = ((rect.w + BAR_GAP) / (BAR_W + BAR_GAP)).floor().max(0.0) as usize;
+    let samples: Vec<f32> = history.samples().collect();
+    let count = samples.len().min(max_bars);
+    for (index, sample) in samples[samples.len() - count..].iter().enumerate() {
+        let h = (rect.h * (sample / 100.0).clamp(0.0, 1.0))
+            .max(1.5)
+            .min(rect.h);
+        let right = rect.x + rect.w - (count - 1 - index) as f32 * (BAR_W + BAR_GAP);
+        f.layer(
+            &format!("aegis-sao-spark-{metric}-{index}"),
+            Rect {
+                x: right - BAR_W,
+                y: rect.y + rect.h - h,
+                w: BAR_W,
+                h,
+            },
+            &OverlayOpts {
+                bg: fade_color(sao.accent, progress),
+                border: Color::TRANSPARENT,
+                radius: 0.75,
+                pad: 0.0,
+                ..Default::default()
+            },
+            |_| {},
+        );
+    }
+}
+
+/// SI throughput: "<10 → one decimal (`1.2M`), otherwise none (`340K`)".
+pub(super) fn format_rate(bytes_per_sec: f64) -> String {
+    const UNITS: [&str; 4] = ["B", "K", "M", "G"];
+    let mut value = bytes_per_sec.max(0.0);
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 || value >= 10.0 {
+        format!("{value:.0}{}", UNITS[unit])
+    } else {
+        format!("{value:.1}{}", UNITS[unit])
+    }
+}
+
+/// A "used/total" GiB pair for the RAM gauge, one decimal each: `6.4/15.6G`.
+pub(super) fn format_gib_pair(used: u64, total: u64) -> String {
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    format!("{:.1}/{:.1}G", used as f64 / GIB, total as f64 / GIB)
 }

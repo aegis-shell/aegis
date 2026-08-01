@@ -34,6 +34,7 @@ fills.
 |------|---------|
 | [Liquid Glass](liquid-glass.md) | The analytic glass material: optical model, lighting, adaptivity, parameters, and usage rules |
 | [Surfaces](surfaces.md) | Material inventory for chrome surfaces with tokens and selection rules |
+| [Command Panel](command-panel.md) | The three-surface SAO cluster: header band, icon rail, content sections, and motion |
 
 ## Related Documentation
 

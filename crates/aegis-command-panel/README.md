@@ -24,6 +24,21 @@ Sections:
   retains one hour of entries; the frameless toast strip presents only a
   three-second window of them (ADR-0083).
 
+## Layout
+
+One centered cluster of three frosted-white surfaces, each with its own
+reveal animation:
+
+- **Header band** — the user's identity (ringed avatar, display name,
+  `@username · groups` from the local account record) beside a live machine
+  monitor: a chassis glyph (laptop/desktop) and CPU/GPU/RAM/NET/DISK/BAT
+  gauges fed by `Chrome::update_resource_stats`, with btop-style sparklines
+  for CPU, GPU, and RAM.
+- **Icon rail** — one circular button per section (ring + amber glyph,
+  solid disc when selected) and the close button at the bottom.
+- **Content panel** — the section title and the active section's body; all
+  three bodies scroll when they overflow.
+
 ## Boundaries
 
 The component owns presentation and interaction state only. System snapshots

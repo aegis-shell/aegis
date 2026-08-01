@@ -14,10 +14,10 @@ use aegis_core::input::{KeyChar, key_action};
 use aegis_core::launcher::{Launch, Launcher as SearchBrain};
 use aegis_core::window::Window;
 use aegis_core::workspace::WorkspaceSnapshot;
-use aegis_design::Design;
+use aegis_design::{Design, materials};
 use aegis_shell::{
-    AppCatalog, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet, Localizer, Message,
-    truncate,
+    AppCatalog, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet, LiquidGlassRegion,
+    Localizer, Message, truncate,
 };
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
 
@@ -32,6 +32,7 @@ const MAX_VISIBLE_RESULTS: usize = 6;
 const ICON_SIZE: f32 = 38.0;
 const BACKDROP_BLUR_SIGMA: f32 = 18.0;
 const ANIMATION_SPEED: f32 = 22.0;
+const PANEL_RADIUS: f32 = 18.0;
 
 /// Spotlight-style application search, opened by the default
 /// `Super+Space` binding.
@@ -227,19 +228,10 @@ impl Chrome for Prism {
         );
 
         let design = Design::dark();
-        frame.layer(
-            "aegis-prism-panel",
-            panel,
-            &OverlayOpts {
-                bg: with_progress(design.colors.popover_surface, progress),
-                border: with_progress(design.colors.popover_border, progress),
-                border_width: design.strokes.hairline,
-                radius: 18.0,
-                pad: 0.0,
-                ..Default::default()
-            },
-            |_| {},
-        );
+        let mut panel_material = materials::dock(&design);
+        panel_material.bg = Color::rgba(255, 255, 255, alpha(12, progress));
+        panel_material.radius = PANEL_RADIUS;
+        frame.layer("aegis-prism-panel", panel, &panel_material, |_| {});
 
         let search = Rect {
             x: panel.x,
@@ -533,10 +525,35 @@ impl Chrome for Prism {
         }
         let panel = Self::panel_rect(display, self.brain.filtered().len(), self.visibility);
         vec![BackdropRegion {
-            x: (panel.x - 12.0).max(0.0),
-            y: (panel.y - 12.0).max(0.0),
-            w: (panel.w + 24.0).min(display.0),
-            h: (panel.h + 24.0).min(display.1),
+            x: panel.x,
+            y: panel.y,
+            w: panel.w,
+            h: panel.h,
+        }]
+    }
+
+    fn liquid_glass_regions(
+        &self,
+        display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> Vec<LiquidGlassRegion> {
+        if !self.brain.is_open() && self.visibility <= 0.01 {
+            return Vec::new();
+        }
+        let panel = Self::panel_rect(display, self.brain.filtered().len(), self.visibility);
+        vec![LiquidGlassRegion {
+            bounds: BackdropRegion {
+                x: panel.x,
+                y: panel.y,
+                w: panel.w,
+                h: panel.h,
+            },
+            corner_radius: PANEL_RADIUS,
+            opacity: self.visibility,
+            shadow_alpha: 0.20,
+            shadow_blur: 18.0,
+            shadow_offset_y: 9.0,
         }]
     }
 }
@@ -633,6 +650,25 @@ mod tests {
         assert!(tiny.x + tiny.w <= 160.0);
         assert!(tiny.y + tiny.h <= 100.0);
         assert_eq!(Prism::result_capacity((160.0, 100.0)), 0);
+    }
+
+    #[test]
+    fn open_panel_is_one_analytic_glass_body() {
+        let mut prism = Prism::new();
+        prism.toggle_prism(&mut ChromeEvents::default());
+        prism.visibility = 0.75;
+        let display = (1280.0, 720.0);
+        let workspaces = WorkspaceSnapshot {
+            outputs: Vec::new(),
+        };
+
+        let backdrop = prism.backdrop_regions(display, &[], &workspaces);
+        let glass = prism.liquid_glass_regions(display, &[], &workspaces);
+        assert_eq!(backdrop.len(), 1);
+        assert_eq!(glass.len(), 1);
+        assert_eq!(glass[0].bounds, backdrop[0]);
+        assert_eq!(glass[0].corner_radius, PANEL_RADIUS);
+        assert_eq!(glass[0].opacity, 0.75);
     }
 
     #[test]

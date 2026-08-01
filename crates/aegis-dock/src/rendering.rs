@@ -66,7 +66,10 @@ impl Chrome for Dock {
         let rest_panel_y = disp.y - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN;
         let effective_autohide = self.effective_autohide();
 
-        // Pointer activation band for magnification and autohide reveal.
+        // Pointer activation band for magnification. A visible hover surface
+        // independently keeps autohide revealed while the pointer travels
+        // from the icon into a live preview card.
+        let over_hover_surface = self.hover_surface_contains(cursor.x, cursor.y);
         let in_band = if self.collapse_pending {
             false
         } else if effective_autohide && self.autohide_reveal < 0.2 {
@@ -81,10 +84,11 @@ impl Chrome for Dock {
                 && cursor.x < rest_bounds.x + rest_bounds.w
                 && cursor.y < rest_bounds.y + rest_bounds.h
         };
+        let keeps_revealed = in_band || over_hover_surface;
         let menu_open = self.app_menu.is_open();
 
         if effective_autohide {
-            if in_band || menu_open {
+            if keeps_revealed || menu_open {
                 self.autohide_idle = 0.0;
             } else {
                 self.autohide_idle += dt;
@@ -255,10 +259,10 @@ impl Chrome for Dock {
             }
         }
 
-        // The bar and collapsed indicator are the same layer. As it drains,
-        // the glass grows more opaque and becomes the pale stadium handle
-        // while staying anchored to the same bottom edge. Edge definition
-        // comes from the compositor's glass rim, not a painted border.
+        // The bar and collapsed indicator are the same layer, and both are
+        // analytic glass bodies: as it drains, the bar morphs into the
+        // stadium handle while keeping lensing, tint and its drop shadow.
+        // Edge definition comes from the glass rim, not a painted border.
         let dock_material = collapsing_dock_material(surface_progress, panel_rect.h);
         // A layer with an empty body collapses to ~0 (the rect is only an
         // anchor, not a size); a fixed-size child forces it to the bar size.
@@ -398,9 +402,33 @@ impl Chrome for Dock {
 
         // Fire a click once on the press edge (the host does not clear the
         // per-frame pressed flag, so track the button-down level transition).
-        if down
-            && !self.prev_down
+        let pressed_edge = down && !self.prev_down;
+        let preview_hit = self
+            .live_preview
+            .as_ref()
+            .and_then(|presentation| live_preview_hit(presentation, cursor.x, cursor.y));
+        self.hovered_preview = preview_hit.filter(|id| {
+            windows
+                .iter()
+                .find(|window| window.id == *id)
+                .is_some_and(|window| !window.read_only)
+        });
+        let clicked_preview = pressed_edge && !menu_was_open && self.hovered_preview.is_some();
+        if clicked_preview {
+            out.clicked = self.hovered_preview;
+            self.hovered_tile = None;
+            self.hover_elapsed = 0.0;
+            self.tooltip_tile = None;
+            self.tooltip_alpha = 0.0;
+            self.live_preview = None;
+            self.hover_surface_bounds = None;
+            self.hover_owner_bounds = None;
+            self.hovered_preview = None;
+        }
+
+        if pressed_edge
             && !menu_was_open
+            && !clicked_preview
             && let Some(i) = hit
         {
             let t = &tiles[i];
@@ -451,15 +479,23 @@ impl Chrome for Dock {
             }
         }
 
-        // Reveal an app name only after a short dwell, then keep it centred
-        // above the current animated icon. Switching tiles resets the dwell so
-        // a sweep across the dock does not produce a trail of labels.
-        let hovered_tile = hit.map(|i| tiles[i].key.clone());
+        // Reveal an app name or running-window previews after a short dwell.
+        // Once open, the popover retains its owner while the pointer crosses
+        // the gap above the Dock and enters a preview card.
+        let hovered_tile = hit.map(|i| tiles[i].key.clone()).or_else(|| {
+            over_hover_surface
+                .then(|| self.tooltip_tile.clone())
+                .flatten()
+        });
         if self.hovered_tile != hovered_tile {
             self.hovered_tile = hovered_tile;
             self.hover_elapsed = 0.0;
             self.tooltip_tile = None;
             self.tooltip_alpha = 0.0;
+            self.live_preview = None;
+            self.hover_surface_bounds = None;
+            self.hover_owner_bounds = None;
+            self.hovered_preview = None;
         } else if self.hovered_tile.is_some() && !self.app_menu.is_open() {
             self.hover_elapsed += dt;
         }
@@ -467,6 +503,10 @@ impl Chrome for Dock {
         if self.app_menu.is_open() {
             self.tooltip_tile = None;
             self.tooltip_alpha = 0.0;
+            self.live_preview = None;
+            self.hover_surface_bounds = None;
+            self.hover_owner_bounds = None;
+            self.hovered_preview = None;
         } else {
             let wants_tooltip = self.hovered_tile.is_some() && self.hover_elapsed >= TOOLTIP_DWELL;
             if wants_tooltip {
@@ -494,13 +534,39 @@ impl Chrome for Dock {
             .as_ref()
             .and_then(|key| tiles.iter().enumerate().find(|(_, tile)| &tile.key == key))
         {
-            render_tooltip(
-                f,
-                &tile.label,
-                icon_rects[index],
-                (disp.x, disp.y),
-                self.tooltip_alpha,
-            );
+            // Once the popover exists, freeze its owner geometry. The Dock's
+            // magnification spring can keep settling underneath it, but the
+            // compositor preview, glass body, labels, and pointer bridge must
+            // remain on one exact rectangle instead of chasing that spring a
+            // frame apart.
+            let owner = self.hover_owner_bounds.unwrap_or(icon_rects[index]);
+            self.hover_owner_bounds = Some(owner);
+            if tile.windows.is_empty() {
+                let rect =
+                    tooltip_rect(f, &tile.label, owner, (disp.x, disp.y), self.tooltip_alpha);
+                self.hover_surface_bounds = Some(rect);
+                self.live_preview = None;
+                self.hovered_preview = None;
+                render_tooltip(f, &tile.label, rect, self.tooltip_alpha);
+            } else {
+                let presentation =
+                    live_preview_layout((disp.x, disp.y), owner, &tile.windows, self.tooltip_alpha);
+                self.hover_surface_bounds = Some(to_lens_rect(presentation.panel));
+                self.hovered_preview =
+                    live_preview_hit(&presentation, cursor.x, cursor.y).filter(|id| {
+                        windows
+                            .iter()
+                            .find(|window| window.id == *id)
+                            .is_some_and(|window| !window.read_only)
+                    });
+                render_live_preview_chrome(f, &presentation, windows, self.hovered_preview);
+                self.live_preview = Some(presentation);
+            }
+        } else {
+            self.live_preview = None;
+            self.hover_surface_bounds = None;
+            self.hover_owner_bounds = None;
+            self.hovered_preview = None;
         }
         self.app_menu.render(f, input, windows, i18n, out);
         if !self.app_menu.is_open() {
@@ -526,11 +592,10 @@ impl Chrome for Dock {
     }
 
     fn backdrop_blur_sigma(&self) -> f32 {
-        if self.fullscreen_locked() || (self.effective_autohide() && self.autohide_reveal <= 0.05) {
-            0.0
-        } else {
-            12.0
-        }
+        // The collapsed handle is an analytic glass body too, so the
+        // compositor's capture path must stay live whenever the Dock is
+        // not hidden behind fullscreen content.
+        if self.fullscreen_locked() { 0.0 } else { 12.0 }
     }
 
     fn backdrop_regions(
@@ -539,9 +604,14 @@ impl Chrome for Dock {
         windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<BackdropRegion> {
-        self.liquid_glass_region(display, windows)
-            .map(|region| vec![region.bounds])
-            .unwrap_or_default()
+        let mut regions = Vec::with_capacity(2);
+        if let Some(region) = self.liquid_glass_region(display, windows) {
+            regions.push(region.bounds);
+        }
+        if let Some(region) = self.hover_liquid_glass_region() {
+            regions.push(region.bounds);
+        }
+        regions
     }
 
     fn liquid_glass_regions(
@@ -552,7 +622,12 @@ impl Chrome for Dock {
     ) -> Vec<LiquidGlassRegion> {
         self.liquid_glass_region(display, windows)
             .into_iter()
+            .chain(self.hover_liquid_glass_region())
             .collect()
+    }
+
+    fn live_preview_presentation(&self) -> Option<LivePreviewPresentation> {
+        self.live_preview.clone()
     }
 
     fn captures_keyboard(&self) -> bool {
@@ -608,6 +683,9 @@ impl Chrome for Dock {
         if self.app_menu.contains(x, y, display) {
             return true;
         }
+        if self.hover_surface_contains(x, y) {
+            return true;
+        }
         if self.effective_autohide()
             && Self::collapse_content_progress(self.autohide_reveal)
                 <= AUTOHIDE_CONTENT_INTERACTION_MIN
@@ -639,6 +717,14 @@ impl Chrome for Dock {
     }
 
     fn update_windows(&mut self, windows: &[Window]) {
+        if self.live_preview.as_ref().is_some_and(|presentation| {
+            presentation
+                .cards
+                .iter()
+                .any(|card| !windows.iter().any(|window| window.id == card.window))
+        }) {
+            self.dismiss_hover_surface();
+        }
         let space_use = SpaceUse::from_windows(windows);
         let previous_space_use = self.space_use;
         self.space_use = space_use;
@@ -684,6 +770,7 @@ impl Chrome for Dock {
     fn update_app_catalog(&mut self, catalog: &AppCatalog) {
         self.app_menu.dismiss();
         self.menu_tile = None;
+        self.dismiss_hover_surface();
         self.all_apps = catalog.apps.clone();
         self.apps = catalog
             .pinned
@@ -708,7 +795,7 @@ impl Dock {
         display: (f32, f32),
         windows: &[Window],
     ) -> Option<LiquidGlassRegion> {
-        if self.fullscreen_locked() || (self.effective_autohide() && self.autohide_reveal <= 0.05) {
+        if self.fullscreen_locked() {
             return None;
         }
         let expanded = self.visual_panel_bounds(windows, display);
@@ -722,6 +809,10 @@ impl Dock {
         } else {
             1.0
         };
+        // The shadow follows the morph in logical pixels: the full bar
+        // casts the deep dock shadow, the collapsed handle keeps a
+        // proportionally tight one.
+        let shadow_factor = (bounds.h / DOCK_PANEL_HEIGHT).clamp(0.35, 1.0);
         Some(LiquidGlassRegion {
             bounds: BackdropRegion {
                 x: bounds.x,
@@ -731,6 +822,34 @@ impl Dock {
             },
             corner_radius: collapsing_radius(surface_progress, bounds.h),
             opacity: 1.0,
+            shadow_alpha: 0.20,
+            shadow_blur: 12.0 * shadow_factor,
+            shadow_offset_y: 6.0 * shadow_factor,
+        })
+    }
+
+    fn hover_liquid_glass_region(&self) -> Option<LiquidGlassRegion> {
+        let bounds = self.hover_surface_bounds?;
+        if self.tooltip_alpha <= 0.01 || bounds.w <= 0.0 || bounds.h <= 0.0 {
+            return None;
+        }
+        let preview = self.live_preview.is_some();
+        Some(LiquidGlassRegion {
+            bounds: BackdropRegion {
+                x: bounds.x,
+                y: bounds.y,
+                w: bounds.w,
+                h: bounds.h,
+            },
+            corner_radius: if preview {
+                PREVIEW_PANEL_RADIUS
+            } else {
+                TOOLTIP_HEIGHT * 0.5
+            },
+            opacity: self.tooltip_alpha,
+            shadow_alpha: if preview { 0.20 } else { 0.14 },
+            shadow_blur: if preview { 16.0 } else { 10.0 },
+            shadow_offset_y: if preview { 8.0 } else { 5.0 },
         })
     }
 }
@@ -836,7 +955,7 @@ fn collapsing_dock_material(surface_progress: f32, height: f32) -> OverlayOpts {
         mix_channel(240, 255, surface_progress),
         mix_channel(243, 255, surface_progress),
         mix_channel(252, 255, surface_progress),
-        mix_channel(150, 12, surface_progress),
+        mix_channel(64, 12, surface_progress),
     );
     material.radius = collapsing_radius(surface_progress, height);
     material
@@ -865,48 +984,259 @@ fn tile_opts() -> OverlayOpts {
     }
 }
 
-/// A compact app-name bubble that follows the owning dock icon. It is kept
-/// visually quieter than a context menu and never obscures the icon itself.
-fn render_tooltip(frame: &mut Frame, label: &str, owner: Rect, display: (f32, f32), alpha: f32) {
+/// Resolve the name bubble once so the painted foreground and compositor
+/// liquid-glass body use identical geometry on the following frame.
+fn tooltip_rect(
+    frame: &mut Frame,
+    label: &str,
+    owner: Rect,
+    display: (f32, f32),
+    _alpha: f32,
+) -> Rect {
     let label = truncate(label, 32);
     let text = frame.measure_text(&label, 12.5);
     let width = (text.width + 22.0).clamp(54.0, 224.0);
     let x = (owner.x + owner.w * 0.5 - width * 0.5).clamp(8.0, (display.0 - width - 8.0).max(8.0));
-    let y = (owner.y - TOOLTIP_GAP - TOOLTIP_HEIGHT - (1.0 - alpha) * 3.0).max(8.0);
-    let opacity = |base: u8| (base as f32 * alpha.clamp(0.0, 1.0)).round() as u8;
-    let rect = Rect {
+    let y = (owner.y - TOOLTIP_GAP - TOOLTIP_HEIGHT).max(8.0);
+    Rect {
         x,
         y,
         w: width,
         h: TOOLTIP_HEIGHT,
-    };
+    }
+}
+
+/// A compact app-name bubble that follows the owning Dock icon. Its physical
+/// body comes from the compositor's analytic glass pass; this foreground only
+/// supplies a minimal tint and the text.
+fn render_tooltip(frame: &mut Frame, label: &str, rect: Rect, alpha: f32) {
+    let label = truncate(label, 32);
+    let opacity = |base: u8| (base as f32 * alpha.clamp(0.0, 1.0)).round() as u8;
     let original = frame.theme();
     frame.set_theme(original.with_fg(Color::rgba(242, 244, 250, opacity(255))));
-    frame.layer(
-        "aegis-dock-app-name",
-        rect,
-        &OverlayOpts {
-            // Frosted glass over the dock's backdrop-blur band: a light tint
-            // with a bright edge, matching the bar's material instead of the
-            // old opaque dark bubble.
-            bg: Color::rgba(255, 255, 255, opacity(40)),
-            border: Color::rgba(255, 255, 255, opacity(78)),
-            border_width: 1.0,
-            radius: TOOLTIP_HEIGHT * 0.5,
-            pad: 0.0,
-            cross: Align::Center,
-            ..Default::default()
-        },
-        |frame| {
-            frame.row_ex(
-                &LayoutOpts {
-                    height: TOOLTIP_HEIGHT,
-                    cross: Align::Center,
-                    ..Default::default()
-                },
-                |frame| frame.label_compact_sized(&label, 12.5),
-            );
-        },
-    );
+    let mut material = materials::dock(&Design::dark());
+    material.bg = Color::rgba(255, 255, 255, opacity(12));
+    material.radius = TOOLTIP_HEIGHT * 0.5;
+    frame.layer("aegis-dock-app-name", rect, &material, |frame| {
+        frame.row_ex(
+            &LayoutOpts {
+                height: TOOLTIP_HEIGHT,
+                cross: Align::Center,
+                ..Default::default()
+            },
+            |frame| frame.label_compact_sized(&label, 12.5),
+        );
+    });
     frame.set_theme(original);
+}
+
+/// Lay out every running window for one Dock application. Typical groups stay
+/// in a single row; large groups wrap into a centred grid while preserving a
+/// usable card width and staying inside the output margins.
+pub(super) fn live_preview_layout(
+    display: (f32, f32),
+    owner: Rect,
+    windows: &[aegis_core::window::WindowId],
+    visibility: f32,
+) -> LivePreviewPresentation {
+    let count = windows.len().max(1);
+    let available_w = (display.0 - PREVIEW_SCREEN_MARGIN * 2.0).max(1.0);
+    let max_columns = (((available_w - PREVIEW_PANEL_PAD * 2.0 + PREVIEW_CARD_GAP)
+        / (PREVIEW_CARD_MIN_WIDTH + PREVIEW_CARD_GAP))
+        .floor() as usize)
+        .clamp(1, count);
+    let columns = count.min(max_columns);
+    let rows = count.div_ceil(columns);
+    let horizontal_width = (available_w
+        - PREVIEW_PANEL_PAD * 2.0
+        - PREVIEW_CARD_GAP * columns.saturating_sub(1) as f32)
+        / columns as f32;
+    let vertical_space = (owner.y
+        - PREVIEW_PANEL_GAP
+        - PREVIEW_SCREEN_MARGIN
+        - PREVIEW_PANEL_PAD * 2.0
+        - PREVIEW_CARD_GAP * rows.saturating_sub(1) as f32)
+        .max(1.0);
+    let vertical_width =
+        ((vertical_space / rows as f32 - PREVIEW_LABEL_HEIGHT) / PREVIEW_ASPECT).max(1.0);
+    let card_w = PREVIEW_CARD_MAX_WIDTH
+        .min(horizontal_width)
+        .min(vertical_width)
+        .max(56.0);
+    let preview_h = (card_w * PREVIEW_ASPECT).max(44.0);
+    let card_h = preview_h + PREVIEW_LABEL_HEIGHT;
+    let panel_w = card_w * columns as f32
+        + PREVIEW_CARD_GAP * columns.saturating_sub(1) as f32
+        + PREVIEW_PANEL_PAD * 2.0;
+    let panel_h = card_h * rows as f32
+        + PREVIEW_CARD_GAP * rows.saturating_sub(1) as f32
+        + PREVIEW_PANEL_PAD * 2.0;
+    let panel_x = (owner.x + owner.w * 0.5 - panel_w * 0.5).clamp(
+        PREVIEW_SCREEN_MARGIN,
+        (display.0 - panel_w - PREVIEW_SCREEN_MARGIN).max(PREVIEW_SCREEN_MARGIN),
+    );
+    let panel_y = (owner.y - PREVIEW_PANEL_GAP - panel_h).max(PREVIEW_SCREEN_MARGIN);
+    let panel = Rect {
+        x: panel_x,
+        y: panel_y,
+        w: panel_w,
+        h: panel_h,
+    };
+
+    let cards = windows
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, window)| {
+            let row = index / columns;
+            let column = index % columns;
+            let row_count = windows.len().saturating_sub(row * columns).min(columns);
+            let row_w =
+                card_w * row_count as f32 + PREVIEW_CARD_GAP * row_count.saturating_sub(1) as f32;
+            let row_x = panel.x + (panel.w - row_w) * 0.5;
+            let x = row_x + column as f32 * (card_w + PREVIEW_CARD_GAP);
+            let y = panel.y + PREVIEW_PANEL_PAD + row as f32 * (card_h + PREVIEW_CARD_GAP);
+            WindowSwitcherCard {
+                window,
+                geometry: aegis_core::window_switcher::Card {
+                    outer: core_rect(Rect {
+                        x,
+                        y,
+                        w: card_w,
+                        h: card_h,
+                    }),
+                    preview: core_rect(Rect {
+                        x,
+                        y,
+                        w: card_w,
+                        h: preview_h,
+                    }),
+                    label: core_rect(Rect {
+                        x,
+                        y: y + preview_h,
+                        w: card_w,
+                        h: PREVIEW_LABEL_HEIGHT,
+                    }),
+                },
+            }
+        })
+        .collect();
+    LivePreviewPresentation {
+        panel: core_rect(panel),
+        cards,
+        visibility: visibility.clamp(0.0, 1.0),
+    }
+}
+
+fn render_live_preview_chrome(
+    frame: &mut Frame,
+    presentation: &LivePreviewPresentation,
+    windows: &[Window],
+    hovered: Option<aegis_core::window::WindowId>,
+) {
+    let opacity = |base: u8| (base as f32 * presentation.visibility.clamp(0.0, 1.0)).round() as u8;
+    let panel = to_lens_rect(presentation.panel);
+    let mut material = materials::dock(&Design::dark());
+    material.bg = Color::rgba(255, 255, 255, opacity(12));
+    material.radius = PREVIEW_PANEL_RADIUS;
+    frame.layer("aegis-dock-live-previews", panel, &material, |frame| {
+        frame.column_ex(&sized(panel.w, panel.h), |_| {});
+    });
+
+    let original = frame.theme();
+    frame.set_theme(original.with_fg(Color::rgba(242, 244, 250, opacity(255))));
+    for (index, card) in presentation.cards.iter().enumerate() {
+        let Some(window) = windows.iter().find(|window| window.id == card.window) else {
+            continue;
+        };
+        let outer = to_lens_rect(card.geometry.outer);
+        let is_hovered = hovered == Some(window.id) && !window.read_only;
+        frame.layer(
+            &format!("aegis-dock-live-preview-card-{index}"),
+            outer,
+            &OverlayOpts {
+                bg: Color::rgba(255, 255, 255, opacity(if is_hovered { 14 } else { 4 })),
+                border: if is_hovered {
+                    Color::rgba(126, 178, 255, opacity(245))
+                } else {
+                    Color::rgba(255, 255, 255, opacity(42))
+                },
+                border_width: if is_hovered { 2.0 } else { 1.0 },
+                radius: 11.0,
+                pad: 0.0,
+                ..Default::default()
+            },
+            |frame| frame.column_ex(&sized(outer.w, outer.h), |_| {}),
+        );
+
+        let label_rect = to_lens_rect(card.geometry.label);
+        let title = window
+            .title
+            .as_deref()
+            .or(window.app_id.as_deref())
+            .unwrap_or("Untitled");
+        let label = truncate(title, (label_rect.w / 7.0).max(5.0) as usize);
+        frame.layer(
+            &format!("aegis-dock-live-preview-label-{index}"),
+            label_rect,
+            &OverlayOpts {
+                bg: Color::rgba(255, 255, 255, opacity(9)),
+                radius: 8.0,
+                pad: 0.0,
+                cross: Align::Center,
+                ..Default::default()
+            },
+            |frame| {
+                frame.row_ex(
+                    &LayoutOpts {
+                        width: label_rect.w,
+                        height: label_rect.h,
+                        pad: 8.0,
+                        cross: Align::Center,
+                        ..Default::default()
+                    },
+                    |frame| frame.label_compact_sized(&label, 11.5),
+                );
+            },
+        );
+    }
+    frame.set_theme(original);
+}
+
+fn contains_core_rect(rect: aegis_core::Rect, x: f32, y: f32) -> bool {
+    x >= rect.origin.x as f32
+        && y >= rect.origin.y as f32
+        && x < (rect.origin.x + rect.size.w) as f32
+        && y < (rect.origin.y + rect.size.h) as f32
+}
+
+pub(super) fn live_preview_hit(
+    presentation: &LivePreviewPresentation,
+    x: f32,
+    y: f32,
+) -> Option<aegis_core::window::WindowId> {
+    presentation
+        .cards
+        .iter()
+        .rev()
+        .find(|card| contains_core_rect(card.geometry.outer, x, y))
+        .map(|card| card.window)
+}
+
+fn core_rect(rect: Rect) -> aegis_core::Rect {
+    aegis_core::Rect::new(
+        rect.x.round() as i32,
+        rect.y.round() as i32,
+        rect.w.round().max(1.0) as i32,
+        rect.h.round().max(1.0) as i32,
+    )
+}
+
+fn to_lens_rect(rect: aegis_core::Rect) -> Rect {
+    Rect {
+        x: rect.origin.x as f32,
+        y: rect.origin.y as f32,
+        w: rect.size.w as f32,
+        h: rect.size.h as f32,
+    }
 }

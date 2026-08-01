@@ -1,16 +1,20 @@
 //! User avatar loading and rendering for Aegis.
 //!
 //! Resolves an avatar source from XDG-conformant locations, then produces a
-//! GPU-ready portrait texture that any chrome surface (the lock screen, a
-//! settings page) composites with one analytic rounded-image draw.
+//! GPU-ready portrait texture that any chrome surface (the lock screen, the
+//! command panel, a settings page) composites directly.
 //!
-//! Two source kinds are handled:
+//! **Contract: every avatar texture is circle-masked in its alpha channel.**
+//! Hosts draw it as-is, without their own clip:
 //!
 //! - **Still images** — any format the workspace `image` crate decodes.
-//!   Cover-fit to a square, masked to a circle, premultiplied, uploaded once.
+//!   Cover-fit to a square, masked to a circle on the CPU, premultiplied,
+//!   uploaded once.
 //! - **VRM models** — VRM 0.x / VRM 1.0 (`.glb` containers) loaded through
-//!   `flux-scene-graph` and rendered offscreen to the same portrait atlas.
-//!   A companion `.vrma` is retargeted and rendered into a persistent texture.
+//!   `flux-scene-graph` and rendered offscreen to the same portrait atlas,
+//!   then blitted through an analytic rounded-rect clip into the published
+//!   texture. A companion `.vrma` is retargeted and rendered into a
+//!   persistent texture.
 //!
 //! The crate owns decode and GPU state only. It has no Wayland connection and
 //! no presentation loop. See ADR-0080.

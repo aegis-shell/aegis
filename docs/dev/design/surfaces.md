@@ -14,7 +14,7 @@ through material factories instead of hard-coding values.
 | Floating control layer | Liquid Glass (analytic SDF) | Dock bar, HUD chips, and any persistent or modal body that floats above client content |
 | Transient panels | Frosted popover | Menus, popovers, and small panels that need a readable body over arbitrary content without lensing |
 | Content cards | Card fill | Settings and system-management cards inside a panel; content layer, never floating chrome |
-| Light island | SAO panel | The command panel's frosted white surface: a deliberate light island inside the dark appearance |
+| Light island | SAO panel | The command panel's frosted white surfaces — header band, icon rail, and content panel: deliberate light islands inside the dark appearance |
 
 Do not improvise new materials per component. If none of the rows fits,
 extend `aegis-design` with a semantic factory and document it here.
@@ -28,7 +28,7 @@ extend `aegis-design` with a semantic factory and document it here.
 | `popover_surface` | white, alpha 38 | Popover and menu bodies over frost |
 | `popover_border` | white, alpha 72, 1 px | Popover edge against content |
 | `card_surface` | white, alpha 14 | Card fill on panels |
-| `sao.surface` | rgb(248, 249, 252), alpha 226 | Command panel body |
+| `sao.surface` | rgb(248, 249, 252), alpha 226 | Command panel surfaces |
 | `sao.border` | SAO palette | Command panel edge |
 
 ## Layering rules

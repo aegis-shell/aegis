@@ -9,10 +9,18 @@ rust-version.workspace = true
 build = "build.rs"
 
 [dependencies]
+# Header-band avatar: user photo / VRM with a procedural-orb fallback, the
+# same loading contract as the lock screen.
+aegis-avatar = { workspace = true }
 aegis-core = { workspace = true }
 aegis-design = { workspace = true }
 aegis-shell = { workspace = true }
 aegis-tray = { workspace = true }
+# Direct dep purely so this crate's build script receives
+# DEP_FLUX_SCENE_GRAPH_RPATHS (the avatar's VRM path links the scene graph)
+# and can re-emit the rpaths for the test harness — `rustc-link-arg` does
+# not propagate across crates.
+flux-scene-graph-sys = { workspace = true }
 # SNI tray icon upload: borrowed flux device + texture cache (same pixel ->
 # GPU path as the compositor's app icon cache).
 flux = { workspace = true }
@@ -21,7 +29,9 @@ lens = { workspace = true }
 # (published via the -sys crate's `links` metadata) and can re-emit the rpaths
 # for the test harness — `rustc-link-arg` does not propagate across crates.
 lens-sys = { workspace = true }
+# Header-band identity: getpwuid_r/getgrouplist for the local account.
+libc = { workspace = true }
 log = { workspace = true }
 
 [package.metadata.cargo-machete]
-ignored = ["lens-sys"]
+ignored = ["flux-scene-graph-sys", "lens-sys"]

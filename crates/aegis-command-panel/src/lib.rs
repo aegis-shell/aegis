@@ -2,14 +2,20 @@
 //! Online menu language (ADR-0080) — frosted white floating panels with an
 //! amber accent over the standard dark blurred scrim.
 //!
-//! The HUD is display-only, so the interactions it used to host
-//! live here: quick settings (volume, brightness, radios, do-not-disturb),
+//! One centered cluster of three surfaces: a header band with the user's
+//! identity (avatar, display name, groups) on the left and a live machine
+//! monitor (chassis glyph plus CPU/GPU/RAM/NET/DISK/BAT gauges fed by
+//! `Chrome::update_resource_stats`) on the right; a narrow icon rail below
+//! it holding one circular button per section and the close button; and the
+//! content panel filling the rest of the cluster. The sections themselves:
+//! quick settings (volume, brightness, radios, do-not-disturb),
 //! StatusNotifierItem tray activation with host-rendered dbusmenu popovers,
 //! and the notification list with dismissal. The System section also shows
 //! the Agent Workspaces status row that the HUD's dropped right chip once
 //! carried (ADR-0083). The panel opens through the
 //! `Super+S` keybinding or a four-finger touchpad swipe down, and closes on
-//! Escape, a scrim click, the same binding, or a four-finger swipe up.
+//! Escape, a scrim click, the rail's close button, the same binding, or a
+//! four-finger swipe up.
 //!
 //! Like the HUD and the dock, the panel is compositor-owned lens
 //! chrome on the [`aegis_shell`] `Chrome` seam: snapshots arrive through the
@@ -31,13 +37,15 @@ use aegis_design::tokens::Sao;
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
 
 use aegis_shell::{
-    AppCatalog, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet, Localizer, Message,
-    NetworkState, SystemAction, SystemStatus, place_popup, truncate,
+    AppCatalog, BackdropRegion, ChassisKind, Chrome, ChromeEvents, CursorShape, IconSet, Localizer,
+    Message, NetworkState, ResourceStats, SystemAction, SystemStatus, place_popup, truncate,
 };
 use aegis_tray::{MenuNode, MenuState, TrayCommand, TrayIcon, TraySnapshot};
 
+mod identity;
 mod rendering;
 
+use identity::Identity;
 use rendering::*;
 
 #[cfg(test)]
@@ -45,12 +53,19 @@ mod tests;
 
 const SCRIM_ALPHA: u8 = 132;
 const BACKDROP_BLUR_SIGMA: f32 = 14.0;
-const MENU_PANEL_W: f32 = 240.0;
-const CONTENT_PANEL_W: f32 = 560.0;
-const CONTENT_PANEL_H: f32 = 520.0;
+/// The cluster's three surfaces: a full-width header band, then the icon
+/// rail at the left and the content panel filling the rest.
+const HEADER_H: f32 = 118.0;
+const RAIL_W: f32 = 64.0;
+const CONTENT_W: f32 = 640.0;
+const CONTENT_H: f32 = 420.0;
 const PANEL_GAP: f32 = 12.0;
-/// Content panel's reveal lags the menu panel's by this fraction.
+/// The rail's reveal lags the header's by this fraction.
+const RAIL_STAGGER: f32 = 0.06;
+/// Content panel's reveal lags the header's by this fraction.
 const CONTENT_STAGGER: f32 = 0.18;
+/// Samples kept per sparkline metric (CPU/GPU/RAM).
+const HISTORY_CAP: usize = 48;
 
 // dbusmenu popover geometry. Placement follows the shared shell popup policy.
 const MENU_WIDTH: f32 = 236.0;
@@ -59,12 +74,12 @@ const MENU_ROW_HEIGHT: f32 = 28.0;
 const MENU_HEADER_HEIGHT: f32 = 23.0;
 const MENU_SECTION_HEIGHT: f32 = 7.0;
 
-const TRAY_COLS: usize = 5;
-const TRAY_CELL_W: f32 = 96.0;
-const TRAY_CELL_H: f32 = 76.0;
-const MAX_MESSAGE_ROWS: usize = 8;
+// Tray grid geometry: cells are 76×64 inside an 84×72 pitch; the column
+// count adapts to the content width.
+const TRAY_CELL_W: f32 = 84.0;
+const TRAY_CELL_H: f32 = 72.0;
 
-/// The panel's left-column sections.
+/// The panel's sections, one circular button each on the icon rail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Section {
     System,
@@ -90,6 +105,39 @@ impl Section {
             Section::Messages => Icon::Bell,
         }
     }
+}
+
+/// A click resolved inside the icon rail, applied after the render pass so
+/// the rail can finish drawing before state changes.
+enum RailAction {
+    Select(Section),
+    Close,
+}
+
+/// One row of the header band's machine monitor, in priority order; the
+/// band shows at most five rows.
+enum Gauge {
+    /// CPU: sparkline from the sample history + percent.
+    Cpu,
+    /// GPU (only when the driver exposes a busy percent): bar + percent.
+    Gpu(f32),
+    Ram {
+        fraction: f32,
+        value: String,
+    },
+    /// Throughput figures span the bar and value cells; there is no bar.
+    Net {
+        value: String,
+    },
+    Disk {
+        fraction: f32,
+        value: String,
+    },
+    Battery {
+        fraction: f32,
+        value: String,
+        charging: bool,
+    },
 }
 
 /// Render-thread half of the StatusNotifierItem tray: the shared snapshot the
@@ -119,12 +167,50 @@ struct SniCell {
     rect: Rect,
 }
 
+/// The per-cell visuals for the tray grid, distilled before the layout
+/// closures so they borrow no `self` state.
+struct TrayCellVisual {
+    key: String,
+    title: String,
+    has_menu: bool,
+    texture: Option<*mut lens::sys::flux_image>,
+    fallback: Option<*mut lens::sys::flux_image>,
+}
+
 /// Render-side cache of the shared dbusmenu tree, tagged with the worker's
 /// `menu_revision` so the (potentially large) tree is re-cloned only when the
 /// menu actually changed.
 struct MenuSnapshotCache {
     revision: u64,
     menu: Option<Arc<MenuState>>,
+}
+
+/// The avatar behind the header band's identity ring: the user's configured
+/// avatar (photo or VRM) when one loads, otherwise the procedural orb. Same
+/// resource shape as the lock screen's.
+enum AvatarResource {
+    Loaded(aegis_avatar::Avatar),
+    Fallback(flux::Image),
+}
+
+impl AvatarResource {
+    fn texture(&self) -> &flux::Image {
+        match self {
+            Self::Loaded(avatar) => avatar.texture(),
+            Self::Fallback(texture) => texture,
+        }
+    }
+
+    fn is_animated(&self) -> bool {
+        matches!(self, Self::Loaded(avatar) if avatar.is_animated())
+    }
+
+    fn advance(&mut self, delta_seconds: f32) -> Result<bool, aegis_avatar::Error> {
+        match self {
+            Self::Loaded(avatar) => avatar.advance(delta_seconds),
+            Self::Fallback(_) => Ok(false),
+        }
+    }
 }
 
 /// The modal command panel.
@@ -137,8 +223,22 @@ pub struct CommandPanel {
     /// Accessibility reduced-motion policy shared with the other chrome.
     reduced_motion: bool,
     prev_down: bool,
-    prev_right_down: bool,
     status: SystemStatus,
+    /// Latest host utilization sample behind the header band's gauges.
+    stats: ResourceStats,
+    /// Sparkline histories for the header band's CPU/GPU/RAM gauges.
+    cpu_history: History,
+    gpu_history: History,
+    ram_history: History,
+    /// Local account behind the header band's identity zone, resolved once
+    /// at construction (never per frame).
+    identity: Identity,
+    /// Header-band avatar; `None` only when both the configured avatar and
+    /// the procedural orb failed (or in headless tests) — the identity's
+    /// initials render inside the ring instead.
+    avatar: Option<AvatarResource>,
+    /// One-shot latch so an animated avatar's advance failure logs once.
+    avatar_warned: bool,
     /// Agent Realm aggregate behind the System section's Agent Workspaces
     /// status row (ADR-0083).
     realms: RealmSnapshot,
@@ -188,14 +288,32 @@ impl CommandPanel {
                 cached_cells: Vec::new(),
             }
         });
+        // Avatar loading is delegated to aegis-avatar (same contract as the
+        // lock screen): the user's photo or VRM when configured, the
+        // procedural orb when not, and the initials fallback when even the
+        // orb cannot upload.
+        let avatar = match aegis_avatar::Avatar::load(device) {
+            Ok(Some(loaded)) => Some(AvatarResource::Loaded(loaded)),
+            Ok(None) => Self::orb_fallback(device),
+            Err(error) => {
+                log::warn!("command-panel: avatar load failed, using procedural orb: {error}");
+                Self::orb_fallback(device)
+            }
+        };
         CommandPanel {
             open: false,
             reveal: 0.0,
             section: Section::System,
             reduced_motion: false,
             prev_down: false,
-            prev_right_down: false,
             status: SystemStatus::default(),
+            stats: ResourceStats::default(),
+            cpu_history: History::new(HISTORY_CAP),
+            gpu_history: History::new(HISTORY_CAP),
+            ram_history: History::new(HISTORY_CAP),
+            identity: Identity::current().unwrap_or_else(|_| Identity::fallback()),
+            avatar,
+            avatar_warned: false,
             realms: aegis_core::realm::RealmModel::new().snapshot(),
             icons: IconSet::default(),
             notifications,
@@ -214,6 +332,18 @@ impl CommandPanel {
         }
     }
 
+    /// The procedural-orb avatar fallback; `None` (initials at render time)
+    /// when the orb itself fails to upload.
+    fn orb_fallback(device: &flux::Device) -> Option<AvatarResource> {
+        match aegis_avatar::procedural_orb(device) {
+            Ok(image) => Some(AvatarResource::Fallback(image)),
+            Err(error) => {
+                log::warn!("command-panel: procedural orb failed, using initials: {error}");
+                None
+            }
+        }
+    }
+
     /// Test/preview constructor without a GPU device, tray, or notification
     /// source.
     #[cfg(test)]
@@ -224,8 +354,14 @@ impl CommandPanel {
             section: Section::System,
             reduced_motion: false,
             prev_down: false,
-            prev_right_down: false,
             status: SystemStatus::default(),
+            stats: ResourceStats::default(),
+            cpu_history: History::new(HISTORY_CAP),
+            gpu_history: History::new(HISTORY_CAP),
+            ram_history: History::new(HISTORY_CAP),
+            identity: Identity::current().unwrap_or_else(|_| Identity::fallback()),
+            avatar: None,
+            avatar_warned: false,
             realms: aegis_core::realm::RealmModel::new().snapshot(),
             icons: IconSet::default(),
             notifications: Arc::new(Mutex::new(NotificationQueue::new(3_600_000))),
@@ -286,25 +422,39 @@ impl CommandPanel {
         }
     }
 
-    /// The side menu and content panel bounds, centered as one cluster. On
-    /// narrow outputs the menu panel shrinks proportionally so the cluster
-    /// always fits inside the display.
-    fn cluster_bounds(display: (f32, f32)) -> (Rect, Rect) {
-        let total_w =
-            (MENU_PANEL_W + PANEL_GAP + CONTENT_PANEL_W).min((display.0 - 32.0).max(120.0));
-        let menu_w = MENU_PANEL_W.min(total_w * 0.32);
-        let content_w = (total_w - menu_w - PANEL_GAP).max(60.0);
-        let h = (display.1 - 48.0).clamp(120.0, CONTENT_PANEL_H);
+    /// The header band, icon rail, and content panel bounds, centered as one
+    /// cluster: the header spans the full cluster width on top, the rail sits
+    /// below it at the left, and the content panel fills the rest. On small
+    /// outputs the cluster shrinks proportionally (rail to a 48px minimum,
+    /// content taking the remainder) so it always fits inside the display.
+    fn cluster_bounds(display: (f32, f32)) -> (Rect, Rect, Rect) {
+        let total_w = (RAIL_W + PANEL_GAP + CONTENT_W).min((display.0 - 32.0).max(120.0));
+        let rail_w = RAIL_W.min((total_w - PANEL_GAP - 120.0).max(48.0));
+        let content_w = (total_w - rail_w - PANEL_GAP).max(60.0);
+        let total_h = (HEADER_H + PANEL_GAP + CONTENT_H).min((display.1 - 48.0).max(176.0));
+        let header_h = HEADER_H.min((total_h - PANEL_GAP - 120.0).max(56.0));
+        let content_h = (total_h - header_h - PANEL_GAP).max(80.0);
         let x = ((display.0 - total_w) * 0.5).max(8.0);
-        let y = ((display.1 - h) * 0.5).max(8.0);
-        let menu = Rect { x, y, w: menu_w, h };
-        let content = Rect {
-            x: x + menu_w + PANEL_GAP,
+        let y = ((display.1 - total_h) * 0.5).max(8.0);
+        let header = Rect {
+            x,
             y,
-            w: content_w,
-            h,
+            w: total_w,
+            h: header_h,
         };
-        (menu, content)
+        let rail = Rect {
+            x,
+            y: y + header_h + PANEL_GAP,
+            w: rail_w,
+            h: content_h,
+        };
+        let content = Rect {
+            x: x + rail_w + PANEL_GAP,
+            y: rail.y,
+            w: content_w,
+            h: content_h,
+        };
+        (header, rail, content)
     }
 
     /// Clone the notification queue, memoized on the queue's revision: an
@@ -441,17 +591,11 @@ impl CommandPanel {
             .map(|visible| menu_bounds(self.menu_owner, visible, display))
     }
 
-    /// The SAO section menu: white floating panel, amber ring header, and
-    /// one ringed row per section (selected = solid amber highlight bar).
-    fn render_menu_panel(
-        &mut self,
-        f: &mut Frame,
-        rect: Rect,
-        progress: f32,
-        cursor: (f32, f32),
-        pressed: bool,
-        i18n: &Localizer,
-    ) {
+    /// The header band: identity zone (ringed avatar, display name,
+    /// `@username · groups`) on the left and the machine monitor (chassis
+    /// glyph plus utilization gauges) on the right, separated by a hairline
+    /// divider. Slides in from the left like the old menu panel.
+    fn render_header_band(&self, f: &mut Frame, rect: Rect, progress: f32, i18n: &Localizer) {
         let sao = Sao::classic();
         let slide = (1.0 - ease_out_cubic(progress)) * -24.0;
         let rect = Rect {
@@ -459,7 +603,7 @@ impl CommandPanel {
             ..rect
         };
         f.layer(
-            "aegis-sao-menu-panel",
+            "aegis-sao-header-panel",
             rect,
             &OverlayOpts {
                 bg: fade_color(sao.surface, progress),
@@ -474,110 +618,586 @@ impl CommandPanel {
             },
         );
 
-        // Header: amber ring + core over the panel title.
-        let header_center = (rect.x + 34.0, rect.y + 36.0);
+        let pad = 16.0;
+        let inner_y = rect.y + pad;
+        let inner_h = (rect.h - pad * 2.0).max(1.0);
+        let center_y = rect.y + rect.h * 0.5;
+        let base_theme = themes::sao(&sao);
+        let muted_theme = themes::sao_muted(base_theme, &sao);
+        let original = f.theme();
+
+        // -- identity zone: ringed avatar + name lines (~270px) ------------
+        let avatar_center = (rect.x + pad + 42.0, center_y);
         render_ring(
             f,
-            "aegis-sao-menu-header-ring",
-            header_center,
-            34.0,
+            "aegis-sao-avatar-ring",
+            avatar_center,
+            80.0,
             fade_color(sao.accent, progress),
             1.6,
         );
-        render_disc(
-            f,
-            "aegis-sao-menu-header-core",
-            header_center,
-            8.0,
-            fade_color(sao.accent, progress),
+        let avatar_rect = Rect {
+            x: avatar_center.0 - 36.0,
+            y: avatar_center.1 - 36.0,
+            w: 72.0,
+            h: 72.0,
+        };
+        match &self.avatar {
+            Some(avatar) => {
+                let texture = avatar.texture().as_raw();
+                f.layer("aegis-sao-avatar", avatar_rect, &transparent(), |f| {
+                    f.row_ex(&sized(72.0, 72.0), |f| {
+                        unsafe { f.image(texture as *mut lens::sys::flux_image, 72.0, 72.0) };
+                    });
+                });
+            }
+            None => {
+                f.set_theme(faded_theme(base_theme.with_fg(sao.accent), progress));
+                f.layer(
+                    "aegis-sao-avatar-initials",
+                    avatar_rect,
+                    &transparent(),
+                    |f| {
+                        f.row_ex(
+                            &LayoutOpts {
+                                width: 72.0,
+                                height: 72.0,
+                                cross: Align::Center,
+                                ..Default::default()
+                            },
+                            |f| {
+                                f.flex(1.0);
+                                f.spacer(0.0);
+                                f.label_compact_sized(&self.identity.initials, 22.0);
+                                f.flex(1.0);
+                                f.spacer(0.0);
+                            },
+                        );
+                    },
+                );
+            }
+        }
+
+        let text_x = rect.x + pad + 84.0 + 14.0;
+        let text_w = (rect.x + pad + 270.0 - text_x).max(40.0);
+        let display_name = truncate(
+            &self.identity.display_name,
+            (text_w / 9.0).max(4.0) as usize,
         );
-        let original = f.theme();
-        f.set_theme(faded_theme(themes::sao(&sao), progress));
+        f.set_theme(faded_theme(base_theme, progress));
         f.layer(
-            "aegis-sao-menu-title",
+            "aegis-sao-identity-name",
             Rect {
-                x: rect.x + 58.0,
-                y: rect.y + 22.0,
-                w: (rect.w - 70.0).max(1.0),
-                h: 28.0,
+                x: text_x,
+                y: center_y - 21.0,
+                w: text_w,
+                h: 22.0,
             },
             &transparent(),
             |f| {
                 f.row_ex(
                     &LayoutOpts {
-                        width: (rect.w - 70.0).max(1.0),
-                        height: 28.0,
+                        width: text_w,
+                        height: 22.0,
                         cross: Align::Center,
                         ..Default::default()
                     },
-                    |f| f.label_compact_sized(i18n.text(Message::CommandPanel), 14.5),
+                    |f| f.label_compact_sized(&display_name, 16.0),
+                );
+            },
+        );
+        let mut sub_line = format!("@{}", self.identity.username);
+        if !self.identity.groups.is_empty() {
+            sub_line.push_str(" · ");
+            sub_line.push_str(&self.identity.groups.join(", "));
+        }
+        let sub_line = truncate(&sub_line, (text_w / 5.8).max(8.0) as usize);
+        f.set_theme(faded_theme(muted_theme, progress));
+        f.layer(
+            "aegis-sao-identity-sub",
+            Rect {
+                x: text_x,
+                y: center_y + 3.0,
+                w: text_w,
+                h: 15.0,
+            },
+            &transparent(),
+            |f| {
+                f.row_ex(
+                    &LayoutOpts {
+                        width: text_w,
+                        height: 15.0,
+                        cross: Align::Center,
+                        ..Default::default()
+                    },
+                    |f| f.label_compact_sized(&sub_line, 10.5),
+                );
+            },
+        );
+
+        // -- divider ---------------------------------------------------------
+        let divider_x = rect.x + pad + 270.0 + 12.0;
+        f.layer(
+            "aegis-sao-header-divider",
+            Rect {
+                x: divider_x,
+                y: rect.y + 22.0,
+                w: 1.0,
+                h: (rect.h - 44.0).max(1.0),
+            },
+            &OverlayOpts {
+                bg: fade_color(sao.border, progress),
+                border: Color::TRANSPARENT,
+                radius: 0.0,
+                pad: 0.0,
+                ..Default::default()
+            },
+            |_| {},
+        );
+
+        // -- machine zone: chassis glyph + gauge rows ------------------------
+        let machine_x = divider_x + 12.0;
+        let machine_right = rect.x + rect.w - pad;
+        if machine_right - machine_x < 200.0 {
+            f.set_theme(original);
+            return;
+        }
+
+        // Chassis glyph: a thin-line machine pictogram built from layer rects.
+        let glyph_cx = machine_x + 28.0;
+        let chassis_label = match self.stats.chassis {
+            ChassisKind::Laptop => i18n.text(Message::Laptop),
+            ChassisKind::Desktop => i18n.text(Message::DesktopChassis),
+        };
+        let glyph_h = match self.stats.chassis {
+            ChassisKind::Laptop => 24.0 + 2.0 + 2.5,
+            ChassisKind::Desktop => 22.0 + 7.0 + 2.0,
+        };
+        let glyph_top = inner_y + (inner_h - 17.0 - glyph_h).max(0.0) * 0.5;
+        let muted_line = fade_color(sao.text_muted, progress);
+        let outline = |radius: f32| OverlayOpts {
+            bg: Color::TRANSPARENT,
+            border: muted_line,
+            border_width: 1.2,
+            radius,
+            pad: 0.0,
+            ..Default::default()
+        };
+        let filled = |radius: f32| OverlayOpts {
+            bg: muted_line,
+            border: Color::TRANSPARENT,
+            radius,
+            pad: 0.0,
+            ..Default::default()
+        };
+        match self.stats.chassis {
+            ChassisKind::Laptop => {
+                let screen = Rect {
+                    x: glyph_cx - 18.0,
+                    y: glyph_top,
+                    w: 36.0,
+                    h: 24.0,
+                };
+                f.layer("aegis-sao-chassis-screen", screen, &outline(3.0), |_| {});
+                let base = Rect {
+                    x: glyph_cx - 22.0,
+                    y: glyph_top + 24.0 + 2.0,
+                    w: 44.0,
+                    h: 2.5,
+                };
+                f.layer("aegis-sao-chassis-base", base, &filled(1.25), |_| {});
+            }
+            ChassisKind::Desktop => {
+                let monitor = Rect {
+                    x: glyph_cx - 17.0,
+                    y: glyph_top,
+                    w: 34.0,
+                    h: 22.0,
+                };
+                f.layer("aegis-sao-chassis-screen", monitor, &outline(2.0), |_| {});
+                let stand = Rect {
+                    x: glyph_cx - 1.0,
+                    y: glyph_top + 22.0,
+                    w: 2.0,
+                    h: 7.0,
+                };
+                f.layer("aegis-sao-chassis-stand", stand, &filled(0.0), |_| {});
+                let base = Rect {
+                    x: glyph_cx - 8.0,
+                    y: glyph_top + 29.0,
+                    w: 16.0,
+                    h: 2.0,
+                };
+                f.layer("aegis-sao-chassis-base", base, &filled(1.0), |_| {});
+            }
+        }
+        f.set_theme(faded_theme(muted_theme, progress));
+        f.layer(
+            "aegis-sao-chassis-label",
+            Rect {
+                x: machine_x,
+                y: rect.y + rect.h - pad - 13.0,
+                w: 56.0,
+                h: 13.0,
+            },
+            &transparent(),
+            |f| {
+                f.row_ex(
+                    &LayoutOpts {
+                        width: 56.0,
+                        height: 13.0,
+                        cross: Align::Center,
+                        ..Default::default()
+                    },
+                    |f| {
+                        f.flex(1.0);
+                        f.spacer(0.0);
+                        f.label_compact_sized(chassis_label, 9.0);
+                        f.flex(1.0);
+                        f.spacer(0.0);
+                    },
+                );
+            },
+        );
+
+        // Gauge rows to the right of the glyph, vertically centered.
+        let stats = self.stats;
+        let mut gauges: Vec<Gauge> = Vec::with_capacity(6);
+        gauges.push(Gauge::Cpu);
+        if let Some(gpu) = stats.gpu_percent {
+            gauges.push(Gauge::Gpu(gpu));
+        }
+        let mem_fraction = if stats.mem_total_bytes > 0 {
+            stats.mem_used_bytes as f32 / stats.mem_total_bytes as f32
+        } else {
+            0.0
+        };
+        gauges.push(Gauge::Ram {
+            fraction: mem_fraction,
+            value: format_gib_pair(stats.mem_used_bytes, stats.mem_total_bytes),
+        });
+        gauges.push(Gauge::Net {
+            value: format!(
+                "↓{}/s ↑{}/s",
+                format_rate(stats.net_rx_bytes_per_sec),
+                format_rate(stats.net_tx_bytes_per_sec)
+            ),
+        });
+        let disk_fraction = if stats.disk_total_bytes > 0 {
+            stats.disk_used_bytes as f32 / stats.disk_total_bytes as f32
+        } else {
+            0.0
+        };
+        gauges.push(Gauge::Disk {
+            fraction: disk_fraction,
+            value: format!("{:.0}%", disk_fraction * 100.0),
+        });
+        if let Some(battery) = self.status.battery {
+            gauges.push(Gauge::Battery {
+                fraction: battery.percent as f32 / 100.0,
+                value: format!("{}%", battery.percent),
+                charging: battery.charging,
+            });
+        }
+        // The band fits five 14px rows; when every source applies the
+        // battery row (last in priority) is the one that yields.
+        gauges.truncate(5);
+
+        const ROW_H: f32 = 14.0;
+        const ROW_GAP: f32 = 2.5;
+        let rows_h =
+            gauges.len() as f32 * ROW_H + (gauges.len().saturating_sub(1)) as f32 * ROW_GAP;
+        let mut row_y = inner_y + (inner_h - rows_h).max(0.0) * 0.5;
+        let gauge_x = machine_x + 56.0 + 8.0;
+        let gauge_w = (machine_right - gauge_x).max(1.0);
+        for (index, gauge) in gauges.iter().enumerate() {
+            self.render_gauge_row(
+                f,
+                gauge,
+                index,
+                Rect {
+                    x: gauge_x,
+                    y: row_y,
+                    w: gauge_w,
+                    h: ROW_H,
+                },
+                progress,
+                i18n,
+            );
+            row_y += ROW_H + ROW_GAP;
+        }
+        f.set_theme(original);
+    }
+
+    /// One gauge row of the header band's machine monitor: a 40px label
+    /// cell, the bar/sparkline zone, and a 58px right-aligned value cell.
+    fn render_gauge_row(
+        &self,
+        f: &mut Frame,
+        gauge: &Gauge,
+        index: usize,
+        row: Rect,
+        progress: f32,
+        i18n: &Localizer,
+    ) {
+        let sao = Sao::classic();
+        let base_theme = themes::sao(&sao);
+        let muted_theme = themes::sao_muted(base_theme, &sao);
+        let original = f.theme();
+        let label_rect = Rect {
+            x: row.x,
+            y: row.y,
+            w: 40.0,
+            h: row.h,
+        };
+        let bar_x = row.x + 40.0 + 6.0;
+        let value_x = row.x + row.w - 58.0;
+        let bar_w = (value_x - 6.0 - bar_x).max(1.0);
+
+        // Label cell: a 9.5pt caption, or a 10px icon for NET/BAT.
+        let icon_label: Option<(Icon, Color)> = match gauge {
+            Gauge::Net { .. } => Some((Icon::Globe, sao.text_muted)),
+            Gauge::Battery { charging, .. } => Some((
+                Icon::Zap,
+                if *charging {
+                    sao.accent
+                } else {
+                    sao.text_muted
+                },
+            )),
+            _ => None,
+        };
+        let text_label: Option<&'static str> = match gauge {
+            Gauge::Cpu => Some(i18n.text(Message::Cpu)),
+            Gauge::Gpu(_) => Some(i18n.text(Message::Gpu)),
+            Gauge::Ram { .. } => Some(i18n.text(Message::Memory)),
+            Gauge::Disk { .. } => Some(i18n.text(Message::Disk)),
+            _ => None,
+        };
+        if text_label.is_some() {
+            f.set_theme(faded_theme(muted_theme, progress));
+        } else if let Some((_, color)) = icon_label {
+            f.set_theme(faded_theme(base_theme.with_fg(color), progress));
+        }
+        f.layer(
+            &format!("aegis-sao-gauge-label-{index}"),
+            label_rect,
+            &transparent(),
+            |f| {
+                f.row_ex(
+                    &LayoutOpts {
+                        width: 40.0,
+                        height: row.h,
+                        cross: Align::Center,
+                        ..Default::default()
+                    },
+                    |f| {
+                        if let Some(text) = text_label {
+                            f.label_compact_sized(text, 9.5);
+                        } else if let Some((icon, _)) = icon_label {
+                            f.icon(icon, 10.0);
+                        }
+                    },
+                );
+            },
+        );
+
+        // Bar/sparkline zone + value cell.
+        let (value, full_span): (String, bool) = match gauge {
+            Gauge::Cpu => {
+                render_sparkline(
+                    f,
+                    "cpu",
+                    &self.cpu_history,
+                    Rect {
+                        x: bar_x,
+                        y: row.y,
+                        w: bar_w,
+                        h: row.h,
+                    },
+                    progress,
+                );
+                (format!("{:.0}%", self.stats.cpu_percent), false)
+            }
+            Gauge::Gpu(gpu) => {
+                gauge_bar(
+                    f,
+                    &format!("aegis-sao-gauge-bar-{index}"),
+                    Rect {
+                        x: bar_x,
+                        y: row.y + (row.h - 4.0) * 0.5,
+                        w: bar_w,
+                        h: 4.0,
+                    },
+                    gpu / 100.0,
+                    progress,
+                );
+                (format!("{gpu:.0}%"), false)
+            }
+            Gauge::Ram { fraction, value } => {
+                gauge_bar(
+                    f,
+                    &format!("aegis-sao-gauge-bar-{index}"),
+                    Rect {
+                        x: bar_x,
+                        y: row.y + (row.h - 4.0) * 0.5,
+                        w: bar_w,
+                        h: 4.0,
+                    },
+                    *fraction,
+                    progress,
+                );
+                (value.clone(), false)
+            }
+            Gauge::Net { value } => (value.clone(), true),
+            Gauge::Disk { fraction, value } => {
+                gauge_bar(
+                    f,
+                    &format!("aegis-sao-gauge-bar-{index}"),
+                    Rect {
+                        x: bar_x,
+                        y: row.y + (row.h - 4.0) * 0.5,
+                        w: bar_w,
+                        h: 4.0,
+                    },
+                    *fraction,
+                    progress,
+                );
+                (value.clone(), false)
+            }
+            Gauge::Battery {
+                fraction, value, ..
+            } => {
+                gauge_bar(
+                    f,
+                    &format!("aegis-sao-gauge-bar-{index}"),
+                    Rect {
+                        x: bar_x,
+                        y: row.y + (row.h - 4.0) * 0.5,
+                        w: bar_w,
+                        h: 4.0,
+                    },
+                    *fraction,
+                    progress,
+                );
+                (value.clone(), false)
+            }
+        };
+        let value_rect = if full_span {
+            Rect {
+                x: bar_x,
+                y: row.y,
+                w: (row.x + row.w - bar_x).max(1.0),
+                h: row.h,
+            }
+        } else {
+            Rect {
+                x: value_x,
+                y: row.y,
+                w: 58.0,
+                h: row.h,
+            }
+        };
+        f.set_theme(faded_theme(base_theme, progress));
+        f.layer(
+            &format!("aegis-sao-gauge-value-{index}"),
+            value_rect,
+            &transparent(),
+            |f| {
+                f.row_ex(
+                    &LayoutOpts {
+                        width: value_rect.w,
+                        height: row.h,
+                        cross: Align::Center,
+                        ..Default::default()
+                    },
+                    |f| {
+                        f.flex(1.0);
+                        f.spacer(0.0);
+                        f.label_compact_sized(&value, 9.5);
+                    },
                 );
             },
         );
         f.set_theme(original);
+    }
 
-        // Section rows.
-        let row_y0 = rect.y + 70.0;
+    /// The icon rail: one 44px circular button per section (ring + accent
+    /// glyph at rest, solid accent disc when selected, a soft disc on
+    /// hover), plus the panel's close button at the bottom. Fades in.
+    fn render_icon_rail(
+        &mut self,
+        f: &mut Frame,
+        rect: Rect,
+        progress: f32,
+        cursor: (f32, f32),
+        pressed: bool,
+    ) {
+        let sao = Sao::classic();
+        f.layer(
+            "aegis-sao-rail-panel",
+            rect,
+            &OverlayOpts {
+                bg: fade_color(sao.surface, progress),
+                border: fade_color(sao.border, progress),
+                border_width: 1.0,
+                radius: 16.0,
+                pad: 0.0,
+                ..Default::default()
+            },
+            |f| {
+                f.column_ex(&sized(rect.w, rect.h), |_| {});
+            },
+        );
+
+        let cx = rect.x + rect.w * 0.5;
+        let mut rail_action = None;
         for (index, section) in Section::ALL.iter().enumerate() {
-            let row = Rect {
-                x: rect.x + 10.0,
-                y: row_y0 + index as f32 * 50.0,
-                w: rect.w - 20.0,
+            let center = (cx, rect.y + 18.0 + 22.0 + index as f32 * 56.0);
+            let hit = Rect {
+                x: center.0 - 22.0,
+                y: center.1 - 22.0,
+                w: 44.0,
                 h: 44.0,
             };
+            let hovered = contains(hit, cursor.0, cursor.1);
             let selected = self.section == *section;
-            let hovered = contains(row, cursor.0, cursor.1);
-            if selected {
-                f.layer(
-                    &format!("aegis-sao-menu-row-bg-{index}"),
-                    row,
-                    &OverlayOpts {
-                        bg: fade_color(sao.accent, progress),
-                        border: Color::TRANSPARENT,
-                        radius: 10.0,
-                        ..Default::default()
-                    },
-                    |_| {},
-                );
-            } else if hovered {
-                f.layer(
-                    &format!("aegis-sao-menu-row-bg-{index}"),
-                    row,
-                    &OverlayOpts {
-                        bg: fade_color(sao.accent_soft, progress),
-                        border: Color::TRANSPARENT,
-                        radius: 10.0,
-                        ..Default::default()
-                    },
-                    |_| {},
-                );
-            }
-            let center = (row.x + 26.0, row.y + row.h * 0.5);
-            let (glyph_color, label_color) = if selected {
+            let glyph_color = if selected {
                 render_disc(
                     f,
-                    &format!("aegis-sao-menu-disc-{index}"),
+                    &format!("aegis-sao-rail-disc-{index}"),
                     center,
-                    30.0,
+                    44.0,
                     fade_color(sao.accent, progress),
                 );
-                (sao.on_accent, sao.on_accent)
+                sao.on_accent
             } else {
+                if hovered {
+                    render_disc(
+                        f,
+                        &format!("aegis-sao-rail-hover-{index}"),
+                        center,
+                        44.0,
+                        fade_color(sao.accent_soft, progress),
+                    );
+                }
                 render_ring(
                     f,
-                    &format!("aegis-sao-menu-ring-{index}"),
+                    &format!("aegis-sao-rail-ring-{index}"),
                     center,
-                    30.0,
+                    44.0,
                     fade_color(sao.accent, progress),
                     1.5,
                 );
-                (sao.accent, sao.text)
+                sao.accent
             };
             let original = f.theme();
-            let glyph_theme = themes::sao(&sao).with_fg(glyph_color);
-            f.set_theme(faded_theme(glyph_theme, progress));
+            f.set_theme(faded_theme(
+                themes::sao(&sao).with_fg(glyph_color),
+                progress,
+            ));
             f.layer(
-                &format!("aegis-sao-menu-glyph-{index}"),
+                &format!("aegis-sao-rail-icon-{index}"),
                 Rect {
                     x: center.0 - 15.0,
                     y: center.1 - 15.0,
@@ -603,48 +1223,87 @@ impl CommandPanel {
                     );
                 },
             );
-            let label_theme = themes::sao(&sao).with_fg(label_color);
-            f.set_theme(faded_theme(label_theme, progress));
-            f.layer(
-                &format!("aegis-sao-menu-label-{index}"),
-                Rect {
-                    x: row.x + 48.0,
-                    y: row.y,
-                    w: (row.w - 56.0).max(1.0),
-                    h: row.h,
-                },
-                &transparent(),
-                |f| {
-                    f.row_ex(
-                        &LayoutOpts {
-                            width: (row.w - 56.0).max(1.0),
-                            height: row.h,
-                            cross: Align::Center,
-                            ..Default::default()
-                        },
-                        |f| f.label_compact_sized(section.label(i18n), 13.0),
-                    );
-                },
-            );
             f.set_theme(original);
             if pressed && hovered {
-                self.select_section(*section);
+                rail_action = Some(RailAction::Select(*section));
             }
+        }
+
+        // Close button at the rail bottom: ring + X, same idiom.
+        let center = (cx, rect.y + rect.h - 30.0);
+        let hit = Rect {
+            x: center.0 - 22.0,
+            y: center.1 - 22.0,
+            w: 44.0,
+            h: 44.0,
+        };
+        let hovered = contains(hit, cursor.0, cursor.1);
+        if hovered {
+            render_disc(
+                f,
+                "aegis-sao-rail-close-hover",
+                center,
+                44.0,
+                fade_color(sao.accent_soft, progress),
+            );
+        }
+        render_ring(
+            f,
+            "aegis-sao-rail-close-ring",
+            center,
+            44.0,
+            fade_color(sao.accent, progress),
+            1.5,
+        );
+        let original = f.theme();
+        f.set_theme(faded_theme(themes::sao(&sao).with_fg(sao.accent), progress));
+        f.layer(
+            "aegis-sao-rail-close-icon",
+            Rect {
+                x: center.0 - 15.0,
+                y: center.1 - 15.0,
+                w: 30.0,
+                h: 30.0,
+            },
+            &transparent(),
+            |f| {
+                f.row_ex(
+                    &LayoutOpts {
+                        width: 30.0,
+                        height: 30.0,
+                        cross: Align::Center,
+                        ..Default::default()
+                    },
+                    |f| {
+                        f.flex(1.0);
+                        f.spacer(0.0);
+                        f.icon(Icon::X, 14.0);
+                        f.flex(1.0);
+                        f.spacer(0.0);
+                    },
+                );
+            },
+        );
+        f.set_theme(original);
+        if pressed && hovered {
+            rail_action = Some(RailAction::Close);
+        }
+
+        match rail_action {
+            Some(RailAction::Select(section)) => self.select_section(section),
+            Some(RailAction::Close) => self.close(),
+            None => {}
         }
     }
 
     /// The white content panel: section title header plus the active
     /// section's body, sliding up slightly as it reveals.
-    #[allow(clippy::too_many_arguments)]
     fn render_content_panel(
         &mut self,
         f: &mut Frame,
         rect: Rect,
         progress: f32,
-        display: (f32, f32),
         cursor: (f32, f32),
-        pressed: bool,
-        right_pressed: bool,
         i18n: &Localizer,
         out: &mut ChromeEvents,
     ) {
@@ -670,10 +1329,10 @@ impl CommandPanel {
             },
         );
 
-        // Header: section title + close button.
+        // Header: the section title alone; the close button lives on the
+        // icon rail now.
         let original = f.theme();
         f.set_theme(faded_theme(themes::sao(&sao), progress));
-        let mut close_clicked = false;
         let header = Rect {
             x: rect.x + 18.0,
             y: rect.y + 10.0,
@@ -692,17 +1351,10 @@ impl CommandPanel {
                 },
                 |f| {
                     f.label_compact_sized(section_label, 15.0);
-                    f.flex(1.0);
-                    f.spacer(0.0);
-                    f.size_next(30.0, 28.0);
-                    close_clicked = f.icon_button(Icon::X);
                 },
             );
         });
         f.set_theme(original);
-        if close_clicked {
-            self.close();
-        }
 
         let area = Rect {
             x: rect.x + 18.0,
@@ -712,14 +1364,9 @@ impl CommandPanel {
         };
         match self.section {
             Section::System => self.render_system_section(f, area, progress, i18n, out),
-            Section::Tray => {
-                self.render_tray_section(f, area, progress, cursor, pressed, right_pressed, i18n)
-            }
-            Section::Messages => {
-                self.render_messages_section(f, area, progress, cursor, pressed, i18n, out)
-            }
+            Section::Tray => self.render_tray_section(f, area, progress, cursor, i18n),
+            Section::Messages => self.render_messages_section(f, area, progress, i18n, out),
         }
-        let _ = display;
     }
 
     /// Quick settings, ported from the status bar's old status-and-controls
@@ -745,208 +1392,223 @@ impl CommandPanel {
         } else {
             agent_indicator.label.clone()
         };
+        // Group headers: a small muted caption above each control group,
+        // replacing the old bare separators.
+        let base_theme = faded_theme(themes::sao(&sao), progress);
+        let muted_theme = faded_theme(themes::sao_muted(themes::sao(&sao), &sao), progress);
+        let group_header = move |f: &mut Frame, label: &str| {
+            f.set_theme(muted_theme);
+            f.label_compact_sized(label, 10.5);
+            f.set_theme(base_theme);
+        };
         f.layer("aegis-sao-system", area, &transparent(), |f| {
-            f.column_ex(
-                &LayoutOpts {
-                    width: area.w,
-                    height: area.h,
-                    gap: 12.0,
-                    cross: Align::Stretch,
-                    ..Default::default()
-                },
-                |f| {
-                    // Sound group.
-                    f.row_ex(
+            f.column_ex(&sized(area.w, area.h), |f| {
+                f.flex(1.0);
+                f.scroll("aegis-sao-system-scroll", |f| {
+                    f.column_ex(
                         &LayoutOpts {
-                            height: 22.0,
                             gap: 8.0,
-                            cross: Align::Center,
+                            cross: Align::Stretch,
                             ..Default::default()
                         },
                         |f| {
-                            match volume_themed {
-                                Some(icon) => unsafe {
-                                    f.image(icon as *mut lens::sys::flux_image, 16.0, 16.0)
+                            // Sound group.
+                            group_header(f, i18n.text(Message::Sound));
+                            f.row_ex(
+                                &LayoutOpts {
+                                    height: 22.0,
+                                    gap: 8.0,
+                                    cross: Align::Center,
+                                    ..Default::default()
                                 },
-                                None => f.icon(volume_icon(&status), 15.0),
-                            }
-                            f.label_compact_sized(i18n.text(Message::Sound), 12.5);
-                            f.flex(1.0);
-                            f.spacer(0.0);
-                            f.label_compact_sized(
-                                &status
-                                    .volume
-                                    .map(|level| format!("{level}%"))
-                                    .unwrap_or_else(|| "--".into()),
-                                11.0,
-                            );
-                        },
-                    );
-                    if status.volume.is_some() {
-                        let mut volume = status.volume.unwrap_or(0) as f32;
-                        if f.slider("##sao-volume", &mut volume, 0.0, 100.0) {
-                            out.system_actions.push(SystemAction::SetVolume {
-                                level: volume.round().clamp(0.0, 100.0) as u8,
-                            });
-                        }
-                        let mut muted = status.muted;
-                        if f.checkbox(i18n.text(Message::Muted), &mut muted) {
-                            out.system_actions.push(SystemAction::ToggleMute);
-                        }
-                    } else {
-                        unavailable_control(f, i18n.text(Message::Volume), i18n);
-                    }
-                    f.separator();
-
-                    // Brightness group.
-                    f.row_ex(
-                        &LayoutOpts {
-                            height: 22.0,
-                            gap: 8.0,
-                            cross: Align::Center,
-                            ..Default::default()
-                        },
-                        |f| {
-                            f.icon(Icon::Zap, 15.0);
-                            f.label_compact_sized(i18n.text(Message::Brightness), 12.5);
-                            f.flex(1.0);
-                            f.spacer(0.0);
-                            f.label_compact_sized(
-                                &status
-                                    .brightness
-                                    .map(|level| format!("{level}%"))
-                                    .unwrap_or_else(|| "--".into()),
-                                11.0,
-                            );
-                        },
-                    );
-                    if status.brightness.is_some() {
-                        let mut brightness = status.brightness.unwrap_or(1) as f32;
-                        if f.slider("##sao-brightness", &mut brightness, 1.0, 100.0) {
-                            out.system_actions.push(SystemAction::SetBrightness {
-                                level: brightness.round().clamp(1.0, 100.0) as u8,
-                            });
-                        }
-                    } else {
-                        unavailable_control(f, i18n.text(Message::Brightness), i18n);
-                    }
-                    f.separator();
-
-                    // Connectivity group.
-                    f.row_ex(
-                        &LayoutOpts {
-                            height: 22.0,
-                            gap: 8.0,
-                            cross: Align::Center,
-                            ..Default::default()
-                        },
-                        |f| {
-                            match network_themed {
-                                Some(icon) => unsafe {
-                                    f.image(icon as *mut lens::sys::flux_image, 16.0, 16.0)
+                                |f| {
+                                    match volume_themed {
+                                        Some(icon) => unsafe {
+                                            f.image(icon as *mut lens::sys::flux_image, 16.0, 16.0)
+                                        },
+                                        None => f.icon(volume_icon(&status), 15.0),
+                                    }
+                                    f.label_compact_sized(i18n.text(Message::Sound), 12.5);
+                                    f.flex(1.0);
+                                    f.spacer(0.0);
+                                    f.label_compact_sized(
+                                        &status
+                                            .volume
+                                            .map(|level| format!("{level}%"))
+                                            .unwrap_or_else(|| "--".into()),
+                                        11.0,
+                                    );
                                 },
-                                None => f.icon(Icon::Globe, 15.0),
+                            );
+                            if status.volume.is_some() {
+                                let mut volume = status.volume.unwrap_or(0) as f32;
+                                if f.slider("##sao-volume", &mut volume, 0.0, 100.0) {
+                                    out.system_actions.push(SystemAction::SetVolume {
+                                        level: volume.round().clamp(0.0, 100.0) as u8,
+                                    });
+                                }
+                                let mut muted = status.muted;
+                                if f.checkbox(i18n.text(Message::Muted), &mut muted) {
+                                    out.system_actions.push(SystemAction::ToggleMute);
+                                }
+                            } else {
+                                unavailable_control(f, i18n.text(Message::Volume), i18n);
                             }
-                            f.label_compact_sized(i18n.text(Message::Connectivity), 12.5);
-                            f.flex(1.0);
-                            f.spacer(0.0);
-                            f.label_compact_sized(network_label, 11.0);
+                            f.spacer(2.0);
+
+                            // Brightness group.
+                            group_header(f, i18n.text(Message::Brightness));
+                            f.row_ex(
+                                &LayoutOpts {
+                                    height: 22.0,
+                                    gap: 8.0,
+                                    cross: Align::Center,
+                                    ..Default::default()
+                                },
+                                |f| {
+                                    f.icon(Icon::Zap, 15.0);
+                                    f.label_compact_sized(i18n.text(Message::Brightness), 12.5);
+                                    f.flex(1.0);
+                                    f.spacer(0.0);
+                                    f.label_compact_sized(
+                                        &status
+                                            .brightness
+                                            .map(|level| format!("{level}%"))
+                                            .unwrap_or_else(|| "--".into()),
+                                        11.0,
+                                    );
+                                },
+                            );
+                            if status.brightness.is_some() {
+                                let mut brightness = status.brightness.unwrap_or(1) as f32;
+                                if f.slider("##sao-brightness", &mut brightness, 1.0, 100.0) {
+                                    out.system_actions.push(SystemAction::SetBrightness {
+                                        level: brightness.round().clamp(1.0, 100.0) as u8,
+                                    });
+                                }
+                            } else {
+                                unavailable_control(f, i18n.text(Message::Brightness), i18n);
+                            }
+                            f.spacer(2.0);
+
+                            // Connectivity group.
+                            group_header(f, i18n.text(Message::Connectivity));
+                            f.row_ex(
+                                &LayoutOpts {
+                                    height: 22.0,
+                                    gap: 8.0,
+                                    cross: Align::Center,
+                                    ..Default::default()
+                                },
+                                |f| {
+                                    match network_themed {
+                                        Some(icon) => unsafe {
+                                            f.image(icon as *mut lens::sys::flux_image, 16.0, 16.0)
+                                        },
+                                        None => f.icon(Icon::Globe, 15.0),
+                                    }
+                                    f.label_compact_sized(i18n.text(Message::Connectivity), 12.5);
+                                    f.flex(1.0);
+                                    f.spacer(0.0);
+                                    f.label_compact_sized(network_label, 11.0);
+                                },
+                            );
+                            if status.wifi_enabled.is_some() {
+                                let mut wifi = status.wifi_enabled.unwrap_or(false);
+                                if f.checkbox(i18n.text(Message::Wifi), &mut wifi) {
+                                    out.system_actions
+                                        .push(SystemAction::SetWifi { enabled: wifi });
+                                }
+                            } else {
+                                unavailable_control(f, i18n.text(Message::Wifi), i18n);
+                            }
+                            if status.bluetooth_enabled.is_some() {
+                                let mut bluetooth = status.bluetooth_enabled.unwrap_or(false);
+                                if f.checkbox(i18n.text(Message::Bluetooth), &mut bluetooth) {
+                                    out.system_actions
+                                        .push(SystemAction::SetBluetooth { enabled: bluetooth });
+                                }
+                            } else {
+                                unavailable_control(f, i18n.text(Message::Bluetooth), i18n);
+                            }
+                            f.spacer(2.0);
+
+                            // Desktop group.
+                            group_header(f, i18n.text(Message::Desktop));
+                            f.row_ex(
+                                &LayoutOpts {
+                                    height: 22.0,
+                                    gap: 8.0,
+                                    cross: Align::Center,
+                                    ..Default::default()
+                                },
+                                |f| {
+                                    f.icon(Icon::Grid, 15.0);
+                                    f.label_compact_sized(i18n.text(Message::Desktop), 12.5);
+                                },
+                            );
+                            let mut do_not_disturb = status.do_not_disturb;
+                            if f.checkbox(i18n.text(Message::DoNotDisturb), &mut do_not_disturb) {
+                                out.system_actions.push(SystemAction::SetDoNotDisturb {
+                                    enabled: do_not_disturb,
+                                });
+                            }
+                            let mut tiled = status.tiled;
+                            if f.checkbox(i18n.text(Message::TiledLayout), &mut tiled) {
+                                out.system_actions
+                                    .push(SystemAction::SetTiling { enabled: tiled });
+                            }
+                            f.spacer(2.0);
+
+                            // Agent Workspaces group: display-only aggregate of
+                            // the live Agent Realms (moved here from the HUD's right
+                            // chip, ADR-0083).
+                            group_header(f, i18n.text(Message::AiWorkspaces));
+                            f.row_ex(
+                                &LayoutOpts {
+                                    height: 22.0,
+                                    gap: 8.0,
+                                    cross: Align::Center,
+                                    ..Default::default()
+                                },
+                                |f| {
+                                    f.icon(Icon::Users, 15.0);
+                                    f.label_compact_sized(i18n.text(Message::AiWorkspaces), 12.5);
+                                    f.flex(1.0);
+                                    f.spacer(0.0);
+                                    f.label_compact_sized(&agent_status_text, 11.0);
+                                },
+                            );
+                            f.spacer(2.0);
+
+                            // Session group: an immediate lock trigger and the
+                            // "always on" idle inhibitor, which suspends automatic
+                            // dimming, locking, and display power-off while held.
+                            group_header(f, i18n.text(Message::Session));
+                            if f.button(i18n.text(Message::LockNow)) {
+                                out.lock = true;
+                            }
+                            let mut always_on = status.idle_inhibited;
+                            if f.checkbox(i18n.text(Message::AlwaysOn), &mut always_on) {
+                                out.system_actions
+                                    .push(SystemAction::SetIdleInhibit { inhibit: always_on });
+                            }
                         },
                     );
-                    if status.wifi_enabled.is_some() {
-                        let mut wifi = status.wifi_enabled.unwrap_or(false);
-                        if f.checkbox(i18n.text(Message::Wifi), &mut wifi) {
-                            out.system_actions
-                                .push(SystemAction::SetWifi { enabled: wifi });
-                        }
-                    } else {
-                        unavailable_control(f, i18n.text(Message::Wifi), i18n);
-                    }
-                    if status.bluetooth_enabled.is_some() {
-                        let mut bluetooth = status.bluetooth_enabled.unwrap_or(false);
-                        if f.checkbox(i18n.text(Message::Bluetooth), &mut bluetooth) {
-                            out.system_actions
-                                .push(SystemAction::SetBluetooth { enabled: bluetooth });
-                        }
-                    } else {
-                        unavailable_control(f, i18n.text(Message::Bluetooth), i18n);
-                    }
-                    f.separator();
-
-                    // Desktop group.
-                    f.row_ex(
-                        &LayoutOpts {
-                            height: 22.0,
-                            gap: 8.0,
-                            cross: Align::Center,
-                            ..Default::default()
-                        },
-                        |f| {
-                            f.icon(Icon::Grid, 15.0);
-                            f.label_compact_sized(i18n.text(Message::Desktop), 12.5);
-                        },
-                    );
-                    let mut do_not_disturb = status.do_not_disturb;
-                    if f.checkbox(i18n.text(Message::DoNotDisturb), &mut do_not_disturb) {
-                        out.system_actions.push(SystemAction::SetDoNotDisturb {
-                            enabled: do_not_disturb,
-                        });
-                    }
-                    let mut tiled = status.tiled;
-                    if f.checkbox(i18n.text(Message::TiledLayout), &mut tiled) {
-                        out.system_actions
-                            .push(SystemAction::SetTiling { enabled: tiled });
-                    }
-                    f.separator();
-
-                    // Agent Workspaces status row: display-only aggregate of
-                    // the live Agent Realms (moved here from the HUD's right
-                    // chip, ADR-0083).
-                    f.row_ex(
-                        &LayoutOpts {
-                            height: 22.0,
-                            gap: 8.0,
-                            cross: Align::Center,
-                            ..Default::default()
-                        },
-                        |f| {
-                            f.icon(Icon::Users, 15.0);
-                            f.label_compact_sized(i18n.text(Message::AiWorkspaces), 12.5);
-                            f.flex(1.0);
-                            f.spacer(0.0);
-                            f.label_compact_sized(&agent_status_text, 11.0);
-                        },
-                    );
-                    f.separator();
-
-                    // Session group: an immediate lock trigger and the
-                    // "always on" idle inhibitor, which suspends automatic
-                    // dimming, locking, and display power-off while held.
-                    if f.button(i18n.text(Message::LockNow)) {
-                        out.lock = true;
-                    }
-                    let mut always_on = status.idle_inhibited;
-                    if f.checkbox(i18n.text(Message::AlwaysOn), &mut always_on) {
-                        out.system_actions
-                            .push(SystemAction::SetIdleInhibit { inhibit: always_on });
-                    }
-                },
-            );
+                });
+            });
         });
         f.set_theme(original);
     }
 
     /// The interactive tray grid: left-click activates, right-click opens
     /// the host-rendered dbusmenu popover (or `SecondaryActivate`).
-    #[allow(clippy::too_many_arguments)]
     fn render_tray_section(
         &mut self,
         f: &mut Frame,
         area: Rect,
         progress: f32,
         cursor: (f32, f32),
-        pressed: bool,
-        right_pressed: bool,
         i18n: &Localizer,
     ) {
         let sao = Sao::classic();
@@ -975,96 +1637,136 @@ impl CommandPanel {
             f.set_theme(original);
             return;
         }
-        for (index, cell) in cells.iter_mut().enumerate() {
-            let col = index % TRAY_COLS;
-            let grid_row = index / TRAY_COLS;
-            let rect = Rect {
-                x: area.x + col as f32 * TRAY_CELL_W,
-                y: area.y + grid_row as f32 * TRAY_CELL_H,
-                w: TRAY_CELL_W - 8.0,
-                h: TRAY_CELL_H - 8.0,
-            };
-            cell.rect = rect;
-            let hovered = contains(rect, cursor.0, cursor.1);
-            let texture = if cell.textured {
-                self.tray
-                    .as_ref()
-                    .and_then(|tray| tray.textures.get(&cell.key))
-                    .map(|(_, image)| image.as_raw())
-            } else {
-                None
-            };
-            let fallback_themed = self.themed_icon("application-x-executable-symbolic");
-            let title = truncate(&cell.title, 12);
-            let original = f.theme();
-            f.set_theme(faded_theme(themes::sao(&sao), progress));
-            f.layer(
-                &format!("aegis-sao-tray-cell-{index}"),
-                rect,
-                &OverlayOpts {
-                    bg: if hovered {
-                        fade_color(sao.accent_soft, progress)
-                    } else {
-                        Color::TRANSPARENT
-                    },
-                    border: Color::TRANSPARENT,
-                    radius: 10.0,
-                    ..Default::default()
+        let cols = ((area.w + 8.0) / TRAY_CELL_W).max(1.0) as usize;
+        // Distill the per-cell visuals before the layout closures: those
+        // capture disjoint borrows, so `self` method calls happen here.
+        let fallback_themed = self
+            .themed_icon("application-x-executable-symbolic")
+            .map(|icon| icon as *mut lens::sys::flux_image);
+        let visuals: Vec<TrayCellVisual> = cells
+            .iter()
+            .map(|cell| TrayCellVisual {
+                key: cell.key.clone(),
+                title: truncate(&cell.title, 12),
+                has_menu: cell.has_menu,
+                texture: if cell.textured {
+                    self.tray
+                        .as_ref()
+                        .and_then(|tray| tray.textures.get(&cell.key))
+                        .map(|(_, image)| image.as_raw() as *mut lens::sys::flux_image)
+                } else {
+                    None
                 },
-                |f| {
+                fallback: fallback_themed,
+            })
+            .collect();
+        // Clicks are collected during layout and applied afterwards —
+        // opening a popover mutates `self`, which the closures borrow.
+        let mut activations: Vec<String> = Vec::new();
+        let mut secondary: Vec<(String, bool)> = Vec::new();
+        let mut resolved: Vec<(String, Rect)> = Vec::new();
+        let original = f.theme();
+        f.set_theme(faded_theme(themes::sao(&sao), progress));
+        f.layer("aegis-sao-tray", area, &transparent(), |f| {
+            f.column_ex(&sized(area.w, area.h), |f| {
+                f.flex(1.0);
+                f.scroll("aegis-sao-tray-scroll", |f| {
                     f.column_ex(
                         &LayoutOpts {
-                            width: rect.w,
-                            height: rect.h,
-                            gap: 3.0,
-                            pad: 6.0,
-                            cross: Align::Center,
+                            gap: 8.0,
+                            cross: Align::Start,
                             ..Default::default()
                         },
                         |f| {
-                            match texture {
-                                Some(texture) => unsafe {
-                                    f.image(texture as *mut lens::sys::flux_image, 28.0, 28.0)
-                                },
-                                None => match fallback_themed {
-                                    Some(icon) => unsafe {
-                                        f.image(icon as *mut lens::sys::flux_image, 26.0, 26.0)
+                            for row in visuals.chunks(cols) {
+                                f.row_ex(
+                                    &LayoutOpts {
+                                        gap: 8.0,
+                                        height: TRAY_CELL_H - 8.0,
+                                        cross: Align::Start,
+                                        ..Default::default()
                                     },
-                                    None => f.icon(Icon::FileText, 22.0),
-                                },
+                                    |f| {
+                                        for cell in row {
+                                            let (response, _) = f.pressable_row(
+                                                &format!("aegis-sao-tray-cell-{}", cell.key),
+                                                &cell.title,
+                                                &LayoutOpts {
+                                                    width: TRAY_CELL_W - 8.0,
+                                                    height: TRAY_CELL_H - 8.0,
+                                                    gap: 3.0,
+                                                    pad: 6.0,
+                                                    radius: 10.0,
+                                                    cross: Align::Center,
+                                                    ..Default::default()
+                                                },
+                                                |f, _| {
+                                                    f.column_ex(
+                                                        &LayoutOpts {
+                                                            gap: 3.0,
+                                                            cross: Align::Center,
+                                                            ..Default::default()
+                                                        },
+                                                        |f| {
+                                                            match cell.texture {
+                                                                Some(texture) => unsafe {
+                                                                    f.image(texture, 28.0, 28.0)
+                                                                },
+                                                                None => match cell.fallback {
+                                                                    Some(icon) => unsafe {
+                                                                        f.image(icon, 26.0, 26.0)
+                                                                    },
+                                                                    None => {
+                                                                        f.icon(Icon::FileText, 22.0)
+                                                                    }
+                                                                },
+                                                            }
+                                                            f.label_compact_sized(&cell.title, 9.0);
+                                                        },
+                                                    );
+                                                },
+                                            );
+                                            resolved.push((cell.key.clone(), response.rect));
+                                            if response.clicked {
+                                                activations.push(cell.key.clone());
+                                            } else if response.right_clicked {
+                                                secondary.push((cell.key.clone(), cell.has_menu));
+                                            }
+                                        }
+                                    },
+                                );
                             }
-                            f.label_compact_sized(&title, 9.0);
                         },
                     );
-                },
-            );
-            f.set_theme(original);
-            let (x, y) = (cursor.0 as i32, cursor.1 as i32);
-            if pressed && hovered {
-                self.send_tray_command(TrayCommand::Activate {
-                    key: cell.key.clone(),
-                    x,
-                    y,
                 });
-            } else if right_pressed && hovered {
-                // Items that expose a Menu object path get the host-rendered
-                // popover; everything else keeps the SNI `SecondaryActivate`
-                // fallback.
-                if cell.has_menu {
-                    self.menu_open_for = Some(cell.key.clone());
-                    self.menu_path = vec![0];
-                    self.menu_owner = rect;
-                    self.menu_just_opened = true;
-                    self.send_tray_command(TrayCommand::FetchMenu {
-                        key: cell.key.clone(),
-                    });
-                } else {
-                    self.send_tray_command(TrayCommand::SecondaryActivate {
-                        key: cell.key.clone(),
-                        x,
-                        y,
-                    });
-                }
+            });
+        });
+        f.set_theme(original);
+        for (key, rect) in &resolved {
+            if let Some(cell) = cells.iter_mut().find(|cell| &cell.key == key) {
+                cell.rect = *rect;
+            }
+        }
+        let (x, y) = (cursor.0 as i32, cursor.1 as i32);
+        for key in activations {
+            self.send_tray_command(TrayCommand::Activate { key, x, y });
+        }
+        for (key, has_menu) in secondary {
+            // Items that expose a Menu object path get the host-rendered
+            // popover; everything else keeps the SNI `SecondaryActivate`
+            // fallback.
+            if has_menu {
+                self.menu_open_for = Some(key.clone());
+                self.menu_path = vec![0];
+                self.menu_owner = resolved
+                    .iter()
+                    .find(|(owner, _)| owner == &key)
+                    .map(|(_, rect)| *rect)
+                    .unwrap_or(self.menu_owner);
+                self.menu_just_opened = true;
+                self.send_tray_command(TrayCommand::FetchMenu { key });
+            } else {
+                self.send_tray_command(TrayCommand::SecondaryActivate { key, x, y });
             }
         }
         // Re-anchor the open popover to its owner cell; close it when the
@@ -1080,15 +1782,13 @@ impl CommandPanel {
         }
     }
 
-    /// The notification list, newest first; a row click dismisses.
-    #[allow(clippy::too_many_arguments)]
+    /// The notification list, newest first, as SAO "quest item" cards in a
+    /// scroll area; a card click dismisses.
     fn render_messages_section(
         &mut self,
         f: &mut Frame,
         area: Rect,
         progress: f32,
-        cursor: (f32, f32),
-        pressed: bool,
         i18n: &Localizer,
         out: &mut ChromeEvents,
     ) {
@@ -1122,63 +1822,59 @@ impl CommandPanel {
         let row_theme = faded_theme(base, progress);
         let muted_theme = faded_theme(themes::sao_muted(base, &sao), progress);
         f.set_theme(row_theme);
-        for (index, notification) in notifications
-            .iter()
-            .rev()
-            .take(MAX_MESSAGE_ROWS)
-            .enumerate()
-        {
-            let row = Rect {
-                x: area.x,
-                y: area.y + index as f32 * 64.0,
-                w: area.w,
-                h: 58.0,
-            };
-            if row.y + row.h > area.y + area.h {
-                break;
-            }
-            let hovered = contains(row, cursor.0, cursor.1);
-            let summary = truncate(&notification.summary, 48);
-            let body = truncate(&notification.body, 72);
-            f.layer(
-                &format!("aegis-sao-message-{}", notification.id),
-                row,
-                &OverlayOpts {
-                    bg: if hovered {
-                        fade_color(sao.accent_soft, progress)
-                    } else {
-                        fade_color(sao.surface_dim, progress)
-                    },
-                    border: Color::TRANSPARENT,
-                    radius: 12.0,
-                    pad: 0.0,
-                    ..Default::default()
-                },
-                |f| {
+        f.layer("aegis-sao-messages", area, &transparent(), |f| {
+            f.column_ex(&sized(area.w, area.h), |f| {
+                f.flex(1.0);
+                f.scroll("aegis-sao-messages-scroll", |f| {
                     f.column_ex(
                         &LayoutOpts {
-                            width: row.w,
-                            height: row.h,
-                            gap: 2.0,
-                            pad: 10.0,
-                            cross: Align::Start,
+                            gap: 6.0,
+                            cross: Align::Stretch,
                             ..Default::default()
                         },
                         |f| {
-                            f.label_compact_sized(&summary, 12.5);
-                            if !body.is_empty() {
-                                f.set_theme(muted_theme);
-                                f.label_compact_sized(&body, 10.5);
-                                f.set_theme(row_theme);
+                            for notification in notifications.iter().rev() {
+                                let summary = truncate(&notification.summary, 48);
+                                let body = truncate(&notification.body, 72);
+                                let (response, _) = f.pressable_row(
+                                    &format!("aegis-sao-message-{}", notification.id),
+                                    &summary,
+                                    &LayoutOpts {
+                                        height: 58.0,
+                                        gap: 2.0,
+                                        pad: 10.0,
+                                        radius: 12.0,
+                                        cross: Align::Center,
+                                        bg: fade_color(sao.surface_dim, progress),
+                                        ..Default::default()
+                                    },
+                                    |f, _| {
+                                        f.column_ex(
+                                            &LayoutOpts {
+                                                gap: 2.0,
+                                                cross: Align::Start,
+                                                ..Default::default()
+                                            },
+                                            |f| {
+                                                f.label_compact_sized(&summary, 12.5);
+                                                if !body.is_empty() {
+                                                    f.set_theme(muted_theme);
+                                                    f.label_compact_sized(&body, 10.5);
+                                                    f.set_theme(row_theme);
+                                                }
+                                            },
+                                        );
+                                    },
+                                );
+                                if response.clicked {
+                                    out.dismissed_notification = Some(notification.id);
+                                }
                             }
                         },
                     );
-                },
-            );
-            if pressed && hovered {
-                out.dismissed_notification = Some(notification.id);
-            }
-        }
+                });
+            });
+        });
         f.set_theme(original);
     }
 
@@ -1310,20 +2006,33 @@ impl Chrome for CommandPanel {
         out: &mut ChromeEvents,
     ) {
         let raw = input.as_raw();
-        self.advance(raw.dt_seconds.max(0.0));
+        let dt = raw.dt_seconds.max(0.0);
+        self.advance(dt);
         let display = (raw.display_size.x, raw.display_size.y);
         let cursor = (raw.cursor.x, raw.cursor.y);
         let down = raw.mouse_down.first().copied().unwrap_or(false);
         let pressed = down && !self.prev_down;
-        let right_down = raw.mouse_down.get(1).copied().unwrap_or(false);
-        let right_pressed = right_down && !self.prev_right_down;
         if !self.active() {
             self.prev_down = down;
-            self.prev_right_down = right_down;
             return;
         }
+        // An animated avatar advances with the panel's frames; static
+        // avatars and the initials fallback do no GPU work, so the panel
+        // stays event-driven off `anim_pending`.
+        if self.open
+            && self
+                .avatar
+                .as_ref()
+                .is_some_and(AvatarResource::is_animated)
+            && let Some(avatar) = &mut self.avatar
+            && let Err(error) = avatar.advance(dt)
+            && !self.avatar_warned
+        {
+            log::warn!("command-panel: avatar advance failed: {error}");
+            self.avatar_warned = true;
+        }
         let reveal = self.reveal.clamp(0.0, 1.0);
-        let (menu_rect, content_rect) = Self::cluster_bounds(display);
+        let (header_rect, rail_rect, content_rect) = Self::cluster_bounds(display);
 
         // Dark scrim over the blurred desktop — the product's standard modal
         // backdrop, scaled in with the reveal.
@@ -1345,14 +2054,15 @@ impl Chrome for CommandPanel {
             |_| {},
         );
 
-        // Click-away: a press landing on neither panel nor an open tray
-        // popover dismisses the panel.
+        // Click-away: a press landing on none of the three surfaces nor an
+        // open tray popover dismisses the panel.
         let on_popover = self
             .open_popover_bounds(display)
             .map(|rect| contains(rect, cursor.0, cursor.1))
             .unwrap_or(false);
         if pressed
-            && !contains(menu_rect, cursor.0, cursor.1)
+            && !contains(header_rect, cursor.0, cursor.1)
+            && !contains(rail_rect, cursor.0, cursor.1)
             && !contains(content_rect, cursor.0, cursor.1)
             && !on_popover
         {
@@ -1361,22 +2071,13 @@ impl Chrome for CommandPanel {
 
         // Sections stop accepting presses while the panel is closing.
         let pressed = pressed && self.open;
-        let right_pressed = right_pressed && self.open;
 
-        let menu_progress = stagger(reveal, 0.0);
+        let header_progress = stagger(reveal, 0.0);
+        let rail_progress = stagger(reveal, RAIL_STAGGER);
         let content_progress = ease_out_cubic(stagger(reveal, CONTENT_STAGGER));
-        self.render_menu_panel(f, menu_rect, menu_progress, cursor, pressed, i18n);
-        self.render_content_panel(
-            f,
-            content_rect,
-            content_progress,
-            display,
-            cursor,
-            pressed,
-            right_pressed,
-            i18n,
-            out,
-        );
+        self.render_header_band(f, header_rect, header_progress, i18n);
+        self.render_icon_rail(f, rail_rect, rail_progress, cursor, pressed);
+        self.render_content_panel(f, content_rect, content_progress, cursor, i18n, out);
 
         // The dbusmenu popover floats above the panels.
         if self.menu_open_for.is_some()
@@ -1387,7 +2088,6 @@ impl Chrome for CommandPanel {
         }
 
         self.prev_down = down;
-        self.prev_right_down = right_down;
     }
 
     fn captures_keyboard(&self) -> bool {
@@ -1458,6 +2158,20 @@ impl Chrome for CommandPanel {
 
     fn update_system_status(&mut self, status: &SystemStatus) {
         self.status = status.clone();
+    }
+
+    fn update_resource_stats(&mut self, stats: &ResourceStats) {
+        self.stats = *stats;
+        self.cpu_history.push(stats.cpu_percent);
+        if let Some(gpu) = stats.gpu_percent {
+            self.gpu_history.push(gpu);
+        }
+        let ram_percent = if stats.mem_total_bytes > 0 {
+            stats.mem_used_bytes as f32 / stats.mem_total_bytes as f32 * 100.0
+        } else {
+            0.0
+        };
+        self.ram_history.push(ram_percent);
     }
 
     fn update_realms(&mut self, snapshot: &RealmSnapshot) {

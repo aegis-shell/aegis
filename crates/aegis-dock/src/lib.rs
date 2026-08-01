@@ -35,7 +35,8 @@ use aegis_core::window::{SpaceUse, Window};
 use aegis_core::workspace::WorkspaceSnapshot;
 use aegis_shell::{
     AppCatalog, AppMenu, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet,
-    LiquidGlassRegion, Localizer, Message, PinAction, Reserved, truncate,
+    LiquidGlassRegion, LivePreviewPresentation, Localizer, Message, PinAction, Reserved,
+    WindowSwitcherCard, truncate,
 };
 
 /// Visual height of the dock bar. Tiles rest inside it; magnified tiles pop
@@ -103,6 +104,16 @@ const TOOLTIP_DWELL: f32 = 0.30;
 const TOOLTIP_FADE_SPEED: f32 = 18.0;
 const TOOLTIP_HEIGHT: f32 = 28.0;
 const TOOLTIP_GAP: f32 = 9.0;
+/// Geometry for the live window cards shown above a running Dock tile.
+const PREVIEW_CARD_MAX_WIDTH: f32 = 224.0;
+const PREVIEW_CARD_MIN_WIDTH: f32 = 112.0;
+const PREVIEW_ASPECT: f32 = 0.62;
+const PREVIEW_LABEL_HEIGHT: f32 = 34.0;
+const PREVIEW_PANEL_PAD: f32 = 12.0;
+const PREVIEW_CARD_GAP: f32 = 10.0;
+const PREVIEW_PANEL_GAP: f32 = 12.0;
+const PREVIEW_SCREEN_MARGIN: f32 = 8.0;
+const PREVIEW_PANEL_RADIUS: f32 = 16.0;
 
 /// One application pinned to the dock: the launchable entry plus the lowercased
 /// `app_id`s a running toplevel might report, used to fold a running window
@@ -208,6 +219,13 @@ pub struct Dock {
     hover_elapsed: f32,
     tooltip_tile: Option<String>,
     tooltip_alpha: f32,
+    /// Geometry shared with the compositor for a running app's live previews.
+    /// It is prepared from the exact icon owner and retained while the pointer
+    /// crosses the gap between the Dock and the popover.
+    live_preview: Option<LivePreviewPresentation>,
+    hover_surface_bounds: Option<Rect>,
+    hover_owner_bounds: Option<Rect>,
+    hovered_preview: Option<aegis_core::window::WindowId>,
     /// Accessibility reduced-motion (ADR-0029): magnification springs and
     /// tooltip fades resolve to their targets in one frame.
     reduced_motion: bool,
@@ -294,6 +312,10 @@ impl Dock {
             hover_elapsed: 0.0,
             tooltip_tile: None,
             tooltip_alpha: 0.0,
+            live_preview: None,
+            hover_surface_bounds: None,
+            hover_owner_bounds: None,
+            hovered_preview: None,
             reduced_motion: false,
             autohide: false,
             autohide_reveal: 1.0,
@@ -426,6 +448,45 @@ impl Dock {
         self.hover_elapsed = 0.0;
         self.tooltip_tile = None;
         self.tooltip_alpha = 0.0;
+        self.live_preview = None;
+        self.hover_surface_bounds = None;
+        self.hover_owner_bounds = None;
+        self.hovered_preview = None;
+    }
+
+    fn dismiss_hover_surface(&mut self) {
+        self.hovered_tile = None;
+        self.hover_elapsed = 0.0;
+        self.tooltip_tile = None;
+        self.tooltip_alpha = 0.0;
+        self.live_preview = None;
+        self.hover_surface_bounds = None;
+        self.hover_owner_bounds = None;
+        self.hovered_preview = None;
+    }
+
+    /// Keep a preview open while the pointer crosses the small air gap above
+    /// its owner icon. The bridge uses the popover's horizontal span so users
+    /// can move diagonally toward any card in a multi-window group.
+    fn hover_surface_contains(&self, x: f32, y: f32) -> bool {
+        let contains =
+            |rect: Rect| x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h;
+        let Some(surface) = self.hover_surface_bounds else {
+            return false;
+        };
+        if contains(surface) {
+            return true;
+        }
+        let Some(owner) = self.hover_owner_bounds else {
+            return false;
+        };
+        let bridge = Rect {
+            x: surface.x.min(owner.x),
+            y: (surface.y + surface.h).min(owner.y),
+            w: (surface.x + surface.w).max(owner.x + owner.w) - surface.x.min(owner.x),
+            h: (owner.y - (surface.y + surface.h)).max(0.0),
+        };
+        contains(bridge)
     }
 
     fn set_dock_obscured(&mut self, obscured: bool) {

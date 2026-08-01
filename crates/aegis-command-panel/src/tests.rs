@@ -118,12 +118,96 @@ fn a_fullscreen_window_closes_the_panel() {
 #[test]
 fn cluster_bounds_stay_inside_small_displays() {
     for display in [(320.0, 480.0), (800.0, 600.0), (1920.0, 1080.0)] {
-        let (menu, content) = CommandPanel::cluster_bounds(display);
-        assert!(menu.x >= 0.0 && menu.y >= 0.0);
+        let (header, rail, content) = CommandPanel::cluster_bounds(display);
+        assert!(header.x >= 0.0 && header.y >= 0.0);
+        assert!(header.x + header.w <= display.0 + 0.01);
+        assert!(header.y + header.h <= display.1 + 0.01);
+        assert!(rail.x >= header.x && rail.y >= header.y + header.h);
         assert!(content.x + content.w <= display.0 + 0.01);
         assert!(content.y + content.h <= display.1 + 0.01);
-        assert!(content.x >= menu.x + menu.w);
+        assert!(content.x >= rail.x + rail.w);
+        assert!(rail.w >= 48.0);
+        // The header spans the full cluster width; rail + gap + content
+        // divide the same width below it.
+        assert!((header.w - (rail.w + PANEL_GAP + content.w)).abs() < 0.01);
     }
+}
+
+#[test]
+fn full_size_displays_get_the_design_geometry() {
+    let (header, rail, content) = CommandPanel::cluster_bounds((1920.0, 1080.0));
+    assert_eq!(header.h, HEADER_H);
+    assert_eq!(rail.w, RAIL_W);
+    assert_eq!(content.w, CONTENT_W);
+    assert_eq!(content.h, CONTENT_H);
+    assert_eq!(header.w, RAIL_W + PANEL_GAP + CONTENT_W);
+}
+
+#[test]
+fn history_evicts_the_oldest_sample_past_its_cap() {
+    let mut history = History::new(4);
+    for value in [10.0, 20.0, 30.0, 40.0] {
+        history.push(value);
+    }
+    assert_eq!(history.len(), 4);
+    history.push(50.0);
+    history.push(60.0);
+    assert_eq!(history.len(), 4);
+    assert_eq!(history.newest(), Some(60.0));
+    let samples: Vec<f32> = history.samples().collect();
+    assert_eq!(samples, vec![30.0, 40.0, 50.0, 60.0]);
+}
+
+#[test]
+fn resource_stats_feed_the_sparkline_histories() {
+    let mut panel = CommandPanel::without_sources();
+    let mut stats = ResourceStats {
+        cpu_percent: 42.0,
+        gpu_percent: Some(17.0),
+        mem_used_bytes: 8 << 30,
+        mem_total_bytes: 16 << 30,
+        ..ResourceStats::default()
+    };
+    panel.update_resource_stats(&stats);
+    assert_eq!(panel.cpu_history.newest(), Some(42.0));
+    assert_eq!(panel.gpu_history.newest(), Some(17.0));
+    assert_eq!(panel.ram_history.newest(), Some(50.0));
+
+    // A vanished GPU probe must not push stale samples.
+    stats.gpu_percent = None;
+    stats.cpu_percent = 5.0;
+    panel.update_resource_stats(&stats);
+    assert_eq!(panel.cpu_history.len(), 2);
+    assert_eq!(panel.gpu_history.len(), 1);
+    assert_eq!(panel.stats.cpu_percent, 5.0);
+}
+
+#[test]
+fn format_rate_picks_si_units_and_precision() {
+    assert_eq!(format_rate(0.0), "0B");
+    assert_eq!(format_rate(512.0), "512B");
+    assert_eq!(format_rate(340.0 * 1024.0), "340K");
+    assert_eq!(format_rate(1.25 * 1024.0 * 1024.0), "1.2M");
+    assert_eq!(format_rate(9.6 * 1024.0), "9.6K");
+    assert_eq!(format_rate(64.0 * 1024.0 * 1024.0), "64M");
+    assert_eq!(format_rate(2.0 * 1024.0 * 1024.0 * 1024.0), "2.0G");
+}
+
+#[test]
+fn format_gib_pair_renders_used_over_total_in_gib() {
+    assert_eq!(format_gib_pair(0, 0), "0.0/0.0G");
+    let gib = 1u64 << 30;
+    assert_eq!(format_gib_pair(gib * 64 / 10, gib * 156 / 10), "6.4/15.6G");
+}
+
+#[test]
+fn identity_resolves_for_the_current_process_user() {
+    let identity = Identity::current().expect("passwd record for the test user");
+    assert!(!identity.username.is_empty());
+    assert!(!identity.display_name.is_empty());
+    assert!(!identity.initials.is_empty());
+    // The primary group is always part of the list when group lookup works.
+    assert!(!identity.groups.is_empty());
 }
 
 #[test]

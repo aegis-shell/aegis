@@ -17,6 +17,8 @@ log.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+# statvfs for the resource probe's root-filesystem usage sample.
+libc.workspace = true
 # The secret prompt's edit buffer is zeroized on close (password hygiene).
 zeroize = { workspace = true }
 

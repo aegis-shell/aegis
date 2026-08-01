@@ -526,6 +526,9 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         error: None,
     };
     shell.set_system_status(system_status.clone());
+    // Seed the panel with one resource sample so it never opens on all zeros.
+    shell.set_resource_stats(aegis_shell::ResourceProbe::new().sample());
+    let (resource_tx, resource_rx) = std::sync::mpsc::channel::<aegis_shell::ResourceStats>();
     let (status_tx, status_rx) = std::sync::mpsc::channel::<aegis_shell::SystemStatus>();
     // System actions wake the poller for an out-of-cycle refresh so the HUD
     // reconciles its optimistic values right away; the main loop itself never
@@ -610,6 +613,21 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .expect("spawn status poller");
+    // Resource utilisation (CPU/GPU/memory/net/disk) polls on its own channel:
+    // the probe reads only /proc and /sys plus one statvfs, so it never
+    // blocks a frame, and a failed send means the main loop is gone.
+    std::thread::Builder::new()
+        .name("aegis-resources".into())
+        .spawn(move || {
+            let mut probe = aegis_shell::ResourceProbe::new();
+            loop {
+                if resource_tx.send(probe.sample()).is_err() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        })
+        .expect("spawn resource poller");
 
     // mtime-based reload watcher, polled each frame. `None` when there is no
     // default config path on this host.
@@ -868,6 +886,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         system_status,
         status_rx,
         status_refresh_tx,
+        resource_rx,
         config_writer,
         reload,
         idle_process,

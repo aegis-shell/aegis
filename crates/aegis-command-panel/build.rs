@@ -2,7 +2,11 @@
 
 fn main() {
     let mut emitted_dtags = false;
-    for var in ["DEP_LENS_RPATHS", "DEP_FLUX_RPATHS"] {
+    for var in [
+        "DEP_LENS_RPATHS",
+        "DEP_FLUX_RPATHS",
+        "DEP_FLUX_SCENE_GRAPH_RPATHS",
+    ] {
         if let Ok(rpaths) = std::env::var(var) {
             if !emitted_dtags {
                 println!("cargo:rustc-link-arg=-Wl,--disable-new-dtags");

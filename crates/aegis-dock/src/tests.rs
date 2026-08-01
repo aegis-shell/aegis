@@ -1,4 +1,6 @@
-use super::rendering::{entry_matches_app_id, hit_test_tiles};
+use super::rendering::{
+    entry_matches_app_id, hit_test_tiles, live_preview_hit, live_preview_layout,
+};
 use super::*;
 
 fn app(id: &str) -> Entry {
@@ -425,6 +427,106 @@ fn dock_backdrop_is_one_analytic_rounded_body() {
     assert_eq!(glass[0].bounds, backdrop[0]);
     assert_eq!(glass[0].corner_radius, Design::dark().radii.dock);
     assert_eq!(glass[0].opacity, 1.0);
+}
+
+#[test]
+fn collapsed_autohide_handle_stays_an_analytic_glass_body() {
+    let mut dock = dock_with(vec![app("org.example.Editor.desktop")]);
+    dock.set_autohide(true);
+    dock.autohide_reveal = 0.0;
+    let display = (1920.0, 1080.0);
+    let workspaces = workspace_snapshot();
+
+    // The compositor's capture path keys off the reported sigma: zero would
+    // silently drop the collapsed handle's glass regions.
+    assert_eq!(dock.backdrop_blur_sigma(), 12.0);
+    let backdrop = dock.backdrop_regions(display, &[], &workspaces);
+    let glass = dock.liquid_glass_regions(display, &[], &workspaces);
+    assert_eq!(backdrop.len(), 1);
+    assert_eq!(glass.len(), 1);
+    assert_eq!(glass[0].bounds, backdrop[0]);
+    assert_eq!(glass[0].bounds.w, AUTOHIDE_HANDLE_WIDTH);
+    assert_eq!(glass[0].bounds.h, AUTOHIDE_HANDLE_HEIGHT);
+    assert_eq!(glass[0].corner_radius, AUTOHIDE_HANDLE_HEIGHT * 0.5);
+}
+
+#[test]
+fn running_app_preview_layout_exposes_every_window_inside_the_output() {
+    let owner = lens::Rect {
+        x: 910.0,
+        y: 980.0,
+        w: 84.0,
+        h: 84.0,
+    };
+    let windows: Vec<_> = (1..=7).map(aegis_core::window::WindowId).collect();
+    let presentation = live_preview_layout((1920.0, 1080.0), owner, &windows, 1.0);
+
+    assert_eq!(presentation.cards.len(), windows.len());
+    assert!(presentation.panel.origin.x >= PREVIEW_SCREEN_MARGIN as i32);
+    assert!(presentation.panel.origin.y >= PREVIEW_SCREEN_MARGIN as i32);
+    assert!(presentation.panel.origin.x + presentation.panel.size.w <= 1920);
+    for card in &presentation.cards {
+        assert!(windows.contains(&card.window));
+        assert_eq!(card.geometry.preview.size.w, card.geometry.outer.size.w);
+        assert_eq!(
+            card.geometry.preview.size.h + card.geometry.label.size.h,
+            card.geometry.outer.size.h
+        );
+    }
+
+    for card in &presentation.cards {
+        let centre_x =
+            card.geometry.outer.origin.x as f32 + card.geometry.outer.size.w as f32 * 0.5;
+        let centre_y =
+            card.geometry.outer.origin.y as f32 + card.geometry.outer.size.h as f32 * 0.5;
+        assert_eq!(
+            live_preview_hit(&presentation, centre_x, centre_y),
+            Some(card.window),
+            "each preview card resolves to its own focus target"
+        );
+    }
+}
+
+#[test]
+fn live_preview_adds_a_second_glass_body_and_keeps_its_pointer_bridge() {
+    let mut dock = dock_with(vec![app("org.example.Editor.desktop")]);
+    let owner = lens::Rect {
+        x: 900.0,
+        y: 970.0,
+        w: 84.0,
+        h: 84.0,
+    };
+    let presentation = live_preview_layout(
+        (1920.0, 1080.0),
+        owner,
+        &[
+            aegis_core::window::WindowId(7),
+            aegis_core::window::WindowId(8),
+        ],
+        1.0,
+    );
+    let panel = presentation.panel;
+    dock.tooltip_alpha = 1.0;
+    dock.hover_owner_bounds = Some(owner);
+    dock.hover_surface_bounds = Some(lens::Rect {
+        x: panel.origin.x as f32,
+        y: panel.origin.y as f32,
+        w: panel.size.w as f32,
+        h: panel.size.h as f32,
+    });
+    dock.live_preview = Some(presentation);
+
+    let glass = dock.liquid_glass_regions((1920.0, 1080.0), &[], &workspace_snapshot());
+    assert_eq!(glass.len(), 2);
+    assert_eq!(glass[1].corner_radius, PREVIEW_PANEL_RADIUS);
+    let bridge_y = (panel.origin.y + panel.size.h) as f32 + PREVIEW_PANEL_GAP * 0.5;
+    assert!(dock.captures_pointer(
+        owner.x + owner.w * 0.5,
+        bridge_y,
+        (1920.0, 1080.0),
+        &[],
+        &workspace_snapshot(),
+    ));
 }
 
 #[test]

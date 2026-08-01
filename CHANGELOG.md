@@ -5,6 +5,41 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once the
 project cuts a tagged release.
 
+## [Unreleased]
+
+### Liquid glass
+
+- Added an SDF drop shadow cast by every glass body, plus a silhouette
+  edge-absorption line, so bodies stay separated from uniform bright
+  content instead of merging into white backdrops.
+- Rim and lensing scale with body size; shadows and tint color are
+  per-body caller parameters on the liquid-glass group, so each chrome
+  component configures its own optical character (Optics ADR-0047).
+- The collapsed autohide Dock indicator is an analytic glass body too, so
+  the stadium handle keeps lensing, adaptive tint, and its proportional
+  shadow.
+
+### Command panel
+
+- Redesigned the command panel from a two-panel menu into a centered
+  three-surface SAO cluster: a header band, an icon rail, and a content
+  panel, all in the frosted white SAO material over the unchanged dark
+  blurred scrim.
+- The header band pairs an identity zone (ringed avatar orb, display
+  name, and account groups) with a machine zone: a thin-line chassis
+  pictogram and btop-inspired live gauges for CPU (with a history
+  sparkline), GPU, RAM, network, disk, and battery, sampled every two
+  seconds. Gauge rows appear only when backed by real data.
+- Section switching moved to a vertical icon rail with the SAO
+  ring/disc selection idiom and a circular close button at its bottom.
+  System quick settings now group under muted headers, the Tray grid
+  derives its column count from the panel width, and the Messages list
+  renders dismissible summary-plus-body cards with no row cap; all
+  three sections scroll.
+- Avatar textures are now circle-masked in their alpha channel across
+  stills, animated VRM models, and the gradient fallback, sharing the
+  lock screen's avatar sources.
+
 ## [0.0.9] - 2026-08-01
 
 ### Liquid glass

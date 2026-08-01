@@ -739,6 +739,10 @@ impl Chrome for Hud {
                 },
                 corner_radius: CHIP_RADIUS,
                 opacity: *fade,
+                // Chips are small controls: a tight, quiet shadow.
+                shadow_alpha: 0.16,
+                shadow_blur: 4.0,
+                shadow_offset_y: 2.0,
             })
             .collect()
     }

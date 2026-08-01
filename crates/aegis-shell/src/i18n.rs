@@ -252,6 +252,17 @@ pub enum Message {
     System,
     Tray,
     NoTrayItems,
+    Session,
+    Cpu,
+    Gpu,
+    Memory,
+    Disk,
+    NetDown,
+    NetUp,
+    Laptop,
+    /// The chassis form factor; [`Message::Desktop`] is the desktop metaphor.
+    DesktopChassis,
+    Charging,
 }
 
 /// Lightweight locale handle passed to chrome components for each frame.
@@ -325,6 +336,7 @@ impl Localizer {
             Message::TiledLayout => &catalog.tiled_layout,
             Message::OpenApplications => &catalog.open_applications,
             Message::QuitSession => &catalog.quit_session,
+            Message::Session => &catalog.session,
             Message::LockNow => &catalog.lock_now,
             Message::AlwaysOn => &catalog.always_on,
             Message::Sound => &catalog.sound,
@@ -474,6 +486,15 @@ impl Localizer {
             Message::System => &catalog.system,
             Message::Tray => &catalog.tray,
             Message::NoTrayItems => &catalog.no_tray_items,
+            Message::Cpu => &catalog.cpu,
+            Message::Gpu => &catalog.gpu,
+            Message::Memory => &catalog.memory,
+            Message::Disk => &catalog.disk,
+            Message::NetDown => &catalog.net_down,
+            Message::NetUp => &catalog.net_up,
+            Message::Laptop => &catalog.laptop,
+            Message::DesktopChassis => &catalog.desktop_chassis,
+            Message::Charging => &catalog.charging,
         }
     }
 
@@ -574,6 +595,7 @@ struct Catalog {
     tiled_layout: String,
     open_applications: String,
     quit_session: String,
+    session: String,
     lock_now: String,
     always_on: String,
     sound: String,
@@ -727,6 +749,15 @@ struct Catalog {
     system: String,
     tray: String,
     no_tray_items: String,
+    cpu: String,
+    gpu: String,
+    memory: String,
+    disk: String,
+    net_down: String,
+    net_up: String,
+    laptop: String,
+    desktop_chassis: String,
+    charging: String,
 }
 
 static ENGLISH: OnceLock<Catalog> = OnceLock::new();

@@ -370,6 +370,10 @@ impl CompositorRuntime {
                 self.chrome_dirty = true;
             }
         }
+        while let Ok(stats) = self.resource_rx.try_recv() {
+            self.shell.set_resource_stats(stats);
+            self.chrome_dirty = true;
+        }
         let touchpad_status = self.host.touchpad_status();
         if touchpad_status != self.system_status.touchpad {
             self.system_status.touchpad = touchpad_status;

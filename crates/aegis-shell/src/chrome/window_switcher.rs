@@ -7,17 +7,20 @@
 
 use std::collections::{HashMap, HashSet};
 
+use aegis_design::{Design, materials};
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{
-    AppCatalog, Chrome, ChromeEvents, CursorShape, IconSet, Localizer, WindowSwitcherCard,
-    WindowSwitcherPresentation, truncate,
+    AppCatalog, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet, LiquidGlassRegion,
+    Localizer, WindowSwitcherCard, WindowSwitcherPresentation, truncate,
 };
 use aegis_core::window::{Window, WindowId};
 use aegis_core::workspace::WorkspaceSnapshot;
 
 const FADE_RATE: f32 = 18.0;
 const SLIDE_RATE: f32 = 15.0;
+const BACKDROP_BLUR_SIGMA: f32 = 16.0;
+const PANEL_RADIUS: f32 = 20.0;
 
 pub struct WindowSwitcher {
     open: bool,
@@ -216,16 +219,13 @@ impl Chrome for WindowSwitcher {
         }
 
         let panel = to_lens(presentation.panel);
+        let mut panel_material = materials::dock(&Design::dark());
+        panel_material.bg = Color::rgba(255, 255, 255, self.alpha(12));
+        panel_material.radius = PANEL_RADIUS;
         frame.layer(
             "aegis-window-switcher-panel",
             panel,
-            &OverlayOpts {
-                bg: Color::rgba(18, 21, 30, self.alpha(110)),
-                border: Color::rgba(176, 190, 220, self.alpha(90)),
-                border_width: 1.0,
-                radius: 20.0,
-                ..Default::default()
-            },
+            &panel_material,
             |frame| {
                 frame.column_ex(
                     &LayoutOpts {
@@ -252,15 +252,15 @@ impl Chrome for WindowSwitcher {
                 outer,
                 &OverlayOpts {
                     bg: Color::rgba(
-                        8,
-                        10,
-                        16,
+                        255,
+                        255,
+                        255,
                         self.alpha(if selected {
-                            48
-                        } else if hovered {
-                            32
-                        } else {
                             18
+                        } else if hovered {
+                            12
+                        } else {
+                            4
                         }),
                     ),
                     border: if selected {
@@ -268,7 +268,7 @@ impl Chrome for WindowSwitcher {
                     } else if hovered {
                         Color::rgba(154, 196, 255, self.alpha(220))
                     } else {
-                        Color::rgba(164, 174, 196, self.alpha(105))
+                        Color::rgba(255, 255, 255, self.alpha(38))
                     },
                     border_width: if selected {
                         3.0
@@ -298,7 +298,7 @@ impl Chrome for WindowSwitcher {
                 &format!("aegis-window-switcher-label-{index}"),
                 label_rect,
                 &OverlayOpts {
-                    bg: Color::rgba(12, 14, 21, self.alpha(218)),
+                    bg: Color::rgba(255, 255, 255, self.alpha(10)),
                     radius: 9.0,
                     ..Default::default()
                 },
@@ -384,6 +384,49 @@ impl Chrome for WindowSwitcher {
         self.open || self.visibility > 0.01
     }
 
+    fn backdrop_blur_sigma(&self) -> f32 {
+        if self.open || self.visibility > 0.01 {
+            BACKDROP_BLUR_SIGMA
+        } else {
+            0.0
+        }
+    }
+
+    fn backdrop_regions(
+        &self,
+        _display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> Vec<BackdropRegion> {
+        self.presentation
+            .as_ref()
+            .filter(|presentation| presentation.visibility > 0.01)
+            .map(|presentation| vec![backdrop_region(presentation.panel)])
+            .unwrap_or_default()
+    }
+
+    fn liquid_glass_regions(
+        &self,
+        _display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> Vec<LiquidGlassRegion> {
+        self.presentation
+            .as_ref()
+            .filter(|presentation| presentation.visibility > 0.01)
+            .map(|presentation| {
+                vec![LiquidGlassRegion {
+                    bounds: backdrop_region(presentation.panel),
+                    corner_radius: PANEL_RADIUS,
+                    opacity: presentation.visibility,
+                    shadow_alpha: 0.18,
+                    shadow_blur: 16.0,
+                    shadow_offset_y: 8.0,
+                }]
+            })
+            .unwrap_or_default()
+    }
+
     fn set_reduced_motion(&mut self, reduced: bool) {
         self.reduced_motion = reduced;
     }
@@ -419,6 +462,15 @@ impl Chrome for WindowSwitcher {
 
 fn to_lens(rect: aegis_core::Rect) -> Rect {
     Rect {
+        x: rect.origin.x as f32,
+        y: rect.origin.y as f32,
+        w: rect.size.w as f32,
+        h: rect.size.h as f32,
+    }
+}
+
+fn backdrop_region(rect: aegis_core::Rect) -> BackdropRegion {
+    BackdropRegion {
         x: rect.origin.x as f32,
         y: rect.origin.y as f32,
         w: rect.size.w as f32,
@@ -492,5 +544,27 @@ mod tests {
         let card = lerp_card(from, to, 0.25);
         assert_eq!(card.outer.origin.x, 50);
         assert!(card.outer.origin.x < to.outer.origin.x);
+    }
+
+    #[test]
+    fn visible_switcher_panel_is_declared_as_liquid_glass() {
+        let mut switcher = WindowSwitcher::new();
+        switcher.presentation = Some(WindowSwitcherPresentation {
+            panel: aegis_core::Rect::new(200, 160, 640, 240),
+            cards: Vec::new(),
+            selected: None,
+            visibility: 0.6,
+        });
+        let workspaces = WorkspaceSnapshot {
+            outputs: Vec::new(),
+        };
+
+        let backdrop = switcher.backdrop_regions((1280.0, 720.0), &[], &workspaces);
+        let glass = switcher.liquid_glass_regions((1280.0, 720.0), &[], &workspaces);
+        assert_eq!(backdrop.len(), 1);
+        assert_eq!(glass.len(), 1);
+        assert_eq!(glass[0].bounds, backdrop[0]);
+        assert_eq!(glass[0].corner_radius, PANEL_RADIUS);
+        assert_eq!(glass[0].opacity, 0.6);
     }
 }

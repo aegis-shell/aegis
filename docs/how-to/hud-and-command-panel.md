@@ -34,10 +34,13 @@ accumulating.
 
 ## Open the Command Panel
 
-Press `Super+S`, or swipe down on the touchpad with four fingers. The panel
-opens over a dark blurred scrim.
+Press `Super+S`, or swipe down on the touchpad with four fingers. The
+panel opens centered over a dark blurred scrim as a cluster of three
+surfaces: a header band across the top, an icon rail down the left
+edge, and a content panel for the selected section.
 
-Close it with `Super+S` again, `Escape`, a click on the scrim, or a
+Close it with `Super+S` again, `Escape`, a click on the scrim, the
+circular close button at the bottom of the icon rail, or a
 four-finger swipe up.
 
 Bind a different key with a `[[keybind]]` entry whose action is
@@ -50,27 +53,47 @@ key = "d"
 action = "command_panel"
 ```
 
+## Read the Header Band
+
+The header band shows your avatar, display name, and account groups on
+the left, and a live machine summary on the right: CPU load with a
+recent-history sparkline, GPU, memory, network rates, disk, and
+battery. Gauge rows appear only for hardware the machine actually has
+— a row without real data is simply absent. The gauges refresh every
+two seconds.
+
+## Switch Sections
+
+Click a section button in the left icon rail — **System**, **Tray**,
+or **Messages**. The selected section reads as a solid amber disc.
+Long sections scroll inside the content panel.
+
 ## Adjust Quick Settings
 
-Open the panel and select **System** in the left menu. The section carries
-the volume slider and mute toggle, the brightness slider, Wi-Fi and
-Bluetooth toggles, Do Not Disturb, and the tiled-layout toggle, plus a
-display-only **Agent Workspaces** status row aggregating the live agent
-sessions. Controls a host cannot serve (no backlight, no audio device)
-read as unavailable.
+Open the panel and select **System** in the icon rail. Controls group
+under muted headers: Sound, Brightness, Connectivity, Desktop, Agent
+Workspaces, and Session. The section carries the volume slider and
+mute toggle, the brightness slider, Wi-Fi and Bluetooth toggles, Do
+Not Disturb, and the tiled-layout toggle, plus a display-only **Agent
+Workspaces** status row aggregating the live agent sessions. Controls
+a host cannot serve (no backlight, no audio device) read as
+unavailable.
 
 ## Activate a Tray Item
 
-Open the panel and select **Tray**. Left-click an item to activate it;
-right-click to open its context menu. Items that expose a dbusmenu `Menu`
-object path render the menu in place with submenu navigation; all others
-fall back to the specification's `SecondaryActivate`.
+Open the panel and select **Tray**. Items lay out in a grid whose
+column count adapts to the panel width; the grid scrolls when it
+overflows. Left-click an item to activate it; right-click to open its
+context menu. Items that expose a dbusmenu `Menu` object path render
+the menu in place with submenu navigation; all others fall back to the
+specification's `SecondaryActivate`.
 
 ## Dismiss Notifications
 
-Open the panel and select **Messages**. The newest notifications list
-first; click a row to dismiss it. Entries stay in the list for up to an
-hour after they were posted — long after their three-second popup has
+Open the panel and select **Messages**. Notifications list as cards
+with the summary and body, newest first; click a card to dismiss it.
+The list scrolls and has no row cap: entries stay for up to an hour
+after they were posted — long after their three-second popup has
 disappeared. Do Not Disturb (in **System**) suppresses popups while
 keeping the list.
 

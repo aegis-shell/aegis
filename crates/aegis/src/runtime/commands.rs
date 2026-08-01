@@ -19,6 +19,7 @@ pub(super) fn draw_direct_desktop_scene(
     geometry: RenderGeometry,
     overview: bool,
     window_switcher: Option<&aegis_shell::WindowSwitcherPresentation>,
+    live_previews: &[aegis_shell::LivePreviewPresentation],
 ) -> Result<(), flux::Error> {
     let RenderGeometry {
         logical_size,
@@ -49,6 +50,8 @@ pub(super) fn draw_direct_desktop_scene(
                 scale,
                 presentation,
             );
+        } else {
+            draw_live_preview_scenes(canvas, device, renderer, server, scale, live_previews);
         }
     }
     Ok(())

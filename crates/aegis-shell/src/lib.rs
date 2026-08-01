@@ -38,8 +38,9 @@ pub use i18n::{Language, Localizer, Message};
 pub use modal::ModalApplicationSpec;
 pub use popup::{POPUP_GAP, POPUP_MARGIN, place_popup};
 pub use system::{
-    BatteryStatus, DisplaySettings, DisplayStatus, NetworkState, SystemAction, SystemStatus,
-    detect_forked_status, detect_system_status, detect_system_status_lightweight,
+    BatteryStatus, ChassisKind, DisplaySettings, DisplayStatus, NetworkState, ResourceProbe,
+    ResourceStats, SystemAction, SystemStatus, detect_forked_status, detect_system_status,
+    detect_system_status_lightweight,
 };
 pub use text::truncate;
 
@@ -113,11 +114,16 @@ pub struct BackdropRegion {
 /// One analytic liquid-glass body backed by a [`BackdropRegion`] capture.
 /// Radius and opacity participate in the same SDF composite as refraction,
 /// blur and edge lighting, so rounded corners and visibility cannot diverge.
+/// The drop shadow is cast by the body's own SDF; the component configures
+/// it in logical pixels and `shadow_alpha` 0 disables it.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct LiquidGlassRegion {
     pub bounds: BackdropRegion,
     pub corner_radius: f32,
     pub opacity: f32,
+    pub shadow_alpha: f32,
+    pub shadow_blur: f32,
+    pub shadow_offset_y: f32,
 }
 
 /// One live preview target in the compositor-owned window switcher.
@@ -137,6 +143,19 @@ pub struct WindowSwitcherPresentation {
     pub panel: aegis_core::Rect,
     pub cards: Vec<WindowSwitcherCard>,
     pub selected: Option<aegis_core::window::WindowId>,
+    pub visibility: f32,
+}
+
+/// One compositor-rendered live-preview popover contributed by ordinary
+/// chrome, such as the group of running windows above a hovered Dock tile.
+///
+/// The compositor paints the client surfaces into each card's `preview`
+/// rectangle before the shell draws labels and hit targets. This keeps Dock
+/// previews live and uses the same geometry contract as the window switcher.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LivePreviewPresentation {
+    pub panel: aegis_core::Rect,
+    pub cards: Vec<WindowSwitcherCard>,
     pub visibility: f32,
 }
 
@@ -438,6 +457,10 @@ pub trait Chrome {
     /// presentation copy so the render trait remains focused on frame data.
     fn update_system_status(&mut self, _status: &SystemStatus) {}
 
+    /// Receive a host resource-utilisation sample. Components keep their own
+    /// presentation copy so the render trait remains focused on frame data.
+    fn update_resource_stats(&mut self, _stats: &ResourceStats) {}
+
     /// Receive the complete Realm authority snapshot. Only trusted
     /// compositor-owned components consume this high-level state.
     fn update_realms(&mut self, _snapshot: &RealmSnapshot) {}
@@ -534,6 +557,14 @@ pub trait Chrome {
         _display: aegis_core::Rect,
         _windows: &[Window],
     ) -> Option<WindowSwitcherPresentation> {
+        None
+    }
+
+    /// Return a live client-preview popover prepared by this component.
+    /// Geometry is read after [`Chrome::prepare_backdrop`] and shared by the
+    /// compositor preview pass, analytic glass declarations, shell rendering,
+    /// and pointer hit-testing.
+    fn live_preview_presentation(&self) -> Option<LivePreviewPresentation> {
         None
     }
 
@@ -759,6 +790,7 @@ pub struct Shell {
     workspaces: WorkspaceSnapshot,
     i18n: Localizer,
     system_status: SystemStatus,
+    resource_stats: ResourceStats,
     realms: RealmSnapshot,
     /// The most recently pushed host application catalog, seeded into every
     /// registered component (including ones added later) by [`Shell::add`].
@@ -794,6 +826,7 @@ impl Shell {
                 },
                 i18n: Localizer::from_env(),
                 system_status: SystemStatus::default(),
+                resource_stats: ResourceStats::default(),
                 realms: aegis_core::realm::RealmModel::new().snapshot(),
                 catalog: AppCatalog::default(),
                 events: ChromeEvents::default(),
@@ -808,6 +841,7 @@ impl Shell {
     /// registration order.
     pub fn add(&mut self, mut component: Box<dyn Chrome>) {
         component.update_system_status(&self.system_status);
+        component.update_resource_stats(&self.resource_stats);
         component.update_realms(&self.realms);
         component.set_reduced_motion(self.reduced_motion);
         component.update_app_catalog(&self.catalog);
@@ -915,6 +949,15 @@ impl Shell {
         }
     }
 
+    /// Replace the host resource-utilisation sample and notify interested
+    /// status surfaces.
+    pub fn set_resource_stats(&mut self, stats: ResourceStats) {
+        self.resource_stats = stats;
+        for component in self.components.iter_mut() {
+            component.update_resource_stats(&self.resource_stats);
+        }
+    }
+
     /// Replace the Realm authority snapshot and notify the overview and
     /// AI Workspaces before their next frame.
     pub fn set_realms(&mut self, snapshot: RealmSnapshot) {
@@ -1014,6 +1057,16 @@ impl Shell {
         self.components
             .iter_mut()
             .find_map(|component| component.prepare_window_switcher(input, display, windows))
+    }
+
+    /// Collect compositor-rendered live-preview popovers contributed by
+    /// ordinary chrome. A vector keeps the contract composable even though the
+    /// Dock is currently the only producer.
+    pub fn live_preview_presentations(&self) -> Vec<LivePreviewPresentation> {
+        self.components
+            .iter()
+            .filter_map(|component| component.live_preview_presentation())
+            .collect()
     }
 
     /// Close the preview strip after the held Super modifier is released.

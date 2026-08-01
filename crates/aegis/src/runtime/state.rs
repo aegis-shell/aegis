@@ -99,6 +99,9 @@ pub(super) struct CompositorRuntime {
     pub(super) keymap: aegis_core::keybind::Keymap,
     pub(super) system_status: aegis_shell::SystemStatus,
     pub(super) status_rx: std::sync::mpsc::Receiver<aegis_shell::SystemStatus>,
+    /// Latest host resource-utilisation sample from the "aegis-resources"
+    /// poller thread; drained each frame into the shell.
+    pub(super) resource_rx: std::sync::mpsc::Receiver<aegis_shell::ResourceStats>,
     /// Wakes the status poller for an out-of-cycle refresh after a system
     /// action, so the HUD reconciles optimistic values without the main loop
     /// ever blocking on a probe subprocess.

@@ -291,6 +291,17 @@ impl CompositorRuntime {
                     scale,
                 };
                 self.shell.prepare_backdrop(&input);
+                let switcher_windows = self.server.windows();
+                let window_switcher = self.shell.prepare_window_switcher(
+                    &input,
+                    aegis_core::Rect::new(0, 0, logical_size.0 as i32, logical_size.1 as i32),
+                    &switcher_windows,
+                );
+                let live_previews = if window_switcher.is_none() {
+                    self.shell.live_preview_presentations()
+                } else {
+                    Vec::new()
+                };
                 let blur_sigma = self.shell.backdrop_blur_sigma();
                 let backdrop_regions = self.shell.backdrop_regions(self.input_acc.display_size);
                 let liquid_glass_regions =
@@ -302,12 +313,6 @@ impl CompositorRuntime {
                 // Overview mode (M9) swaps the whole client scene for the
                 // thumbnail grid and skips the launcher-blur capture path.
                 let overview_active = self.shell.overview_active();
-                let switcher_windows = self.server.windows();
-                let window_switcher = self.shell.prepare_window_switcher(
-                    &input,
-                    aegis_core::Rect::new(0, 0, logical_size.0 as i32, logical_size.1 as i32),
-                    &switcher_windows,
-                );
                 // A screenshot freeze session replaces the whole frame with
                 // the trigger-frame snapshot: the capture frame renders the
                 // desktop scene *and* the chrome into an offscreen target
@@ -335,19 +340,17 @@ impl CompositorRuntime {
                     });
                 let (capture_origin, capture_extent) =
                     capture_bounds.unwrap_or(((0, 0), physical_size));
-                let backdrop_plan =
-                    if overview_active || window_switcher.is_some() || self.screenshot_freeze.armed
-                    {
-                        BackdropPlan::Direct
-                    } else {
-                        self.launcher_backdrop.prepare(
-                            blur_sigma > 0.0 && !backdrop_regions.is_empty(),
-                            &self.device,
-                            &self.surface,
-                            &frame,
-                            capture_extent,
-                        )
-                    };
+                let backdrop_plan = if overview_active || self.screenshot_freeze.armed {
+                    BackdropPlan::Direct
+                } else {
+                    self.launcher_backdrop.prepare(
+                        blur_sigma > 0.0 && !backdrop_regions.is_empty(),
+                        &self.device,
+                        &self.surface,
+                        &frame,
+                        capture_extent,
+                    )
+                };
 
                 match backdrop_plan {
                     BackdropPlan::Capture
@@ -400,6 +403,26 @@ impl CompositorRuntime {
                             &self.server,
                             capture_scale,
                         );
+                        if let Some(presentation) = window_switcher.as_ref() {
+                            draw_window_switcher_scene(
+                                &self.canvas,
+                                &self.device,
+                                &mut self.renderer,
+                                &self.server,
+                                logical_size,
+                                capture_scale,
+                                presentation,
+                            );
+                        } else {
+                            draw_live_preview_scenes(
+                                &self.canvas,
+                                &self.device,
+                                &mut self.renderer,
+                                &self.server,
+                                capture_scale,
+                                &live_previews,
+                            );
+                        }
                         self.canvas.restore();
                         let glass_groups = liquid_glass_groups(
                             &liquid_glass_regions,
@@ -436,6 +459,7 @@ impl CompositorRuntime {
                             render_geometry,
                             overview_active,
                             window_switcher.as_ref(),
+                            &live_previews,
                         )?;
                         if let Some(images) = composites {
                             let liquid_available = images.liquid.is_some();
@@ -587,6 +611,7 @@ impl CompositorRuntime {
                                     render_geometry,
                                     overview_active,
                                     window_switcher.as_ref(),
+                                    &live_previews,
                                 )?;
                             }
                         } else {
@@ -607,6 +632,7 @@ impl CompositorRuntime {
                                 render_geometry,
                                 overview_active,
                                 window_switcher.as_ref(),
+                                &live_previews,
                             )?;
                         }
                     }

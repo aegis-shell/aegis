@@ -143,6 +143,7 @@ pub(super) fn blur_capture_bounds(
 /// Convert output-logical liquid-glass declarations into coordinates of the
 /// capture image consumed by Optics. This is the single mapping
 /// used for shape, corner radius, refraction and the final image draw.
+/// Shadow distances scale like the shape; the alpha passes through.
 pub(super) fn liquid_glass_groups(
     regions: &[aegis_shell::LiquidGlassRegion],
     capture_origin: (u32, u32),
@@ -164,6 +165,10 @@ pub(super) fn liquid_glass_groups(
             merged: None,
             blend_radius: 0.0,
             opacity: region.opacity.clamp(0.0, 1.0),
+            shadow_alpha: region.shadow_alpha.clamp(0.0, 1.0),
+            shadow_blur: region.shadow_blur.max(0.0) * capture_scale,
+            shadow_offset_y: region.shadow_offset_y * capture_scale,
+            tint_color: [255, 255, 255],
         })
         .collect()
 }
@@ -835,6 +840,78 @@ pub(super) fn draw_window_switcher_scene(
     canvas.restore();
 }
 
+/// Draw compositor-owned live-preview popovers contributed by ordinary shell
+/// chrome. Each card gets its own clip and mapping pass so a window's
+/// subsurfaces cannot bleed into a neighbouring card and unrelated windows
+/// are never redrawn over the popover.
+pub(super) fn draw_live_preview_scenes(
+    canvas: &flux::Canvas,
+    device: &flux::Device,
+    renderer: &mut aegis_render::Renderer,
+    server: &aegis_compositor::Server,
+    scale: f32,
+    presentations: &[aegis_shell::LivePreviewPresentation],
+) {
+    if presentations.is_empty() {
+        return;
+    }
+    let windows = server.windows();
+    let shm = server.client_surface_frames();
+    let dmabuf = server.client_surface_dmabuf_frames();
+    let surface_order = server.client_surface_frame_order();
+    renderer.gc(shm
+        .iter()
+        .map(|frame| frame.id)
+        .chain(dmabuf.iter().map(|frame| frame.id)));
+
+    canvas.save();
+    if scale != 1.0 {
+        canvas.scale(scale, scale);
+    }
+    for presentation in presentations {
+        for card in &presentation.cards {
+            let Some(window) = windows.iter().find(|window| window.id == card.window) else {
+                continue;
+            };
+            let cell = aegis_core::overview::fit(card.geometry.preview, window.size);
+            let base = window.position;
+            let window_size = window.size;
+            let target = window.id;
+            let map = move |id: Option<aegis_core::window::WindowId>, natural: aegis_core::Rect| {
+                if id != Some(target) {
+                    return aegis_core::Rect::new(-100_000, -100_000, 1, 1);
+                }
+                let factor = (cell.size.w as f32 / window_size.w.max(1) as f32)
+                    .min(cell.size.h as f32 / window_size.h.max(1) as f32);
+                let remap = |value: i32, origin: i32| (value - origin) as f32 * factor;
+                aegis_core::Rect::new(
+                    cell.origin.x + remap(natural.origin.x, base.x).round() as i32,
+                    cell.origin.y + remap(natural.origin.y, base.y).round() as i32,
+                    (natural.size.w as f32 * factor).round().max(1.0) as i32,
+                    (natural.size.h as f32 * factor).round().max(1.0) as i32,
+                )
+            };
+            canvas.save();
+            canvas.clip_rect(
+                card.geometry.preview.origin.x as f32,
+                card.geometry.preview.origin.y as f32,
+                card.geometry.preview.size.w as f32,
+                card.geometry.preview.size.h as f32,
+            );
+            renderer.draw_surfaces_ordered_mapped(
+                device,
+                canvas,
+                &surface_order,
+                &shm,
+                &dmabuf,
+                &map,
+            );
+            canvas.restore();
+        }
+    }
+    canvas.restore();
+}
+
 /// Software cursor for direct KMS, sourced exclusively from the XDG cursor
 /// theme (`$XCURSOR_THEME`/`$XCURSOR_SIZE`, inheritance included) via
 /// [`cursor::CursorCache`].
@@ -1064,6 +1141,7 @@ mod tests {
             bounds: region(400.0, 100.0, 320.0, 74.0),
             corner_radius: 18.0,
             opacity: 0.4,
+            ..Default::default()
         };
         // Output scale 2, capture downsample 1/2, physical capture origin
         // (600, 120): capture coordinates are logical*1 - origin*0.5.

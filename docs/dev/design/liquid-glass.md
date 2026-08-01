@@ -26,7 +26,9 @@ Each pixel inside the analytic coverage composes these layers in order:
 | Key light | A thin (~2 px) highlight hugging the silhouette on the light-facing side, fading around the curve |
 | Sheen | A soft, direction-weighted glow across the rim band plus a fresnel term that dies at the bottom — never a full white ring |
 | Shadow side | A thin dark line at the silhouette opposite the key light |
+| Edge absorption | A faint dark hairline at the silhouette in every direction, stronger over bright content — grazing light dies at the edge, and the body never merges with white |
 | Light trough | A faint brightening just inside the bottom rim, where light through the lens pools |
+| Drop shadow | The same SDF shifted down, soft falloff, fading with body opacity. It grounds the body and carries separation over uniform bright content |
 | Antialiasing | One physical pixel of analytic coverage at the silhouette; sub-LSB dither defeats `rgba8` banding |
 
 The key light sits up-left of the shape (`light_direction` toward the
@@ -38,15 +40,22 @@ design.
 
 The material reads the blurred backdrop's luminance per pixel and
 opposes it. Dark content lifts the body toward pearl; bright content
-dims it toward smoke. The tint is weakest inside the rim band, where
-lensing and lighting already separate the body from the content. This
-keeps glyphs on top of the material legible without a fixed light or
-dark style.
+dims it toward smoke, strongly enough that the body stays defined over
+uniform white. The tint is weakest inside the rim band, where lensing
+and lighting already separate the body from the content. This keeps
+glyphs on top of the material legible without a fixed light or dark
+style.
+
+Separation over bright content is a system, not a single knob: the
+smoke tint, the edge-absorption hairline, and the drop shadow work
+together. A body that disappears into a white backdrop is a defect;
+weakening any one of the three reintroduces it.
 
 ## Parameters
 
 Distances are physical pixels of the capture image. The compositor
 scales the logical values by the output scale before dispatch.
+Descriptor parameters set the dispatch-wide look:
 
 | Parameter | Logical default | Meaning |
 |-----------|-----------------|---------|
@@ -57,7 +66,35 @@ scales the logical values by the output scale before dispatch.
 | `brightness` | 1.02 | Exposure multiplier on the body |
 | `glare` | 0.55 | Key-light, sheen, and shadow-side strength |
 | `light_direction` | (-0.45, -0.89) | Direction toward the key light (up-left) |
-| `opacity` | 1.0 | Per-body visibility, multiplied into coverage |
+| `opacity` | 1.0 | Multiplied into every body's coverage |
+| `size_reference` | 72.0 | Body small-side size at which rim and lensing render at full strength; 0 disables size scaling |
+| `size_scale_min` | 0.15 | Floor of the size-scaling factor |
+| `tint_strength` | 1.0 | Multiplier on the adaptive body tint |
+| `frost_strength` | 1.0 | Multiplier on the scattering layer |
+
+Each body additionally carries its own optical character:
+
+| Group field | Meaning |
+|-------------|---------|
+| `opacity` | Per-body visibility, multiplied into coverage |
+| `shadow_alpha` | Drop-shadow strength cap; 0 disables the shadow |
+| `shadow_blur` | Drop-shadow falloff softness, used verbatim |
+| `shadow_offset_y` | Drop-shadow downward offset, used verbatim |
+| `tint_color` | RGB multiplier on the adaptive tint, for accent-tinted glass (white = neutral) |
+
+## Scaling with size
+
+Rim band and lensing scale down for bodies smaller than
+`size_reference`; a full-size bar uses the parameters as given. Shadow
+geometry is *not* rescaled: component-sized shadows are the caller's
+policy — the Dock scales its declared shadow by its own morph progress,
+and a HUD chip declares a tight shadow outright.
+
+Only the curve shapes (the lens profile and the falloff curves) are the
+material's identity and stay in the shader. Every policy knob —
+geometry, lighting, tone, per-body shadow and tint, and size scaling —
+is a caller parameter. The boundary rule is recorded in Optics
+ADR-0047.
 
 ## Usage rules
 

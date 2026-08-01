@@ -52,6 +52,51 @@ pub struct SystemStatus {
     pub idle_inhibited: bool,
 }
 
+/// Machine form factor, for chrome that adapts its presentation.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ChassisKind {
+    #[default]
+    Desktop,
+    Laptop,
+}
+
+/// One sample of host resource utilisation (polled separately from
+/// [`SystemStatus`]).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResourceStats {
+    /// Aggregate CPU usage in percent, 0..=100.
+    pub cpu_percent: f32,
+    /// Best-effort DRM busy percent; `None` when the driver exposes none.
+    pub gpu_percent: Option<f32>,
+    pub mem_used_bytes: u64,
+    pub mem_total_bytes: u64,
+    pub net_rx_bytes_per_sec: f64,
+    pub net_tx_bytes_per_sec: f64,
+    /// Usage of the filesystem mounted at `/`.
+    pub disk_used_bytes: u64,
+    pub disk_total_bytes: u64,
+    /// Static in practice; carried so one channel feeds the panel.
+    pub chassis: ChassisKind,
+}
+
+impl Default for ResourceStats {
+    fn default() -> Self {
+        ResourceStats {
+            cpu_percent: 0.0,
+            gpu_percent: None,
+            mem_used_bytes: 0,
+            mem_total_bytes: 0,
+            net_rx_bytes_per_sec: 0.0,
+            net_tx_bytes_per_sec: 0.0,
+            disk_used_bytes: 0,
+            disk_total_bytes: 0,
+            chassis: ChassisKind::default(),
+        }
+    }
+}
+
 /// An immediate live-system mutation.
 ///
 /// Unlike [`crate::settings::SettingsAction`], applying one of these actions
