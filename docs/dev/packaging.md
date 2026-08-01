@@ -22,7 +22,7 @@ verify the native development files before building Aegis:
 pkg-config --modversion flux flux-scene-graph lens iris
 ```
 
-Each command must report a version compatible with `0.0.7`. Distribution
+Each command must report a version compatible with `<OPTICS_VERSION>`. Distribution
 package names vary, so express the dependency in terms of the shared
 libraries, headers, and `.pc` files rather than copying files from an Optics
 build tree. (On Arch this is the separate `optics` package; see
@@ -208,10 +208,13 @@ Aegis on Arch uses three installable packages. Package Optics first, then use
 one split PKGBUILD to produce the core and portal packages from the same
 locked source and build.
 
+Replace `<OPTICS_VERSION>` and `<AEGIS_VERSION>` below with the release
+versions being packaged.
+
 | Package | Provides | Built by |
 |---------|----------|----------|
-| `optics` | `libflux.so`, `libflux-scene-graph.so`, `liblens.so`, `libiris.so`, headers, `flux.pc` … `iris.pc` | Meson/Ninja from the `ming2k/optics` `v0.0.7` tag |
-| `aegis` | Compositor, System Settings, CLI and agent integration binaries, systemd user unit, desktop entry, icon, and cursor license disclosure | Cargo from the `ming2k/aegis` `v0.0.8` tag |
+| `optics` | `libflux.so`, `libflux-scene-graph.so`, `liblens.so`, `libiris.so`, headers, `flux.pc` … `iris.pc` | Meson/Ninja from the `ming2k/optics` `v<OPTICS_VERSION>` tag |
+| `aegis` | Compositor, System Settings, CLI and agent integration binaries, systemd user unit, desktop entry, icon, and cursor license disclosure | Cargo from the `ming2k/aegis` `v<AEGIS_VERSION>` tag |
 | `aegis-portal` | Private portal backend plus its D-Bus activation, `.portal`, and backend-selection files | The same Cargo build as `aegis` |
 
 CI installs the same Debian packages for both (`.github/workflows/ci.yml`,
@@ -223,7 +226,7 @@ equivalents.
 ```bash
 # Maintainer: <you>
 pkgname=optics
-pkgver=0.0.7
+pkgver='<OPTICS_VERSION>'
 pkgrel=1
 pkgdesc='Vulkan-first rendering stack: flux, flux-scene-graph, lens, iris'
 arch=(x86_64)
@@ -257,7 +260,7 @@ package is installed.
 # Maintainer: <you>
 pkgbase=aegis
 pkgname=(aegis aegis-portal)
-pkgver=0.0.8
+pkgver='<AEGIS_VERSION>'
 pkgrel=1
 arch=(x86_64)
 url='https://github.com/ming2k/aegis'

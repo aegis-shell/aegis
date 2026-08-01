@@ -13,7 +13,7 @@ Install:
 - Meson, Ninja, `pkg-config`, a C23 compiler, and libclang;
 - Vulkan, Wayland, xkbcommon, libinput, libseat, and Linux PAM development
   files; and
-- the Optics `v0.0.7` native libraries.
+- the Optics `v<OPTICS_VERSION>` native libraries.
 
 Building the independent `aegis-portal` backend additionally requires
 PipeWire and SPA development files. The nested compositor tutorial does not
@@ -23,7 +23,7 @@ Build and install the matching Optics release when the distribution does not
 provide it:
 
 ```bash
-git clone --branch v0.0.7 --depth 1 \
+git clone --branch "v<OPTICS_VERSION>" --depth 1 \
   https://github.com/ming2k/optics.git ../optics
 meson setup ../optics/build ../optics \
   -Dtests=false -Dbuildtype=debugoptimized
@@ -33,7 +33,8 @@ sudo ldconfig
 pkg-config --modversion flux flux-scene-graph lens iris
 ```
 
-Each version printed by the final command must be compatible with `0.0.7`.
+Each version printed by the final command must be compatible with
+`<OPTICS_VERSION>`.
 
 ## Stage System Settings
 
