@@ -31,6 +31,7 @@ pub(super) fn begin_opaque_frame(
         flux::CanvasPassOptions {
             clear: Some(clear),
             antialias: flux::CanvasAntialias::None,
+            render_area: None,
         },
     )
 }
@@ -41,21 +42,35 @@ pub(super) fn begin_opaque_frame(
 pub(super) fn begin_opaque_frame_repaint(
     canvas: &flux::Canvas,
     frame: &flux::Frame<'_>,
-    size: (u32, u32),
+    _size: (u32, u32),
     clear: u32,
     repaint: FrameDamage,
 ) -> Result<(), flux::Error> {
     debug_assert_eq!(clear >> 24, 0xff, "compositor pass clear must be opaque");
     match repaint {
-        FrameDamage::Area(rect) => {
-            canvas.begin(frame, None)?;
-            canvas.clip_rect(
-                rect.origin.x as f32,
-                rect.origin.y as f32,
-                rect.size.w as f32,
-                rect.size.h as f32,
-            );
-            canvas.fill_rect(0.0, 0.0, size.0 as f32, size.1 as f32, clear);
+        FrameDamage::Area(rect) if !rect.is_empty() => canvas.begin_pass(
+            frame,
+            flux::CanvasPassOptions {
+                clear: Some(clear),
+                antialias: flux::CanvasAntialias::None,
+                render_area: Some(flux::CanvasRenderArea {
+                    x: rect.origin.x,
+                    y: rect.origin.y,
+                    width: rect.size.w as u32,
+                    height: rect.size.h as u32,
+                }),
+            },
+        )?,
+        FrameDamage::Area(_) => {
+            debug_assert!(false, "empty compositor repaint area");
+            canvas.begin_pass(
+                frame,
+                flux::CanvasPassOptions {
+                    clear: Some(clear),
+                    antialias: flux::CanvasAntialias::None,
+                    render_area: None,
+                },
+            )?;
         }
         FrameDamage::Full | FrameDamage::None => {
             canvas.begin_pass(
@@ -63,6 +78,7 @@ pub(super) fn begin_opaque_frame_repaint(
                 flux::CanvasPassOptions {
                     clear: Some(clear),
                     antialias: flux::CanvasAntialias::None,
+                    render_area: None,
                 },
             )?;
         }
@@ -84,6 +100,7 @@ pub(super) fn begin_opaque_target(
         flux::CanvasPassOptions {
             clear: Some(clear),
             antialias: flux::CanvasAntialias::None,
+            render_area: None,
         },
     )
 }

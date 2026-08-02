@@ -86,7 +86,7 @@ static SURFACE_IMPL: ffi::wl_surface_interface_impl = ffi::wl_surface_interface_
     attach: surface_attach,
     damage: surface_damage,
     frame: surface_frame,
-    set_opaque_region: surface_noop_region,
+    set_opaque_region: surface_set_opaque_region,
     set_input_region: surface_set_input_region,
     commit: surface_commit,
     set_buffer_transform: surface_set_buffer_transform,
@@ -318,12 +318,17 @@ pub(crate) unsafe extern "C" fn surface_commit(
         let visual_metadata_changed = (*rec).pending_window_geometry.is_some()
             || (*rec).pending_viewport_src.is_some()
             || (*rec).pending_viewport_dst.is_some()
+            || (*rec).pending_opaque_region.is_some()
             || (*rec).pending_transform != (*rec).buffer_transform
             || (*rec).pending_scale != (*rec).buffer_scale
-            || !(*rec).pending_damage.is_empty();
+            || !(*rec).pending_damage.is_empty()
+            || !(*rec).pending_buffer_damage.is_empty();
         let old_window_size = (*rec).window.size;
         if let Some(region) = (*rec).pending_input_region.take() {
             (*rec).input_region = region;
+        }
+        if let Some(region) = (*rec).pending_opaque_region.take() {
+            (*rec).opaque_region = region;
         }
         if let Some(geometry) = (*rec).pending_window_geometry.take() {
             (*rec).window_geometry = Some(geometry);
@@ -392,8 +397,37 @@ pub(crate) unsafe extern "C" fn surface_commit(
         // stale in the retained shm snapshot/GPU texture and under-report the
         // KMS damage hint. Empty damage on a new buffer carries no usable
         // information and therefore poisons the aggregate to full.
-        let pending_damage = std::mem::take(&mut (*rec).pending_damage);
-        let unknown_full = buffer_set && !buffer.is_null() && pending_damage.is_empty();
+        let mut pending_damage = std::mem::take(&mut (*rec).pending_damage);
+        let pending_buffer_damage = std::mem::take(&mut (*rec).pending_buffer_damage);
+        // buffer damage (wl_surface.damage_buffer) is in buffer-pixel space. It
+        // is mappable to surface-local logical pixels whenever the pending
+        // buffer's own dimensions are known (so the transform can be applied)
+        // and the surface has no wp_viewport crop/destination — viewport
+        // changes the buffer↔surface sample relationship in a way a simple
+        // rect transform cannot capture. The historical guard also bailed on
+        // any buffer_transform != Normal; that is now handled by a real
+        // 8-way geometric remap, so rotated/flipped clients no longer force a
+        // whole-output repaint.
+        let buffer_dims = if !buffer.is_null() {
+            pending_buffer_dimensions(buffer)
+        } else {
+            None
+        };
+        let buffer_damage_unmappable = !pending_buffer_damage.is_empty()
+            && (buffer_dims.is_none()
+                || (*rec).viewport_src.is_some()
+                || (*rec).viewport_dst.is_some());
+        if !buffer_damage_unmappable {
+            let (bw, bh) = buffer_dims.unwrap_or(((*rec).width, (*rec).height));
+            let transform = (*rec).buffer_transform;
+            let scale = (*rec).buffer_scale;
+            pending_damage.extend(pending_buffer_damage.into_iter().map(|damage| {
+                let mapped = transform.map_buffer_rect_to_surface(damage, (bw, bh));
+                buffer_damage_to_surface(mapped, scale)
+            }));
+        }
+        let unknown_full = buffer_damage_unmappable
+            || (buffer_set && !buffer.is_null() && pending_damage.is_empty());
         accumulate_committed_damage(&mut *rec, pending_damage, unknown_full);
         if buffer_set && buffer.is_null() {
             retire_surface_buffer(rec);
@@ -477,7 +511,6 @@ pub(crate) unsafe extern "C" fn surface_commit(
                             && (*rec).height == h
                             && (*rec).pixels.len() == needed
                             && (*rec).buffer_transform == aegis_core::Transform::Normal
-                            && (*rec).buffer_scale <= 1
                             && !(*rec).committed_damage.is_empty();
                         if (*rec).pixels.len() != needed {
                             (*rec).pixels = vec![0u8; needed];
@@ -495,14 +528,30 @@ pub(crate) unsafe extern "C" fn surface_commit(
                         // access.
                         let pixels = &mut (*rec).pixels;
                         if incremental {
+                            // Damage rects are surface-local logical coordinates;
+                            // map them to buffer pixels (× buffer_scale, rounded
+                            // outward) before copying, so a HiDPI client's
+                            // incremental refresh is no longer forced into a
+                            // whole-buffer copy.
+                            let scale = (*rec).buffer_scale.max(1);
                             for d in &damage {
-                                let x = d.origin.x.max(0).min(w - 1) as usize;
-                                let y = d.origin.y.max(0).min(h - 1) as usize;
-                                let cw = (d.size.w.max(0)).min(w - x as i32) as usize;
-                                let ch = (d.size.h.max(0)).min(h - y as i32) as usize;
+                                let x = d.origin.x.saturating_mul(scale).max(0).min(w);
+                                let y = d.origin.y.saturating_mul(scale).max(0).min(h);
+                                let x1 = (d.origin.x + d.size.w)
+                                    .saturating_mul(scale)
+                                    .max(0)
+                                    .min(w);
+                                let y1 = (d.origin.y + d.size.h)
+                                    .saturating_mul(scale)
+                                    .max(0)
+                                    .min(h);
+                                let cw = (x1 - x) as usize;
+                                let ch = (y1 - y) as usize;
                                 if cw == 0 || ch == 0 {
                                     continue;
                                 }
+                                let x = x as usize;
+                                let y = y as usize;
                                 for row in 0..ch {
                                     std::ptr::copy_nonoverlapping(
                                         src.add((y + row) * stride + x * 4),
@@ -512,7 +561,7 @@ pub(crate) unsafe extern "C" fn surface_commit(
                                 }
                                 // XRGB8888 has undefined alpha; force opaque on
                                 // the refreshed rows.
-                                if format == 1 {
+                                if aegis_core::dmabuf::is_wl_shm_format_xrgb(format) {
                                     for row in 0..ch {
                                         let base = (y + row) * tight + x * 4;
                                         for px in 0..cw {
@@ -531,7 +580,7 @@ pub(crate) unsafe extern "C" fn surface_commit(
                                 );
                             }
                             // XRGB8888 has undefined alpha; force opaque.
-                            if format == 1 {
+                            if aegis_core::dmabuf::is_wl_shm_format_xrgb(format) {
                                 let mut i = 3;
                                 while i < needed {
                                     pixels[i] = 0xff;
@@ -855,11 +904,28 @@ unsafe extern "C" fn surface_frame(
     }
 }
 
-unsafe extern "C" fn surface_noop_region(
-    _c: *mut ffi::wl_client,
-    _r: *mut ffi::wl_resource,
-    _reg: *mut ffi::wl_resource,
+unsafe extern "C" fn surface_set_opaque_region(
+    _client: *mut ffi::wl_client,
+    surface: *mut ffi::wl_resource,
+    region: *mut ffi::wl_resource,
 ) {
+    unsafe {
+        let rec = ffi::wl_resource_get_user_data(surface) as *mut SurfaceRec;
+        if rec.is_null() {
+            return;
+        }
+        let value = if region.is_null() {
+            None
+        } else {
+            let region = ffi::wl_resource_get_user_data(region) as *mut RegionRec;
+            if region.is_null() {
+                Some(Vec::new())
+            } else {
+                Some((*region).rects.clone())
+            }
+        };
+        (*rec).pending_opaque_region = Some(value);
+    }
 }
 
 unsafe extern "C" fn surface_set_input_region(
@@ -936,7 +1002,7 @@ unsafe extern "C" fn surface_set_buffer_scale(
         (*rec).pending_scale = value;
     }
 }
-/// `wl_surface.damage` (v1): damage in surface-local coords. The renderer's
+/// `wl_surface.damage` (v1): damage in surface-local logical coordinates. The renderer's
 /// texture is in buffer pixel coords, so under buffer_scale > 1 these rects
 /// cover only a fraction of the buffer. The renderer bypasses the
 /// incremental-upload path when `buffer_scale != 1` (see aegis-render); a
@@ -960,10 +1026,62 @@ unsafe extern "C" fn surface_damage(
     }
 }
 
-/// `wl_surface.damage_buffer` (v4): damage in buffer coords (post-scale,
-/// post-transform). Accumulated into the same Vec as surface damage; the
-/// renderer's incremental-upload path uses these directly because the
-/// cached texture lives in buffer pixel space.
+/// Map normal-orientation buffer damage to the surface-local coordinate space
+/// shared with `wl_surface.damage`. Rounding outward preserves every touched
+/// logical pixel when a HiDPI buffer rectangle is not scale-aligned.
+pub(crate) fn buffer_damage_to_surface(damage: aegis_core::Rect, scale: i32) -> aegis_core::Rect {
+    if scale <= 1 {
+        return damage;
+    }
+    let scale = i64::from(scale);
+    let x0 = i64::from(damage.origin.x).div_euclid(scale);
+    let y0 = i64::from(damage.origin.y).div_euclid(scale);
+    let buffer_x1 = i64::from(damage.origin.x) + i64::from(damage.size.w);
+    let buffer_y1 = i64::from(damage.origin.y) + i64::from(damage.size.h);
+    let x1 = -(-buffer_x1).div_euclid(scale);
+    let y1 = -(-buffer_y1).div_euclid(scale);
+    let clamp_i32 = |value: i64| value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    aegis_core::Rect::new(
+        clamp_i32(x0),
+        clamp_i32(y0),
+        clamp_i32(x1.saturating_sub(x0)),
+        clamp_i32(y1.saturating_sub(y0)),
+    )
+}
+
+/// `wl_surface.damage_buffer` (v4): damage in buffer coordinates. Keep it
+/// separate from surface damage until commit, when the final pending
+/// scale/transform/viewport state is known.
+///
+/// Query the pixel dimensions of a pending `wl_buffer` so buffer-coordinate
+/// damage can be geometrically transformed at commit. Returns `None` for buffer
+/// types whose dimensions are not locally known (e.g. an EGL/legacy buffer the
+/// compositor does not recognise), in which case damage is conservatively
+/// treated as unmappable. SHM buffers expose width/height via libwayland; dma-buf
+/// buffers carry them on the `DmabufBuffer` user-data.
+unsafe fn pending_buffer_dimensions(buffer: *mut ffi::wl_resource) -> Option<(i32, i32)> {
+    unsafe {
+        let shm = ffi::wl_shm_buffer_get(buffer);
+        if !shm.is_null() {
+            let w = ffi::wl_shm_buffer_get_width(shm);
+            let h = ffi::wl_shm_buffer_get_height(shm);
+            return Some((w, h));
+        }
+        let is_dmabuf = ffi::wl_resource_instance_of(
+            buffer,
+            &ffi::wl_buffer_interface,
+            &WL_BUFFER_IMPL as *const _ as *const c_void,
+        ) != 0;
+        if is_dmabuf {
+            let db = ffi::wl_resource_get_user_data(buffer) as *const DmabufBuffer;
+            if !db.is_null() && (*db).have_plane {
+                return Some(((*db).width, (*db).height));
+            }
+        }
+        None
+    }
+}
+
 unsafe extern "C" fn surface_damage_buffer(
     _c: *mut ffi::wl_client,
     r: *mut ffi::wl_resource,
@@ -978,7 +1096,7 @@ unsafe extern "C" fn surface_damage_buffer(
             return;
         }
         (*rec)
-            .pending_damage
+            .pending_buffer_damage
             .push(aegis_core::Rect::new(x, y, w, h));
     }
 }
@@ -1002,6 +1120,7 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
         extensions::idle_inhibit_surface_destroyed(rec);
         extensions::explicit_sync_surface_destroyed(rec);
         extensions::input_popup_surface_destroyed(rec);
+        extensions::xdg_foreign_surface_destroyed(rec, (*rec).state);
         retire_surface_buffer(rec);
         if (*rec).committed_acquire_fence >= 0 {
             libc_close((*rec).committed_acquire_fence);

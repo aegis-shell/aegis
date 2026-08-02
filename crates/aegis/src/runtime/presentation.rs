@@ -942,33 +942,8 @@ impl CompositorRuntime {
                 {
                     let _ = pick.reply.send(Ok(aegis_ipc::PickResult::Cancelled));
                 }
-                // File-pick delivery (the FileChooser portal's compositor
-                // side): the modal picker answers the parked request with
-                // the confirmed paths and active filter, or a cancellation.
-                // No freeze is involved at any point of this path.
-                if let Some((paths, filter)) = self.shell.take_file_pick_confirmed()
-                    && let Some(pick) = self.pending_file_pick.take()
-                {
-                    let _ = pick
-                        .reply
-                        .send(Ok(aegis_ipc::FilePickResult::Paths { paths, filter }));
-                }
-                if self.shell.take_file_pick_cancelled()
-                    && let Some(pick) = self.pending_file_pick.take()
-                {
-                    let _ = pick.reply.send(Ok(aegis_ipc::FilePickResult::Cancelled));
-                }
-                // Safety net, mirroring the picker overlay's: a file picker
-                // that closed without emitting any event still answers its
-                // request.
-                if self.pending_file_pick.is_some()
-                    && !self.shell.file_pick_active()
-                    && let Some(pick) = self.pending_file_pick.take()
-                {
-                    let _ = pick.reply.send(Ok(aegis_ipc::FilePickResult::Cancelled));
-                }
                 // App-pick delivery (the AppChooser portal's compositor
-                // side), same shape as the file pick above.
+                // side).
                 if let Some(id) = self.shell.take_app_pick_confirmed()
                     && let Some(pick) = self.pending_app_pick.take()
                 {

@@ -22,6 +22,32 @@ pub const DRM_FORMAT_XRGB8888: u32 = 0x3432_5258;
 pub const DRM_FORMAT_ABGR8888: u32 = 0x3432_4241;
 pub const DRM_FORMAT_XBGR8888: u32 = 0x3432_4258;
 
+/// `WL_SHM_FORMAT_XRGB8888`. Wayland SHM formats overlap numerically with DRM
+/// fourccs for the `A`-variants but use the legacy `1` enum value for the
+/// `X`-variant, so SHM and DRM opaqueness must be tested separately. Kept here
+/// so all alpha/opaque knowledge lives in one place.
+pub const WL_SHM_FORMAT_XRGB8888: u32 = 1;
+
+/// The single source of truth for "is this DRM fourcc alpha-free?" — a buffer
+/// whose only undefined channel is a padding `X` byte can be composited with a
+/// SRC-replace write (no destination read) and treated as fully opaque by the
+/// occlusion pass. Every consumer (occlusion culling, renderer blit selection,
+/// SHM ingestion) must go through this predicate instead of re-listing fourccs,
+/// so adding a new alpha-free format can never silently diverge between them.
+pub fn is_format_opaque(fourcc: u32) -> bool {
+    matches!(
+        fourcc,
+        DRM_FORMAT_XRGB8888 | DRM_FORMAT_XBGR8888
+    )
+}
+
+/// Whether a Wayland SHM format code has an undefined (padding) alpha byte that
+/// must be forced opaque at ingest time. SHM format codes are a separate
+/// namespace from DRM fourccs (see [`WL_SHM_FORMAT_XRGB8888`]).
+pub fn is_wl_shm_format_xrgb(shm_format: u32) -> bool {
+    shm_format == WL_SHM_FORMAT_XRGB8888
+}
+
 /// `DRM_FORMAT_MOD_LINEAR` — the only layout a CPU can interpret directly. It
 /// disables GPU compression and tiling, so advertising it alone is a
 /// performance liability whenever the device supports better modifiers.

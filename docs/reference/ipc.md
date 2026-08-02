@@ -1,6 +1,6 @@
 # IPC Reference
 
-The aegis IPC is protocol version 19, carried as length-framed JSON over the
+The aegis IPC is protocol version 20, carried as length-framed JSON over the
 owner-only Unix socket at `$XDG_RUNTIME_DIR/aegis.sock`. Every connection starts
 with `Hello`; commands are accepted only after capability and scope checks.
 JSON messages are limited to 16 MiB. Large immutable capture and frame
@@ -482,7 +482,6 @@ the live scene and capture no screen content.
 | Request | Reply | Scope op | Purpose |
 |---------|-------|----------|---------|
 | `PickTarget { kind }` | `Picked { result }` | `PickTarget` | Region, pixel, or window picking for Screenshot and ScreenCast ([ADR-0054](../adr/0054-interactive-target-picking.md)) |
-| `PickFile { options }` | `FilePicked { result }` | `PickFile` | FileChooser portal: open/save/directory with filters (protocol 13) |
 | `PickApp { choices, subject, last_choice }` | `AppPicked { result }` | `PickApp` | AppChooser portal: one application out of the candidates (protocol 14) |
 | `PromptSecret { title, reason }` | `SecretPrompted { result }` | `PromptSecret` | Masked credential prompt, e.g. the vault password unlock; both ends zeroize their copies (protocol 15) |
 | `PickConfirm { title, body, accept_label }` | `ConfirmPicked { result }` | `PickConfirm` | Yes/no consent dialogs (Account, DynamicLauncher, Wallpaper, future Access) (protocol 16) |
@@ -499,16 +498,21 @@ owner mutations, Realm recovery, and agent-registry administration.
 `xdg-desktop-portal-aegis` uses the built-in owner-only `aegis-portal`
 scope, which grants exactly these operations: `CaptureOutput` for Screenshot,
 `StreamOutput` for ScreenCast, `IdleInhibit` for Inhibit, `PickTarget` for
-user-confirmed Screenshot and ScreenCast selection, `PickFile` for
-FileChooser, `PickApp` for AppChooser, `Notify` and `DismissNotification`
+user-confirmed Screenshot and ScreenCast selection, `PickApp` for AppChooser,
+`Notify` and `DismissNotification`
 for Notification, `PromptSecret` for the vault unlock prompt, and
 `PickConfirm` for the consent dialogs, plus `SetWallpaper` for the Wallpaper
 portal's decode-and-swap mutation (protocol 17). It grants no general
 compositor control. The portal boundary is recorded in
 [ADR-0075](../adr/0075-independent-portal-package-and-backend-contract.md)
 and its extension in
-[ADR-0086](../adr/0086-full-stack-portal-via-user-consent-pick-chains.md).
+[ADR-0099](../adr/0099-resource-authority-and-out-of-process-file-chooser.md).
 The built-in high-risk scopes are fail-closed explicit allowlists.
+
+Protocol 20 removes the former `PickFile` request, response, types, and scope
+operation. FileChooser and its path data now stay inside the independent
+portal package; Aegis participates only through xdg-foreign-v2 window
+parenting.
 
 **Agent authorization** (protocol 19, ADR-0090) replaces configured scopes
 for agents. `Hello.agent` carries a self-declaration: a cosmetic `label`,

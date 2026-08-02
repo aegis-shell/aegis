@@ -196,9 +196,8 @@ pub(super) fn wall_clock_minute() -> u64 {
 /// Record one visible surface into the generation diff. Returns `true` when
 /// this surface alone forces full damage: it appeared since the last
 /// assessment, or its contents changed in a way that cannot be mapped to a
-/// rectangle (buffer transform, buffer scale, wp_viewport, or an in-flight
-/// window transition — the same conditions under which the renderer falls
-/// back to a whole-texture upload).
+/// rectangle (buffer transform, wp_viewport, or an in-flight window
+/// transition).
 struct SurfaceDamageSample<'a> {
     id: usize,
     generation: u64,
@@ -252,17 +251,36 @@ fn accumulate_surface(
     if previous.generation == generation {
         return false;
     }
-    let mappable = geometry.transform == aegis_core::Transform::Normal
-        && geometry.buffer_scale <= 1
-        && geometry.viewport_src.is_none()
+    // Damage here is already in surface-local logical coordinates — the server
+    // applied the buffer transform at commit (see Transform::map_buffer_rect_to_surface)
+    // — so a non-identity transform does NOT force a full-output repaint here.
+    // Only the cases that genuinely break the logical→physical mapping remain
+    // unmappable: wp_viewport crop/destination (they change which buffer pixels
+    // map to which surface pixels) and an in-flight transition_size (it draws
+    // the surface at a size unrelated to the buffer-implied logical extent).
+    let mappable = geometry.viewport_src.is_none()
         && geometry.viewport_dst.is_none()
         && geometry.transition_size.is_none();
     if !mappable {
         return true;
     }
-    if let Some(area) =
-        surface_damage_logical(geometry.position, width, height, damage.unwrap_or(&[]))
-    {
+    let scale = geometry.buffer_scale.max(1) as f32;
+    // A rotated/flipped buffer's logical extent swaps its axes; use the
+    // post-transform dimensions so the damage rect is clamped to the surface's
+    // actual visible size, not the raw buffer size.
+    let (lw, lh) = if geometry.transform.swap_axes() {
+        (height, width)
+    } else {
+        (width, height)
+    };
+    let logical_width = (lw as f32 / scale).round().max(1.0) as i32;
+    let logical_height = (lh as f32 / scale).round().max(1.0) as i32;
+    if let Some(area) = surface_damage_logical(
+        geometry.position,
+        logical_width,
+        logical_height,
+        damage.unwrap_or(&[]),
+    ) {
         union_bbox(bbox, area);
     }
     false
@@ -303,8 +321,8 @@ impl CompositorRuntime {
                 );
             }
         }
-        // dma-buf surfaces carry no committed damage rects; a generation
-        // change conservatively damages the whole surface.
+        // DMA-BUF contents are imported zero-copy, but their Wayland damage
+        // metadata still constrains compositor rasterization.
         for frames in [
             server.client_surface_dmabuf_frames(),
             server.overlay_dmabuf_frames(),
@@ -317,7 +335,7 @@ impl CompositorRuntime {
                     SurfaceDamageSample {
                         id: frame.id,
                         generation: frame.generation,
-                        damage: None,
+                        damage: Some(&frame.damage),
                         geometry: &frame.geometry,
                         width: frame.width,
                         height: frame.height,
@@ -611,6 +629,41 @@ mod tests {
                 geometry: &geometry,
                 width: 100,
                 height: 80,
+            },
+            &mut bbox,
+        ));
+        assert_eq!(bbox, Some(aegis_core::Rect::new(12, 23, 4, 5)));
+    }
+
+    #[test]
+    fn hidpi_surface_maps_logical_damage_without_forcing_full() {
+        let geometry = aegis_core::SurfaceGeometry {
+            position: aegis_core::Point { x: 10, y: 20 },
+            buffer_scale: 2,
+            ..Default::default()
+        };
+        let mut old = std::collections::HashMap::new();
+        old.insert(
+            7,
+            SurfaceDamageBaseline {
+                generation: 3,
+                geometry,
+                width: 200,
+                height: 160,
+            },
+        );
+        let mut new = std::collections::HashMap::new();
+        let mut bbox = None;
+        assert!(!accumulate_surface(
+            &old,
+            &mut new,
+            SurfaceDamageSample {
+                id: 7,
+                generation: 4,
+                damage: Some(&[aegis_core::Rect::new(2, 3, 4, 5)]),
+                geometry: &geometry,
+                width: 200,
+                height: 160,
             },
             &mut bbox,
         ));

@@ -440,6 +440,10 @@ pub struct SurfaceRec {
     /// maximized/fullscreen transitions. Sent back to the client in the
     /// states array of subsequent `xdg_toplevel.configure` events.
     pub window: aegis_core::window::Window,
+    /// Imported xdg-foreign object that most recently established
+    /// `window.parent`; null for xdg_toplevel.set_parent and unparented
+    /// windows. This makes relationship revocation precise.
+    foreign_parent_owner: *mut ffi::wl_resource,
     /// Tiling target (ADR-0024): the layout rect the tiling policy last
     /// configured this surface to, or `None` when not under active tiling.
     /// The apply path reconfigures only when the target moves.
@@ -472,6 +476,12 @@ pub struct SurfaceRec {
     /// rectangles copied from the last committed `wl_region`.
     input_region: Option<Vec<aegis_core::Rect>>,
     pending_input_region: Option<Option<Vec<aegis_core::Rect>>>,
+    /// `None` means no opacity guarantee; `Some` is the union of rectangles
+    /// copied from the last committed `wl_region`, in surface-local logical
+    /// coordinates. Unlike the input-region default, a null opaque region is
+    /// deliberately empty.
+    opaque_region: Option<Vec<aegis_core::Rect>>,
+    pending_opaque_region: Option<Option<Vec<aegis_core::Rect>>>,
     // ----- pending buffer transform / scale -----
     /// Pending buffer transform from `wl_surface.set_buffer_transform`,
     /// applied on the next commit.
@@ -481,11 +491,15 @@ pub struct SurfaceRec {
     pending_scale: i32,
     buffer_scale: i32,
     // ----- damage tracking -----
-    /// Damage rectangles accumulated by `wl_surface.damage` /
-    /// `damage_buffer` since the last commit. Surface-local pixel coords;
+    /// Damage rectangles accumulated by `wl_surface.damage` since the last
+    /// commit, in surface-local logical coordinates;
     /// empty means "client did not report damage, renderer should
     /// re-upload the whole texture on a generation change".
     pending_damage: Vec<aegis_core::Rect>,
+    /// Raw buffer-coordinate rectangles accumulated by
+    /// `wl_surface.damage_buffer`. Kept separate until commit because buffer
+    /// scale/transform requests may be interleaved with damage requests.
+    pending_buffer_damage: Vec<aegis_core::Rect>,
     /// Damage accumulated across every commit since the last successfully
     /// presented compositor frame, surfaced via `Server::toplevel_frames`.
     /// Multiple client commits can be dispatched before one render, so
@@ -546,6 +560,7 @@ impl SurfaceRec {
             subsurface_cached_commit: false,
             subsurface_applying_cached: false,
             window: aegis_core::window::Window::default(),
+            foreign_parent_owner: std::ptr::null_mut(),
             viewport_src: None,
             pending_viewport_src: None,
             viewport_dst: None,
@@ -556,11 +571,14 @@ impl SurfaceRec {
             pending_window_geometry: None,
             input_region: None,
             pending_input_region: None,
+            opaque_region: None,
+            pending_opaque_region: None,
             pending_transform: aegis_core::Transform::Normal,
             buffer_transform: aegis_core::Transform::Normal,
             pending_scale: 1,
             buffer_scale: 1,
             pending_damage: Vec::new(),
+            pending_buffer_damage: Vec::new(),
             committed_damage: Vec::new(),
             committed_damage_full: false,
             // Tiling (ADR-0024): the last layout rect we configured this
@@ -1120,6 +1138,10 @@ pub(crate) struct State {
     /// Per-toplevel foreign handle resources, keyed by window id. Lets the
     /// server push title/app_id/closed updates to the right handle.
     foreign_handles: std::collections::HashMap<u64, Vec<*mut ffi::wl_resource>>,
+    /// xdg-foreign-v2 capability handles and imports. The resource callbacks
+    /// own their records; these indexes support lookup and surface teardown.
+    xdg_foreign_exports: std::collections::HashMap<String, *mut ffi::wl_resource>,
+    xdg_foreign_imports: Vec<*mut ffi::wl_resource>,
     activation_tokens: std::collections::HashMap<String, SeatId>,
     pending_activation: Option<(SeatId, *mut ffi::wl_resource)>,
     /// Keyboard-focus transitions requested from xdg-popup protocol
@@ -1306,6 +1328,8 @@ impl State {
             retired_buffer_releases: Vec::new(),
             foreign_toplevel_lists: Vec::new(),
             foreign_handles: std::collections::HashMap::new(),
+            xdg_foreign_exports: std::collections::HashMap::new(),
+            xdg_foreign_imports: Vec::new(),
             activation_tokens: std::collections::HashMap::new(),
             pending_activation: None,
             pending_popup_focus: std::collections::BTreeMap::new(),

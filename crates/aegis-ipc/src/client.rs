@@ -13,10 +13,10 @@ use crate::codec::{read_msg, write_msg};
 use crate::journal::JournalSnapshot;
 use crate::schema::{
     AgentGrantInfo, AgentHello, AgentIssued, AgentPrincipalInfo, AppPickResult, Capabilities,
-    Command, ConfirmPickResult, Event, FilePickOptions, FilePickResult, LeaseGrant, LeaseRequest,
-    OpClass, PROTOCOL_VERSION, PickKind, PickResult, RealmAction, RealmActionResult, Request,
-    Response, Scope, SecretPromptResult, SettingsAction, SettingsReceipt, SettingsSnapshot,
-    StreamPixelFormat, StreamTarget, SystemAction, SystemStatus,
+    Command, ConfirmPickResult, Event, LeaseGrant, LeaseRequest, OpClass, PROTOCOL_VERSION,
+    PickKind, PickResult, RealmAction, RealmActionResult, Request, Response, Scope,
+    SecretPromptResult, SettingsAction, SettingsReceipt, SettingsSnapshot, StreamPixelFormat,
+    StreamTarget, SystemAction, SystemStatus,
 };
 
 /// Decoded Realm observation returned by [`Client::capture_realm`].
@@ -769,29 +769,10 @@ impl Client {
         }
     }
 
-    /// Ask the user to choose filesystem paths through compositor chrome
-    /// (the FileChooser portal's compositor side). Blocks until the user
-    /// confirms or cancels (or the compositor's interaction timeout
-    /// elapses), so this can take arbitrarily longer than any other request.
-    /// Unlike [`Client::pick_target`] the picker never freezes the screen.
-    /// Requires `control` and an explicit `PickFile` op in the connection's
-    /// scope.
-    pub fn pick_file(&mut self, options: FilePickOptions) -> io::Result<FilePickResult> {
-        write_msg(&mut self.stream, &Request::PickFile { options })?;
-        match read_msg::<_, Response>(&mut self.stream)? {
-            Response::FilePicked { result } => Ok(result),
-            Response::Error { message } => Err(io::Error::other(message)),
-            other => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("expected FilePicked, got {other:?}"),
-            )),
-        }
-    }
-
     /// Ask the user to choose one application out of `choices` through
     /// compositor chrome (the AppChooser portal's compositor side). Same
-    /// blocking discipline as [`Client::pick_file`]. Requires `control` and
-    /// an explicit `PickApp` op in the connection's scope.
+    /// blocking discipline as [`Client::pick_target`]. Requires `control`
+    /// and an explicit `PickApp` op in the connection's scope.
     pub fn pick_app(
         &mut self,
         choices: Vec<String>,
@@ -818,7 +799,7 @@ impl Client {
 
     /// Ask the user for a secret (password, PIN, …) through a masked
     /// compositor prompt (the secret vault's password unlock). Same blocking
-    /// discipline as [`Client::pick_file`]. Requires `control` and an
+    /// discipline as [`Client::pick_target`]. Requires `control` and an
     /// explicit `PromptSecret` op in the connection's scope. Zeroize the
     /// returned value after use.
     pub fn prompt_secret(
@@ -839,7 +820,7 @@ impl Client {
 
     /// Ask the user a yes/no consent question through compositor chrome
     /// (portal consent dialogs). Same blocking discipline as
-    /// [`Client::pick_file`]. Requires `control` and an explicit
+    /// [`Client::pick_target`]. Requires `control` and an explicit
     /// `PickConfirm` op in the connection's scope.
     pub fn pick_confirm(
         &mut self,

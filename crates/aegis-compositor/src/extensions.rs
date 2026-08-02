@@ -4,7 +4,7 @@
 //! creating the resource, and request vtables. Several are fully functional
 //! (xdg-output, fractional-scale, relative-pointer,
 //! pointer-constraints, cursor-shape, idle-inhibit, ext-idle-notify,
-//! ext-foreign-toplevel-list, text-input-v3, input-method-v2, and
+//! ext-foreign-toplevel-list, xdg-foreign-v2, text-input-v3, input-method-v2, and
 //! virtual-keyboard-v1), while others accept requests but defer some
 //! compositor-side behavior (ext-session-lock surfaces). Every advertised
 //! protocol still owns a complete object lifecycle so clients do not fail
@@ -38,6 +38,7 @@ mod relative_pointer;
 mod session_lock;
 mod tablet;
 mod text_input;
+mod xdg_foreign;
 
 pub(crate) use activation::*;
 pub(crate) use cursor_shape::*;
@@ -55,3 +56,4 @@ pub(crate) use relative_pointer::*;
 pub(crate) use session_lock::*;
 pub(crate) use tablet::*;
 pub(crate) use text_input::*;
+pub(crate) use xdg_foreign::*;

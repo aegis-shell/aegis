@@ -472,24 +472,9 @@ pub trait Handler: Send + Sync {
     ) -> Result<crate::schema::PickResult, String> {
         Err("interactive picking unsupported".into())
     }
-    /// Run one user-consent file pick (the FileChooser portal's compositor
-    /// side). Called from a connection thread after capability, lease,
-    /// scope, and lock/VT-gate checks; the implementation forwards to the
-    /// compositor main loop, which opens the file-picker chrome over the
-    /// live scene — no screen freeze, no screen-content capture — and
-    /// answers when the user confirms or cancels. The reply may therefore
-    /// block for as long as the user takes, bounded by the compositor's
-    /// interaction timeout.
-    fn pick_file(
-        &self,
-        _conn_id: u64,
-        _options: crate::schema::FilePickOptions,
-    ) -> Result<crate::schema::FilePickResult, String> {
-        Err("file picking unsupported".into())
-    }
     /// Run one user-consent application pick (the AppChooser portal's
-    /// compositor side). Same gate and blocking discipline as
-    /// [`Handler::pick_file`].
+    /// compositor side). It is gated by a live lease and an explicit scope
+    /// operation, and may block until user interaction completes.
     fn pick_app(
         &self,
         _conn_id: u64,
@@ -500,9 +485,8 @@ pub trait Handler: Send + Sync {
         Err("application picking unsupported".into())
     }
     /// Run one user-consent secret prompt (the secret vault's password
-    /// unlock). Same gate and blocking discipline as [`Handler::pick_file`];
-    /// the typed secret crosses this channel and the implementation must
-    /// zeroize its copy once answered.
+    /// unlock). The typed secret crosses this channel and the implementation
+    /// must zeroize its copy once answered.
     fn prompt_secret(
         &self,
         _conn_id: u64,
@@ -512,7 +496,8 @@ pub trait Handler: Send + Sync {
         Err("secret prompting unsupported".into())
     }
     /// Run one user-consent yes/no confirmation (portal consent dialogs).
-    /// Same gate and blocking discipline as [`Handler::pick_file`].
+    /// Uses the same lease, scope, and interaction-timeout discipline as the
+    /// other compositor-owned prompts.
     fn pick_confirm(
         &self,
         _conn_id: u64,
@@ -1900,80 +1885,12 @@ fn drive_read_loop<H: Handler>(
                     }
                 }
             }
-            Request::PickFile { options } => {
-                // Fail-closed exactly like PickTarget (ADR-0054): `control`,
-                // a live lease, and an explicit PickFile op in the granted
-                // scope — never inherited — plus the lock/VT gate. The
-                // user's confirmation is the interactive half of the
-                // authorization; the picker reveals user-approved
-                // filesystem names, never screen content.
-                let current_scope = match scope_name.as_deref() {
-                    Some(name) => handler.resolve_scope(name),
-                    None => Some(granted_scope.clone()),
-                };
-                let op_allowed = current_scope.as_ref().is_some_and(|scope| {
-                    scope
-                        .ops
-                        .as_ref()
-                        .is_some_and(|ops| ops.contains(&OpClass::PickFile))
-                });
-                if !granted.control {
-                    Response::Error {
-                        message: "PickFile requires the control capability".into(),
-                    }
-                } else if !lease_alive {
-                    Response::Error {
-                        message: "privileged capability lease expired".into(),
-                    }
-                } else if !op_allowed {
-                    Response::Error {
-                        message: "out of scope".into(),
-                    }
-                } else if !handler.capture_security_active() {
-                    Response::Error {
-                        message: "session is locked or inactive".into(),
-                    }
-                } else {
-                    match handler.pick_file(conn_id, options) {
-                        Ok(result) => {
-                            // The pick blocked on user interaction; policy may
-                            // have changed meanwhile, so re-check before
-                            // delivering the picked paths (ADR-0054).
-                            let scope_still_allows = match scope_name.as_deref() {
-                                Some(name) => handler.resolve_scope(name),
-                                None => Some(granted_scope.clone()),
-                            }
-                            .is_some_and(|scope| {
-                                scope
-                                    .ops
-                                    .as_ref()
-                                    .is_some_and(|ops| ops.contains(&OpClass::PickFile))
-                            });
-                            if !scope_still_allows {
-                                Response::Error {
-                                    message: "out of scope before pick delivery".into(),
-                                }
-                            } else if active_lease
-                                .as_ref()
-                                .is_some_and(|(_, deadline)| std::time::Instant::now() >= *deadline)
-                            {
-                                Response::Error {
-                                    message: "privileged capability lease expired".into(),
-                                }
-                            } else {
-                                Response::FilePicked { result }
-                            }
-                        }
-                        Err(message) => Response::Error { message },
-                    }
-                }
-            }
             Request::PickApp {
                 choices,
                 subject,
                 last_choice,
             } => {
-                // Fail-closed exactly like PickFile: `control`, a live lease,
+                // Fail-closed like the other interactive prompts: `control`, a live lease,
                 // an explicit PickApp op (never inherited), the lock/VT gate,
                 // and a scope+lease re-check before delivery.
                 let current_scope = match scope_name.as_deref() {
@@ -2035,7 +1952,7 @@ fn drive_read_loop<H: Handler>(
                 }
             }
             Request::PromptSecret { title, reason } => {
-                // Fail-closed exactly like PickFile: `control`, a live lease,
+                // Fail-closed like the other interactive prompts: `control`, a live lease,
                 // an explicit PromptSecret op (never inherited), the lock/VT
                 // gate, and a scope+lease re-check before delivery.
                 let current_scope = match scope_name.as_deref() {

@@ -30,9 +30,8 @@ mod text;
 pub use chrome::{
     AgentFeedback, AppMenu, AppPickParams, AppPicker, CapabilityGroup, CapabilityPickParams,
     CapabilityPickResult, CapabilityPrompt, ConfirmAnswer, ConfirmPickParams, ConfirmPickStyle,
-    ConfirmPrompt, ControlledWindowGuard, FilePickParams, FilePicker, Launcher, Overview,
-    PickerMode, PinAction, ScreenshotSelector, SecretPrompt, SecretPromptParams, Toast,
-    WindowSwitcher,
+    ConfirmPrompt, ControlledWindowGuard, Launcher, Overview, PickerMode, PinAction,
+    ScreenshotSelector, SecretPrompt, SecretPromptParams, Toast, WindowSwitcher,
 };
 pub use i18n::{Language, Localizer, Message};
 pub use modal::ModalApplicationSpec;
@@ -343,14 +342,6 @@ pub struct ChromeEvents {
     /// a confirm with no staged region). The main loop answers the waiting
     /// request with a cancellation.
     pub pick_cancelled: bool,
-    /// Paths the file picker confirmed this frame, plus the active filter
-    /// index into the request's filters (the FileChooser portal's
-    /// compositor side). The main loop answers the waiting `PickFile` IPC
-    /// request with them.
-    pub file_pick_confirmed: Option<(Vec<std::path::PathBuf>, Option<u32>)>,
-    /// The user dismissed the file picker without confirming (Escape, the
-    /// Cancel button, or a click away from the panel).
-    pub file_pick_cancelled: bool,
     /// The desktop file id the app picker confirmed this frame (the
     /// AppChooser portal's compositor side). The main loop answers the
     /// waiting `PickApp` IPC request with it.
@@ -600,29 +591,11 @@ pub trait Chrome {
     /// no-op.
     fn cancel_pick(&mut self) {}
 
-    /// Open the user-consent file picker for a `PickFile` IPC request (the
-    /// FileChooser portal's compositor side). Default no-op; the file-picker
-    /// component overrides this to open with the requested options. Results
-    /// arrive through the `file_pick_confirmed`/`file_pick_cancelled`
-    /// events. Unlike [`Chrome::start_pick`] the picker never freezes the
-    /// screen: it is ordinary modal chrome over the live scene.
-    fn start_file_pick(&mut self, _params: FilePickParams) {}
-
-    /// Force-close the file picker whose requester went away (lock,
-    /// timeout, disconnect). Default no-op.
-    fn cancel_file_pick(&mut self) {}
-
-    /// Whether the file picker is currently open. Default `false`; the
-    /// file-picker component overrides this.
-    fn file_pick_active(&self) -> bool {
-        false
-    }
-
     /// Open the user-consent application picker for a `PickApp` IPC request
     /// (the AppChooser portal's compositor side). Default no-op; the
     /// app-picker component overrides this. Results arrive through the
     /// `app_pick_confirmed`/`app_pick_cancelled` events. Ordinary modal
-    /// chrome over the live scene, like the file picker.
+    /// chrome over the live scene.
     fn start_app_pick(&mut self, _params: AppPickParams) {}
 
     /// Force-close the app picker whose requester went away (lock, timeout,
@@ -1160,38 +1133,6 @@ impl Shell {
     /// Whether an IPC picker session was dismissed without a pick this frame.
     pub fn take_pick_cancelled(&mut self) -> bool {
         std::mem::take(&mut self.events.pick_cancelled)
-    }
-
-    /// Open the user-consent file picker for a `PickFile` IPC request.
-    /// No-op if no file-picker component is registered.
-    pub fn start_file_pick(&mut self, params: FilePickParams) {
-        for component in self.components.iter_mut() {
-            component.start_file_pick(params.clone());
-        }
-    }
-
-    /// Force-close the file picker (requester gone: lock, timeout,
-    /// disconnect).
-    pub fn cancel_file_pick(&mut self) {
-        for component in self.components.iter_mut() {
-            component.cancel_file_pick();
-        }
-    }
-
-    /// Whether the file picker is currently open.
-    pub fn file_pick_active(&self) -> bool {
-        self.components.iter().any(|c| c.file_pick_active())
-    }
-
-    /// Paths and active filter index the file picker confirmed this frame,
-    /// if any.
-    pub fn take_file_pick_confirmed(&mut self) -> Option<(Vec<std::path::PathBuf>, Option<u32>)> {
-        self.events.file_pick_confirmed.take()
-    }
-
-    /// Whether the file picker was dismissed without a pick this frame.
-    pub fn take_file_pick_cancelled(&mut self) -> bool {
-        std::mem::take(&mut self.events.file_pick_cancelled)
     }
 
     /// Open the user-consent application picker for a `PickApp` IPC request.

@@ -284,14 +284,15 @@ vault plus a transitional
 `org.freedesktop.secrets` compatibility layer
 ([ADR-0085](../adr/0085-portal-secret-absorption-and-secret-service-compat.md)),
 Lockdown, FileChooser v3, AppChooser v2, Email v2, Notification v2,
-Account v1, DynamicLauncher v1, and Wallpaper v1 through the scoped IPC
+Account v1, DynamicLauncher v1, and Wallpaper v1. Compositor-owned operations
+use scoped IPC
 ([ADR-0075](../adr/0075-independent-portal-package-and-backend-contract.md),
-[ADR-0086](../adr/0086-full-stack-portal-via-user-consent-pick-chains.md)).
+[ADR-0099](../adr/0099-resource-authority-and-out-of-process-file-chooser.md)).
 Screenshot region selection, color picking, and monitor/window ScreenCast
-selection use one compositor-owned interactive picker; file, application,
-and secret-prompt dialogs are native modal chrome over the same
-user-consent pick chain. ScreenCast republishes the scoped output-frame
-stream
+selection use one compositor-owned interactive picker. Application and
+secret-prompt dialogs remain native compositor chrome; FileChooser runs in a
+portal-owned, one-shot GTK4 process and uses xdg-foreign-v2 only for transient
+parenting. ScreenCast republishes the scoped output-frame stream
 ([ADR-0052](../adr/0052-scoped-output-frame-streaming.md)) as a PipeWire
 producer. The backend does not advertise Background or persistent ScreenCast
 grants until Aegis has the required policy UI, application tracking, and

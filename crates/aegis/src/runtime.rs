@@ -10,7 +10,6 @@ mod config;
 mod confirm_pick;
 mod damage;
 mod event_loop;
-mod file_pick;
 mod idle;
 mod input;
 mod ipc;
@@ -36,7 +35,6 @@ use commands::*;
 use config::*;
 use confirm_pick::*;
 use damage::*;
-use file_pick::*;
 use idle::*;
 use input::*;
 use ipc::*;
@@ -348,10 +346,6 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     shell.add(Box::new(aegis_ai_workspaces::AiWorkspaces::new()));
     // Interactive screenshot region selector, triggered by the Print key.
     shell.add(Box::new(aegis_shell::ScreenshotSelector::new()));
-    // User-consent file picker (the FileChooser portal's compositor side):
-    // ordinary modal chrome over the live scene, opened by PickFile IPC
-    // requests; it never touches the screenshot freeze.
-    shell.add(Box::new(aegis_shell::FilePicker::new()));
     // User-consent application picker (the AppChooser portal's compositor
     // side), opened by PickApp IPC requests.
     shell.add(Box::new(aegis_shell::AppPicker::new()));
@@ -683,8 +677,6 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (stream_control_tx, stream_control_rx) = std::sync::mpsc::channel::<StreamControlRequest>();
     let (idle_control_tx, idle_control_rx) = std::sync::mpsc::channel::<IdleControlRequest>();
     let (pick_control_tx, pick_control_rx) = std::sync::mpsc::channel::<PickControlRequest>();
-    let (file_pick_control_tx, file_pick_control_rx) =
-        std::sync::mpsc::channel::<FilePickControlRequest>();
     let (app_pick_control_tx, app_pick_control_rx) =
         std::sync::mpsc::channel::<AppPickControlRequest>();
     let (secret_prompt_control_tx, secret_prompt_control_rx) =
@@ -727,7 +719,6 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
             stream_controls: stream_control_tx,
             idle_controls: idle_control_tx,
             pick_controls: pick_control_tx,
-            file_pick_controls: file_pick_control_tx,
             app_pick_controls: app_pick_control_tx,
             secret_prompt_controls: secret_prompt_control_tx,
             confirm_pick_controls: confirm_pick_control_tx,
@@ -903,8 +894,6 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         pick_rx: pick_control_rx,
         pending_pick: None,
         pending_pick_open: None,
-        file_pick_rx: file_pick_control_rx,
-        pending_file_pick: None,
         app_pick_rx: app_pick_control_rx,
         pending_app_pick: None,
         secret_prompt_rx: secret_prompt_control_rx,

@@ -990,6 +990,14 @@ fn registry_exposes_clipboard_and_host_ime_protocols() {
         "host virtual-keyboard global missing:\n{stdout}"
     );
     assert!(
+        stdout.contains("interface: 'zxdg_exporter_v2'"),
+        "xdg-foreign exporter global missing:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("interface: 'zxdg_importer_v2'"),
+        "xdg-foreign importer global missing:\n{stdout}"
+    );
+    assert!(
         !stdout.contains("interface: 'wp_presentation'"),
         "incomplete presentation feedback must not be advertised:\n{stdout}"
     );
@@ -1824,6 +1832,77 @@ fn surface_damage_accumulates_until_present_and_full_is_sticky() {
     accumulate_committed_damage(&mut surface, vec![aegis_core::Rect::new(1, 1, 2, 2)], false);
     assert!(surface.committed_damage.is_empty());
     assert!(surface.committed_damage_full);
+}
+
+#[test]
+fn buffer_damage_at_hidpi_scale_rounds_outward_to_surface_coordinates() {
+    let mapped = buffer_damage_to_surface(aegis_core::Rect::new(3, 5, 8, 10), 2);
+    assert_eq!(mapped, aegis_core::Rect::new(1, 2, 5, 6));
+}
+
+#[test]
+fn committed_opaque_region_culls_a_fully_covered_window_tree() {
+    let mut state = State::new(std::ptr::null_mut());
+    state.output_geometry = aegis_core::output::OutputGeometry {
+        mode: aegis_core::output::OutputMode {
+            width: 100,
+            height: 80,
+            refresh_mhz: 60_000,
+        },
+        ..Default::default()
+    };
+    let background_id = aegis_core::window::WindowId(301);
+    let foreground_id = aegis_core::window::WindowId(302);
+    let workspace = state
+        .workspaces
+        .current_workspace(state.output)
+        .expect("bootstrap workspace");
+    state.workspaces.place_toplevel(workspace, background_id);
+    state.workspaces.place_toplevel(workspace, foreground_id);
+    let output = state.output_geometry.logical_rect();
+
+    let mut background = Box::new(SurfaceRec::new(0x301usize as *mut ffi::wl_resource));
+    background.mapped = true;
+    background.xdg_toplevel = background.resource;
+    background.window.id = background_id;
+    background.window.size = output.size;
+    background.position = output.origin;
+    background.width = output.size.w;
+    background.height = output.size.h;
+
+    let mut foreground = Box::new(SurfaceRec::new(0x302usize as *mut ffi::wl_resource));
+    foreground.mapped = true;
+    foreground.xdg_toplevel = foreground.resource;
+    foreground.window.id = foreground_id;
+    foreground.window.size = output.size;
+    foreground.position = output.origin;
+    foreground.width = output.size.w;
+    foreground.height = output.size.h;
+    foreground.opaque_region = Some(vec![aegis_core::Rect::new(
+        0,
+        0,
+        output.size.w - 1,
+        output.size.h,
+    )]);
+
+    state.surfaces = vec![background.as_mut(), foreground.as_mut()];
+    let server = std::mem::ManuallyDrop::new(Server {
+        state: Box::new(state),
+        socket: String::new(),
+        realm_portals: Vec::new(),
+        epoch: std::time::Instant::now(),
+    });
+
+    assert!(!server.occluded_window_ids().contains(&background_id));
+    foreground.opaque_region = Some(vec![aegis_core::Rect::new(
+        0,
+        0,
+        output.size.w,
+        output.size.h,
+    )]);
+    let occluded = server.occluded_window_ids();
+    assert!(occluded.contains(&background_id));
+    assert!(!occluded.contains(&foreground_id));
 }
 
 #[test]

@@ -49,6 +49,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 # (ADR-0047, ADR-0050, ADR-0087).
 base64 = "0.22"
 fastrand = "2"
+getrandom = "0.3"
 notify = "8.2"
 
 # Session D-Bus for the StatusNotifierItem system tray (aegis-tray, shared by

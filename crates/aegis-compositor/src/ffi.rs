@@ -54,7 +54,8 @@ pub use aegis_protocols::{
     zwp_relative_pointer_v1_interface, zwp_text_input_manager_v3_interface,
     zwp_text_input_v3_interface, zwp_virtual_keyboard_manager_v1_interface,
     zwp_virtual_keyboard_v1_interface, zxdg_decoration_manager_v1_interface,
-    zxdg_output_manager_v1_interface, zxdg_output_v1_interface,
+    zxdg_exported_v2_interface, zxdg_exporter_v2_interface, zxdg_imported_v2_interface,
+    zxdg_importer_v2_interface, zxdg_output_manager_v1_interface, zxdg_output_v1_interface,
     zxdg_toplevel_decoration_v1_interface,
 };
 pub use aegis_protocols::{
@@ -277,6 +278,12 @@ pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_DONE: u32 = 1;
 pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_TITLE: u32 = 2;
 pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_APP_ID: u32 = 3;
 pub const EXT_FOREIGN_TOPLEVEL_HANDLE_V1_IDENTIFIER: u32 = 4;
+
+// xdg-foreign-unstable-v2
+pub const ZXDG_EXPORTER_V2_ERROR_INVALID_SURFACE: u32 = 0;
+pub const ZXDG_EXPORTED_V2_HANDLE: u32 = 0;
+pub const ZXDG_IMPORTED_V2_ERROR_INVALID_SURFACE: u32 = 0;
+pub const ZXDG_IMPORTED_V2_DESTROYED: u32 = 0;
 
 // wp_presentation_feedback
 pub const WP_PRESENTATION_FEEDBACK_SYNC_OUTPUT: u32 = 0;
@@ -1039,6 +1046,34 @@ pub struct ext_foreign_toplevel_handle_v1_interface_impl {
     pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
 }
 
+/// `zxdg_exporter_v2`: destroy, export_toplevel.
+#[repr(C)]
+pub struct zxdg_exporter_v2_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub export_toplevel:
+        unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *mut wl_resource),
+}
+
+/// `zxdg_importer_v2`: destroy, import_toplevel.
+#[repr(C)]
+pub struct zxdg_importer_v2_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub import_toplevel: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, u32, *const c_char),
+}
+
+/// `zxdg_exported_v2`: destroy.
+#[repr(C)]
+pub struct zxdg_exported_v2_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+}
+
+/// `zxdg_imported_v2`: destroy, set_parent_of.
+#[repr(C)]
+pub struct zxdg_imported_v2_interface_impl {
+    pub destroy: unsafe extern "C" fn(*mut wl_client, *mut wl_resource),
+    pub set_parent_of: unsafe extern "C" fn(*mut wl_client, *mut wl_resource, *mut wl_resource),
+}
+
 /// `wp_cursor_shape_manager_v1`: destroy, get_pointer, get_tablet_tool_v2.
 #[repr(C)]
 pub struct wp_cursor_shape_manager_v1_interface_impl {
@@ -1163,6 +1198,10 @@ assert_impl_opcode_count!(ext_session_lock_v1_interface_impl, 3);
 assert_impl_opcode_count!(ext_session_lock_surface_v1_interface_impl, 2);
 assert_impl_opcode_count!(ext_foreign_toplevel_list_v1_interface_impl, 2);
 assert_impl_opcode_count!(ext_foreign_toplevel_handle_v1_interface_impl, 1);
+assert_impl_opcode_count!(zxdg_exporter_v2_interface_impl, 2);
+assert_impl_opcode_count!(zxdg_importer_v2_interface_impl, 2);
+assert_impl_opcode_count!(zxdg_exported_v2_interface_impl, 1);
+assert_impl_opcode_count!(zxdg_imported_v2_interface_impl, 2);
 assert_impl_opcode_count!(wp_cursor_shape_manager_v1_interface_impl, 3);
 assert_impl_opcode_count!(wp_cursor_shape_device_v1_interface_impl, 2);
 assert_impl_opcode_count!(zwp_text_input_manager_v3_interface_impl, 2);

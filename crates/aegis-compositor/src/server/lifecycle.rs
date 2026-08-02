@@ -149,6 +149,24 @@ impl Server {
                 data,
                 extensions::xdg_decoration_manager_bind,
             );
+            // Cross-client transient parenting for out-of-process portal
+            // dialogs. Both globals are visible to Realm clients: possession
+            // of an unguessable export handle is the explicit authority, and
+            // the portal prompter must import handles from sandboxed apps.
+            ffi::wl_global_create(
+                display,
+                &ffi::zxdg_exporter_v2_interface,
+                1,
+                data,
+                extensions::xdg_exporter_bind,
+            );
+            ffi::wl_global_create(
+                display,
+                &ffi::zxdg_importer_v2_interface,
+                1,
+                data,
+                extensions::xdg_importer_bind,
+            );
             // Do not advertise wp_presentation until feedback can be tied to
             // the corresponding commit and completed with a real presentation
             // timestamp. Clients fall back to wl_surface.frame, which this

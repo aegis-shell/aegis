@@ -12,6 +12,7 @@ build = "build.rs"
 aegis-core = { workspace = true, features = ["serde"] }
 aegis-protocols = { workspace = true }
 log.workspace = true
+getrandom.workspace = true
 thiserror.workspace = true
 xkbcommon = "0.9"
 

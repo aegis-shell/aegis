@@ -7,7 +7,6 @@
 
 pub mod app;
 pub mod dmabuf;
-pub mod file_picker;
 pub mod gesture;
 pub mod input;
 pub mod keybind;
@@ -190,6 +189,68 @@ impl Transform {
         )
     }
 
+    /// Map a damage rectangle from **buffer pixel coordinates** to
+    /// **surface-local buffer pixel coordinates** (i.e. the coordinate space the
+    /// surface occupies *after* this transform but *before* division by
+    /// `buffer_scale`). All eight Wayland transforms are pure 90°-multiple
+    /// rotations and/or axis flips, so an axis-aligned buffer rectangle maps to
+    /// another axis-aligned rectangle; the result is the tight bounding box of
+    /// the four transformed corners, rounded outward so no edge pixel is lost.
+    ///
+    /// `buffer_dims` is the buffer's own `(width, height)` in pixels. Callers
+    /// then divide by `buffer_scale` (with outward rounding) to reach
+    /// surface-local logical pixels — exactly what `buffer_damage_to_surface`
+    /// already does for the identity case.
+    ///
+    /// This closes the historical "transform ⇒ unmappable ⇒ full damage"
+    /// fallback: a rotated/flipped client's `wl_surface.damage_buffer` no longer
+    /// forces a whole-output repaint.
+    pub fn map_buffer_rect_to_surface(
+        self,
+        rect: Rect,
+        buffer_dims: (i32, i32),
+    ) -> Rect {
+        let (bw, bh) = buffer_dims;
+        // Buffer rectangle corners (inclusive-exclusive spans).
+        let (bx0, by0, bx1, by1) = (
+            i64::from(rect.origin.x),
+            i64::from(rect.origin.y),
+            i64::from(rect.origin.x + rect.size.w),
+            i64::from(rect.origin.y + rect.size.h),
+        );
+        let bwi = i64::from(bw.max(1));
+        let bhi = i64::from(bh.max(1));
+        // Point transform for each of the 8 cases, accumulated as the min/max
+        // of the four corner images.
+        let mut sx0 = i64::MAX;
+        let mut sy0 = i64::MAX;
+        let mut sx1 = i64::MIN;
+        let mut sy1 = i64::MIN;
+        for (px, py) in [(bx0, by0), (bx1, by0), (bx0, by1), (bx1, by1)] {
+            let (ux, uy) = match self {
+                Transform::Normal => (px, py),
+                Transform::Rotate90 => (py, bwi - px),
+                Transform::Rotate180 => (bwi - px, bhi - py),
+                Transform::Rotate270 => (bhi - py, px),
+                Transform::FlipHorizontal => (bwi - px, py),
+                Transform::FlipRotate90 => (bhi - py, bwi - px),
+                Transform::FlipRotate180 => (px, bhi - py),
+                Transform::FlipRotate270 => (py, px),
+            };
+            sx0 = sx0.min(ux);
+            sy0 = sy0.min(uy);
+            sx1 = sx1.max(ux);
+            sy1 = sy1.max(uy);
+        }
+        let clamp = |v: i64| v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+        Rect::new(
+            clamp(sx0),
+            clamp(sy0),
+            clamp(sx1.saturating_sub(sx0)),
+            clamp(sy1.saturating_sub(sy0)),
+        )
+    }
+
     /// The canonical lowercase name (hyphenated) used in configuration and
     /// documentation. [`Transform::from_name`] accepts these names plus
     /// underscore aliases.
@@ -360,11 +421,18 @@ pub struct SurfacePixels<'a> {
     pub pixels: &'a [u8],
     pub geometry: SurfaceGeometry,
     /// Damage rectangles accumulated since the last commit, in surface-
-    /// local pixel coords. Empty means "no damage info; renderer may
+    /// local logical coordinates. Empty means "no damage info; renderer may
     /// choose to skip the incremental update and re-upload the whole
     /// texture on the next generation change." Bounded to the surface's
     /// width/height by the server before being surfaced.
     pub damage: &'a [Rect],
+    /// Opaque region declared via `wl_surface.set_opaque_region`, in surface-
+    /// local logical coordinates, or `None` when the client declared no opaque
+    /// region (the surface is treated as fully translucent). Lets the renderer
+    /// split the blit so pixels under an opaque sub-rect use SRC-replace (no
+    /// framebuffer readback) even for ARGB buffers, matching the occlusion
+    /// pass's notion of opaqueness. Empty slice == no opaque region.
+    pub opaque_region: Option<&'a [Rect]>,
 }
 
 /// A single-plane dma-buf-backed surface, handed from the server to the
@@ -380,6 +448,10 @@ pub struct SurfaceDmabuf {
     pub width: i32,
     pub height: i32,
     pub generation: u64,
+    /// Damage accumulated since the previous presented frame, in
+    /// surface-local logical coordinates. Empty means the damage is unknown
+    /// and consumers must conservatively treat the whole surface as changed.
+    pub damage: Vec<Rect>,
     /// Stable monotonic identity of the backing `wl_buffer`, or 0 when
     /// unknown. Unlike `generation` — which is bumped on every commit — this
     /// stays constant across frames that reuse the same buffer and is not
@@ -395,4 +467,10 @@ pub struct SurfaceDmabuf {
     /// synchronization applies. The renderer duplicates it before import.
     pub acquire_fence: i32,
     pub geometry: SurfaceGeometry,
+    /// Opaque region declared via `wl_surface.set_opaque_region`, in surface-
+    /// local logical coordinates, or `None` when the client declared no opaque
+    /// region. Owned (like `damage`) because the dma-buf frame may outlive the
+    /// server borrow. Lets the renderer split the blit into SRC-replace opaque
+    /// sub-rects and source-over remainder, matching the occlusion pass.
+    pub opaque_region: Option<Vec<Rect>>,
 }

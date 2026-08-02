@@ -205,7 +205,116 @@ fn viewport_uv(
     )
 }
 
-/// Caches per-surface GPU textures so client contents are re-uploaded only when
+/// A sub-rectangle of the destination blit in framebuffer pixels, paired with
+/// the matching normalised source-UV box so a single texture can be sampled
+/// into an arbitrary destination rectangle.
+#[derive(Clone, Copy)]
+struct BlitRect {
+    dst_x: f32,
+    dst_y: f32,
+    dst_w: f32,
+    dst_h: f32,
+    src_u: f32,
+    src_v: f32,
+    src_du: f32,
+    src_dv: f32,
+}
+
+/// Split a full-surface blit into opaque and blended destination pieces using
+/// the client's `opaque_region` (surface-local logical coordinates).
+///
+/// When the region is usable — the surface has no buffer transform and no
+/// `wp_viewport` source-crop, the two cases where surface-local logical
+/// coordinates do not map 1:1 onto destination pixels — every pixel under an
+/// opaque rect is drawn with SRC-replace (no framebuffer readback) and only
+/// the genuinely translucent remainder is composited source-over. Each
+/// destination pixel is blitted exactly once: the non-opaque remainder is the
+/// set difference of the whole destination rect and the opaque rectangles.
+///
+/// `surface_logical` is the unscaled surface size used to turn surface-local
+/// coordinates into normalised UVs; it equals `dst` when scale/viewport are
+/// identity. An opaque rect that falls outside the surface is clipped to it;
+/// degenerate rects are dropped.
+fn split_opaque_blit(
+    dst: (f32, f32, f32, f32),
+    surface_logical: (f32, f32),
+    opaque_region: Option<&[aegis_core::Rect]>,
+    can_split: bool,
+) -> (Vec<BlitRect>, Vec<BlitRect>) {
+    let (dx, dy, dw, dh) = dst;
+    let (sw, sh) = surface_logical;
+    if !can_split || sw < 1.0 || sh < 1.0 || dw < 1.0 || dh < 1.0 {
+        return (Vec::new(), vec![BlitRect {
+            dst_x: dx, dst_y: dy, dst_w: dw, dst_h: dh,
+            src_u: 0.0, src_v: 0.0, src_du: 1.0, src_dv: 1.0,
+        }]);
+    }
+    let region = match opaque_region {
+        Some(r) if !r.is_empty() => r,
+        _ => {
+            return (Vec::new(), vec![BlitRect {
+                dst_x: dx, dst_y: dy, dst_w: dw, dst_h: dh,
+                src_u: 0.0, src_v: 0.0, src_du: 1.0, src_dv: 1.0,
+            }]);
+        }
+    };
+    // Map each surface-local opaque rect into destination pixels and UVs,
+    // clipping to the surface extent first.
+    let sx = dw / sw;
+    let sy = dh / sh;
+    let mut opaque_dst: Vec<aegis_core::Rect> = Vec::with_capacity(region.len());
+    let mut opaque: Vec<BlitRect> = Vec::with_capacity(region.len());
+    for r in region {
+        let cx0 = r.origin.x.max(0).min(sw as i32);
+        let cy0 = r.origin.y.max(0).min(sh as i32);
+        let cx1 = (r.origin.x + r.size.w).max(0).min(sw as i32);
+        let cy1 = (r.origin.y + r.size.h).max(0).min(sh as i32);
+        if cx1 <= cx0 || cy1 <= cy0 {
+            continue;
+        }
+        let lw = (cx1 - cx0) as f32;
+        let lh = (cy1 - cy0) as f32;
+        let bx = dx + cx0 as f32 * sx;
+        let by = dy + cy0 as f32 * sy;
+        let bw = lw * sx;
+        let bh = lh * sy;
+        opaque_dst.push(aegis_core::Rect::new(bx as i32, by as i32, bw as i32, bh as i32));
+        opaque.push(BlitRect {
+            dst_x: bx, dst_y: by, dst_w: bw, dst_h: bh,
+            src_u: cx0 as f32 / sw, src_v: cy0 as f32 / sh,
+            src_du: lw / sw, src_dv: lh / sh,
+        });
+    }
+    if opaque.is_empty() {
+        return (Vec::new(), vec![BlitRect {
+            dst_x: dx, dst_y: dy, dst_w: dw, dst_h: dh,
+            src_u: 0.0, src_v: 0.0, src_du: 1.0, src_dv: 1.0,
+        }]);
+    }
+    // Remainder = whole destination rect minus the union of opaque rects.
+    let whole = aegis_core::Rect::new(dx as i32, dy as i32, dw as i32, dh as i32);
+    let mut remainder = vec![whole];
+    for o in &opaque_dst {
+        let mut next = Vec::new();
+        for piece in remainder.drain(..) {
+            next.extend(piece.subtract(*o));
+        }
+        remainder = next;
+    }
+    let blended: Vec<BlitRect> = remainder.into_iter().map(|p| {
+        let pw = p.size.w as f32;
+        let ph = p.size.h as f32;
+        BlitRect {
+            dst_x: p.origin.x as f32, dst_y: p.origin.y as f32, dst_w: pw, dst_h: ph,
+            src_u: (p.origin.x - dx as i32) as f32 / sw,
+            src_v: (p.origin.y - dy as i32) as f32 / sh,
+            src_du: pw / sw, src_dv: ph / sh,
+        }
+    }).filter(|b| b.dst_w >= 1.0 && b.dst_h >= 1.0).collect();
+    (opaque, blended)
+}
+
+
 /// they change. Whole-texture uploads happen on first sight, size changes, and
 /// frames without usable damage; same-size frames with damage refresh only the
 /// damage bounding box (mirroring the server's incremental snapshot copy).
@@ -641,32 +750,51 @@ impl Renderer {
                 .get(&f.id)
                 .is_none_or(|c| c.generation != f.generation);
             if !dims_match || new_contents {
+                // Incremental refresh is valid whenever the texture dims are
+                // unchanged, the buffer is upright (a rotated/reflected buffer
+                // needs real geometric damage remapping, not a scale multiply),
+                // and the server supplied usable surface-local damage. Unlike
+                // the historical guard, a buffer_scale > 1 is NOT a barrier:
+                // the server already normalises buffer damage to surface-local
+                // logical coordinates at commit, so we only have to multiply
+                // those coordinates by `buffer_scale` to reach buffer pixels.
                 let incremental = dims_match
                     && f.geometry.transform == Transform::Normal
-                    && f.geometry.buffer_scale <= 1
                     && !f.damage.is_empty();
                 if incremental {
-                    // Union of the (clamped) damage rects, uploaded in a
-                    // single update_region. Pixels outside every damaged
-                    // rect are identical to the previous frame by the
-                    // damage protocol, so refreshing a bounding superset
-                    // of the damage is always correct.
+                    // Union of the damage rects mapped from surface-local
+                    // logical coordinates to buffer pixels (× buffer_scale,
+                    // rounded outward so no edge pixel is dropped), then
+                    // clamped to the buffer extent. Uploaded in a single
+                    // update_region: pixels outside every damaged rect are
+                    // identical to the previous frame by the damage protocol,
+                    // so refreshing a bounding superset is always correct.
+                    let scale = f.geometry.buffer_scale.max(1);
                     let mut x0 = i32::MAX;
                     let mut y0 = i32::MAX;
                     let mut x1 = i32::MIN;
                     let mut y1 = i32::MIN;
                     for d in f.damage {
-                        let x = d.origin.x.max(0).min(f.width - 1);
-                        let y = d.origin.y.max(0).min(f.height - 1);
-                        let w = (d.size.w.max(0)).min(f.width - x);
-                        let h = (d.size.h.max(0)).min(f.height - y);
-                        if w == 0 || h == 0 {
+                        // Outward rounding so a partially-covered buffer pixel
+                        // is always included (mirrors the server's
+                        // buffer_damage_to_surface division).
+                        let sx0 = d.origin.x.saturating_mul(scale).max(0).min(f.width);
+                        let sy0 = d.origin.y.saturating_mul(scale).max(0).min(f.height);
+                        let sx1 = (d.origin.x + d.size.w)
+                            .saturating_mul(scale)
+                            .max(0)
+                            .min(f.width);
+                        let sy1 = (d.origin.y + d.size.h)
+                            .saturating_mul(scale)
+                            .max(0)
+                            .min(f.height);
+                        if sx1 <= sx0 || sy1 <= sy0 {
                             continue;
                         }
-                        x0 = x0.min(x);
-                        y0 = y0.min(y);
-                        x1 = x1.max(x + w);
-                        y1 = y1.max(y + h);
+                        x0 = x0.min(sx0);
+                        y0 = y0.min(sy0);
+                        x1 = x1.max(sx1);
+                        y1 = y1.max(sy1);
                     }
                     if x0 < x1
                         && y0 < y1
@@ -798,7 +926,32 @@ impl Renderer {
                         canvas.draw_image_sub(img, x, y, dst_w, dst_h, su, sv, sw, sh);
                     }
                     None => {
-                        canvas.draw_image(img, x, y, dst_w, dst_h);
+                        // Split on the client's opaque_region so the pixels it
+                        // declares opaque use SRC-replace (no destination
+                        // readback) and only the translucent remainder pays the
+                        // source-over merge. SHM XRGB alpha is already forced
+                        // opaque at ingest, so SRC-replace is pixel-correct here
+                        // too. Opaque-region mapping is only well-defined without
+                        // a buffer transform.
+                        let can_split = f.geometry.transform == aegis_core::Transform::Normal;
+                        let (opaque, blended) = split_opaque_blit(
+                            (x, y, dst_w, dst_h),
+                            (tw as f32, th as f32),
+                            f.opaque_region,
+                            can_split,
+                        );
+                        for b in &opaque {
+                            canvas.draw_image_opaque_sub(
+                                img, b.dst_x, b.dst_y, b.dst_w, b.dst_h,
+                                b.src_u, b.src_v, b.src_du, b.src_dv,
+                            );
+                        }
+                        for b in &blended {
+                            canvas.draw_image_sub(
+                                img, b.dst_x, b.dst_y, b.dst_w, b.dst_h,
+                                b.src_u, b.src_v, b.src_du, b.src_dv,
+                            );
+                        }
                     }
                 }
             }
@@ -1041,23 +1194,72 @@ impl Renderer {
                         dst_h.max(1.0) as i32,
                     );
                     let mapped = map(f.window, natural);
-                    canvas.draw_image(
-                        img,
-                        mapped.origin.x as f32,
-                        mapped.origin.y as f32,
-                        mapped.size.w as f32,
-                        mapped.size.h as f32,
-                    );
+                    if drm_fmt::is_format_opaque(f.drm_format)
+                        && f.geometry.viewport_src.is_none()
+                    {
+                        canvas.draw_image_opaque(
+                            img,
+                            mapped.origin.x as f32,
+                            mapped.origin.y as f32,
+                            mapped.size.w as f32,
+                            mapped.size.h as f32,
+                        );
+                    } else {
+                        canvas.draw_image(
+                            img,
+                            mapped.origin.x as f32,
+                            mapped.origin.y as f32,
+                            mapped.size.w as f32,
+                            mapped.size.h as f32,
+                        );
+                    }
                     continue;
                 }
                 match f.geometry.viewport_src {
                     Some(src) => {
                         let (su, sv, sw, sh) =
                             viewport_uv(src, (f.width, f.height), f.geometry.buffer_scale);
-                        canvas.draw_image_sub(img, x, y, dst_w, dst_h, su, sv, sw, sh);
+                        if drm_fmt::is_format_opaque(f.drm_format) {
+                            // Alpha-free buffer with source-crop: still SRC-replace
+                            // and alpha-forced-opaque, so the undefined X bits are
+                            // never read as alpha and no framebuffer readback occurs.
+                            canvas.draw_image_opaque_sub(img, x, y, dst_w, dst_h, su, sv, sw, sh);
+                        } else {
+                            canvas.draw_image_sub(img, x, y, dst_w, dst_h, su, sv, sw, sh);
+                        }
                     }
                     None => {
-                        canvas.draw_image(img, x, y, dst_w, dst_h);
+                        if drm_fmt::is_format_opaque(f.drm_format) {
+                            // Alpha-free buffer: the whole surface is SRC-replace and
+                            // alpha-forced-opaque, so the undefined X bits are never
+                            // read as alpha and no framebuffer readback occurs.
+                            canvas.draw_image_opaque(img, x, y, dst_w, dst_h);
+                        } else {
+                            // ARGB buffer: split on the client's opaque_region so the
+                            // pixels it declares opaque use SRC-replace (no
+                            // destination readback) and only the translucent remainder
+                            // pays the source-over merge. Opaque-region mapping is only
+                            // well-defined without a buffer transform.
+                            let can_split = f.geometry.transform == aegis_core::Transform::Normal;
+                            let (opaque, blended) = split_opaque_blit(
+                                (x, y, dst_w, dst_h),
+                                (f.width as f32, f.height as f32),
+                                f.opaque_region.as_deref(),
+                                can_split,
+                            );
+                            for b in &opaque {
+                                canvas.draw_image_opaque_sub(
+                                    img, b.dst_x, b.dst_y, b.dst_w, b.dst_h,
+                                    b.src_u, b.src_v, b.src_du, b.src_dv,
+                                );
+                            }
+                            for b in &blended {
+                                canvas.draw_image_sub(
+                                    img, b.dst_x, b.dst_y, b.dst_w, b.dst_h,
+                                    b.src_u, b.src_v, b.src_du, b.src_dv,
+                                );
+                            }
+                        }
                     }
                 }
             }

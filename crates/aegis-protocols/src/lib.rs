@@ -89,6 +89,12 @@ unsafe extern "C" {
     pub static zxdg_decoration_manager_v1_interface: wl_interface;
     pub static zxdg_toplevel_decoration_v1_interface: wl_interface;
 
+    // xdg-foreign-unstable-v2
+    pub static zxdg_exporter_v2_interface: wl_interface;
+    pub static zxdg_importer_v2_interface: wl_interface;
+    pub static zxdg_exported_v2_interface: wl_interface;
+    pub static zxdg_imported_v2_interface: wl_interface;
+
     // idle-inhibit-unstable-v1
     pub static zwp_idle_inhibit_manager_v1_interface: wl_interface;
     pub static zwp_idle_inhibitor_v1_interface: wl_interface;

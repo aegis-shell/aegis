@@ -11,9 +11,10 @@ D-Bus as needed.
 | Item | Value |
 |------|-------|
 | Source repository | `https://github.com/aegis-shell/xdg-desktop-portal-aegis` |
-| Release compatibility | Portal `v0.0.1` supports Aegis `v0.0.9`; the Portal manifest is authoritative |
+| Release compatibility | Published Portal `v0.0.1` supports Aegis `v0.0.9`; this unreleased protocol-20 boundary requires the next coordinated Portal release, whose manifest remains authoritative |
 | Distribution package | `xdg-desktop-portal-aegis` |
 | Backend executable | `/usr/lib/xdg-desktop-portal-aegis` |
+| FileChooser prompter | `/usr/lib/aegis-portal-prompter` |
 | Backend bus name | `org.freedesktop.impl.portal.desktop.aegis` |
 | Public frontend bus name | `org.freedesktop.portal.Desktop` |
 | Backend and frontend object path | `/org/freedesktop/portal/desktop` |
@@ -42,6 +43,7 @@ unadvertised interfaces and configured fallbacks.
 | Aegis selection | `XDG_CURRENT_DESKTOP=aegis` in the activation environment |
 | Compositor-backed operations | Matching Aegis compositor and `$XDG_RUNTIME_DIR/aegis.sock` |
 | ScreenCast | PipeWire session |
+| FileChooser | GTK4 and Aegis xdg-foreign-v2 support |
 | Unsupported interface fallback | `xdg-desktop-portal-gtk` |
 | Email | `xdg-email`, or the command selected by `AEGIS_PORTAL_MAILER` |
 | Password-vault auto-unlock | Optional `pam_aegis.so` integration |
@@ -56,7 +58,7 @@ unadvertised interfaces and configured fallbacks.
 | `org.freedesktop.impl.portal.Inhibit` | implementation ABI | Accepts the idle flag `8`. Logout, user-switch, and suspend flags `1`, `2`, and `4` are rejected. The request-scoped lease is released when the request closes or its connection disappears. |
 | `org.freedesktop.impl.portal.Secret` | 1 | Returns an HKDF-derived application secret from the encrypted Aegis vault. The raw vault master key does not cross D-Bus. |
 | `org.freedesktop.impl.portal.Lockdown` | implementation ABI | Returns `false` for every restriction. Aegis does not currently provide a kiosk policy engine. |
-| `org.freedesktop.impl.portal.FileChooser` | 3 | Supports `OpenFile`, `SaveFile`, and `SaveFiles` through native compositor chrome, including navigation, multi-select, filters, and save filenames. GTK remains a fallback. |
+| `org.freedesktop.impl.portal.FileChooser` | 3 | The backend supervises a one-shot GTK4 prompter with Wayland parent handles, modality, navigation, multi-select, typed filters/current-filter, choices, current-file, and collision-safe `SaveFiles`. No path crosses compositor IPC. |
 | `org.freedesktop.impl.portal.AppChooser` | 2 | Uses the native application picker and honors `last_choice`. GTK remains a fallback. |
 | `org.freedesktop.impl.portal.Email` | 2 | Hands compose requests and staged attachments to the session mail client through `xdg-email`. GTK remains a fallback. |
 | `org.freedesktop.impl.portal.Notification` | 2 | Adds and removes baseline title/body notifications in the compositor queue. Icons and action buttons are not supported. |
@@ -74,7 +76,8 @@ Location, when installed.
 |-----------|-----------------------------|
 | Screenshot and color picking | Refused with a cancelled/failed portal response. |
 | ScreenCast | Existing streams pause and resume after the session becomes active and unlocked. |
-| File, application, account, launcher, secret, and wallpaper consent | Compositor IPC authorization fails closed while the lock or VT gate is active. |
+| File selection | The prompter is an ordinary transient Wayland client below the lock surface; `Request.Close` terminates it. |
+| Application, account, launcher, secret, and wallpaper consent | Compositor IPC authorization fails closed while the lock or VT gate is active. |
 | Settings | The last effective settings snapshot remains readable. |
 | Secret vault storage | The vault remains encrypted at rest; lock-screen policy does not currently re-lock an already unlocked vault. |
 

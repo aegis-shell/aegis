@@ -1,6 +1,6 @@
 # ADR-0095: Independent portal repository and component workspace
 
-- Status: Accepted
+- Status: Superseded by [ADR-0099](0099-resource-authority-and-out-of-process-file-chooser.md)
 - Date: 2026-08-02
 
 ## Context

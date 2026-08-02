@@ -5,6 +5,29 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once the
 project cuts a tagged release.
 
+## [Unreleased]
+
+### Portal boundary
+
+- Removed compositor FileChooser chrome, filesystem enumeration, runtime
+  state, the `PickFile` IPC surface, and its built-in scope grant. FileChooser
+  is now implemented by the independent portal's supervised GTK4 prompter;
+  Aegis IPC advances to protocol 20 for the schema deletion.
+- Added xdg-foreign-unstable-v2 exporter/importer support with 128-bit
+  capability handles and lifecycle-safe transient-parent revocation, allowing
+  out-of-process portal dialogs to attach to their calling Wayland windows
+  without exposing file data to the compositor.
+
+### Rendering
+
+- Wired `wl_surface.set_opaque_region` through to the renderer. The server now
+  carries each surface's declared opaque region on `SurfacePixels` and
+  `SurfaceDmabuf`, so the blit path can use a SRC-replace write for the opaque
+  sub-rectangles of ARGB buffers and skip the framebuffer readback there,
+  matching the occlusion pass's notion of opaqueness. `aegis-core::dmabuf`
+  gains a single `is_format_opaque` predicate as the source of truth for
+  alpha-free DRM fourccs.
+
 ## [0.0.10] - 2026-08-02
 
 ### Source organization

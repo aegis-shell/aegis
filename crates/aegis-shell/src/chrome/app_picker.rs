@@ -2,7 +2,7 @@
 //! candidate applications of one `PickApp` IPC request (the AppChooser
 //! portal's compositor side).
 //!
-//! The flow mirrors the file picker: [`Chrome::start_app_pick`] opens the
+//! [`Chrome::start_app_pick`] opens the
 //! panel, and the user's confirm or cancel travels back through
 //! [`ChromeEvents::app_pick_confirmed`] / [`ChromeEvents::app_pick_cancelled`].
 //! Ordinary modal chrome over the live scene: no freeze, no screen-content

@@ -101,9 +101,6 @@ impl CompositorRuntime {
             // A pick presents screen content through chrome; the lock must
             // not cover a live picker (ADR-0054).
             self.abandon_pending_pick("session locked before the pick completed");
-            // The file picker reveals user-approved filesystem names; the
-            // lock must not cover it either.
-            self.abandon_pending_file_pick("session locked before the file pick completed");
             self.abandon_pending_app_pick("session locked before the app pick completed");
             self.abandon_pending_secret_prompt("session locked before the secret prompt completed");
             self.abandon_pending_confirm_pick("session locked before the confirmation completed");
@@ -598,7 +595,6 @@ impl CompositorRuntime {
         }
         self.drain_idle_controls();
         self.drain_pick_controls();
-        self.drain_file_pick_controls();
         self.drain_app_pick_controls();
         self.drain_secret_prompt_controls();
         self.drain_confirm_pick_controls();

@@ -23,7 +23,6 @@ mod app_picker;
 mod capability_prompt;
 mod confirm_prompt;
 mod controlled_window_guard;
-mod file_picker;
 mod launcher;
 mod overview;
 mod screenshot;
@@ -39,7 +38,6 @@ pub use capability_prompt::{
 };
 pub use confirm_prompt::{ConfirmAnswer, ConfirmPickParams, ConfirmPickStyle, ConfirmPrompt};
 pub use controlled_window_guard::ControlledWindowGuard;
-pub use file_picker::{FilePickParams, FilePicker};
 pub use launcher::Launcher;
 pub use overview::Overview;
 pub use screenshot::{PickerMode, ScreenshotSelector};

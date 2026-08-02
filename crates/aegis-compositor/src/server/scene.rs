@@ -11,35 +11,11 @@ impl Server {
             .collect()
     }
 
-    /// Toplevel ids whose rendered rectangle is entirely covered by opaque
-    /// windows stacked above them, and which may therefore be skipped by the
-    /// renderer and damage tracker without changing the visible output.
-    ///
-    /// # Correctness model
-    ///
-    /// Only a fully-opaque occluder can hide everything beneath it. Aegis does
-    /// not yet honour `wl_surface.set_opaque_region` (the request is a noop in
-    /// `compositor.rs`), and a normal window may carry client-side decoration,
-    /// rounded corners, or translucent pixels that are not implied by its
-    /// geometry rectangle. To stay conservative only a window that is both
-    /// **fullscreen** and free of an in-flight transition is admitted as an
-    /// occluder: the compositor presents a fullscreen toplevel exactly over its
-    /// whole output with no chrome decoration above it, so its rectangle is a
-    /// faithful opaque region. A transition in flight means the rect is still
-    /// animating; such a window is excluded from both sides of the test until
-    /// it settles, so the enter/leave-occlusion frame is handled by the normal
-    /// full-damage path rather than a mid-animation guess.
-    ///
-    /// The victim side is more permissive: any visible, non-transitioning
-    /// toplevel whose render rect is fully covered by the occluder set is
-    /// reported. Picking the victim by "fully covered" rather than "intersects"
-    /// is the property that keeps partial overlaps — which still expose some of
-    /// the lower window — correct.
-    ///
-    /// This runs once per scene query, mirroring [`visible`](Self::visible);
-    /// the per-frame window count is small and the rectangle algebra is cheap,
-    /// so recomputing keeps every consumer (shm, dma-buf, frame order, and the
-    /// two subsurface passes) in lock-step without a shared cache to invalidate.
+    /// Toplevel ids whose complete surface tree is covered by opaque pixels in
+    /// windows stacked above it. Opacity comes from committed Wayland opaque
+    /// regions, alpha-free XRGB/XBGR DMA-BUF formats, or the existing
+    /// fullscreen guarantee. Popups and subsurfaces participate on both sides
+    /// so culling a root can never make one of its children disappear.
     pub(crate) fn occluded_window_ids(
         &self,
     ) -> std::collections::HashSet<aegis_core::window::WindowId> {
@@ -50,11 +26,12 @@ impl Server {
             return std::collections::HashSet::new();
         }
         let visible = self.visible();
-        // Collect candidate toplevels in paint order. `state.surfaces` is kept
-        // top-to-bottom by the raise logic, so the last entry is on top.
-        let stacked: Vec<*mut SurfaceRec> = self
-            .state
-            .live_surfaces()
+        let live = self.state.live_surfaces().collect::<Vec<_>>();
+        // Root order follows the scene's bottom-to-top surface order; reverse
+        // it below so coverage is known before each lower window is tested.
+        let stacked: Vec<*mut SurfaceRec> = live
+            .iter()
+            .copied()
             .filter(|pointer| {
                 let surface = unsafe { &**pointer };
                 surface.mapped
@@ -67,30 +44,74 @@ impl Server {
         }
         let mut occluded = std::collections::HashSet::new();
         let mut opaque_coverage: Vec<aegis_core::Rect> = Vec::new();
-        // Walk top-to-bottom (highest window first). A window is an occluder
-        // for every window beneath it, so accumulate opaque rects as we descend.
+        let output = self.output_logical_rect();
         for pointer in stacked.iter().rev() {
-            let surface = unsafe { &**pointer };
-            let render_rect = self
-                .transition_render_rect(surface)
-                .unwrap_or(aegis_core::Rect {
-                    origin: surface.position,
-                    size: surface.window.size,
-                });
-            // A window still animating to its target rect is neither a reliable
-            // victim nor a reliable occluder: skip it on both sides.
-            let in_transition = surface.window.transition.is_some();
-            if !in_transition && surface.window.state.fullscreen && !render_rect.is_empty() {
-                // This window is an opaque occluder for everything below it.
-                opaque_coverage.push(render_rect);
+            let root = unsafe { &**pointer };
+            if root.window.transition.is_some() {
                 continue;
             }
-            if !in_transition
-                && !occluded.contains(&surface.window.id)
-                && !render_rect.is_empty()
-                && render_rect.fully_covered_by(&opaque_coverage)
+
+            let tree = live
+                .iter()
+                .copied()
+                .filter(|surface| unsafe {
+                    (**surface).mapped && surface_root_toplevel(*surface) == *pointer
+                })
+                .collect::<Vec<_>>();
+            let painted = tree
+                .iter()
+                .filter_map(|surface| {
+                    let surface = unsafe { &**surface };
+                    intersect_rect(
+                        aegis_core::Rect {
+                            origin: surface_draw_origin(surface),
+                            size: surface_logical_size(surface),
+                        },
+                        output,
+                    )
+                })
+                .collect::<Vec<_>>();
+            if !painted.is_empty()
+                && painted
+                    .iter()
+                    .all(|rect| rect.fully_covered_by(&opaque_coverage))
             {
-                occluded.insert(surface.window.id);
+                occluded.insert(root.window.id);
+                continue;
+            }
+
+            if root.window.state.fullscreen {
+                opaque_coverage.push(output);
+                continue;
+            }
+            for surface in tree {
+                let surface = unsafe { &*surface };
+                let surface_rect = aegis_core::Rect {
+                    origin: surface_draw_origin(surface),
+                    size: surface_logical_size(surface),
+                };
+                let alpha_free_dmabuf = surface.content_is_dmabuf
+                    && surface
+                        .dmabuf
+                        .as_ref()
+                        .is_some_and(|buffer| aegis_core::dmabuf::is_format_opaque(buffer.drm_format));
+                if alpha_free_dmabuf && let Some(rect) = intersect_rect(surface_rect, output) {
+                    opaque_coverage.push(rect);
+                }
+                let origin = surface_draw_origin(surface);
+                for local in surface.opaque_region.iter().flatten() {
+                    let translated = aegis_core::Rect::new(
+                        origin.x.saturating_add(local.origin.x),
+                        origin.y.saturating_add(local.origin.y),
+                        local.size.w,
+                        local.size.h,
+                    );
+                    if let Some(rect) = intersect_rect(translated, surface_rect)
+                        .and_then(|rect| intersect_rect(rect, output))
+                    {
+                        opaque_coverage.push(rect);
+                    }
+                }
             }
         }
         occluded
@@ -245,6 +266,7 @@ impl Server {
                         ..Default::default()
                     },
                     damage: &s.committed_damage,
+                    opaque_region: s.opaque_region.as_deref(),
                 }
             })
             .collect()
@@ -303,6 +325,7 @@ impl Server {
                     width: s.width,
                     height: s.height,
                     generation: s.generation,
+                    damage: s.committed_damage.clone(),
                     buffer_id: db.buffer_id,
                     fd: db.fd,
                     drm_format: db.drm_format,
@@ -319,6 +342,7 @@ impl Server {
                         transition_size: render_rect.map(|r| r.size),
                         ..Default::default()
                     },
+                    opaque_region: s.opaque_region.clone(),
                 })
             })
             .collect()
@@ -382,6 +406,7 @@ impl Server {
                     pixels: &surface.pixels,
                     geometry: self.realm_surface_geometry(surface, root, realm)?,
                     damage: &surface.committed_damage,
+                    opaque_region: surface.opaque_region.as_deref(),
                 })
             })
             .collect()
@@ -433,6 +458,8 @@ impl Server {
                     width: surface.width,
                     height: surface.height,
                     generation: surface.generation,
+                    damage: surface.committed_damage.clone(),
+                    opaque_region: surface.opaque_region.clone(),
                     buffer_id: dmabuf.buffer_id,
                     fd: dmabuf.fd,
                     drm_format: dmabuf.drm_format,
@@ -517,6 +544,7 @@ impl Server {
                     ..Default::default()
                 },
                 damage: &surface.committed_damage,
+                opaque_region: surface.opaque_region.as_deref(),
             })
             .collect::<Vec<_>>();
         let cursor = self.state.cursor_surface;
@@ -548,6 +576,7 @@ impl Server {
                             ..Default::default()
                         },
                         damage: &surface.committed_damage,
+                        opaque_region: surface.opaque_region.as_deref(),
                     });
                 }
             }
@@ -576,6 +605,8 @@ impl Server {
                     width: surface.width,
                     height: surface.height,
                     generation: surface.generation,
+                    damage: surface.committed_damage.clone(),
+                    opaque_region: surface.opaque_region.clone(),
                     buffer_id: buffer.buffer_id,
                     fd: buffer.fd,
                     drm_format: buffer.drm_format,
@@ -616,6 +647,8 @@ impl Server {
                         width: surface.width,
                         height: surface.height,
                         generation: surface.generation,
+                        damage: surface.committed_damage.clone(),
+                        opaque_region: surface.opaque_region.clone(),
                         buffer_id: buffer.buffer_id,
                         fd: buffer.fd,
                         drm_format: buffer.drm_format,
@@ -712,6 +745,7 @@ impl Server {
                         ..Default::default()
                     },
                     damage: &surface.committed_damage,
+                    opaque_region: surface.opaque_region.as_deref(),
                 })
             })
             .collect()
@@ -779,6 +813,8 @@ impl Server {
                     width: surface.width,
                     height: surface.height,
                     generation: surface.generation,
+                    damage: surface.committed_damage.clone(),
+                    opaque_region: surface.opaque_region.clone(),
                     buffer_id: buffer.buffer_id,
                     fd: buffer.fd,
                     drm_format: buffer.drm_format,
@@ -928,6 +964,7 @@ impl Server {
                 pixels: &surface.pixels,
                 geometry,
                 damage: &surface.committed_damage,
+                opaque_region: surface.opaque_region.as_deref(),
             });
         }
         for &child_ptr in &surface.children {
@@ -1030,6 +1067,8 @@ impl Server {
                 width: surface.width,
                 height: surface.height,
                 generation: surface.generation,
+                damage: surface.committed_damage.clone(),
+                opaque_region: surface.opaque_region.clone(),
                 buffer_id: dmabuf.buffer_id,
                 fd: dmabuf.fd,
                 drm_format: dmabuf.drm_format,
@@ -1155,6 +1194,7 @@ impl Server {
                     ..Default::default()
                 },
                 damage: &s.committed_damage,
+                opaque_region: s.opaque_region.as_deref(),
             });
         }
         for &child_ptr in &s.children {
@@ -1249,6 +1289,8 @@ impl Server {
                 width: s.width,
                 height: s.height,
                 generation: s.generation,
+                damage: s.committed_damage.clone(),
+                opaque_region: s.opaque_region.clone(),
                 buffer_id: db.buffer_id,
                 fd: db.fd,
                 drm_format: db.drm_format,

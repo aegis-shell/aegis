@@ -130,12 +130,6 @@ pub(super) struct CompositorRuntime {
     pub(super) pick_rx: std::sync::mpsc::Receiver<PickControlRequest>,
     pub(super) pending_pick: Option<PendingPick>,
     pub(super) pending_pick_open: Option<aegis_ipc::PickKind>,
-    /// File-pick controls from IPC connection threads (the FileChooser
-    /// portal's compositor side) and the pick waiting for user interaction.
-    /// Unlike the target pick above, the file picker never arms the
-    /// screenshot freeze.
-    pub(super) file_pick_rx: std::sync::mpsc::Receiver<FilePickControlRequest>,
-    pub(super) pending_file_pick: Option<PendingFilePick>,
     pub(super) app_pick_rx: std::sync::mpsc::Receiver<AppPickControlRequest>,
     pub(super) pending_app_pick: Option<PendingAppPick>,
     pub(super) secret_prompt_rx: std::sync::mpsc::Receiver<SecretPromptControlRequest>,

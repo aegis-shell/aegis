@@ -18,7 +18,6 @@ pub(super) struct LiveChannels {
     pub(super) stream_controls: std::sync::mpsc::Sender<StreamControlRequest>,
     pub(super) idle_controls: std::sync::mpsc::Sender<IdleControlRequest>,
     pub(super) pick_controls: std::sync::mpsc::Sender<PickControlRequest>,
-    pub(super) file_pick_controls: std::sync::mpsc::Sender<FilePickControlRequest>,
     pub(super) app_pick_controls: std::sync::mpsc::Sender<AppPickControlRequest>,
     pub(super) secret_prompt_controls: std::sync::mpsc::Sender<SecretPromptControlRequest>,
     pub(super) confirm_pick_controls: std::sync::mpsc::Sender<ConfirmPickControlRequest>,
@@ -46,7 +45,6 @@ pub(super) struct LiveState {
     stream_controls: std::sync::Mutex<std::sync::mpsc::Sender<StreamControlRequest>>,
     idle_controls: std::sync::Mutex<std::sync::mpsc::Sender<IdleControlRequest>>,
     pick_controls: std::sync::Mutex<std::sync::mpsc::Sender<PickControlRequest>>,
-    file_pick_controls: std::sync::Mutex<std::sync::mpsc::Sender<FilePickControlRequest>>,
     app_pick_controls: std::sync::Mutex<std::sync::mpsc::Sender<AppPickControlRequest>>,
     secret_prompt_controls: std::sync::Mutex<std::sync::mpsc::Sender<SecretPromptControlRequest>>,
     confirm_pick_controls: std::sync::Mutex<std::sync::mpsc::Sender<ConfirmPickControlRequest>>,
@@ -97,7 +95,6 @@ impl LiveState {
             stream_controls: std::sync::Mutex::new(channels.stream_controls),
             idle_controls: std::sync::Mutex::new(channels.idle_controls),
             pick_controls: std::sync::Mutex::new(channels.pick_controls),
-            file_pick_controls: std::sync::Mutex::new(channels.file_pick_controls),
             app_pick_controls: std::sync::Mutex::new(channels.app_pick_controls),
             secret_prompt_controls: std::sync::Mutex::new(channels.secret_prompt_controls),
             confirm_pick_controls: std::sync::Mutex::new(channels.confirm_pick_controls),
@@ -866,9 +863,9 @@ impl aegis_ipc::Handler for LiveState {
                 },
             })
             .map_err(|_| "compositor is shutting down".to_owned())?;
-        // The reply parks until the user confirms or cancels, exactly like
-        // the file pick; the timeout bounds an abandoned picker and cancels
-        // the chrome so the panel never lingers for a dead requester.
+        // The reply parks until the user confirms or cancels. The timeout
+        // bounds an abandoned picker and cancels the chrome so the panel
+        // never lingers for a dead requester.
         match reply_rx.recv_timeout(PICK_TIMEOUT) {
             Ok(result) => result,
             Err(_) => {
@@ -881,43 +878,6 @@ impl aegis_ipc::Handler for LiveState {
                         action: AppPickControl::Cancel,
                     });
                 Err("app pick timed out".to_owned())
-            }
-        }
-    }
-
-    fn pick_file(
-        &self,
-        conn_id: u64,
-        options: aegis_ipc::FilePickOptions,
-    ) -> Result<aegis_ipc::FilePickResult, String> {
-        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        self.file_pick_controls
-            .lock()
-            .unwrap()
-            .send(FilePickControlRequest {
-                conn_id,
-                action: FilePickControl::Start {
-                    options,
-                    reply: reply_tx,
-                },
-            })
-            .map_err(|_| "compositor is shutting down".to_owned())?;
-        // The reply parks until the user confirms or cancels, exactly like
-        // the target pick above; the timeout bounds an abandoned picker and
-        // cancels the chrome so the panel never lingers for a dead
-        // requester.
-        match reply_rx.recv_timeout(PICK_TIMEOUT) {
-            Ok(result) => result,
-            Err(_) => {
-                let _ = self
-                    .file_pick_controls
-                    .lock()
-                    .unwrap()
-                    .send(FilePickControlRequest {
-                        conn_id,
-                        action: FilePickControl::Cancel,
-                    });
-                Err("file pick timed out".to_owned())
             }
         }
     }

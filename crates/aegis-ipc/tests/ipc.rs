@@ -55,7 +55,6 @@ struct TestHandler {
     stream_disconnects: Mutex<Vec<u64>>,
     stream_targets: Mutex<Vec<aegis_ipc::StreamTarget>>,
     picks: Mutex<Vec<(u64, aegis_ipc::PickKind)>>,
-    file_picks: Mutex<Vec<(u64, aegis_ipc::FilePickMode)>>,
     app_picks: Mutex<Vec<(u64, Vec<String>)>>,
     secret_prompts: Mutex<Vec<(u64, String)>>,
     confirms: Mutex<Vec<(u64, String)>>,
@@ -108,7 +107,6 @@ impl TestHandler {
             stream_disconnects: Mutex::new(Vec::new()),
             stream_targets: Mutex::new(Vec::new()),
             picks: Mutex::new(Vec::new()),
-            file_picks: Mutex::new(Vec::new()),
             app_picks: Mutex::new(Vec::new()),
             secret_prompts: Mutex::new(Vec::new()),
             confirms: Mutex::new(Vec::new()),
@@ -166,7 +164,6 @@ impl TestHandler {
             stream_disconnects: Mutex::new(Vec::new()),
             stream_targets: Mutex::new(Vec::new()),
             picks: Mutex::new(Vec::new()),
-            file_picks: Mutex::new(Vec::new()),
             app_picks: Mutex::new(Vec::new()),
             secret_prompts: Mutex::new(Vec::new()),
             confirms: Mutex::new(Vec::new()),
@@ -472,20 +469,6 @@ impl Handler for TestHandler {
             rect: aegis_core::Rect::new(1, 2, 30, 40),
         })
     }
-    fn pick_file(
-        &self,
-        conn_id: u64,
-        options: aegis_ipc::FilePickOptions,
-    ) -> Result<aegis_ipc::FilePickResult, String> {
-        self.file_picks
-            .lock()
-            .unwrap()
-            .push((conn_id, options.mode));
-        Ok(aegis_ipc::FilePickResult::Paths {
-            paths: vec![PathBuf::from("/home/user/a.png")],
-            filter: None,
-        })
-    }
     fn pick_app(
         &self,
         conn_id: u64,
@@ -608,13 +591,6 @@ fn test_scopes() -> HashMap<String, Scope> {
             "pick".into(),
             Scope {
                 ops: Some(vec![OpClass::PickTarget]),
-                ..Scope::default()
-            },
-        ),
-        (
-            "file-pick".into(),
-            Scope {
-                ops: Some(vec![OpClass::PickFile]),
                 ..Scope::default()
             },
         ),
@@ -1212,66 +1188,6 @@ fn pick_target_requires_control_and_an_explicit_scope_op() {
         .store(false, Ordering::Release);
     let mut scoped = Client::connect_scoped(&path, requested, "pick").expect("scoped connect");
     let err = scoped.pick_target(aegis_ipc::PickKind::Region).unwrap_err();
-    assert!(err.to_string().contains("locked or inactive"), "{err}");
-}
-
-#[test]
-fn pick_file_requires_control_and_an_explicit_scope_op() {
-    let path = scratch();
-    let handler = Arc::new(TestHandler::permissive(sample_windows()));
-    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
-
-    let requested = Capabilities {
-        query: true,
-        control: true,
-        input: false,
-        session: false,
-        realm: false,
-    };
-    let options = aegis_ipc::FilePickOptions {
-        mode: aegis_ipc::FilePickMode::Open,
-        ..aegis_ipc::FilePickOptions::default()
-    };
-    // Scoped with the explicit PickFile op + control: the picked paths
-    // round-trip.
-    let mut scoped = Client::connect_scoped(&path, requested, "file-pick").expect("scoped connect");
-    let result = scoped
-        .pick_file(options.clone())
-        .expect("file pick succeeds");
-    assert_eq!(
-        result,
-        aegis_ipc::FilePickResult::Paths {
-            paths: vec![PathBuf::from("/home/user/a.png")],
-            filter: None,
-        }
-    );
-    assert_eq!(
-        handler.file_picks.lock().unwrap().as_slice(),
-        &[(1, aegis_ipc::FilePickMode::Open)]
-    );
-
-    // A scope without the op is refused even though it has control.
-    let mut focus_scope =
-        Client::connect_scoped(&path, requested, "focus-first").expect("scoped connect");
-    let err = focus_scope.pick_file(options.clone()).unwrap_err();
-    assert!(err.to_string().contains("out of scope"), "{err}");
-
-    // Unscoped connections never inherit the op (fail-closed, like input).
-    let mut unscoped = Client::connect_with(&path, requested).expect("unscoped connect");
-    let err = unscoped.pick_file(options.clone()).unwrap_err();
-    assert!(err.to_string().contains("out of scope"), "{err}");
-
-    // Without the control capability the request is refused earlier.
-    let mut query_only = Client::connect(&path).expect("query connect");
-    let err = query_only.pick_file(options.clone()).unwrap_err();
-    assert!(err.to_string().contains("control capability"), "{err}");
-
-    // A locked/inactive session refuses before any chrome opens.
-    handler
-        .capture_security_active
-        .store(false, Ordering::Release);
-    let mut scoped = Client::connect_scoped(&path, requested, "file-pick").expect("scoped connect");
-    let err = scoped.pick_file(options).unwrap_err();
     assert!(err.to_string().contains("locked or inactive"), "{err}");
 }
 

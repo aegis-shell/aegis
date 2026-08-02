@@ -33,12 +33,11 @@ pub use journal::{
 };
 pub use schema::{
     AgentGrantDecision, AgentGrantInfo, AgentHello, AgentIssued, AgentPrincipalInfo, AppPickResult,
-    Capabilities, Command, ConfirmPickResult, Event, FileFilter, FilePickMode, FilePickOptions,
-    FilePickResult, LOCAL_AGENT_ADMIN_SCOPE, LOCAL_OWNER_ADMIN_SCOPE, LOCAL_PORTAL_SCOPE,
-    LOCAL_REALM_ADMIN_SCOPE, LeaseGrant, LeaseRequest, OpClass, PROTOCOL_VERSION, PickKind,
-    PickResult, RealmAction, RealmActionResult, RealmCapture, Request, Response, Scope,
-    ScopeDecision, SecretPromptResult, SettingsAction, SettingsReceipt, SettingsSnapshot,
-    StreamPixelFormat, StreamTarget, SystemAction, SystemStatus,
+    Capabilities, Command, ConfirmPickResult, Event, LOCAL_AGENT_ADMIN_SCOPE,
+    LOCAL_OWNER_ADMIN_SCOPE, LOCAL_PORTAL_SCOPE, LOCAL_REALM_ADMIN_SCOPE, LeaseGrant, LeaseRequest,
+    OpClass, PROTOCOL_VERSION, PickKind, PickResult, RealmAction, RealmActionResult, RealmCapture,
+    Request, Response, Scope, ScopeDecision, SecretPromptResult, SettingsAction, SettingsReceipt,
+    SettingsSnapshot, StreamPixelFormat, StreamTarget, SystemAction, SystemStatus,
 };
 pub use server::{
     AgentIdentity, CaptureOutputPayload, CaptureRealmPayload, Handler, PairedAgent, Server,

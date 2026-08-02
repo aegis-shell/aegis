@@ -598,6 +598,7 @@ unsafe extern "C" fn xdg_toplevel_destroy(
             }
             if !(*rec).state.is_null() {
                 (*(*rec).state).unregister_window((*rec).window.id);
+                extensions::xdg_foreign_surface_destroyed(rec, (*rec).state);
             }
             reset_xdg_configure_state_after_unmap(&mut *rec);
             (*rec).xdg_toplevel = std::ptr::null_mut();
@@ -674,6 +675,7 @@ unsafe extern "C" fn toplevel_set_parent(
         if rec.is_null() {
             return;
         }
+        extensions::xdg_foreign_clear_child_parent(rec);
         if parent_resource.is_null() {
             (*rec).window.parent = None;
             return;

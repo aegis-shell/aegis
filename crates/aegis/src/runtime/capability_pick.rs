@@ -48,7 +48,6 @@ impl CompositorRuntime {
                         || self.pending_confirm_pick.is_some()
                         || self.pending_secret_prompt.is_some()
                         || self.pending_app_pick.is_some()
-                        || self.pending_file_pick.is_some()
                         || self.pending_pick.is_some()
                     {
                         let _ =

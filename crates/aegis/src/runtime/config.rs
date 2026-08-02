@@ -621,11 +621,11 @@ pub(super) fn builtin_ipc_scopes() -> std::collections::HashMap<String, aegis_ip
                 ask_ops: None,
             },
         ),
-        // The portal backend (ADR-0075; mechanisms ADR-0052/0054) serves Screenshot,
-        // ScreenCast, the Inhibit portal's global idle inhibitor, the
-        // interactive picker round-trips, and the FileChooser portal's
-        // user-consent file picking through exactly five fail-closed
-        // operations; the ops must be listed explicitly here.
+        // The portal backend (ADR-0075; mechanisms ADR-0052/0054) serves
+        // compositor-owned capture, inhibit, target/app/consent prompts, and
+        // notification/wallpaper actions through explicit fail-closed ops.
+        // FileChooser is intentionally absent: its prompter is a portal-owned
+        // Wayland client and no filesystem path crosses compositor IPC.
         (
             aegis_ipc::LOCAL_PORTAL_SCOPE.to_string(),
             aegis_ipc::Scope {
@@ -638,7 +638,6 @@ pub(super) fn builtin_ipc_scopes() -> std::collections::HashMap<String, aegis_ip
                     aegis_ipc::OpClass::StreamOutput,
                     aegis_ipc::OpClass::IdleInhibit,
                     aegis_ipc::OpClass::PickTarget,
-                    aegis_ipc::OpClass::PickFile,
                     aegis_ipc::OpClass::PickApp,
                     aegis_ipc::OpClass::Notify,
                     aegis_ipc::OpClass::DismissNotification,

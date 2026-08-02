@@ -24,7 +24,10 @@ use aegis_core::workspace::{OutputId, Switch, WorkspaceId, WorkspaceSnapshot};
 use crate::journal::{JournalEntry, JournalSnapshot};
 
 /// The protocol major version this build speaks. A client must offer the
-/// same major version at the [`Request::Hello`] handshake. Version 19 binds
+/// same major version at the [`Request::Hello`] handshake. Version 20 removes
+/// compositor filesystem selection (`PickFile`, `FilePicked`, and their
+/// scope/types); FileChooser is now a portal-owned process boundary. Version
+/// 19 binds
 /// Agent Realms to authenticated subjects, reauthorizes live agent ceilings,
 /// and separates owner/Realm/agent administration scopes. Version 18 adds
 /// agent identity pairing (`Hello.agent`) and runtime-grantable `ask`
@@ -48,7 +51,7 @@ use crate::journal::{JournalEntry, JournalSnapshot};
 /// `Event::StreamFrame`, `Event::StreamEnded`, `StreamOutputStop`,
 /// ADR-0052). Version 4 adds revisioned desktop-settings snapshots,
 /// subscriptions, and confirmed settings transactions.
-pub const PROTOCOL_VERSION: u32 = 19;
+pub const PROTOCOL_VERSION: u32 = 20;
 /// Built-in owner-only scope used by native `aegis` commands for Realm
 /// recovery and administration. The Unix socket remains user-private; naming
 /// this scope opts the connection into the high-risk Realm operation allowlist
@@ -188,11 +191,6 @@ pub enum OpClass {
     /// through compositor chrome (ADR-0054). Never inherited through
     /// `None`-means-all: a pick reads back user-approved screen content.
     PickTarget,
-    /// User-consent file picking through compositor chrome (the FileChooser
-    /// portal's compositor side). Never inherited through `None`-means-all,
-    /// for the same reason as `PickTarget`: a pick reveals user-approved
-    /// filesystem names.
-    PickFile,
     /// User-consent application picking through compositor chrome (the
     /// AppChooser portal's compositor side). Never inherited through
     /// `None`-means-all: the chosen app id is a user-authorization decision.
@@ -247,7 +245,6 @@ impl OpClass {
             "streamoutput" | "stream_output" => Some(OpClass::StreamOutput),
             "idleinhibit" | "idle_inhibit" => Some(OpClass::IdleInhibit),
             "picktarget" | "pick_target" => Some(OpClass::PickTarget),
-            "pickfile" | "pick_file" => Some(OpClass::PickFile),
             "pickapp" | "pick_app" => Some(OpClass::PickApp),
             "promptsecret" | "prompt_secret" => Some(OpClass::PromptSecret),
             "pickconfirm" | "pick_confirm" => Some(OpClass::PickConfirm),
@@ -282,7 +279,6 @@ impl OpClass {
             OpClass::StreamOutput => "Stream screen outputs",
             OpClass::IdleInhibit => "Inhibit idle",
             OpClass::PickTarget => "Pick screen targets",
-            OpClass::PickFile => "Pick files",
             OpClass::PickApp => "Pick applications",
             OpClass::PromptSecret => "Prompt for secrets",
             OpClass::PickConfirm => "Show confirmation dialogs",
@@ -952,79 +948,6 @@ pub enum PickResult {
     Cancelled,
 }
 
-/// How a [`Request::PickFile`] asks the user to choose filesystem paths
-/// (the FileChooser portal's compositor side).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type")]
-pub enum FilePickMode {
-    /// Pick an existing file (or several, with `multiple`).
-    #[default]
-    Open,
-    /// Name a file to write; the target may not exist yet.
-    Save,
-    /// Pick a directory.
-    ChooseDir,
-}
-
-/// One named filter of selectable files in a [`Request::PickFile`].
-/// `patterns` are globs (`"*.png"`) or MIME types (`"image/png"`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct FileFilter {
-    #[serde(default)]
-    pub label: String,
-    #[serde(default)]
-    pub patterns: Vec<String>,
-}
-
-/// Options for a user-consent file pick ([`Request::PickFile`]). Every
-/// field carries a serde default so future additions stay additive for
-/// older peers.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct FilePickOptions {
-    #[serde(default)]
-    pub mode: FilePickMode,
-    /// Allow picking several files (Open mode only).
-    #[serde(default)]
-    pub multiple: bool,
-    /// Pick a directory instead of a file (Open mode; `ChooseDir` implies
-    /// it on its own).
-    #[serde(default)]
-    pub directory: bool,
-    /// Title for the picker panel; the compositor falls back to a per-mode
-    /// default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    /// Label for the accept button; the compositor falls back to a per-mode
-    /// default ("Open"/"Save"/"Select").
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accept_label: Option<String>,
-    /// Directory the picker opens in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_folder: Option<PathBuf>,
-    /// Suggested filename seeding the Save-mode edit buffer.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_name: Option<String>,
-    #[serde(default)]
-    pub filters: Vec<FileFilter>,
-}
-
-/// The outcome of a [`Request::PickFile`], delivered as
-/// [`Response::FilePicked`]. The user's confirmation is the authorization:
-/// a pick returns exactly the paths the user approved and nothing more.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type")]
-pub enum FilePickResult {
-    /// The confirmed paths, plus the index of the active filter into
-    /// [`FilePickOptions::filters`] when the request carried any.
-    Paths {
-        paths: Vec<PathBuf>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        filter: Option<u32>,
-    },
-    /// The user dismissed the picker without confirming.
-    Cancelled,
-}
-
 /// The outcome of a [`Request::PickApp`], delivered as
 /// [`Response::AppPicked`]. The user's confirmation is the authorization:
 /// the result is exactly the one application id the user approved.
@@ -1311,24 +1234,12 @@ pub enum Request {
     /// refused while the session is locked. One pick at a time compositor-
     /// wide; a concurrent request is refused.
     PickTarget { kind: PickKind },
-    /// Ask the user to choose filesystem paths through compositor chrome
-    /// (the FileChooser portal's compositor side). Unlike
-    /// [`Request::PickTarget`] the picker never freezes the screen: it is
-    /// ordinary modal chrome over the live scene and captures no screen
-    /// content. The connection blocks until the user confirms or cancels
-    /// (or the compositor's interaction timeout elapses). Authorization is
-    /// fail-closed exactly like `PickTarget`: `control`, a live lease, and
-    /// an explicit [`OpClass::PickFile`] entry in the connection's named
-    /// scope — never inherited — and refusal while the session is locked.
-    /// One interactive pick at a time compositor-wide, shared with
-    /// `PickTarget`; a concurrent request is refused.
-    PickFile { options: FilePickOptions },
     /// Ask the user to choose one application out of `choices` (desktop file
     /// ids) through compositor chrome (the AppChooser portal's compositor
     /// side). `subject` is a human-readable context line ("the file or
     /// content the app is chosen for"), `last_choice` pre-highlights the
-    /// previously used app. Same fail-closed authorization and one-pick-at-a
-    /// -time rule as [`Request::PickFile`]; no screen capture involved.
+    /// previously used app. It uses fail-closed authorization and permits
+    /// only one compositor prompt at a time; no screen capture is involved.
     PickApp {
         choices: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1339,9 +1250,8 @@ pub enum Request {
     /// Ask the user for a secret (password, PIN, …) through a masked
     /// compositor prompt (the secret vault's password unlock). `title` and
     /// `reason` label the prompt; the typed value returns as
-    /// [`SecretPromptResult::Secret`]. Same fail-closed authorization and
-    /// one-pick-at-a-time rule as [`Request::PickFile`]; no screen capture
-    /// involved.
+    /// [`SecretPromptResult::Secret`]. It uses fail-closed authorization and
+    /// permits only one compositor prompt at a time; no capture is involved.
     PromptSecret {
         title: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1350,9 +1260,8 @@ pub enum Request {
     /// Ask the user a yes/no consent question through compositor chrome
     /// (portal consent dialogs: Account, Access, DynamicLauncher). `title`
     /// heads the dialog, `body` explains the request, `accept_label`
-    /// overrides the affirmative button's label. Same fail-closed
-    /// authorization and one-pick-at-a-time rule as [`Request::PickFile`];
-    /// no screen capture involved.
+    /// overrides the affirmative button's label. It uses fail-closed
+    /// authorization and permits only one compositor prompt at a time.
     PickConfirm {
         title: String,
         body: String,
@@ -1469,11 +1378,6 @@ pub enum Response {
     /// or [`PickResult::Cancelled`].
     Picked {
         result: PickResult,
-    },
-    /// Reply to [`Request::PickFile`]: the paths the user confirmed, or
-    /// [`FilePickResult::Cancelled`].
-    FilePicked {
-        result: FilePickResult,
     },
     /// Reply to [`Request::PickApp`]: the application id the user confirmed,
     /// or [`AppPickResult::Cancelled`].
@@ -2182,89 +2086,6 @@ mod tests {
                 other => panic!("expected Picked, got {other:?}"),
             }
         }
-    }
-
-    #[test]
-    fn pick_file_round_trips_options_and_results() {
-        let req = Request::PickFile {
-            options: FilePickOptions {
-                mode: FilePickMode::Save,
-                multiple: true,
-                directory: true,
-                title: Some("Export".into()),
-                accept_label: Some("Export".into()),
-                current_folder: Some(PathBuf::from("/home/user/Documents")),
-                current_name: Some("report.pdf".into()),
-                filters: vec![
-                    FileFilter {
-                        label: "Images".into(),
-                        patterns: vec!["*.png".into(), "image/jpeg".into()],
-                    },
-                    FileFilter {
-                        label: "All files".into(),
-                        patterns: Vec::new(),
-                    },
-                ],
-            },
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains(r#""type":"PickFile""#), "{json}");
-        assert!(json.contains(r#""mode":{"type":"Save"}"#), "{json}");
-        assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
-
-        // Every option defaults, so a bare request stays additive for
-        // peers that predate individual fields.
-        let bare: Request = serde_json::from_str(r#"{"type":"PickFile","options":{}}"#).unwrap();
-        assert_eq!(
-            bare,
-            Request::PickFile {
-                options: FilePickOptions::default()
-            }
-        );
-
-        for result in [
-            FilePickResult::Paths {
-                paths: vec![PathBuf::from("/home/user/a.png")],
-                filter: Some(1),
-            },
-            FilePickResult::Paths {
-                paths: vec![PathBuf::from("/home/user/a.png")],
-                filter: None,
-            },
-            FilePickResult::Cancelled,
-        ] {
-            let resp = Response::FilePicked {
-                result: result.clone(),
-            };
-            let json = serde_json::to_string(&resp).unwrap();
-            match serde_json::from_str::<Response>(&json).unwrap() {
-                Response::FilePicked { result: back } => assert_eq!(back, result),
-                other => panic!("expected FilePicked, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn pick_file_op_class_is_explicit_in_scopes() {
-        // Like PickTarget, PickFile is never inherited through
-        // `None`-means-all: the ops allowlist must name it.
-        let scoped = Scope {
-            ops: Some(vec![OpClass::PickFile]),
-            ..Scope::default()
-        };
-        assert!(
-            scoped
-                .ops
-                .as_ref()
-                .is_some_and(|ops| ops.contains(&OpClass::PickFile))
-        );
-        let unscoped = Scope::unscoped();
-        assert!(
-            !unscoped
-                .ops
-                .as_ref()
-                .is_some_and(|ops| ops.contains(&OpClass::PickFile))
-        );
     }
 
     #[test]

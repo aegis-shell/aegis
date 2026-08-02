@@ -1,17 +1,17 @@
 //! User-consent application picking (the AppChooser portal's compositor
 //! side).
 //!
-//! Modeled on the file pick (`file_pick.rs`): a `PickApp` IPC request
+//! A `PickApp` IPC request
 //! arrives on a connection thread, is forwarded here, and parks its reply
 //! channel while the compositor opens the app-picker chrome immediately —
 //! ordinary modal chrome over the live scene that captures no screen
-//! content. One interactive pick at a time compositor-wide, shared with the
-//! target pick and the file pick: all are single modal overlays.
+//! content. One interactive compositor-owned pick at a time is shared with
+//! target selection; both are single modal overlays.
 
 use super::*;
 
 /// One control message from an IPC connection thread, applied on the main
-/// loop. Mirrors [`FilePickControlRequest`].
+/// loop.
 pub(super) struct AppPickControlRequest {
     pub(super) conn_id: u64,
     pub(super) action: AppPickControl,
@@ -38,9 +38,9 @@ pub(super) struct PendingAppPick {
 }
 
 impl CompositorRuntime {
-    /// Apply app-pick controls from IPC connection threads. Like the file
-    /// pick there is no freeze to arm: the picker chrome opens over the
-    /// live scene as soon as the request is accepted.
+    /// Apply app-pick controls from IPC connection threads. There is no
+    /// screenshot freeze to arm: the picker chrome opens over the live scene
+    /// as soon as the request is accepted.
     pub(super) fn drain_app_pick_controls(&mut self) {
         while let Ok(request) = self.app_pick_rx.try_recv() {
             match request.action {
@@ -50,10 +50,7 @@ impl CompositorRuntime {
                     last_choice,
                     reply,
                 } => {
-                    if self.pending_app_pick.is_some()
-                        || self.pending_file_pick.is_some()
-                        || self.pending_pick.is_some()
-                    {
+                    if self.pending_app_pick.is_some() || self.pending_pick.is_some() {
                         let _ =
                             reply.send(Err("another interactive pick is in progress".to_owned()));
                     } else if self.server.session_locked() || !self.host.is_active() {
@@ -96,6 +93,5 @@ impl CompositorRuntime {
 
 #[cfg(test)]
 mod tests {
-    // The drain logic mirrors the file pick's; behavior is covered by the
-    // shell-side component tests and the IPC gate tests.
+    // Behavior is covered by the shell-side component tests and IPC gates.
 }

@@ -1,6 +1,6 @@
 # ADR-0086: Full-stack portal via user-consent pick chains
 
-- Status: Accepted
+- Status: Superseded by [ADR-0099](0099-resource-authority-and-out-of-process-file-chooser.md)
 - Date: 2026-07-31
 
 ## Context

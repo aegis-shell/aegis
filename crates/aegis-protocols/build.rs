@@ -33,6 +33,7 @@ fn main() {
         // unstable
         ("unstable/xdg-output", "xdg-output-unstable-v1"),
         ("unstable/xdg-decoration", "xdg-decoration-unstable-v1"),
+        ("unstable/xdg-foreign", "xdg-foreign-unstable-v2"),
         ("unstable/idle-inhibit", "idle-inhibit-unstable-v1"),
         ("unstable/relative-pointer", "relative-pointer-unstable-v1"),
         ("unstable/pointer-gestures", "pointer-gestures-unstable-v1"),
