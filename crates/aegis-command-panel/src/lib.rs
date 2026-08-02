@@ -211,6 +211,27 @@ impl AvatarResource {
             Self::Fallback(_) => Ok(false),
         }
     }
+
+    fn play_random_action(&mut self) -> Option<String> {
+        match self {
+            Self::Loaded(avatar) => avatar.play_random_action().map(str::to_owned),
+            Self::Fallback(_) => None,
+        }
+    }
+
+    fn current_motion(&self) -> Option<&str> {
+        match self {
+            Self::Loaded(avatar) => avatar.current_motion(),
+            Self::Fallback(_) => None,
+        }
+    }
+
+    fn play_motion(&mut self, name: &str) -> bool {
+        match self {
+            Self::Loaded(avatar) => avatar.play_motion(name),
+            Self::Fallback(_) => false,
+        }
+    }
 }
 
 /// The modal command panel.
@@ -237,6 +258,12 @@ pub struct CommandPanel {
     /// the procedural orb failed (or in headless tests) — the identity's
     /// initials render inside the ring instead.
     avatar: Option<AvatarResource>,
+    /// Non-owning view of the compositor device, used only on the render
+    /// thread to construct a complete hot-reload replacement.
+    avatar_device: Option<flux::Device>,
+    /// Filesystem observation is notification-only; all decode and GPU work
+    /// stays on the render thread.
+    avatar_watcher: Option<aegis_avatar::AvatarWatcher>,
     /// One-shot latch so an animated avatar's advance failure logs once.
     avatar_warned: bool,
     /// Agent Realm aggregate behind the System section's Agent Workspaces
@@ -292,12 +319,23 @@ impl CommandPanel {
         // lock screen): the user's photo or VRM when configured, the
         // procedural orb when not, and the initials fallback when even the
         // orb cannot upload.
-        let avatar = match aegis_avatar::Avatar::load(device) {
+        let avatar = match aegis_avatar::Avatar::load_transactional(device) {
             Ok(Some(loaded)) => Some(AvatarResource::Loaded(loaded)),
             Ok(None) => Self::orb_fallback(device),
             Err(error) => {
                 log::warn!("command-panel: avatar load failed, using procedural orb: {error}");
                 Self::orb_fallback(device)
+            }
+        };
+        // SAFETY: the composition root owns the device and drops the shell
+        // (including this panel) before the device. Chrome methods run on the
+        // compositor render thread.
+        let avatar_device = unsafe { flux::Device::borrow_raw(device.as_raw()) };
+        let avatar_watcher = match aegis_avatar::AvatarWatcher::new() {
+            Ok(watcher) => Some(watcher),
+            Err(error) => {
+                log::warn!("command-panel: avatar hot reload disabled: {error}");
+                None
             }
         };
         CommandPanel {
@@ -313,6 +351,8 @@ impl CommandPanel {
             ram_history: History::new(HISTORY_CAP),
             identity: Identity::current().unwrap_or_else(|_| Identity::fallback()),
             avatar,
+            avatar_device: Some(avatar_device),
+            avatar_watcher,
             avatar_warned: false,
             realms: aegis_core::realm::RealmModel::new().snapshot(),
             icons: IconSet::default(),
@@ -361,6 +401,8 @@ impl CommandPanel {
             ram_history: History::new(HISTORY_CAP),
             identity: Identity::current().unwrap_or_else(|_| Identity::fallback()),
             avatar: None,
+            avatar_device: None,
+            avatar_watcher: None,
             avatar_warned: false,
             realms: aegis_core::realm::RealmModel::new().snapshot(),
             icons: IconSet::default(),
@@ -384,6 +426,63 @@ impl CommandPanel {
     /// animating closed.
     fn active(&self) -> bool {
         self.open || self.reveal > 0.01
+    }
+
+    fn avatar_reload_pending(&self) -> bool {
+        self.avatar_watcher
+            .as_ref()
+            .is_some_and(aegis_avatar::AvatarWatcher::needs_poll)
+    }
+
+    /// Rebuild on the render thread and publish only a complete replacement.
+    /// A failed decode/upload leaves the currently displayed GPU resources
+    /// untouched and schedules a bounded retry.
+    fn reload_avatar_if_ready(&mut self) {
+        let ready = self
+            .avatar_watcher
+            .as_mut()
+            .is_some_and(aegis_avatar::AvatarWatcher::poll);
+        if !ready {
+            return;
+        }
+        if let Some(watcher) = &mut self.avatar_watcher
+            && let Err(error) = watcher.refresh()
+        {
+            log::warn!("command-panel: could not refresh avatar watches: {error}");
+        }
+        let Some(device) = &self.avatar_device else {
+            return;
+        };
+        let previous_motion = self
+            .avatar
+            .as_ref()
+            .and_then(AvatarResource::current_motion)
+            .map(str::to_owned);
+        match aegis_avatar::Avatar::load_transactional(device) {
+            Ok(Some(loaded)) => {
+                let mut replacement = AvatarResource::Loaded(loaded);
+                let restored = previous_motion
+                    .as_deref()
+                    .is_some_and(|name| replacement.play_motion(name));
+                if !restored && self.open {
+                    replacement.play_random_action();
+                }
+                self.avatar = Some(replacement);
+                self.avatar_warned = false;
+                log::info!("command-panel: avatar hot reloaded");
+            }
+            Ok(None) => {
+                self.avatar = Self::orb_fallback(device);
+                self.avatar_warned = false;
+                log::info!("command-panel: avatar removed, using fallback");
+            }
+            Err(error) => {
+                log::warn!("command-panel: avatar hot reload failed, keeping current: {error}");
+                if let Some(watcher) = &mut self.avatar_watcher {
+                    watcher.retry();
+                }
+            }
+        }
     }
 
     fn advance(&mut self, dt: f32) {
@@ -2008,6 +2107,7 @@ impl Chrome for CommandPanel {
         let raw = input.as_raw();
         let dt = raw.dt_seconds.max(0.0);
         self.advance(dt);
+        self.reload_avatar_if_ready();
         let display = (raw.display_size.x, raw.display_size.y);
         let cursor = (raw.cursor.x, raw.cursor.y);
         let down = raw.mouse_down.first().copied().unwrap_or(false);
@@ -2112,6 +2212,13 @@ impl Chrome for CommandPanel {
             self.close();
         } else {
             self.open = true;
+            if let Some(name) = self
+                .avatar
+                .as_mut()
+                .and_then(AvatarResource::play_random_action)
+            {
+                log::debug!("command-panel: playing avatar action {name:?}");
+            }
         }
     }
 
@@ -2187,7 +2294,7 @@ impl Chrome for CommandPanel {
 
     fn anim_pending(&self) -> bool {
         let target = if self.open { 1.0 } else { 0.0 };
-        (self.reveal - target).abs() > 0.002
+        (self.reveal - target).abs() > 0.002 || self.avatar_reload_pending()
     }
 
     fn requires_composition(&self) -> bool {

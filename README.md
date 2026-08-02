@@ -48,10 +48,12 @@ cargo run --locked -p aegis
 opens a nested window; a login on a bare TTY selects direct DRM/KMS.
 
 Source-tree Cargo commands do not install systemd, D-Bus, portal, desktop, or
-icon metadata. Distribution packaging keeps the D-Bus-activated portal
-backend in the independent `aegis-portal` package; the core compositor runs
-without it. An installed core package can start the compositor as a user
-service:
+icon metadata. The D-Bus-activated portal backend is built from the
+independent
+[xdg-desktop-portal-aegis repository](https://github.com/aegis-shell/xdg-desktop-portal-aegis)
+and distributed as a compatibility-mapped optional package; the core
+compositor runs without it. An installed core package can start the
+compositor as a user service:
 
 ```bash
 systemctl --user enable --now aegis.service

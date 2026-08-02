@@ -1,14 +1,19 @@
 # Portal Backend Reference
 
-`aegis-portal` is the private xdg-desktop-portal backend for an Aegis
-session. It is distributed separately from the compositor and activated on
-the session D-Bus as needed.
+`xdg-desktop-portal-aegis` is the private xdg-desktop-portal backend for an
+Aegis session. It is built from the independent
+[xdg-desktop-portal-aegis repository](https://github.com/aegis-shell/xdg-desktop-portal-aegis),
+distributed separately from the compositor, and activated on the session
+D-Bus as needed.
 
 ## Identifiers and Paths
 
 | Item | Value |
 |------|-------|
-| Backend executable | `/usr/lib/aegis/aegis-portal` |
+| Source repository | `https://github.com/aegis-shell/xdg-desktop-portal-aegis` |
+| Release compatibility | Portal `v0.0.1` supports Aegis `v0.0.9`; the Portal manifest is authoritative |
+| Distribution package | `xdg-desktop-portal-aegis` |
+| Backend executable | `/usr/lib/xdg-desktop-portal-aegis` |
 | Backend bus name | `org.freedesktop.impl.portal.desktop.aegis` |
 | Public frontend bus name | `org.freedesktop.portal.Desktop` |
 | Backend and frontend object path | `/org/freedesktop/portal/desktop` |
@@ -17,7 +22,7 @@ the session D-Bus as needed.
 | Backend selection | `/usr/share/xdg-desktop-portal/aegis-portals.conf` |
 | D-Bus activation | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` |
 | Secret Service compatibility activation | `/usr/share/dbus-1/services/org.freedesktop.secrets.service` |
-| Screenshot cache | `$XDG_CACHE_HOME/aegis-portal/`, falling back to `$XDG_RUNTIME_DIR/aegis-portal/` |
+| Screenshot cache | `$XDG_CACHE_HOME/xdg-desktop-portal-aegis/`, falling back to `$XDG_RUNTIME_DIR/xdg-desktop-portal-aegis/` |
 | Secret vault | `$XDG_DATA_HOME/aegis/secrets/` |
 
 Per-user discovery paths are

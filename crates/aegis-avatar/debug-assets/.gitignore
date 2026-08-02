@@ -1,7 +1,10 @@
 # Local-only fixtures; keep the source files out of Git.
-# Expected names: avatar.vrm and optional companion avatar.vrma.
+# Expected model: avatar.vrm. Motions may use the legacy avatar.vrma or the
+# motions/{idle,actions} library layout.
 # Enable with AEGIS_AVATAR_DEBUG_ASSETS=1. Set
 # AEGIS_AVATAR_DEBUG_DUMP=/tmp/aegis-avatar.png to save one preview frame.
+# AEGIS_AVATAR_DEBUG_MOTION=greeting selects a named library motion.
 # AEGIS_AVATAR_DEBUG_TIME=2.5 selects the sampled animation time in seconds.
+# Use AEGIS_AVATAR_DEBUG_XDG=1 instead to preview the current XDG avatar.
 *
 !.gitignore

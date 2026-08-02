@@ -66,7 +66,7 @@ pub(super) struct TrayFold {
     pub(super) hidden: usize,
 }
 
-pub(super) fn render_text(f: &mut Frame, id: &str, rect: Rect, text: &str, size: f32) {
+pub(super) fn render_text(f: &mut Frame, id: &str, rect: Rect, text: &str, size: f32, fade: f32) {
     f.layer(id, rect, &centered_layer(), |f| {
         f.row_ex(
             &LayoutOpts {
@@ -75,7 +75,7 @@ pub(super) fn render_text(f: &mut Frame, id: &str, rect: Rect, text: &str, size:
                 cross: Align::Center,
                 ..Default::default()
             },
-            |f| f.label_compact_sized(text, size),
+            |f| f.label_compact_outlined_sized(text, size, hud_text_outline(fade)),
         );
     });
 }
@@ -104,21 +104,43 @@ pub(super) fn render_status_cell(
             |f| {
                 match themed_icon {
                     Some(icon) => unsafe {
-                        f.image_tinted(
+                        f.image_tinted_outlined(
                             icon as *mut lens::sys::flux_image,
                             16.0,
                             16.0,
-                            Color::rgba(255, 255, 255, fade_alpha(255, fade)),
+                            hud_foreground_color(fade),
+                            hud_glyph_outline(fade),
                         )
                     },
-                    None => f.icon(fallback, 15.0),
+                    None => f.icon_outlined(fallback, 15.0, hud_glyph_outline(fade)),
                 }
                 if !label.is_empty() {
-                    f.label_compact_sized(label, 11.0);
+                    f.label_compact_outlined_sized(label, 11.0, hud_text_outline(fade));
                 }
             },
         );
     });
+}
+
+/// Stable light core for HUD foreground content. The dark contour carries
+/// bright-background separation, so the core can stay constant instead of
+/// flipping every symbol independently and causing visual chatter.
+pub(super) fn hud_foreground_color(fade: f32) -> Color {
+    fade_color(Design::dark().hud_foreground.primary, fade)
+}
+
+pub(super) fn hud_contour_color() -> Color {
+    Design::dark().hud_foreground.contour
+}
+
+pub(super) fn hud_text_outline(fade: f32) -> ForegroundOutline {
+    let hud = Design::dark().hud_foreground;
+    ForegroundOutline::new(fade_color(hud.contour, fade), hud.text_contour_width)
+}
+
+pub(super) fn hud_glyph_outline(fade: f32) -> ForegroundOutline {
+    let hud = Design::dark().hud_foreground;
+    ForegroundOutline::new(fade_color(hud.contour, fade), hud.glyph_contour_width)
 }
 
 /// The floating HUD chip foreground tint. The compositor's SDF glass pass now
@@ -136,10 +158,11 @@ pub(super) fn chip_opts(fade: f32) -> OverlayOpts {
 }
 
 pub(super) fn workspace_dot_color(active: bool) -> Color {
+    let primary = Design::dark().hud_foreground.primary;
     if active {
-        Color::rgba(248, 248, 250, 248)
+        primary.with_alpha(248)
     } else {
-        Color::rgba(225, 225, 232, 78)
+        primary.with_alpha(78)
     }
 }
 

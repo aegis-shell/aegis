@@ -280,12 +280,16 @@ struct TileCache {
     /// separately so pointer-only callers, which do not know the label, can
     /// reuse the strip as long as the windows match.
     label: String,
+    /// Window ids in first-observed (mapping) order. The compositor's window
+    /// slice follows stacking order and therefore changes when focus changes;
+    /// Dock placement must not.
+    window_order: Vec<aegis_core::window::WindowId>,
     tiles: Vec<Tile>,
 }
 
 /// A damped-spring state for one animated scalar (a tile's edge length).
-/// Integrated semi-implicitly each frame so it stays stable across a wide
-/// range of `dt` and produces the macOS-style slight overshoot.
+/// Integrated from the analytic solution each frame so it stays stable across
+/// a wide range of `dt` and produces the macOS-style slight overshoot.
 #[derive(Clone, Copy, Default)]
 struct SpringState {
     /// Current eased value (logical px).
@@ -329,6 +333,7 @@ impl Dock {
             tile_cache: RefCell::new(TileCache {
                 signature: None,
                 label: String::new(),
+                window_order: Vec::new(),
                 tiles: Vec::new(),
             }),
             catalog_revision: 0,
@@ -427,6 +432,17 @@ impl Dock {
             && cursor.1 >= trigger.y
             && cursor.0 < trigger.x + trigger.w
             && cursor.1 < trigger.y + trigger.h
+    }
+
+    /// While an autohiding Dock is expanded, keep the stable resting strip
+    /// and the gap below it as one continuous approach corridor. Without the
+    /// gap, the pointer that revealed the Dock can fall out of its ownership
+    /// as soon as the panel expands, starting an expand/collapse loop.
+    fn expanded_trigger_contains(cursor: (f32, f32), rest_bounds: Rect, display_h: f32) -> bool {
+        cursor.0 >= rest_bounds.x
+            && cursor.1 >= rest_bounds.y
+            && cursor.0 < rest_bounds.x + rest_bounds.w
+            && cursor.1 < display_h
     }
 
     /// A forced collapse must observe a pointer exit before the same pointer
@@ -567,25 +583,31 @@ impl Dock {
         }
     }
 
-    /// Advance a damped spring one `dt` seconds toward `target`. Semi-implicit
-    /// Euler keeps it stable at large `dt` (a clamped-vs-true hybrid blows up
-    /// under frame hitches); the under-damped ratio gives a single gentle
-    /// overshoot — the macOS lift-and-settle. `value` and `vel` are updated in
-    /// place and the new value is returned.
+    /// Advance a damped spring one `dt` seconds toward `target`. The exact
+    /// under-damped solution is stable at every accepted frame interval and
+    /// retains the single gentle macOS-style overshoot. `value` and `vel` are
+    /// updated in place and the new value is returned.
     fn spring(state: &mut SpringState, target: f32, dt: f32) -> f32 {
-        // ω₀ = √stiffness is the undamped angular frequency; c = 2·ζ·ω₀ the
-        // damping coefficient derived from the chosen damping ratio ζ.
+        // Clamp a long stall so the Dock catches up over subsequent frames
+        // instead of jumping straight to rest.
+        let dt = dt.clamp(0.0, 1.0 / 30.0);
+        if dt == 0.0 {
+            return state.value;
+        }
+
+        let displacement = state.value - target;
         let omega0 = SPRING_STIFFNESS.sqrt();
-        let damping = 2.0 * SPRING_DAMPING * omega0;
-        // Clamp dt so a long stall (paused tab, debugger) does not blow the
-        // integrator up; the spring simply catches up over the cap.
-        let dt = dt.min(1.0 / 30.0);
-        // Semi-implicit: update velocity from the force at the current value,
-        // then advance value with the new velocity. Energy-stable and matches
-        // the analytic damped-oscillator feel.
-        let force = SPRING_STIFFNESS * (target - state.value) - damping * state.vel;
-        state.vel += force * dt;
-        state.value += state.vel * dt;
+        let decay_rate = SPRING_DAMPING * omega0;
+        let omega_d = omega0 * (1.0 - SPRING_DAMPING * SPRING_DAMPING).sqrt();
+        let decay = (-decay_rate * dt).exp();
+        let sin = (omega_d * dt).sin();
+        let cos = (omega_d * dt).cos();
+        let velocity_term = (state.vel + decay_rate * displacement) / omega_d;
+
+        state.value = target + decay * (displacement * cos + velocity_term * sin);
+        state.vel = decay
+            * (state.vel * cos
+                - (decay_rate * state.vel + omega0 * omega0 * displacement) / omega_d * sin);
         state.value
     }
 
@@ -622,12 +644,18 @@ impl Dock {
             let label = application_label
                 .map(str::to_string)
                 .unwrap_or_else(|| tile_cache.borrow().label.clone());
-            let tiles = Self::build_tiles(apps, icons, windows, &label);
-            *tile_cache.borrow_mut() = TileCache {
-                signature: Some(signature),
-                label,
-                tiles,
-            };
+            let mut cache = tile_cache.borrow_mut();
+            cache
+                .window_order
+                .retain(|id| windows.iter().any(|window| window.id == *id));
+            for window in windows {
+                if !cache.window_order.contains(&window.id) {
+                    cache.window_order.push(window.id);
+                }
+            }
+            cache.tiles = Self::build_tiles(apps, icons, windows, &cache.window_order, &label);
+            cache.signature = Some(signature);
+            cache.label = label;
         }
         Ref::map(tile_cache.borrow(), |cache| &cache.tiles)
     }
@@ -667,6 +695,7 @@ impl Dock {
         apps: &[DockApp],
         icons: &IconSet,
         windows: &[Window],
+        window_order: &[aegis_core::window::WindowId],
         application_label: &str,
     ) -> Vec<Tile> {
         let win_appid: Vec<Option<String>> = windows
@@ -717,7 +746,14 @@ impl Dock {
             });
         }
 
-        for (wi, w) in windows.iter().enumerate() {
+        for window_id in window_order {
+            let Some((wi, w)) = windows
+                .iter()
+                .enumerate()
+                .find(|(_, window)| window.id == *window_id)
+            else {
+                continue;
+            };
             if claimed[wi] {
                 continue;
             }

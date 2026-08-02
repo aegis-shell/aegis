@@ -277,9 +277,10 @@ unified overview (window grid + workspace rail, live thumbnails, click to
 focus, `Super+O` or `aegis overview`) is in daily use, and a screenshot
 path (`aegis display capture`, scoped `CaptureOutput` pixel capture per
 [ADR-0041](../adr/0041-sealed-file-descriptor-pixel-transport.md)) covers the
-single-frame half of the capture story. The independently packaged
-`aegis-portal` backend now serves Settings v1, Screenshot v2, ScreenCast v3,
-idle-only Inhibit, Secret v1 with an at-rest vault plus a transitional
+single-frame half of the capture story. The independently developed and
+packaged `xdg-desktop-portal-aegis` backend now serves Settings v1,
+Screenshot v2, ScreenCast v3, idle-only Inhibit, Secret v1 with an at-rest
+vault plus a transitional
 `org.freedesktop.secrets` compatibility layer
 ([ADR-0085](../adr/0085-portal-secret-absorption-and-secret-service-compat.md)),
 Lockdown, FileChooser v3, AppChooser v2, Email v2, Notification v2,

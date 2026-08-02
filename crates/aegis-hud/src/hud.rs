@@ -20,7 +20,10 @@ use std::time::{Duration, Instant};
 use aegis_core::notify::{Notification, NotificationQueue};
 use aegis_core::window::{SpaceUse, Window};
 use aegis_core::workspace::WorkspaceSnapshot;
-use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
+use aegis_design::Design;
+use lens::{
+    Align, Color, ForegroundOutline, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme,
+};
 
 use aegis_shell::{
     AppCatalog, BackdropRegion, BatteryStatus, Chrome, ChromeEvents, HUD_HEIGHT, IconSet,
@@ -440,7 +443,7 @@ impl Chrome for Hud {
             f.layer("aegis-hud-chip-left", chip, &chip_opts(fade), |f| {
                 f.column_ex(&sized(chip.w, chip.h), |_| {});
             });
-            f.set_theme(faded_theme(original_theme, fade));
+            f.set_theme(faded_theme(original_theme, fade).with_fg(hud_foreground_color(fade)));
             let mut x = chip.x + CHIP_PAD_X;
             let mut cell = |width: f32| {
                 let rect = Rect {
@@ -478,11 +481,12 @@ impl Chrome for Hud {
                                 ..Default::default()
                             },
                             |f| unsafe {
-                                f.image_tinted(
+                                f.image_tinted_outlined(
                                     icon as *mut lens::sys::flux_image,
                                     16.0,
                                     16.0,
-                                    Color::rgba(255, 255, 255, fade_alpha(255, bt_fade)),
+                                    hud_foreground_color(bt_fade),
+                                    hud_glyph_outline(bt_fade),
                                 )
                             },
                         );
@@ -525,23 +529,27 @@ impl Chrome for Hud {
                         },
                         |f| match texture {
                             Some(texture) => unsafe {
-                                f.image_tinted(
+                                f.image_tinted_outlined(
                                     texture as *mut lens::sys::flux_image,
                                     18.0,
                                     18.0,
-                                    Color::rgba(255, 255, 255, fade_alpha(255, fade)),
+                                    hud_foreground_color(fade),
+                                    hud_glyph_outline(fade),
                                 )
                             },
                             None => match fallback {
                                 Some(icon) => unsafe {
-                                    f.image_tinted(
+                                    f.image_tinted_outlined(
                                         icon as *mut lens::sys::flux_image,
                                         18.0,
                                         18.0,
-                                        Color::rgba(255, 255, 255, fade_alpha(255, fade)),
+                                        hud_foreground_color(fade),
+                                        hud_glyph_outline(fade),
                                     )
                                 },
-                                None => f.icon(Icon::FileText, 16.0),
+                                None => {
+                                    f.icon_outlined(Icon::FileText, 16.0, hud_glyph_outline(fade))
+                                }
                             },
                         },
                     );
@@ -557,12 +565,13 @@ impl Chrome for Hud {
                     rect,
                     &format!("+{}", fold.hidden.min(99)),
                     11.0,
+                    fade,
                 );
             }
 
             // Clock and notification bell close out the left chip (ADR-0083).
             let rect = cell(CELL_CLOCK);
-            render_text(f, "aegis-hud-clock", rect, &self.clock, 13.5);
+            render_text(f, "aegis-hud-clock", rect, &self.clock, 13.5, fade);
 
             let bell_w = if notifications.is_empty() { 34.0 } else { 50.0 };
             let rect = cell(bell_w);
@@ -607,6 +616,30 @@ impl Chrome for Hud {
                         w: diameter,
                         h: diameter,
                     };
+                    let contour_width = Design::dark().hud_foreground.glyph_contour_width;
+                    let contour_diameter = diameter + contour_width * 2.0;
+                    let contour = Rect {
+                        x: slot.x + (slot.w - contour_diameter) * 0.5,
+                        y: slot.y + (slot.h - contour_diameter) * 0.5,
+                        w: contour_diameter,
+                        h: contour_diameter,
+                    };
+                    f.layer(
+                        &format!("aegis-hud-workspace-contour-{}", workspace.id.0),
+                        contour,
+                        &OverlayOpts::default(),
+                        |f| {
+                            f.column_ex(
+                                &sized_fill(
+                                    contour_diameter,
+                                    contour_diameter,
+                                    fade_color(hud_contour_color(), fade),
+                                    contour_diameter * 0.5,
+                                ),
+                                |_| {},
+                            );
+                        },
+                    );
                     f.layer(
                         &format!("aegis-hud-workspace-dot-{}", workspace.id.0),
                         dot,

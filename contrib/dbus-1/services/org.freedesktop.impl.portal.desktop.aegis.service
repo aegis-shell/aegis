@@ -1,3 +1,0 @@
-[D-BUS Service]
-Name=org.freedesktop.impl.portal.desktop.aegis
-Exec=/usr/lib/aegis/aegis-portal

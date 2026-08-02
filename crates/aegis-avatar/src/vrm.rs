@@ -2,9 +2,10 @@
 //! portrait texture already circle-masked in its alpha channel.
 //!
 //! VRM 0.x and VRM 1.0 are both binary glTF containers, so the model loads
-//! through `flux_scene_graph::Scene::from_glb`. Companion VRMA clips are bound
-//! by humanoid bone identity, retargeted from their source T-pose, sampled on
-//! the CPU, and skinned on the GPU.
+//! through `flux_scene_graph::Scene::from_glb_with_materials`, including its
+//! embedded base-colour textures and per-primitive alpha/culling state. VRMA
+//! motion-library clips are bound by humanoid bone identity, retargeted from
+//! their source T-pose, sampled on the CPU, and skinned on the GPU.
 //!
 //! Rendering follows the established offscreen pattern: a depth-tested scene
 //! pass updates one reusable sampleable render target, which a Canvas pass
@@ -14,24 +15,23 @@
 
 use std::path::{Path, PathBuf};
 
-use flux::{
-    Camera, Canvas, Format, Image, Material, MaterialDesc, MaterialKind, SceneColorLoad,
-    SceneLight, Surface, Target,
-};
-use flux_scene_graph::{Animation, Bounds, Scene};
+use flux::{Camera, Canvas, Format, Image, SceneColorLoad, SceneLight, Surface, Target};
+use flux_scene_graph::{Bounds, MaterialTarget, Scene};
 
 use crate::ATLAS_SIZE;
 #[cfg(debug_assertions)]
 use crate::mask::circle_mask_premultiplied;
+use crate::motion::{MotionInfo, MotionLibrary};
 
 /// What the loaded VRM model can do regarding VRMA animation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnimationSupport {
-    /// VRMA clips can advance frame-to-frame (skinning and animation are
-    /// available in the scene graph and the model exposes a humanoid rig).
+    /// One or more VRMA clips can advance frame-to-frame (skinning and
+    /// animation are available in the scene graph and the model exposes a
+    /// humanoid rig).
     Animated,
-    /// The model loaded but only as a posed mesh; animation is not possible
-    /// in this build. Honest degradation rather than silent freezing.
+    /// The model loaded without a usable VRMA clip and remains in its rest
+    /// pose. Honest degradation rather than silent freezing.
     Static,
 }
 
@@ -41,15 +41,25 @@ pub enum VrmError {
     #[error("read {0:?}")]
     Io(PathBuf, #[source] std::io::Error),
     #[error("vrm model {0:?}")]
-    Gltf(PathBuf, #[source] flux_scene_graph::Error),
-    #[error("vrm material for {0:?}")]
-    Material(PathBuf, #[source] flux::Error),
+    Gltf(PathBuf, #[source] flux_scene_graph::LoadError),
     /// The model has no measurable bounding box, so a framing camera cannot
     /// be computed. Usually an empty or corrupt glTF.
     #[error("vrm model {0:?} has no measurable bounds")]
     NoBounds(PathBuf),
     #[error("vrma clip {0:?}")]
     Animation(PathBuf, #[source] flux_scene_graph::Error),
+    #[error("avatar motion path {0:?} must be a directory")]
+    MotionDirectory(PathBuf),
+    #[error("avatar motion path {0:?} must be a regular file")]
+    MotionFile(PathBuf),
+    #[error("avatar motion {0:?} must use a lowercase ASCII name beginning with a letter")]
+    MotionName(PathBuf),
+    #[error("duplicate avatar motion {0:?}: {1:?} and {2:?}")]
+    DuplicateMotion(String, PathBuf, PathBuf),
+    #[error("avatar motion {0:?} has invalid duration {1}")]
+    MotionDuration(PathBuf, f32),
+    #[error("avatar motion {0:?} has no retargetable channels")]
+    MotionChannels(PathBuf),
     #[error("render vrm model {0:?}")]
     Render(PathBuf, #[source] flux::Error),
 }
@@ -57,8 +67,7 @@ pub enum VrmError {
 /// A loaded VRM model with persistent animation and offscreen render state.
 pub struct Model {
     scene: Scene,
-    animation: Option<Animation>,
-    material: Material,
+    motions: MotionLibrary,
     bounds: Bounds,
     rest_head: Option<[f32; 3]>,
     surface: Surface,
@@ -70,9 +79,7 @@ pub struct Model {
     /// `rendered` re-rendered through an analytic circular clip; this is the
     /// texture hosts composite.
     texture: Image,
-    elapsed: f32,
     source_path: PathBuf,
-    animation_path: Option<PathBuf>,
 }
 
 impl Model {
@@ -83,47 +90,28 @@ impl Model {
         animation_path: Option<&Path>,
     ) -> Result<Self, VrmError> {
         let bytes = std::fs::read(path).map_err(|error| VrmError::Io(path.to_path_buf(), error))?;
-        let scene = Scene::from_glb(device, &bytes)
-            .map_err(|error| VrmError::Gltf(path.to_path_buf(), error))?;
+        let scene = Scene::from_glb_with_materials(
+            device,
+            &bytes,
+            MaterialTarget {
+                color_format: TARGET_FORMAT,
+                depth_format: DEPTH_FORMAT,
+            },
+        )
+        .map_err(|error| VrmError::Gltf(path.to_path_buf(), error))?;
         let bounds = scene
             .bounds()
             .ok_or_else(|| VrmError::NoBounds(path.to_path_buf()))?;
         let rest_head = scene.humanoid_bone_position("head");
-        // The color format must match the offscreen render target below; depth
-        // matches the scene-pass attachment. Phong gives the avatar readable
-        // shading without textures (which the v0.1 loader does not import).
-        let material = Material::new(
-            device,
-            MaterialDesc {
-                kind: MaterialKind::Phong,
-                base_color: [0.68, 0.72, 0.80, 1.0],
-                color_format: TARGET_FORMAT,
-                depth_format: DEPTH_FORMAT,
-                shininess: 36.0,
-                specular: 0.2,
-            },
-        )
-        .map_err(|error| VrmError::Material(path.to_path_buf(), error))?;
-        let animation = if let Some(animation_path) = animation_path {
-            let bytes = std::fs::read(animation_path)
-                .map_err(|error| VrmError::Io(animation_path.to_path_buf(), error))?;
-            let animation = scene
-                .animation_from_glb(&bytes)
-                .map_err(|error| VrmError::Animation(animation_path.to_path_buf(), error))?;
-            log::info!(
-                "avatar: loaded VRMA {:?}: {:.3}s, {} retargeted channels",
-                animation_path,
-                animation.duration(),
-                animation.channel_count()
-            );
-            Some(animation)
-        } else {
-            None
-        };
+        let motions = MotionLibrary::load(
+            &scene,
+            path.parent().unwrap_or_else(|| Path::new(".")),
+            animation_path,
+        )?;
         let surface = Surface::offscreen(device, ATLAS_SIZE, ATLAS_SIZE)
             .map_err(|error| VrmError::Render(path.to_path_buf(), error))?;
-        let canvas = Canvas::new(&surface)
-            .map_err(|error| VrmError::Render(path.to_path_buf(), error))?;
+        let canvas =
+            Canvas::new(&surface).map_err(|error| VrmError::Render(path.to_path_buf(), error))?;
         let depth = Target::depth(device, ATLAS_SIZE, ATLAS_SIZE, DEPTH_FORMAT)
             .map_err(|error| VrmError::Render(path.to_path_buf(), error))?;
         let rendered = Image::render_target(device, ATLAS_SIZE, ATLAS_SIZE, TARGET_FORMAT)
@@ -132,8 +120,7 @@ impl Model {
             .map_err(|error| VrmError::Render(path.to_path_buf(), error))?;
         let mut model = Self {
             scene,
-            animation,
-            material,
+            motions,
             bounds,
             rest_head,
             surface,
@@ -141,9 +128,7 @@ impl Model {
             depth,
             rendered,
             texture,
-            elapsed: 0.0,
             source_path: path.to_path_buf(),
-            animation_path: animation_path.map(Path::to_path_buf),
         };
         model.render()?;
         Ok(model)
@@ -152,7 +137,7 @@ impl Model {
     /// Report whether VRMA animation can advance for this model.
     #[must_use]
     pub fn animation_support(&self) -> AnimationSupport {
-        if self.animation.is_some() {
+        if !self.motions.is_empty() {
             AnimationSupport::Animated
         } else {
             AnimationSupport::Static
@@ -169,39 +154,46 @@ impl Model {
         &self.texture
     }
 
-    /// Advance the looping clip and refresh the reusable GPU texture. Returns
-    /// `Ok(false)` for a static model so hosts can stay event-driven.
+    #[must_use]
+    pub fn motions(&self) -> Vec<MotionInfo> {
+        self.motions.infos()
+    }
+
+    #[must_use]
+    pub fn current_motion(&self) -> Option<&str> {
+        self.motions.current_name()
+    }
+
+    pub fn play_motion(&mut self, name: &str) -> bool {
+        self.motions.play(name)
+    }
+
+    pub fn play_random_action(&mut self) -> Option<&str> {
+        self.motions.play_random_action()
+    }
+
+    #[must_use]
+    pub fn is_playing(&self) -> bool {
+        self.motions.is_playing()
+    }
+
+    /// Advance the selected clip and refresh the reusable GPU texture. Returns
+    /// `Ok(false)` for a rest-pose model so hosts can stay event-driven.
     pub fn advance(&mut self, delta_seconds: f32) -> Result<bool, VrmError> {
-        let Some(animation) = &self.animation else {
+        if !self.motions.advance(delta_seconds) {
             return Ok(false);
-        };
-        let delta = if delta_seconds.is_finite() {
-            delta_seconds.max(0.0)
-        } else {
-            0.0
-        };
-        let duration = animation.duration();
-        self.elapsed = if duration > f32::EPSILON {
-            (self.elapsed + delta).rem_euclid(duration)
-        } else {
-            0.0
-        };
+        }
         self.render()?;
         Ok(true)
     }
 
     fn render(&mut self) -> Result<(), VrmError> {
-        if let Some(animation) = &self.animation {
+        if let Some((animation, elapsed, animation_path)) = self.motions.sample() {
             self.scene
-                .apply_animation(animation, self.elapsed, true)
-                .map_err(|error| {
-                    VrmError::Animation(
-                        self.animation_path
-                            .clone()
-                            .unwrap_or_else(|| self.source_path.clone()),
-                        error,
-                    )
-                })?;
+                .apply_animation(animation, elapsed, false)
+                .map_err(|error| VrmError::Animation(animation_path.to_path_buf(), error))?;
+        } else {
+            self.scene.reset_pose();
         }
         let mut frame = self
             .surface
@@ -230,8 +222,7 @@ impl Model {
             color: [1.0, 0.97, 0.94],
             ambient: 0.22,
         };
-        self.scene
-            .draw(&pass, &camera, &self.material, Some(&light));
+        self.scene.draw_materials(&pass, &camera, Some(&light));
         pass.end();
         // Blit the scene through an analytic circular clip into the published
         // texture, so hosts (including the lens-based command panel, which

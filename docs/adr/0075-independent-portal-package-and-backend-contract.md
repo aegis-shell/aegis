@@ -1,6 +1,6 @@
 # ADR-0075: Independent portal package and backend contract
 
-- Status: Accepted
+- Status: Superseded by ADR-0095
 - Date: 2026-07-29
 
 ## Context

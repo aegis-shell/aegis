@@ -13,6 +13,7 @@ pub struct Design {
     pub colors: Colors,
     pub radii: Radii,
     pub strokes: Strokes,
+    pub hud_foreground: HudForeground,
 }
 
 impl Design {
@@ -53,6 +54,12 @@ impl Design {
             strokes: Strokes {
                 hairline: 1.0,
                 scrollbar: 5.0,
+            },
+            hud_foreground: HudForeground {
+                primary: Color::rgba(248, 249, 252, 255),
+                contour: Color::rgba(5, 7, 12, 48),
+                text_contour_width: 0.75,
+                glyph_contour_width: 1.0,
             },
         }
     }
@@ -164,6 +171,26 @@ pub struct Strokes {
     pub scrollbar: f32,
 }
 
+/// Foreground-separation policy for the display-only HUD.
+///
+/// The HUD floats above arbitrary wallpaper and application content, so a
+/// single foreground colour cannot guarantee local contrast. A restrained
+/// dark contour keeps the light core legible on bright or visually busy
+/// regions while disappearing naturally over dark regions. Text and glyphs
+/// share one contour colour; only their geometry-specific widths differ.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct HudForeground {
+    /// Light core shared by HUD labels, symbols, and active indicators.
+    pub primary: Color,
+    /// Dark contour/underlay shared by every floating HUD foreground form.
+    pub contour: Color,
+    /// Fine contour for compact text, in logical pixels.
+    pub text_contour_width: f32,
+    /// Contour for vector, raster, and geometric glyphs, in logical pixels.
+    pub glyph_contour_width: f32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,5 +213,15 @@ mod tests {
         assert!(surface_alpha > 200);
         let (r, g, b, _) = sao.text.components();
         assert!(r < 64 && g < 64 && b < 64);
+    }
+
+    #[test]
+    fn hud_foreground_uses_one_restrained_contour_family() {
+        let hud = Design::dark().hud_foreground;
+        assert_eq!(hud.primary, Color::rgba(248, 249, 252, 255));
+        assert_eq!(hud.contour, Color::rgba(5, 7, 12, 48));
+        assert!(hud.text_contour_width > 0.0);
+        assert!(hud.text_contour_width < hud.glyph_contour_width);
+        assert!(hud.glyph_contour_width <= 1.0);
     }
 }

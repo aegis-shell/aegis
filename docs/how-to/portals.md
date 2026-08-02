@@ -1,58 +1,67 @@
 # How to Install and Verify the Portal Backend
 
-Install `aegis-portal` when portal-aware and sandboxed applications must use
-Aegis settings, screenshots, screen sharing, native pickers, notifications,
-and secrets. The compositor works without this package. Installing only the
-backend executable is not enough: xdg-desktop-portal must discover its
-metadata, select it for an Aegis session, and activate it on the session bus.
+Install `xdg-desktop-portal-aegis` when portal-aware and sandboxed
+applications must use Aegis settings, screenshots, screen sharing, native
+pickers, notifications, and secrets. The compositor works without this
+package. Installing only the backend executable is not enough:
+xdg-desktop-portal must discover its metadata, select it for an Aegis
+session, and activate it on the session bus.
 
 ## Prepare the Runtime
 
 Install these runtime components:
 
-- `aegis` and `aegis-portal` from the exact same release;
+- compatible `aegis` and `xdg-desktop-portal-aegis` releases from the
+  [Portal Backend Reference](../reference/portal.md#identifiers-and-paths);
 - `xdg-desktop-portal` as the public frontend;
 - `xdg-desktop-portal-gtk` as the fallback for interfaces that Aegis does not
   implement; and
 - PipeWire for screen sharing.
 
-The matching-release requirement is strict. The backend connects to the
+The compatibility mapping is strict even though the components use separate
+source repositories and version sequences. The backend connects to the
 compositor through the versioned socket at
 `$XDG_RUNTIME_DIR/aegis.sock`; independently upgrading either side can make
 that private protocol incompatible.
 
 ## Install the System Package
 
-Use the distribution package when one is available. The `aegis-portal`
-package must install all of these files:
+Use the distribution package when one is available. The
+`xdg-desktop-portal-aegis` package must install all of these files from the
+[xdg-desktop-portal-aegis repository](https://github.com/aegis-shell/xdg-desktop-portal-aegis):
 
 | Source | Destination |
 |--------|-------------|
-| `target/release/aegis-portal` | `/usr/lib/aegis/aegis-portal` |
+| `target/release/xdg-desktop-portal-aegis` | `/usr/lib/xdg-desktop-portal-aegis` |
 | `contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` |
 | `contrib/xdg-desktop-portal/portals/aegis.portal` | `/usr/share/xdg-desktop-portal/portals/aegis.portal` |
 | `contrib/xdg-desktop-portal/aegis-portals.conf` | `/usr/share/xdg-desktop-portal/aegis-portals.conf` |
 | `contrib/dbus-1/services/org.freedesktop.secrets.service` | `/usr/share/dbus-1/services/org.freedesktop.secrets.service` |
-| `LICENSE` | `/usr/share/licenses/aegis-portal/LICENSE` |
+| `LICENSE` | `/usr/share/licenses/xdg-desktop-portal-aegis/LICENSE` |
 
 The first D-Bus service file activates the portal backend. The second is a
 transitional activation path for un-sandboxed Secret Service clients. The
 `aegis.portal` file declares the interfaces that the backend implements, and
 `aegis-portals.conf` selects `aegis;gtk` for an Aegis desktop.
 
-There is no `aegis-portal.service` to enable. D-Bus starts the private helper
-on demand.
+There is no `xdg-desktop-portal-aegis.service` to enable. D-Bus starts the
+private helper on demand.
 
 ### Install a source build system-wide
 
-Build the backend from the same checkout as the installed compositor:
+Clone the compatible Portal tag listed in the reference, then build from the
+Portal repository root:
 
 ```bash
-cargo build --locked --release -p aegis-portal
-sudo install -Dm0755 target/release/aegis-portal \
-  /usr/lib/aegis/aegis-portal
+git clone --branch "v<PORTAL_VERSION>" --depth 1 \
+  https://github.com/aegis-shell/xdg-desktop-portal-aegis.git \
+  ../xdg-desktop-portal-aegis
+cd ../xdg-desktop-portal-aegis
+cargo build --locked --release --workspace
+sudo install -Dm0755 target/release/xdg-desktop-portal-aegis \
+  /usr/lib/xdg-desktop-portal-aegis
 sudo install -Dm0644 LICENSE \
-  /usr/share/licenses/aegis-portal/LICENSE
+  /usr/share/licenses/xdg-desktop-portal-aegis/LICENSE
 ```
 
 Install its discovery and activation metadata:
@@ -69,20 +78,22 @@ sudo install -Dm0644 contrib/xdg-desktop-portal/aegis-portals.conf \
   /usr/share/xdg-desktop-portal/aegis-portals.conf
 ```
 
-Keep `/usr/lib/aegis/aegis-portal` synchronized with both D-Bus files'
-`Exec=` value when using another installation prefix.
+Keep `/usr/lib/xdg-desktop-portal-aegis` synchronized with both D-Bus files'
+`Exec=` value when using another installation prefix or `libexecdir`.
 
 ## Stage a Per-User Development Build
 
 Use a per-user installation to exercise backend changes without replacing
-the system package. Run these commands from the repository root:
+the system package. Run these commands from the
+`xdg-desktop-portal-aegis` repository root:
 
 ```bash
 portal_data=${XDG_DATA_HOME:-"$HOME/.local/share"}
 portal_config=${XDG_CONFIG_HOME:-"$HOME/.config"}
-portal_lib="$HOME/.local/lib/aegis"
-cargo build --locked -p aegis-portal
-install -Dm0755 target/debug/aegis-portal "$portal_lib/aegis-portal"
+portal_lib="$HOME/.local/lib"
+cargo build --locked -p xdg-desktop-portal-aegis
+install -Dm0755 target/debug/xdg-desktop-portal-aegis \
+  "$portal_lib/xdg-desktop-portal-aegis"
 install -Dm0644 contrib/xdg-desktop-portal/portals/aegis.portal \
   "$portal_data/xdg-desktop-portal/portals/aegis.portal"
 install -Dm0644 contrib/xdg-desktop-portal/aegis-portals.conf \
@@ -98,7 +109,7 @@ install -Dm0644 \
   "$portal_data/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service"
 install -Dm0644 contrib/dbus-1/services/org.freedesktop.secrets.service \
   "$portal_data/dbus-1/services/org.freedesktop.secrets.service"
-sed -i "s|^Exec=.*|Exec=${portal_lib:?}/aegis-portal|" \
+sed -i "s|^Exec=.*|Exec=${portal_lib:?}/xdg-desktop-portal-aegis|" \
   "$portal_data/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service" \
   "$portal_data/dbus-1/services/org.freedesktop.secrets.service"
 ```
@@ -178,16 +189,17 @@ gdbus call --session \
 ```
 
 Complete the Aegis picker. A successful response contains a `file://` URI
-under `$XDG_CACHE_HOME/aegis-portal/`, or under
-`$XDG_RUNTIME_DIR/aegis-portal/` when the cache directory is unset. The
+under `$XDG_CACHE_HOME/xdg-desktop-portal-aegis/`, or under
+`$XDG_RUNTIME_DIR/xdg-desktop-portal-aegis/` when the cache directory is
+unset. The
 request fails closed while the session is locked or its seat is inactive.
 
 Verify screen sharing from a portal-aware browser or conferencing client.
 After choosing an Aegis monitor or window, inspect the PipeWire producer:
 
 ```bash
-pw-dump | grep -A5 aegis-portal-screencast
-pw-link -o | grep aegis-portal-screencast
+pw-dump | grep -A5 xdg-desktop-portal-aegis-screencast
+pw-link -o | grep xdg-desktop-portal-aegis-screencast
 ```
 
 The stream pauses while the session is locked or inactive and resumes after
@@ -202,17 +214,17 @@ just-verified password in an owner-only runtime token. The portal consumes
 and deletes that token to unlock a password-mode secret vault without a
 second prompt.
 
-Install the matching `aegis-pam` build in the distribution's PAM module
-directory, then add this line *after* the primary authentication stack in
-the login and `aegis-lock` service profiles:
+Install the matching `aegis-pam` build from the Aegis Portal repository in
+the distribution's PAM module directory, then add this line *after* the
+primary authentication stack in the login and `aegis-lock` service profiles:
 
 ```text
 auth optional pam_aegis.so
 ```
 
-The supplied `/etc/pam.d/aegis-lock` profile already contains the optional
-line. The module is not the screen authenticator; missing it must not prevent
-PAM from unlocking the session. Follow
+The Aegis core package's supplied `/etc/pam.d/aegis-lock` profile already
+contains the optional line. The module is not the screen authenticator;
+missing it must not prevent PAM from unlocking the session. Follow
 [How to Install and Verify the Lock Screen](lock-screen.md) before changing a
 PAM stack.
 

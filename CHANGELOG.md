@@ -7,6 +7,33 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Source organization
+
+- Moved the optional `xdg-desktop-portal-aegis` backend, encrypted Secret
+  component, PAM auto-unlock helper, tests, and activation metadata into the
+  independent `aegis-shell/xdg-desktop-portal-aegis` source repository while
+  retaining explicit compatibility through tagged Aegis IPC dependencies.
+  Core Aegis workspace builds no longer resolve portal-only PipeWire or
+  cryptography dependencies.
+
+### Avatars
+
+- VRM avatars now render their embedded sRGB base-color textures with
+  per-primitive unlit/Phong materials, UV transforms, glTF samplers,
+  OPAQUE/MASK/BLEND alpha behavior, cutoff, and double-sided state instead of
+  appearing as a whole-model white/gray clay render. Material and image loads
+  participate in the existing transactional hot-reload replacement.
+- Added XDG VRMA motion libraries under
+  `$XDG_DATA_HOME/aegis/avatars/motions/{idle,actions}/`. Idle clips use a
+  no-repeat shuffle bag, named actions play once before returning to idle,
+  the command panel requests a random action when opened, and the lock screen
+  requests `greeting` with a random-action fallback. The legacy
+  `avatar.vrma` companion remains supported when no motion library exists.
+- Added live reload for still images, VRM models, and VRMA motion libraries in
+  the lock screen and command panel. Reloads are debounced and transactional:
+  partial or malformed saves retain the last-known-good GPU resource with
+  bounded retries, while an intentional deletion switches to the fallback.
+
 ### Liquid glass
 
 - Added an SDF drop shadow cast by every glass body, plus a silhouette

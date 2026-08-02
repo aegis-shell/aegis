@@ -11,13 +11,13 @@ Install:
 
 - Rust 1.88 or later;
 - Meson, Ninja, `pkg-config`, a C23 compiler, and libclang;
-- Vulkan, Wayland, xkbcommon, libinput, libseat, and Linux PAM development
-  files; and
+- Vulkan, Wayland, xkbcommon, libinput, and libseat development files; and
 - the Optics `v<OPTICS_VERSION>` native libraries.
 
-Building the independent `aegis-portal` backend additionally requires
-PipeWire and SPA development files. The nested compositor tutorial does not
-build or install that package.
+The independently sourced
+[xdg-desktop-portal-aegis](https://github.com/aegis-shell/xdg-desktop-portal-aegis)
+additionally requires PipeWire and SPA development files. The nested
+compositor tutorial does not clone, build, or install that package.
 
 Build and install the matching Optics release when the distribution does not
 provide it:

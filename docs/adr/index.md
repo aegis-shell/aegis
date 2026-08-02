@@ -81,7 +81,7 @@ background and how the decisions fit together, see
 | [0072](0072-desktop-preference-authority-and-toolkit-compatibility.md) | Desktop preference authority and toolkit compatibility | Accepted |
 | [0073](0073-prism-search-and-explicit-application-shortcuts.md) | Prism search and explicit application shortcuts (amends [0022](0022-application-launcher.md), [0044](0044-dock-and-control-center-crates.md)) | Accepted |
 | [0074](0074-generic-agent-workspaces-status-surface.md) | Generic Agent Workspaces status surface (amends [0050](0050-fuji-agent-product-and-bridge-rename.md), [0060](0060-statusbar-system-controls-and-live-system-ipc.md)) | Accepted |
-| [0075](0075-independent-portal-package-and-backend-contract.md) | Independent portal package and backend contract (supersedes [0051](0051-portal-backend-dbus-bridge.md), [0053](0053-portal-session-services-and-grants.md)) | Accepted |
+| [0075](0075-independent-portal-package-and-backend-contract.md) | Independent portal package and backend contract (supersedes [0051](0051-portal-backend-dbus-bridge.md), [0053](0053-portal-session-services-and-grants.md)) | Superseded by [0095](0095-independent-portal-repository-and-component-workspace.md) |
 | [0076](0076-linux-dmabuf-device-feedback-and-reusable-buffer-sync.md) | Linux-dmabuf device feedback and reusable-buffer synchronization | Accepted |
 | [0077](0077-presentation-domain-redraw-state-machine.md) | Presentation-domain redraw state machine (supersedes [0038](0038-frame-pacing.md)) | Accepted |
 | [0078](0078-out-of-process-idle-and-session-lock.md) | Out-of-process idle policy and session lock | Accepted |
@@ -102,3 +102,7 @@ background and how the decisions fit together, see
 | [0092](0092-explicit-wallpaper-modes-and-continuous-parallax.md) | Explicit wallpaper modes and continuous pointer parallax (amends [0018](0018-wallpaper-crate.md)) | Accepted |
 | [0093](0093-unified-domain-oriented-aegis-command-surface.md) | Unified domain-oriented Aegis command surface (amends [0027](0027-ipc-and-introspection.md), [0066](0066-canonical-aegis-namespace.md)) | Accepted |
 | [0094](0094-liquid-glass-lens-model-and-full-resolution-capture.md) | Liquid glass lens model and full-resolution backdrop capture (amends [0046](0046-design-system-crate.md)) | Accepted |
+| [0095](0095-independent-portal-repository-and-component-workspace.md) | Independent portal repository and component workspace (supersedes [0075](0075-independent-portal-package-and-backend-contract.md), preserves [0085](0085-portal-secret-absorption-and-secret-service-compat.md)) | Accepted |
+| [0096](0096-avatar-motion-library-and-semantic-playback.md) | Avatar motion library and semantic playback (amends [0080](0080-avatar-crate-xdg-conformant-vrm-aware.md)) | Accepted |
+| [0097](0097-transactional-avatar-hot-reload.md) | Transactional avatar hot reload (amends [0080](0080-avatar-crate-xdg-conformant-vrm-aware.md), [0096](0096-avatar-motion-library-and-semantic-playback.md)) | Accepted |
+| [0098](0098-textured-vrm-materials.md) | Textured VRM materials (amends [0080](0080-avatar-crate-xdg-conformant-vrm-aware.md), preserves [0097](0097-transactional-avatar-hot-reload.md)) | Accepted |

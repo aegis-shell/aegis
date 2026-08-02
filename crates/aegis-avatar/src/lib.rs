@@ -13,19 +13,23 @@
 //! - **VRM models** — VRM 0.x / VRM 1.0 (`.glb` containers) loaded through
 //!   `flux-scene-graph` and rendered offscreen to the same portrait atlas,
 //!   then blitted through an analytic rounded-rect clip into the published
-//!   texture. A companion `.vrma` is retargeted and rendered into a
-//!   persistent texture.
+//!   texture. XDG motion libraries separate shuffled idle clips from named
+//!   one-shot actions; the legacy companion `avatar.vrma` remains supported.
 //!
 //! The crate owns decode and GPU state only. It has no Wayland connection and
 //! no presentation loop. See ADR-0080.
 
 mod mask;
+mod motion;
 mod resolve;
 mod still;
 mod vrm;
+mod watch;
 
+pub use motion::{MotionInfo, MotionKind};
 pub use resolve::{candidate_paths, vrm_candidate_paths, vrma_candidate_paths};
 pub use vrm::AnimationSupport;
+pub use watch::{AvatarWatcher, WatchError};
 
 use std::path::{Path, PathBuf};
 
@@ -47,6 +51,8 @@ pub enum Error {
     Vrm(#[from] vrm::VrmError),
     #[error("avatar: texture upload failed: {0}")]
     Flux(#[from] flux::Error),
+    #[error("avatar: configured sources exist but none could be decoded")]
+    NoUsableSource,
 }
 
 /// What an [`Avatar`] was built from, and what its renderer can do.
@@ -61,7 +67,7 @@ pub enum AvatarKind {
 
 enum Content {
     Still(Image),
-    Model(vrm::Model),
+    Model(Box<vrm::Model>),
 }
 
 /// A prepared avatar. Still images own one immutable texture; VRM avatars own
@@ -77,10 +83,11 @@ impl Avatar {
     /// path, in precedence order. A still image always wins over a VRM model
     /// when both are configured.
     ///
-    /// Returns `Ok(None)` only when no candidate exists at all, so the caller
-    /// can fall back to its own procedural orb. Any candidate that is merely
-    /// missing or in a format this build cannot decode is skipped in favour
-    /// of the next candidate.
+    /// Returns `Ok(None)` when no candidate can be selected, so the caller can
+    /// fall back to its own procedural orb. Missing or undecodable candidates
+    /// are skipped in favour of the next candidate. Long-lived consumers that
+    /// must distinguish deletion from an incomplete save should use
+    /// [`Self::load_transactional`].
     pub fn load(device: &Device) -> Result<Option<Self>, Error> {
         let load_still = || -> Result<Option<Self>, Error> {
             for candidate in candidate_paths() {
@@ -117,7 +124,7 @@ impl Avatar {
                 Ok(model) => {
                     let animation = model.animation_support();
                     return Ok(Some(Self {
-                        content: Content::Model(model),
+                        content: Content::Model(Box::new(model)),
                         kind: AvatarKind::Animated3d { animation },
                     }));
                 }
@@ -130,6 +137,28 @@ impl Avatar {
             load_still()
         } else {
             Ok(None)
+        }
+    }
+
+    /// Build a complete avatar replacement for a live reload.
+    ///
+    /// Unlike [`Self::load`], this treats an existing but currently unusable
+    /// source as an error instead of the benign "not configured" case. That
+    /// distinction lets a host retain its last-known-good GPU resource while
+    /// an editor is between truncate/write/rename steps. A genuine deletion
+    /// still returns `Ok(None)` so the host can deliberately install its
+    /// fallback avatar.
+    pub fn load_transactional(device: &Device) -> Result<Option<Self>, Error> {
+        let loaded = Self::load(device)?;
+        if loaded.is_none()
+            && candidate_paths()
+                .into_iter()
+                .chain(vrm_candidate_paths())
+                .any(|path| path.is_file())
+        {
+            Err(Error::NoUsableSource)
+        } else {
+            Ok(loaded)
         }
     }
 
@@ -146,8 +175,8 @@ impl Avatar {
         }
     }
 
-    /// Advance an animated avatar and refresh its texture. Static images and
-    /// VRMs without a companion clip return `Ok(false)` without GPU work.
+    /// Advance the current avatar motion and refresh its texture. Static
+    /// images and rest-pose VRMs return `Ok(false)` without GPU work.
     pub fn advance(&mut self, delta_seconds: f32) -> Result<bool, Error> {
         match &mut self.content {
             Content::Still(_) => Ok(false),
@@ -155,14 +184,55 @@ impl Avatar {
         }
     }
 
+    /// Whether a motion is currently selected and needs frame advances.
+    /// [`Self::kind`] reports animation capability even when an action has
+    /// completed and the model is resting.
     #[must_use]
     pub fn is_animated(&self) -> bool {
-        matches!(
-            self.kind,
-            AvatarKind::Animated3d {
-                animation: AnimationSupport::Animated
-            }
-        )
+        matches!(&self.content, Content::Model(model) if model.is_playing())
+    }
+
+    /// Metadata for every loaded VRMA clip. Still avatars and unanimated VRMs
+    /// return an empty list. Names come from validated `.vrma` file stems and
+    /// remain stable inputs to [`Self::play_motion`].
+    #[must_use]
+    pub fn motions(&self) -> Vec<MotionInfo> {
+        match &self.content {
+            Content::Still(_) => Vec::new(),
+            Content::Model(model) => model.motions(),
+        }
+    }
+
+    /// Name of the clip currently advancing, or `None` for a still/rest pose.
+    #[must_use]
+    pub fn current_motion(&self) -> Option<&str> {
+        match &self.content {
+            Content::Still(_) => None,
+            Content::Model(model) => model.current_motion(),
+        }
+    }
+
+    /// Start a named idle or action clip from its first frame. Explicit clips
+    /// play once and then return to the shuffled idle pool (or the rest pose
+    /// when no idle clips are configured). The selection is sampled by the
+    /// next [`Self::advance`] call. Returns `false` when the avatar is still or
+    /// the name is unavailable.
+    pub fn play_motion(&mut self, name: &str) -> bool {
+        match &mut self.content {
+            Content::Still(_) => false,
+            Content::Model(model) => model.play_motion(name),
+        }
+    }
+
+    /// Start one action from the non-repeating shuffled action pool. Idle
+    /// clips are not selected by this method. The selection is sampled by the
+    /// next [`Self::advance`] call. Returns the chosen stable name, or `None`
+    /// when the avatar is still or has no action clips.
+    pub fn play_random_action(&mut self) -> Option<&str> {
+        match &mut self.content {
+            Content::Still(_) => None,
+            Content::Model(model) => model.play_random_action(),
+        }
     }
 }
 

@@ -48,6 +48,8 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 # and Realm tools without linking the agent stack into the compositor
 # (ADR-0047, ADR-0050, ADR-0087).
 base64 = "0.22"
+fastrand = "2"
+notify = "8.2"
 
 # Session D-Bus for the StatusNotifierItem system tray (aegis-tray, shared by
 # aegis-hud and aegis-command-panel).
@@ -117,9 +119,6 @@ aegis-config = { path = "crates/aegis-config" }
 aegis-ipc = { path = "crates/aegis-ipc" }
 # Domain-oriented native command implementation used by the `aegis` binary.
 aegis-commands = { path = "crates/aegis-commands" }
-# Independently packaged xdg-desktop-portal backend: D-Bus bridge over the
-# scoped IPC (ADR-0075).
-aegis-portal = { path = "crates/aegis-portal" }
 # Launcher: XDG application discovery + detached launch. See ADR-0022.
 aegis-desktop-entries = { path = "crates/aegis-desktop-entries" }
 aegis-launcher = { path = "crates/aegis-launcher" }

@@ -496,8 +496,8 @@ Native `aegis` commands use separate `aegis-owner-admin`,
 `aegis-realm-admin`, and `aegis-agent-admin` scopes for ordinary
 owner mutations, Realm recovery, and agent-registry administration.
 
-`aegis-portal` uses the built-in owner-only `aegis-portal` scope, which
-grants exactly these operations: `CaptureOutput` for Screenshot,
+`xdg-desktop-portal-aegis` uses the built-in owner-only `aegis-portal`
+scope, which grants exactly these operations: `CaptureOutput` for Screenshot,
 `StreamOutput` for ScreenCast, `IdleInhibit` for Inhibit, `PickTarget` for
 user-confirmed Screenshot and ScreenCast selection, `PickFile` for
 FileChooser, `PickApp` for AppChooser, `Notify` and `DismissNotification`

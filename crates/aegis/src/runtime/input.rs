@@ -330,7 +330,7 @@ impl CompositorRuntime {
         let session_locked = self.server.session_locked();
         if session_locked {
             self.shell.finish_window_switcher();
-            self.server.finish_window_switcher();
+            self.server.cancel_window_switcher();
         }
         let realm_revision = self.server.realm_snapshot().revision;
         for (realm, damage) in self.server.take_realm_damage() {
@@ -507,10 +507,22 @@ impl CompositorRuntime {
                                 // A small explicit set of compositor controls
                                 // remains reachable while modal chrome owns
                                 // new key sequences.
-                                if let Some(action) = self
-                                    .keymap
-                                    .match_key_during_keyboard_capture(kc.mods, kc.keysym)
-                                {
+                                let switcher_action = self
+                                    .shell
+                                    .window_switcher_active()
+                                    .then(|| self.keymap.match_key(kc.mods, kc.keysym))
+                                    .flatten()
+                                    .filter(|action| {
+                                        matches!(
+                                            action,
+                                            aegis_core::keybind::Action::CycleFocus
+                                                | aegis_core::keybind::Action::CycleFocusBack
+                                        )
+                                    });
+                                if let Some(action) = switcher_action.or_else(|| {
+                                    self.keymap
+                                        .match_key_during_keyboard_capture(kc.mods, kc.keysym)
+                                }) {
                                     captured_actions.push((action, event_cursor));
                                 } else {
                                     self.shell.key_char(kc);
@@ -692,6 +704,13 @@ impl CompositorRuntime {
                     })
                     .unwrap_or(self.input_acc.cursor);
                 actions.push((action, position));
+            }
+            // Escape is delivered to switcher chrome above. Cancel the
+            // compositor session before release handling in the same backend
+            // batch can otherwise commit its preview target.
+            if self.shell.take_window_switcher_cancel() {
+                self.server.cancel_window_switcher();
+                self.shell.finish_window_switcher();
             }
             let super_held = self
                 .server

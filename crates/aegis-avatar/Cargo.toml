@@ -11,12 +11,14 @@ rust-version.workspace = true
 # XDG base-directory resolution reused from the freedesktop integration
 # crate, so this crate never hand-rolls $XDG_DATA_HOME again.
 aegis-desktop-entries = { workspace = true }
+fastrand.workspace = true
 flux = { workspace = true }
 flux-sys = { workspace = true }
 flux-scene-graph = { workspace = true }
 flux-scene-graph-sys = { workspace = true }
 image = { workspace = true }
 log.workspace = true
+notify.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

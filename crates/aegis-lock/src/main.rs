@@ -363,6 +363,9 @@ impl AppData {
 
     fn advance(&mut self) {
         let now = Instant::now();
+        if self.graphics.reload_avatar_if_ready() {
+            self.dirty = true;
+        }
         while let Ok(result) = self.auth_rx.try_recv() {
             let action = self.lock_state.authentication_finished(result, now);
             self.handle_action(action);
@@ -417,6 +420,7 @@ impl AppData {
             || self.visual_progress > 0.02;
         (self.visual_progress - target).abs() > 0.001
             || (avatar_visible && self.graphics.avatar_is_animated())
+            || self.graphics.avatar_reload_pending()
     }
 
     fn render_all(&mut self) {

@@ -1034,14 +1034,12 @@ struct ClientDestroyRecord {
 }
 
 /// Frozen MRU order while the physical user holds Super for window cycling.
-///
-/// Focusing a window raises it in the compositor stack, so deriving the next
-/// candidate afresh on every Tab would collapse into a two-window toggle.
-/// Freezing the order gives held-key cycling and one-shot MRU toggling their
-/// distinct, expected semantics.
+/// Selection is compositor-local until the session is committed, so browsing
+/// never raises windows or transfers keyboard focus underneath the overlay.
 struct WindowSwitcherSession {
     order: Vec<aegis_core::window::WindowId>,
     selected: usize,
+    last_forward: bool,
 }
 
 /// Server-wide state. Its address is handed to the C bind callbacks, so it is

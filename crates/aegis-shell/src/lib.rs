@@ -140,8 +140,12 @@ pub struct WindowSwitcherCard {
 /// single snapshot prevents the chrome and client scene from drifting apart.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowSwitcherPresentation {
+    pub mode: aegis_core::window_switcher::Mode,
     pub panel: aegis_core::Rect,
     pub cards: Vec<WindowSwitcherCard>,
+    /// Independently animated focus frame. In fixed mode this moves between
+    /// stationary cards; in carousel mode it remains at the output centre.
+    pub selection_indicator: Option<aegis_core::window_switcher::Card>,
     pub selected: Option<aegis_core::window::WindowId>,
     pub visibility: f32,
 }
@@ -556,6 +560,8 @@ pub trait Chrome {
         _input: &Input,
         _display: aegis_core::Rect,
         _windows: &[Window],
+        _order: &[aegis_core::window::WindowId],
+        _selected: Option<aegis_core::window::WindowId>,
     ) -> Option<WindowSwitcherPresentation> {
         None
     }
@@ -1053,10 +1059,12 @@ impl Shell {
         input: &Input,
         display: aegis_core::Rect,
         windows: &[Window],
+        order: &[aegis_core::window::WindowId],
+        selected: Option<aegis_core::window::WindowId>,
     ) -> Option<WindowSwitcherPresentation> {
-        self.components
-            .iter_mut()
-            .find_map(|component| component.prepare_window_switcher(input, display, windows))
+        self.components.iter_mut().find_map(|component| {
+            component.prepare_window_switcher(input, display, windows, order, selected)
+        })
     }
 
     /// Collect compositor-rendered live-preview popovers contributed by

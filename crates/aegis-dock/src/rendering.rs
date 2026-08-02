@@ -70,21 +70,24 @@ impl Chrome for Dock {
         // independently keeps autohide revealed while the pointer travels
         // from the icon into a live preview card.
         let over_hover_surface = self.hover_surface_contains(cursor.x, cursor.y);
-        let in_band = if self.collapse_pending {
+        let in_band = !self.collapse_pending
+            && cursor.x >= rest_bounds.x
+            && cursor.y >= rest_bounds.y
+            && cursor.x < rest_bounds.x + rest_bounds.w
+            && cursor.y < rest_bounds.y + rest_bounds.h;
+        let in_autohide_trigger = if self.collapse_pending || !effective_autohide {
             false
-        } else if effective_autohide && self.autohide_reveal < 0.2 {
+        } else if self.autohide_reveal < 0.2 {
             Self::hidden_reveal_requested(
                 &mut self.hidden_trigger_armed,
                 (cursor.x, cursor.y),
                 (disp.x, disp.y),
             )
         } else {
-            cursor.x >= rest_bounds.x
-                && cursor.y >= rest_bounds.y
-                && cursor.x < rest_bounds.x + rest_bounds.w
-                && cursor.y < rest_bounds.y + rest_bounds.h
+            Self::hidden_trigger_contains((cursor.x, cursor.y), (disp.x, disp.y))
+                || Self::expanded_trigger_contains((cursor.x, cursor.y), rest_bounds, disp.y)
         };
-        let keeps_revealed = in_band || over_hover_surface;
+        let keeps_revealed = in_band || in_autohide_trigger || over_hover_surface;
         let menu_open = self.app_menu.is_open();
 
         if effective_autohide {
@@ -686,13 +689,17 @@ impl Chrome for Dock {
         if self.hover_surface_contains(x, y) {
             return true;
         }
-        if self.effective_autohide()
-            && Self::collapse_content_progress(self.autohide_reveal)
-                <= AUTOHIDE_CONTENT_INTERACTION_MIN
-        {
-            return Self::hidden_trigger_contains((x, y), display);
-        }
         let rest = self.pointer_bounds(windows, display);
+        if self.effective_autohide() {
+            if self.autohide_reveal < 0.2 {
+                return Self::hidden_trigger_contains((x, y), display);
+            }
+            if Self::hidden_trigger_contains((x, y), display)
+                || Self::expanded_trigger_contains((x, y), rest, display.1)
+            {
+                return true;
+            }
+        }
         let r = if self.effective_autohide() {
             Self::collapsed_panel_rect(display, rest.w, self.autohide_reveal)
         } else {

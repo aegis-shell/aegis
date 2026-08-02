@@ -164,6 +164,19 @@ fn workspace_dot_states_use_size_and_brightness() {
 }
 
 #[test]
+fn floating_foregrounds_share_one_contour_with_geometry_specific_widths() {
+    let text = hud_text_outline(1.0);
+    let glyph = hud_glyph_outline(1.0);
+    assert_eq!(text.color, glyph.color);
+    assert!(text.width < glyph.width);
+    assert_eq!(text.color, hud_contour_color());
+
+    let faded = hud_text_outline(0.5);
+    assert!(faded.color.components().3 < text.color.components().3);
+    assert_eq!(faded.width, text.width);
+}
+
+#[test]
 fn status_icons_follow_the_reported_state() {
     assert_eq!(
         network_icon_name(NetworkState::Wired),

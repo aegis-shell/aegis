@@ -69,6 +69,7 @@ pub struct Graphics {
     background: Image,
     avatar: AvatarResource,
     avatar_status: AvatarStatus,
+    avatar_watcher: Option<aegis_avatar::AvatarWatcher>,
     ash: AshBridge,
 }
 
@@ -95,6 +96,13 @@ impl AvatarResource {
             Self::Fallback(_) => Ok(false),
         }
     }
+
+    fn current_motion(&self) -> Option<&str> {
+        match self {
+            Self::Loaded(avatar) => avatar.current_motion(),
+            Self::Fallback(_) => None,
+        }
+    }
 }
 
 impl Graphics {
@@ -105,8 +113,13 @@ impl Graphics {
         // search path, decodes still images or loads VRM models, and returns a
         // single circle-masked texture. When nothing is configured, this lock
         // screen supplies its own procedural gradient orb.
-        let (avatar, avatar_status) = match aegis_avatar::Avatar::load(&device) {
-            Ok(Some(loaded)) => {
+        let (avatar, avatar_status) = match aegis_avatar::Avatar::load_transactional(&device) {
+            Ok(Some(mut loaded)) => {
+                if loaded.play_motion("greeting") {
+                    log::debug!("lock: playing avatar action \"greeting\"");
+                } else if let Some(name) = loaded.play_random_action() {
+                    log::debug!("lock: playing avatar action {name:?}");
+                }
                 let kind = loaded.kind();
                 (AvatarResource::Loaded(loaded), AvatarStatus::from(kind))
             }
@@ -125,12 +138,20 @@ impl Graphics {
                 (AvatarResource::Fallback(texture), AvatarStatus::Fallback)
             }
         };
+        let avatar_watcher = match aegis_avatar::AvatarWatcher::new() {
+            Ok(watcher) => Some(watcher),
+            Err(error) => {
+                log::warn!("lock: avatar hot reload disabled: {error}");
+                None
+            }
+        };
         let ash = AshBridge::new(connection, &device)?;
         Ok(Self {
             device,
             background,
             avatar,
             avatar_status,
+            avatar_watcher,
             ash,
         })
     }
@@ -200,6 +221,69 @@ impl Graphics {
     #[must_use]
     pub fn avatar_is_animated(&self) -> bool {
         self.avatar.is_animated()
+    }
+
+    #[must_use]
+    pub fn avatar_reload_pending(&self) -> bool {
+        self.avatar_watcher
+            .as_ref()
+            .is_some_and(aegis_avatar::AvatarWatcher::needs_poll)
+    }
+
+    /// Build and publish an avatar replacement on the render thread. Failed
+    /// or partial sources leave the last-known-good resource untouched.
+    pub fn reload_avatar_if_ready(&mut self) -> bool {
+        let ready = self
+            .avatar_watcher
+            .as_mut()
+            .is_some_and(aegis_avatar::AvatarWatcher::poll);
+        if !ready {
+            return false;
+        }
+        if let Some(watcher) = &mut self.avatar_watcher
+            && let Err(error) = watcher.refresh()
+        {
+            log::warn!("lock: could not refresh avatar watches: {error}");
+        }
+        let previous_motion = self.avatar.current_motion().map(str::to_owned);
+        match aegis_avatar::Avatar::load_transactional(&self.device) {
+            Ok(Some(mut loaded)) => {
+                let restored = previous_motion
+                    .as_deref()
+                    .is_some_and(|name| loaded.play_motion(name));
+                if !restored && loaded.play_motion("greeting") {
+                    log::debug!("lock: playing avatar action \"greeting\" after reload");
+                } else if !restored && let Some(name) = loaded.play_random_action() {
+                    log::debug!("lock: playing avatar action {name:?} after reload");
+                }
+                self.avatar_status = AvatarStatus::from(loaded.kind());
+                self.avatar = AvatarResource::Loaded(loaded);
+                log::info!("lock: avatar hot reloaded");
+                true
+            }
+            Ok(None) => match aegis_avatar::procedural_orb(&self.device) {
+                Ok(texture) => {
+                    self.avatar = AvatarResource::Fallback(texture);
+                    self.avatar_status = AvatarStatus::Fallback;
+                    log::info!("lock: avatar removed, using fallback");
+                    true
+                }
+                Err(error) => {
+                    log::warn!("lock: avatar fallback reload failed, keeping current: {error}");
+                    if let Some(watcher) = &mut self.avatar_watcher {
+                        watcher.retry();
+                    }
+                    false
+                }
+            },
+            Err(error) => {
+                log::warn!("lock: avatar hot reload failed, keeping current: {error}");
+                if let Some(watcher) = &mut self.avatar_watcher {
+                    watcher.retry();
+                }
+                false
+            }
+        }
     }
 }
 

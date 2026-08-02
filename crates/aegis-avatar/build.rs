@@ -9,10 +9,14 @@ fn main() {
     let debug_assets = manifest_dir.join("debug-assets");
     let debug_vrm = debug_assets.join("avatar.vrm");
     let debug_vrma = debug_assets.join("avatar.vrma");
+    let debug_motions = debug_assets.join("motions");
     println!("cargo:rerun-if-changed={}", debug_vrm.display());
     println!("cargo:rerun-if-changed={}", debug_vrma.display());
+    println!("cargo:rerun-if-changed={}", debug_motions.display());
     if debug_vrm.is_file() {
-        let motion = if debug_vrma.is_file() {
+        let motion = if debug_motions.is_dir() {
+            " with motion library"
+        } else if debug_vrma.is_file() {
             " with companion avatar.vrma"
         } else {
             ""

@@ -3,8 +3,8 @@
 Shared tracing-based observability init for Aegis processes.
 
 Every first-party binary (`aegis`, `aegis-idle`, `aegis-lock`,
-`aegis-portal`, `aegis-settings`) calls `aegis_logging::init` before doing
-work. Crates keep using the `log` facade; this crate installs a
+`xdg-desktop-portal-aegis`, `aegis-settings`) calls `aegis_logging::init`
+before doing work. Crates keep using the `log` facade; this crate installs a
 `tracing`-based subscriber and bridges `log::` records into it, so structured
 spans and fields added around `log::` events are captured without rewriting
 every callsite.

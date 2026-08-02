@@ -66,7 +66,8 @@ pub const LOCAL_AGENT_ADMIN_SCOPE: &str = "aegis-agent-admin";
 /// session capability surface.
 pub const LOCAL_OWNER_ADMIN_SCOPE: &str = "aegis-owner-admin";
 /// Built-in owner-only scope used by the xdg-desktop-portal backend
-/// (`aegis-portal`, ADR-0075). It resolves to an explicit allowlist covering
+/// (`xdg-desktop-portal-aegis`, ADR-0095). It resolves to an explicit
+/// allowlist covering
 /// capture and streaming, idle inhibition, user-consent pickers and prompts,
 /// notifications, and wallpaper changes — and nothing else. Like the Realm
 /// administration

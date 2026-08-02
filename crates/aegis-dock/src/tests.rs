@@ -116,6 +116,24 @@ fn spring_is_dt_stable() {
 }
 
 #[test]
+fn spring_remains_bounded_and_settles_at_thirty_fps() {
+    let mut s = SpringState {
+        value: DOCK_TILE,
+        vel: 0.0,
+    };
+    for _ in 0..300 {
+        Dock::spring(&mut s, DOCK_TILE_MAX, 1.0 / 30.0);
+        assert!(
+            s.value >= 0.0 && s.value <= DOCK_TILE_MAX * 2.0,
+            "spring escaped its visual range: {}",
+            s.value
+        );
+    }
+    assert!((s.value - DOCK_TILE_MAX).abs() < 0.01);
+    assert!(s.vel.abs() < 0.01);
+}
+
+#[test]
 fn pinned_apps_show_without_any_running_window() {
     let dock = dock_with(vec![app("firefox.desktop"), app("term.desktop")]);
     let tiles = dock.tiles(&[]);
@@ -169,6 +187,41 @@ fn unpinned_running_window_is_appended() {
     assert!(gimp.running);
     assert!(!gimp.pinned, "the window tile is transient, not kept");
     assert_eq!(gimp.focus, Some(aegis_core::window::WindowId(3)));
+}
+
+#[test]
+fn unpinned_windows_keep_open_order_when_focus_reorders_snapshot() {
+    let dock = Dock::new();
+    let first = dock.tiles(&[window(1, "first", false), window(2, "second", true)]);
+    assert_eq!(
+        first
+            .iter()
+            .map(|tile| tile.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["win:1", "win:2"]
+    );
+
+    let reordered = dock.tiles(&[window(2, "second", false), window(1, "first", true)]);
+    assert_eq!(
+        reordered
+            .iter()
+            .map(|tile| tile.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["win:1", "win:2"],
+        "focus/stacking order must not move a transient Dock tile"
+    );
+    assert!(reordered[0].activated);
+    assert!(!reordered[1].activated);
+
+    let after_close_and_open = dock.tiles(&[window(3, "third", true), window(2, "second", false)]);
+    assert_eq!(
+        after_close_and_open
+            .iter()
+            .map(|tile| tile.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["win:2", "win:3"],
+        "a newly opened window is appended after surviving transient tiles"
+    );
 }
 
 #[test]
@@ -392,6 +445,41 @@ fn collapsed_handle_has_no_tile_hover_target() {
         display,
         &[],
         &workspace_snapshot(),
+    ));
+}
+
+#[test]
+fn expanded_autohide_dock_keeps_pointer_across_bottom_gap() {
+    let display = (1920.0, 1080.0);
+    let mut dock = Dock::new();
+    dock.set_autohide(true);
+    dock.autohide_reveal = 1.0;
+    let rest = dock.pointer_bounds(&[], display);
+    let gap_y = rest.y + rest.h + DOCK_BOTTOM_MARGIN * 0.5;
+    let original_trigger = Dock::hidden_trigger_bounds(display);
+    let trigger_edge_x = original_trigger.x + 1.0;
+
+    assert!(Dock::expanded_trigger_contains(
+        (display.0 * 0.5, gap_y),
+        rest,
+        display.1,
+    ));
+    assert!(dock.captures_pointer(display.0 * 0.5, gap_y, display, &[], &workspace_snapshot(),));
+    assert!(
+        trigger_edge_x < rest.x,
+        "the regression point must be outside the expanded panel"
+    );
+    assert!(dock.captures_pointer(
+        trigger_edge_x,
+        display.1 - 1.0,
+        display,
+        &[],
+        &workspace_snapshot(),
+    ));
+    assert!(!Dock::expanded_trigger_contains(
+        (rest.x - 1.0, gap_y),
+        rest,
+        display.1,
     ));
 }
 

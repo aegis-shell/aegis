@@ -291,11 +291,22 @@ impl CompositorRuntime {
                     scale,
                 };
                 self.shell.prepare_backdrop(&input);
+                let switcher_state = self.server.window_switcher_snapshot();
                 let switcher_windows = self.server.windows();
+                let (switcher_order, switcher_selected) = switcher_state
+                    .as_ref()
+                    .map(|(order, selected)| (order.as_slice(), *selected))
+                    .unwrap_or((&[], None));
+                let switcher_display = self
+                    .shell
+                    .reserved()
+                    .inset(self.server.output_logical_rect());
                 let window_switcher = self.shell.prepare_window_switcher(
                     &input,
-                    aegis_core::Rect::new(0, 0, logical_size.0 as i32, logical_size.1 as i32),
+                    switcher_display,
                     &switcher_windows,
+                    switcher_order,
+                    switcher_selected,
                 );
                 let live_previews = if window_switcher.is_none() {
                     self.shell.live_preview_presentations()
@@ -1053,7 +1064,7 @@ impl CompositorRuntime {
                 let ts = self.start.elapsed().as_millis() as u64;
                 let origin = aegis_ipc::Origin::Chrome;
                 if let Some(id) = self.shell.take_window_switcher_pick() {
-                    self.server.finish_window_switcher();
+                    self.server.cancel_window_switcher();
                     self.shell.finish_window_switcher();
                     apply_chrome_window_command(
                         &mut self.server,
@@ -1066,7 +1077,7 @@ impl CompositorRuntime {
                     );
                 }
                 if self.shell.take_window_switcher_cancel() {
-                    self.server.finish_window_switcher();
+                    self.server.cancel_window_switcher();
                     self.shell.finish_window_switcher();
                 }
                 if let Some(id) = self.shell.take_clicked_window() {

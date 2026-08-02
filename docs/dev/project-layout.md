@@ -41,6 +41,14 @@ Cross-repository development uses a
 [worktree-isolated Cargo patch](cross-repository-development.md) for
 `../optics/bindings` and discovers that checkout's uninstalled Meson tree.
 
+The optional
+[xdg-desktop-portal-aegis repository](https://github.com/aegis-shell/xdg-desktop-portal-aegis)
+owns the private backend, its encrypted Secret implementation, PipeWire
+bridge, PAM helper, D-Bus activation files, and portal metadata. It depends
+on `aegis-core`, `aegis-ipc`, and `aegis-logging` from its declared
+compatible Aegis tag; none of its crates are workspace members here. See
+[ADR-0095](../adr/0095-independent-portal-repository-and-component-workspace.md).
+
 ## Modules
 
 | Crate | Purpose | Design reference |

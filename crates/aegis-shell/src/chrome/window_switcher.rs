@@ -12,8 +12,9 @@ use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{
     AppCatalog, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet, LiquidGlassRegion,
-    Localizer, WindowSwitcherCard, WindowSwitcherPresentation, truncate,
+    Localizer, Message, WindowSwitcherCard, WindowSwitcherPresentation, truncate,
 };
+use aegis_core::input::{KeyAction, KeyChar, key_action};
 use aegis_core::window::{Window, WindowId};
 use aegis_core::workspace::WorkspaceSnapshot;
 
@@ -28,11 +29,12 @@ pub struct WindowSwitcher {
     anim_active: bool,
     reduced_motion: bool,
     icons: IconSet,
-    /// Bottom-to-top compositor order from the last ordinary window snapshot.
-    known_windows: Vec<WindowId>,
     /// Frozen MRU order for the current held-Super session.
     order: Vec<WindowId>,
+    layout_key: Option<(usize, i32, i32, i32, i32)>,
+    mode: aegis_core::window_switcher::Mode,
     animated_cards: HashMap<WindowId, aegis_core::window_switcher::Card>,
+    animated_selection: Option<aegis_core::window_switcher::Card>,
     presentation: Option<WindowSwitcherPresentation>,
     hovered: Option<WindowId>,
 }
@@ -51,9 +53,11 @@ impl WindowSwitcher {
             anim_active: false,
             reduced_motion: false,
             icons: IconSet::default(),
-            known_windows: Vec::new(),
             order: Vec::new(),
+            layout_key: None,
+            mode: aegis_core::window_switcher::Mode::Fixed,
             animated_cards: HashMap::new(),
+            animated_selection: None,
             presentation: None,
             hovered: None,
         }
@@ -83,6 +87,8 @@ impl WindowSwitcher {
         input: &Input,
         display: aegis_core::Rect,
         windows: &[Window],
+        session_order: &[WindowId],
+        selected: Option<WindowId>,
     ) -> Option<WindowSwitcherPresentation> {
         let dt = input.as_raw().dt_seconds.max(0.0);
         self.advance_visibility(dt);
@@ -94,30 +100,46 @@ impl WindowSwitcher {
         }
 
         let live: HashSet<_> = windows.iter().map(|window| window.id).collect();
-        self.order.retain(|id| live.contains(id));
-        // A window mapped while the switcher is held joins at the old end
-        // without perturbing the frozen MRU order already visible to the user.
-        for id in windows.iter().rev().map(|window| window.id) {
-            if !self.order.contains(&id) {
-                self.order.push(id);
-            }
-        }
-        if self.order.is_empty() {
-            self.order
-                .extend(windows.iter().rev().map(|window| window.id));
+        if self.open {
+            // The compositor owns the frozen eligible set. Replacing from its
+            // snapshot removes closed windows but deliberately ignores newly
+            // mapped windows until the next switcher session.
+            self.order = session_order
+                .iter()
+                .copied()
+                .filter(|id| live.contains(id))
+                .collect();
+        } else {
+            self.order.retain(|id| live.contains(id));
         }
 
-        let selected = windows
-            .iter()
-            .find(|window| window.state.activated)
-            .map(|window| window.id)
+        let selected = selected
+            .filter(|id| self.order.contains(id))
+            .or_else(|| self.presentation.as_ref().and_then(|state| state.selected))
             .filter(|id| self.order.contains(id))
             .or_else(|| self.order.first().copied());
         let selected_index = selected
             .and_then(|id| self.order.iter().position(|candidate| *candidate == id))
             .unwrap_or(0);
-        let target =
-            aegis_core::window_switcher::carousel_layout(display, self.order.len(), selected_index);
+        let layout_key = (
+            self.order.len(),
+            display.origin.x,
+            display.origin.y,
+            display.size.w,
+            display.size.h,
+        );
+        if self.layout_key != Some(layout_key) {
+            self.layout_key = Some(layout_key);
+            self.mode = aegis_core::window_switcher::mode(display, self.order.len());
+            self.animated_cards.clear();
+            self.animated_selection = None;
+        }
+        let target = aegis_core::window_switcher::layout_for_mode(
+            display,
+            self.order.len(),
+            selected_index,
+            self.mode,
+        );
         let blend = if self.reduced_motion {
             1.0
         } else {
@@ -127,29 +149,53 @@ impl WindowSwitcher {
         let mut cards_moving = false;
         for (id, target_card) in self.order.iter().copied().zip(target.cards.iter().copied()) {
             let current = self.animated_cards.entry(id).or_insert(target_card);
-            // The chosen window owns the fixed visual centre immediately.
-            // The surrounding cards glide around it instead of dragging the
-            // highlight across a row of fixed slots.
-            if Some(id) == selected || self.reduced_motion {
+            if self.mode == aegis_core::window_switcher::Mode::Fixed || self.reduced_motion {
                 *current = target_card;
             } else {
+                // A circular list has one off-screen item whose logical slot
+                // wraps from one tail to the other. Teleport only that distant
+                // item behind the panel clip; every visible item, including
+                // the incoming selection, moves exactly one adjacent step.
+                let current_centre = current.outer.origin.x + current.outer.size.w / 2;
+                let target_centre = target_card.outer.origin.x + target_card.outer.size.w / 2;
+                if (current_centre - target_centre).abs() > target.panel.size.w / 2 {
+                    *current = target_card;
+                }
                 *current = lerp_card(*current, target_card, blend);
             }
             cards_moving |= *current != target_card;
-            cards.push(WindowSwitcherCard {
-                window: id,
-                geometry: *current,
-            });
+            if intersects(target.panel, current.outer) {
+                cards.push(WindowSwitcherCard {
+                    window: id,
+                    geometry: *current,
+                });
+            }
         }
-        self.animated_cards.retain(|id, _| live.contains(id));
-        self.anim_active |= cards_moving;
-        if !cards_moving {
+        self.animated_cards.retain(|id, _| self.order.contains(id));
+
+        let target_selection = target.cards.get(selected_index).copied();
+        let selection_moving = if let Some(target_selection) = target_selection {
+            let current = self.animated_selection.get_or_insert(target_selection);
+            if self.mode == aegis_core::window_switcher::Mode::Carousel || self.reduced_motion {
+                *current = target_selection;
+            } else {
+                *current = lerp_card(*current, target_selection, blend);
+            }
+            *current != target_selection
+        } else {
+            self.animated_selection = None;
+            false
+        };
+        self.anim_active |= cards_moving || selection_moving;
+        if !cards_moving && !selection_moving {
             self.anim_active = (self.visibility - if self.open { 1.0 } else { 0.0 }).abs() > 0.002;
         }
 
         let presentation = WindowSwitcherPresentation {
+            mode: self.mode,
             panel: target.panel,
             cards,
+            selection_indicator: self.animated_selection,
             selected,
             visibility: self.visibility,
         };
@@ -165,7 +211,7 @@ impl Chrome for WindowSwitcher {
         input: &Input,
         windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
-        _i18n: &Localizer,
+        i18n: &Localizer,
         out: &mut ChromeEvents,
     ) {
         let display = aegis_core::Rect::new(
@@ -175,7 +221,8 @@ impl Chrome for WindowSwitcher {
             input.as_raw().display_size.y.max(1.0) as i32,
         );
         if self.presentation.is_none() {
-            self.prepare(input, display, windows);
+            let order = self.order.clone();
+            self.prepare(input, display, windows, &order, None);
         }
         let Some(presentation) = self.presentation.clone() else {
             return;
@@ -238,6 +285,21 @@ impl Chrome for WindowSwitcher {
             },
         );
 
+        if let Some(indicator) = presentation.selection_indicator {
+            frame.layer(
+                "aegis-window-switcher-selection",
+                to_lens(indicator.outer),
+                &OverlayOpts {
+                    bg: Color::rgba(116, 170, 255, self.alpha(22)),
+                    border: Color::rgba(116, 170, 255, self.alpha(255)),
+                    border_width: 3.0,
+                    radius: 13.0,
+                    ..Default::default()
+                },
+                |_| {},
+            );
+        }
+
         let mut render_cards: Vec<_> = presentation.cards.iter().collect();
         render_cards.sort_by_key(|card| Some(card.window) == presentation.selected);
         for (index, presented) in render_cards.into_iter().enumerate() {
@@ -256,7 +318,7 @@ impl Chrome for WindowSwitcher {
                         255,
                         255,
                         self.alpha(if selected {
-                            18
+                            0
                         } else if hovered {
                             12
                         } else {
@@ -264,14 +326,14 @@ impl Chrome for WindowSwitcher {
                         }),
                     ),
                     border: if selected {
-                        Color::rgba(116, 170, 255, self.alpha(255))
+                        Color::rgba(255, 255, 255, 0)
                     } else if hovered {
                         Color::rgba(154, 196, 255, self.alpha(220))
                     } else {
                         Color::rgba(255, 255, 255, self.alpha(38))
                     },
                     border_width: if selected {
-                        3.0
+                        0.0
                     } else if hovered {
                         2.0
                     } else {
@@ -288,7 +350,7 @@ impl Chrome for WindowSwitcher {
                 .title
                 .as_deref()
                 .or(window.app_id.as_deref())
-                .unwrap_or("Untitled");
+                .unwrap_or_else(|| i18n.text(Message::UntitledWindow));
             let label = truncate(title, (label_rect.w / 7.0).max(5.0) as usize);
             let icon = window
                 .app_id
@@ -331,8 +393,21 @@ impl Chrome for WindowSwitcher {
         input: &Input,
         display: aegis_core::Rect,
         windows: &[Window],
+        order: &[WindowId],
+        selected: Option<WindowId>,
     ) -> Option<WindowSwitcherPresentation> {
-        self.prepare(input, display, windows)
+        self.prepare(input, display, windows, order, selected)
+    }
+
+    fn captures_keyboard(&self) -> bool {
+        self.open
+    }
+
+    fn key_char(&mut self, key: &KeyChar, out: &mut ChromeEvents) {
+        if self.open && matches!(key_action(key.keysym, key.ch), KeyAction::Escape) {
+            out.window_switcher_cancel = true;
+            self.finish_window_switcher();
+        }
     }
 
     fn captures_pointer(
@@ -435,15 +510,12 @@ impl Chrome for WindowSwitcher {
         self.icons = catalog.icons.clone();
     }
 
-    fn update_windows(&mut self, windows: &[Window]) {
-        self.known_windows = windows.iter().map(|window| window.id).collect();
-    }
-
     fn start_window_switcher(&mut self) {
         if self.open {
             return;
         }
-        self.order = self.known_windows.iter().rev().copied().collect();
+        self.order.clear();
+        self.layout_key = None;
         self.open = true;
         self.anim_active = true;
     }
@@ -485,6 +557,13 @@ fn contains(rect: aegis_core::Rect, x: f32, y: f32) -> bool {
         && y < (rect.origin.y + rect.size.h) as f32
 }
 
+fn intersects(a: aegis_core::Rect, b: aegis_core::Rect) -> bool {
+    a.origin.x < b.origin.x + b.size.w
+        && b.origin.x < a.origin.x + a.size.w
+        && a.origin.y < b.origin.y + b.size.h
+        && b.origin.y < a.origin.y + a.size.h
+}
+
 fn lerp_i32(from: i32, to: i32, blend: f32) -> i32 {
     let value = from as f32 + (to - from) as f32 * blend;
     if (value - to as f32).abs() < 0.75 {
@@ -519,6 +598,12 @@ fn lerp_card(
 mod tests {
     use super::*;
 
+    fn windows(count: u64) -> (Vec<Window>, Vec<WindowId>) {
+        let order: Vec<_> = (1..=count).map(WindowId).collect();
+        let windows = order.iter().copied().map(Window::new).collect();
+        (windows, order)
+    }
+
     #[test]
     fn held_switcher_opens_and_modifier_release_closes_it() {
         let mut switcher = WindowSwitcher::new();
@@ -547,11 +632,99 @@ mod tests {
     }
 
     #[test]
+    fn fixed_mode_keeps_cards_still_and_moves_only_the_indicator() {
+        let mut switcher = WindowSwitcher::new();
+        switcher.set_reduced_motion(true);
+        switcher.start_window_switcher();
+        let input = Input::default();
+        let display = aegis_core::Rect::new(0, 0, 1920, 1080);
+        let (windows, order) = windows(4);
+
+        let first = switcher
+            .prepare(&input, display, &windows, &order, Some(order[0]))
+            .unwrap();
+        let last = switcher
+            .prepare(&input, display, &windows, &order, Some(order[3]))
+            .unwrap();
+
+        assert_eq!(first.mode, aegis_core::window_switcher::Mode::Fixed);
+        assert_eq!(first.cards, last.cards);
+        assert_eq!(
+            last.selection_indicator.unwrap().outer,
+            last.cards
+                .iter()
+                .find(|card| card.window == order[3])
+                .unwrap()
+                .geometry
+                .outer
+        );
+    }
+
+    #[test]
+    fn carousel_wraps_through_the_adjacent_slot_with_a_centred_indicator() {
+        let mut switcher = WindowSwitcher::new();
+        switcher.set_reduced_motion(true);
+        switcher.start_window_switcher();
+        let input = Input::default();
+        let display = aegis_core::Rect::new(0, 0, 1920, 1080);
+        let (windows, order) = windows(5);
+
+        let before = switcher
+            .prepare(&input, display, &windows, &order, Some(order[4]))
+            .unwrap();
+        let after = switcher
+            .prepare(&input, display, &windows, &order, Some(order[0]))
+            .unwrap();
+        let centre = display.size.w / 2;
+        let incoming_before = before
+            .cards
+            .iter()
+            .find(|card| card.window == order[0])
+            .unwrap()
+            .geometry
+            .outer;
+        let incoming_after = after
+            .cards
+            .iter()
+            .find(|card| card.window == order[0])
+            .unwrap()
+            .geometry
+            .outer;
+
+        assert_eq!(after.mode, aegis_core::window_switcher::Mode::Carousel);
+        assert!(incoming_before.origin.x + incoming_before.size.w / 2 > centre);
+        assert_eq!(incoming_after.origin.x + incoming_after.size.w / 2, centre);
+        let indicator = after.selection_indicator.unwrap().outer;
+        assert_eq!(indicator.origin.x + indicator.size.w / 2, centre);
+    }
+
+    #[test]
+    fn escape_requests_cancellation_without_selecting_a_window() {
+        let mut switcher = WindowSwitcher::new();
+        switcher.start_window_switcher();
+        let mut out = ChromeEvents::default();
+        switcher.key_char(
+            &KeyChar {
+                keysym: aegis_core::input::XKB_KEY_Escape,
+                ch: None,
+                mods: aegis_core::input::Mods::SUPER,
+            },
+            &mut out,
+        );
+
+        assert!(out.window_switcher_cancel);
+        assert!(out.window_switcher_pick.is_none());
+        assert!(!switcher.open);
+    }
+
+    #[test]
     fn visible_switcher_panel_is_declared_as_liquid_glass() {
         let mut switcher = WindowSwitcher::new();
         switcher.presentation = Some(WindowSwitcherPresentation {
+            mode: aegis_core::window_switcher::Mode::Fixed,
             panel: aegis_core::Rect::new(200, 160, 640, 240),
             cards: Vec::new(),
+            selection_indicator: None,
             selected: None,
             visibility: 0.6,
         });

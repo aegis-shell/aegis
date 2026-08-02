@@ -179,14 +179,41 @@ A VRM 0.x or 1.0 model can instead be placed at:
 
 - `$XDG_DATA_HOME/aegis/avatars/avatar.vrm`
 
-To animate it, add the companion VRM Animation 1.0 clip at:
+To add multiple VRM Animation 1.0 clips, create these directories:
 
-- `$XDG_DATA_HOME/aegis/avatars/avatar.vrma`
+- `$XDG_DATA_HOME/aegis/avatars/motions/idle/`
+- `$XDG_DATA_HOME/aegis/avatars/motions/actions/`
 
-A still image takes precedence over a VRM model. Aegis retargets the VRMA
-humanoid motion onto VRM 0.x or 1.0 bones, loops it while the avatar is
-visible, and keeps the animated head and shoulders inside the identity disc.
-Without the companion clip, the VRM remains in its rest pose.
+Use lowercase ASCII file stems beginning with a letter, such as
+`idle/breathe.vrma` and `actions/greeting.vrma`. Aegis plays every idle clip
+once in shuffled order before reshuffling, without repeating across the
+shuffle boundary. Named actions play once and then return to the idle pool or
+the rest pose. Opening the command panel requests a random action; the lock
+screen requests `greeting` and falls back to a random action when that name is
+absent.
+
+For compatibility, a single
+`$XDG_DATA_HOME/aegis/avatars/avatar.vrma` remains a looping idle clip when
+both motion-library directories contain no clips. The motion library takes
+precedence when both layouts exist.
+
+A still image takes precedence over a VRM model. Aegis retargets each VRMA
+motion onto VRM 0.x or 1.0 bones and keeps the animated head and shoulders
+inside the identity disc. Without any motion clip, the VRM remains in its
+rest pose. Embedded PNG/JPEG base-color textures retain authored skin, hair,
+eye, and clothing colors. UV0 transforms, unlit materials, glTF sampler state,
+OPAQUE/MASK/BLEND alpha, alpha cutoff, and double-sided primitives are
+supported. Referenced external images and additional texture-coordinate sets
+are rejected instead of rendering an incomplete white model.
+
+Avatar sources and motion libraries reload live in both the lock screen and
+command panel. Save or atomically replace a still image, VRM, or VRMA file and
+allow about one second for an idle surface to observe it, plus a short debounce
+while writes settle. A complete replacement is decoded and uploaded before it
+becomes visible. If a save temporarily leaves malformed data, Aegis keeps the
+last-known-good avatar and retries; deleting all avatar sources deliberately
+switches to the gradient fallback. A reload keeps the current named motion
+when that motion still exists in the replacement library.
 
 See [How to Configure Locking and Idle](lock-and-idle.md) for automatic
 timeouts and the [Session Service Commands](../reference/session-services.md)

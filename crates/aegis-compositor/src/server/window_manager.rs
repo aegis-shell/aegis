@@ -33,13 +33,28 @@ impl Server {
             .focused_toplevel_id()
             .and_then(|id| order.iter().position(|candidate| *candidate == id))
             .unwrap_or(0);
-        self.state.window_switcher = Some(WindowSwitcherSession { order, selected });
+        self.state.window_switcher = Some(WindowSwitcherSession {
+            order,
+            selected,
+            last_forward: true,
+        });
     }
 
-    /// End the held-Super cycle. The focused window is already raised, so the
-    /// next one-shot cycle naturally sees the old window as the previous MRU
-    /// target and toggles back to it.
+    /// Commit the current preview selection, then end the held-Super session.
+    /// This is the only keyboard-switcher path that raises a window or moves
+    /// the Wayland keyboard focus.
     pub fn finish_window_switcher(&mut self) {
+        let selected = self
+            .window_switcher_snapshot()
+            .and_then(|(_, selected)| selected);
+        self.state.window_switcher = None;
+        if let Some(selected) = selected {
+            self.focus_surface_by_id(selected);
+        }
+    }
+
+    /// Dismiss the held-Super session without applying its preview selection.
+    pub fn cancel_window_switcher(&mut self) {
         self.state.window_switcher = None;
     }
 
@@ -47,46 +62,60 @@ impl Server {
         self.state.window_switcher.is_some()
     }
 
-    /// Cycle keyboard focus in a frozen MRU order while a switcher session is
-    /// active. Outside a held session this performs one temporary MRU step;
-    /// repeated quick Super+Tab taps therefore alternate between the two most
-    /// recent windows instead of walking the whole creation order.
+    /// Update the preview target in a frozen MRU order while a switcher
+    /// session is active. Outside a held session this remains an immediate,
+    /// one-shot focus command for IPC and non-session callers.
     pub fn cycle_focus(&mut self, forward: bool) {
-        let one_shot = self.state.window_switcher.is_none();
-        self.start_window_switcher();
-
-        let eligible: std::collections::HashSet<_> =
-            self.switcher_candidates().into_iter().collect();
-        if eligible.len() < 2 {
-            if one_shot {
-                self.finish_window_switcher();
+        if self.state.window_switcher.is_none() {
+            let order = self.switcher_candidates();
+            if order.len() < 2 {
+                return;
             }
+            let selected = self
+                .focused_toplevel_id()
+                .and_then(|id| order.iter().position(|candidate| *candidate == id))
+                .unwrap_or(0);
+            let next = order[stepped_index(selected, order.len(), forward)];
+            self.focus_surface_by_id(next);
             return;
         }
-        let focused = self.focused_toplevel_id();
-        let next = {
-            let Some(session) = self.state.window_switcher.as_mut() else {
-                return;
-            };
-            let selected_id = session.order.get(session.selected).copied();
-            session.order.retain(|id| eligible.contains(id));
-            if session.order.len() < 2 {
-                return;
-            }
-            session.selected = selected_id
-                .and_then(|id| session.order.iter().position(|candidate| *candidate == id))
-                .or_else(|| {
-                    focused
-                        .and_then(|id| session.order.iter().position(|candidate| *candidate == id))
-                })
-                .unwrap_or(0);
-            session.selected = stepped_index(session.selected, session.order.len(), forward);
-            session.order[session.selected]
+
+        self.refresh_window_switcher();
+        let Some(session) = self.state.window_switcher.as_mut() else {
+            return;
         };
-        self.focus_surface_by_id(next);
-        if one_shot {
-            self.finish_window_switcher();
+        if session.order.len() < 2 {
+            return;
         }
+        session.selected = stepped_index(session.selected, session.order.len(), forward);
+        session.last_forward = forward;
+    }
+
+    /// Return the frozen order and latest preview target for shell rendering.
+    /// Closed windows are pruned first; new windows are never inserted into an
+    /// active session.
+    pub fn window_switcher_snapshot(
+        &mut self,
+    ) -> Option<(
+        Vec<aegis_core::window::WindowId>,
+        Option<aegis_core::window::WindowId>,
+    )> {
+        self.refresh_window_switcher();
+        self.state.window_switcher.as_ref().map(|session| {
+            (
+                session.order.clone(),
+                session.order.get(session.selected).copied(),
+            )
+        })
+    }
+
+    fn refresh_window_switcher(&mut self) {
+        let eligible: std::collections::HashSet<_> =
+            self.switcher_candidates().into_iter().collect();
+        let Some(session) = self.state.window_switcher.as_mut() else {
+            return;
+        };
+        reconcile_switcher_session(session, &eligible);
     }
 
     /// Switch to an adjacent workspace on the focused output (ADR-0025). The
@@ -640,6 +669,31 @@ fn stepped_index(current: usize, len: usize, forward: bool) -> usize {
     }
 }
 
+fn reconcile_switcher_session(
+    session: &mut WindowSwitcherSession,
+    eligible: &std::collections::HashSet<aegis_core::window::WindowId>,
+) {
+    let selected_id = session.order.get(session.selected).copied();
+    let old_index = session.selected.min(session.order.len().saturating_sub(1));
+    session.order.retain(|id| eligible.contains(id));
+    if session.order.is_empty() {
+        session.selected = 0;
+        return;
+    }
+    if let Some(index) =
+        selected_id.and_then(|id| session.order.iter().position(|candidate| *candidate == id))
+    {
+        session.selected = index;
+        return;
+    }
+
+    session.selected = if session.last_forward {
+        old_index % session.order.len()
+    } else {
+        (old_index + session.order.len() - 1) % session.order.len()
+    };
+}
+
 #[cfg(test)]
 mod window_switcher_tests {
     use super::*;
@@ -667,5 +721,43 @@ mod window_switcher_tests {
         let second_mru: Vec<_> = stack.iter().rev().copied().collect();
         let target = second_mru[stepped_index(0, second_mru.len(), true)];
         assert_eq!(target, WindowId(3));
+    }
+
+    #[test]
+    fn closing_the_selection_chooses_the_neighbour_in_the_last_direction() {
+        use aegis_core::window::WindowId;
+        use std::collections::HashSet;
+
+        let eligible = HashSet::from([WindowId(1), WindowId(3), WindowId(4)]);
+        let mut forward = WindowSwitcherSession {
+            order: vec![WindowId(1), WindowId(2), WindowId(3), WindowId(4)],
+            selected: 1,
+            last_forward: true,
+        };
+        reconcile_switcher_session(&mut forward, &eligible);
+        assert_eq!(forward.order[forward.selected], WindowId(3));
+
+        let mut backward = WindowSwitcherSession {
+            order: vec![WindowId(1), WindowId(2), WindowId(3), WindowId(4)],
+            selected: 1,
+            last_forward: false,
+        };
+        reconcile_switcher_session(&mut backward, &eligible);
+        assert_eq!(backward.order[backward.selected], WindowId(1));
+    }
+
+    #[test]
+    fn refreshing_a_session_never_inserts_new_windows() {
+        use aegis_core::window::WindowId;
+        use std::collections::HashSet;
+
+        let mut session = WindowSwitcherSession {
+            order: vec![WindowId(1), WindowId(2)],
+            selected: 0,
+            last_forward: true,
+        };
+        let eligible = HashSet::from([WindowId(1), WindowId(2), WindowId(3)]);
+        reconcile_switcher_session(&mut session, &eligible);
+        assert_eq!(session.order, vec![WindowId(1), WindowId(2)]);
     }
 }

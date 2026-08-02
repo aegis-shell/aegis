@@ -20,7 +20,7 @@ use aegis_desktop_entries::xdg_data_dirs;
 /// Candidate still-image avatar paths, in lookup precedence.
 ///
 /// Order: the canonical Aegis data location for every name in
-/// [`still_names`], then the freedesktop `~/.face` and `~/.face.icon`
+/// `still_names`, then the freedesktop `~/.face` and `~/.face.icon`
 /// compatibility locations. The Aegis location wins because a user who placed
 /// a file there made an explicit Aegis choice.
 pub fn candidate_paths() -> Vec<PathBuf> {
@@ -53,9 +53,10 @@ fn vrm_candidate_paths_from(aegis: PathBuf, debug: Option<PathBuf>) -> Vec<PathB
         .collect()
 }
 
-/// Candidate VRMA clips paired positionally with [`vrm_candidate_paths`]. A
-/// `.vrma` contains animation only; it is never passed to the model loader as
-/// if it contained renderable meshes.
+/// Legacy companion VRMA clips paired positionally with
+/// [`vrm_candidate_paths`]. Motion-library directories are derived beside the
+/// selected model instead. A `.vrma` contains animation only; it is never
+/// passed to the model loader as if it contained renderable meshes.
 pub fn vrma_candidate_paths() -> Vec<PathBuf> {
     vrma_candidate_paths_from(aegis_avatar_dir(), enabled_debug_asset_dir())
 }

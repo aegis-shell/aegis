@@ -66,6 +66,14 @@ backend, renderer, and shell behind clear seams so the
 
 | **Binary** | `aegis` | The binary: wires the parts together and runs the event loop |
 
+The optional xdg-desktop-portal backend is developed in the independent
+[xdg-desktop-portal-aegis repository](https://github.com/aegis-shell/xdg-desktop-portal-aegis).
+It remains an explicitly version-pinned Aegis companion because its scoped
+IPC mechanisms move with the compositor, while its D-Bus, PipeWire,
+encrypted-secret, and PAM dependencies evolve outside the core source
+workspace. See
+[ADR-0095](../adr/0095-independent-portal-repository-and-component-workspace.md).
+
 flux and lens are consumed through separately versioned Rust binding
 workspaces in the Optics monorepo, following the openssl-sys / rusqlite
 convention: `flux-rs` (`flux` / `flux-sys`) and `lens-rs`
