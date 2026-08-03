@@ -603,7 +603,7 @@ fn dock_backdrop_is_one_analytic_rounded_body() {
     assert_eq!(backdrop.len(), 1);
     assert_eq!(glass.len(), 1);
     assert_eq!(glass[0].bounds, backdrop[0]);
-    assert_eq!(glass[0].corner_radius, Design::dark().radii.dock);
+    assert_eq!(glass[0].corner_radius, Design::dark().radii.glass_panel);
     assert_eq!(glass[0].opacity, 1.0);
 }
 
@@ -728,7 +728,7 @@ fn running_app_preview_layout_exposes_every_window_inside_the_output() {
 }
 
 #[test]
-fn live_preview_adds_a_second_glass_body_and_keeps_its_pointer_bridge() {
+fn live_preview_adds_one_panel_body_and_keeps_its_pointer_bridge() {
     let mut dock = dock_with(vec![app("org.example.Editor.desktop")]);
     let owner = lens::Rect {
         x: 900.0,
@@ -758,7 +758,7 @@ fn live_preview_adds_a_second_glass_body_and_keeps_its_pointer_bridge() {
 
     let glass = dock.liquid_glass_regions((1920.0, 1080.0), &[], &workspace_snapshot());
     assert_eq!(glass.len(), 2);
-    assert_eq!(glass[1].corner_radius, PREVIEW_PANEL_RADIUS);
+    assert_eq!(glass[1].corner_radius, Design::dark().radii.glass_panel);
     let bridge_y = (panel.origin.y + panel.size.h) as f32 + PREVIEW_PANEL_GAP * 0.5;
     assert!(dock.captures_pointer(
         owner.x + owner.w * 0.5,
@@ -767,6 +767,60 @@ fn live_preview_adds_a_second_glass_body_and_keeps_its_pointer_bridge() {
         &[],
         &workspace_snapshot(),
     ));
+    assert!(dock.captures_pointer(
+        owner.x + owner.w * 0.5,
+        owner.y + owner.h * 0.25,
+        (1920.0, 1080.0),
+        &[],
+        &workspace_snapshot(),
+    ));
+}
+
+#[test]
+fn hovered_live_preview_uses_one_parent_body_with_an_optical_focus_field() {
+    let mut dock = dock_with(vec![app("org.example.Editor.desktop")]);
+    let owner = lens::Rect {
+        x: 900.0,
+        y: 970.0,
+        w: 84.0,
+        h: 84.0,
+    };
+    let window = aegis_core::window::WindowId(7);
+    let presentation = live_preview_layout((1920.0, 1080.0), owner, &[window], 1.0);
+    let panel = presentation.panel;
+    dock.tooltip_alpha = 1.0;
+    dock.hover_surface_bounds = Some(lens::Rect {
+        x: panel.origin.x as f32,
+        y: panel.origin.y as f32,
+        w: panel.size.w as f32,
+        h: panel.size.h as f32,
+    });
+    let mut focused_presentation = presentation.clone();
+    focused_presentation.focused = Some(window);
+    dock.hovered_preview = Some(window);
+    dock.live_preview = Some(focused_presentation);
+
+    let glass = dock.liquid_glass_regions((1920.0, 1080.0), &[], &workspace_snapshot());
+    assert_eq!(glass.len(), 2);
+    let focus = glass[1].focus.expect("preview panel should carry focus");
+    assert_eq!(
+        focus.bounds.x,
+        presentation.cards[0].geometry.outer.origin.x as f32
+    );
+    assert_eq!(
+        focus.bounds.y,
+        presentation.cards[0].geometry.outer.origin.y as f32
+    );
+    assert_eq!(
+        focus.bounds.w,
+        presentation.cards[0].geometry.outer.size.w as f32
+    );
+    assert_eq!(
+        focus.bounds.h,
+        presentation.cards[0].geometry.outer.size.h as f32
+    );
+    assert_eq!(focus.corner_radius, Design::dark().radii.control);
+    assert_eq!(focus.strength, Design::dark().glass_focus.field_strength);
 }
 
 #[test]

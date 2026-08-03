@@ -451,18 +451,41 @@ enum OrderedSurfaceSource {
 type WindowMap<'a> =
     dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect + 'a;
 
+/// Appearance applied to every image in one mapped surface subtree.
+///
+/// `rounded_clip` is independent of each surface destination. Reusing it for
+/// the toplevel, subsurfaces, and popups produces one preview silhouette.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MappedSurfaceStyle {
+    pub opacity: f32,
+    pub brightness: f32,
+    pub rounded_clip: aegis_core::Rect,
+    pub corner_radius: f32,
+}
+
 #[derive(Default)]
 struct OrderedSurfaceOptions<'a> {
     map: Option<&'a WindowMap<'a>>,
     window_shadows: Option<&'a [aegis_core::window::Window]>,
     window_filter: Option<&'a HashSet<aegis_core::window::WindowId>>,
-    mapped_opacity: Option<f32>,
+    mapped_style: Option<MappedSurfaceStyle>,
 }
 
-fn mapped_opacity_alpha(opacity: Option<f32>) -> Option<u8> {
-    let opacity = opacity.filter(|value| value.is_finite())?.clamp(0.0, 1.0);
-    let alpha = (opacity * 255.0).round() as u8;
-    (alpha < u8::MAX).then_some(alpha)
+fn mapped_surface_modulation(style: MappedSurfaceStyle) -> (u8, u8) {
+    let opacity = if style.opacity.is_finite() {
+        style.opacity.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let brightness = if style.brightness.is_finite() {
+        style.brightness.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    (
+        (brightness * 255.0).round() as u8,
+        (opacity * 255.0).round() as u8,
+    )
 }
 
 /// Window metadata and membership for one independently composited workspace
@@ -804,11 +827,11 @@ impl Renderer {
         );
     }
 
-    /// Ordered mapped drawing with one shared opacity for every remapped
-    /// surface. This is used by transient scene previews whose client pixels
-    /// must fade in lockstep with the surrounding compositor chrome.
+    /// Ordered mapped drawing with one shared appearance for every remapped
+    /// surface. This is used by transient scene previews whose complete
+    /// surface tree needs one rounded silhouette and color-preserving focus.
     #[allow(clippy::too_many_arguments)]
-    pub fn draw_surfaces_ordered_mapped_with_opacity(
+    pub fn draw_surfaces_ordered_mapped_with_style(
         &mut self,
         device: &flux::Device,
         canvas: &flux::Canvas,
@@ -816,7 +839,7 @@ impl Renderer {
         shm: &[SurfacePixels<'_>],
         dmabuf: &[SurfaceDmabuf],
         map: &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
-        opacity: f32,
+        style: MappedSurfaceStyle,
     ) {
         self.draw_surfaces_ordered_impl(
             device,
@@ -826,7 +849,7 @@ impl Renderer {
             dmabuf,
             OrderedSurfaceOptions {
                 map: Some(map),
-                mapped_opacity: Some(opacity),
+                mapped_style: Some(style),
                 ..Default::default()
             },
         );
@@ -869,7 +892,7 @@ impl Renderer {
         options: OrderedSurfaceOptions<'_>,
     ) {
         let map = options.map;
-        let mapped_opacity = options.mapped_opacity;
+        let mapped_style = options.mapped_style;
         let shm_ids = shm.iter().map(|frame| frame.id).collect::<Vec<_>>();
         let dmabuf_ids = dmabuf.iter().map(|frame| frame.id).collect::<Vec<_>>();
         let shadow_windows = options.window_shadows.map(|windows| {
@@ -902,14 +925,14 @@ impl Renderer {
                     canvas,
                     std::slice::from_ref(&shm[index]),
                     map,
-                    mapped_opacity,
+                    mapped_style,
                 ),
                 OrderedSurfaceSource::Dmabuf(index) => self.draw_dmabuf_toplevels_impl(
                     device,
                     canvas,
                     std::slice::from_ref(&dmabuf[index]),
                     map,
-                    mapped_opacity,
+                    mapped_style,
                 ),
             }
         }
@@ -923,7 +946,7 @@ impl Renderer {
         map: Option<
             &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
         >,
-        mapped_opacity: Option<f32>,
+        mapped_style: Option<MappedSurfaceStyle>,
     ) {
         for f in frames.iter() {
             self.retire_dmabuf_surface(f.id);
@@ -1117,14 +1140,23 @@ impl Renderer {
                         dst_h.max(1.0) as i32,
                     );
                     let mapped = map(f.window, natural);
-                    if let Some(alpha) = mapped_opacity_alpha(mapped_opacity) {
-                        let paint = flux::Paint::solid(flux::rgba(255, 255, 255, alpha));
-                        canvas.draw_image_with_paint(
+                    if let Some(style) = mapped_style {
+                        let (brightness, alpha) = mapped_surface_modulation(style);
+                        let paint = flux::Paint::solid(flux::rgba(
+                            brightness, brightness, brightness, alpha,
+                        ));
+                        let clip = style.rounded_clip;
+                        canvas.draw_image_clipped_rrect_with_paint(
                             img,
                             mapped.origin.x as f32,
                             mapped.origin.y as f32,
                             mapped.size.w as f32,
                             mapped.size.h as f32,
+                            clip.origin.x as f32,
+                            clip.origin.y as f32,
+                            clip.size.w as f32,
+                            clip.size.h as f32,
+                            style.corner_radius,
                             &paint,
                         );
                     } else {
@@ -1210,7 +1242,7 @@ impl Renderer {
         map: Option<
             &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
         >,
-        mapped_opacity: Option<f32>,
+        mapped_style: Option<MappedSurfaceStyle>,
     ) {
         for f in frames.iter() {
             self.retire_cached(f.id);
@@ -1417,14 +1449,23 @@ impl Renderer {
                         dst_h.max(1.0) as i32,
                     );
                     let mapped = map(f.window, natural);
-                    if let Some(alpha) = mapped_opacity_alpha(mapped_opacity) {
-                        let paint = flux::Paint::solid(flux::rgba(255, 255, 255, alpha));
-                        canvas.draw_image_with_paint(
+                    if let Some(style) = mapped_style {
+                        let (brightness, alpha) = mapped_surface_modulation(style);
+                        let paint = flux::Paint::solid(flux::rgba(
+                            brightness, brightness, brightness, alpha,
+                        ));
+                        let clip = style.rounded_clip;
+                        canvas.draw_image_clipped_rrect_with_paint(
                             img,
                             mapped.origin.x as f32,
                             mapped.origin.y as f32,
                             mapped.size.w as f32,
                             mapped.size.h as f32,
+                            clip.origin.x as f32,
+                            clip.origin.y as f32,
+                            clip.size.w as f32,
+                            clip.size.h as f32,
+                            style.corner_radius,
                             &paint,
                         );
                     } else if drm_fmt::is_format_opaque(f.drm_format)
@@ -1921,12 +1962,22 @@ mod tests {
     }
 
     #[test]
-    fn mapped_opacity_only_requests_tint_for_a_real_fade() {
-        assert_eq!(mapped_opacity_alpha(None), None);
-        assert_eq!(mapped_opacity_alpha(Some(1.0)), None);
-        assert_eq!(mapped_opacity_alpha(Some(f32::NAN)), None);
-        assert_eq!(mapped_opacity_alpha(Some(0.5)), Some(128));
-        assert_eq!(mapped_opacity_alpha(Some(-1.0)), Some(0));
+    fn mapped_surface_modulation_separates_brightness_from_opacity() {
+        let style = MappedSurfaceStyle {
+            opacity: 0.5,
+            brightness: 0.75,
+            rounded_clip: aegis_core::Rect::new(0, 0, 100, 80),
+            corner_radius: 12.0,
+        };
+        assert_eq!(mapped_surface_modulation(style), (191, 128));
+        assert_eq!(
+            mapped_surface_modulation(MappedSurfaceStyle {
+                opacity: f32::NAN,
+                brightness: f32::NAN,
+                ..style
+            }),
+            (255, 255)
+        );
     }
 
     #[test]

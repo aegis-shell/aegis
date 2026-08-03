@@ -5,6 +5,6 @@
 # AEGIS_AVATAR_DEBUG_DUMP=/tmp/aegis-avatar.png to save one preview frame.
 # AEGIS_AVATAR_DEBUG_MOTION=greeting selects a named library motion.
 # AEGIS_AVATAR_DEBUG_TIME=2.5 selects the sampled animation time in seconds.
-# Use AEGIS_AVATAR_DEBUG_XDG=1 instead to preview the current XDG avatar.
 *
 !.gitignore
+!README.md

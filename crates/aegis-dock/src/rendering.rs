@@ -418,6 +418,7 @@ impl Chrome for Dock {
         // Fire a click once on the press edge (the host does not clear the
         // per-frame pressed flag, so track the button-down level transition).
         let pressed_edge = down && !self.prev_down;
+        let previous_hovered_preview = self.hovered_preview;
         let preview_hit = self
             .live_preview
             .as_ref()
@@ -428,6 +429,7 @@ impl Chrome for Dock {
                 .find(|window| window.id == *id)
                 .is_some_and(|window| !window.read_only)
         });
+        self.anim_active |= self.hovered_preview != previous_hovered_preview;
         let clicked_preview = pressed_edge && !menu_was_open && self.hovered_preview.is_some();
         if clicked_preview {
             out.clicked = self.hovered_preview;
@@ -564,9 +566,10 @@ impl Chrome for Dock {
                 self.hovered_preview = None;
                 render_tooltip(f, &tile.label, rect, self.tooltip_alpha);
             } else {
-                let presentation =
+                let mut presentation =
                     live_preview_layout((disp.x, disp.y), owner, &tile.windows, self.tooltip_alpha);
                 self.hover_surface_bounds = Some(to_lens_rect(presentation.panel));
+                let previous_hovered_preview = self.hovered_preview;
                 self.hovered_preview =
                     live_preview_hit(&presentation, cursor.x, cursor.y).filter(|id| {
                         windows
@@ -574,6 +577,8 @@ impl Chrome for Dock {
                             .find(|window| window.id == *id)
                             .is_some_and(|window| !window.read_only)
                     });
+                self.anim_active |= self.hovered_preview != previous_hovered_preview;
+                presentation.focused = self.hovered_preview;
                 render_live_preview_chrome(f, &presentation, windows, self.hovered_preview);
                 self.live_preview = Some(presentation);
             }
@@ -881,6 +886,7 @@ impl Dock {
             shadow_alpha: 0.20,
             shadow_blur: 12.0 * shadow_factor,
             shadow_offset_y: 6.0 * shadow_factor,
+            focus: None,
         })
     }
 
@@ -890,6 +896,24 @@ impl Dock {
             return None;
         }
         let preview = self.live_preview.is_some();
+        let focus = self.live_preview.as_ref().and_then(|presentation| {
+            let focused = presentation.focused?;
+            let card = presentation
+                .cards
+                .iter()
+                .find(|card| card.window == focused)?;
+            let bounds = card.geometry.outer;
+            Some(aegis_shell::LiquidGlassFocus {
+                bounds: BackdropRegion {
+                    x: bounds.origin.x as f32,
+                    y: bounds.origin.y as f32,
+                    w: bounds.size.w as f32,
+                    h: bounds.size.h as f32,
+                },
+                corner_radius: Design::dark().radii.control,
+                strength: Design::dark().glass_focus.field_strength,
+            })
+        });
         Some(LiquidGlassRegion {
             bounds: BackdropRegion {
                 x: bounds.x,
@@ -898,7 +922,7 @@ impl Dock {
                 h: bounds.h,
             },
             corner_radius: if preview {
-                PREVIEW_PANEL_RADIUS
+                Design::dark().radii.glass_panel
             } else {
                 TOOLTIP_HEIGHT * 0.5
             },
@@ -906,6 +930,7 @@ impl Dock {
             shadow_alpha: if preview { 0.20 } else { 0.14 },
             shadow_blur: if preview { 16.0 } else { 10.0 },
             shadow_offset_y: if preview { 8.0 } else { 5.0 },
+            focus,
         })
     }
 }
@@ -1001,12 +1026,12 @@ fn mix_channel(collapsed: u8, expanded: u8, progress: f32) -> u8 {
 
 fn collapsing_radius(surface_progress: f32, height: f32) -> f32 {
     let radius = AUTOHIDE_HANDLE_HEIGHT * 0.5
-        + (Design::dark().radii.dock - AUTOHIDE_HANDLE_HEIGHT * 0.5) * surface_progress;
+        + (Design::dark().radii.glass_panel - AUTOHIDE_HANDLE_HEIGHT * 0.5) * surface_progress;
     radius.min(height * 0.5)
 }
 
 fn collapsing_dock_material(surface_progress: f32, height: f32) -> OverlayOpts {
-    let mut material = materials::dock(&Design::dark());
+    let mut material = materials::glass_panel(&Design::dark());
     material.bg = Color::rgba(
         mix_channel(240, 255, surface_progress),
         mix_channel(243, 255, surface_progress),
@@ -1070,7 +1095,7 @@ fn render_tooltip(frame: &mut Frame, label: &str, rect: Rect, alpha: f32) {
     let opacity = |base: u8| (base as f32 * alpha.clamp(0.0, 1.0)).round() as u8;
     let original = frame.theme();
     frame.set_theme(original.with_fg(Color::rgba(242, 244, 250, opacity(255))));
-    let mut material = materials::dock(&Design::dark());
+    let mut material = materials::glass_panel(&Design::dark());
     material.bg = Color::rgba(255, 255, 255, opacity(12));
     material.radius = TOOLTIP_HEIGHT * 0.5;
     frame.layer("aegis-dock-app-name", rect, &material, |frame| {
@@ -1154,6 +1179,7 @@ pub(super) fn live_preview_layout(
             let y = panel.y + PREVIEW_PANEL_PAD + row as f32 * (card_h + PREVIEW_CARD_GAP);
             WindowSwitcherCard {
                 window,
+                corner_radius: Design::dark().radii.control,
                 geometry: aegis_core::window_switcher::Card {
                     outer: core_rect(Rect {
                         x,
@@ -1180,6 +1206,8 @@ pub(super) fn live_preview_layout(
     LivePreviewPresentation {
         panel: core_rect(panel),
         cards,
+        focused: None,
+        inactive_content_brightness: Design::dark().glass_focus.inactive_content_brightness,
         visibility: visibility.clamp(0.0, 1.0),
     }
 }
@@ -1192,9 +1220,10 @@ fn render_live_preview_chrome(
 ) {
     let opacity = |base: u8| (base as f32 * presentation.visibility.clamp(0.0, 1.0)).round() as u8;
     let panel = to_lens_rect(presentation.panel);
-    let mut material = materials::dock(&Design::dark());
+    let design = Design::dark();
+    let mut material = materials::glass_panel(&design);
     material.bg = Color::rgba(255, 255, 255, opacity(12));
-    material.radius = PREVIEW_PANEL_RADIUS;
+    material.radius = design.radii.glass_panel;
     frame.layer("aegis-dock-live-previews", panel, &material, |frame| {
         frame.column_ex(&sized(panel.w, panel.h), |_| {});
     });
@@ -1207,20 +1236,28 @@ fn render_live_preview_chrome(
         };
         let outer = to_lens_rect(card.geometry.outer);
         let is_hovered = hovered == Some(window.id) && !window.read_only;
+        let content_brightness = if hovered.is_some() && !is_hovered {
+            design.glass_focus.inactive_content_brightness
+        } else {
+            1.0
+        };
+        frame.set_theme(original.with_fg(Color::rgba(
+            242,
+            244,
+            250,
+            opacity((255.0 * content_brightness).round() as u8),
+        )));
         frame.layer(
             &format!("aegis-dock-live-preview-card-{index}"),
             outer,
-            &OverlayOpts {
-                bg: Color::rgba(255, 255, 255, opacity(if is_hovered { 14 } else { 4 })),
-                border: if is_hovered {
-                    Color::rgba(126, 178, 255, opacity(245))
-                } else {
-                    Color::rgba(255, 255, 255, opacity(42))
-                },
-                border_width: if is_hovered { 2.0 } else { 1.0 },
-                radius: 11.0,
-                pad: 0.0,
-                ..Default::default()
+            &if is_hovered {
+                materials::glass_focus(&design, true, presentation.visibility)
+            } else {
+                OverlayOpts {
+                    radius: card.corner_radius,
+                    pad: 0.0,
+                    ..Default::default()
+                }
             },
             |frame| frame.column_ex(&sized(outer.w, outer.h), |_| {}),
         );
@@ -1236,8 +1273,8 @@ fn render_live_preview_chrome(
             &format!("aegis-dock-live-preview-label-{index}"),
             label_rect,
             &OverlayOpts {
-                bg: Color::rgba(255, 255, 255, opacity(9)),
-                radius: 8.0,
+                bg: Color::TRANSPARENT,
+                radius: design.radii.control,
                 pad: 0.0,
                 cross: Align::Center,
                 ..Default::default()

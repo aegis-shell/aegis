@@ -1,9 +1,8 @@
-//! Local account identity for the header band: username, display name,
-//! initials, and group memberships, resolved once at panel construction.
+//! Local account identity resolved once and shared by presentation hosts.
 
 use std::ffi::{CStr, CString, c_char};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
     pub username: String,
     pub display_name: String,
@@ -12,9 +11,6 @@ pub struct Identity {
 }
 
 impl Identity {
-    /// Resolve the effective user's account record and group names. Group
-    /// lookup failures are skipped silently — the sub-line simply shows fewer
-    /// groups — but a missing passwd record fails the whole call.
     pub fn current() -> Result<Self, std::io::Error> {
         let uid = unsafe { libc::geteuid() };
         let capacity = unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) };
@@ -65,7 +61,6 @@ impl Identity {
         })
     }
 
-    /// The headless/failure identity: a generic local user with no groups.
     pub fn fallback() -> Self {
         Self {
             username: "user".into(),
@@ -76,8 +71,6 @@ impl Identity {
     }
 }
 
-/// The user's group names: the primary group first, then the supplementary
-/// list from `getgrouplist`, deduplicated and with empties filtered out.
 fn groups(username: &str, primary_gid: libc::gid_t) -> Vec<String> {
     let mut names = Vec::new();
     if let Some(name) = group_name(primary_gid) {
@@ -86,8 +79,6 @@ fn groups(username: &str, primary_gid: libc::gid_t) -> Vec<String> {
     let Ok(c_user) = CString::new(username) else {
         return names;
     };
-    // First call sizes the list; `getgrouplist` reports the full count
-    // through `count` even when the array is too small.
     let mut count: libc::c_int = 0;
     unsafe {
         libc::getgrouplist(
@@ -144,5 +135,18 @@ fn c_string(pointer: *const c_char) -> String {
         unsafe { CStr::from_ptr(pointer) }
             .to_string_lossy()
             .into_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_process_has_a_stable_shared_identity() {
+        let identity = Identity::current().expect("passwd record for test user");
+        assert!(!identity.username.is_empty());
+        assert!(!identity.display_name.is_empty());
+        assert!(!identity.initials.is_empty());
     }
 }

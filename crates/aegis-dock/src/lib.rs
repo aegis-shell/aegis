@@ -108,7 +108,6 @@ const PREVIEW_PANEL_PAD: f32 = 12.0;
 const PREVIEW_CARD_GAP: f32 = 10.0;
 const PREVIEW_PANEL_GAP: f32 = 12.0;
 const PREVIEW_SCREEN_MARGIN: f32 = 8.0;
-const PREVIEW_PANEL_RADIUS: f32 = 16.0;
 
 /// One application pinned to the dock: the launchable entry plus the lowercased
 /// `app_id`s a running toplevel might report, used to fold a running window
@@ -511,6 +510,9 @@ impl Dock {
         let Some(owner) = self.hover_owner_bounds else {
             return false;
         };
+        if contains(owner) {
+            return true;
+        }
         let bridge = Rect {
             x: surface.x.min(owner.x),
             y: (surface.y + surface.h).min(owner.y),

@@ -117,8 +117,10 @@ aegis-tray = { path = "crates/aegis-tray" }
 # Modal command panel (ADR-0080).
 aegis-command-panel = { path = "crates/aegis-command-panel" }
 aegis-wallpaper = { path = "crates/aegis-wallpaper" }
-# User avatar loading and rendering: still images and VRM models (ADR-0080).
+# VRM avatar animation and offscreen rendering.
 aegis-avatar = { path = "crates/aegis-avatar" }
+# Shared account identity, portrait source precedence, and still/VRM routing.
+aegis-identity = { path = "crates/aegis-identity" }
 # First-party session products. The compositor retains the protocol and
 # fail-closed authority; these packages are ordinary Wayland clients.
 aegis-lock = { path = "crates/aegis-lock" }

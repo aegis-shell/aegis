@@ -13,6 +13,7 @@ pub struct Design {
     pub colors: Colors,
     pub radii: Radii,
     pub strokes: Strokes,
+    pub glass_focus: GlassFocus,
     pub hud_foreground: HudForeground,
 }
 
@@ -30,8 +31,8 @@ impl Design {
                 menu_active: Color::rgba(255, 255, 255, 36),
                 popover_surface: Color::rgba(255, 255, 255, 38),
                 popover_border: Color::rgba(255, 255, 255, 72),
-                dock_surface: Color::rgba(255, 255, 255, 12),
-                dock_border: Color::rgba(255, 255, 255, 0),
+                glass_surface: Color::rgba(255, 255, 255, 12),
+                glass_border: Color::rgba(255, 255, 255, 0),
                 application_surface: Color::rgba(25, 28, 40, 255),
                 application_text: Color::rgba(244, 246, 252, 255),
                 application_accent: Color::rgba(102, 156, 255, 255),
@@ -46,7 +47,7 @@ impl Design {
             radii: Radii {
                 menu_item: 7.0,
                 popover: 12.0,
-                dock: 18.0,
+                glass_panel: 18.0,
                 control: 12.0,
                 card: 16.0,
                 scrollbar: 2.5,
@@ -54,6 +55,12 @@ impl Design {
             strokes: Strokes {
                 hairline: 1.0,
                 scrollbar: 5.0,
+            },
+            glass_focus: GlassFocus {
+                hover_tint: Color::rgba(255, 255, 255, 6),
+                selected_tint: Color::rgba(255, 255, 255, 3),
+                field_strength: 1.0,
+                inactive_content_brightness: 0.74,
             },
             hud_foreground: HudForeground {
                 primary: Color::rgba(248, 249, 252, 255),
@@ -137,8 +144,8 @@ pub struct Colors {
     pub menu_active: Color,
     pub popover_surface: Color,
     pub popover_border: Color,
-    pub dock_surface: Color,
-    pub dock_border: Color,
+    pub glass_surface: Color,
+    pub glass_border: Color,
     pub application_surface: Color,
     pub application_text: Color,
     pub application_accent: Color,
@@ -157,7 +164,7 @@ pub struct Colors {
 pub struct Radii {
     pub menu_item: f32,
     pub popover: f32,
-    pub dock: f32,
+    pub glass_panel: f32,
     pub control: f32,
     pub card: f32,
     pub scrollbar: f32,
@@ -169,6 +176,21 @@ pub struct Radii {
 pub struct Strokes {
     pub hairline: f32,
     pub scrollbar: f32,
+}
+
+/// Focus hierarchy for interactive content hosted inside one glass body.
+///
+/// Hover is a quiet painted wash. Selection additionally drives the parent
+/// body's optical focus field; it never creates a second glass body or a
+/// painted outline. Sibling content dims just enough to make the focused
+/// target read without tinting the material with an application accent.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct GlassFocus {
+    pub hover_tint: Color,
+    pub selected_tint: Color,
+    pub field_strength: f32,
+    pub inactive_content_brightness: f32,
 }
 
 /// Foreground-separation policy for the display-only HUD.
@@ -223,5 +245,14 @@ mod tests {
         assert!(hud.text_contour_width > 0.0);
         assert!(hud.text_contour_width < hud.glyph_contour_width);
         assert!(hud.glyph_contour_width <= 1.0);
+    }
+
+    #[test]
+    fn glass_focus_is_neutral_borderless_policy() {
+        let focus = Design::dark().glass_focus;
+        assert_eq!(focus.hover_tint, Color::rgba(255, 255, 255, 6));
+        assert_eq!(focus.selected_tint, Color::rgba(255, 255, 255, 3));
+        assert_eq!(focus.field_strength, 1.0);
+        assert_eq!(focus.inactive_content_brightness, 0.74);
     }
 }

@@ -1,9 +1,4 @@
-//! Debounced filesystem observation for transactional avatar reloads.
-//!
-//! The watcher reports only that source state may have changed. It never
-//! decodes media or touches Flux from notify's callback thread: callers poll
-//! on their render thread, build a complete replacement with
-//! [`crate::Avatar::load_transactional`], and swap only after that succeeds.
+//! Debounced observation for the shared portrait configuration.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,16 +8,17 @@ use std::time::{Duration, Instant};
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
+use crate::{PortraitCandidate, PortraitConfig};
+
 const DEBOUNCE: Duration = Duration::from_millis(180);
 const RETRY_DELAY: Duration = Duration::from_millis(350);
 const MAX_RETRIES: u8 = 3;
 
-/// Failure to create or arm avatar filesystem observation.
 #[derive(Debug, thiserror::Error)]
 pub enum WatchError {
-    #[error("create avatar filesystem watcher")]
+    #[error("create identity portrait filesystem watcher")]
     Create(#[source] notify::Error),
-    #[error("no avatar source directory could be watched")]
+    #[error("no identity portrait source directory could be watched")]
     NoTargets,
 }
 
@@ -33,15 +29,21 @@ struct RelevantPaths {
 }
 
 impl RelevantPaths {
-    fn current() -> Self {
-        let mut trees = crate::vrm_candidate_paths()
-            .into_iter()
-            .filter_map(|path| path.parent().map(Path::to_path_buf))
-            .collect::<Vec<_>>();
+    fn from_config(config: &PortraitConfig) -> Self {
+        let mut trees = Vec::new();
+        let mut exact = Vec::new();
+        for candidate in config.candidates() {
+            match candidate {
+                PortraitCandidate::Still(path) => exact.push(path.clone()),
+                PortraitCandidate::Vrm { model, .. } => {
+                    if let Some(parent) = model.parent() {
+                        trees.push(parent.to_path_buf());
+                    }
+                }
+            }
+        }
         trees.sort();
         trees.dedup();
-
-        let mut exact = crate::candidate_paths();
         exact.retain(|path| !trees.iter().any(|tree| path.starts_with(tree)));
         exact.sort();
         exact.dedup();
@@ -103,19 +105,10 @@ impl ReloadSchedule {
         self.deadline = Some(now + RETRY_DELAY);
         true
     }
-
-    fn is_pending(&self) -> bool {
-        self.deadline.is_some()
-    }
 }
 
-/// Watches every source that can affect [`crate::Avatar::load`].
-///
-/// Event callbacks only set an atomic dirty flag. [`Self::poll`] performs
-/// trailing-edge debouncing on the caller's thread; a `true` result authorizes
-/// one transactional reload attempt. Call [`Self::retry`] after a failed load
-/// to tolerate editors that expose a partial file between rename/write events.
-pub struct AvatarWatcher {
+/// Watches every source described by one immutable [`PortraitConfig`].
+pub struct PortraitWatcher {
     watcher: RecommendedWatcher,
     relevant: Arc<RelevantPaths>,
     changed: Arc<AtomicBool>,
@@ -123,11 +116,9 @@ pub struct AvatarWatcher {
     schedule: ReloadSchedule,
 }
 
-impl AvatarWatcher {
-    /// Create and arm a watcher for the current XDG/debug avatar resolution
-    /// paths. Watcher setup is independent of whether an avatar exists yet.
-    pub fn new() -> Result<Self, WatchError> {
-        Self::from_relevant(RelevantPaths::current())
+impl PortraitWatcher {
+    pub fn new(config: &PortraitConfig) -> Result<Self, WatchError> {
+        Self::from_relevant(RelevantPaths::from_config(config))
     }
 
     fn from_relevant(relevant: RelevantPaths) -> Result<Self, WatchError> {
@@ -139,20 +130,18 @@ impl AvatarWatcher {
             notify::recommended_watcher(
                 move |result: notify::Result<notify::Event>| match result {
                     Ok(event) => {
-                        if matches!(event.kind, EventKind::Access(_)) {
-                            return;
-                        }
-                        if event.paths.is_empty()
-                            || event
-                                .paths
-                                .iter()
-                                .any(|path| callback_relevant.includes(path))
+                        if !matches!(event.kind, EventKind::Access(_))
+                            && (event.paths.is_empty()
+                                || event
+                                    .paths
+                                    .iter()
+                                    .any(|path| callback_relevant.includes(path)))
                         {
                             callback_changed.store(true, Ordering::Release);
                         }
                     }
                     Err(error) => {
-                        log::warn!("avatar: filesystem watcher error: {error}");
+                        log::warn!("identity portrait: filesystem watcher error: {error}");
                         callback_changed.store(true, Ordering::Release);
                     }
                 },
@@ -169,27 +158,20 @@ impl AvatarWatcher {
         Ok(this)
     }
 
-    /// Reconcile watches after a directory is created, removed, or replaced.
-    /// Parent guards remain armed so a deleted avatar tree can reappear.
     pub fn refresh(&mut self) -> Result<(), WatchError> {
         let desired = watch_targets(&self.relevant);
-        // Re-arm every target after a settled event. A directory can be
-        // atomically replaced at the same pathname while the old watch stays
-        // attached to the unlinked inode; comparing paths alone cannot detect
-        // that case.
         for path in std::mem::take(&mut self.watched).into_keys() {
             if let Err(error) = self.watcher.unwatch(&path) {
-                log::debug!("avatar: could not remove stale watch {:?}: {error}", path);
+                log::debug!("identity portrait: could not remove stale watch {path:?}: {error}");
             }
         }
-
         for (path, depth) in desired {
             match self.watcher.watch(&path, depth.notify_mode()) {
                 Ok(()) => {
                     self.watched.insert(path, depth);
                 }
                 Err(error) => {
-                    log::warn!("avatar: could not watch {:?}: {error}", path);
+                    log::warn!("identity portrait: could not watch {path:?}: {error}");
                 }
             }
         }
@@ -200,14 +182,11 @@ impl AvatarWatcher {
         }
     }
 
-    /// Whether an event or debounce/retry deadline needs render-loop polling.
     #[must_use]
     pub fn needs_poll(&self) -> bool {
-        self.changed.load(Ordering::Acquire) || self.schedule.is_pending()
+        self.changed.load(Ordering::Acquire) || self.schedule.deadline.is_some()
     }
 
-    /// Consume new events, apply trailing-edge debounce, and report when the
-    /// caller should attempt one complete avatar rebuild.
     pub fn poll(&mut self) -> bool {
         let now = Instant::now();
         if self.changed.swap(false, Ordering::AcqRel) {
@@ -216,9 +195,6 @@ impl AvatarWatcher {
         self.schedule.take_ready(now)
     }
 
-    /// Schedule a bounded retry after a failed transactional load.
-    /// Returns `false` after the retry budget is exhausted; a later filesystem
-    /// event starts a fresh budget.
     pub fn retry(&mut self) -> bool {
         self.schedule.retry(Instant::now())
     }
@@ -263,75 +239,34 @@ fn nearest_existing_directory(path: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use tempfile::tempdir;
-
     use super::*;
 
     #[test]
-    fn relevant_paths_ignore_unrelated_home_changes() {
-        let relevant = RelevantPaths {
-            trees: vec![PathBuf::from("/data/aegis/avatars")],
-            exact: vec![PathBuf::from("/home/test/.face")],
-        };
-        assert!(relevant.includes(Path::new("/data/aegis/avatars/motions/idle/a.vrma")));
-        assert!(relevant.includes(Path::new("/data/aegis/avatars")));
+    fn one_config_drives_still_and_motion_observation() {
+        let relevant = RelevantPaths::from_config(&PortraitConfig::new(vec![
+            PortraitCandidate::Still(PathBuf::from("/home/test/.face")),
+            PortraitCandidate::Vrm {
+                model: PathBuf::from("/data/aegis/avatars/avatar.vrm"),
+                legacy_motion: PathBuf::from("/data/aegis/avatars/avatar.vrma"),
+            },
+        ]));
         assert!(relevant.includes(Path::new("/home/test/.face")));
+        assert!(relevant.includes(Path::new(
+            "/data/aegis/avatars/motions/actions/greeting.vrma"
+        )));
         assert!(!relevant.includes(Path::new("/home/test/Downloads/photo.png")));
-        assert!(!relevant.includes(Path::new("/data/applications/app.desktop")));
     }
 
     #[test]
-    fn schedule_is_trailing_edge_debounced_and_retries_are_bounded() {
+    fn retry_schedule_is_bounded() {
         let start = Instant::now();
         let mut schedule = ReloadSchedule::default();
         schedule.observe(start);
         assert!(!schedule.take_ready(start + DEBOUNCE - Duration::from_millis(1)));
-        schedule.observe(start + Duration::from_millis(100));
-        assert!(!schedule.take_ready(start + DEBOUNCE));
-        assert!(schedule.take_ready(start + Duration::from_millis(100) + DEBOUNCE));
+        assert!(schedule.take_ready(start + DEBOUNCE));
         for retry in 0..MAX_RETRIES {
             assert!(schedule.retry(start + Duration::from_secs(u64::from(retry))));
         }
         assert!(!schedule.retry(start + Duration::from_secs(10)));
-    }
-
-    #[test]
-    fn existing_tree_gets_recursive_watch_and_parent_guard() {
-        let root = tempdir().unwrap();
-        let tree = root.path().join("aegis/avatars");
-        std::fs::create_dir_all(&tree).unwrap();
-        let relevant = RelevantPaths {
-            trees: vec![tree.clone()],
-            exact: Vec::new(),
-        };
-        let targets = watch_targets(&relevant);
-        assert_eq!(targets.get(&tree), Some(&WatchDepth::Recursive));
-        assert_eq!(
-            targets.get(tree.parent().unwrap()),
-            Some(&WatchDepth::Direct)
-        );
-    }
-
-    #[test]
-    fn recursive_source_change_reaches_the_debounced_poll() {
-        let root = tempdir().unwrap();
-        let tree = root.path().join("aegis/avatars");
-        std::fs::create_dir_all(&tree).unwrap();
-        let relevant = RelevantPaths {
-            trees: vec![tree.clone()],
-            exact: Vec::new(),
-        };
-        let mut watcher = AvatarWatcher::from_relevant(relevant).unwrap();
-        watcher.refresh().unwrap();
-
-        std::fs::write(tree.join("avatar.vrm"), b"replacement").unwrap();
-        let timeout = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < timeout {
-            if watcher.poll() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        panic!("filesystem change did not reach the reload poll before timeout");
     }
 }

@@ -44,4 +44,8 @@ reveal animation:
 The component owns presentation and interaction state only. System snapshots
 arrive through the `Chrome` trait each frame; intents leave through
 `aegis_shell::ChromeEvents` and the shared tray command channel. It has no
-D-Bus, Wayland, or process authority of its own.
+D-Bus, Wayland, or process authority of its own. `aegis-identity` supplies the
+same account and ordered photo/VRM contract used by the lock screen;
+`aegis-avatar` renders only an explicitly selected VRM with the panel's camera.
+This panel owns the flat graphite fallback disc, keyline, and reveal treatment
+around that content.

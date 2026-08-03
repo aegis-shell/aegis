@@ -21,6 +21,7 @@ Each pixel inside the analytic coverage composes these layers in order:
 | Lensing | The sharp backdrop sample displaces inward along the rim normal, strongest at the silhouette, exactly zero in the interior — a magnifier, never a wash |
 | Dispersion | Red and blue bend slightly more and less than green, so chromatic fringes live only inside the rim band |
 | Scattering | A small frost mix across the body that grows through the rim band, simulating soft internal scattering |
+| Interaction focus | An optional soft field inside the body reduces frost and tint locally, preserves chroma, and applies a restrained directional gain; it reveals one clear target without adding white or drawing an inner rim |
 | Adaptive tint | A luminance-opposed body tint: a pearl lift over dark content, a smoke dim over bright content, weakest inside the rim band |
 | Vibrancy | A saturation boost on the transmitted backdrop keeps content lively through the material |
 | Key light | A thin (~2 px) highlight hugging the silhouette on the light-facing side, fading around the curve |
@@ -81,6 +82,8 @@ Each body additionally carries its own optical character:
 | `shadow_blur` | Drop-shadow falloff softness, used verbatim |
 | `shadow_offset_y` | Drop-shadow downward offset, used verbatim |
 | `tint_color` | RGB multiplier on the adaptive tint, for accent-tinted glass (white = neutral) |
+| `focus` | Rounded-rectangle bounds of one soft interaction field inside the primary body |
+| `focus_strength` | Field visibility from 0 to 1; positive focus requires one body and is mutually exclusive with smooth union |
 
 ## Scaling with size
 
@@ -105,6 +108,19 @@ ADR-0047.
   owns its shape, so no rectangular clip or corner patch-up may follow.
 - Never stack glass on glass. A body over another glass body reads as
   clutter; the upper element belongs to the material as content instead.
+- Interactive selection inside a glass panel uses that panel's single focus
+  field. Its bounds remain inside the primary body. It changes local clarity
+  and color-preserving contrast, never coverage, silhouette, shadow, rim, or
+  additive white.
+- Hover is immediate foreground feedback: a neutral low-alpha wash using the
+  shared focus tokens. Selection combines the optical field with the selected
+  wash and restrained sibling de-emphasis. Neither state uses an accent or
+  outline merely to communicate structure.
+- Live preview content uses an analytic `radii.control` clip matching its
+  interaction geometry. Every surface in one composed client tree reuses that
+  clip; a rectangular scissor may bound work but may not define the visible
+  corners. Nonfocused previews stay opaque and recede through brightness,
+  because lowering their alpha washes client pixels into the glass below.
 - Painted foreground layers on top of glass stay minimal: no painted
   borders, no opaque fills, tint alpha at or below the Dock's resting
   value. The glass rim supplies the edge definition.
@@ -113,19 +129,20 @@ ADR-0047.
 
 ## Motion
 
-Springs and merges animate the SDF parameters — bounds, corner radius,
-union blend radius, and per-body opacity — rather than cross-fading
-rendered images. A control merging into a bar shares one SDF body with
-it, so the neck forms and releases optically instead of through a
-two-layer blend. With `reduced_motion`, elastic behavior resolves to
-its end state immediately.
+Springs and merges animate the SDF parameters — body and focus bounds,
+corner radius, union blend radius, focus strength, and per-body opacity —
+rather than cross-fading rendered images. A control merging into a bar
+shares one SDF body with it, so the neck forms and releases optically instead
+of through a two-layer blend. A body in smooth-union motion cannot carry a
+focus field in the same frame. With `reduced_motion`, elastic behavior
+resolves to its end state immediately.
 
 ## Verification
 
 The Optics build tree carries a headless A/B harness,
 `liquid_glass_study`, that composites glass bodies over a hostile
 backdrop (fine stripes, text rows, saturated blobs, dark and bright
-zones) and writes a PPM for pixel-level review. Run it after any change
-to the glass shader and compare the rim, the lensing, and the body tint
-against the references in this page before judging the change on a live
-desktop.
+zones) and writes a PPM for pixel-level review. Its panel case includes an
+interaction focus field. Run it after any change to the glass shader and
+compare the rim, lensing, body tint, and focus field against the
+references in this page before judging the change on a live desktop.

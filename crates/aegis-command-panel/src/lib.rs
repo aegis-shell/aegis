@@ -36,6 +36,7 @@ use aegis_core::workspace::WorkspaceSnapshot;
 use aegis_design::materials;
 use aegis_design::themes;
 use aegis_design::tokens::Sao;
+use aegis_identity::{Identity, Portrait, PortraitConfig, PortraitWatcher};
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
 
 use aegis_shell::{
@@ -44,10 +45,8 @@ use aegis_shell::{
 };
 use aegis_tray::{MenuNode, MenuState, TrayCommand, TrayIcon, TraySnapshot};
 
-mod identity;
 mod rendering;
 
-use identity::Identity;
 use rendering::*;
 
 #[cfg(test)]
@@ -69,6 +68,11 @@ const CONTENT_STAGGER: f32 = 0.18;
 /// Samples kept per sparkline metric (CPU/GPU/RAM).
 const HISTORY_CAP: usize = 48;
 
+/// The command panel explicitly owns its VRM composition. Keeping the
+/// parameters here lets another host choose a different crop without changing
+/// the VRM renderer or the shared portrait source policy.
+const AVATAR_CAMERA: aegis_avatar::VrmCamera = aegis_avatar::VrmCamera::new(28.0, 0.25, 0.48, 0.0);
+
 // dbusmenu popover geometry. Placement follows the shared shell popup policy.
 const MENU_WIDTH: f32 = 236.0;
 const MENU_PAD: f32 = 7.0;
@@ -80,6 +84,15 @@ const MENU_SECTION_HEIGHT: f32 = 7.0;
 // count adapts to the content width.
 const TRAY_CELL_W: f32 = 84.0;
 const TRAY_CELL_H: f32 = 72.0;
+
+fn presentation_anim_pending(
+    reveal: f32,
+    target: f32,
+    avatar_playing: bool,
+    avatar_reload_pending: bool,
+) -> bool {
+    (reveal - target).abs() > 0.002 || avatar_playing || avatar_reload_pending
+}
 
 /// The panel's sections, one circular button each on the icon rail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,55 +200,6 @@ struct MenuSnapshotCache {
     menu: Option<Arc<MenuState>>,
 }
 
-/// The avatar behind the header band's identity ring: the user's configured
-/// avatar (photo or VRM) when one loads, otherwise the procedural orb. Same
-/// resource shape as the lock screen's.
-enum AvatarResource {
-    Loaded(aegis_avatar::Avatar),
-    Fallback(flux::Image),
-}
-
-impl AvatarResource {
-    fn texture(&self) -> &flux::Image {
-        match self {
-            Self::Loaded(avatar) => avatar.texture(),
-            Self::Fallback(texture) => texture,
-        }
-    }
-
-    fn is_animated(&self) -> bool {
-        matches!(self, Self::Loaded(avatar) if avatar.is_animated())
-    }
-
-    fn advance(&mut self, delta_seconds: f32) -> Result<bool, aegis_avatar::Error> {
-        match self {
-            Self::Loaded(avatar) => avatar.advance(delta_seconds),
-            Self::Fallback(_) => Ok(false),
-        }
-    }
-
-    fn play_random_action(&mut self) -> Option<String> {
-        match self {
-            Self::Loaded(avatar) => avatar.play_random_action().map(str::to_owned),
-            Self::Fallback(_) => None,
-        }
-    }
-
-    fn current_motion(&self) -> Option<&str> {
-        match self {
-            Self::Loaded(avatar) => avatar.current_motion(),
-            Self::Fallback(_) => None,
-        }
-    }
-
-    fn play_motion(&mut self, name: &str) -> bool {
-        match self {
-            Self::Loaded(avatar) => avatar.play_motion(name),
-            Self::Fallback(_) => false,
-        }
-    }
-}
-
 /// The modal command panel.
 pub struct CommandPanel {
     open: bool,
@@ -256,16 +220,18 @@ pub struct CommandPanel {
     /// Local account behind the header band's identity zone, resolved once
     /// at construction (never per frame).
     identity: Identity,
-    /// Header-band avatar; `None` only when both the configured avatar and
-    /// the procedural orb failed (or in headless tests) — the identity's
-    /// initials render inside the ring instead.
-    avatar: Option<AvatarResource>,
+    /// Header-band portrait selected by the shared identity contract. Without
+    /// configured content, initials render over a flat host-owned disc; no
+    /// fallback texture is synthesized by either resource layer.
+    avatar: Option<Portrait>,
+    /// Immutable source order shared with the watcher and every reload.
+    portrait_config: PortraitConfig,
     /// Non-owning view of the compositor device, used only on the render
     /// thread to construct a complete hot-reload replacement.
     avatar_device: Option<flux::Device>,
     /// Filesystem observation is notification-only; all decode and GPU work
     /// stays on the render thread.
-    avatar_watcher: Option<aegis_avatar::AvatarWatcher>,
+    avatar_watcher: Option<PortraitWatcher>,
     /// One-shot latch so an animated avatar's advance failure logs once.
     avatar_warned: bool,
     /// Agent Interaction Domain aggregate behind the System section's Agent Workspaces
@@ -317,23 +283,22 @@ impl CommandPanel {
                 cached_cells: Vec::new(),
             }
         });
-        // Avatar loading is delegated to aegis-avatar (same contract as the
-        // lock screen): the user's photo or VRM when configured, the
-        // procedural orb when not, and the initials fallback when even the
-        // orb cannot upload.
-        let avatar = match aegis_avatar::Avatar::load_transactional(device) {
-            Ok(Some(loaded)) => Some(AvatarResource::Loaded(loaded)),
-            Ok(None) => Self::orb_fallback(device),
+        // Source precedence and still/VRM routing come from the shared
+        // identity contract. The panel supplies only its VRM camera and owns
+        // the outer disc, keyline, and reveal treatment.
+        let portrait_config = PortraitConfig::current();
+        let avatar = match Portrait::load_transactional(device, &portrait_config, AVATAR_CAMERA) {
+            Ok(loaded) => loaded,
             Err(error) => {
-                log::warn!("command-panel: avatar load failed, using procedural orb: {error}");
-                Self::orb_fallback(device)
+                log::warn!("command-panel: avatar load failed, using initials: {error}");
+                None
             }
         };
         // SAFETY: the composition root owns the device and drops the shell
         // (including this panel) before the device. Chrome methods run on the
         // compositor render thread.
         let avatar_device = unsafe { flux::Device::borrow_raw(device.as_raw()) };
-        let avatar_watcher = match aegis_avatar::AvatarWatcher::new() {
+        let avatar_watcher = match PortraitWatcher::new(&portrait_config) {
             Ok(watcher) => Some(watcher),
             Err(error) => {
                 log::warn!("command-panel: avatar hot reload disabled: {error}");
@@ -353,6 +318,7 @@ impl CommandPanel {
             ram_history: History::new(HISTORY_CAP),
             identity: Identity::current().unwrap_or_else(|_| Identity::fallback()),
             avatar,
+            portrait_config,
             avatar_device: Some(avatar_device),
             avatar_watcher,
             avatar_warned: false,
@@ -375,18 +341,6 @@ impl CommandPanel {
         }
     }
 
-    /// The procedural-orb avatar fallback; `None` (initials at render time)
-    /// when the orb itself fails to upload.
-    fn orb_fallback(device: &flux::Device) -> Option<AvatarResource> {
-        match aegis_avatar::procedural_orb(device) {
-            Ok(image) => Some(AvatarResource::Fallback(image)),
-            Err(error) => {
-                log::warn!("command-panel: procedural orb failed, using initials: {error}");
-                None
-            }
-        }
-    }
-
     /// Test/preview constructor without a GPU device, tray, or notification
     /// source.
     #[cfg(test)]
@@ -404,6 +358,7 @@ impl CommandPanel {
             ram_history: History::new(HISTORY_CAP),
             identity: Identity::current().unwrap_or_else(|_| Identity::fallback()),
             avatar: None,
+            portrait_config: PortraitConfig::new(Vec::new()),
             avatar_device: None,
             avatar_watcher: None,
             avatar_warned: false,
@@ -435,7 +390,7 @@ impl CommandPanel {
     fn avatar_reload_pending(&self) -> bool {
         self.avatar_watcher
             .as_ref()
-            .is_some_and(aegis_avatar::AvatarWatcher::needs_poll)
+            .is_some_and(PortraitWatcher::needs_poll)
     }
 
     /// Rebuild on the render thread and publish only a complete replacement.
@@ -445,7 +400,7 @@ impl CommandPanel {
         let ready = self
             .avatar_watcher
             .as_mut()
-            .is_some_and(aegis_avatar::AvatarWatcher::poll);
+            .is_some_and(PortraitWatcher::poll);
         if !ready {
             return;
         }
@@ -460,11 +415,10 @@ impl CommandPanel {
         let previous_motion = self
             .avatar
             .as_ref()
-            .and_then(AvatarResource::current_motion)
+            .and_then(Portrait::current_motion)
             .map(str::to_owned);
-        match aegis_avatar::Avatar::load_transactional(device) {
-            Ok(Some(loaded)) => {
-                let mut replacement = AvatarResource::Loaded(loaded);
+        match Portrait::load_transactional(device, &self.portrait_config, AVATAR_CAMERA) {
+            Ok(Some(mut replacement)) => {
                 let restored = previous_motion
                     .as_deref()
                     .is_some_and(|name| replacement.play_motion(name));
@@ -476,9 +430,9 @@ impl CommandPanel {
                 log::info!("command-panel: avatar hot reloaded");
             }
             Ok(None) => {
-                self.avatar = Self::orb_fallback(device);
+                self.avatar = None;
                 self.avatar_warned = false;
-                log::info!("command-panel: avatar removed, using fallback");
+                log::info!("command-panel: avatar removed, using initials");
             }
             Err(error) => {
                 log::warn!("command-panel: avatar hot reload failed, keeping current: {error}");
@@ -710,10 +664,7 @@ impl Chrome for CommandPanel {
         // avatars and the initials fallback do no GPU work, so the panel
         // stays event-driven off `anim_pending`.
         if self.open
-            && self
-                .avatar
-                .as_ref()
-                .is_some_and(AvatarResource::is_animated)
+            && self.avatar.as_ref().is_some_and(Portrait::is_animated)
             && let Some(avatar) = &mut self.avatar
             && let Err(error) = avatar.advance(dt)
             && !self.avatar_warned
@@ -805,7 +756,7 @@ impl Chrome for CommandPanel {
             if let Some(name) = self
                 .avatar
                 .as_mut()
-                .and_then(AvatarResource::play_random_action)
+                .and_then(|avatar| avatar.play_random_action().map(str::to_owned))
             {
                 log::debug!("command-panel: playing avatar action {name:?}");
             }
@@ -830,6 +781,10 @@ impl Chrome for CommandPanel {
     }
 
     fn modal_active(&self) -> bool {
+        self.active()
+    }
+
+    fn exclusive_presentation_active(&self) -> bool {
         self.active()
     }
 
@@ -884,7 +839,12 @@ impl Chrome for CommandPanel {
 
     fn anim_pending(&self) -> bool {
         let target = if self.open { 1.0 } else { 0.0 };
-        (self.reveal - target).abs() > 0.002 || self.avatar_reload_pending()
+        presentation_anim_pending(
+            self.reveal,
+            target,
+            self.open && self.avatar.as_ref().is_some_and(Portrait::is_animated),
+            self.avatar_reload_pending(),
+        )
     }
 
     fn requires_composition(&self) -> bool {

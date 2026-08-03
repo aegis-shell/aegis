@@ -22,6 +22,7 @@ const INSTANCE_EXTENSIONS: [&CStr; 2] = [c"VK_KHR_surface", c"VK_KHR_wayland_sur
 const DEVICE_EXTENSIONS: [&CStr; 1] = [c"VK_KHR_swapchain"];
 const REJECTION_RGB: [u8; 3] = [255, 72, 84];
 const VALIDATION_RGB: [u8; 3] = [190, 226, 255];
+const AVATAR_CAMERA: aegis_avatar::VrmCamera = aegis_avatar::VrmCamera::new(28.0, 0.25, 0.48, 0.0);
 
 #[derive(Debug, Error)]
 pub enum RenderError {
@@ -40,9 +41,9 @@ pub enum RenderError {
 impl RenderError {
     /// Map an `aegis-avatar` error onto the lock's render error. Flux faults
     /// are preserved as-is; everything else becomes a descriptive `Avatar`.
-    fn from_avatar(error: aegis_avatar::Error) -> Self {
+    fn from_avatar(error: aegis_identity::Error) -> Self {
         match error {
-            aegis_avatar::Error::Flux(error) => RenderError::Flux(error),
+            aegis_identity::Error::Flux(error) => RenderError::Flux(error),
             other => RenderError::Avatar(other.to_string()),
         }
     }
@@ -60,11 +61,11 @@ pub enum AvatarStatus {
     Fallback,
 }
 
-impl From<aegis_avatar::AvatarKind> for AvatarStatus {
-    fn from(kind: aegis_avatar::AvatarKind) -> Self {
+impl From<aegis_identity::PortraitKind> for AvatarStatus {
+    fn from(kind: aegis_identity::PortraitKind) -> Self {
         match kind {
-            aegis_avatar::AvatarKind::Still => AvatarStatus::Image,
-            aegis_avatar::AvatarKind::Animated3d { animation } => AvatarStatus::Animated3d {
+            aegis_identity::PortraitKind::Still => AvatarStatus::Image,
+            aegis_identity::PortraitKind::Vrm { animation } => AvatarStatus::Animated3d {
                 animated: animation == aegis_avatar::AnimationSupport::Animated,
             },
         }
@@ -77,12 +78,13 @@ pub struct Graphics {
     visual: LockVisual,
     avatar: AvatarResource,
     avatar_status: AvatarStatus,
-    avatar_watcher: Option<aegis_avatar::AvatarWatcher>,
+    portrait_config: aegis_identity::PortraitConfig,
+    avatar_watcher: Option<aegis_identity::PortraitWatcher>,
     ash: AshBridge,
 }
 
 enum AvatarResource {
-    Loaded(aegis_avatar::Avatar),
+    Loaded(aegis_identity::Portrait),
     Fallback,
 }
 
@@ -98,7 +100,7 @@ impl AvatarResource {
         matches!(self, Self::Loaded(avatar) if avatar.is_animated())
     }
 
-    fn advance(&mut self, delta_seconds: f32) -> Result<bool, aegis_avatar::Error> {
+    fn advance(&mut self, delta_seconds: f32) -> Result<bool, aegis_identity::Error> {
         match self {
             Self::Loaded(avatar) => avatar.advance(delta_seconds),
             Self::Fallback => Ok(false),
@@ -152,12 +154,17 @@ impl Graphics {
         let device = flux::Device::new(true, &INSTANCE_EXTENSIONS, &DEVICE_EXTENSIONS, 2)?;
         let resolved = resolve_lock_appearance(options);
         let background = load_background(&resolved.background, resolved.config_path.as_deref())?;
+        let portrait_config = aegis_identity::PortraitConfig::current();
         let (avatar, avatar_status, avatar_watcher) = if resolved.style == LockScreenStyle::Centered
         {
             // Only the centered composition owns an identity portrait. Avoid
             // decoding, uploading, animating, or watching avatar resources for
             // the deliberately typographic cinematic composition.
-            let (avatar, status) = match aegis_avatar::Avatar::load_transactional(&device) {
+            let (avatar, status) = match aegis_identity::Portrait::load_transactional(
+                &device,
+                &portrait_config,
+                AVATAR_CAMERA,
+            ) {
                 Ok(Some(mut loaded)) => {
                     if loaded.play_motion("greeting") {
                         log::debug!("lock: playing avatar action \"greeting\"");
@@ -174,7 +181,7 @@ impl Graphics {
                     (AvatarResource::Fallback, AvatarStatus::Fallback)
                 }
             };
-            let watcher = match aegis_avatar::AvatarWatcher::new() {
+            let watcher = match aegis_identity::PortraitWatcher::new(&portrait_config) {
                 Ok(watcher) => Some(watcher),
                 Err(error) => {
                     log::warn!("lock: avatar hot reload disabled: {error}");
@@ -197,6 +204,7 @@ impl Graphics {
             },
             avatar,
             avatar_status,
+            portrait_config,
             avatar_watcher,
             ash,
         })
@@ -286,7 +294,7 @@ impl Graphics {
     pub fn avatar_reload_pending(&self) -> bool {
         self.avatar_watcher
             .as_ref()
-            .is_some_and(aegis_avatar::AvatarWatcher::needs_poll)
+            .is_some_and(aegis_identity::PortraitWatcher::needs_poll)
     }
 
     /// Build and publish an avatar replacement on the render thread. Failed
@@ -295,7 +303,7 @@ impl Graphics {
         let ready = self
             .avatar_watcher
             .as_mut()
-            .is_some_and(aegis_avatar::AvatarWatcher::poll);
+            .is_some_and(aegis_identity::PortraitWatcher::poll);
         if !ready {
             return false;
         }
@@ -305,7 +313,11 @@ impl Graphics {
             log::warn!("lock: could not refresh avatar watches: {error}");
         }
         let previous_motion = self.avatar.current_motion().map(str::to_owned);
-        match aegis_avatar::Avatar::load_transactional(&self.device) {
+        match aegis_identity::Portrait::load_transactional(
+            &self.device,
+            &self.portrait_config,
+            AVATAR_CAMERA,
+        ) {
             Ok(Some(mut loaded)) => {
                 let restored = previous_motion
                     .as_deref()

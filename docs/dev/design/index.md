@@ -27,6 +27,9 @@ fills.
 6. **Restraint.** Liquid Glass marks the floating control layer. Content
    surfaces use quiet fills. Painted borders and heavy tints do not belong
    on glass.
+7. **One body, one hierarchy.** Interaction emphasis changes the optics and
+   content hierarchy inside an existing glass body. Hover and selection never
+   introduce a nested glass body or a structural accent outline.
 
 ## Pages
 
@@ -40,3 +43,4 @@ fills.
 
 - [Design system crate decision](../../adr/0046-design-system-crate.md)
 - [Liquid glass lens model and full-resolution capture](../../adr/0094-liquid-glass-lens-model-and-full-resolution-capture.md)
+- [Single-body liquid-glass interaction focus](../../adr/0105-single-body-liquid-glass-interaction-focus.md)

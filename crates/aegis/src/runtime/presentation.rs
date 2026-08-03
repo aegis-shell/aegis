@@ -94,9 +94,6 @@ impl CompositorRuntime {
         // Portal pick sessions also use the freeze, but retain their own
         // cursor-free capture contract and are not governed by this setting.
         let human_screenshot_session = self.screenshot_freeze.armed && self.pending_pick.is_none();
-        let frozen_screenshot_cursor = human_screenshot_session
-            .then(|| self.screenshot_freeze.cursor().cloned())
-            .flatten();
         let frozen_trigger_cursor = human_screenshot_session
             .then(|| self.screenshot_freeze.trigger_cursor())
             .flatten();
@@ -343,6 +340,10 @@ impl CompositorRuntime {
                     .wallpaper
                     .as_ref()
                     .is_some_and(aegis_wallpaper::Wallpaper::has_model);
+                // Once frozen, the immutable screenshot image is the backdrop
+                // source even if the live wallpaper owns a 3D model. Keep the
+                // effect capture local to the glass footprint in that state.
+                let backdrop_model_active = model_active && !self.screenshot_freeze.active();
                 // Overview mode (M9) swaps the whole client scene for the
                 // thumbnail grid and skips the launcher-blur capture path.
                 let overview_active = self.shell.overview_active();
@@ -359,18 +360,17 @@ impl CompositorRuntime {
                 // blur can sample avoids a second full-screen scene render.
                 // A live 3D wallpaper still draws its model into the whole
                 // capture image, so it keeps the full-frame extent.
-                let capture_bounds = (blur_sigma > 0.0
-                    && !backdrop_regions.is_empty()
-                    && !model_active)
-                    .then(|| {
-                        blur_capture_bounds(
-                            &backdrop_regions,
-                            logical_size,
-                            physical_size,
-                            scale,
-                            blur_sigma,
-                        )
-                    });
+                let capture_bounds =
+                    (blur_sigma > 0.0 && !backdrop_regions.is_empty() && !backdrop_model_active)
+                        .then(|| {
+                            blur_capture_bounds(
+                                &backdrop_regions,
+                                logical_size,
+                                physical_size,
+                                scale,
+                                blur_sigma,
+                            )
+                        });
                 let (capture_origin, capture_extent) =
                     capture_bounds.unwrap_or(((0, 0), physical_size));
                 // Keep disconnected chrome bodies disconnected all the way
@@ -380,7 +380,7 @@ impl CompositorRuntime {
                 // the otherwise-empty bounding box between a top HUD and a
                 // bottom Dock.
                 let capture_regions = if blur_sigma > 0.0 && !backdrop_regions.is_empty() {
-                    if model_active {
+                    if backdrop_model_active {
                         vec![BackdropCaptureRegion {
                             origin: (0, 0),
                             extent: physical_size,
@@ -416,14 +416,16 @@ impl CompositorRuntime {
                     physical_size,
                     blur_sigma,
                     scale,
-                    model_active,
+                    backdrop_model_active,
                     &capture_regions,
                     &frost_backdrop_regions,
                     &liquid_glass_regions,
                     window_switcher.as_ref(),
                     &live_previews,
                 );
-                let backdrop_plan = if overview_active || self.screenshot_freeze.armed {
+                let backdrop_plan = if overview_active
+                    || (self.screenshot_freeze.armed && !self.screenshot_freeze.active())
+                {
                     self.launcher_backdrop.invalidate();
                     BackdropPlan::Direct
                 } else {
@@ -507,78 +509,98 @@ impl CompositorRuntime {
                                 -(capture_origin.1 as f32) * capture_ratio,
                             );
 
-                            draw_wallpaper_background(
-                                &self.canvas,
-                                &self.device,
-                                &mut self.wallpaper,
-                                logical_size,
-                                capture_scale,
-                            );
-
-                            if model_active {
-                                if let Err(error) = self.canvas.end_target_checked() {
-                                    log::warn!(
-                                        "launcher: backdrop capture pass failed ({error}); using translucent fallback"
+                            if self.screenshot_freeze.active() {
+                                // During selection the trigger frame is the
+                                // effect's immutable source. Sampling the live
+                                // scene here would make glass contents drift
+                                // while the rest of the screenshot stays frozen.
+                                if let Some(image) = self.screenshot_freeze.image() {
+                                    self.canvas.draw_image(
+                                        image,
+                                        0.0,
+                                        0.0,
+                                        physical_size.0 as f32 * capture_ratio,
+                                        physical_size.1 as f32 * capture_ratio,
                                     );
-                                    self.canvas.restore();
-                                    capture_ok = false;
-                                    break;
                                 }
-                                if let Some(target) = self.launcher_backdrop.target(&frame) {
-                                    if let Some(wallpaper) = self.wallpaper.as_mut() {
-                                        wallpaper.draw_model_to(&self.device, &mut frame, target);
-                                    }
-                                    if let Err(error) = self.canvas.begin_target_pass(
-                                        &frame,
-                                        target,
-                                        flux::CanvasPassOptions {
-                                            clear: None,
-                                            antialias: flux::CanvasAntialias::None,
-                                            render_area: Some(flux::CanvasRenderArea {
-                                                x: region.x as i32,
-                                                y: region.y as i32,
-                                                width: region.width,
-                                                height: region.height,
-                                            }),
-                                            skip_stencil: true,
-                                        },
-                                    ) {
+                            } else {
+                                draw_wallpaper_background(
+                                    &self.canvas,
+                                    &self.device,
+                                    &mut self.wallpaper,
+                                    logical_size,
+                                    capture_scale,
+                                );
+
+                                if model_active {
+                                    if let Err(error) = self.canvas.end_target_checked() {
                                         log::warn!(
-                                            "launcher: failed to resume backdrop capture ({error}); using translucent fallback"
+                                            "launcher: backdrop capture pass failed ({error}); using translucent fallback"
                                         );
                                         self.canvas.restore();
                                         capture_ok = false;
                                         break;
                                     }
+                                    if let Some(target) = self.launcher_backdrop.target(&frame) {
+                                        if let Some(wallpaper) = self.wallpaper.as_mut() {
+                                            wallpaper.draw_model_to(
+                                                &self.device,
+                                                &mut frame,
+                                                target,
+                                            );
+                                        }
+                                        if let Err(error) = self.canvas.begin_target_pass(
+                                            &frame,
+                                            target,
+                                            flux::CanvasPassOptions {
+                                                clear: None,
+                                                antialias: flux::CanvasAntialias::None,
+                                                render_area: Some(flux::CanvasRenderArea {
+                                                    x: region.x as i32,
+                                                    y: region.y as i32,
+                                                    width: region.width,
+                                                    height: region.height,
+                                                }),
+                                                skip_stencil: true,
+                                            },
+                                        ) {
+                                            log::warn!(
+                                                "launcher: failed to resume backdrop capture ({error}); using translucent fallback"
+                                            );
+                                            self.canvas.restore();
+                                            capture_ok = false;
+                                            break;
+                                        }
+                                    }
                                 }
-                            }
 
-                            draw_client_scene(
-                                &self.canvas,
-                                &self.device,
-                                &mut self.renderer,
-                                &self.server,
-                                capture_scale,
-                            );
-                            if let Some(presentation) = window_switcher.as_ref() {
-                                draw_window_switcher_scene(
-                                    &self.canvas,
-                                    &self.device,
-                                    &mut self.renderer,
-                                    &self.server,
-                                    logical_size,
-                                    capture_scale,
-                                    presentation,
-                                );
-                            } else {
-                                draw_live_preview_scenes(
+                                draw_client_scene(
                                     &self.canvas,
                                     &self.device,
                                     &mut self.renderer,
                                     &self.server,
                                     capture_scale,
-                                    &live_previews,
                                 );
+                                if let Some(presentation) = window_switcher.as_ref() {
+                                    draw_window_switcher_scene(
+                                        &self.canvas,
+                                        &self.device,
+                                        &mut self.renderer,
+                                        &self.server,
+                                        logical_size,
+                                        capture_scale,
+                                        presentation,
+                                    );
+                                } else {
+                                    draw_live_preview_scenes(
+                                        &self.canvas,
+                                        &self.device,
+                                        &mut self.renderer,
+                                        &self.server,
+                                        capture_scale,
+                                        &live_previews,
+                                    );
+                                }
                             }
                             self.canvas.restore();
                         }
@@ -656,7 +678,17 @@ impl CompositorRuntime {
                             self.clear,
                             &repaint,
                         )?;
-                        if capture_covers_output
+                        if self.screenshot_freeze.active() {
+                            if let Some(image) = self.screenshot_freeze.image() {
+                                self.canvas.draw_image(
+                                    image,
+                                    0.0,
+                                    0.0,
+                                    physical_size.0 as f32,
+                                    physical_size.1 as f32,
+                                );
+                            }
+                        } else if capture_covers_output
                             && refreshed
                             && self.launcher_backdrop.draw_capture_opaque(
                                 &self.canvas,
@@ -707,19 +739,31 @@ impl CompositorRuntime {
                             self.clear,
                             &repaint,
                         )?;
-                        draw_direct_desktop_scene(
-                            &self.canvas,
-                            &self.device,
-                            &mut frame,
-                            &mut self.wallpaper,
-                            &mut self.renderer,
-                            &self.server,
-                            render_geometry,
-                            output_render_area,
-                            overview_active,
-                            window_switcher.as_ref(),
-                            &live_previews,
-                        )?;
+                        if self.screenshot_freeze.active() {
+                            if let Some(image) = self.screenshot_freeze.image() {
+                                self.canvas.draw_image(
+                                    image,
+                                    0.0,
+                                    0.0,
+                                    physical_size.0 as f32,
+                                    physical_size.1 as f32,
+                                );
+                            }
+                        } else {
+                            draw_direct_desktop_scene(
+                                &self.canvas,
+                                &self.device,
+                                &mut frame,
+                                &mut self.wallpaper,
+                                &mut self.renderer,
+                                &self.server,
+                                render_geometry,
+                                output_render_area,
+                                overview_active,
+                                window_switcher.as_ref(),
+                                &live_previews,
+                            )?;
+                        }
                         self.launcher_backdrop.draw_cached(
                             &self.canvas,
                             &frame,
@@ -1061,23 +1105,27 @@ impl CompositorRuntime {
                 // screen. On failure the selector opens right away over the
                 // live scene instead.
                 if freeze_capturing && !self.screenshot_freeze.failed {
+                    if human_screenshot_session
+                        && screenshot_include_cursor
+                        && let Some(cursor) = frozen_trigger_cursor
+                        && !cursor.hidden
+                        && !cursor.client_surface
+                    {
+                        // Bake the trigger-time themed cursor into the frozen
+                        // image itself. The selector then draws the current
+                        // live cursor above this immutable cursor, so both are
+                        // visible throughout region selection.
+                        draw_software_cursor(
+                            &self.canvas,
+                            &self.device,
+                            &mut self.cursor_cache,
+                            cursor.position,
+                            cursor.shape,
+                            scale,
+                        );
+                    }
                     self.canvas.end_target_checked()?;
-                    let frozen_cursor = if human_screenshot_session && screenshot_include_cursor {
-                        frozen_trigger_cursor
-                            .filter(|cursor| !cursor.hidden && !cursor.client_surface)
-                            .and_then(|cursor| {
-                                capture_cursor_snapshot(
-                                    &self.device,
-                                    &mut self.cursor_cache,
-                                    cursor.position,
-                                    cursor.shape,
-                                    scale,
-                                )
-                            })
-                    } else {
-                        None
-                    };
-                    self.screenshot_freeze.mark_captured(&frame, frozen_cursor);
+                    self.screenshot_freeze.mark_captured(&frame);
                     begin_opaque_frame(&self.canvas, &frame, self.clear)?;
                     if let Some(image) = self.screenshot_freeze.image() {
                         self.canvas.draw_image(
@@ -1662,7 +1710,10 @@ impl CompositorRuntime {
                         && matches!(&target, CaptureTarget::Screenshot { .. })
                     {
                         if capturing_frozen_screenshot {
-                            frozen_screenshot_cursor.clone()
+                            // The trigger-time cursor is already part of the
+                            // frozen image. Adding a readback overlay here
+                            // would duplicate it in the saved PNG.
+                            None
                         } else if !self.host.uses_software_cursor() {
                             trigger_cursor
                                 .filter(|cursor| !cursor.hidden && !cursor.client_surface)

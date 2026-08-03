@@ -56,7 +56,8 @@ backend, renderer, and shell behind clear seams so the
 | | `aegis-hud` | Display-only HUD status chips: system status, workspace dots, clock, notification count, and the StatusNotifierItem tray row |
 | | `aegis-command-panel` | Full-screen modal command panel: quick settings, tray activation, and notification dismissal |
 | | `aegis-wallpaper` | Background layer: image, video, 3D, and multi-plane parallax wallpaper |
-| | `aegis-avatar` | User-avatar loading and rendering: still images and VRM models |
+| | `aegis-identity` | Shared account metadata and ordered still/VRM portrait selection |
+| | `aegis-avatar` | Explicit VRM/VRMA animation and offscreen rendering |
 | | `aegis-config` | Declarative configuration: versioned TOML schema, loader, live reload |
 | **Session services** | `aegis-lock` | Multi-output session-lock presentation and PAM authentication |
 | | `aegis-idle` | Ordered inactivity policy, lock-before-sleep coordination, and display-power requests |

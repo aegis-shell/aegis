@@ -380,6 +380,16 @@ pub(super) fn liquid_glass_groups(
             shadow_blur: region.shadow_blur.max(0.0) * capture_scale,
             shadow_offset_y: region.shadow_offset_y * capture_scale,
             tint_color: [255, 255, 255],
+            focus: region.focus.map(|focus| flux::LiquidGlassFocus {
+                shape: flux::LiquidGlassShape {
+                    x: focus.bounds.x * capture_scale - capture_origin.0 as f32 * capture_ratio,
+                    y: focus.bounds.y * capture_scale - capture_origin.1 as f32 * capture_ratio,
+                    width: focus.bounds.w * capture_scale,
+                    height: focus.bounds.h * capture_scale,
+                    corner_radius: focus.corner_radius * capture_scale,
+                },
+                strength: focus.strength.clamp(0.0, 1.0),
+            }),
         })
         .collect()
 }
@@ -415,7 +425,7 @@ pub(super) struct BackdropCacheKey {
     model_active: bool,
     capture_regions: Vec<BackdropCaptureRegion>,
     frost_regions: Vec<[u32; 4]>,
-    liquid_regions: Vec<[u32; 10]>,
+    liquid_regions: Vec<[u32; 16]>,
     scene_overlays: Vec<u64>,
 }
 
@@ -446,21 +456,29 @@ impl BackdropCacheKey {
         if let Some(switcher) = window_switcher {
             scene_overlays.push(1);
             scene_overlays.push(switcher.visibility.to_bits() as u64);
+            scene_overlays.push(u64::from(switcher.selected.is_some()));
+            scene_overlays.push(switcher.selected.map_or(0, |id| id.0));
+            scene_overlays.push(switcher.inactive_content_brightness.to_bits() as u64);
             push_rect(&mut scene_overlays, switcher.panel);
             scene_overlays.push(switcher.cards.len() as u64);
             for card in &switcher.cards {
                 scene_overlays.push(card.window.0);
                 push_rect(&mut scene_overlays, card.geometry.preview);
+                scene_overlays.push(card.corner_radius.to_bits() as u64);
             }
         } else {
             scene_overlays.push(0);
         }
         scene_overlays.push(live_previews.len() as u64);
         for preview in live_previews {
+            scene_overlays.push(u64::from(preview.focused.is_some()));
+            scene_overlays.push(preview.focused.map_or(0, |id| id.0));
+            scene_overlays.push(preview.inactive_content_brightness.to_bits() as u64);
             scene_overlays.push(preview.cards.len() as u64);
             for card in &preview.cards {
                 scene_overlays.push(card.window.0);
                 push_rect(&mut scene_overlays, card.geometry.preview);
+                scene_overlays.push(card.corner_radius.to_bits() as u64);
             }
         }
         Self {
@@ -485,6 +503,7 @@ impl BackdropCacheKey {
             liquid_regions: liquid_regions
                 .iter()
                 .map(|region| {
+                    let focus = region.focus.unwrap_or_default();
                     [
                         region.bounds.x.to_bits(),
                         region.bounds.y.to_bits(),
@@ -495,7 +514,13 @@ impl BackdropCacheKey {
                         region.shadow_alpha.to_bits(),
                         region.shadow_blur.to_bits(),
                         region.shadow_offset_y.to_bits(),
-                        0,
+                        u32::from(region.focus.is_some()),
+                        focus.bounds.x.to_bits(),
+                        focus.bounds.y.to_bits(),
+                        focus.bounds.w.to_bits(),
+                        focus.bounds.h.to_bits(),
+                        focus.corner_radius.to_bits(),
+                        focus.strength.to_bits(),
                     ]
                 })
                 .collect(),
@@ -968,10 +993,6 @@ pub(super) struct ScreenshotFreeze {
     /// Logical cursor state sampled synchronously with the trigger, before a
     /// later input batch or capture frame can move it.
     trigger_cursor: Option<CaptureCursorState>,
-    /// The compositor-owned cursor as it appeared on the trigger frame.
-    /// Client cursor surfaces are already part of `captures`; this is the
-    /// themed cursor used by nested backends and direct KMS.
-    cursor: Option<CaptureCursor>,
     /// A freeze session is in progress (requested, capturing, or frozen).
     pub(super) armed: bool,
     /// The snapshot holds the trigger frame.
@@ -990,7 +1011,6 @@ impl ScreenshotFreeze {
             captures: Vec::new(),
             active_slot: None,
             trigger_cursor: None,
-            cursor: None,
             armed: false,
             captured: false,
             failed: false,
@@ -1011,7 +1031,6 @@ impl ScreenshotFreeze {
         self.opened = false;
         self.active_slot = None;
         self.trigger_cursor = cursor;
-        self.cursor = None;
     }
 
     /// Whether this frame must render the scene into the snapshot target.
@@ -1024,14 +1043,9 @@ impl ScreenshotFreeze {
         self.armed && self.captured && !self.failed
     }
 
-    pub(super) fn mark_captured(&mut self, frame: &flux::Frame<'_>, cursor: Option<CaptureCursor>) {
+    pub(super) fn mark_captured(&mut self, frame: &flux::Frame<'_>) {
         self.active_slot = Some(frame.index() as usize);
-        self.cursor = cursor;
         self.captured = true;
-    }
-
-    pub(super) fn cursor(&self) -> Option<&CaptureCursor> {
-        self.cursor.as_ref()
     }
 
     pub(super) fn trigger_cursor(&self) -> Option<CaptureCursorState> {
@@ -1057,7 +1071,6 @@ impl ScreenshotFreeze {
         self.opened = false;
         self.active_slot = None;
         self.trigger_cursor = None;
-        self.cursor = None;
     }
 
     /// The snapshot image, once the trigger frame has been captured.
@@ -1411,39 +1424,6 @@ pub(super) fn draw_window_switcher_scene(
     if windows.is_empty() {
         return;
     }
-    let cells: std::collections::HashMap<
-        aegis_core::window::WindowId,
-        (aegis_core::Rect, aegis_core::Point, aegis_core::Size),
-    > = presentation
-        .cards
-        .iter()
-        .filter_map(|card| {
-            let window = windows.iter().find(|window| window.id == card.window)?;
-            Some((
-                card.window,
-                (
-                    aegis_core::overview::fit(card.geometry.preview, window.size),
-                    window.position,
-                    window.size,
-                ),
-            ))
-        })
-        .collect();
-    let map = move |window: Option<aegis_core::window::WindowId>, natural: aegis_core::Rect| {
-        let Some((cell, base, window_size)) = window.and_then(|id| cells.get(&id)) else {
-            return natural;
-        };
-        let scale = (cell.size.w as f32 / window_size.w.max(1) as f32)
-            .min(cell.size.h as f32 / window_size.h.max(1) as f32);
-        let remap = |value: i32, origin: i32| (value - origin) as f32 * scale;
-        aegis_core::Rect::new(
-            cell.origin.x + remap(natural.origin.x, base.x).round() as i32,
-            cell.origin.y + remap(natural.origin.y, base.y).round() as i32,
-            (natural.size.w as f32 * scale).round().max(1.0) as i32,
-            (natural.size.h as f32 * scale).round().max(1.0) as i32,
-        )
-    };
-
     canvas.save();
     if scale != 1.0 {
         canvas.scale(scale, scale);
@@ -1461,15 +1441,28 @@ pub(super) fn draw_window_switcher_scene(
         .iter()
         .map(|frame| frame.id)
         .chain(dmabuf.iter().map(|frame| frame.id)));
-    renderer.draw_surfaces_ordered_mapped_with_opacity(
-        device,
-        canvas,
-        &surface_order,
-        &shm,
-        &dmabuf,
-        &map,
-        presentation.visibility,
-    );
+    for card in &presentation.cards {
+        let Some(window) = windows.iter().find(|window| window.id == card.window) else {
+            continue;
+        };
+        let brightness = focused_content_brightness(
+            presentation.selected,
+            card.window,
+            presentation.inactive_content_brightness,
+        );
+        draw_preview_card_scene(
+            canvas,
+            device,
+            renderer,
+            &surface_order,
+            &shm,
+            &dmabuf,
+            window,
+            card,
+            presentation.visibility,
+            brightness,
+        );
+    }
     canvas.restore();
 }
 
@@ -1506,43 +1499,93 @@ pub(super) fn draw_live_preview_scenes(
             let Some(window) = windows.iter().find(|window| window.id == card.window) else {
                 continue;
             };
-            let cell = aegis_core::overview::fit(card.geometry.preview, window.size);
-            let base = window.position;
-            let window_size = window.size;
-            let target = window.id;
-            let map = move |id: Option<aegis_core::window::WindowId>, natural: aegis_core::Rect| {
-                if id != Some(target) {
-                    return aegis_core::Rect::new(-100_000, -100_000, 1, 1);
-                }
-                let factor = (cell.size.w as f32 / window_size.w.max(1) as f32)
-                    .min(cell.size.h as f32 / window_size.h.max(1) as f32);
-                let remap = |value: i32, origin: i32| (value - origin) as f32 * factor;
-                aegis_core::Rect::new(
-                    cell.origin.x + remap(natural.origin.x, base.x).round() as i32,
-                    cell.origin.y + remap(natural.origin.y, base.y).round() as i32,
-                    (natural.size.w as f32 * factor).round().max(1.0) as i32,
-                    (natural.size.h as f32 * factor).round().max(1.0) as i32,
-                )
-            };
-            canvas.save();
-            canvas.clip_rect(
-                card.geometry.preview.origin.x as f32,
-                card.geometry.preview.origin.y as f32,
-                card.geometry.preview.size.w as f32,
-                card.geometry.preview.size.h as f32,
+            let brightness = focused_content_brightness(
+                presentation.focused,
+                card.window,
+                presentation.inactive_content_brightness,
             );
-            renderer.draw_surfaces_ordered_mapped(
-                device,
+            draw_preview_card_scene(
                 canvas,
+                device,
+                renderer,
                 &surface_order,
                 &shm,
                 &dmabuf,
-                &map,
+                window,
+                card,
+                presentation.visibility,
+                brightness,
             );
-            canvas.restore();
         }
     }
     canvas.restore();
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_preview_card_scene(
+    canvas: &flux::Canvas,
+    device: &flux::Device,
+    renderer: &mut aegis_render::Renderer,
+    surface_order: &[usize],
+    shm: &[aegis_core::SurfacePixels<'_>],
+    dmabuf: &[aegis_core::SurfaceDmabuf],
+    window: &aegis_core::window::Window,
+    card: &aegis_shell::WindowSwitcherCard,
+    opacity: f32,
+    brightness: f32,
+) {
+    let cell = aegis_core::overview::fit(card.geometry.preview, window.size);
+    let base = window.position;
+    let window_size = window.size;
+    let target = window.id;
+    let map = move |id: Option<aegis_core::window::WindowId>, natural: aegis_core::Rect| {
+        if id != Some(target) {
+            return aegis_core::Rect::new(-100_000, -100_000, 1, 1);
+        }
+        let factor = (cell.size.w as f32 / window_size.w.max(1) as f32)
+            .min(cell.size.h as f32 / window_size.h.max(1) as f32);
+        let remap = |value: i32, origin: i32| (value - origin) as f32 * factor;
+        aegis_core::Rect::new(
+            cell.origin.x + remap(natural.origin.x, base.x).round() as i32,
+            cell.origin.y + remap(natural.origin.y, base.y).round() as i32,
+            (natural.size.w as f32 * factor).round().max(1.0) as i32,
+            (natural.size.h as f32 * factor).round().max(1.0) as i32,
+        )
+    };
+    canvas.save();
+    canvas.clip_rect(
+        card.geometry.preview.origin.x as f32,
+        card.geometry.preview.origin.y as f32,
+        card.geometry.preview.size.w as f32,
+        card.geometry.preview.size.h as f32,
+    );
+    renderer.draw_surfaces_ordered_mapped_with_style(
+        device,
+        canvas,
+        surface_order,
+        shm,
+        dmabuf,
+        &map,
+        aegis_render::MappedSurfaceStyle {
+            opacity: opacity.clamp(0.0, 1.0),
+            brightness: brightness.clamp(0.0, 1.0),
+            rounded_clip: card.geometry.preview,
+            corner_radius: card.corner_radius,
+        },
+    );
+    canvas.restore();
+}
+
+fn focused_content_brightness(
+    focused: Option<aegis_core::window::WindowId>,
+    candidate: aegis_core::window::WindowId,
+    inactive: f32,
+) -> f32 {
+    if focused.is_some_and(|focused| focused != candidate) {
+        inactive.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
 }
 
 /// Software cursor for direct KMS, sourced exclusively from the XDG cursor
@@ -1645,6 +1688,69 @@ mod tests {
         );
         assert_ne!(base, sigma_changed);
         assert_eq!(base, base.clone());
+
+        let glass = aegis_shell::LiquidGlassRegion {
+            bounds: region(400.0, 1000.0, 320.0, 64.0),
+            focus: Some(aegis_shell::LiquidGlassFocus {
+                bounds: region(420.0, 1008.0, 96.0, 48.0),
+                corner_radius: 12.0,
+                strength: 1.0,
+            }),
+            ..Default::default()
+        };
+        let with_focus = BackdropCacheKey::new(
+            (0, 1000),
+            (1920, 80),
+            (1920, 1080),
+            12.0,
+            1.0,
+            false,
+            &capture,
+            &frost,
+            &[glass],
+            None,
+            &[],
+        );
+        let moved_focus = BackdropCacheKey::new(
+            (0, 1000),
+            (1920, 80),
+            (1920, 1080),
+            12.0,
+            1.0,
+            false,
+            &capture,
+            &frost,
+            &[aegis_shell::LiquidGlassRegion {
+                focus: glass.focus.map(|focus| aegis_shell::LiquidGlassFocus {
+                    bounds: region(
+                        focus.bounds.x + 1.0,
+                        focus.bounds.y,
+                        focus.bounds.w,
+                        focus.bounds.h,
+                    ),
+                    ..focus
+                }),
+                ..glass
+            }],
+            None,
+            &[],
+        );
+        assert_ne!(with_focus, moved_focus);
+    }
+
+    #[test]
+    fn focused_preview_content_keeps_one_full_brightness_target() {
+        let focused = aegis_core::window::WindowId(7);
+        let sibling = aegis_core::window::WindowId(8);
+        assert_eq!(
+            focused_content_brightness(Some(focused), focused, 0.74),
+            1.0
+        );
+        assert_eq!(
+            focused_content_brightness(Some(focused), sibling, 0.74),
+            0.74
+        );
+        assert_eq!(focused_content_brightness(None, sibling, 0.74), 1.0);
     }
 
     #[test]
@@ -1816,6 +1922,11 @@ mod tests {
             bounds: region(400.0, 100.0, 320.0, 74.0),
             corner_radius: 18.0,
             opacity: 0.4,
+            focus: Some(aegis_shell::LiquidGlassFocus {
+                bounds: region(480.0, 112.0, 120.0, 50.0),
+                corner_radius: 12.0,
+                strength: 0.8,
+            }),
             ..Default::default()
         };
         // Output scale 2, capture downsample 1/2, physical capture origin
@@ -1829,6 +1940,15 @@ mod tests {
         assert_eq!(groups[0].primary.corner_radius, 18.0);
         assert_eq!(groups[0].opacity, 0.4);
         assert!(groups[0].merged.is_none());
+        let focus = groups[0]
+            .focus
+            .expect("focus should share the capture mapping");
+        assert_eq!(focus.shape.x, 180.0);
+        assert_eq!(focus.shape.y, 52.0);
+        assert_eq!(focus.shape.width, 120.0);
+        assert_eq!(focus.shape.height, 50.0);
+        assert_eq!(focus.shape.corner_radius, 12.0);
+        assert_eq!(focus.strength, 0.8);
     }
 
     #[test]

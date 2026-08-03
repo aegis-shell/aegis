@@ -1,6 +1,6 @@
 [package]
 name = "aegis-avatar"
-description = "User avatar loading and rendering: still images and VRM models"
+description = "VRM avatar animation and offscreen rendering"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
@@ -8,9 +8,6 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-# XDG base-directory resolution reused from the freedesktop integration
-# crate, so this crate never hand-rolls $XDG_DATA_HOME again.
-aegis-desktop-entries = { workspace = true }
 fastrand.workspace = true
 flux = { workspace = true }
 flux-sys = { workspace = true }
@@ -18,7 +15,6 @@ flux-scene-graph = { workspace = true }
 flux-scene-graph-sys = { workspace = true }
 image = { workspace = true }
 log.workspace = true
-notify.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

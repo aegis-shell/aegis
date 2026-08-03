@@ -125,6 +125,16 @@ pub struct LiquidGlassRegion {
     pub shadow_alpha: f32,
     pub shadow_blur: f32,
     pub shadow_offset_y: f32,
+    /// Optional optical emphasis inside this body. This is one field in the
+    /// parent's material, not a nested glass body.
+    pub focus: Option<LiquidGlassFocus>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct LiquidGlassFocus {
+    pub bounds: BackdropRegion,
+    pub corner_radius: f32,
+    pub strength: f32,
 }
 
 /// One live preview target in the compositor-owned window switcher.
@@ -132,12 +142,13 @@ pub struct LiquidGlassRegion {
 pub struct WindowSwitcherCard {
     pub window: aegis_core::window::WindowId,
     pub geometry: aegis_core::window_switcher::Card,
+    pub corner_radius: f32,
 }
 
 /// Shared switcher presentation prepared once per frame.
 ///
 /// The executable uses these exact targets for live client previews and the
-/// shell uses them for borders, labels, hit-testing, and animation. Keeping a
+/// shell uses them for focus, labels, hit-testing, and animation. Keeping a
 /// single snapshot prevents the chrome and client scene from drifting apart.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowSwitcherPresentation {
@@ -148,6 +159,7 @@ pub struct WindowSwitcherPresentation {
     /// stationary cards; in carousel mode it remains at the output centre.
     pub selection_indicator: Option<aegis_core::window_switcher::Card>,
     pub selected: Option<aegis_core::window::WindowId>,
+    pub inactive_content_brightness: f32,
     pub visibility: f32,
 }
 
@@ -161,6 +173,8 @@ pub struct WindowSwitcherPresentation {
 pub struct LivePreviewPresentation {
     pub panel: aegis_core::Rect,
     pub cards: Vec<WindowSwitcherCard>,
+    pub focused: Option<aegis_core::window::WindowId>,
+    pub inactive_content_brightness: f32,
     pub visibility: f32,
 }
 
@@ -488,6 +502,15 @@ pub trait Chrome {
         false
     }
 
+    /// Whether this component temporarily owns the complete chrome layer.
+    ///
+    /// Full-output presentations such as the window switcher and command
+    /// panel suppress every other component, including persistent HUD and
+    /// Dock decorations, until their exit animation has finished.
+    fn exclusive_presentation_active(&self) -> bool {
+        self.window_switcher_active()
+    }
+
     /// Whether this component is part of the persistent desktop decoration
     /// layer. Persistent decorations stay present above ordinary overlays such
     /// as Prism and the launcher. An exclusive presentation such as the window
@@ -774,16 +797,18 @@ pub struct CompositionRequirements {
 }
 
 /// Whether one component participates in the current shell pass. Ordinary
-/// modal overlays preserve persistent decorations; the window switcher is an
-/// exclusive presentation and temporarily owns the complete chrome layer.
+/// modal overlays preserve persistent decorations; an exclusive presentation
+/// temporarily owns the complete chrome layer.
 fn participates_in_shell_pass(
     component: &dyn Chrome,
     screenshot_freeze: bool,
     modal_active: bool,
     window_switcher_active: bool,
+    exclusive_presentation_active: bool,
 ) -> bool {
     (!screenshot_freeze || component.screenshot_active())
         && (!window_switcher_active || component.window_switcher_active())
+        && (!exclusive_presentation_active || component.exclusive_presentation_active())
         && (!modal_active || component.visible_during_modal())
 }
 
@@ -1090,6 +1115,7 @@ impl Shell {
             .iter()
             .any(|component| component.modal_active());
         let window_switcher_active = self.window_switcher_active();
+        let exclusive_presentation_active = self.exclusive_presentation_active();
         self.components
             .iter()
             .filter(|component| {
@@ -1098,6 +1124,7 @@ impl Shell {
                     self.screenshot_freeze,
                     modal_active,
                     window_switcher_active,
+                    exclusive_presentation_active,
                 )
             })
             .filter_map(|component| component.live_preview_presentation())
@@ -1116,6 +1143,12 @@ impl Shell {
         self.components
             .iter()
             .any(|component| component.window_switcher_active())
+    }
+
+    fn exclusive_presentation_active(&self) -> bool {
+        self.components
+            .iter()
+            .any(|component| component.exclusive_presentation_active())
     }
 
     /// Window id the overview asked to focus this frame, if any.
@@ -1327,12 +1360,14 @@ impl Shell {
             .iter()
             .any(|component| component.modal_active());
         let window_switcher_active = self.window_switcher_active();
+        let exclusive_presentation_active = self.exclusive_presentation_active();
         self.components.iter().any(|component| {
             participates_in_shell_pass(
                 component.as_ref(),
                 self.screenshot_freeze,
                 modal_active,
                 window_switcher_active,
+                exclusive_presentation_active,
             ) && component.captures_keyboard()
         })
     }
@@ -1346,6 +1381,7 @@ impl Shell {
             .iter()
             .any(|component| component.modal_active());
         let window_switcher_active = self.window_switcher_active();
+        let exclusive_presentation_active = self.exclusive_presentation_active();
         self.components
             .iter()
             .filter(|component| {
@@ -1354,6 +1390,7 @@ impl Shell {
                     self.screenshot_freeze,
                     modal_active,
                     window_switcher_active,
+                    exclusive_presentation_active,
                 )
             })
             .any(|c| c.captures_pointer(x, y, display, &self.windows, &self.workspaces))
@@ -1368,6 +1405,7 @@ impl Shell {
             .iter()
             .any(|component| component.modal_active());
         let window_switcher_active = self.window_switcher_active();
+        let exclusive_presentation_active = self.exclusive_presentation_active();
         self.components
             .iter()
             .rev()
@@ -1377,6 +1415,7 @@ impl Shell {
                     self.screenshot_freeze,
                     modal_active,
                     window_switcher_active,
+                    exclusive_presentation_active,
                 )
             })
             .find(|component| {
@@ -1405,6 +1444,7 @@ impl Shell {
             .iter()
             .any(|component| component.modal_active());
         let window_switcher_active = self.window_switcher_active();
+        let exclusive_presentation_active = self.exclusive_presentation_active();
         let freeze = self.screenshot_freeze;
         let events = &mut self.events;
         for component in self.components.iter_mut() {
@@ -1413,6 +1453,7 @@ impl Shell {
                 freeze,
                 modal_active,
                 window_switcher_active,
+                exclusive_presentation_active,
             ) {
                 component.key_char(&kc, events);
             }
@@ -1481,6 +1522,7 @@ impl Shell {
             .iter()
             .any(|component| component.modal_active());
         let window_switcher_active = self.window_switcher_active();
+        let exclusive_presentation_active = self.exclusive_presentation_active();
         if self
             .components
             .iter()
@@ -1490,6 +1532,7 @@ impl Shell {
                     self.screenshot_freeze,
                     modal_active,
                     window_switcher_active,
+                    exclusive_presentation_active,
                 )
             })
             .any(|c| c.anim_pending())
@@ -1507,6 +1550,7 @@ impl Shell {
             .iter()
             .any(|component| component.modal_active());
         let window_switcher_active = self.window_switcher_active();
+        let exclusive_presentation_active = self.exclusive_presentation_active();
         self.components
             .iter()
             .filter(|component| {
@@ -1515,6 +1559,7 @@ impl Shell {
                     self.screenshot_freeze,
                     modal_active,
                     window_switcher_active,
+                    exclusive_presentation_active,
                 )
             })
             .any(|component| component.requires_composition())
@@ -1530,6 +1575,7 @@ impl Shell {
             .iter()
             .any(|component| component.modal_active());
         let window_switcher_active = self.window_switcher_active();
+        let exclusive_presentation_active = self.exclusive_presentation_active();
         let mut requirements = CompositionRequirements::default();
         for component in self.components.iter().filter(|component| {
             participates_in_shell_pass(
@@ -1537,6 +1583,7 @@ impl Shell {
                 self.screenshot_freeze,
                 modal_active,
                 window_switcher_active,
+                exclusive_presentation_active,
             )
         }) {
             let visible = component.requires_composition();
@@ -1557,6 +1604,7 @@ impl Shell {
             .iter()
             .any(|component| component.modal_active());
         let window_switcher_active = self.window_switcher_active();
+        let exclusive_presentation_active = self.exclusive_presentation_active();
         self.components
             .iter()
             .filter(|component| {
@@ -1565,6 +1613,7 @@ impl Shell {
                     self.screenshot_freeze,
                     modal_active,
                     window_switcher_active,
+                    exclusive_presentation_active,
                 )
             })
             .map(|component| component.backdrop_blur_sigma())
@@ -1579,6 +1628,7 @@ impl Shell {
             .iter()
             .any(|component| component.modal_active());
         let window_switcher_active = self.window_switcher_active();
+        let exclusive_presentation_active = self.exclusive_presentation_active();
         let freeze = self.screenshot_freeze;
         for component in &mut self.components {
             if participates_in_shell_pass(
@@ -1586,6 +1636,7 @@ impl Shell {
                 freeze,
                 modal_active,
                 window_switcher_active,
+                exclusive_presentation_active,
             ) {
                 component.prepare_backdrop(input, &self.windows, &self.workspaces);
             }
@@ -1601,6 +1652,7 @@ impl Shell {
             .iter()
             .any(|component| component.modal_active());
         let window_switcher_active = self.window_switcher_active();
+        let exclusive_presentation_active = self.exclusive_presentation_active();
         let mut regions = Vec::new();
         for component in &self.components {
             if participates_in_shell_pass(
@@ -1608,6 +1660,7 @@ impl Shell {
                 self.screenshot_freeze,
                 modal_active,
                 window_switcher_active,
+                exclusive_presentation_active,
             ) && component.backdrop_blur_sigma() > 0.0
             {
                 let mut requested =
@@ -1634,6 +1687,7 @@ impl Shell {
             .iter()
             .any(|component| component.modal_active());
         let window_switcher_active = self.window_switcher_active();
+        let exclusive_presentation_active = self.exclusive_presentation_active();
         let mut regions = Vec::new();
         for component in &self.components {
             if participates_in_shell_pass(
@@ -1641,6 +1695,7 @@ impl Shell {
                 self.screenshot_freeze,
                 modal_active,
                 window_switcher_active,
+                exclusive_presentation_active,
             ) && component.backdrop_blur_sigma() > 0.0
             {
                 regions.extend(component.liquid_glass_regions(
@@ -1671,6 +1726,9 @@ impl Shell {
             let window_switcher_active = components
                 .iter()
                 .any(|component| component.window_switcher_active());
+            let exclusive_presentation_active = components
+                .iter()
+                .any(|component| component.exclusive_presentation_active());
             let modal_reserved = components
                 .iter()
                 .filter(|component| component.persistent_decoration())
@@ -1680,6 +1738,7 @@ impl Shell {
                         freeze,
                         modal_active,
                         window_switcher_active,
+                        exclusive_presentation_active,
                     )
                 })
                 .fold(Reserved::default(), |mut total, component| {
@@ -1700,6 +1759,7 @@ impl Shell {
                         freeze,
                         modal_active,
                         window_switcher_active,
+                        exclusive_presentation_active,
                     ) {
                         component.render(f, input, windows, workspaces, i18n, events);
                     }
@@ -1750,9 +1810,9 @@ mod tests {
         }
     }
 
-    struct ExclusiveSwitcher;
+    struct ExclusivePresentation;
 
-    impl Chrome for ExclusiveSwitcher {
+    impl Chrome for ExclusivePresentation {
         fn render(
             &mut self,
             _frame: &mut Frame,
@@ -1772,21 +1832,67 @@ mod tests {
             true
         }
 
+        fn exclusive_presentation_active(&self) -> bool {
+            true
+        }
+    }
+
+    struct SwitcherPresentation;
+
+    impl Chrome for SwitcherPresentation {
+        fn render(
+            &mut self,
+            _frame: &mut Frame,
+            _input: &Input,
+            _windows: &[Window],
+            _workspaces: &WorkspaceSnapshot,
+            _i18n: &Localizer,
+            _out: &mut ChromeEvents,
+        ) {
+        }
+
+        fn visible_during_modal(&self) -> bool {
+            true
+        }
+
         fn window_switcher_active(&self) -> bool {
             true
         }
     }
 
     #[test]
-    fn ordinary_overlays_preserve_decorations_but_switcher_is_exclusive() {
+    fn ordinary_overlays_preserve_decorations_but_exclusive_presentations_do_not() {
         let ordinary = OrdinaryChrome;
         let decoration = PersistentDecoration;
-        let switcher = ExclusiveSwitcher;
+        let exclusive = ExclusivePresentation;
+        let switcher = SwitcherPresentation;
 
-        assert!(!participates_in_shell_pass(&ordinary, false, true, false));
-        assert!(participates_in_shell_pass(&decoration, false, true, false));
-        assert!(!participates_in_shell_pass(&decoration, false, true, true));
-        assert!(participates_in_shell_pass(&switcher, false, true, true));
+        assert!(!participates_in_shell_pass(
+            &ordinary, false, true, false, false
+        ));
+        assert!(participates_in_shell_pass(
+            &decoration,
+            false,
+            true,
+            false,
+            false
+        ));
+        assert!(!participates_in_shell_pass(
+            &decoration,
+            false,
+            true,
+            false,
+            true
+        ));
+        assert!(participates_in_shell_pass(
+            &exclusive, false, true, false, true
+        ));
+        assert!(!participates_in_shell_pass(
+            &exclusive, false, true, true, true
+        ));
+        assert!(participates_in_shell_pass(
+            &switcher, false, true, true, true
+        ));
     }
 
     #[test]

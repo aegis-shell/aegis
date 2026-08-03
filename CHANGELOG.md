@@ -7,6 +7,29 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Shell chrome
+
+- Dock live previews now keep one continuous pointer corridor from the
+  magnified owner icon into the preview panel, so crossing the visual gap no
+  longer dismisses the panel before a preview can be chosen.
+- Dock previews and the window switcher now share a single-body Liquid Glass
+  focus treatment: their live client pixels now follow the same analytic
+  rounded silhouette as the card, selected content gains color-preserving
+  optical clarity, and opaque darker siblings replace the washed-out alpha
+  fade and former blue-white outlined selection treatment.
+- The command panel now owns the full chrome layer while it is open or
+  animating closed, matching the window switcher preview: the HUD and Dock
+  stay hidden until the panel has fully closed.
+- Restored continuous command-panel VRMA playback after the panel becomes the
+  exclusive chrome presentation. Lock and command panel now consume one
+  shared `aegis-identity` account and ordered still/VRM source contract, while
+  `aegis-avatar` is limited to explicit VRM/VRMA rendering with a camera
+  supplied by each caller. Static portraits remain supported, reload uses the
+  same immutable source configuration in both scenes, and outer presentation
+  stays local; the command panel's old blue-white procedural fallback is
+  replaced by a flat warm-graphite disc, quiet amber keyline, and neutral
+  initials.
+
 ### Actor-scoped Agent interaction
 
 - Hardened Actor IPC and accessibility supervision with bounded interactive

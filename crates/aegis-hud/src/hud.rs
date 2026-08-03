@@ -836,6 +836,7 @@ impl Chrome for Hud {
                 shadow_alpha: 0.16,
                 shadow_blur: 4.0,
                 shadow_offset_y: 2.0,
+                focus: None,
             })
             .collect()
     }

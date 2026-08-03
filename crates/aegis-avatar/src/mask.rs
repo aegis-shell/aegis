@@ -1,8 +1,4 @@
-//! Circle alpha-mask mathematics shared by the still-image and VRM renderers.
-//!
-//! Both avatar kinds must end as a circular, premultiplied texture (see
-//! `lib.rs`). Rather than duplicate the disc edge in two places, the analytic
-//! coverage function and the premultiply pass live here.
+//! Circle alpha-mask mathematics used only by the opt-in debug readback.
 
 use image::RgbaImage;
 

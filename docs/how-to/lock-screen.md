@@ -229,14 +229,19 @@ For compatibility, a single
 both motion-library directories contain no clips. The motion library takes
 precedence when both layouts exist.
 
-A still image takes precedence over a VRM model. Aegis retargets each VRMA
-motion onto VRM 0.x or 1.0 bones and keeps the animated head and shoulders
-inside the identity disc. Without any motion clip, the VRM remains in its
-rest pose. Embedded PNG/JPEG base-color textures retain authored skin, hair,
-eye, and clothing colors. UV0 transforms, unlit materials, glTF sampler state,
-OPAQUE/MASK/BLEND alpha, alpha cutoff, and double-sided primitives are
-supported. Referenced external images and additional texture-coordinate sets
-are rejected instead of rendering an incomplete white model.
+The shared identity portrait contract gives still images precedence over a
+VRM model. Both the lock screen and command panel use the same ordered
+configuration for initial loading and live reload. `aegis-avatar` receives
+only an explicitly selected VRM and the camera owned by that presentation;
+it does not decode still images or choose a source.
+
+Aegis retargets each VRMA motion onto VRM 0.x or 1.0 bones. Without any
+motion clip, the VRM remains in its rest pose. Embedded PNG/JPEG base-color
+textures retain authored skin, hair, eye, and clothing colors. UV0
+transforms, unlit materials, glTF sampler state, OPAQUE/MASK/BLEND alpha,
+alpha cutoff, and double-sided primitives are supported. Referenced external
+images and additional texture-coordinate sets are rejected instead of
+rendering an incomplete white model.
 
 Avatar sources and motion libraries reload live in both the lock screen and
 command panel. Save or atomically replace a still image, VRM, or VRMA file and
@@ -246,6 +251,10 @@ becomes visible. If a save temporarily leaves malformed data, Aegis keeps the
 last-known-good avatar and retries; deleting all avatar sources deliberately
 switches to the flat initial fallback. A reload keeps the current named motion
 when that motion still exists in the replacement library.
+
+See the [Identity Portrait Reference](../reference/identity-portraits.md) for
+the exact source order, motion layout, caller-owned VRM camera parameters, and
+transactional reload contract.
 
 See [How to Configure Locking and Idle](lock-and-idle.md) for automatic
 timeouts and the [Session Service Commands](../reference/session-services.md)

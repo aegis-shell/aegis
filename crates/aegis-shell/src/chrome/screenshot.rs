@@ -13,7 +13,7 @@
 //!
 //! - `Region` is the Print-key interaction, but the confirmed rect goes to
 //!   the waiting IPC request instead of the screenshot file path.
-//! - `Pixel` draws a full-screen crosshair; a click emits the picked point
+//! - `Pixel` draws a compact optical loupe; a click emits the picked point
 //!   through [`ChromeEvents::picked_point`].
 //! - `Window` highlights the window under the cursor; a click emits its id
 //!   through [`ChromeEvents::picked_window`], a click on empty desktop (or
@@ -24,9 +24,15 @@
 //! [`ChromeEvents::pick_cancelled`]; the compositor closes the loop by
 //! answering the IPC request.
 
-use lens::{Color, Frame, Input, LayoutOpts, OverlayOpts, Rect as LensRect};
+use aegis_design::{Design, materials};
+use lens::{
+    Align, Color, ForegroundOutline, Frame, Input, LayoutOpts, OverlayOpts, Rect as LensRect,
+};
 
-use crate::{Chrome, ChromeEvents, Localizer, Message};
+use crate::{
+    BackdropRegion, Chrome, ChromeEvents, CursorShape, LiquidGlassRegion, Localizer, Message,
+    ellipsize,
+};
 use aegis_core::app::BuiltInApplication;
 use aegis_core::input::{KeyAction, KeyChar, key_action};
 use aegis_core::window::{Window, WindowId};
@@ -35,6 +41,16 @@ use aegis_core::workspace::WorkspaceSnapshot;
 /// Minimum drag distance in logical pixels before a release is treated as a
 /// real selection rather than an accidental tap.
 const MIN_DRAG: f32 = 8.0;
+
+/// Shared optical character of screenshot-picker glass bodies. The selector
+/// is static, so it uses the same full-strength blur as the window switcher
+/// without introducing another component-local material.
+const BACKDROP_BLUR_SIGMA: f32 = 16.0;
+const GLASS_RADIUS: f32 = 18.0;
+const PIXEL_LENS_SIZE: f32 = 48.0;
+const STATUS_FONT_SIZE: f32 = 12.0;
+const STATUS_PAD: f32 = 8.0;
+const STATUS_MARGIN: f32 = 12.0;
 
 /// The interaction a portal picker session asks for (ADR-0054).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,6 +228,116 @@ impl ScreenshotSelector {
         self.hovered = None;
     }
 
+    /// Current Liquid Glass body. Region and window selection use the target
+    /// itself; pixel picking uses a compact lens centred on the pointer.
+    fn glass_rect(&self, display: (f32, f32), windows: &[Window]) -> Option<LensRect> {
+        match self.mode {
+            PickerMode::Region => self
+                .shown_rect()
+                .and_then(|rect| (rect.size.w > 0 && rect.size.h > 0).then_some(to_lens(rect))),
+            PickerMode::Pixel => {
+                let w = PIXEL_LENS_SIZE.min(display.0.max(1.0));
+                let h = PIXEL_LENS_SIZE.min(display.1.max(1.0));
+                Some(LensRect {
+                    x: (self.current.x - w * 0.5).clamp(0.0, (display.0 - w).max(0.0)),
+                    y: (self.current.y - h * 0.5).clamp(0.0, (display.1 - h).max(0.0)),
+                    w,
+                    h,
+                })
+            }
+            PickerMode::Window => self
+                .hovered
+                .and_then(|id| windows.iter().find(|window| window.id == id))
+                .map(|window| LensRect {
+                    x: window.position.x as f32,
+                    y: window.position.y as f32,
+                    w: window.size.w.max(1) as f32,
+                    h: window.size.h.max(1) as f32,
+                }),
+        }
+    }
+
+    fn glass_radius(rect: LensRect) -> f32 {
+        GLASS_RADIUS.min(rect.w * 0.5).min(rect.h * 0.5)
+    }
+
+    /// Dim only outside the active optical body. A full-screen translucent
+    /// layer would dim the already-composited Liquid Glass along with the
+    /// desktop and collapse it back into a classic flat selection rectangle.
+    fn render_scrim(&self, frame: &mut Frame, display: (f32, f32), hole: Option<LensRect>) {
+        let scrim = OverlayOpts {
+            bg: Color::rgba(0, 0, 0, 128),
+            ..Default::default()
+        };
+        let full = LensRect {
+            x: 0.0,
+            y: 0.0,
+            w: display.0,
+            h: display.1,
+        };
+        let regions = scrim_regions(full, hole);
+        for (index, rect) in regions.into_iter().enumerate() {
+            if rect.w <= 0.0 || rect.h <= 0.0 {
+                continue;
+            }
+            frame.layer(
+                &format!("aegis-screenshot-scrim-{index}"),
+                rect,
+                &scrim,
+                |_| {},
+            );
+        }
+    }
+
+    fn render_status_pill(
+        frame: &mut Frame,
+        id: &str,
+        text: &str,
+        anchor: LensRect,
+        display: (f32, f32),
+        selected: bool,
+    ) {
+        let max_text_width = (display.0 - 2.0 * (STATUS_MARGIN + STATUS_PAD)).max(1.0);
+        let text = ellipsize(frame, text, STATUS_FONT_SIZE, max_text_width);
+        let metrics = frame.measure_text(&text, STATUS_FONT_SIZE);
+        let size = (
+            metrics.width + STATUS_PAD * 2.0,
+            metrics.height + STATUS_PAD * 2.0,
+        );
+        let rect = status_rect(anchor, size, display);
+        let design = Design::dark();
+        let mut material = materials::glass_focus(&design, selected, 1.0);
+        material.radius = rect.h * 0.5;
+
+        let original_theme = frame.theme();
+        frame.set_theme(original_theme.with_fg(design.hud_foreground.primary));
+        frame.layer(id, rect, &material, |frame| {
+            // A row's cross axis is vertical. With an explicitly measured body
+            // and equal padding on both sides, the compact glyph box is centred
+            // on both axes instead of inheriting the regular label's theme pad.
+            frame.row_ex(
+                &LayoutOpts {
+                    width: rect.w,
+                    height: rect.h,
+                    pad: STATUS_PAD,
+                    cross: Align::Center,
+                    ..Default::default()
+                },
+                |frame| {
+                    frame.label_compact_outlined_sized(
+                        &text,
+                        STATUS_FONT_SIZE,
+                        ForegroundOutline::new(
+                            design.hud_foreground.contour,
+                            design.hud_foreground.text_contour_width,
+                        ),
+                    );
+                },
+            );
+        });
+        frame.set_theme(original_theme);
+    }
+
     /// Draw the region-mode overlay: selection rect, dimensions label, and
     /// the confirm hint once a selection is staged.
     fn render_region(&self, frame: &mut Frame, display: (f32, f32), i18n: &Localizer) {
@@ -225,202 +351,186 @@ impl ScreenshotSelector {
             h: rect.size.h.max(1) as f32,
         };
 
-        // Selection fill and border.
-        frame.layer(
-            "aegis-screenshot-selection",
-            lens_rect,
-            &OverlayOpts {
-                bg: Color::rgba(100, 160, 255, 40),
-                border: Color::rgba(100, 160, 255, 220),
-                border_width: 1.5,
-                ..Default::default()
-            },
-            |_| {},
-        );
+        // Minimal foreground tint only. The compositor-owned analytic pass
+        // supplies the body, refraction, rim light, and shadow.
+        let design = Design::dark();
+        let mut material = materials::glass_panel(&design);
+        material.radius = Self::glass_radius(lens_rect);
+        frame.layer("aegis-screenshot-selection", lens_rect, &material, |_| {});
 
-        // Dimensions label.
+        // One measured status pill is content inside the glass body, not a
+        // second outlined material. It expands to include the confirmation
+        // hint after the drag is staged.
         if rect.size.w > 0 && rect.size.h > 0 {
-            let label = format!("{} x {}", rect.size.w, rect.size.h);
-            let label_w = (label.len() as f32 * 6.5 + 12.0).min(120.0);
-            let label_h = 22.0;
-            let label_x = lens_rect.x.clamp(0.0, display.0 - label_w);
-            let label_y = (lens_rect.y - label_h - 6.0).clamp(0.0, display.1 - label_h);
-            frame.layer(
-                "aegis-screenshot-label",
-                LensRect {
-                    x: label_x,
-                    y: label_y,
-                    w: label_w,
-                    h: label_h,
-                },
-                &OverlayOpts {
-                    bg: Color::rgba(12, 14, 22, 210),
-                    radius: 4.0,
-                    ..Default::default()
-                },
-                |frame| {
-                    frame.column_ex(
-                        &LayoutOpts {
-                            width: label_w,
-                            height: label_h,
-                            cross: lens::Align::Center,
-                            ..Default::default()
-                        },
-                        |frame| {
-                            frame.label_sized(&label, 11.0);
-                        },
-                    );
-                },
-            );
-        }
-
-        // Confirm/cancel hint once a selection is staged.
-        if self.confirmed.is_some() {
-            let hint = i18n.text(Message::ScreenshotConfirmHint);
-            let hint_w = (hint.chars().count() as f32 * 6.5 + 16.0).min(display.0);
-            let hint_h = 26.0;
-            let hint_x = lens_rect.x.clamp(0.0, display.0 - hint_w);
-            let below = lens_rect.y + lens_rect.h + 6.0;
-            let hint_y = if below + hint_h <= display.1 {
-                below
+            let dimensions = format!("{} × {}", rect.size.w, rect.size.h);
+            let status = if self.confirmed.is_some() {
+                format!(
+                    "{dimensions}  —  {}",
+                    i18n.text(Message::ScreenshotConfirmHint)
+                )
             } else {
-                (lens_rect.y - hint_h - 6.0).max(0.0)
+                dimensions
             };
-            frame.layer(
-                "aegis-screenshot-hint",
-                LensRect {
-                    x: hint_x,
-                    y: hint_y,
-                    w: hint_w,
-                    h: hint_h,
-                },
-                &OverlayOpts {
-                    bg: Color::rgba(12, 14, 22, 210),
-                    radius: 4.0,
-                    ..Default::default()
-                },
-                |frame| {
-                    frame.column_ex(
-                        &LayoutOpts {
-                            width: hint_w,
-                            height: hint_h,
-                            cross: lens::Align::Center,
-                            ..Default::default()
-                        },
-                        |frame| {
-                            frame.label_sized(hint, 11.0);
-                        },
-                    );
-                },
+            Self::render_status_pill(
+                frame,
+                "aegis-screenshot-status",
+                &status,
+                lens_rect,
+                display,
+                self.confirmed.is_some(),
             );
         }
     }
 
-    /// Draw the pixel-mode crosshair through the cursor.
-    fn render_crosshair(&self, frame: &mut Frame, display: (f32, f32)) {
-        let crosshair = Color::rgba(100, 160, 255, 220);
+    /// Draw a compact optical loupe instead of classic full-screen crosshair
+    /// rules. The analytic body is supplied through `liquid_glass_regions`.
+    fn render_pixel_lens(&self, frame: &mut Frame, display: (f32, f32)) {
+        let Some(rect) = self.glass_rect(display, &[]) else {
+            return;
+        };
+        let design = Design::dark();
+        let mut material = materials::glass_panel(&design);
+        material.radius = Self::glass_radius(rect);
+        frame.layer("aegis-picker-pixel-lens", rect, &material, |_| {});
         frame.layer(
-            "aegis-picker-crosshair-v",
+            "aegis-picker-pixel-centre",
             LensRect {
-                x: self.current.x.round() - 0.5,
-                y: 0.0,
-                w: 1.0,
-                h: display.1,
+                x: self.current.x.round() - 2.0,
+                y: self.current.y.round() - 2.0,
+                w: 4.0,
+                h: 4.0,
             },
             &OverlayOpts {
-                bg: crosshair,
-                ..Default::default()
-            },
-            |_| {},
-        );
-        frame.layer(
-            "aegis-picker-crosshair-h",
-            LensRect {
-                x: 0.0,
-                y: self.current.y.round() - 0.5,
-                w: display.0,
-                h: 1.0,
-            },
-            &OverlayOpts {
-                bg: crosshair,
+                bg: design.hud_foreground.primary,
+                radius: 2.0,
                 ..Default::default()
             },
             |_| {},
         );
     }
 
-    /// Draw the window-mode highlight over the hovered window, with its
-    /// title (or a whole-output marker when hovering empty desktop).
+    /// Draw the Liquid Glass highlight and title for the hovered window.
+    /// Empty desktop remains the implicit whole-output target.
     fn render_window_pick(&self, frame: &mut Frame, display: (f32, f32), windows: &[Window]) {
-        let window = self
+        let Some(window) = self
             .hovered
-            .and_then(|id| windows.iter().find(|window| window.id == id));
-        let (rect, label) = match window {
-            Some(window) => (
-                LensRect {
-                    x: window.position.x as f32,
-                    y: window.position.y as f32,
-                    w: window.size.w.max(1) as f32,
-                    h: window.size.h.max(1) as f32,
-                },
-                window.title.clone().unwrap_or_default(),
-            ),
-            // Empty desktop: the click picks the whole output.
-            None => (
-                LensRect {
-                    x: 0.0,
-                    y: 0.0,
-                    w: display.0,
-                    h: display.1,
-                },
-                String::new(),
-            ),
+            .and_then(|id| windows.iter().find(|window| window.id == id))
+        else {
+            // Empty desktop remains the whole-output target, represented by
+            // the unobstructed frozen canvas instead of a fake full-screen
+            // glass body.
+            return;
         };
+        let rect = LensRect {
+            x: window.position.x as f32,
+            y: window.position.y as f32,
+            w: window.size.w.max(1) as f32,
+            h: window.size.h.max(1) as f32,
+        };
+        let label = window.title.clone().unwrap_or_default();
         frame.layer(
             "aegis-picker-window",
             rect,
-            &OverlayOpts {
-                bg: Color::rgba(100, 160, 255, 40),
-                border: Color::rgba(100, 160, 255, 220),
-                border_width: 1.5,
-                ..Default::default()
+            &{
+                let design = Design::dark();
+                let mut material = materials::glass_panel(&design);
+                material.radius = Self::glass_radius(rect);
+                material
             },
             |_| {},
         );
         if !label.is_empty() {
-            let label_w = (label.chars().count() as f32 * 6.5 + 12.0).min(display.0);
-            let label_h = 22.0;
-            let label_x = rect.x.clamp(0.0, display.0 - label_w);
-            let label_y = (rect.y - label_h - 6.0).clamp(0.0, display.1 - label_h);
-            frame.layer(
+            Self::render_status_pill(
+                frame,
                 "aegis-picker-window-label",
-                LensRect {
-                    x: label_x,
-                    y: label_y,
-                    w: label_w,
-                    h: label_h,
-                },
-                &OverlayOpts {
-                    bg: Color::rgba(12, 14, 22, 210),
-                    radius: 4.0,
-                    ..Default::default()
-                },
-                |frame| {
-                    frame.column_ex(
-                        &LayoutOpts {
-                            width: label_w,
-                            height: label_h,
-                            cross: lens::Align::Center,
-                            ..Default::default()
-                        },
-                        |frame| {
-                            frame.label_sized(&label, 11.0);
-                        },
-                    );
-                },
+                &label,
+                rect,
+                display,
+                true,
             );
         }
     }
+}
+
+fn to_lens(rect: aegis_core::Rect) -> LensRect {
+    LensRect {
+        x: rect.origin.x as f32,
+        y: rect.origin.y as f32,
+        w: rect.size.w.max(1) as f32,
+        h: rect.size.h.max(1) as f32,
+    }
+}
+
+fn to_backdrop(rect: LensRect) -> BackdropRegion {
+    BackdropRegion {
+        x: rect.x,
+        y: rect.y,
+        w: rect.w,
+        h: rect.h,
+    }
+}
+
+fn status_rect(anchor: LensRect, size: (f32, f32), display: (f32, f32)) -> LensRect {
+    let w = size.0.min(display.0.max(1.0));
+    let h = size.1.min(display.1.max(1.0));
+    let inside = anchor.w >= w + STATUS_MARGIN * 2.0 && anchor.h >= h + STATUS_MARGIN * 2.0;
+    let x = if inside {
+        anchor.x + STATUS_MARGIN
+    } else {
+        anchor.x + (anchor.w - w) * 0.5
+    }
+    .clamp(0.0, (display.0 - w).max(0.0));
+    let y = if inside {
+        anchor.y + STATUS_MARGIN
+    } else if anchor.y + anchor.h + STATUS_MARGIN + h <= display.1 {
+        anchor.y + anchor.h + STATUS_MARGIN
+    } else {
+        anchor.y - STATUS_MARGIN - h
+    }
+    .clamp(0.0, (display.1 - h).max(0.0));
+    LensRect { x, y, w, h }
+}
+
+fn scrim_regions(full: LensRect, hole: Option<LensRect>) -> [LensRect; 4] {
+    let Some(hole) = hole else {
+        let empty = LensRect {
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 0.0,
+        };
+        return [full, empty, empty, empty];
+    };
+    let left = hole.x.clamp(full.x, full.x + full.w);
+    let top = hole.y.clamp(full.y, full.y + full.h);
+    let right = (hole.x + hole.w).clamp(left, full.x + full.w);
+    let bottom = (hole.y + hole.h).clamp(top, full.y + full.h);
+    [
+        LensRect {
+            x: full.x,
+            y: full.y,
+            w: full.w,
+            h: top - full.y,
+        },
+        LensRect {
+            x: full.x,
+            y: bottom,
+            w: full.w,
+            h: full.y + full.h - bottom,
+        },
+        LensRect {
+            x: full.x,
+            y: top,
+            w: left - full.x,
+            h: bottom - top,
+        },
+        LensRect {
+            x: right,
+            y: top,
+            w: full.x + full.w - right,
+            h: bottom - top,
+        },
+    ]
 }
 
 impl Chrome for ScreenshotSelector {
@@ -444,9 +554,10 @@ impl Chrome for ScreenshotSelector {
             y: raw.cursor.y,
         };
         let pressed = raw.mouse_pressed.first().copied().unwrap_or(false);
-        let released = raw.mouse_released.first().copied().unwrap_or(false);
         match self.mode {
-            PickerMode::Region => self.update_pointer(cursor, pressed, released),
+            // Region state is prepared before the compositor queries the
+            // matching glass geometry, so foreground and optics share one rect.
+            PickerMode::Region => {}
             PickerMode::Pixel => {
                 self.current = cursor;
                 if pressed {
@@ -474,25 +585,12 @@ impl Chrome for ScreenshotSelector {
             return;
         }
 
-        // Full-screen dimmed scrim.
-        frame.layer(
-            "aegis-screenshot-scrim",
-            LensRect {
-                x: 0.0,
-                y: 0.0,
-                w: display.0,
-                h: display.1,
-            },
-            &OverlayOpts {
-                bg: Color::rgba(0, 0, 0, 140),
-                ..Default::default()
-            },
-            |_| {},
-        );
+        let glass_rect = self.glass_rect(display, windows);
+        self.render_scrim(frame, display, glass_rect);
 
         match self.mode {
             PickerMode::Region => self.render_region(frame, display, i18n),
-            PickerMode::Pixel => self.render_crosshair(frame, display),
+            PickerMode::Pixel => self.render_pixel_lens(frame, display),
             PickerMode::Window => self.render_window_pick(frame, display, windows),
         }
     }
@@ -520,12 +618,99 @@ impl Chrome for ScreenshotSelector {
         self.active
     }
 
+    fn prepare_backdrop(
+        &mut self,
+        input: &Input,
+        windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) {
+        if !self.active {
+            return;
+        }
+        let raw = input.as_raw();
+        let cursor = Point {
+            x: raw.cursor.x,
+            y: raw.cursor.y,
+        };
+        match self.mode {
+            PickerMode::Region => self.update_pointer(
+                cursor,
+                raw.mouse_pressed.first().copied().unwrap_or(false),
+                raw.mouse_released.first().copied().unwrap_or(false),
+            ),
+            PickerMode::Pixel => self.current = cursor,
+            PickerMode::Window => {
+                self.current = cursor;
+                self.hovered = Self::window_at(windows, cursor);
+            }
+        }
+    }
+
+    fn backdrop_blur_sigma(&self) -> f32 {
+        if self.active
+            && match self.mode {
+                PickerMode::Region => self
+                    .shown_rect()
+                    .is_some_and(|rect| rect.size.w > 0 && rect.size.h > 0),
+                PickerMode::Pixel => true,
+                PickerMode::Window => self.hovered.is_some(),
+            }
+        {
+            BACKDROP_BLUR_SIGMA
+        } else {
+            0.0
+        }
+    }
+
+    fn backdrop_regions(
+        &self,
+        display: (f32, f32),
+        windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> Vec<BackdropRegion> {
+        self.glass_rect(display, windows)
+            .map(|rect| vec![to_backdrop(rect)])
+            .unwrap_or_default()
+    }
+
+    fn liquid_glass_regions(
+        &self,
+        display: (f32, f32),
+        windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> Vec<LiquidGlassRegion> {
+        self.glass_rect(display, windows)
+            .map(|rect| {
+                vec![LiquidGlassRegion {
+                    bounds: to_backdrop(rect),
+                    corner_radius: Self::glass_radius(rect),
+                    opacity: 1.0,
+                    shadow_alpha: 0.18,
+                    shadow_blur: 16.0,
+                    shadow_offset_y: 8.0,
+                    focus: None,
+                }]
+            })
+            .unwrap_or_default()
+    }
+
     fn visible_during_modal(&self) -> bool {
         true
     }
 
     fn screenshot_active(&self) -> bool {
         self.active
+    }
+
+    fn cursor_shape_at(
+        &self,
+        _x: f32,
+        _y: f32,
+        _display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) -> Option<CursorShape> {
+        self.active.then_some(CursorShape::Default)
     }
 
     fn open_builtin(&mut self, app: BuiltInApplication) {
@@ -683,7 +868,7 @@ mod tests {
     }
 
     #[test]
-    fn selector_captures_input_without_overriding_cursor_shape() {
+    fn selector_captures_input_with_a_visible_live_cursor() {
         let mut s = ScreenshotSelector::new();
         s.start();
         let workspaces = WorkspaceSnapshot {
@@ -693,8 +878,88 @@ mod tests {
         assert!(s.captures_pointer(0.0, 0.0, (100.0, 100.0), &[], &workspaces));
         assert_eq!(
             s.cursor_shape_at(0.0, 0.0, (100.0, 100.0), &[], &workspaces),
-            None
+            Some(CursorShape::Default)
         );
+    }
+
+    #[test]
+    fn active_region_is_one_borderless_liquid_glass_body() {
+        let mut s = ScreenshotSelector::new();
+        s.start();
+        s.update_pointer(Point { x: 20.0, y: 30.0 }, true, false);
+        s.update_pointer(Point { x: 220.0, y: 150.0 }, false, true);
+        let workspaces = WorkspaceSnapshot {
+            outputs: Vec::new(),
+        };
+
+        assert_eq!(s.backdrop_blur_sigma(), BACKDROP_BLUR_SIGMA);
+        let backdrop = s.backdrop_regions((800.0, 600.0), &[], &workspaces);
+        let glass = s.liquid_glass_regions((800.0, 600.0), &[], &workspaces);
+        assert_eq!(backdrop.len(), 1);
+        assert_eq!(glass.len(), 1);
+        assert_eq!(glass[0].bounds, backdrop[0]);
+        assert_eq!(glass[0].corner_radius, GLASS_RADIUS);
+        assert!(glass[0].focus.is_none());
+    }
+
+    #[test]
+    fn status_geometry_stays_inside_a_roomy_selection_and_centres_when_outside() {
+        let roomy = LensRect {
+            x: 100.0,
+            y: 80.0,
+            w: 500.0,
+            h: 300.0,
+        };
+        assert_eq!(
+            status_rect(roomy, (180.0, 32.0), (800.0, 600.0)),
+            LensRect {
+                x: 112.0,
+                y: 92.0,
+                w: 180.0,
+                h: 32.0,
+            }
+        );
+
+        let narrow = LensRect {
+            x: 100.0,
+            y: 80.0,
+            w: 80.0,
+            h: 40.0,
+        };
+        assert_eq!(
+            status_rect(narrow, (180.0, 32.0), (800.0, 600.0)),
+            LensRect {
+                x: 50.0,
+                y: 132.0,
+                w: 180.0,
+                h: 32.0,
+            }
+        );
+    }
+
+    #[test]
+    fn scrim_regions_leave_the_selection_body_undimmed() {
+        let full = LensRect {
+            x: 0.0,
+            y: 0.0,
+            w: 800.0,
+            h: 600.0,
+        };
+        let hole = LensRect {
+            x: 100.0,
+            y: 80.0,
+            w: 200.0,
+            h: 120.0,
+        };
+        let regions = scrim_regions(full, Some(hole));
+        let area: f32 = regions.iter().map(|rect| rect.w * rect.h).sum();
+        assert_eq!(area, full.w * full.h - hole.w * hole.h);
+        assert!(regions.iter().all(|rect| {
+            rect.x + rect.w <= hole.x
+                || rect.x >= hole.x + hole.w
+                || rect.y + rect.h <= hole.y
+                || rect.y >= hole.y + hole.h
+        }));
     }
 
     fn window(id: u64, x: i32, y: i32, w: i32, h: i32) -> Window {

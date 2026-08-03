@@ -1,6 +1,6 @@
 # ADR-0080: Avatar as an independent crate, XDG-conformant, VRM-aware
 
-- Status: Accepted
+- Status: Superseded by ADR-0106
 - Date: 2026-07-30
 
 ## Context

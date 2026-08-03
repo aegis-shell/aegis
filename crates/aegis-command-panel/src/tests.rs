@@ -28,6 +28,7 @@ fn toggle_opens_and_closes_the_panel() {
     assert!(panel.command_panel_active());
     assert!(panel.captures_keyboard());
     assert!(panel.modal_active());
+    assert!(panel.exclusive_presentation_active());
     assert!(panel.requires_composition());
     assert!(!panel.anim_pending());
     assert_eq!(panel.backdrop_blur_sigma(), BACKDROP_BLUR_SIGMA);
@@ -36,6 +37,7 @@ fn toggle_opens_and_closes_the_panel() {
     assert!(!panel.open);
     panel.advance(0.016);
     assert!(!panel.command_panel_active());
+    assert!(!panel.exclusive_presentation_active());
     assert_eq!(panel.backdrop_blur_sigma(), 0.0);
 }
 
@@ -66,6 +68,12 @@ fn reduced_motion_snaps_reveal_to_its_target() {
     panel.toggle_command_panel(&mut out);
     panel.set_reduced_motion(true);
     assert_eq!(panel.reveal, 0.0);
+}
+
+#[test]
+fn a_playing_avatar_keeps_the_panel_frame_loop_alive_after_reveal() {
+    assert!(presentation_anim_pending(1.0, 1.0, true, false));
+    assert!(!presentation_anim_pending(1.0, 1.0, false, false));
 }
 
 #[test]

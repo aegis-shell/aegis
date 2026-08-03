@@ -26,7 +26,8 @@ aegis/
     aegis-hud/           display-only HUD status chips (system status, workspace dots, clock, SNI tray)
     aegis-command-panel/ full-screen modal command panel (quick settings, tray, notifications)
     aegis-wallpaper/     image, video, 3D, and parallax background layer
-    aegis-avatar/        user-avatar loading and rendering: still images and VRM models
+    aegis-avatar/        VRM animation and offscreen rendering
+    aegis-identity/      shared account and still/VRM portrait source contract
     aegis-config/        TOML schema, typed atomic persistence, loader, live reload
     aegis-ipc/           Actor capability broker and introspection over a unix socket
     aegis-commands/    domain command parser and IPC dispatcher (lib-only)
@@ -74,7 +75,8 @@ compatible Aegis tag; none of its crates are workspace members here. See
 | [`aegis-hud`](../../crates/aegis-hud/README.md) | Display-only HUD status chips with the StatusNotifierItem tray row | [ADR-0080](../adr/0080-hud-status-chips-and-sao-command-panel.md), [ADR-0081](../adr/0081-hud-and-command-panel-naming.md) |
 | [`aegis-command-panel`](../../crates/aegis-command-panel/README.md) | Full-screen modal command panel: quick settings, tray activation, and notifications | [ADR-0080](../adr/0080-hud-status-chips-and-sao-command-panel.md), [ADR-0081](../adr/0081-hud-and-command-panel-naming.md) |
 | [`aegis-wallpaper`](../../crates/aegis-wallpaper/README.md) | Image, video, 3D, and parallax background layer | [ADR-0018](../adr/0018-wallpaper-crate.md), [ADR-0092](../adr/0092-explicit-wallpaper-modes-and-continuous-parallax.md) |
-| [`aegis-avatar`](../../crates/aegis-avatar/README.md) | User-avatar loading and rendering: still images and VRM models | [ADR-0080](../adr/0080-avatar-crate-xdg-conformant-vrm-aware.md) |
+| [`aegis-avatar`](../../crates/aegis-avatar/README.md) | Explicit VRM/VRMA animation and offscreen rendering with a caller-owned camera | [ADR-0106](../adr/0106-shared-identity-portrait-contract-and-vrm-renderer-boundary.md) |
+| [`aegis-identity`](../../crates/aegis-identity/README.md) | Shared account metadata, ordered still/VRM source contract, static texture preparation, and transactional reload | [ADR-0106](../adr/0106-shared-identity-portrait-contract-and-vrm-renderer-boundary.md) |
 | [`aegis-config`](../../crates/aegis-config/README.md) | Versioned TOML schema, typed atomic persistence, loader, and mtime-based live reload | [ADR-0026](../adr/0026-configuration-system.md) |
 | [`aegis-ipc`](../../crates/aegis-ipc/README.md) | Versioned Actor identity, capability, semantic observation, action, and audit protocol over a unix socket | [ADR-0027](../adr/0027-ipc-and-introspection.md), [ADR-0102](../adr/0102-actor-scoped-semantic-observation-and-transactional-actions.md) |
 | [`aegis-commands`](../../crates/aegis-commands/README.md) | Domain command parser, IPC dispatcher, and output formatter; no installed binary | [ADR-0093](../adr/0093-unified-domain-oriented-aegis-command-surface.md) |

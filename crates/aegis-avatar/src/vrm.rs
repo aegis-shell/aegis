@@ -23,6 +23,71 @@ use crate::ATLAS_SIZE;
 use crate::mask::circle_mask_premultiplied;
 use crate::motion::{MotionInfo, MotionLibrary};
 
+/// Caller-owned parameters for framing a VRM in the square offscreen target.
+///
+/// Ratios are relative to the model's measured height, so one profile remains
+/// useful across VRMs with different authored scales. The renderer follows
+/// animated head translation while preserving this composition.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VrmCamera {
+    /// Vertical perspective field of view in degrees, in `(1, 179)`.
+    pub vertical_fov_degrees: f32,
+    /// Fraction of total model height visible in the square portrait.
+    pub visible_height_ratio: f32,
+    /// Optical center measured down from the top of the visible frame.
+    pub center_from_top_ratio: f32,
+    /// Horizontal target offset as a fraction of total model height.
+    pub horizontal_offset_ratio: f32,
+}
+
+impl VrmCamera {
+    /// Construct camera parameters for a normalized portrait composition.
+    pub const fn new(
+        vertical_fov_degrees: f32,
+        visible_height_ratio: f32,
+        center_from_top_ratio: f32,
+        horizontal_offset_ratio: f32,
+    ) -> Self {
+        Self {
+            vertical_fov_degrees,
+            visible_height_ratio,
+            center_from_top_ratio,
+            horizontal_offset_ratio,
+        }
+    }
+
+    fn validate(self) -> Result<Self, CameraError> {
+        if !self.vertical_fov_degrees.is_finite()
+            || !(1.0..179.0).contains(&self.vertical_fov_degrees)
+        {
+            return Err(CameraError::VerticalFov(self.vertical_fov_degrees));
+        }
+        if !self.visible_height_ratio.is_finite() || self.visible_height_ratio <= 0.0 {
+            return Err(CameraError::VisibleHeight(self.visible_height_ratio));
+        }
+        if !self.center_from_top_ratio.is_finite() {
+            return Err(CameraError::CenterFromTop(self.center_from_top_ratio));
+        }
+        if !self.horizontal_offset_ratio.is_finite() {
+            return Err(CameraError::HorizontalOffset(self.horizontal_offset_ratio));
+        }
+        Ok(self)
+    }
+}
+
+/// Invalid caller-provided VRM camera parameters.
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
+pub enum CameraError {
+    #[error("vertical FOV must be finite and between 1 and 179 degrees, got {0}")]
+    VerticalFov(f32),
+    #[error("visible-height ratio must be finite and positive, got {0}")]
+    VisibleHeight(f32),
+    #[error("center-from-top ratio must be finite, got {0}")]
+    CenterFromTop(f32),
+    #[error("horizontal-offset ratio must be finite, got {0}")]
+    HorizontalOffset(f32),
+}
+
 /// What the loaded VRM model can do regarding VRMA animation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnimationSupport {
@@ -38,6 +103,8 @@ pub enum AnimationSupport {
 /// Errors specific to loading or rendering a VRM model.
 #[derive(Debug, thiserror::Error)]
 pub enum VrmError {
+    #[error("invalid VRM camera: {0}")]
+    Camera(#[from] CameraError),
     #[error("read {0:?}")]
     Io(PathBuf, #[source] std::io::Error),
     #[error("vrm model {0:?}")]
@@ -70,6 +137,7 @@ pub struct Model {
     motions: MotionLibrary,
     bounds: Bounds,
     rest_head: Option<[f32; 3]>,
+    camera: VrmCamera,
     surface: Surface,
     /// One canvas serves both the circular mask blit and the debug dump.
     canvas: Canvas,
@@ -88,7 +156,9 @@ impl Model {
         device: &Device,
         path: &Path,
         animation_path: Option<&Path>,
+        camera: VrmCamera,
     ) -> Result<Self, VrmError> {
+        let camera = camera.validate()?;
         let bytes = std::fs::read(path).map_err(|error| VrmError::Io(path.to_path_buf(), error))?;
         let scene = Scene::from_glb_with_materials(
             device,
@@ -123,6 +193,7 @@ impl Model {
             motions,
             bounds,
             rest_head,
+            camera,
             surface,
             canvas,
             depth,
@@ -144,11 +215,19 @@ impl Model {
         }
     }
 
-    /// The circle-masked portrait texture. Every avatar texture — stills via
-    /// the CPU mask, VRM via the analytic rrect blit — is masked in its alpha
-    /// channel, so hosts composite directly without their own clip. The lock
-    /// screen still applies its own circular clip on top; masking twice is
-    /// harmless.
+    pub fn set_camera(&mut self, camera: VrmCamera) -> Result<bool, VrmError> {
+        let camera = camera.validate()?;
+        if camera == self.camera {
+            return Ok(false);
+        }
+        self.camera = camera;
+        self.render()?;
+        Ok(true)
+    }
+
+    /// The VRM portrait texture, masked in its alpha channel during the final
+    /// offscreen blit. Hosts remain free to apply their own geometric crop as
+    /// part of the surrounding presentation.
     #[must_use]
     pub fn texture(&self) -> &Image {
         &self.texture
@@ -213,7 +292,7 @@ impl Model {
                 ]
             })
             .unwrap_or([0.0; 3]);
-        let camera = framing_camera(self.bounds, 1.0, head_offset);
+        let camera = framing_camera(self.bounds, 1.0, head_offset, self.camera);
         // A soft key close to the portrait camera keeps facial planes readable.
         // `direction` is the direction light travels, hence +Z for a camera on
         // the model's -Z/front side.
@@ -283,13 +362,17 @@ impl Model {
     }
 }
 
-/// Compute a fixed portrait-lens camera from the model bounds. A full-body
-/// VRM is deliberately cropped to the upper 25%: a small gap above the hair,
-/// the face near center, and the shoulders crossing the lower edge, matching
-/// an ID-photo subject/camera relationship rather than a full-body viewer.
-fn framing_camera(bounds: Bounds, aspect: f32, tracking_offset: [f32; 3]) -> Camera {
-    let frame = portrait_frame(bounds, aspect);
-    let center_x = (bounds.min[0] + bounds.max[0]) * 0.5;
+/// Compute a portrait camera from model bounds and caller-owned normalized
+/// composition parameters.
+fn framing_camera(
+    bounds: Bounds,
+    aspect: f32,
+    tracking_offset: [f32; 3],
+    config: VrmCamera,
+) -> Camera {
+    let frame = portrait_frame(bounds, aspect, config);
+    let height = (bounds.max[1] - bounds.min[1]).max(0.001);
+    let center_x = (bounds.min[0] + bounds.max[0]) * 0.5 + height * config.horizontal_offset_ratio;
     let center_z = (bounds.min[2] + bounds.max[2]) * 0.5;
     let center = [
         center_x + tracking_offset[0],
@@ -305,7 +388,7 @@ fn framing_camera(bounds: Bounds, aspect: f32, tracking_offset: [f32; 3]) -> Cam
     ];
     let near = (frame.distance - frame.depth * 1.5).max(0.01);
     let far = frame.distance + frame.depth * 3.0 + 1.0;
-    let fov_y = PORTRAIT_FOV_DEGREES.to_radians();
+    let fov_y = config.vertical_fov_degrees.to_radians();
     let mut camera = Camera::perspective(fov_y, aspect, near, far);
     camera.look_at(eye, center, [0.0, 1.0, 0.0]);
     camera
@@ -318,16 +401,16 @@ struct PortraitFrame {
     depth: f32,
 }
 
-fn portrait_frame(bounds: Bounds, aspect: f32) -> PortraitFrame {
+fn portrait_frame(bounds: Bounds, aspect: f32, config: VrmCamera) -> PortraitFrame {
     let height = (bounds.max[1] - bounds.min[1]).max(0.001);
     let depth = (bounds.max[2] - bounds.min[2]).max(0.001);
-    let visible_height = height * PORTRAIT_HEIGHT_RATIO;
+    let visible_height = height * config.visible_height_ratio;
     // Deliberately ignore the full model width: humanoid bind poses commonly
     // extend both arms into a T-pose, which would zoom a portrait out until it
     // showed the torso. The circle is allowed to crop arms beyond the shoulder.
     let fitted_height = visible_height / aspect.clamp(0.75, 1.0);
-    let center_y = bounds.max[1] - fitted_height * PORTRAIT_TOP_TO_CENTER;
-    let fov_y = PORTRAIT_FOV_DEGREES.to_radians();
+    let center_y = bounds.max[1] - fitted_height * config.center_from_top_ratio;
+    let fov_y = config.vertical_fov_degrees.to_radians();
     let distance = (fitted_height * 0.5) / (fov_y * 0.5).tan();
     PortraitFrame {
         center_y,
@@ -335,10 +418,6 @@ fn portrait_frame(bounds: Bounds, aspect: f32) -> PortraitFrame {
         depth,
     }
 }
-
-const PORTRAIT_FOV_DEGREES: f32 = 28.0;
-const PORTRAIT_HEIGHT_RATIO: f32 = 0.25;
-const PORTRAIT_TOP_TO_CENTER: f32 = 0.48;
 
 const TARGET_FORMAT: Format = Format::FLUX_FORMAT_RGBA8_UNORM;
 const DEPTH_FORMAT: Format = Format::FLUX_FORMAT_D32_SFLOAT;
@@ -356,12 +435,24 @@ mod tests {
             min: [-0.81, 0.0, -0.16],
             max: [0.81, 1.77, 0.16],
         };
-        let frame = portrait_frame(bounds, 1.0);
+        let frame = portrait_frame(bounds, 1.0, VrmCamera::new(28.0, 0.25, 0.48, 0.0));
         // The optical center sits around the upper chest/face, never at the
         // full-body midpoint (0.885 for this fixture).
         assert!(frame.center_y > 1.50);
         assert!(frame.center_y < 1.62);
         assert!(frame.distance > 0.7);
         assert!(frame.distance < 1.2);
+    }
+
+    #[test]
+    fn caller_camera_rejects_non_finite_and_impossible_values() {
+        assert!(matches!(
+            VrmCamera::new(0.0, 0.25, 0.48, 0.0).validate(),
+            Err(CameraError::VerticalFov(0.0))
+        ));
+        assert!(matches!(
+            VrmCamera::new(28.0, f32::NAN, 0.48, 0.0).validate(),
+            Err(CameraError::VisibleHeight(value)) if value.is_nan()
+        ));
     }
 }

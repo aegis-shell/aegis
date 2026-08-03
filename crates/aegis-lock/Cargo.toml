@@ -23,6 +23,7 @@ required-features = ["dev-preview"]
 
 [dependencies]
 aegis-avatar.workspace = true
+aegis-identity.workspace = true
 aegis-config.workspace = true
 aegis-design.workspace = true
 aegis-wallpaper.workspace = true

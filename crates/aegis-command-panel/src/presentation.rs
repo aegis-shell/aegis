@@ -54,13 +54,24 @@ impl CommandPanel {
 
         // -- identity zone: ringed avatar + name lines (~270px) ------------
         let avatar_center = (rect.x + pad + 42.0, center_y);
+        // The avatar crate supplies only the portrait texture. Its surrounding
+        // chrome belongs to this host: a flat warm graphite disc replaces the
+        // old blue-white gradient fallback, while a quiet amber keyline keeps
+        // the identity tied to the panel's accent language.
+        render_disc(
+            f,
+            "aegis-sao-avatar-backdrop",
+            avatar_center,
+            72.0,
+            Color::rgba(24, 23, 22, fade_alpha(246, progress)),
+        );
         render_ring(
             f,
             "aegis-sao-avatar-ring",
             avatar_center,
             80.0,
-            fade_color(sao.accent, progress),
-            1.6,
+            fade_color(sao.accent.with_alpha(132), progress),
+            1.0,
         );
         let avatar_rect = Rect {
             x: avatar_center.0 - 36.0,
@@ -73,12 +84,24 @@ impl CommandPanel {
                 let texture = avatar.texture().as_raw();
                 f.layer("aegis-sao-avatar", avatar_rect, &transparent(), |f| {
                     f.row_ex(&sized(72.0, 72.0), |f| {
-                        unsafe { f.image(texture as *mut lens::sys::flux_image, 72.0, 72.0) };
+                        unsafe {
+                            f.image_tinted(
+                                texture as *mut lens::sys::flux_image,
+                                72.0,
+                                72.0,
+                                Color::rgba(255, 255, 255, fade_alpha(255, progress)),
+                            )
+                        };
                     });
                 });
             }
             None => {
-                f.set_theme(faded_theme(base_theme.with_fg(sao.accent), progress));
+                f.set_theme(base_theme.with_fg(Color::rgba(
+                    236,
+                    232,
+                    222,
+                    fade_alpha(238, progress),
+                )));
                 f.layer(
                     "aegis-sao-avatar-initials",
                     avatar_rect,

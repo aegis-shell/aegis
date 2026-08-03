@@ -37,7 +37,8 @@ accumulating.
 Press `Super+S`, or swipe down on the touchpad with four fingers. The
 panel opens centered over a dark blurred scrim as a cluster of three
 surfaces: a header band across the top, an icon rail down the left
-edge, and a content panel for the selected section.
+edge, and a content panel for the selected section. The HUD and Dock hide
+while the panel owns the screen and return after it has fully closed.
 
 Close it with `Super+S` again, `Escape`, a click on the scrim, the
 circular close button at the bottom of the icon rail, or a

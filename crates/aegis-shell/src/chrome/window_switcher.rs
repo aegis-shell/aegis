@@ -11,8 +11,9 @@ use aegis_design::{Design, materials};
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{
-    AppCatalog, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet, LiquidGlassRegion,
-    Localizer, Message, WindowSwitcherCard, WindowSwitcherPresentation, ellipsize,
+    AppCatalog, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet, LiquidGlassFocus,
+    LiquidGlassRegion, Localizer, Message, WindowSwitcherCard, WindowSwitcherPresentation,
+    ellipsize,
 };
 use aegis_core::input::{KeyAction, KeyChar, key_action};
 use aegis_core::window::{Window, WindowId};
@@ -21,7 +22,6 @@ use aegis_core::workspace::WorkspaceSnapshot;
 const FADE_RATE: f32 = 18.0;
 const SLIDE_RATE: f32 = 15.0;
 const BACKDROP_BLUR_SIGMA: f32 = 16.0;
-const PANEL_RADIUS: f32 = 20.0;
 
 pub struct WindowSwitcher {
     open: bool,
@@ -168,6 +168,7 @@ impl WindowSwitcher {
                 cards.push(WindowSwitcherCard {
                     window: id,
                     geometry: *current,
+                    corner_radius: Design::dark().radii.control,
                 });
             }
         }
@@ -197,6 +198,7 @@ impl WindowSwitcher {
             cards,
             selection_indicator: self.animated_selection,
             selected,
+            inactive_content_brightness: Design::dark().glass_focus.inactive_content_brightness,
             visibility: self.visibility,
         };
         self.presentation = Some(presentation.clone());
@@ -230,6 +232,7 @@ impl Chrome for WindowSwitcher {
 
         let raw = input.as_raw();
         let cursor = (raw.cursor.x, raw.cursor.y);
+        let previous_hovered = self.hovered;
         self.hovered = self
             .open
             .then(|| {
@@ -250,6 +253,7 @@ impl Chrome for WindowSwitcher {
                     .map(|card| card.window)
             })
             .flatten();
+        self.anim_active |= self.hovered != previous_hovered;
         let pressed = raw.mouse_pressed.first().copied().unwrap_or(false);
         if self.open && pressed {
             if let Some(id) = self.hovered
@@ -268,10 +272,11 @@ impl Chrome for WindowSwitcher {
         let content_alpha = self.alpha(u8::MAX);
         let original_theme = frame.theme();
         frame.set_theme(original_theme.with_fg(original_theme.fg().with_alpha(content_alpha)));
+        let design = Design::dark();
         let panel = to_lens(presentation.panel);
-        let mut panel_material = materials::dock(&Design::dark());
+        let mut panel_material = materials::glass_panel(&design);
         panel_material.bg = Color::rgba(255, 255, 255, self.alpha(12));
-        panel_material.radius = PANEL_RADIUS;
+        panel_material.radius = design.radii.glass_panel;
         frame.layer(
             "aegis-window-switcher-panel",
             panel,
@@ -292,13 +297,7 @@ impl Chrome for WindowSwitcher {
             frame.layer(
                 "aegis-window-switcher-selection",
                 to_lens(indicator.outer),
-                &OverlayOpts {
-                    bg: Color::rgba(116, 170, 255, self.alpha(22)),
-                    border: Color::rgba(116, 170, 255, self.alpha(255)),
-                    border_width: 3.0,
-                    radius: 13.0,
-                    ..Default::default()
-                },
+                &materials::glass_focus(&design, true, presentation.visibility),
                 |_| {},
             );
         }
@@ -315,35 +314,13 @@ impl Chrome for WindowSwitcher {
             frame.layer(
                 &format!("aegis-window-switcher-card-{index}"),
                 outer,
-                &OverlayOpts {
-                    bg: Color::rgba(
-                        255,
-                        255,
-                        255,
-                        self.alpha(if selected {
-                            0
-                        } else if hovered {
-                            12
-                        } else {
-                            4
-                        }),
-                    ),
-                    border: if selected {
-                        Color::rgba(255, 255, 255, 0)
-                    } else if hovered {
-                        Color::rgba(154, 196, 255, self.alpha(220))
-                    } else {
-                        Color::rgba(255, 255, 255, self.alpha(38))
-                    },
-                    border_width: if selected {
-                        0.0
-                    } else if hovered {
-                        2.0
-                    } else {
-                        1.0
-                    },
-                    radius: 13.0,
-                    ..Default::default()
+                &if hovered && !selected {
+                    materials::glass_focus(&design, false, presentation.visibility)
+                } else {
+                    OverlayOpts {
+                        radius: presented.corner_radius,
+                        ..Default::default()
+                    }
                 },
                 |_| {},
             );
@@ -359,13 +336,20 @@ impl Chrome for WindowSwitcher {
                 .as_deref()
                 .and_then(|app_id| self.icons.get(&app_id.to_ascii_lowercase()));
             let occupied_width = 16.0 + if icon.is_some() { 20.0 + 7.0 } else { 0.0 };
+            let item_opacity = if presentation.selected.is_none() || selected || hovered {
+                1.0
+            } else {
+                presentation.inactive_content_brightness
+            };
+            let item_alpha = self.alpha((255.0 * item_opacity).round() as u8);
+            frame.set_theme(original_theme.with_fg(original_theme.fg().with_alpha(item_alpha)));
             let label = ellipsize(frame, title, 11.5, (label_rect.w - occupied_width).max(0.0));
             frame.layer(
                 &format!("aegis-window-switcher-label-{index}"),
                 label_rect,
                 &OverlayOpts {
-                    bg: Color::rgba(255, 255, 255, self.alpha(10)),
-                    radius: 9.0,
+                    bg: Color::TRANSPARENT,
+                    radius: design.radii.control,
                     ..Default::default()
                 },
                 move |frame| {
@@ -385,7 +369,7 @@ impl Chrome for WindowSwitcher {
                                         icon as *mut lens::sys::flux_image,
                                         20.0,
                                         20.0,
-                                        Color::rgba(255, 255, 255, content_alpha),
+                                        Color::rgba(255, 255, 255, item_alpha),
                                     );
                                 }
                             }
@@ -502,11 +486,18 @@ impl Chrome for WindowSwitcher {
             .map(|presentation| {
                 vec![LiquidGlassRegion {
                     bounds: backdrop_region(presentation.panel),
-                    corner_radius: PANEL_RADIUS,
+                    corner_radius: Design::dark().radii.glass_panel,
                     opacity: presentation.visibility,
                     shadow_alpha: 0.18,
                     shadow_blur: 16.0,
                     shadow_offset_y: 8.0,
+                    focus: presentation
+                        .selection_indicator
+                        .map(|indicator| LiquidGlassFocus {
+                            bounds: backdrop_region(indicator.outer),
+                            corner_radius: Design::dark().radii.control,
+                            strength: Design::dark().glass_focus.field_strength,
+                        }),
                 }]
             })
             .unwrap_or_default()
@@ -736,6 +727,7 @@ mod tests {
             cards: Vec::new(),
             selection_indicator: None,
             selected: None,
+            inactive_content_brightness: Design::dark().glass_focus.inactive_content_brightness,
             visibility: 0.6,
         });
         let workspaces = WorkspaceSnapshot {
@@ -747,7 +739,44 @@ mod tests {
         assert_eq!(backdrop.len(), 1);
         assert_eq!(glass.len(), 1);
         assert_eq!(glass[0].bounds, backdrop[0]);
-        assert_eq!(glass[0].corner_radius, PANEL_RADIUS);
+        assert_eq!(glass[0].corner_radius, Design::dark().radii.glass_panel);
         assert_eq!(glass[0].opacity, 0.6);
+        assert!(glass[0].focus.is_none());
+    }
+
+    #[test]
+    fn selected_switcher_card_is_a_focus_field_inside_the_panel_body() {
+        let selected = WindowId(7);
+        let card = aegis_core::window_switcher::Card {
+            outer: aegis_core::Rect::new(240, 182, 220, 170),
+            preview: aegis_core::Rect::new(240, 182, 220, 132),
+            label: aegis_core::Rect::new(240, 314, 220, 38),
+        };
+        let mut switcher = WindowSwitcher::new();
+        switcher.presentation = Some(WindowSwitcherPresentation {
+            mode: aegis_core::window_switcher::Mode::Fixed,
+            panel: aegis_core::Rect::new(200, 160, 640, 240),
+            cards: vec![WindowSwitcherCard {
+                window: selected,
+                geometry: card,
+                corner_radius: Design::dark().radii.control,
+            }],
+            selection_indicator: Some(card),
+            selected: Some(selected),
+            inactive_content_brightness: Design::dark().glass_focus.inactive_content_brightness,
+            visibility: 0.6,
+        });
+        let workspaces = WorkspaceSnapshot {
+            outputs: Vec::new(),
+        };
+
+        let glass = switcher.liquid_glass_regions((1280.0, 720.0), &[], &workspaces);
+        assert_eq!(glass.len(), 1);
+        let focus = glass[0]
+            .focus
+            .expect("selected card should focus the panel");
+        assert_eq!(focus.bounds, backdrop_region(card.outer));
+        assert_eq!(focus.corner_radius, Design::dark().radii.control);
+        assert_eq!(focus.strength, Design::dark().glass_focus.field_strength);
     }
 }

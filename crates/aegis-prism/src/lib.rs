@@ -228,7 +228,7 @@ impl Chrome for Prism {
         );
 
         let design = Design::dark();
-        let mut panel_material = materials::dock(&design);
+        let mut panel_material = materials::glass_panel(&design);
         panel_material.bg = Color::rgba(255, 255, 255, alpha(12, progress));
         panel_material.radius = PANEL_RADIUS;
         frame.layer("aegis-prism-panel", panel, &panel_material, |_| {});
@@ -563,6 +563,7 @@ impl Chrome for Prism {
             shadow_alpha: 0.20,
             shadow_blur: 18.0,
             shadow_offset_y: 9.0,
+            focus: None,
         }]
     }
 }

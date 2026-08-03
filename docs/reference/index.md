@@ -10,6 +10,7 @@ see [Explanation](../explanation/index.md).
 | Page | Purpose |
 |------|---------|
 | [Configuration](config.md) | The `config.toml` schema: fields, key names, modifier names, action names, and defaults |
+| [Identity Portraits](identity-portraits.md) | Shared account, still/VRM source precedence, motion layout, camera parameters, and reload contract |
 | [System Shortcuts](keyboard-shortcuts.md) | Default global keyboard, pointer, quit, and VT controls |
 | [Rendering and KMS Planes](rendering.md) | Presentation plans, direct-scanout eligibility, rejection labels, plane roles, state transitions, and diagnostics |
 | [Command-Line Reference](cli.md) | Native `aegis` startup, resource commands, event streams, JSON, and exit-status reference |
