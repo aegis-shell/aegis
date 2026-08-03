@@ -13,7 +13,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ops::RangeBounds;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
@@ -128,28 +127,37 @@ fn commit_error_is_transient(error: &std::io::Error) -> bool {
     )
 }
 
-/// Clip a desktop-wide damage bounding box (physical framebuffer pixels) to
-/// one output's scanout rectangle, yielding the `drm_mode_rect` fields
-/// `(x1, y1, x2, y2)` for `FB_DAMAGE_CLIPS`. `None` damage means "unknown"
-/// and covers the whole output; `None` result means the output is untouched
-/// by this frame's damage.
+/// Clip desktop-wide damage rectangles (physical framebuffer pixels) to one
+/// output's scanout rectangle, yielding the `drm_mode_rect` fields
+/// `(x1, y1, x2, y2)` for each `FB_DAMAGE_CLIPS` entry. `None` damage means
+/// "unknown" and covers the whole output; an empty result slice means the
+/// output is untouched by this frame's damage. Each input rect is clipped
+/// independently so disjoint dirty regions (e.g. a video window plus a clock
+/// tick) survive as separate clips instead of being unioned into one spanning
+/// rect — which would defeat PSR2 / panel self-refresh.
 fn damage_clip_for_output(
-    damage: Option<aegis_core::Rect>,
+    damage: Option<&[aegis_core::Rect]>,
     output_x: u32,
     output_y: u32,
     width: u32,
     height: u32,
-) -> Option<[i32; 4]> {
+) -> Vec<[i32; 4]> {
     let (ox, oy) = (output_x as i32, output_y as i32);
     let full = [ox, oy, ox + width as i32, oy + height as i32];
-    let Some(damage) = damage else {
-        return Some(full);
+    let Some(rects) = damage else {
+        return vec![full];
     };
-    let x1 = damage.origin.x.max(ox);
-    let y1 = damage.origin.y.max(oy);
-    let x2 = (damage.origin.x.saturating_add(damage.size.w)).min(full[2]);
-    let y2 = (damage.origin.y.saturating_add(damage.size.h)).min(full[3]);
-    (x2 > x1 && y2 > y1).then_some([x1, y1, x2, y2])
+    let mut out = Vec::with_capacity(rects.len());
+    for damage in rects {
+        let x1 = damage.origin.x.max(ox);
+        let y1 = damage.origin.y.max(oy);
+        let x2 = (damage.origin.x.saturating_add(damage.size.w)).min(full[2]);
+        let y2 = (damage.origin.y.saturating_add(damage.size.h)).min(full[3]);
+        if x2 > x1 && y2 > y1 {
+            out.push([x1, y1, x2, y2]);
+        }
+    }
+    out
 }
 
 /// Place one cursor sprite on an output when their rectangles intersect. The
@@ -290,28 +298,41 @@ impl BasicDevice for Card {}
 impl ControlDevice for Card {}
 
 #[derive(Debug, Clone, Copy)]
-struct AtomicProperties {
+struct OutputAtomicProperties {
     connector_crtc_id: property::Handle,
     crtc_mode_id: property::Handle,
     crtc_active: property::Handle,
     /// `OUT_FENCE_PTR`: produces a sync_file for completion of an atomic
     /// commit. Direct scanout uses it for correct Wayland buffer release.
     crtc_out_fence_ptr: Option<property::Handle>,
-    plane_fb_id: property::Handle,
-    plane_crtc_id: property::Handle,
-    plane_src_x: property::Handle,
-    plane_src_y: property::Handle,
-    plane_src_w: property::Handle,
-    plane_src_h: property::Handle,
-    plane_crtc_x: property::Handle,
-    plane_crtc_y: property::Handle,
-    plane_crtc_w: property::Handle,
-    plane_crtc_h: property::Handle,
-    plane_in_fence_fd: Option<property::Handle>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PrimaryPlaneProperties {
+    fb_id: property::Handle,
+    crtc_id: property::Handle,
+    src_x: property::Handle,
+    src_y: property::Handle,
+    src_w: property::Handle,
+    src_h: property::Handle,
+    crtc_x: property::Handle,
+    crtc_y: property::Handle,
+    crtc_w: property::Handle,
+    crtc_h: property::Handle,
+    in_fence_fd: Option<property::Handle>,
     /// `FB_DAMAGE_CLIPS`: per-commit damage hint consumed by PSR-style
     /// drivers. Absent on planes/kernels without damage tracking; commits
     /// then carry no hint at all.
-    plane_fb_damage_clips: Option<property::Handle>,
+    fb_damage_clips: Option<property::Handle>,
+}
+
+#[derive(Debug)]
+struct PrimaryPlane {
+    handle: plane::Handle,
+    props: PrimaryPlaneProperties,
+    /// Pre-created `FB_DAMAGE_CLIPS` blob covering the output's whole
+    /// framebuffer rectangle, reused by full/unknown-damage commits.
+    full_damage_blob: Option<(property::Value<'static>, u64)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -328,7 +349,7 @@ struct CursorPlaneProperties {
     plane_crtc_h: property::Handle,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct CursorPlane {
     handle: plane::Handle,
     props: CursorPlaneProperties,
@@ -339,7 +360,10 @@ struct Output {
     connector: connector::Handle,
     name: String,
     crtc: crtc::Handle,
-    plane: plane::Handle,
+    /// Exactly one primary plane owns this CRTC. Its framebuffer is either a
+    /// compositor output or one eligible client dma-buf; those sources are
+    /// mutually exclusive within an atomic commit.
+    primary: PrimaryPlane,
     mode: Mode,
     mode_blob: property::Value<'static>,
     mode_blob_id: u64,
@@ -354,14 +378,10 @@ struct Output {
     /// Hardware-derived default. A `[[output]] scale` policy can still
     /// override this after the backend snapshot reaches the compositor.
     scale: Scale,
-    props: AtomicProperties,
+    props: OutputAtomicProperties,
     /// Dedicated ARGB8888 KMS cursor plane for this CRTC. Direct scanout may
     /// keep running with a visible cursor only when every output has one.
     cursor: Option<CursorPlane>,
-    /// Pre-created `FB_DAMAGE_CLIPS` blob covering the output's whole
-    /// framebuffer rectangle, reused by every commit whose damage is unknown
-    /// or spans the output. Present only when the plane exposes the property.
-    full_damage_blob: Option<(property::Value<'static>, u64)>,
     /// The connector's advertised modes at selection time (deduplicated,
     /// highest resolution first), surfaced through `output_infos`.
     available_modes: Vec<OutputMode>,
@@ -377,14 +397,44 @@ struct DisplaySet {
     /// primary plane. This is broader than the compositor render-target
     /// format above and governs client direct scanout.
     scanout_formats: HashMap<u32, Vec<u64>>,
+    overlay: OverlayPlaneInventory,
 }
 
-type OutputSignature = (String, u32, u32, u32, u32, u32, u32);
+/// Current overlay allocation contract. Discovery is useful for diagnostics,
+/// but arbitrary desktop layers stay compositor-owned until a future plane
+/// planner proves every relevant capability in one atomic TEST_ONLY request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverlayPlanePolicy {
+    CompositorOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OverlayPlaneInventory {
+    available: usize,
+    policy: OverlayPlanePolicy,
+}
+
+#[derive(Debug, Clone)]
+struct AvailablePlane {
+    handle: plane::Handle,
+    possible_crtcs: Vec<crtc::Handle>,
+    formats: Vec<u32>,
+}
+
+#[derive(Debug, Default)]
+struct PlaneInventory {
+    primary: Vec<AvailablePlane>,
+    cursor: Vec<AvailablePlane>,
+    overlay: Vec<AvailablePlane>,
+}
+
+type OutputSignature = (String, u32, u32, u32, u32, u32, u32, bool);
 type DisplaySignature = (
     DrmFourcc,
     Vec<u64>,
     Vec<(u32, Vec<u64>)>,
     Vec<OutputSignature>,
+    OverlayPlaneInventory,
 );
 
 #[derive(Debug)]
@@ -393,6 +443,86 @@ struct Scanout {
     gem: BufferHandle,
     slot: u32,
     acquire_fence: Option<OwnedFd>,
+    ownership: ScanoutOwnership,
+}
+
+/// Semantic source selected for the primary plane in this atomic commit.
+/// Keeping this explicit prevents a boolean parameter from silently mixing
+/// compositor framebuffer lifetime with client `wl_buffer` release rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrimaryPlaneFrame {
+    Composited,
+    DirectClient,
+}
+
+impl PrimaryPlaneFrame {
+    fn needs_kms_completion_fence(self) -> bool {
+        matches!(self, Self::DirectClient)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScanoutOwnership {
+    /// An uncacheable compositor output import. It is destroyed when the
+    /// scanout retires but does not use client `wl_buffer` release semantics.
+    TransientCompositor,
+    /// A client direct-scanout import belongs to this one presentation and is
+    /// destroyed when the scanout retires or its atomic commit fails.
+    TransientClient,
+    /// A compositor-output import is owned by the backend cache. Scanout
+    /// retirement only drops this reference; the cache destroys the DRM
+    /// framebuffer and GEM handle after invalidation and the last reference.
+    Cached(CompositeFbKey),
+}
+
+impl ScanoutOwnership {
+    fn matches_frame(self, frame: PrimaryPlaneFrame) -> bool {
+        matches!(
+            (self, frame),
+            (
+                Self::TransientCompositor | Self::Cached(_),
+                PrimaryPlaneFrame::Composited
+            ) | (Self::TransientClient, PrimaryPlaneFrame::DirectClient)
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct DmabufIdentity {
+    device: u64,
+    inode: u64,
+}
+
+/// Complete identity of one Flux compositor-output swapchain image.
+///
+/// A slot number alone is insufficient: resize or surface recreation reuses
+/// slot numbers for new dma-buf objects. The inode identity distinguishes the
+/// backing object, while the layout fields prevent reuse after a format or
+/// modifier reconfigure. `epoch` makes invalidation explicit even on drivers
+/// whose dma-buf inode identity is unexpectedly recycled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct CompositeFbKey {
+    epoch: u64,
+    slot: u32,
+    identity: DmabufIdentity,
+    width: u32,
+    height: u32,
+    stride: u32,
+    fourcc: u32,
+    modifier: u64,
+}
+
+#[derive(Debug)]
+struct CachedCompositeFb {
+    framebuffer: control::framebuffer::Handle,
+    gem: BufferHandle,
+    /// Number of submitted/imported `Scanout` values that still reference
+    /// this entry. This includes failed commits until their error path releases
+    /// the scanout, current scanout, and page-flip-retiring scanout.
+    users: u32,
+    /// False once another dma-buf replaces the same slot or the surface epoch
+    /// is invalidated. Non-reusable entries are destroyed at users == 0.
+    reusable: bool,
 }
 
 #[derive(Debug)]
@@ -532,6 +662,15 @@ pub struct DrmBackend {
     pending_flips: HashSet<crtc::Handle>,
     current: Option<Scanout>,
     retiring: Option<Scanout>,
+    /// KMS framebuffer imports for Flux compositor-output swapchain images.
+    /// Direct client scanout deliberately bypasses this cache.
+    composite_fb_cache: HashMap<CompositeFbKey, CachedCompositeFb>,
+    /// Generation of the live Flux surface/storage. Resize and recreation
+    /// advance it before the next exported frame can be imported.
+    composite_fb_epoch: u64,
+    /// Reused scratch storage for cache reaping; invalidation is rare, but it
+    /// should not require a fresh allocation every time.
+    composite_fb_reap: Vec<CompositeFbKey>,
     cursor_buffers: Vec<CursorBuffer>,
     cursor_state: Option<CursorState>,
     /// Whether the last successful atomic commit left any cursor plane
@@ -570,6 +709,53 @@ pub struct DrmBackend {
 }
 
 impl DrmBackend {
+    /// Format/modifier pairs accepted by every active primary plane.
+    ///
+    /// This is the conservative set suitable for the linux-dmabuf feedback
+    /// SCANOUT tranche: a client choosing one of these pairs can still be
+    /// scanned out when the desktop spans more than one selected output.
+    pub fn dmabuf_scanout_formats(&self) -> Vec<aegis_core::dmabuf::DmabufFormat> {
+        let mut formats = self
+            .displays
+            .scanout_formats
+            .iter()
+            .map(|(&fourcc, modifiers)| aegis_core::dmabuf::DmabufFormat {
+                fourcc,
+                modifiers: modifiers.clone(),
+            })
+            .collect::<Vec<_>>();
+        formats.sort_by_key(|format| format.fourcc);
+        formats
+    }
+
+    /// Path and character-device identity of the libseat-owned KMS node.
+    ///
+    /// The identity comes from the live descriptor rather than a second path
+    /// lookup, so Vulkan selection is bound to the exact device libseat
+    /// granted even if `/dev/dri` changes concurrently.
+    pub fn kms_device(&self) -> Result<(PathBuf, flux::DrmNode), DrmError> {
+        let card = self.card.as_ref().ok_or(DrmError::Inactive)?;
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe { libc::fstat(card.as_fd().as_raw_fd(), stat.as_mut_ptr()) } < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let stat = unsafe { stat.assume_init() };
+        if stat.st_mode & libc::S_IFMT != libc::S_IFCHR {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{} is not a character device", card.path.display()),
+            )
+            .into());
+        }
+        Ok((
+            card.path.clone(),
+            flux::DrmNode {
+                major: libc::major(stat.st_rdev),
+                minor: libc::minor(stat.st_rdev),
+            },
+        ))
+    }
+
     /// Linux `dev_t` for the DRM node that owns the active KMS resources.
     ///
     /// linux-dmabuf feedback accepts either a primary or render node. The
@@ -578,13 +764,13 @@ impl DrmBackend {
     /// `None` keeps the compositor on the legacy v3 protocol rather than
     /// sending an invalid device identity.
     pub fn dmabuf_feedback_device(&self) -> Option<u64> {
-        let card = self.card.as_ref()?;
-        match std::fs::metadata(&card.path) {
-            Ok(metadata) => Some(metadata.rdev()),
+        let path = &self.card.as_ref()?.path;
+        match self.kms_device() {
+            Ok((_, node)) => Some(libc::makedev(node.major, node.minor)),
             Err(error) => {
                 log::warn!(
-                    "drm: cannot stat {} for linux-dmabuf feedback: {error}",
-                    card.path.display()
+                    "drm: cannot identify live KMS device {} for linux-dmabuf feedback: {error}",
+                    path.display()
                 );
                 None
             }
@@ -748,7 +934,14 @@ impl Backend for DrmBackend {
     }
 
     fn take_resize(&mut self) -> Option<Size> {
-        self.pending_resize.take()
+        let resize = self.pending_resize.take();
+        if resize.is_some() {
+            // Runtime will resize or recreate the Flux surface immediately
+            // after consuming this event. Prevent same-slot reuse across that
+            // storage boundary while retaining any still-scanned framebuffer.
+            self.invalidate_composite_fb_cache();
+        }
+        resize
     }
 
     fn take_pointer_gestures(&mut self) -> Vec<PointerGestureEvent> {
@@ -812,13 +1005,28 @@ impl Drop for DrmBackend {
         }
         debug_assert!(self.input_devices.borrow().is_empty());
 
-        if let Some(scanout) = self.retiring.take() {
-            self.release_scanout(scanout);
+        if self.active {
+            if let Some(scanout) = self.retiring.take() {
+                self.release_scanout(scanout);
+            }
+            if let Some(scanout) = self.current.take() {
+                self.release_scanout(scanout);
+            }
+            // Cache owns compositor-output framebuffer/GEM resources; release
+            // all of them exactly once while the originating card fd is live.
+            if self.card.is_some() {
+                self.destroy_composite_fb_cache();
+            }
+        } else {
+            // libseat has revoked this fd. Kernel resources died with it, and
+            // cleanup ioctls must not be sent to a future/reused handle.
+            self.retiring = None;
+            self.current = None;
+            self.forget_composite_fb_cache();
         }
-        if let Some(scanout) = self.current.take() {
-            self.release_scanout(scanout);
-        }
-        if let Some(card) = self.card.as_ref() {
+        if self.active
+            && let Some(card) = self.card.as_ref()
+        {
             for cursor in self.cursor_buffers.drain(..) {
                 if let Err(error) = card.destroy_framebuffer(cursor.framebuffer) {
                     log::warn!("DRM: failed to destroy cursor framebuffer: {error}");
@@ -827,12 +1035,17 @@ impl Drop for DrmBackend {
                     log::warn!("DRM: failed to destroy cursor buffer: {error}");
                 }
             }
+        } else {
+            // Revoked card: the kernel destroyed these records with the fd.
+            self.cursor_buffers.clear();
         }
         if let Some(card) = self.card.take() {
-            for output in &self.displays.outputs {
-                let _ = card.destroy_property_blob(output.mode_blob_id);
-                if let Some((_, blob_id)) = output.full_damage_blob.as_ref() {
-                    let _ = card.destroy_property_blob(*blob_id);
+            if self.active {
+                for output in &self.displays.outputs {
+                    let _ = card.destroy_property_blob(output.mode_blob_id);
+                    if let Some((_, blob_id)) = output.primary.full_damage_blob.as_ref() {
+                        let _ = card.destroy_property_blob(*blob_id);
+                    }
                 }
             }
             if let Err(error) = self.seat.borrow_mut().close_device(card.device) {
@@ -850,29 +1063,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn scanout_ownership_must_match_primary_plane_source() {
+        assert!(ScanoutOwnership::TransientCompositor.matches_frame(PrimaryPlaneFrame::Composited));
+        assert!(
+            !ScanoutOwnership::TransientCompositor.matches_frame(PrimaryPlaneFrame::DirectClient)
+        );
+        assert!(ScanoutOwnership::TransientClient.matches_frame(PrimaryPlaneFrame::DirectClient));
+        assert!(!ScanoutOwnership::TransientClient.matches_frame(PrimaryPlaneFrame::Composited));
+    }
+
+    #[test]
     fn damage_clip_intersects_output_rect() {
         use aegis_core::Rect;
         // Unknown damage covers the whole output.
         assert_eq!(
             damage_clip_for_output(None, 1920, 0, 1920, 1080),
-            Some([1920, 0, 3840, 1080])
+            vec![[1920, 0, 3840, 1080]]
         );
         // A box spanning both outputs of a side-by-side desktop clips to each.
-        let damage = Some(Rect::new(1900, 100, 100, 200));
+        let damage = Some(&[Rect::new(1900, 100, 100, 200)][..]);
         assert_eq!(
             damage_clip_for_output(damage, 0, 0, 1920, 1080),
-            Some([1900, 100, 1920, 300])
+            vec![[1900, 100, 1920, 300]]
         );
         assert_eq!(
             damage_clip_for_output(damage, 1920, 0, 1920, 1080),
-            Some([1920, 100, 2000, 300])
+            vec![[1920, 100, 2000, 300]]
         );
         // Disjoint damage leaves the output untouched.
-        let other = Some(Rect::new(0, 0, 100, 100));
-        assert_eq!(damage_clip_for_output(other, 1920, 0, 1920, 1080), None);
+        let other = Some(&[Rect::new(0, 0, 100, 100)][..]);
+        assert_eq!(
+            damage_clip_for_output(other, 1920, 0, 1920, 1080),
+            Vec::<[i32; 4]>::new()
+        );
         // Damage fully outside the framebuffer on the negative side.
-        let negative = Some(Rect::new(-50, -50, 40, 40));
-        assert_eq!(damage_clip_for_output(negative, 0, 0, 1920, 1080), None);
+        let negative = Some(&[Rect::new(-50, -50, 40, 40)][..]);
+        assert_eq!(
+            damage_clip_for_output(negative, 0, 0, 1920, 1080),
+            Vec::<[i32; 4]>::new()
+        );
+        // Disjoint dirty regions are preserved as separate clips.
+        let disjoint = Some(&[Rect::new(10, 10, 5, 5), Rect::new(500, 400, 8, 8)][..]);
+        assert_eq!(
+            damage_clip_for_output(disjoint, 0, 0, 1920, 1080),
+            vec![[10, 10, 15, 15], [500, 400, 508, 408]]
+        );
     }
 
     #[test]
@@ -983,6 +1218,32 @@ mod tests {
             parse_format_modifiers(&blob, DrmFourcc::Argb8888 as u32)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn native_modifier_precedes_linear_fallback() {
+        // Preserve deterministic preference even when the kernel blob lists
+        // LINEAR first: output composition should use a GPU-native tiled
+        // layout whenever the primary plane and Vulkan both accept it.
+        let mut blob = vec![0_u8; 80];
+        blob[8..12].copy_from_slice(&1_u32.to_ne_bytes());
+        blob[12..16].copy_from_slice(&24_u32.to_ne_bytes());
+        blob[16..20].copy_from_slice(&2_u32.to_ne_bytes());
+        blob[20..24].copy_from_slice(&32_u32.to_ne_bytes());
+        blob[24..28].copy_from_slice(&(DrmFourcc::Xrgb8888 as u32).to_ne_bytes());
+
+        let linear = u64::from(DrmModifier::Linear);
+        let tiled = u64::from(DrmModifier::I915_x_tiled);
+        for (base, modifier) in [(32, linear), (56, tiled)] {
+            blob[base..base + 8].copy_from_slice(&1_u64.to_ne_bytes());
+            blob[base + 8..base + 12].copy_from_slice(&0_u32.to_ne_bytes());
+            blob[base + 16..base + 24].copy_from_slice(&modifier.to_ne_bytes());
+        }
+
+        assert_eq!(
+            parse_format_modifiers(&blob, DrmFourcc::Xrgb8888 as u32).unwrap(),
+            vec![tiled, linear]
         );
     }
 

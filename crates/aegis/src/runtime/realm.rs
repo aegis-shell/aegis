@@ -274,7 +274,13 @@ pub(super) fn begin_realm_capture(
     let surface_order = server.realm_client_surface_frame_order(realm);
     renderer.draw_surfaces_ordered(device, &target.canvas, &surface_order, &shm, &dmabuf);
     target.canvas.restore();
-    target.canvas.end();
+    target.canvas.end_checked().map_err(|error| {
+        format!(
+            "end realm {} canvas: {error}{}",
+            realm.0,
+            flux_last_error_detail()
+        )
+    })?;
     frame.request_readback().map_err(|error| {
         format!(
             "request realm {} readback: {error}{}",

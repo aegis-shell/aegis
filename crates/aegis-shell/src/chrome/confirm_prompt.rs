@@ -11,7 +11,7 @@
 
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
-use crate::{BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Reserved, truncate};
+use crate::{BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Reserved, ellipsize};
 use aegis_core::input::{KeyAction, KeyChar, key_action};
 use aegis_core::window::Window;
 use aegis_design::{Design, themes};
@@ -265,7 +265,12 @@ impl Chrome for ConfirmPrompt {
             |_| {},
         );
 
-        let title = truncate(&self.title, 72);
+        let title = ellipsize(
+            frame,
+            &self.title,
+            15.0,
+            (layout.title.w - frame.theme().padding() * 2.0).max(0.0),
+        );
         frame.layer(
             "aegis-confirm-prompt-title",
             layout.title,
@@ -277,7 +282,7 @@ impl Chrome for ConfirmPrompt {
             },
         );
 
-        let body = truncate(&self.body, 160);
+        let body = ellipsize(frame, &self.body, 12.0, layout.body.w);
         frame.layer(
             "aegis-confirm-prompt-body",
             layout.body,

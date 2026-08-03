@@ -1,8 +1,9 @@
 use super::geometry::crop_rgba;
 
 /// Immutable GPU readback staging detached from the presentation surface and
-/// handed to the capture worker. `crop` is already converted to physical
-/// pixels; the full CPU copy and every later operation stay off the
+/// handed to the capture worker. Region captures already contain only their
+/// physical selection; the legacy `crop` field remains for non-frame sources
+/// that still hand us a full readback. Every CPU operation stays off the
 /// compositor's presentation-critical thread.
 pub(in crate::runtime) struct CapturedPixels {
     width: u32,
@@ -33,6 +34,60 @@ pub(in crate::runtime) struct PendingReadback {
     pub(in crate::runtime) security_generation: u64,
 }
 
+/// Bind a screenshot readback and describe the tightly packed CPU-side layout
+/// it will produce. Region captures stay regional end-to-end: Flux copies only
+/// the requested physical rectangle, the worker allocates only that extent,
+/// and no later CPU crop is needed.
+pub(in crate::runtime) fn request_frame_readback(
+    frame: &mut flux::Frame,
+    full_size: (u32, u32),
+    crop: Option<aegis_core::Rect>,
+    mut cursor: Option<CaptureCursor>,
+    security_generation: u64,
+) -> Result<PendingReadback, String> {
+    let (width, height, crop) = if let Some(crop) = crop {
+        if crop.origin.x < 0 || crop.origin.y < 0 || crop.size.w <= 0 || crop.size.h <= 0 {
+            return Err("frame readback request has an empty or out-of-bounds region".into());
+        }
+        let region = flux::ReadbackRegion {
+            x: crop.origin.x as u32,
+            y: crop.origin.y as u32,
+            width: crop.size.w as u32,
+            height: crop.size.h as u32,
+        };
+        frame.request_readback_region(region).map_err(|error| {
+            format!(
+                "frame region readback request: {error}{}",
+                flux_last_error_detail()
+            )
+        })?;
+        translate_cursor_to_region(&mut cursor, crop);
+        (region.width, region.height, None)
+    } else {
+        frame.request_readback().map_err(|error| {
+            format!(
+                "frame readback request: {error}{}",
+                flux_last_error_detail()
+            )
+        })?;
+        (full_size.0, full_size.1, None)
+    };
+    Ok(PendingReadback {
+        width,
+        height,
+        crop,
+        cursor,
+        security_generation,
+    })
+}
+
+fn translate_cursor_to_region(cursor: &mut Option<CaptureCursor>, region: aegis_core::Rect) {
+    if let Some(cursor) = cursor.as_mut() {
+        cursor.x = cursor.x.saturating_sub(region.origin.x);
+        cursor.y = cursor.y.saturating_sub(region.origin.y);
+    }
+}
+
 pub(in crate::runtime) fn read_captured_pixels(
     surface: &flux::Surface,
     pending: PendingReadback,
@@ -40,6 +95,13 @@ pub(in crate::runtime) fn read_captured_pixels(
     let readback = surface
         .take_readback()
         .map_err(|error| format!("detach shot readback: {error}{}", flux_last_error_detail()))?;
+    let region = readback.region();
+    if region.width != pending.width || region.height != pending.height {
+        return Err(format!(
+            "shot readback extent mismatch: requested {}x{}, received {}x{}",
+            pending.width, pending.height, region.width, region.height
+        ));
+    }
     Ok(CapturedPixels {
         width: pending.width,
         height: pending.height,
@@ -143,18 +205,25 @@ fn unpremultiply(pixels: &mut [u8]) {
     }
 }
 
-/// Read back one user-picked pixel (ADR-0054). The crop marks the picked
-/// spot in physical pixels; the returned RGB is straight-alpha, matching
-/// the portal's `(ddd)` colour contract after a `/255` normalization.
+/// Read back one user-picked pixel (ADR-0054). Region-capable frame captures
+/// place the picked rectangle at buffer origin; legacy full-frame sources may
+/// still carry a CPU crop. The returned RGB is straight-alpha, matching the
+/// portal's `(ddd)` colour contract after a `/255` normalization.
 pub(in crate::runtime) fn read_picked_pixel(capture: CapturedPixels) -> Result<[u8; 3], String> {
     let mut full_rgba = vec![0u8; capture.width as usize * capture.height as usize * 4];
     capture
         .readback
         .read_pixels(&mut full_rgba)
         .map_err(|error| format!("picked-pixel copy: {error}"))?;
-    let crop = capture.crop.ok_or("pixel pick lost its crop rect")?;
-    let x = crop.origin.x.clamp(0, capture.width as i32 - 1) as usize;
-    let y = crop.origin.y.clamp(0, capture.height as i32 - 1) as usize;
+    // Region readback already rebases the picked rectangle to (0, 0). Keep
+    // accepting a legacy CPU crop for full-frame/Realm sources during the
+    // transition to region-capable targets.
+    let (x, y) = capture.crop.map_or((0, 0), |crop| {
+        (
+            crop.origin.x.clamp(0, capture.width as i32 - 1) as usize,
+            crop.origin.y.clamp(0, capture.height as i32 - 1) as usize,
+        )
+    });
     let at = (y * capture.width as usize + x) * 4;
     unpremultiply(&mut full_rgba[at..at + 4]);
     Ok([full_rgba[at], full_rgba[at + 1], full_rgba[at + 2]])
@@ -163,10 +232,36 @@ pub(in crate::runtime) fn read_picked_pixel(capture: CapturedPixels) -> Result<[
 fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
     use image::ImageEncoder;
 
+    let expected = usize::try_from(width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| format!("png dimensions {width}x{height} overflow address space"))?;
+    if rgba.len() != expected {
+        return Err(format!(
+            "png RGBA length mismatch: {width}x{height} needs {expected} bytes, received {}",
+            rgba.len()
+        ));
+    }
+
     let mut out = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut out)
-        .write_image(rgba, width, height, image::ExtendedColorType::Rgba8)
-        .map_err(|error| format!("png encode: {error}"))?;
+    // Interactive screenshots prefer predictable latency over the last few
+    // percent of file-size reduction. `Up` is a cheap, lossless scanline
+    // filter that performs well on vertically coherent desktop pixels; unlike
+    // `NoFilter`, it also keeps the deflate input compact enough that Fast
+    // compression does less work overall. File persistence still happens on
+    // the background worker and consumes this exact byte stream.
+    image::codecs::png::PngEncoder::new_with_quality(
+        &mut out,
+        image::codecs::png::CompressionType::Fast,
+        image::codecs::png::FilterType::Up,
+    )
+    .write_image(rgba, width, height, image::ExtendedColorType::Rgba8)
+    .map_err(|error| format!("png encode: {error}"))?;
     Ok(out)
 }
 
@@ -231,5 +326,42 @@ mod tests {
         assert_eq!(&rgba[0..4], &[128, 0, 0, 255]);
         assert_eq!(&rgba[4..8], &[0, 0, 0, 255]);
         assert_eq!(&rgba[12..16], &[128, 0, 0, 255]);
+    }
+
+    #[test]
+    fn region_readback_translates_and_clips_a_crossing_cursor() {
+        let mut cursor = Some(CaptureCursor {
+            // Full-output position: one pixel left of the selected region.
+            x: 9,
+            y: 20,
+            width: 2,
+            height: 1,
+            bgra: std::sync::Arc::from([0, 0, 255, 255].repeat(2)),
+        });
+        translate_cursor_to_region(&mut cursor, aegis_core::Rect::new(10, 20, 2, 1));
+        let cursor = cursor.unwrap();
+        assert_eq!((cursor.x, cursor.y), (-1, 0));
+
+        let mut region_rgba = vec![0, 0, 0, 255, 0, 0, 0, 255];
+        composite_cursor(&mut region_rgba, 2, 1, &cursor);
+        // Only the cursor's second source pixel intersects the selection.
+        assert_eq!(&region_rgba[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&region_rgba[4..8], &[0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn interactive_png_profile_round_trips_exact_rgba() {
+        let rgba = [
+            0, 1, 2, 255, 10, 20, 30, 128, 255, 200, 100, 0, 7, 8, 9, 255, 11, 22, 33, 44, 99, 88,
+            77, 66,
+        ];
+        let png = encode_png(3, 2, &rgba).expect("encode low-latency PNG");
+        let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+            .expect("decode PNG")
+            .into_rgba8();
+        assert_eq!(decoded.dimensions(), (3, 2));
+        assert_eq!(decoded.as_raw(), &rgba);
+
+        assert!(encode_png(3, 2, &rgba[..rgba.len() - 1]).is_err());
     }
 }

@@ -12,7 +12,7 @@ use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{
     AppCatalog, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet, LiquidGlassRegion,
-    Localizer, Message, WindowSwitcherCard, WindowSwitcherPresentation, truncate,
+    Localizer, Message, WindowSwitcherCard, WindowSwitcherPresentation, ellipsize,
 };
 use aegis_core::input::{KeyAction, KeyChar, key_action};
 use aegis_core::window::{Window, WindowId};
@@ -265,6 +265,9 @@ impl Chrome for WindowSwitcher {
             self.finish_window_switcher();
         }
 
+        let content_alpha = self.alpha(u8::MAX);
+        let original_theme = frame.theme();
+        frame.set_theme(original_theme.with_fg(original_theme.fg().with_alpha(content_alpha)));
         let panel = to_lens(presentation.panel);
         let mut panel_material = materials::dock(&Design::dark());
         panel_material.bg = Color::rgba(255, 255, 255, self.alpha(12));
@@ -351,11 +354,12 @@ impl Chrome for WindowSwitcher {
                 .as_deref()
                 .or(window.app_id.as_deref())
                 .unwrap_or_else(|| i18n.text(Message::UntitledWindow));
-            let label = truncate(title, (label_rect.w / 7.0).max(5.0) as usize);
             let icon = window
                 .app_id
                 .as_deref()
                 .and_then(|app_id| self.icons.get(&app_id.to_ascii_lowercase()));
+            let occupied_width = 16.0 + if icon.is_some() { 20.0 + 7.0 } else { 0.0 };
+            let label = ellipsize(frame, title, 11.5, (label_rect.w - occupied_width).max(0.0));
             frame.layer(
                 &format!("aegis-window-switcher-label-{index}"),
                 label_rect,
@@ -377,7 +381,12 @@ impl Chrome for WindowSwitcher {
                         move |frame| {
                             if let Some(icon) = icon {
                                 unsafe {
-                                    frame.image(icon as *mut lens::sys::flux_image, 20.0, 20.0);
+                                    frame.image_tinted(
+                                        icon as *mut lens::sys::flux_image,
+                                        20.0,
+                                        20.0,
+                                        Color::rgba(255, 255, 255, content_alpha),
+                                    );
                                 }
                             }
                             frame.label_compact_sized(&label, 11.5);
@@ -386,6 +395,7 @@ impl Chrome for WindowSwitcher {
                 },
             );
         }
+        frame.set_theme(original_theme);
     }
 
     fn prepare_window_switcher(

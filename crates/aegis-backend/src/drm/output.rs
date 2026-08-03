@@ -64,7 +64,7 @@ impl DrmBackend {
             // Probe created fresh mode blobs. The existing display set remains
             // authoritative, so release only the redundant probe resources.
             for output in selected.outputs {
-                let _ = self.card().destroy_property_blob(output.mode_blob_id);
+                destroy_output_blobs(self.card(), &output);
             }
             self.render_ready = true;
             return;
@@ -86,7 +86,7 @@ impl DrmBackend {
 
         let old = std::mem::replace(&mut self.displays, selected);
         for output in old.outputs {
-            let _ = self.card().destroy_property_blob(output.mode_blob_id);
+            destroy_output_blobs(self.card(), &output);
         }
         if self.displays.modifiers != self.surface_modifiers {
             // The live Flux surface was created with the old intersection and
@@ -105,7 +105,7 @@ impl DrmBackend {
                 .displays
                 .outputs
                 .iter()
-                .all(|output| output.props.plane_in_fence_fd.is_some());
+                .all(|output| output.primary.props.in_fence_fd.is_some());
         self.pending_resize = Some(Size {
             w: width as i32,
             h: height as i32,
@@ -119,13 +119,28 @@ impl DrmBackend {
         );
     }
 
-    pub(super) fn release_scanout(&self, scanout: Scanout) {
-        let card = self.card();
-        if let Err(error) = card.destroy_framebuffer(scanout.framebuffer) {
-            log::warn!("DRM: failed to destroy framebuffer: {error}");
-        }
-        if let Err(error) = card.close_buffer(scanout.gem) {
-            log::warn!("DRM: failed to close imported GEM handle: {error}");
+    pub(super) fn release_scanout(&mut self, scanout: Scanout) {
+        match scanout.ownership {
+            ScanoutOwnership::TransientCompositor | ScanoutOwnership::TransientClient => {
+                let card = self.card();
+                if let Err(error) = card.destroy_framebuffer(scanout.framebuffer) {
+                    log::warn!("DRM: failed to destroy framebuffer: {error}");
+                }
+                if let Err(error) = card.close_buffer(scanout.gem) {
+                    log::warn!("DRM: failed to close imported GEM handle: {error}");
+                }
+            }
+            ScanoutOwnership::Cached(key) => {
+                if let Some(entry) = self.composite_fb_cache.get_mut(&key) {
+                    debug_assert!(entry.users > 0, "cached scanout released twice");
+                    entry.users = entry.users.saturating_sub(1);
+                } else {
+                    // This is only expected after a revoked DRM fd, whose
+                    // scanouts are forgotten rather than released.
+                    log::warn!("drm: cached scanout record disappeared before retirement");
+                }
+                self.reap_composite_fb_cache();
+            }
         }
     }
 
@@ -146,13 +161,13 @@ impl DrmBackend {
                 );
             }
             request.add_property(
-                output.plane,
-                props.plane_fb_id,
+                output.primary.handle,
+                output.primary.props.fb_id,
                 property::Value::Framebuffer(None),
             );
             request.add_property(
-                output.plane,
-                props.plane_crtc_id,
+                output.primary.handle,
+                output.primary.props.crtc_id,
                 property::Value::CRTC(None),
             );
             request.add_property(
@@ -287,12 +302,7 @@ pub(super) fn select_outputs(
         return Err(DrmError::NoConnector);
     }
 
-    let planes = card
-        .plane_handles()?
-        .into_iter()
-        .filter_map(|handle| card.get_plane(handle).ok().map(|info| (handle, info)))
-        .filter(|(handle, _)| plane_type(card, *handle) == Some(control::PlaneType::Primary))
-        .collect::<Vec<_>>();
+    let plane_inventory = discover_plane_inventory(card, &resources)?;
 
     let mut assignment = None;
     for format in [DrmFourcc::Xrgb8888, DrmFourcc::Argb8888] {
@@ -370,19 +380,17 @@ pub(super) fn select_outputs(
 
             let mut choices = Vec::new();
             for crtc in crtcs {
-                for (plane, info) in &planes {
-                    if !resources
-                        .filter_crtcs(info.possible_crtcs())
-                        .contains(&crtc)
-                        || !info.formats().contains(&(format as u32))
+                for plane in &plane_inventory.primary {
+                    if !plane.possible_crtcs.contains(&crtc)
+                        || !plane.formats.contains(&(format as u32))
                     {
                         continue;
                     }
-                    let modifiers = plane_modifiers(card, *plane, format)?;
+                    let modifiers = plane_modifiers(card, plane.handle, format)?;
                     if !modifiers.is_empty() {
                         choices.push(OutputChoice {
                             crtc,
-                            plane: *plane,
+                            plane: plane.handle,
                             modifiers,
                         });
                     }
@@ -438,7 +446,7 @@ pub(super) fn select_outputs(
             Ok(output) => output,
             Err(error) => {
                 for output in &outputs {
-                    let _ = card.destroy_property_blob(output.mode_blob_id);
+                    destroy_output_blobs(card, output);
                 }
                 return Err(error);
             }
@@ -447,56 +455,133 @@ pub(super) fn select_outputs(
         x += size.0 as u32;
         outputs.push(output);
     }
-    // Cursor planes are independent of the primary-plane matching above:
-    // assign at most one ARGB8888 linear plane to each selected CRTC. Failure
-    // is non-fatal because the compositor can still paint a software cursor,
-    // but direct scanout with a visible cursor then remains disabled.
-    let cursor_planes = card
-        .plane_handles()?
-        .into_iter()
-        .filter(|handle| plane_type(card, *handle) == Some(control::PlaneType::Cursor))
+    // Cursor planes are independent of the primary-plane matching above.
+    // Validate each ARGB8888 linear candidate once, then run a maximum
+    // bipartite matching rather than greedily consuming a flexible plane that
+    // may be the only choice for a later CRTC. Failure is non-fatal because
+    // the compositor can still paint a software cursor, but direct scanout
+    // with a visible cursor then remains disabled.
+    let usable_cursor_planes = plane_inventory
+        .cursor
+        .iter()
+        .filter(|plane| plane.formats.contains(&(DrmFourcc::Argb8888 as u32)))
+        .filter(|plane| {
+            plane_modifiers(card, plane.handle, DrmFourcc::Argb8888)
+                .is_ok_and(|modifiers| modifiers.contains(&u64::from(DrmModifier::Linear)))
+        })
+        .filter_map(|plane| match build_cursor_plane(card, plane.handle) {
+            Ok(cursor) => Some((plane, cursor)),
+            Err(error) => {
+                log::warn!(
+                    "drm: cursor plane {:?} is incomplete: {error}",
+                    plane.handle
+                );
+                None
+            }
+        })
         .collect::<Vec<_>>();
-    let mut used_cursor_planes = HashSet::new();
-    for output in &mut outputs {
-        for handle in &cursor_planes {
-            if used_cursor_planes.contains(handle) {
-                continue;
-            }
-            let Ok(info) = card.get_plane(*handle) else {
-                continue;
-            };
-            if !resources
-                .filter_crtcs(info.possible_crtcs())
-                .contains(&output.crtc)
-                || !info.formats().contains(&(DrmFourcc::Argb8888 as u32))
-            {
-                continue;
-            }
-            let supports_linear = plane_modifiers(card, *handle, DrmFourcc::Argb8888)
-                .is_ok_and(|modifiers| modifiers.contains(&u64::from(DrmModifier::Linear)));
-            if !supports_linear {
-                continue;
-            }
-            match build_cursor_plane(card, *handle) {
-                Ok(cursor) => {
-                    output.cursor = Some(cursor);
-                    used_cursor_planes.insert(*handle);
-                    break;
-                }
-                Err(error) => {
-                    log::warn!("drm: cursor plane {handle:?} is incomplete: {error}");
-                }
-            }
-        }
+    let cursor_choices = outputs
+        .iter()
+        .map(|output| {
+            usable_cursor_planes
+                .iter()
+                .enumerate()
+                .filter_map(|(index, (plane, _))| {
+                    plane.possible_crtcs.contains(&output.crtc).then_some(index)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    for (output, cursor_index) in outputs.iter_mut().zip(assign_optional_planes(
+        &cursor_choices,
+        usable_cursor_planes.len(),
+    )) {
+        output.cursor = cursor_index.map(|index| usable_cursor_planes[index].1);
     }
-    let scanout_formats = scanout_format_intersection(card, &outputs)?;
+    let scanout_formats = match scanout_format_intersection(card, &outputs) {
+        Ok(formats) => formats,
+        Err(error) => {
+            for output in &outputs {
+                destroy_output_blobs(card, output);
+            }
+            return Err(error);
+        }
+    };
     Ok(DisplaySet {
         outputs,
         size: (desktop_width, desktop_height),
         format,
         modifiers,
         scanout_formats,
+        overlay: OverlayPlaneInventory {
+            available: plane_inventory.overlay.len(),
+            policy: OverlayPlanePolicy::CompositorOnly,
+        },
     })
+}
+
+fn discover_plane_inventory(
+    card: &Card,
+    resources: &control::ResourceHandles,
+) -> Result<PlaneInventory, DrmError> {
+    let mut inventory = PlaneInventory::default();
+    for handle in card.plane_handles()? {
+        let Ok(info) = card.get_plane(handle) else {
+            continue;
+        };
+        let plane = AvailablePlane {
+            handle,
+            possible_crtcs: resources.filter_crtcs(info.possible_crtcs()),
+            formats: info.formats().to_vec(),
+        };
+        match plane_type(card, handle) {
+            Some(control::PlaneType::Primary) => inventory.primary.push(plane),
+            Some(control::PlaneType::Cursor) => inventory.cursor.push(plane),
+            Some(control::PlaneType::Overlay) => inventory.overlay.push(plane),
+            None => log::debug!("drm: ignoring plane {handle:?} with no known role"),
+        }
+    }
+    Ok(inventory)
+}
+
+/// Maximize one-to-one optional plane allocation across a set of consumers.
+///
+/// Each entry in `choices` contains indices into the discovered plane list.
+/// The augmenting-path assignment keeps flexible planes available for
+/// consumers whose compatibility set is narrower.
+fn assign_optional_planes(choices: &[Vec<usize>], plane_count: usize) -> Vec<Option<usize>> {
+    fn augment(
+        consumer: usize,
+        choices: &[Vec<usize>],
+        owners: &mut [Option<usize>],
+        visited: &mut [bool],
+    ) -> bool {
+        for &plane in &choices[consumer] {
+            if plane >= owners.len() || visited[plane] {
+                continue;
+            }
+            visited[plane] = true;
+            let previous = owners[plane];
+            if previous.is_none_or(|owner| augment(owner, choices, owners, visited)) {
+                owners[plane] = Some(consumer);
+                return true;
+            }
+        }
+        false
+    }
+
+    let mut owners = vec![None; plane_count];
+    for consumer in 0..choices.len() {
+        let mut visited = vec![false; plane_count];
+        let _ = augment(consumer, choices, &mut owners, &mut visited);
+    }
+    let mut assignments = vec![None; choices.len()];
+    for (plane, consumer) in owners.into_iter().enumerate() {
+        if let Some(consumer) = consumer {
+            assignments[consumer] = Some(plane);
+        }
+    }
+    assignments
 }
 
 pub(super) fn intersect_modifier_sets(sets: &[Vec<u64>]) -> Vec<u64> {
@@ -523,12 +608,12 @@ fn scanout_format_intersection(
     ] {
         let mut per_output = Vec::with_capacity(outputs.len());
         for output in outputs {
-            let info = card.get_plane(output.plane)?;
+            let info = card.get_plane(output.primary.handle)?;
             if !info.formats().contains(&(format as u32)) {
                 per_output.clear();
                 break;
             }
-            let modifiers = plane_modifiers(card, output.plane, format)?;
+            let modifiers = plane_modifiers(card, output.primary.handle, format)?;
             if modifiers.is_empty() {
                 per_output.clear();
                 break;
@@ -614,23 +699,25 @@ pub(super) fn build_output(
     let connector_props = property_map(card, candidate.connector)?;
     let crtc_props = property_map(card, choice.crtc)?;
     let plane_props = property_map(card, choice.plane)?;
-    let props = AtomicProperties {
+    let props = OutputAtomicProperties {
         connector_crtc_id: required_prop(&connector_props, "CRTC_ID")?,
         crtc_mode_id: required_prop(&crtc_props, "MODE_ID")?,
         crtc_active: required_prop(&crtc_props, "ACTIVE")?,
         crtc_out_fence_ptr: optional_prop(&crtc_props, "OUT_FENCE_PTR"),
-        plane_fb_id: required_prop(&plane_props, "FB_ID")?,
-        plane_crtc_id: required_prop(&plane_props, "CRTC_ID")?,
-        plane_src_x: required_prop(&plane_props, "SRC_X")?,
-        plane_src_y: required_prop(&plane_props, "SRC_Y")?,
-        plane_src_w: required_prop(&plane_props, "SRC_W")?,
-        plane_src_h: required_prop(&plane_props, "SRC_H")?,
-        plane_crtc_x: required_prop(&plane_props, "CRTC_X")?,
-        plane_crtc_y: required_prop(&plane_props, "CRTC_Y")?,
-        plane_crtc_w: required_prop(&plane_props, "CRTC_W")?,
-        plane_crtc_h: required_prop(&plane_props, "CRTC_H")?,
-        plane_in_fence_fd: optional_prop(&plane_props, "IN_FENCE_FD"),
-        plane_fb_damage_clips: optional_prop(&plane_props, "FB_DAMAGE_CLIPS"),
+    };
+    let primary_props = PrimaryPlaneProperties {
+        fb_id: required_prop(&plane_props, "FB_ID")?,
+        crtc_id: required_prop(&plane_props, "CRTC_ID")?,
+        src_x: required_prop(&plane_props, "SRC_X")?,
+        src_y: required_prop(&plane_props, "SRC_Y")?,
+        src_w: required_prop(&plane_props, "SRC_W")?,
+        src_h: required_prop(&plane_props, "SRC_H")?,
+        crtc_x: required_prop(&plane_props, "CRTC_X")?,
+        crtc_y: required_prop(&plane_props, "CRTC_Y")?,
+        crtc_w: required_prop(&plane_props, "CRTC_W")?,
+        crtc_h: required_prop(&plane_props, "CRTC_H")?,
+        in_fence_fd: optional_prop(&plane_props, "IN_FENCE_FD"),
+        fb_damage_clips: optional_prop(&plane_props, "FB_DAMAGE_CLIPS"),
     };
     let mode_blob = card.create_property_blob(&candidate.mode)?;
     let property::Value::Blob(mode_blob_id) = mode_blob else {
@@ -640,7 +727,7 @@ pub(super) fn build_output(
     // commits whose damage is unknown or spans the output. The blob layout is
     // an array of `drm_mode_rect` — four native i32 values (x1, y1, x2, y2).
     let (width, height) = candidate.mode.size();
-    let full_damage_blob = if props.plane_fb_damage_clips.is_some() {
+    let full_damage_blob = if primary_props.fb_damage_clips.is_some() {
         let rect = [[
             x as i32,
             0,
@@ -665,7 +752,11 @@ pub(super) fn build_output(
         connector: candidate.connector,
         name: candidate.name,
         crtc: choice.crtc,
-        plane: choice.plane,
+        primary: PrimaryPlane {
+            handle: choice.plane,
+            props: primary_props,
+            full_damage_blob,
+        },
         mode: candidate.mode,
         mode_blob,
         mode_blob_id,
@@ -677,7 +768,6 @@ pub(super) fn build_output(
         scale: candidate.scale,
         props,
         cursor: None,
-        full_damage_blob,
         available_modes: candidate.available_modes,
     })
 }
@@ -781,10 +871,19 @@ pub(super) fn display_signature(displays: &DisplaySet) -> DisplaySignature {
                     output.scale.as_f32().to_bits(),
                     output.x,
                     output.y,
+                    output.cursor.is_some(),
                 )
             })
             .collect(),
+        displays.overlay,
     )
+}
+
+fn destroy_output_blobs(card: &Card, output: &Output) {
+    let _ = card.destroy_property_blob(output.mode_blob_id);
+    if let Some((_, blob_id)) = output.primary.full_damage_blob.as_ref() {
+        let _ = card.destroy_property_blob(*blob_id);
+    }
 }
 
 pub(super) fn property_map<H: ResourceHandle>(
@@ -915,8 +1014,35 @@ pub(super) fn parse_format_modifiers(blob: &[u8], format: u32) -> Result<Vec<u64
             }
         }
     }
-    // Prefer linear when both sides support it. Flux applies the same policy,
-    // but ordering here also makes logs/tests deterministic.
-    modifiers.sort_by_key(|modifier| (*modifier != u64::from(DrmModifier::Linear), *modifier));
+    // Prefer a device-native tiled layout for the compositor render target.
+    // LINEAR is the compatibility fallback: making it the first choice turns
+    // every animated full-output frame into an uncompressed linear write,
+    // which is particularly expensive at HiDPI/high refresh rates. Keep the
+    // ordering deterministic while placing LINEAR after every native layout;
+    // Flux consumes this list as a producer preference order.
+    modifiers.sort_by_key(|modifier| (*modifier == u64::from(DrmModifier::Linear), *modifier));
     Ok(modifiers)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn optional_plane_matching_preserves_the_only_plane_for_a_later_crtc() {
+        // Consumer 0 can use either plane, while consumer 1 can only use 0.
+        // A greedy first-fit allocator would strand consumer 1.
+        assert_eq!(
+            assign_optional_planes(&[vec![0, 1], vec![0]], 2),
+            vec![Some(1), Some(0)]
+        );
+    }
+
+    #[test]
+    fn optional_plane_matching_leaves_unsupported_consumers_unassigned() {
+        assert_eq!(
+            assign_optional_planes(&[vec![0], Vec::new(), vec![1]], 2),
+            vec![Some(0), None, Some(1)]
+        );
+    }
 }

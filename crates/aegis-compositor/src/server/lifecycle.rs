@@ -32,6 +32,27 @@ impl Server {
         dmabuf_formats: Vec<aegis_core::dmabuf::DmabufFormat>,
         dmabuf_main_device: Option<u64>,
     ) -> Result<Server, ServerError> {
+        Self::new_with_dmabuf_feedback(
+            dmabuf_supported,
+            explicit_sync_supported,
+            dmabuf_formats,
+            dmabuf_main_device,
+            Vec::new(),
+            None,
+        )
+    }
+
+    /// Create a server with separate renderer and KMS scanout capabilities.
+    /// The scanout set is advertised as a preferred linux-dmabuf v4 tranche;
+    /// the renderer set remains the mandatory fallback tranche.
+    pub fn new_with_dmabuf_feedback(
+        dmabuf_supported: bool,
+        explicit_sync_supported: bool,
+        dmabuf_formats: Vec<aegis_core::dmabuf::DmabufFormat>,
+        dmabuf_main_device: Option<u64>,
+        dmabuf_scanout_formats: Vec<aegis_core::dmabuf::DmabufFormat>,
+        dmabuf_scanout_device: Option<u64>,
+    ) -> Result<Server, ServerError> {
         unsafe {
             let display = ffi::wl_display_create();
             if display.is_null() {
@@ -55,6 +76,8 @@ impl Server {
             // instead of falling back to LINEAR.
             state.dmabuf_formats = dmabuf_formats;
             state.dmabuf_main_device = dmabuf_main_device;
+            state.dmabuf_scanout_formats = dmabuf_scanout_formats;
+            state.dmabuf_scanout_device = dmabuf_scanout_device;
             // The keyboard is optional in the sense that its absence should
             // not crash the compositor — but a working keymap is needed for
             // interactive use, so a failure here is logged loudly. The seat

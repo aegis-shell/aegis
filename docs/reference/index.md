@@ -1,7 +1,7 @@
 # Reference
 
-Exact lookup for aegis: configuration keys, schemas, and option tables. For
-the design behind these options, see the
+Exact lookup for aegis: configuration keys, schemas, runtime contracts, and
+option tables. For the design behind these interfaces, see the
 [Architecture Decision Records](../adr/index.md); for narrative background,
 see [Explanation](../explanation/index.md).
 
@@ -11,6 +11,7 @@ see [Explanation](../explanation/index.md).
 |------|---------|
 | [Configuration](config.md) | The `config.toml` schema: fields, key names, modifier names, action names, and defaults |
 | [System Shortcuts](keyboard-shortcuts.md) | Default global keyboard, pointer, quit, and VT controls |
+| [Rendering and KMS Planes](rendering.md) | Presentation plans, direct-scanout eligibility, rejection labels, plane roles, state transitions, and diagnostics |
 | [Command-Line Reference](cli.md) | Native `aegis` startup, resource commands, event streams, JSON, and exit-status reference |
 | [IPC Reference](ipc.md) | Protocol capabilities, queries, commands, geometry, synthetic input, and scope behavior |
 | [System Settings](settings.md) | Standalone app invocation, module routes, backend availability, and apply behavior |

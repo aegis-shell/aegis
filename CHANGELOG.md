@@ -20,6 +20,22 @@ project cuts a tagged release.
 
 ### Rendering
 
+- Made compositor output and direct client scanout explicit primary-plane
+  presentation plans. Opening the live window switcher now reclaims the
+  primary plane with a full compositor frame without mutating the old
+  client's fullscreen state; presentation ownership advances only after a
+  successful atomic commit.
+- Split KMS output, primary-plane, and cursor-plane state, inventory all plane
+  roles once per probe, and track cursor allocation across hotplug. Overlay
+  planes remain deliberately compositor-only until a future atomic planner can
+  prove z-order, alpha, color, scaling, and synchronization compatibility.
+- Direct DRM sessions now bind Flux's Vulkan physical-device selection to the
+  exact KMS primary node granted by libseat. Hybrid-GPU systems fail with the
+  selected card identity instead of silently rendering on a different GPU;
+  `AEGIS_DRM_DEVICE` therefore selects both the display and renderer GPU.
+- Linux-dmabuf feedback now advertises only format/modifier pairs that Flux
+  proves sampleable and externally importable on the selected GPU. Aegis no
+  longer synthesizes an unverified `DRM_FORMAT_MOD_LINEAR` fallback.
 - Wired `wl_surface.set_opaque_region` through to the renderer. The server now
   carries each surface's declared opaque region on `SurfacePixels` and
   `SurfaceDmabuf`, so the blit path can use a SRC-replace write for the opaque

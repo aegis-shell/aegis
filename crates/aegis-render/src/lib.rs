@@ -24,38 +24,43 @@ fn drm_format_to_flux(drm: u32) -> Option<flux::Format> {
     }
 }
 
+fn prefer_native_modifiers(modifiers: &mut [u64]) {
+    // `sort_by_key` is stable: preserve the driver's preference order inside
+    // each class while moving the bandwidth-heavy linear fallback behind all
+    // native tiled/compressed layouts.
+    modifiers.sort_by_key(|modifier| u8::from(*modifier == drm_fmt::DRM_FORMAT_MOD_LINEAR));
+}
+
 /// Build the `(fourcc, modifiers)` set the compositor should advertise over
 /// `zwp_linux_dmabuf_v1`, by querying the render device for the modifiers it
 /// can both sample and import per fourcc.
 ///
-/// Each advertised fourcc is paired with its real, device-supported modifier
-/// list so clients allocate GPU-optimal (tiled/compressed) buffers. A format
-/// whose modifiers the device cannot honor still degrades to the historical
-/// `[DRM_FORMAT_MOD_LINEAR]` fallback rather than being dropped entirely, so
-/// every client that previously worked keeps working.
+/// Each advertised fourcc is paired only with modifiers Flux proves both
+/// sampleable and externally importable on the selected device. Unsupported
+/// formats are omitted; in particular, LINEAR is never synthesized when the
+/// driver does not report it.
 ///
 /// Call this once at startup, after the flux device is created, and pass the
 /// result to `aegis_compositor::Server::new_with_render_caps`.
 pub fn formats_with_modifiers(device: &flux::Device) -> Vec<drm_fmt::DmabufFormat> {
     use drm_fmt::DmabufFormat;
+    if !flux::dmabuf_supported(device) {
+        return Vec::new();
+    }
     ADVERTISED_FOURCCS
         .iter()
-        .map(|&fourcc| {
-            let modifiers = drm_format_to_flux(fourcc)
-                .filter(|_| flux::dmabuf_supported(device))
-                .map(|fmt| {
-                    let mut mods = flux::dmabuf_format_modifiers(device, fmt);
-                    // Always include LINEAR: it is the universal fallback and
-                    // keeps the format usable on devices/pathologies where no
-                    // tiled modifier is sampleable. Dedup in case the device
-                    // already reports it.
-                    if !mods.contains(&drm_fmt::DRM_FORMAT_MOD_LINEAR) {
-                        mods.push(drm_fmt::DRM_FORMAT_MOD_LINEAR);
-                    }
-                    mods
-                })
-                .unwrap_or_else(|| vec![drm_fmt::DRM_FORMAT_MOD_LINEAR]);
-            DmabufFormat { fourcc, modifiers }
+        .filter_map(|&fourcc| {
+            let format = drm_format_to_flux(fourcc)?;
+            let mut modifiers = flux::dmabuf_format_modifiers(device, format);
+            if modifiers.is_empty() {
+                return None;
+            }
+            // Vulkan does not promise a preference order for format
+            // modifiers. Wayland clients generally choose from the leading
+            // preference tranche, so keep native tiled/compressed layouts
+            // ahead of a driver-confirmed LINEAR option.
+            prefer_native_modifiers(&mut modifiers);
+            Some(DmabufFormat { fourcc, modifiers })
         })
         .collect()
 }
@@ -208,7 +213,7 @@ fn viewport_uv(
 /// A sub-rectangle of the destination blit in framebuffer pixels, paired with
 /// the matching normalised source-UV box so a single texture can be sampled
 /// into an arbitrary destination rectangle.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct BlitRect {
     dst_x: f32,
     dst_y: f32,
@@ -244,76 +249,141 @@ fn split_opaque_blit(
     let (dx, dy, dw, dh) = dst;
     let (sw, sh) = surface_logical;
     if !can_split || sw < 1.0 || sh < 1.0 || dw < 1.0 || dh < 1.0 {
-        return (Vec::new(), vec![BlitRect {
-            dst_x: dx, dst_y: dy, dst_w: dw, dst_h: dh,
-            src_u: 0.0, src_v: 0.0, src_du: 1.0, src_dv: 1.0,
-        }]);
+        return (
+            Vec::new(),
+            vec![BlitRect {
+                dst_x: dx,
+                dst_y: dy,
+                dst_w: dw,
+                dst_h: dh,
+                src_u: 0.0,
+                src_v: 0.0,
+                src_du: 1.0,
+                src_dv: 1.0,
+            }],
+        );
     }
     let region = match opaque_region {
         Some(r) if !r.is_empty() => r,
         _ => {
-            return (Vec::new(), vec![BlitRect {
-                dst_x: dx, dst_y: dy, dst_w: dw, dst_h: dh,
-                src_u: 0.0, src_v: 0.0, src_du: 1.0, src_dv: 1.0,
-            }]);
+            return (
+                Vec::new(),
+                vec![BlitRect {
+                    dst_x: dx,
+                    dst_y: dy,
+                    dst_w: dw,
+                    dst_h: dh,
+                    src_u: 0.0,
+                    src_v: 0.0,
+                    src_du: 1.0,
+                    src_dv: 1.0,
+                }],
+            );
         }
     };
-    // Map each surface-local opaque rect into destination pixels and UVs,
-    // clipping to the surface extent first.
-    let sx = dw / sw;
-    let sy = dh / sh;
-    let mut opaque_dst: Vec<aegis_core::Rect> = Vec::with_capacity(region.len());
-    let mut opaque: Vec<BlitRect> = Vec::with_capacity(region.len());
+    // Opaque regions use integer surface-local logical coordinates. Avoid
+    // guessing when the computed surface extent is fractional: drawing the
+    // complete surface source-over is always correct, whereas rounding the
+    // region domain can duplicate or omit source texels.
+    let logical_w = sw.round() as i32;
+    let logical_h = sh.round() as i32;
+    if (sw - logical_w as f32).abs() > f32::EPSILON
+        || (sh - logical_h as f32).abs() > f32::EPSILON
+        || logical_w < 1
+        || logical_h < 1
+    {
+        return (
+            Vec::new(),
+            vec![BlitRect {
+                dst_x: dx,
+                dst_y: dy,
+                dst_w: dw,
+                dst_h: dh,
+                src_u: 0.0,
+                src_v: 0.0,
+                src_du: 1.0,
+                src_dv: 1.0,
+            }],
+        );
+    }
+
+    let whole_logical = aegis_core::Rect::new(0, 0, logical_w, logical_h);
+
+    // Build a non-overlapping union of the opaque region in *surface logical*
+    // coordinates. This is the coordinate space used by wl_surface's
+    // opaque_region. Keeping both the union and the remainder in this domain
+    // is essential at buffer_scale > 1: buffer pixels and surface pixels are
+    // not interchangeable.
+    let mut opaque_logical: Vec<aegis_core::Rect> = Vec::with_capacity(region.len());
     for r in region {
-        let cx0 = r.origin.x.max(0).min(sw as i32);
-        let cy0 = r.origin.y.max(0).min(sh as i32);
-        let cx1 = (r.origin.x + r.size.w).max(0).min(sw as i32);
-        let cy1 = (r.origin.y + r.size.h).max(0).min(sh as i32);
+        let cx0 = r.origin.x.max(0).min(logical_w);
+        let cy0 = r.origin.y.max(0).min(logical_h);
+        // Regions are client supplied. Saturate the far edge before clipping
+        // so an extreme origin/extent cannot wrap (or panic in debug builds)
+        // before it reaches the surface bounds.
+        let cx1 = r.origin.x.saturating_add(r.size.w).max(0).min(logical_w);
+        let cy1 = r.origin.y.saturating_add(r.size.h).max(0).min(logical_h);
         if cx1 <= cx0 || cy1 <= cy0 {
             continue;
         }
-        let lw = (cx1 - cx0) as f32;
-        let lh = (cy1 - cy0) as f32;
-        let bx = dx + cx0 as f32 * sx;
-        let by = dy + cy0 as f32 * sy;
-        let bw = lw * sx;
-        let bh = lh * sy;
-        opaque_dst.push(aegis_core::Rect::new(bx as i32, by as i32, bw as i32, bh as i32));
-        opaque.push(BlitRect {
-            dst_x: bx, dst_y: by, dst_w: bw, dst_h: bh,
-            src_u: cx0 as f32 / sw, src_v: cy0 as f32 / sh,
-            src_du: lw / sw, src_dv: lh / sh,
-        });
+        let clipped = aegis_core::Rect::new(cx0, cy0, cx1 - cx0, cy1 - cy0);
+        let mut additions = vec![clipped];
+        for existing in &opaque_logical {
+            let mut next = Vec::new();
+            for piece in additions.drain(..) {
+                next.extend(piece.subtract(*existing));
+            }
+            additions = next;
+        }
+        opaque_logical.extend(additions);
     }
-    if opaque.is_empty() {
-        return (Vec::new(), vec![BlitRect {
-            dst_x: dx, dst_y: dy, dst_w: dw, dst_h: dh,
-            src_u: 0.0, src_v: 0.0, src_du: 1.0, src_dv: 1.0,
-        }]);
+    if opaque_logical.is_empty() {
+        return (
+            Vec::new(),
+            vec![BlitRect {
+                dst_x: dx,
+                dst_y: dy,
+                dst_w: dw,
+                dst_h: dh,
+                src_u: 0.0,
+                src_v: 0.0,
+                src_du: 1.0,
+                src_dv: 1.0,
+            }],
+        );
     }
-    // Remainder = whole destination rect minus the union of opaque rects.
-    let whole = aegis_core::Rect::new(dx as i32, dy as i32, dw as i32, dh as i32);
-    let mut remainder = vec![whole];
-    for o in &opaque_dst {
+    // Remainder = whole logical surface minus the opaque union. Mapping both
+    // sets through the same normalised transform makes them cover the
+    // destination exactly once, including transitions that rescale `dst`.
+    let mut remainder = vec![whole_logical];
+    for o in &opaque_logical {
         let mut next = Vec::new();
         for piece in remainder.drain(..) {
             next.extend(piece.subtract(*o));
         }
         remainder = next;
     }
-    let blended: Vec<BlitRect> = remainder.into_iter().map(|p| {
-        let pw = p.size.w as f32;
-        let ph = p.size.h as f32;
+
+    let map_piece = |p: aegis_core::Rect| {
+        let u = p.origin.x as f32 / sw;
+        let v = p.origin.y as f32 / sh;
+        let du = p.size.w as f32 / sw;
+        let dv = p.size.h as f32 / sh;
         BlitRect {
-            dst_x: p.origin.x as f32, dst_y: p.origin.y as f32, dst_w: pw, dst_h: ph,
-            src_u: (p.origin.x - dx as i32) as f32 / sw,
-            src_v: (p.origin.y - dy as i32) as f32 / sh,
-            src_du: pw / sw, src_dv: ph / sh,
+            dst_x: dx + u * dw,
+            dst_y: dy + v * dh,
+            dst_w: du * dw,
+            dst_h: dv * dh,
+            src_u: u,
+            src_v: v,
+            src_du: du,
+            src_dv: dv,
         }
-    }).filter(|b| b.dst_w >= 1.0 && b.dst_h >= 1.0).collect();
+    };
+    let opaque = opaque_logical.into_iter().map(map_piece).collect();
+    let blended = remainder.into_iter().map(map_piece).collect();
     (opaque, blended)
 }
-
 
 /// they change. Whole-texture uploads happen on first sight, size changes, and
 /// frames without usable damage; same-size frames with damage refresh only the
@@ -334,6 +404,11 @@ pub struct Renderer {
     /// while an older command buffer may still sample them.
     retired: Vec<(flux::Image, u64)>,
     frame_epoch: u64,
+    /// Scratch buffers reused across [`Renderer::gc`] calls so the live-id
+    /// set and dead-id lists are never freshly heap-allocated each frame.
+    gc_live: std::collections::HashSet<usize>,
+    gc_dead_shm: Vec<usize>,
+    gc_dead_dmabuf: Vec<(usize, u64)>,
 }
 
 /// A cached texture. SHM entries are keyed by surface; dma-buf entries by
@@ -356,6 +431,17 @@ struct CachedImage {
 
 const MAX_DMABUF_BUFFERS_PER_SURFACE: usize = 8;
 
+/// A sync_file belongs to one producer commit, not to every draw of the same
+/// imported image. Backdrop capture and final output may reference one buffer
+/// several times; only a new surface generation needs another acquire wait.
+fn reusable_acquire_wait_required(
+    cached_generation: u64,
+    incoming_generation: u64,
+    acquire_fence: i32,
+) -> bool {
+    acquire_fence >= 0 && cached_generation != incoming_generation
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OrderedSurfaceSource {
     Shm(usize),
@@ -369,6 +455,34 @@ type WindowMap<'a> =
 struct OrderedSurfaceOptions<'a> {
     map: Option<&'a WindowMap<'a>>,
     window_shadows: Option<&'a [aegis_core::window::Window]>,
+    window_filter: Option<&'a HashSet<aegis_core::window::WindowId>>,
+    mapped_opacity: Option<f32>,
+}
+
+fn mapped_opacity_alpha(opacity: Option<f32>) -> Option<u8> {
+    let opacity = opacity.filter(|value| value.is_finite())?.clamp(0.0, 1.0);
+    let alpha = (opacity * 255.0).round() as u8;
+    (alpha < u8::MAX).then_some(alpha)
+}
+
+/// Window metadata and membership for one independently composited workspace
+/// page. Keeping them together prevents callers from accidentally filtering
+/// surfaces while sourcing shadows from a different scene.
+pub struct WorkspaceSurfaceLayer<'a> {
+    windows: &'a [aegis_core::window::Window],
+    window_filter: &'a HashSet<aegis_core::window::WindowId>,
+}
+
+impl<'a> WorkspaceSurfaceLayer<'a> {
+    pub fn new(
+        windows: &'a [aegis_core::window::Window],
+        window_filter: &'a HashSet<aegis_core::window::WindowId>,
+    ) -> Self {
+        Self {
+            windows,
+            window_filter,
+        }
+    }
 }
 
 fn ordered_surface_sources(
@@ -395,6 +509,13 @@ fn ordered_surface_sources(
     // in backing-type batches would silently invent a z-order and can expose
     // a lower window above a foreground window.
     sources
+}
+
+fn surface_passes_window_filter(
+    window: Option<aegis_core::window::WindowId>,
+    filter: Option<&HashSet<aegis_core::window::WindowId>>,
+) -> bool {
+    filter.is_none_or(|filter| window.is_some_and(|window| filter.contains(&window)))
 }
 
 fn window_casts_resize_shadow(window: &aegis_core::window::Window) -> bool {
@@ -446,6 +567,9 @@ impl Renderer {
             failed_imports: HashMap::new(),
             retired: Vec::new(),
             frame_epoch: 0,
+            gc_live: std::collections::HashSet::new(),
+            gc_dead_shm: Vec::new(),
+            gc_dead_dmabuf: Vec::new(),
         }
     }
 
@@ -514,30 +638,43 @@ impl Renderer {
     }
 
     /// Drop cached textures for surfaces no longer present. Call once per frame
-    /// with every live surface id (shm and dma-buf).
+    /// with every live surface id (shm and dma-buf). Reuses internal scratch
+    /// buffers so no set or list is heap-allocated on the steady-state path.
     pub fn gc(&mut self, live_ids: impl Iterator<Item = usize>) {
-        let live: std::collections::HashSet<usize> = live_ids.collect();
-        let dead = self
-            .cache
-            .keys()
-            .copied()
-            .filter(|id| !live.contains(id))
-            .collect::<Vec<_>>();
-        for id in dead {
-            if let Some(entry) = self.cache.remove(&id) {
+        self.gc_live.clear();
+        self.gc_live.extend(live_ids);
+        // Collect dead ids into the scratch Vec, then move it out so the loop
+        // body can mutate the cache/dmabuf_cache without holding a borrow on
+        // the scratch field.
+        self.gc_dead_shm.clear();
+        self.gc_dead_shm.extend(
+            self.cache
+                .keys()
+                .copied()
+                .filter(|id| !self.gc_live.contains(id)),
+        );
+        let dead_shm = std::mem::take(&mut self.gc_dead_shm);
+        for id in &dead_shm {
+            if let Some(entry) = self.cache.remove(id) {
                 self.retired.push((entry.image, self.frame_epoch));
             }
         }
-        let dead_dmabufs = self
-            .dmabuf_cache
-            .keys()
-            .copied()
-            .filter(|(id, _)| !live.contains(id))
-            .collect::<Vec<_>>();
-        for key in dead_dmabufs {
-            self.retire_dmabuf(key);
+        self.gc_dead_shm = dead_shm;
+
+        self.gc_dead_dmabuf.clear();
+        self.gc_dead_dmabuf.extend(
+            self.dmabuf_cache
+                .keys()
+                .copied()
+                .filter(|(id, _)| !self.gc_live.contains(id)),
+        );
+        let dead_dmabuf = std::mem::take(&mut self.gc_dead_dmabuf);
+        for key in &dead_dmabuf {
+            self.retire_dmabuf(*key);
         }
-        self.failed_imports.retain(|k, _| live.contains(k));
+        self.gc_dead_dmabuf = dead_dmabuf;
+
+        self.failed_imports.retain(|k, _| self.gc_live.contains(k));
     }
 
     /// Composite toplevel surfaces into `canvas`. Each is uploaded to a cached
@@ -552,7 +689,7 @@ impl Renderer {
         frames: &[SurfacePixels<'_>],
         _origin: (f32, f32),
     ) {
-        self.draw_toplevels_impl(device, canvas, frames, None);
+        self.draw_toplevels_impl(device, canvas, frames, None, None);
     }
 
     /// As [`draw_toplevels`](Self::draw_toplevels), but each frame's natural
@@ -566,7 +703,7 @@ impl Renderer {
         frames: &[SurfacePixels<'_>],
         map: &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
     ) {
-        self.draw_toplevels_impl(device, canvas, frames, Some(map));
+        self.draw_toplevels_impl(device, canvas, frames, Some(map), None);
     }
 
     /// Composite shm and dma-buf surfaces in one compositor-provided stacking
@@ -617,6 +754,33 @@ impl Renderer {
         );
     }
 
+    /// Draw one workspace as an independent scene layer. The compositor may
+    /// collect surfaces from several workspaces for an animated transition,
+    /// but each call retains only this page's complete window trees and their
+    /// internal mixed-backing Z-order.
+    pub fn draw_workspace_surface_layer(
+        &mut self,
+        device: &flux::Device,
+        canvas: &flux::Canvas,
+        order: &[usize],
+        shm: &[SurfacePixels<'_>],
+        dmabuf: &[SurfaceDmabuf],
+        layer: WorkspaceSurfaceLayer<'_>,
+    ) {
+        self.draw_surfaces_ordered_impl(
+            device,
+            canvas,
+            order,
+            shm,
+            dmabuf,
+            OrderedSurfaceOptions {
+                window_shadows: Some(layer.windows),
+                window_filter: Some(layer.window_filter),
+                ..Default::default()
+            },
+        );
+    }
+
     /// Ordered mixed-backing surface drawing with overview placement applied.
     pub fn draw_surfaces_ordered_mapped(
         &mut self,
@@ -635,6 +799,34 @@ impl Renderer {
             dmabuf,
             OrderedSurfaceOptions {
                 map: Some(map),
+                ..Default::default()
+            },
+        );
+    }
+
+    /// Ordered mapped drawing with one shared opacity for every remapped
+    /// surface. This is used by transient scene previews whose client pixels
+    /// must fade in lockstep with the surrounding compositor chrome.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_surfaces_ordered_mapped_with_opacity(
+        &mut self,
+        device: &flux::Device,
+        canvas: &flux::Canvas,
+        order: &[usize],
+        shm: &[SurfacePixels<'_>],
+        dmabuf: &[SurfaceDmabuf],
+        map: &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
+        opacity: f32,
+    ) {
+        self.draw_surfaces_ordered_impl(
+            device,
+            canvas,
+            order,
+            shm,
+            dmabuf,
+            OrderedSurfaceOptions {
+                map: Some(map),
+                mapped_opacity: Some(opacity),
                 ..Default::default()
             },
         );
@@ -677,6 +869,7 @@ impl Renderer {
         options: OrderedSurfaceOptions<'_>,
     ) {
         let map = options.map;
+        let mapped_opacity = options.mapped_opacity;
         let shm_ids = shm.iter().map(|frame| frame.id).collect::<Vec<_>>();
         let dmabuf_ids = dmabuf.iter().map(|frame| frame.id).collect::<Vec<_>>();
         let shadow_windows = options.window_shadows.map(|windows| {
@@ -691,6 +884,9 @@ impl Renderer {
                 OrderedSurfaceSource::Shm(index) => shm[index].window,
                 OrderedSurfaceSource::Dmabuf(index) => dmabuf[index].window,
             };
+            if !surface_passes_window_filter(window_id, options.window_filter) {
+                continue;
+            }
             if let Some(window_id) = window_id
                 && shadowed.insert(window_id)
                 && let Some(window) = shadow_windows
@@ -701,14 +897,19 @@ impl Renderer {
                 draw_window_resize_shadow(canvas, window);
             }
             match source {
-                OrderedSurfaceSource::Shm(index) => {
-                    self.draw_toplevels_impl(device, canvas, std::slice::from_ref(&shm[index]), map)
-                }
+                OrderedSurfaceSource::Shm(index) => self.draw_toplevels_impl(
+                    device,
+                    canvas,
+                    std::slice::from_ref(&shm[index]),
+                    map,
+                    mapped_opacity,
+                ),
                 OrderedSurfaceSource::Dmabuf(index) => self.draw_dmabuf_toplevels_impl(
                     device,
                     canvas,
                     std::slice::from_ref(&dmabuf[index]),
                     map,
+                    mapped_opacity,
                 ),
             }
         }
@@ -722,6 +923,7 @@ impl Renderer {
         map: Option<
             &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
         >,
+        mapped_opacity: Option<f32>,
     ) {
         for f in frames.iter() {
             self.retire_dmabuf_surface(f.id);
@@ -738,7 +940,7 @@ impl Renderer {
             // * HOW to upload (mirrors the server's incremental shm
             //   copy): a same-size commit with usable damage refreshes
             //   only the damage bounding box; anything else — first
-            //   frame, resize, transform, buffer scale, or empty damage
+            //   frame, resize, transform, or empty damage
             //   ("no information") — replaces the whole texture.
             let (tex_w, tex_h) = transformed_dims(f.width, f.height, f.geometry.transform);
             let dims_match = self
@@ -758,9 +960,8 @@ impl Renderer {
                 // the server already normalises buffer damage to surface-local
                 // logical coordinates at commit, so we only have to multiply
                 // those coordinates by `buffer_scale` to reach buffer pixels.
-                let incremental = dims_match
-                    && f.geometry.transform == Transform::Normal
-                    && !f.damage.is_empty();
+                let incremental =
+                    dims_match && f.geometry.transform == Transform::Normal && !f.damage.is_empty();
                 if incremental {
                     // Union of the damage rects mapped from surface-local
                     // logical coordinates to buffer pixels (× buffer_scale,
@@ -893,6 +1094,11 @@ impl Renderer {
                     f.geometry.viewport_dst,
                     f.geometry.buffer_scale,
                 );
+                // wl_surface opaque regions are expressed in the surface's
+                // untransformed logical coordinate space. Preserve that
+                // extent before a window transition temporarily rescales the
+                // destination rectangle.
+                let surface_logical = (dst_w, dst_h);
                 // ADR-0029: an in-flight window transition draws the texture
                 // scaled to the interpolated size instead of the
                 // buffer-implied size. Mapped mode (overview) ignores it;
@@ -911,13 +1117,25 @@ impl Renderer {
                         dst_h.max(1.0) as i32,
                     );
                     let mapped = map(f.window, natural);
-                    canvas.draw_image(
-                        img,
-                        mapped.origin.x as f32,
-                        mapped.origin.y as f32,
-                        mapped.size.w as f32,
-                        mapped.size.h as f32,
-                    );
+                    if let Some(alpha) = mapped_opacity_alpha(mapped_opacity) {
+                        let paint = flux::Paint::solid(flux::rgba(255, 255, 255, alpha));
+                        canvas.draw_image_with_paint(
+                            img,
+                            mapped.origin.x as f32,
+                            mapped.origin.y as f32,
+                            mapped.size.w as f32,
+                            mapped.size.h as f32,
+                            &paint,
+                        );
+                    } else {
+                        canvas.draw_image(
+                            img,
+                            mapped.origin.x as f32,
+                            mapped.origin.y as f32,
+                            mapped.size.w as f32,
+                            mapped.size.h as f32,
+                        );
+                    }
                     continue;
                 }
                 match f.geometry.viewport_src {
@@ -936,20 +1154,20 @@ impl Renderer {
                         let can_split = f.geometry.transform == aegis_core::Transform::Normal;
                         let (opaque, blended) = split_opaque_blit(
                             (x, y, dst_w, dst_h),
-                            (tw as f32, th as f32),
+                            surface_logical,
                             f.opaque_region,
                             can_split,
                         );
                         for b in &opaque {
                             canvas.draw_image_opaque_sub(
-                                img, b.dst_x, b.dst_y, b.dst_w, b.dst_h,
-                                b.src_u, b.src_v, b.src_du, b.src_dv,
+                                img, b.dst_x, b.dst_y, b.dst_w, b.dst_h, b.src_u, b.src_v,
+                                b.src_du, b.src_dv,
                             );
                         }
                         for b in &blended {
                             canvas.draw_image_sub(
-                                img, b.dst_x, b.dst_y, b.dst_w, b.dst_h,
-                                b.src_u, b.src_v, b.src_du, b.src_dv,
+                                img, b.dst_x, b.dst_y, b.dst_w, b.dst_h, b.src_u, b.src_v,
+                                b.src_du, b.src_dv,
                             );
                         }
                     }
@@ -968,7 +1186,7 @@ impl Renderer {
         frames: &[SurfaceDmabuf],
         _origin: (f32, f32),
     ) {
-        self.draw_dmabuf_toplevels_impl(device, canvas, frames, None);
+        self.draw_dmabuf_toplevels_impl(device, canvas, frames, None, None);
     }
 
     /// As [`draw_dmabuf_toplevels`](Self::draw_dmabuf_toplevels), but each
@@ -981,7 +1199,7 @@ impl Renderer {
         frames: &[SurfaceDmabuf],
         map: &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
     ) {
-        self.draw_dmabuf_toplevels_impl(device, canvas, frames, Some(map));
+        self.draw_dmabuf_toplevels_impl(device, canvas, frames, Some(map), None);
     }
 
     fn draw_dmabuf_toplevels_impl(
@@ -992,6 +1210,7 @@ impl Renderer {
         map: Option<
             &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
         >,
+        mapped_opacity: Option<f32>,
     ) {
         for f in frames.iter() {
             self.retire_cached(f.id);
@@ -1008,7 +1227,10 @@ impl Renderer {
                 // the lifetime of the backing buffer. Attach the new fence to
                 // this frame's use of the existing VkImage; Flux waits it on
                 // the GPU before the FOREIGN -> graphics ownership acquire.
-                if f.acquire_fence >= 0 {
+                let needs_acquire_wait = self.dmabuf_cache.get(&key).is_some_and(|cached| {
+                    reusable_acquire_wait_required(cached.generation, f.generation, f.acquire_fence)
+                });
+                if needs_acquire_wait {
                     let fd = unsafe { libc::dup(f.acquire_fence) };
                     if fd < 0 {
                         if self.failed_imports.insert(f.id, ()).is_none() {
@@ -1176,6 +1398,7 @@ impl Renderer {
                     f.geometry.viewport_dst,
                     f.geometry.buffer_scale,
                 );
+                let surface_logical = (dst_w, dst_h);
                 // ADR-0029: an in-flight window transition draws the texture
                 // scaled to the interpolated size instead of the
                 // buffer-implied size. Mapped mode (overview) ignores it;
@@ -1194,7 +1417,17 @@ impl Renderer {
                         dst_h.max(1.0) as i32,
                     );
                     let mapped = map(f.window, natural);
-                    if drm_fmt::is_format_opaque(f.drm_format)
+                    if let Some(alpha) = mapped_opacity_alpha(mapped_opacity) {
+                        let paint = flux::Paint::solid(flux::rgba(255, 255, 255, alpha));
+                        canvas.draw_image_with_paint(
+                            img,
+                            mapped.origin.x as f32,
+                            mapped.origin.y as f32,
+                            mapped.size.w as f32,
+                            mapped.size.h as f32,
+                            &paint,
+                        );
+                    } else if drm_fmt::is_format_opaque(f.drm_format)
                         && f.geometry.viewport_src.is_none()
                     {
                         canvas.draw_image_opaque(
@@ -1243,20 +1476,20 @@ impl Renderer {
                             let can_split = f.geometry.transform == aegis_core::Transform::Normal;
                             let (opaque, blended) = split_opaque_blit(
                                 (x, y, dst_w, dst_h),
-                                (f.width as f32, f.height as f32),
+                                surface_logical,
                                 f.opaque_region.as_deref(),
                                 can_split,
                             );
                             for b in &opaque {
                                 canvas.draw_image_opaque_sub(
-                                    img, b.dst_x, b.dst_y, b.dst_w, b.dst_h,
-                                    b.src_u, b.src_v, b.src_du, b.src_dv,
+                                    img, b.dst_x, b.dst_y, b.dst_w, b.dst_h, b.src_u, b.src_v,
+                                    b.src_du, b.src_dv,
                                 );
                             }
                             for b in &blended {
                                 canvas.draw_image_sub(
-                                    img, b.dst_x, b.dst_y, b.dst_w, b.dst_h,
-                                    b.src_u, b.src_v, b.src_du, b.src_dv,
+                                    img, b.dst_x, b.dst_y, b.dst_w, b.dst_h, b.src_u, b.src_v,
+                                    b.src_du, b.src_dv,
                                 );
                             }
                         }
@@ -1341,6 +1574,35 @@ pub fn create_device(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modifier_preference_is_stable_and_keeps_linear_last() {
+        let tiled_a = 0x100;
+        let tiled_b = 0x200;
+        let mut modifiers = vec![
+            drm_fmt::DRM_FORMAT_MOD_LINEAR,
+            tiled_a,
+            drm_fmt::DRM_FORMAT_MOD_LINEAR,
+            tiled_b,
+        ];
+        prefer_native_modifiers(&mut modifiers);
+        assert_eq!(
+            modifiers,
+            vec![
+                tiled_a,
+                tiled_b,
+                drm_fmt::DRM_FORMAT_MOD_LINEAR,
+                drm_fmt::DRM_FORMAT_MOD_LINEAR,
+            ]
+        );
+    }
+
+    #[test]
+    fn reusable_dmabuf_wait_is_once_per_commit_generation() {
+        assert!(reusable_acquire_wait_required(7, 8, 12));
+        assert!(!reusable_acquire_wait_required(8, 8, 12));
+        assert!(!reusable_acquire_wait_required(7, 8, -1));
+    }
 
     /// GC drops only the textures for ids not present in the live set. The
     /// cache itself is empty here (no flux device in unit tests), but the
@@ -1516,6 +1778,90 @@ mod tests {
         assert_eq!((w, h), (100.0, 50.0));
     }
 
+    /// A scale-2 buffer is 3072x1920 pixels but its opaque region is still
+    /// expressed in the 1536x960 surface coordinate space. A full-surface
+    /// region must therefore produce exactly one full opaque blit, not a
+    /// half-sized opaque piece plus a second enlarged copy of the texture.
+    #[test]
+    fn opaque_split_uses_surface_coordinates_at_hidpi_scale() {
+        let region = [aegis_core::Rect::new(0, 0, 1536, 960)];
+        let (opaque, blended) = split_opaque_blit(
+            (0.0, 0.0, 1536.0, 960.0),
+            (1536.0, 960.0),
+            Some(&region),
+            true,
+        );
+
+        assert_eq!(
+            opaque,
+            vec![BlitRect {
+                dst_x: 0.0,
+                dst_y: 0.0,
+                dst_w: 1536.0,
+                dst_h: 960.0,
+                src_u: 0.0,
+                src_v: 0.0,
+                src_du: 1.0,
+                src_dv: 1.0,
+            }]
+        );
+        assert!(blended.is_empty());
+    }
+
+    /// Client-owned region coordinates may approach the i32 limits. Clipping
+    /// must reject an entirely out-of-bounds rectangle without overflowing its
+    /// far-edge addition or disturbing the full blended fallback.
+    #[test]
+    fn opaque_split_saturates_extreme_client_rect_edges() {
+        let region = [aegis_core::Rect::new(i32::MAX - 4, i32::MAX - 4, 100, 100)];
+        let (opaque, blended) =
+            split_opaque_blit((0.0, 0.0, 128.0, 64.0), (128.0, 64.0), Some(&region), true);
+
+        assert!(opaque.is_empty());
+        assert_eq!(
+            blended,
+            vec![BlitRect {
+                dst_x: 0.0,
+                dst_y: 0.0,
+                dst_w: 128.0,
+                dst_h: 64.0,
+                src_u: 0.0,
+                src_v: 0.0,
+                src_du: 1.0,
+                src_dv: 1.0,
+            }]
+        );
+    }
+
+    /// Transition scaling changes only the destination mapping; the source UV
+    /// remains normalised against the original surface logical extent.
+    #[test]
+    fn opaque_split_scales_destination_without_rescaling_source_uv() {
+        let region = [aegis_core::Rect::new(0, 0, 1536, 120)];
+        let (opaque, blended) = split_opaque_blit(
+            (10.0, 20.0, 3072.0, 1920.0),
+            (1536.0, 960.0),
+            Some(&region),
+            true,
+        );
+
+        assert_eq!(opaque.len(), 1);
+        assert_eq!(opaque[0].dst_x, 10.0);
+        assert_eq!(opaque[0].dst_y, 20.0);
+        assert_eq!(opaque[0].dst_w, 3072.0);
+        assert_eq!(opaque[0].dst_h, 240.0);
+        assert_eq!(opaque[0].src_u, 0.0);
+        assert_eq!(opaque[0].src_v, 0.0);
+        assert_eq!(opaque[0].src_du, 1.0);
+        assert_eq!(opaque[0].src_dv, 0.125);
+
+        assert_eq!(blended.len(), 1);
+        assert_eq!(blended[0].dst_y, 260.0);
+        assert_eq!(blended[0].dst_h, 1680.0);
+        assert_eq!(blended[0].src_v, 0.125);
+        assert_eq!(blended[0].src_dv, 0.875);
+    }
+
     #[test]
     fn viewport_source_converts_post_scale_coordinates_to_buffer_uvs() {
         let src = aegis_core::Rect::new(10, 5, 30, 20);
@@ -1555,6 +1901,32 @@ mod tests {
     fn a_frame_missing_from_the_authoritative_order_stays_hidden() {
         let sources = ordered_surface_sources(&[10], &[10, 20], &[]);
         assert_eq!(sources, vec![OrderedSurfaceSource::Shm(0)]);
+    }
+
+    #[test]
+    fn workspace_filter_is_closed_to_foreign_and_unowned_surfaces() {
+        use aegis_core::window::WindowId;
+
+        let filter = HashSet::from([WindowId(2)]);
+        assert!(surface_passes_window_filter(
+            Some(WindowId(2)),
+            Some(&filter)
+        ));
+        assert!(!surface_passes_window_filter(
+            Some(WindowId(1)),
+            Some(&filter)
+        ));
+        assert!(!surface_passes_window_filter(None, Some(&filter)));
+        assert!(surface_passes_window_filter(None, None));
+    }
+
+    #[test]
+    fn mapped_opacity_only_requests_tint_for_a_real_fade() {
+        assert_eq!(mapped_opacity_alpha(None), None);
+        assert_eq!(mapped_opacity_alpha(Some(1.0)), None);
+        assert_eq!(mapped_opacity_alpha(Some(f32::NAN)), None);
+        assert_eq!(mapped_opacity_alpha(Some(0.5)), Some(128));
+        assert_eq!(mapped_opacity_alpha(Some(-1.0)), Some(0));
     }
 
     #[test]

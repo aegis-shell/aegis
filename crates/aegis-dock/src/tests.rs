@@ -39,6 +39,13 @@ fn workspace_snapshot() -> WorkspaceSnapshot {
 }
 
 #[test]
+fn dock_is_persistent_decoration() {
+    let dock = Dock::new();
+    assert!(dock.persistent_decoration());
+    assert!(dock.visible_during_modal());
+}
+
+#[test]
 fn magnify_factor_is_one_at_cursor() {
     assert!(Dock::magnify_factor(0.0) > 0.999);
 }
@@ -439,12 +446,94 @@ fn collapsed_handle_has_no_tile_hover_target() {
     dock.set_autohide(true);
     dock.autohide_reveal = 0.0;
     assert!(!dock.captures_pointer(cursor.0, cursor.1, display, &[], &workspace_snapshot(),));
+    let indicator = Dock::collapsed_indicator_bounds(display);
     assert!(dock.captures_pointer(
+        indicator.x + indicator.w * 0.5,
+        indicator.y + indicator.h * 0.5,
+        display,
+        &[],
+        &workspace_snapshot(),
+    ));
+    assert!(!dock.captures_pointer(
         display.0 * 0.5,
         display.1 - 1.0,
         display,
         &[],
         &workspace_snapshot(),
+    ));
+}
+
+#[test]
+fn capsule_is_the_only_collapsed_reveal_target() {
+    let display = (1920.0, 1080.0);
+    let mut dock = Dock::new();
+    dock.set_autohide(true);
+    dock.autohide_reveal = 0.0;
+    let indicator = Dock::collapsed_indicator_bounds(display);
+    let workspaces = workspace_snapshot();
+
+    assert!(dock.captures_pointer(
+        indicator.x + indicator.w * 0.5,
+        indicator.y + indicator.h * 0.5,
+        display,
+        &[],
+        &workspaces,
+    ));
+    for point in [
+        (indicator.x - 1.0, indicator.y + indicator.h * 0.5),
+        (
+            indicator.x + indicator.w + 1.0,
+            indicator.y + indicator.h * 0.5,
+        ),
+        (indicator.x + indicator.w * 0.5, indicator.y - 1.0),
+        (
+            indicator.x + indicator.w * 0.5,
+            indicator.y + indicator.h + 1.0,
+        ),
+    ] {
+        assert!(
+            !dock.captures_pointer(point.0, point.1, display, &[], &workspaces),
+            "point {point:?} outside the capsule must remain client-owned"
+        );
+    }
+}
+
+#[test]
+fn collapsed_dock_does_not_reuse_its_old_resting_region_as_a_trigger() {
+    let display = (1920.0, 1080.0);
+    let dock = Dock::new();
+    let rest = dock.pointer_bounds(&[], display);
+    let indicator = Dock::collapsed_indicator_bounds(display);
+    let old_dock_point = (rest.x + rest.w * 0.5, rest.y + 8.0);
+    let capsule_point = (
+        indicator.x + indicator.w * 0.5,
+        indicator.y + indicator.h * 0.5,
+    );
+
+    assert!(!Dock::collapsed_indicator_contains(old_dock_point, display));
+    assert!(!Dock::pointer_keeps_revealed(
+        true,
+        0.0,
+        false,
+        old_dock_point,
+        rest,
+        display.1,
+    ));
+    assert!(Dock::pointer_keeps_revealed(
+        true,
+        0.0,
+        true,
+        capsule_point,
+        rest,
+        display.1,
+    ));
+    assert!(Dock::pointer_keeps_revealed(
+        true,
+        1.0,
+        false,
+        old_dock_point,
+        rest,
+        display.1,
     ));
 }
 
@@ -456,8 +545,8 @@ fn expanded_autohide_dock_keeps_pointer_across_bottom_gap() {
     dock.autohide_reveal = 1.0;
     let rest = dock.pointer_bounds(&[], display);
     let gap_y = rest.y + rest.h + DOCK_BOTTOM_MARGIN * 0.5;
-    let original_trigger = Dock::hidden_trigger_bounds(display);
-    let trigger_edge_x = original_trigger.x + 1.0;
+    let indicator = Dock::collapsed_indicator_bounds(display);
+    let former_indicator_edge_x = indicator.x + 1.0;
 
     assert!(Dock::expanded_trigger_contains(
         (display.0 * 0.5, gap_y),
@@ -466,12 +555,12 @@ fn expanded_autohide_dock_keeps_pointer_across_bottom_gap() {
     ));
     assert!(dock.captures_pointer(display.0 * 0.5, gap_y, display, &[], &workspace_snapshot(),));
     assert!(
-        trigger_edge_x < rest.x,
+        former_indicator_edge_x < rest.x,
         "the regression point must be outside the expanded panel"
     );
-    assert!(dock.captures_pointer(
-        trigger_edge_x,
-        display.1 - 1.0,
+    assert!(!dock.captures_pointer(
+        former_indicator_edge_x,
+        indicator.y + indicator.h * 0.5,
         display,
         &[],
         &workspace_snapshot(),
@@ -494,6 +583,7 @@ fn fullscreen_window_locks_dock_hidden_without_hot_edge() {
     assert_eq!(dock.autohide_reveal, 0.0);
     assert_eq!(dock.reserved(), Reserved::default());
     assert_eq!(dock.backdrop_blur_sigma(), 0.0);
+    assert!(!dock.requires_composition());
     assert!(
         dock.backdrop_regions((1920.0, 1080.0), &[], &workspace_snapshot())
             .is_empty()
@@ -525,8 +615,7 @@ fn collapsed_autohide_handle_stays_an_analytic_glass_body() {
     let display = (1920.0, 1080.0);
     let workspaces = workspace_snapshot();
 
-    // The compositor's capture path keys off the reported sigma: zero would
-    // silently drop the collapsed handle's glass regions.
+    assert!(dock.requires_composition());
     assert_eq!(dock.backdrop_blur_sigma(), 12.0);
     let backdrop = dock.backdrop_regions(display, &[], &workspaces);
     let glass = dock.liquid_glass_regions(display, &[], &workspaces);
@@ -536,6 +625,69 @@ fn collapsed_autohide_handle_stays_an_analytic_glass_body() {
     assert_eq!(glass[0].bounds.w, AUTOHIDE_HANDLE_WIDTH);
     assert_eq!(glass[0].bounds.h, AUTOHIDE_HANDLE_HEIGHT);
     assert_eq!(glass[0].corner_radius, AUTOHIDE_HANDLE_HEIGHT * 0.5);
+    assert_eq!(glass[0].opacity, 1.0);
+}
+
+#[test]
+fn settled_maximized_collapse_keeps_the_capsule_composited() {
+    let mut dock = dock_with(vec![app("org.example.Editor.desktop")]);
+    let mut maximized = window(7, "org.example.Editor", true);
+    maximized.state.maximized = true;
+    dock.update_windows(std::slice::from_ref(&maximized));
+    dock.autohide_reveal = 0.0;
+    dock.collapse_pending = false;
+
+    assert_eq!(dock.space_use, SpaceUse::Maximized);
+    assert!(dock.requires_composition());
+    assert_eq!(dock.backdrop_blur_sigma(), 12.0);
+    let glass = dock.liquid_glass_regions(
+        (1920.0, 1080.0),
+        &[maximized.clone()],
+        &workspace_snapshot(),
+    );
+    assert_eq!(glass.len(), 1);
+    assert_eq!(glass[0].bounds.w, AUTOHIDE_HANDLE_WIDTH);
+    assert_eq!(glass[0].bounds.h, AUTOHIDE_HANDLE_HEIGHT);
+
+    dock.autohide_reveal = 0.25;
+    assert!(dock.requires_composition());
+    assert_eq!(dock.backdrop_blur_sigma(), 12.0);
+    assert_eq!(
+        dock.backdrop_regions((1920.0, 1080.0), &[maximized], &workspace_snapshot())
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn backdrop_prepass_reveals_only_from_the_capsule_body() {
+    let mut dock = dock_with(vec![app("org.example.Editor.desktop")]);
+    let mut maximized = window(7, "org.example.Editor", true);
+    maximized.state.maximized = true;
+    dock.update_windows(std::slice::from_ref(&maximized));
+    dock.autohide_reveal = 0.0;
+    dock.collapse_pending = false;
+    dock.hidden_trigger_armed = true;
+    let display = (1920.0, 1080.0);
+    let workspaces = workspace_snapshot();
+
+    // The bottom edge outside the visible capsule remains client-owned.
+    let mut outside = Input::new(display, 0.016);
+    outside.set_cursor(display.0 * 0.5, display.1 - 1.0);
+    dock.prepare_backdrop(&outside, std::slice::from_ref(&maximized), &workspaces);
+    assert_eq!(dock.autohide_idle, dock.autohide_timeout);
+    assert!(dock.requires_composition());
+
+    // Hovering the capsule itself starts the normal reveal animation.
+    let indicator = Dock::collapsed_indicator_bounds(display);
+    let mut capsule = Input::new(display, 0.016);
+    capsule.set_cursor(
+        indicator.x + indicator.w * 0.5,
+        indicator.y + indicator.h * 0.5,
+    );
+    dock.prepare_backdrop(&capsule, &[maximized], &workspaces);
+    assert_eq!(dock.autohide_idle, 0.0);
+    assert!(dock.anim_pending());
 }
 
 #[test]

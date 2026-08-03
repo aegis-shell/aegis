@@ -11,7 +11,7 @@ use aegis_core::window::{Window, WindowId};
 use aegis_core::workspace::WorkspaceSnapshot;
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
-use crate::{Chrome, ChromeEvents, CursorShape, Localizer, Message, truncate};
+use crate::{Chrome, ChromeEvents, CursorShape, Localizer, Message, ellipsize};
 
 const WASH_ALPHA: u8 = 92;
 const BADGE_HEIGHT: f32 = 28.0;
@@ -125,14 +125,20 @@ impl Chrome for ControlledWindowGuard {
                 i18n.text(Message::AgentOperating)
             };
             let label = match realm.map(|realm| realm.label.as_str()) {
-                Some(label) if !label.is_empty() => format!(
-                    "{} · {status} · {}",
-                    truncate(label, 20),
-                    i18n.text(Message::ReadOnlyMirror)
-                ),
+                Some(label) if !label.is_empty() => {
+                    format!(
+                        "{label} · {status} · {}",
+                        i18n.text(Message::ReadOnlyMirror)
+                    )
+                }
                 _ => format!("{status} · {}", i18n.text(Message::ReadOnlyMirror)),
             };
-            let label = truncate(&label, 52);
+            let label = ellipsize(
+                frame,
+                &label,
+                11.0,
+                (rect.w - BADGE_MARGIN * 2.0 - 28.0).max(0.0),
+            );
             let badge_width = (frame.measure_text(&label, 11.0).width + 28.0)
                 .min((rect.w - BADGE_MARGIN * 2.0).max(1.0));
             let badge = Rect {

@@ -37,16 +37,22 @@ impl WindowTransition {
         }
     }
 
+    /// Whether this transition is still in flight at `now_ms`.
+    ///
+    /// Keep the lifetime predicate independent of the current target rect so
+    /// every consumer (scene visibility, occlusion, callbacks, and rendering)
+    /// agrees on the exact instant a transition settles.
+    pub fn is_active_at(&self, now_ms: u64) -> bool {
+        self.duration_ms > 0 && now_ms.saturating_sub(self.started_ms) < self.duration_ms
+    }
+
     /// The interpolated rect at `now_ms` (ease-out cubic), or `None` when
     /// the transition has settled and the window renders at `target`.
     pub fn rect_at(&self, target: Rect, now_ms: u64) -> Option<Rect> {
-        if self.duration_ms == 0 {
+        if !self.is_active_at(now_ms) {
             return None;
         }
         let elapsed = now_ms.saturating_sub(self.started_ms);
-        if elapsed >= self.duration_ms {
-            return None;
-        }
         let t = ease_out_cubic(elapsed as f32 / self.duration_ms as f32);
         Some(lerp_rect(self.from, target, t))
     }

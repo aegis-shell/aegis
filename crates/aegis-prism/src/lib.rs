@@ -17,7 +17,7 @@ use aegis_core::workspace::WorkspaceSnapshot;
 use aegis_design::{Design, materials};
 use aegis_shell::{
     AppCatalog, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet, LiquidGlassRegion,
-    Localizer, Message, truncate,
+    Localizer, Message, ellipsize,
 };
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
 
@@ -239,7 +239,15 @@ impl Chrome for Prism {
             w: panel.w,
             h: SEARCH_HEIGHT,
         };
-        let shown_query = truncate(self.brain.query(), 72);
+        let query_is_empty = self.brain.query().is_empty();
+        let search_text_width = (search.w - 20.0 * 2.0 - 23.0 - 12.0).max(0.0);
+        let shown_query = ellipsize(frame, self.brain.query(), 20.0, search_text_width);
+        let shown_placeholder = ellipsize(
+            frame,
+            i18n.text(Message::SearchApplications),
+            20.0,
+            search_text_width,
+        );
         let query_metrics = frame.measure_text(&shown_query, 20.0);
         frame.layer(
             "aegis-prism-search",
@@ -262,8 +270,8 @@ impl Chrome for Prism {
                     },
                     |frame| {
                         frame.icon(Icon::Search, 23.0);
-                        if shown_query.is_empty() {
-                            frame.label_compact_sized(i18n.text(Message::SearchApplications), 20.0);
+                        if query_is_empty {
+                            frame.label_compact_sized(&shown_placeholder, 20.0);
                         } else {
                             frame.label_compact_sized(&shown_query, 20.0);
                         }
@@ -349,12 +357,13 @@ impl Chrome for Prism {
                 }
                 let selected = filtered_position == selection;
                 let icon = self.entry_icon(entry);
-                let name = truncate(&entry.name, 48);
+                let text_width = (row.w - 92.0).max(1.0);
+                let name = ellipsize(frame, &entry.name, 13.5, text_width);
                 let subtitle = entry
                     .generic_name
                     .as_deref()
                     .or(entry.comment.as_deref())
-                    .map(|text| truncate(text, 64));
+                    .map(|text| ellipsize(frame, text, 10.5, text_width));
                 let running = self.brain.is_running(app_index);
                 frame.layer(
                     &format!("aegis-prism-result-{filtered_position}"),
@@ -384,7 +393,7 @@ impl Chrome for Prism {
                                 render_icon(frame, icon, progress);
                                 frame.column_ex(
                                     &LayoutOpts {
-                                        width: (row.w - 92.0).max(1.0),
+                                        width: text_width,
                                         height: 42.0,
                                         gap: 2.0,
                                         ..Default::default()

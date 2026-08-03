@@ -205,11 +205,7 @@ impl Transform {
     /// This closes the historical "transform ⇒ unmappable ⇒ full damage"
     /// fallback: a rotated/flipped client's `wl_surface.damage_buffer` no longer
     /// forces a whole-output repaint.
-    pub fn map_buffer_rect_to_surface(
-        self,
-        rect: Rect,
-        buffer_dims: (i32, i32),
-    ) -> Rect {
+    pub fn map_buffer_rect_to_surface(self, rect: Rect, buffer_dims: (i32, i32)) -> Rect {
         let (bw, bh) = buffer_dims;
         // Buffer rectangle corners (inclusive-exclusive spans).
         let (bx0, by0, bx1, by1) = (
@@ -229,13 +225,13 @@ impl Transform {
         for (px, py) in [(bx0, by0), (bx1, by0), (bx0, by1), (bx1, by1)] {
             let (ux, uy) = match self {
                 Transform::Normal => (px, py),
-                Transform::Rotate90 => (py, bwi - px),
+                Transform::Rotate90 => (bhi - py, px),
                 Transform::Rotate180 => (bwi - px, bhi - py),
-                Transform::Rotate270 => (bhi - py, px),
+                Transform::Rotate270 => (py, bwi - px),
                 Transform::FlipHorizontal => (bwi - px, py),
-                Transform::FlipRotate90 => (bhi - py, bwi - px),
+                Transform::FlipRotate90 => (py, px),
                 Transform::FlipRotate180 => (px, bhi - py),
-                Transform::FlipRotate270 => (py, px),
+                Transform::FlipRotate270 => (bhi - py, bwi - px),
             };
             sx0 = sx0.min(ux);
             sy0 = sy0.min(uy);
@@ -320,6 +316,59 @@ mod tests {
         }
         for t in should_not_swap {
             assert!(!t.swap_axes(), "{t:?} should not swap axes");
+        }
+    }
+
+    #[test]
+    fn transform_maps_buffer_damage_to_the_renderer_surface_orientation() {
+        let rect = Rect::new(10, 15, 20, 10);
+        let dims = (100, 60);
+        let expected = [
+            (Transform::Normal, Rect::new(10, 15, 20, 10)),
+            (Transform::Rotate90, Rect::new(35, 10, 10, 20)),
+            (Transform::Rotate180, Rect::new(70, 35, 20, 10)),
+            (Transform::Rotate270, Rect::new(15, 70, 10, 20)),
+            (Transform::FlipHorizontal, Rect::new(70, 15, 20, 10)),
+            (Transform::FlipRotate90, Rect::new(15, 10, 10, 20)),
+            (Transform::FlipRotate180, Rect::new(10, 35, 20, 10)),
+            (Transform::FlipRotate270, Rect::new(35, 70, 10, 20)),
+        ];
+
+        for (transform, mapped) in expected {
+            assert_eq!(
+                transform.map_buffer_rect_to_surface(rect, dims),
+                mapped,
+                "{transform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn transform_maps_a_full_buffer_to_the_full_transformed_extent() {
+        let full = Rect::new(0, 0, 100, 60);
+        for transform in [
+            Transform::Normal,
+            Transform::Rotate180,
+            Transform::FlipHorizontal,
+            Transform::FlipRotate180,
+        ] {
+            assert_eq!(
+                transform.map_buffer_rect_to_surface(full, (100, 60)),
+                Rect::new(0, 0, 100, 60),
+                "{transform:?}"
+            );
+        }
+        for transform in [
+            Transform::Rotate90,
+            Transform::Rotate270,
+            Transform::FlipRotate90,
+            Transform::FlipRotate270,
+        ] {
+            assert_eq!(
+                transform.map_buffer_rect_to_surface(full, (100, 60)),
+                Rect::new(0, 0, 60, 100),
+                "{transform:?}"
+            );
         }
     }
 

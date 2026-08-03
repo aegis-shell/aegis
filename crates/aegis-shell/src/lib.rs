@@ -41,7 +41,7 @@ pub use system::{
     ResourceStats, SystemAction, SystemStatus, detect_forked_status, detect_system_status,
     detect_system_status_lightweight,
 };
-pub use text::truncate;
+pub use text::{ellipsize, truncate};
 
 /// Logical height of the HUD chips (the `aegis-hud` component).
 /// Defined here, at the shell seam, so shell-resident chrome that must align
@@ -486,11 +486,20 @@ pub trait Chrome {
         false
     }
 
+    /// Whether this component is part of the persistent desktop decoration
+    /// layer. Persistent decorations stay present above ordinary overlays such
+    /// as Prism and the launcher. An exclusive presentation such as the window
+    /// switcher may still suppress the whole decoration layer temporarily.
+    fn persistent_decoration(&self) -> bool {
+        false
+    }
+
     /// Whether this component remains visible and interactive while another
     /// component is modal. Modal components opt in themselves; persistent
-    /// surfaces such as the dock may opt in as well.
+    /// decorations share the default opt-in through
+    /// [`Chrome::persistent_decoration`].
     fn visible_during_modal(&self) -> bool {
-        false
+        self.persistent_decoration()
     }
 
     /// Cursor shape to use while this component owns the pointer at `(x, y)`.
@@ -745,6 +754,35 @@ pub trait Chrome {
     ) -> Vec<LiquidGlassRegion> {
         Vec::new()
     }
+}
+
+/// Exact compositor-owned output requirements for primary-plane policy.
+///
+/// This deliberately describes what would affect the *next rendered frame*,
+/// rather than broad component state such as "the Dock exists" or "an
+/// animation timer is running".  A hidden/fully transparent component must
+/// not prevent direct scanout, while any visible chrome pixel or live
+/// backdrop sample must.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CompositionRequirements {
+    /// At least one eligible chrome component would draw visible pixels.
+    pub visible_pixels: bool,
+    /// Visible chrome samples the client scene through a backdrop effect.
+    pub live_backdrop_effect: bool,
+}
+
+/// Whether one component participates in the current shell pass. Ordinary
+/// modal overlays preserve persistent decorations; the window switcher is an
+/// exclusive presentation and temporarily owns the complete chrome layer.
+fn participates_in_shell_pass(
+    component: &dyn Chrome,
+    screenshot_freeze: bool,
+    modal_active: bool,
+    window_switcher_active: bool,
+) -> bool {
+    (!screenshot_freeze || component.screenshot_active())
+        && (!window_switcher_active || component.window_switcher_active())
+        && (!modal_active || component.visible_during_modal())
 }
 
 /// Errors from the shell.
@@ -1044,8 +1082,21 @@ impl Shell {
     /// ordinary chrome. A vector keeps the contract composable even though the
     /// Dock is currently the only producer.
     pub fn live_preview_presentations(&self) -> Vec<LivePreviewPresentation> {
+        let modal_active = self
+            .components
+            .iter()
+            .any(|component| component.modal_active());
+        let window_switcher_active = self.window_switcher_active();
         self.components
             .iter()
+            .filter(|component| {
+                participates_in_shell_pass(
+                    component.as_ref(),
+                    self.screenshot_freeze,
+                    modal_active,
+                    window_switcher_active,
+                )
+            })
             .filter_map(|component| component.live_preview_presentation())
             .collect()
     }
@@ -1268,15 +1319,40 @@ impl Shell {
     /// route key events to [`Shell::key_char`] or forward them to the focused
     /// client.
     pub fn captures_keyboard(&self) -> bool {
-        self.components.iter().any(|c| c.captures_keyboard())
+        let modal_active = self
+            .components
+            .iter()
+            .any(|component| component.modal_active());
+        let window_switcher_active = self.window_switcher_active();
+        self.components.iter().any(|component| {
+            participates_in_shell_pass(
+                component.as_ref(),
+                self.screenshot_freeze,
+                modal_active,
+                window_switcher_active,
+            ) && component.captures_keyboard()
+        })
     }
 
     /// Whether compositor chrome owns pointer input at `(x, y)`. Components
     /// use the same window/workspace snapshot they render, so routing and
     /// visuals agree for the frame.
     pub fn captures_pointer_at(&self, x: f32, y: f32, display: (f32, f32)) -> bool {
+        let modal_active = self
+            .components
+            .iter()
+            .any(|component| component.modal_active());
+        let window_switcher_active = self.window_switcher_active();
         self.components
             .iter()
+            .filter(|component| {
+                participates_in_shell_pass(
+                    component.as_ref(),
+                    self.screenshot_freeze,
+                    modal_active,
+                    window_switcher_active,
+                )
+            })
             .any(|c| c.captures_pointer(x, y, display, &self.windows, &self.workspaces))
     }
 
@@ -1288,14 +1364,18 @@ impl Shell {
             .components
             .iter()
             .any(|component| component.modal_active());
+        let window_switcher_active = self.window_switcher_active();
         self.components
             .iter()
             .rev()
-            // Same filter as `render`: while the screenshot freeze holds the
-            // screen, frozen components are inert — the dock under the
-            // snapshot must not turn the cursor clickable.
-            .filter(|component| !self.screenshot_freeze || component.screenshot_active())
-            .filter(|component| !modal_active || component.visible_during_modal())
+            .filter(|component| {
+                participates_in_shell_pass(
+                    component.as_ref(),
+                    self.screenshot_freeze,
+                    modal_active,
+                    window_switcher_active,
+                )
+            })
             .find(|component| {
                 component.captures_pointer(x, y, display, &self.windows, &self.workspaces)
             })
@@ -1317,9 +1397,22 @@ impl Shell {
     /// with keyboard-owned state, such as the launcher or an application
     /// context menu, override [`Chrome::key_char`]; others no-op.
     pub fn key_char(&mut self, kc: aegis_core::input::KeyChar) {
+        let modal_active = self
+            .components
+            .iter()
+            .any(|component| component.modal_active());
+        let window_switcher_active = self.window_switcher_active();
+        let freeze = self.screenshot_freeze;
         let events = &mut self.events;
         for component in self.components.iter_mut() {
-            component.key_char(&kc, events);
+            if participates_in_shell_pass(
+                component.as_ref(),
+                freeze,
+                modal_active,
+                window_switcher_active,
+            ) {
+                component.key_char(&kc, events);
+            }
         }
     }
 
@@ -1380,13 +1473,22 @@ impl Shell {
     /// wakeup. Also folds in lens's own eased-value state so hover/active
     /// fades on lens widgets (buttons, etc.) settle correctly.
     pub fn anim_pending(&self) -> bool {
+        let modal_active = self
+            .components
+            .iter()
+            .any(|component| component.modal_active());
+        let window_switcher_active = self.window_switcher_active();
         if self
             .components
             .iter()
-            // Frozen components do not render, so their animations never
-            // advance; excluding them keeps the loop from spinning on an
-            // animation that cannot settle until the freeze lifts.
-            .filter(|c| !self.screenshot_freeze || c.screenshot_active())
+            .filter(|component| {
+                participates_in_shell_pass(
+                    component.as_ref(),
+                    self.screenshot_freeze,
+                    modal_active,
+                    window_switcher_active,
+                )
+            })
             .any(|c| c.anim_pending())
         {
             return true;
@@ -1401,19 +1503,67 @@ impl Shell {
             .components
             .iter()
             .any(|component| component.modal_active());
+        let window_switcher_active = self.window_switcher_active();
         self.components
             .iter()
-            .filter(|component| !self.screenshot_freeze || component.screenshot_active())
-            .filter(|component| !modal_active || component.visible_during_modal())
+            .filter(|component| {
+                participates_in_shell_pass(
+                    component.as_ref(),
+                    self.screenshot_freeze,
+                    modal_active,
+                    window_switcher_active,
+                )
+            })
             .any(|component| component.requires_composition())
+    }
+
+    /// Return the precise compositor-owned work that would affect the next
+    /// output frame.  Direct-scanout policy consumes this instead of treating
+    /// registered components, dormant animations, or a non-zero blur setting
+    /// as global blockers.
+    pub fn composition_requirements(&self) -> CompositionRequirements {
+        let modal_active = self
+            .components
+            .iter()
+            .any(|component| component.modal_active());
+        let window_switcher_active = self.window_switcher_active();
+        let mut requirements = CompositionRequirements::default();
+        for component in self.components.iter().filter(|component| {
+            participates_in_shell_pass(
+                component.as_ref(),
+                self.screenshot_freeze,
+                modal_active,
+                window_switcher_active,
+            )
+        }) {
+            let visible = component.requires_composition();
+            requirements.visible_pixels |= visible;
+            // A blur request belonging to visually empty chrome is not live:
+            // there are no output pixels that could consume the backdrop.
+            requirements.live_backdrop_effect |= visible && component.backdrop_blur_sigma() > 0.0;
+        }
+        requirements
     }
 
     /// Strongest backdrop blur requested by any registered component, in
     /// logical pixels. The executable converts it to physical pixels before
     /// invoking flux's realtime multi-resolution filter.
     pub fn backdrop_blur_sigma(&self) -> f32 {
+        let modal_active = self
+            .components
+            .iter()
+            .any(|component| component.modal_active());
+        let window_switcher_active = self.window_switcher_active();
         self.components
             .iter()
+            .filter(|component| {
+                participates_in_shell_pass(
+                    component.as_ref(),
+                    self.screenshot_freeze,
+                    modal_active,
+                    window_switcher_active,
+                )
+            })
             .map(|component| component.backdrop_blur_sigma())
             .fold(0.0_f32, f32::max)
     }
@@ -1425,8 +1575,15 @@ impl Shell {
             .components
             .iter()
             .any(|component| component.modal_active());
+        let window_switcher_active = self.window_switcher_active();
+        let freeze = self.screenshot_freeze;
         for component in &mut self.components {
-            if !modal_active || component.visible_during_modal() {
+            if participates_in_shell_pass(
+                component.as_ref(),
+                freeze,
+                modal_active,
+                window_switcher_active,
+            ) {
                 component.prepare_backdrop(input, &self.windows, &self.workspaces);
             }
         }
@@ -1440,10 +1597,15 @@ impl Shell {
             .components
             .iter()
             .any(|component| component.modal_active());
+        let window_switcher_active = self.window_switcher_active();
         let mut regions = Vec::new();
         for component in &self.components {
-            if (!modal_active || component.visible_during_modal())
-                && component.backdrop_blur_sigma() > 0.0
+            if participates_in_shell_pass(
+                component.as_ref(),
+                self.screenshot_freeze,
+                modal_active,
+                window_switcher_active,
+            ) && component.backdrop_blur_sigma() > 0.0
             {
                 let mut requested =
                     component.backdrop_regions(display, &self.windows, &self.workspaces);
@@ -1468,10 +1630,15 @@ impl Shell {
             .components
             .iter()
             .any(|component| component.modal_active());
+        let window_switcher_active = self.window_switcher_active();
         let mut regions = Vec::new();
         for component in &self.components {
-            if (!modal_active || component.visible_during_modal())
-                && component.backdrop_blur_sigma() > 0.0
+            if participates_in_shell_pass(
+                component.as_ref(),
+                self.screenshot_freeze,
+                modal_active,
+                window_switcher_active,
+            ) && component.backdrop_blur_sigma() > 0.0
             {
                 regions.extend(component.liquid_glass_regions(
                     display,
@@ -1497,9 +1664,21 @@ impl Shell {
             let events = &mut self.events;
             let components = &mut self.components;
             let freeze = self.screenshot_freeze;
+            let modal_active = components.iter().any(|component| component.modal_active());
+            let window_switcher_active = components
+                .iter()
+                .any(|component| component.window_switcher_active());
             let modal_reserved = components
                 .iter()
-                .filter(|component| component.visible_during_modal())
+                .filter(|component| component.persistent_decoration())
+                .filter(|component| {
+                    participates_in_shell_pass(
+                        component.as_ref(),
+                        freeze,
+                        modal_active,
+                        window_switcher_active,
+                    )
+                })
                 .fold(Reserved::default(), |mut total, component| {
                     let edge = component.reserved();
                     total.top += edge.top;
@@ -1512,15 +1691,13 @@ impl Shell {
                 component.set_modal_reserved(modal_reserved);
             }
             self.ui.frame(input, |f| {
-                let modal_active = components.iter().any(|component| component.modal_active());
                 for component in components.iter_mut() {
-                    // While the screenshot freeze holds the screen, only the
-                    // selector draws; everything else is baked into the
-                    // frozen snapshot underneath.
-                    if freeze && !component.screenshot_active() {
-                        continue;
-                    }
-                    if !modal_active || component.visible_during_modal() {
+                    if participates_in_shell_pass(
+                        component.as_ref(),
+                        freeze,
+                        modal_active,
+                        window_switcher_active,
+                    ) {
                         component.render(f, input, windows, workspaces, i18n, events);
                     }
                 }
@@ -1535,6 +1712,79 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct OrdinaryChrome;
+
+    impl Chrome for OrdinaryChrome {
+        fn render(
+            &mut self,
+            _frame: &mut Frame,
+            _input: &Input,
+            _windows: &[Window],
+            _workspaces: &WorkspaceSnapshot,
+            _i18n: &Localizer,
+            _out: &mut ChromeEvents,
+        ) {
+        }
+    }
+
+    struct PersistentDecoration;
+
+    impl Chrome for PersistentDecoration {
+        fn render(
+            &mut self,
+            _frame: &mut Frame,
+            _input: &Input,
+            _windows: &[Window],
+            _workspaces: &WorkspaceSnapshot,
+            _i18n: &Localizer,
+            _out: &mut ChromeEvents,
+        ) {
+        }
+
+        fn persistent_decoration(&self) -> bool {
+            true
+        }
+    }
+
+    struct ExclusiveSwitcher;
+
+    impl Chrome for ExclusiveSwitcher {
+        fn render(
+            &mut self,
+            _frame: &mut Frame,
+            _input: &Input,
+            _windows: &[Window],
+            _workspaces: &WorkspaceSnapshot,
+            _i18n: &Localizer,
+            _out: &mut ChromeEvents,
+        ) {
+        }
+
+        fn modal_active(&self) -> bool {
+            true
+        }
+
+        fn visible_during_modal(&self) -> bool {
+            true
+        }
+
+        fn window_switcher_active(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn ordinary_overlays_preserve_decorations_but_switcher_is_exclusive() {
+        let ordinary = OrdinaryChrome;
+        let decoration = PersistentDecoration;
+        let switcher = ExclusiveSwitcher;
+
+        assert!(!participates_in_shell_pass(&ordinary, false, true, false));
+        assert!(participates_in_shell_pass(&decoration, false, true, false));
+        assert!(!participates_in_shell_pass(&decoration, false, true, true));
+        assert!(participates_in_shell_pass(&switcher, false, true, true));
+    }
 
     #[test]
     fn reserved_inset_shrinks_and_clamps() {

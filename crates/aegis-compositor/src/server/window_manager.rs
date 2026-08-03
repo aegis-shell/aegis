@@ -50,6 +50,7 @@ impl Server {
         self.state.window_switcher = None;
         if let Some(selected) = selected {
             self.focus_surface_by_id(selected);
+            self.rehit_pointer_after_stack_change();
         }
     }
 
@@ -77,6 +78,7 @@ impl Server {
                 .unwrap_or(0);
             let next = order[stepped_index(selected, order.len(), forward)];
             self.focus_surface_by_id(next);
+            self.rehit_pointer_after_stack_change();
             return;
         }
 
@@ -123,7 +125,17 @@ impl Server {
     /// longer visible, keyboard focus is dropped (a `wl_keyboard.leave` is
     /// posted) so keystrokes do not route to a hidden window.
     pub fn switch_workspace(&mut self, dir: aegis_core::workspace::Switch) {
-        self.state.workspaces.switch(self.state.output, dir);
+        let old = self.state.workspaces.current_workspace(self.state.output);
+        let new = self.state.workspaces.switch(self.state.output, dir);
+        if let (Some(old), Some(new)) = (old, new)
+            && old != new
+        {
+            let direction = match dir {
+                aegis_core::workspace::Switch::Next => 1,
+                aegis_core::workspace::Switch::Prev => -1,
+            };
+            self.begin_workspace_slide(old, new, direction);
+        }
         self.drop_focus_if_hidden();
         unsafe { ffi::wl_display_flush_clients(self.state.display) };
     }
@@ -131,7 +143,44 @@ impl Server {
     /// Switch directly to a workspace by id on the output that owns it. Same
     /// focus-drop contract as [`switch_workspace`](Self::switch_workspace).
     pub fn switch_workspace_to(&mut self, id: aegis_core::workspace::WorkspaceId) {
-        self.state.workspaces.switch_to(id);
+        let Some(target_output) = self
+            .state
+            .workspaces
+            .workspace(id)
+            .map(|workspace| workspace.output)
+        else {
+            return;
+        };
+        let old = self.state.workspaces.current_workspace(target_output);
+        let old_index = old.and_then(|workspace| {
+            self.state
+                .workspaces
+                .output(target_output)?
+                .workspaces
+                .iter()
+                .position(|candidate| *candidate == workspace)
+        });
+        let new_index = self
+            .state
+            .workspaces
+            .output(target_output)
+            .and_then(|output| {
+                output
+                    .workspaces
+                    .iter()
+                    .position(|candidate| *candidate == id)
+            });
+        let new = self.state.workspaces.switch_to(id);
+        if let (Some(old), Some(new)) = (old, new)
+            && old != new
+        {
+            let direction = if new_index.unwrap_or(0) >= old_index.unwrap_or(0) {
+                1
+            } else {
+                -1
+            };
+            self.begin_workspace_slide(old, new, direction);
+        }
         self.drop_focus_if_hidden();
         unsafe { ffi::wl_display_flush_clients(self.state.display) };
     }
@@ -246,6 +295,7 @@ impl Server {
     pub fn set_reduced_motion(&mut self, reduced: bool) {
         self.state.reduced_motion = reduced;
         if reduced {
+            self.state.workspace_slide = None;
             for p in self.state.live_surfaces() {
                 unsafe { (*p).window.transition = None };
             }
@@ -275,6 +325,139 @@ impl Server {
     /// Compositor-relative millisecond timestamp for transition records.
     pub(crate) fn now_ms(&self) -> u64 {
         self.epoch.elapsed().as_millis() as u64
+    }
+
+    fn begin_workspace_slide(
+        &mut self,
+        outgoing: aegis_core::workspace::WorkspaceId,
+        incoming: aegis_core::workspace::WorkspaceId,
+        direction: i32,
+    ) {
+        if self.state.reduced_motion {
+            self.state.workspace_slide = None;
+            return;
+        }
+        let output = self
+            .state
+            .workspaces
+            .workspace(outgoing)
+            .and_then(|workspace| self.state.workspaces.output(workspace.output))
+            .and_then(|workspace_output| {
+                self.state
+                    .output_infos
+                    .iter()
+                    .find(|output| output.connector == workspace_output.connector)
+            })
+            .map(|output| output.geometry.logical_rect())
+            .unwrap_or_else(|| self.output_logical_rect());
+        let width = output.size.w.max(1) as f32;
+        let now = self.now_ms();
+        let previous = self.state.workspace_slide.take();
+        let positions = previous
+            .as_ref()
+            .filter(|slide| slide.output == output && slide.is_active_at(now))
+            .map(|slide| {
+                slide
+                    .layers
+                    .iter()
+                    .filter_map(|layer| {
+                        slide
+                            .offset_at(layer.workspace, now)
+                            .map(|offset| (layer.workspace, offset))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let layers = retarget_workspace_strip(positions, outgoing, incoming, direction, width);
+        self.state.workspace_slide = Some(WorkspaceSlide {
+            output,
+            layers,
+            started_ms: now,
+            duration_ms: WORKSPACE_SLIDE_DURATION_MS,
+        });
+    }
+
+    pub(crate) fn workspace_slide_pending(&self) -> bool {
+        self.state
+            .workspace_slide
+            .as_ref()
+            .is_some_and(|slide| slide.is_active_at(self.now_ms()))
+    }
+
+    pub fn workspace_slide_presentation(&self) -> Option<WorkspaceSlidePresentation> {
+        let now = self.now_ms();
+        let slide = self
+            .state
+            .workspace_slide
+            .as_ref()
+            .filter(|slide| slide.is_active_at(now))?;
+        let layers = slide
+            .layers
+            .iter()
+            .filter_map(|layer| {
+                let offset_x = slide.offset_at(layer.workspace, now)?;
+                let windows = self
+                    .state
+                    .workspaces
+                    .workspace(layer.workspace)
+                    .map(|workspace| workspace.toplevels.clone())
+                    .unwrap_or_default();
+                Some(WorkspaceSlideLayerPresentation { windows, offset_x })
+            })
+            .collect();
+        Some(WorkspaceSlidePresentation {
+            output: slide.output,
+            layers,
+        })
+    }
+
+    /// Current workspace surfaces plus the source surfaces retained by a
+    /// live workspace slide. This is presentation visibility only; input and
+    /// focus continue to use [`Self::visible`].
+    pub(crate) fn render_visible(&self) -> std::collections::HashSet<aegis_core::window::WindowId> {
+        let mut visible = self.visible();
+        if let Some(slide) = self.workspace_slide_presentation() {
+            visible.extend(slide.layers.into_iter().flat_map(|layer| layer.windows));
+        }
+        visible
+    }
+
+    /// Normalize geometry and workspace transition state after each animation
+    /// interval has elapsed. Transition records are state, not history:
+    /// keeping settled values makes scene consumers mistake old animation for
+    /// live work (notably disabling opaque coverage or retaining source
+    /// workspace surfaces).
+    ///
+    /// The runtime calls this once at the start of every event iteration. An
+    /// active transition schedules those iterations until its deadline, so the
+    /// terminal tick always retires it even if no client submits another
+    /// buffer.
+    pub fn settle_finished_transitions(&mut self) -> usize {
+        let now = self.now_ms();
+        let mut settled = 0;
+        if self
+            .state
+            .workspace_slide
+            .as_ref()
+            .is_some_and(|slide| !slide.is_active_at(now))
+        {
+            self.state.workspace_slide = None;
+            settled += 1;
+        }
+        for pointer in self.state.live_surfaces() {
+            // SAFETY: `live_surfaces` yields non-null records owned by this
+            // single-threaded server for the duration of the iteration.
+            let surface = unsafe { &mut *pointer };
+            if surface
+                .window
+                .transition
+                .is_some_and(|transition| !transition.is_active_at(now))
+            {
+                surface.window.transition = None;
+                settled += 1;
+            }
+        }
+        settled
     }
 
     /// Record a geometry transition for a non-interactive rect change
@@ -318,12 +501,13 @@ impl Server {
             .and_then(|t| t.rect_at(target, self.now_ms()))
     }
 
-    /// Whether any toplevel has a transition still in flight — the main loop
-    /// keeps ticking frames at cadence instead of blocking on the host queue.
+    /// Whether a workspace slide or toplevel geometry transition is in flight
+    /// — the main loop keeps ticking frames instead of blocking on the host.
     pub fn transitions_pending(&self) -> bool {
-        self.state.live_surfaces().any(|p| unsafe {
-            !(*p).xdg_toplevel.is_null() && self.transition_render_rect(&*p).is_some()
-        })
+        self.workspace_slide_pending()
+            || self.state.live_surfaces().any(|p| unsafe {
+                !(*p).xdg_toplevel.is_null() && self.transition_render_rect(&*p).is_some()
+            })
     }
 
     /// Reconcile connector identities and geometries reported by the backend.
@@ -660,6 +844,52 @@ impl Server {
     }
 }
 
+/// Retarget a partially moved workspace strip without snapping it back to a
+/// new two-page animation. Every retained page receives the same translation,
+/// preserving the output-width spacing that makes page clips meet exactly.
+fn retarget_workspace_strip(
+    mut positions: Vec<(aegis_core::workspace::WorkspaceId, f32)>,
+    outgoing: aegis_core::workspace::WorkspaceId,
+    incoming: aegis_core::workspace::WorkspaceId,
+    direction: i32,
+    width: f32,
+) -> Vec<WorkspaceSlideLayer> {
+    if !positions
+        .iter()
+        .any(|(workspace, _)| *workspace == outgoing)
+    {
+        positions.push((outgoing, 0.0));
+    }
+    let outgoing_offset = positions
+        .iter()
+        .find(|(workspace, _)| *workspace == outgoing)
+        .map(|(_, offset)| *offset)
+        .unwrap_or(0.0);
+    if !positions
+        .iter()
+        .any(|(workspace, _)| *workspace == incoming)
+    {
+        positions.push((
+            incoming,
+            outgoing_offset + direction.signum() as f32 * width,
+        ));
+    }
+    let incoming_offset = positions
+        .iter()
+        .find(|(workspace, _)| *workspace == incoming)
+        .map(|(_, offset)| *offset)
+        .unwrap_or(0.0);
+    let shift = -incoming_offset;
+    positions
+        .into_iter()
+        .map(|(workspace, from_x)| WorkspaceSlideLayer {
+            workspace,
+            from_x,
+            to_x: from_x + shift,
+        })
+        .collect()
+}
+
 fn stepped_index(current: usize, len: usize, forward: bool) -> usize {
     debug_assert!(len > 0);
     if forward {
@@ -697,6 +927,72 @@ fn reconcile_switcher_session(
 #[cfg(test)]
 mod window_switcher_tests {
     use super::*;
+
+    #[test]
+    fn workspace_slide_moves_old_and_new_desktops_in_the_same_direction() {
+        use aegis_core::workspace::WorkspaceId;
+
+        let slide = WorkspaceSlide {
+            output: aegis_core::Rect::new(0, 0, 1000, 800),
+            layers: vec![
+                WorkspaceSlideLayer {
+                    workspace: WorkspaceId(1),
+                    from_x: 0.0,
+                    to_x: -1000.0,
+                },
+                WorkspaceSlideLayer {
+                    workspace: WorkspaceId(2),
+                    from_x: 1000.0,
+                    to_x: 0.0,
+                },
+            ],
+            started_ms: 10,
+            duration_ms: 100,
+        };
+        assert_eq!(slide.offset_at(WorkspaceId(1), 10), Some(0.0));
+        assert_eq!(slide.offset_at(WorkspaceId(2), 10), Some(1000.0));
+        let outgoing_mid = slide.offset_at(WorkspaceId(1), 60).unwrap();
+        let incoming_mid = slide.offset_at(WorkspaceId(2), 60).unwrap();
+        assert!(outgoing_mid < 0.0);
+        assert!(incoming_mid > 0.0);
+        assert!((incoming_mid - outgoing_mid - 1000.0).abs() < f32::EPSILON);
+        assert_eq!(slide.offset_at(WorkspaceId(1), 110), None);
+        assert_eq!(slide.offset_at(WorkspaceId(2), 110), None);
+    }
+
+    #[test]
+    fn workspace_strip_retargets_without_breaking_page_spacing() {
+        use aegis_core::workspace::WorkspaceId;
+
+        let layers = retarget_workspace_strip(
+            vec![(WorkspaceId(1), -500.0), (WorkspaceId(2), 500.0)],
+            WorkspaceId(2),
+            WorkspaceId(3),
+            1,
+            1000.0,
+        );
+        assert_eq!(layers.len(), 3);
+        assert_eq!(layers[0].to_x, -2000.0);
+        assert_eq!(layers[1].to_x, -1000.0);
+        assert_eq!(layers[2].to_x, 0.0);
+    }
+
+    #[test]
+    fn reversing_workspace_slide_keeps_continuous_positions() {
+        use aegis_core::workspace::WorkspaceId;
+
+        let layers = retarget_workspace_strip(
+            vec![(WorkspaceId(1), -400.0), (WorkspaceId(2), 600.0)],
+            WorkspaceId(2),
+            WorkspaceId(1),
+            -1,
+            1000.0,
+        );
+        assert_eq!(layers[0].from_x, -400.0);
+        assert_eq!(layers[1].from_x, 600.0);
+        assert_eq!(layers[0].to_x, 0.0);
+        assert_eq!(layers[1].to_x, 1000.0);
+    }
 
     #[test]
     fn frozen_order_cycles_both_directions() {

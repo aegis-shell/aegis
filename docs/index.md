@@ -12,7 +12,7 @@ aegis is a Wayland compositor for Linux, written in Rust on
 | [Tutorials](tutorials/01-getting-started.md) | Learning-oriented step-by-step walkthroughs |
 | [How-to guides](how-to/index.md) | Task-oriented instructions for daily use |
 | [Explanation](explanation/index.md) | Architecture and conceptual background |
-| [Reference](reference/index.md) | Configuration keys, schemas, and option tables |
+| [Reference](reference/index.md) | Configuration, schemas, runtime contracts, and option tables |
 | [Architecture Decision Records](adr/index.md) | Durable technical decisions |
 | [Contributor docs](dev/index.md) | Setup, layout, and project maintenance |
 
@@ -28,6 +28,9 @@ aegis is a Wayland compositor for Linux, written in Rust on
   [Configuration Reference](reference/config.md).
 - Looking for global keyboard, pointer, quit, or VT controls: read
   [System Shortcuts](reference/keyboard-shortcuts.md).
+- Looking up compositor versus direct scanout behavior, KMS plane roles, or
+  rejection diagnostics: read the
+  [Rendering and KMS Plane Reference](reference/rendering.md).
 - Looking for System Settings module routes and backend availability: read the
   [System Settings Reference](reference/settings.md).
 - Starting applications or using app-level window actions: read

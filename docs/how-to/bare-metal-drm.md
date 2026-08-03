@@ -30,11 +30,13 @@ repository root, and run the prebuilt compositor:
 AEGIS_BACKEND=drm RUST_LOG=info target/release/aegis
 ```
 
-`AEGIS_DRM_DEVICE=/dev/dri/card1` overrides the GPU when there is more than one.
-The log shows the device, seat, connector, and modifier choices as they happen.
-Prebuilding keeps compiler latency and failures outside the hardware session.
-Install the release first when the launcher must discover System Settings and
-its desktop metadata.
+`AEGIS_DRM_DEVICE=/dev/dri/card1` selects the KMS GPU when there is more than
+one. The Vulkan renderer is strictly bound to the same physical GPU; Aegis
+does not silently select another render device. The log shows both DRM
+identities along with the seat, connector, and modifier choices. Prebuilding
+keeps compiler latency and failures outside the hardware session. Install the
+release first when the launcher must discover System Settings and its desktop
+metadata.
 
 Use the packaged `aegis.service` instead of the direct binary when testing
 Realm application launch. The service delegates the cgroup controllers that
@@ -77,7 +79,11 @@ sessions apply it after the current page flip retires. In a nested session the
 card is read-only because the outer compositor owns the physical monitors.
 Run `aegis display` to inspect exact connector names, advertised modes,
 and the effective scale. The DRM startup log includes the validated physical
-size, calculated PPI, output kind, and automatic scale.
+size, calculated PPI, output kind, automatic scale, and the assigned primary,
+cursor, and available overlay plane counts. Overlay offload currently remains
+disabled by policy. Use the
+[Rendering and KMS Plane Reference](../reference/rendering.md) to interpret
+eligibility failures and rejection labels.
 
 ## Smoke checklist
 
@@ -86,25 +92,31 @@ First bare-metal run, in order:
 1. **Lights up.** The mode is set on the first usable connector and the
    shell chrome appears. Watch for `EINVAL` on the first atomic commit —
    a modifier or format mismatch is logged with the plane/CRTC details.
-2. **Input under load.** Wiggle the mouse continuously from the first
+2. **Presentation paths.** Open one opaque, full-output dma-buf client and
+   hide compositor chrome. Confirm `direct scanout active` appears once. Open
+   the window switcher (the default binding is `Super+Tab`) and confirm
+   `compositor reclaimed the primary plane` appears while the live switcher is
+   visible. Commit a different selection and confirm the new window receives
+   focus only when the switcher closes.
+3. **Input under load.** Wiggle the mouse continuously from the first
    frame; the compositor must keep pacing frames (60 Hz) and must not
    exit. This exercises the flip-wait deadline loop.
-3. **Clients.** Launch a terminal from the launcher (`Super+A`) and
+4. **Clients.** Launch a terminal from the launcher (`Super+A`) and
    confirm keyboard focus, typing, and window move (`Super+drag`).
-4. **GPU clients.** Run `wayland-info` and confirm
+5. **GPU clients.** Run `wayland-info` and confirm
    `zwp_linux_dmabuf_v1` is version 4 with a main device. Launch an OpenGL
    application and confirm its renderer names the physical GPU rather than
    `llvmpipe`.
-5. **VT switch.** `Ctrl+Alt+F2` away, then back (`Ctrl+Alt+F3` returns to
+6. **VT switch.** `Ctrl+Alt+F2` away, then back (`Ctrl+Alt+F3` returns to
    aegis — the compositor forwards these keys to libseat itself). The session
    resumes with a fresh modeset; at most one skipped frame is logged at
    warn level.
-6. **Hotplug.** Unplug and replug the monitor (or dock). The display set
+7. **Hotplug.** Unplug and replug the monitor (or dock). The display set
    is reprobed, the surface recreated if the modifier set changed, and
    workspaces return to their home connector (ADR-0025).
-7. **Session lock.** Lock, confirm the screen shows only the lock client,
+8. **Session lock.** Lock, confirm the screen shows only the lock client,
    and unlock. While locked, native `aegis` management commands are refused.
-8. **Screenshot.** `aegis display capture /tmp/tty.png` produces a PNG of the
+9. **Screenshot.** `aegis display capture /tmp/tty.png` produces a PNG of the
    desktop (also exercises the CPU readback path).
 
 ## Stop
@@ -125,6 +137,9 @@ returns to the TTY. Switch back to the original graphical VT afterward.
   path is the first suspect.
 - Black screen with a running log — check the modifier intersection in the
   log; set `AEGIS_DRM_DEVICE` to the other card on hybrid-GPU machines.
+- `cannot create a Vulkan renderer for KMS device` — the selected card has no
+  matching Vulkan physical device that satisfies Flux. Install the Vulkan ICD
+  for that GPU or select the card backed by the available ICD.
 - An OpenGL application reports `llvmpipe` — check linux-dmabuf v4 feedback
   and the Flatpak or sandbox's `/dev/dri` access before changing the
   application's graphics API.

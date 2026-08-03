@@ -36,7 +36,7 @@ use aegis_core::workspace::WorkspaceSnapshot;
 use aegis_shell::{
     AppCatalog, AppMenu, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet,
     LiquidGlassRegion, LivePreviewPresentation, Localizer, Message, PinAction, Reserved,
-    WindowSwitcherCard, truncate,
+    WindowSwitcherCard, ellipsize,
 };
 
 /// Visual height of the dock bar. Tiles rest inside it; magnified tiles pop
@@ -80,9 +80,9 @@ const DOCK_DOT: f32 = 5.0;
 const DOCK_DOT_STADIUM: f32 = 12.0;
 /// Inactivity timeout in seconds before an autohiding dock collapses.
 const AUTOHIDE_IDLE_TIMEOUT: f32 = 2.5;
-/// Width of the thin stadium handle shown when the dock is autohidden.
+/// Width of the thin stadium handle shown when the Dock is autohidden.
 const AUTOHIDE_HANDLE_WIDTH: f32 = 140.0;
-/// Height of the thin stadium handle shown when the dock is autohidden.
+/// Height of the thin stadium handle shown when the Dock is autohidden.
 const AUTOHIDE_HANDLE_HEIGHT: f32 = 6.0;
 /// Reveal progress below which iconography has completely drained into the
 /// collapsing surface. The panel continues morphing into the stadium handle
@@ -92,11 +92,6 @@ const AUTOHIDE_CONTENT_DRAIN_END: f32 = 0.28;
 /// Content at or below this scale is visually drained into the collapsed
 /// handle and must no longer expose per-tile hover or click targets.
 const AUTOHIDE_CONTENT_INTERACTION_MIN: f32 = 0.01;
-/// Horizontal breathing room around the collapsed handle that reveals the
-/// Dock. The rest of the bottom edge remains client-owned.
-const AUTOHIDE_TRIGGER_PAD_X: f32 = 40.0;
-/// Vertical approach band around the collapsed handle.
-const AUTOHIDE_TRIGGER_HEIGHT: f32 = 24.0;
 /// Pointer dwell before an application name appears. This keeps labels from
 /// flashing while the pointer merely crosses the dock.
 const TOOLTIP_DWELL: f32 = 0.30;
@@ -239,8 +234,8 @@ pub struct Dock {
     autohide_idle: f32,
     /// Configurable inactivity timeout in seconds before an autohiding dock collapses.
     autohide_timeout: f32,
-    /// Whether a pointer entry may reveal the collapsed handle. Entering
-    /// maximized mode disarms it until the pointer leaves the handle target,
+    /// Whether a pointer entry may reveal the collapsed Dock. Entering
+    /// maximized mode disarms it until the pointer leaves the capsule,
     /// preventing a Dock under a stationary pointer from reopening on the
     /// very frame it is collapsed.
     hidden_trigger_armed: bool,
@@ -253,7 +248,7 @@ pub struct Dock {
     /// decides whether the Dock becomes an overlay and hides.
     dock_obscured: bool,
     /// Entering an obscured state must complete one uninterrupted trip below
-    /// the output before the reveal handle becomes active. Otherwise a
+    /// the output before the reveal capsule becomes active. Otherwise a
     /// stationary pointer inside the old Dock rect cancels the hide animation.
     collapse_pending: bool,
     /// Most recently rendered logical output size. `update_windows` has no
@@ -417,21 +412,18 @@ impl Dock {
         }
     }
 
-    fn hidden_trigger_bounds(display: (f32, f32)) -> Rect {
-        Rect {
-            x: (display.0 - AUTOHIDE_HANDLE_WIDTH) * 0.5 - AUTOHIDE_TRIGGER_PAD_X,
-            y: display.1 - AUTOHIDE_TRIGGER_HEIGHT,
-            w: AUTOHIDE_HANDLE_WIDTH + AUTOHIDE_TRIGGER_PAD_X * 2.0,
-            h: AUTOHIDE_TRIGGER_HEIGHT,
-        }
+    /// The collapsed capsule is both the visible affordance and the complete
+    /// reveal target. Pixels around it remain owned by the client below.
+    fn collapsed_indicator_bounds(display: (f32, f32)) -> Rect {
+        Self::collapsed_panel_rect(display, AUTOHIDE_HANDLE_WIDTH, 0.0)
     }
 
-    fn hidden_trigger_contains(cursor: (f32, f32), display: (f32, f32)) -> bool {
-        let trigger = Self::hidden_trigger_bounds(display);
-        cursor.0 >= trigger.x
-            && cursor.1 >= trigger.y
-            && cursor.0 < trigger.x + trigger.w
-            && cursor.1 < trigger.y + trigger.h
+    fn collapsed_indicator_contains(cursor: (f32, f32), display: (f32, f32)) -> bool {
+        let indicator = Self::collapsed_indicator_bounds(display);
+        cursor.0 >= indicator.x
+            && cursor.1 >= indicator.y
+            && cursor.0 < indicator.x + indicator.w
+            && cursor.1 < indicator.y + indicator.h
     }
 
     /// While an autohiding Dock is expanded, keep the stable resting strip
@@ -445,11 +437,34 @@ impl Dock {
             && cursor.1 < display_h
     }
 
+    /// Resolve the single pointer region that may keep the Dock revealed.
+    /// While collapsed, the caller-provided capsule entry is the only trigger;
+    /// the resting Dock rectangle becomes active only after reveal has begun.
+    fn pointer_keeps_revealed(
+        effective_autohide: bool,
+        reveal: f32,
+        capsule_entry: bool,
+        cursor: (f32, f32),
+        rest_bounds: Rect,
+        display_h: f32,
+    ) -> bool {
+        if !effective_autohide {
+            return cursor.0 >= rest_bounds.x
+                && cursor.1 >= rest_bounds.y
+                && cursor.0 < rest_bounds.x + rest_bounds.w
+                && cursor.1 < rest_bounds.y + rest_bounds.h;
+        }
+        if reveal < 0.2 {
+            return capsule_entry;
+        }
+        Self::expanded_trigger_contains(cursor, rest_bounds, display_h)
+    }
+
     /// A forced collapse must observe a pointer exit before the same pointer
     /// can reveal the Dock again. This turns reveal into an entry gesture
     /// instead of a level-triggered condition under a stationary cursor.
     fn hidden_reveal_requested(armed: &mut bool, cursor: (f32, f32), display: (f32, f32)) -> bool {
-        if !Self::hidden_trigger_contains(cursor, display) {
+        if !Self::collapsed_indicator_contains(cursor, display) {
             *armed = true;
             return false;
         }

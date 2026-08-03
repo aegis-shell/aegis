@@ -42,6 +42,7 @@ aegis-launcher = { workspace = true }
 flux = { workspace = true }
 lens = { workspace = true }
 image = { workspace = true }
+libc = { workspace = true }
 # SVG cursor rasterization for the software cursor (ADR-0070). Pure Rust,
 # with text/raster-image features off since the bundled cursor art is
 # path/fill/stroke only.

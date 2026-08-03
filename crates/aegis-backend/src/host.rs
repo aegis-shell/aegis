@@ -1,21 +1,19 @@
 //! Runtime backend selection and the common compositor-host facade.
 
 use std::collections::HashMap;
-use std::ffi::CStr;
 use std::os::fd::OwnedFd;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
+use crate::Backend;
+use crate::drm::{DrmBackend, DrmError};
+use crate::nested::{DEVICE_EXTENSIONS, INSTANCE_EXTENSIONS, NestedError, NestedHost};
 use aegis_core::Size;
 use aegis_core::input::{
     InputEvent, PointerGestureEvent, TextInputEvent, TextInputState, TouchpadConfig, TouchpadStatus,
 };
 use aegis_core::output::ModeSpec;
-use ash::vk::Handle;
-
-use crate::Backend;
-use crate::drm::{DrmBackend, DrmError};
-use crate::nested::{DEVICE_EXTENSIONS, INSTANCE_EXTENSIONS, NestedError, NestedHost};
 
 /// Frame slots Flux runs concurrently. ADR-0038's frame pacing assumes three:
 /// on DRM the offscreen ring must hold one image per slot so a frame being
@@ -70,6 +68,14 @@ pub enum HostError {
     Drm(#[from] DrmError),
     #[error(transparent)]
     Flux(#[from] flux::Error),
+    #[error("cannot create a Vulkan renderer for KMS device {path} ({major}:{minor}): {source}")]
+    DrmRenderer {
+        path: PathBuf,
+        major: u32,
+        minor: u32,
+        #[source]
+        source: flux::Error,
+    },
 }
 
 /// One runtime-selected compositor host.
@@ -115,57 +121,62 @@ impl Host {
     pub fn create_device(&self) -> Result<flux::Device, HostError> {
         match self {
             Self::Nested(_) => {
-                let mut extensions = DEVICE_EXTENSIONS.to_vec();
-                extensions.extend_from_slice(&flux::DMABUF_DEVICE_EXTENSIONS);
-                extensions.extend_from_slice(&flux::DMABUF_SYNC_DEVICE_EXTENSIONS);
-                match flux::Device::new(false, &INSTANCE_EXTENSIONS, &extensions, FRAMES_IN_FLIGHT)
-                {
-                    Ok(device) => Ok(device),
-                    Err(error) => {
-                        log::warn!(
-                            "nested: explicit dma-buf sync unavailable ({error}); trying implicit-sync dma-buf"
-                        );
-                        let mut implicit_extensions = DEVICE_EXTENSIONS.to_vec();
-                        implicit_extensions.extend_from_slice(&flux::DMABUF_DEVICE_EXTENSIONS);
-                        match flux::Device::new(
-                            false,
-                            &INSTANCE_EXTENSIONS,
-                            &implicit_extensions,
-                            FRAMES_IN_FLIGHT,
-                        ) {
-                            Ok(device) => Ok(device),
-                            Err(error) => {
-                                log::warn!(
-                                    "nested: dma-buf Vulkan extensions unavailable ({error}); using swapchain-only device"
-                                );
-                                Ok(flux::Device::new(
-                                    false,
-                                    &INSTANCE_EXTENSIONS,
-                                    &DEVICE_EXTENSIONS,
-                                    FRAMES_IN_FLIGHT,
-                                )?)
-                            }
-                        }
-                    }
+                let device = flux::Device::new_with_options(flux::DeviceOptions {
+                    headless: false,
+                    instance_extensions: &INSTANCE_EXTENSIONS,
+                    device_extensions: &DEVICE_EXTENSIONS,
+                    frames_in_flight: FRAMES_IN_FLIGHT,
+                    optional_features: flux::DeviceFeatures::DMABUF
+                        | flux::DeviceFeatures::DMABUF_SYNC_FILE,
+                    ..flux::DeviceOptions::default()
+                })?;
+                let enabled = device.enabled_features();
+                if !enabled.contains(flux::DeviceFeatures::DMABUF) {
+                    log::warn!(
+                        "nested: dma-buf Vulkan capabilities unavailable; using swapchain-only device"
+                    );
+                } else if !enabled.contains(flux::DeviceFeatures::DMABUF_SYNC_FILE) {
+                    log::warn!(
+                        "nested: explicit dma-buf sync unavailable; using implicit synchronization"
+                    );
                 }
+                Ok(device)
             }
-            Self::Drm(_) => {
-                let mut extensions = flux::DMABUF_DEVICE_EXTENSIONS.to_vec();
-                extensions.extend_from_slice(&flux::DMABUF_SYNC_DEVICE_EXTENSIONS);
-                match flux::Device::new(true, &[], &extensions, FRAMES_IN_FLIGHT) {
-                    Ok(device) => Ok(device),
-                    Err(error) => {
-                        log::warn!(
-                            "drm: explicit-sync Vulkan extension unavailable ({error}); using fence-wait fallback"
-                        );
-                        Ok(flux::Device::new(
-                            true,
-                            &[],
-                            &flux::DMABUF_DEVICE_EXTENSIONS,
-                            FRAMES_IN_FLIGHT,
-                        )?)
-                    }
+            Self::Drm(host) => {
+                let (kms_path, drm_node) = host.kms_device()?;
+                log::info!(
+                    "drm: constraining Vulkan renderer to KMS device {} ({}:{})",
+                    kms_path.display(),
+                    drm_node.major,
+                    drm_node.minor
+                );
+                let device = flux::Device::new_with_options(flux::DeviceOptions {
+                    headless: true,
+                    frames_in_flight: FRAMES_IN_FLIGHT,
+                    drm_node: Some(drm_node),
+                    required_features: flux::DeviceFeatures::DMABUF,
+                    optional_features: flux::DeviceFeatures::DMABUF_SYNC_FILE,
+                    ..flux::DeviceOptions::default()
+                })
+                .map_err(|source| HostError::DrmRenderer {
+                    path: kms_path.clone(),
+                    major: drm_node.major,
+                    minor: drm_node.minor,
+                    source,
+                })?;
+                if !device
+                    .enabled_features()
+                    .contains(flux::DeviceFeatures::DMABUF_SYNC_FILE)
+                {
+                    log::warn!("drm: explicit dma-buf sync unavailable; using the fence-wait path");
                 }
+                log::info!(
+                    "drm: Vulkan renderer matched KMS device {} ({}:{})",
+                    kms_path.display(),
+                    drm_node.major,
+                    drm_node.minor
+                );
+                Ok(device)
             }
         }
     }
@@ -187,7 +198,7 @@ impl Host {
         &mut self,
         surface: &flux::Surface,
         frame: flux::SubmittedFrame<'_>,
-        damage: Option<aegis_core::Rect>,
+        damage: Option<&[aegis_core::Rect]>,
     ) -> Result<Option<OwnedFd>, HostError> {
         match self {
             Self::Nested(_) => {
@@ -201,13 +212,15 @@ impl Host {
         }
     }
 
-    /// Page-flip a fullscreen client buffer directly, bypassing the composite.
+    /// Page-flip one compositor-selected full-output client buffer directly,
+    /// bypassing the composite. Eligibility is based on physical coverage and
+    /// opacity rather than an xdg fullscreen state bit.
     /// Nested mode never owns scanout, so it reports unsupported (the runtime
     /// then composites instead).
     pub fn present_scanout(
         &mut self,
         candidate: &aegis_core::SurfaceDmabuf,
-        damage: Option<aegis_core::Rect>,
+        damage: Option<&[aegis_core::Rect]>,
     ) -> Result<Option<OwnedFd>, HostError> {
         match self {
             Self::Nested(_) => Err(HostError::Drm(DrmError::ScanoutUnsupported)),
@@ -300,6 +313,24 @@ impl Host {
         }
     }
 
+    /// Format/modifier intersection accepted by every active DRM primary
+    /// plane. Nested mode has no local KMS planes and therefore no scanout
+    /// tranche to advertise.
+    pub fn dmabuf_scanout_formats(&self) -> Vec<aegis_core::dmabuf::DmabufFormat> {
+        match self {
+            Self::Nested(_) => Vec::new(),
+            Self::Drm(host) => host.dmabuf_scanout_formats(),
+        }
+    }
+
+    /// Linux `dev_t` of the KMS node targeted by the SCANOUT feedback tranche.
+    pub fn dmabuf_scanout_device(&self) -> Option<u64> {
+        match self {
+            Self::Nested(_) => None,
+            Self::Drm(host) => host.dmabuf_feedback_device(),
+        }
+    }
+
     /// Preferred DRM device for linux-dmabuf v4 feedback.
     ///
     /// Query the physical device Flux actually selected, so Mesa clients use
@@ -318,60 +349,20 @@ impl Host {
 }
 
 fn vulkan_dmabuf_feedback_device(device: &flux::Device) -> Option<u64> {
-    unsafe {
-        let entry = match ash::Entry::load() {
-            Ok(entry) => entry,
-            Err(error) => {
-                log::warn!("dmabuf: cannot load Vulkan entry for device feedback: {error}");
-                return None;
-            }
-        };
-        let instance = ash::Instance::load(
-            entry.static_fn(),
-            ash::vk::Instance::from_raw(device.vk_instance() as usize as u64),
-        );
-        let physical =
-            ash::vk::PhysicalDevice::from_raw(device.vk_physical_device() as usize as u64);
-        let extensions = match instance.enumerate_device_extension_properties(physical) {
-            Ok(extensions) => extensions,
-            Err(error) => {
-                log::warn!("dmabuf: cannot enumerate Vulkan device extensions: {error}");
-                return None;
-            }
-        };
-        let supports_drm = extensions.iter().any(|extension| {
-            CStr::from_ptr(extension.extension_name.as_ptr())
-                == ash::vk::EXT_PHYSICAL_DEVICE_DRM_NAME
-        });
-        if !supports_drm {
-            log::warn!(
-                "dmabuf: Vulkan device lacks VK_EXT_physical_device_drm; using backend fallback"
-            );
-            return None;
-        }
-
-        let mut drm = ash::vk::PhysicalDeviceDrmPropertiesEXT::default();
-        let mut properties = ash::vk::PhysicalDeviceProperties2::default().push_next(&mut drm);
-        instance.get_physical_device_properties2(physical, &mut properties);
-
-        let selected = if drm.has_render != 0 {
-            Some(("render", drm.render_major, drm.render_minor))
-        } else if drm.has_primary != 0 {
-            Some(("primary", drm.primary_major, drm.primary_minor))
-        } else {
-            None
-        };
-        let Some((kind, major, minor)) = selected else {
-            log::warn!("dmabuf: Vulkan device reports no DRM primary or render node");
-            return None;
-        };
-        let (Ok(major), Ok(minor)) = (u32::try_from(major), u32::try_from(minor)) else {
-            log::warn!("dmabuf: Vulkan device returned invalid DRM node {major}:{minor}");
-            return None;
-        };
-        log::info!("dmabuf: v4 main device is Vulkan {kind} node {major}:{minor}");
-        Some(libc::makedev(major, minor))
-    }
+    let Some(identity) = device.drm_identity() else {
+        log::warn!("dmabuf: Vulkan device exposes no DRM identity; using backend fallback");
+        return None;
+    };
+    let (kind, node) = identity
+        .render
+        .map(|node| ("render", node))
+        .or_else(|| identity.primary.map(|node| ("primary", node)))?;
+    log::info!(
+        "dmabuf: v4 main device is Vulkan {kind} node {}:{}",
+        node.major,
+        node.minor
+    );
+    Some(libc::makedev(node.major, node.minor))
 }
 
 impl Backend for Host {

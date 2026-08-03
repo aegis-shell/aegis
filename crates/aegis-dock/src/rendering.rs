@@ -18,7 +18,7 @@ impl Chrome for Dock {
 
         // A fullscreen client owns the whole output edge: no animation,
         // handle, hover target, popup, or residual tooltip may surface above
-        // it. Maximized windows force the Dock into its collapsed overlay;
+        // it. Maximized windows force the Dock into its collapsed capsule;
         // other non-fullscreen windows use the geometric intersection policy.
         if self.fullscreen_locked() {
             self.dismiss_transient_ui();
@@ -70,24 +70,36 @@ impl Chrome for Dock {
         // independently keeps autohide revealed while the pointer travels
         // from the icon into a live preview card.
         let over_hover_surface = self.hover_surface_contains(cursor.x, cursor.y);
-        let in_band = !self.collapse_pending
-            && cursor.x >= rest_bounds.x
+        let over_rest_bounds = cursor.x >= rest_bounds.x
             && cursor.y >= rest_bounds.y
             && cursor.x < rest_bounds.x + rest_bounds.w
             && cursor.y < rest_bounds.y + rest_bounds.h;
-        let in_autohide_trigger = if self.collapse_pending || !effective_autohide {
-            false
-        } else if self.autohide_reveal < 0.2 {
-            Self::hidden_reveal_requested(
-                &mut self.hidden_trigger_armed,
+        // The old resting rectangle must stay inert while collapsed. It is
+        // enabled for magnification only after the capsule has begun revealing
+        // the Dock.
+        let in_band = !self.collapse_pending
+            && over_rest_bounds
+            && (!effective_autohide || self.autohide_reveal >= 0.2);
+        let capsule_entry =
+            if self.collapse_pending || !effective_autohide || self.autohide_reveal >= 0.2 {
+                false
+            } else {
+                Self::hidden_reveal_requested(
+                    &mut self.hidden_trigger_armed,
+                    (cursor.x, cursor.y),
+                    (disp.x, disp.y),
+                )
+            };
+        let over_dock_trigger = !self.collapse_pending
+            && Self::pointer_keeps_revealed(
+                effective_autohide,
+                self.autohide_reveal,
+                capsule_entry,
                 (cursor.x, cursor.y),
-                (disp.x, disp.y),
-            )
-        } else {
-            Self::hidden_trigger_contains((cursor.x, cursor.y), (disp.x, disp.y))
-                || Self::expanded_trigger_contains((cursor.x, cursor.y), rest_bounds, disp.y)
-        };
-        let keeps_revealed = in_band || in_autohide_trigger || over_hover_surface;
+                rest_bounds,
+                disp.y,
+            );
+        let keeps_revealed = over_dock_trigger || over_hover_surface;
         let menu_open = self.app_menu.is_open();
 
         if effective_autohide {
@@ -594,10 +606,42 @@ impl Chrome for Dock {
         }
     }
 
+    fn prepare_backdrop(
+        &mut self,
+        input: &Input,
+        windows: &[Window],
+        _workspaces: &WorkspaceSnapshot,
+    ) {
+        if self.fullscreen_locked() {
+            return;
+        }
+        let raw = input.as_raw();
+        let display = (raw.display_size.x, raw.display_size.y);
+        self.last_display = Some(display);
+        let obscured = self.obscured_by_windows(windows, display);
+        self.set_dock_obscured(obscured);
+
+        // Resolve capsule hover before backdrop and damage policy are queried.
+        // A forced maximize/collision collapse remains latched until the
+        // pointer exits, preserving its anti-reopen contract.
+        if !self.effective_autohide() || self.collapse_pending || self.autohide_reveal >= 0.2 {
+            return;
+        }
+        let requested = Self::hidden_reveal_requested(
+            &mut self.hidden_trigger_armed,
+            (raw.cursor.x, raw.cursor.y),
+            display,
+        );
+        if requested {
+            self.autohide_idle = 0.0;
+            self.anim_active = true;
+            if self.reduced_motion {
+                self.autohide_reveal = 1.0;
+            }
+        }
+    }
+
     fn backdrop_blur_sigma(&self) -> f32 {
-        // The collapsed handle is an analytic glass body too, so the
-        // compositor's capture path must stay live whenever the Dock is
-        // not hidden behind fullscreen content.
         if self.fullscreen_locked() { 0.0 } else { 12.0 }
     }
 
@@ -690,17 +734,22 @@ impl Chrome for Dock {
             return true;
         }
         let rest = self.pointer_bounds(windows, display);
-        if self.effective_autohide() {
-            if self.autohide_reveal < 0.2 {
-                return Self::hidden_trigger_contains((x, y), display);
-            }
-            if Self::hidden_trigger_contains((x, y), display)
-                || Self::expanded_trigger_contains((x, y), rest, display.1)
-            {
-                return true;
-            }
+        let effective_autohide = self.effective_autohide();
+        let collapsed_indicator = Self::collapsed_indicator_contains((x, y), display);
+        if Self::pointer_keeps_revealed(
+            effective_autohide,
+            self.autohide_reveal,
+            collapsed_indicator,
+            (x, y),
+            rest,
+            display.1,
+        ) {
+            return true;
         }
-        let r = if self.effective_autohide() {
+        if effective_autohide && self.autohide_reveal < 0.2 {
+            return false;
+        }
+        let r = if effective_autohide {
             Self::collapsed_panel_rect(display, rest.w, self.autohide_reveal)
         } else {
             rest
@@ -708,7 +757,7 @@ impl Chrome for Dock {
         x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h
     }
 
-    fn visible_during_modal(&self) -> bool {
+    fn persistent_decoration(&self) -> bool {
         true
     }
 
@@ -817,7 +866,7 @@ impl Dock {
             1.0
         };
         // The shadow follows the morph in logical pixels: the full bar
-        // casts the deep dock shadow, the collapsed handle keeps a
+        // casts the deep Dock shadow, the collapsed handle keeps a
         // proportionally tight one.
         let shadow_factor = (bounds.h / DOCK_PANEL_HEIGHT).clamp(0.35, 1.0);
         Some(LiquidGlassRegion {
@@ -1000,7 +1049,7 @@ fn tooltip_rect(
     display: (f32, f32),
     _alpha: f32,
 ) -> Rect {
-    let label = truncate(label, 32);
+    let label = ellipsize(frame, label, 12.5, 224.0 - 22.0);
     let text = frame.measure_text(&label, 12.5);
     let width = (text.width + 22.0).clamp(54.0, 224.0);
     let x = (owner.x + owner.w * 0.5 - width * 0.5).clamp(8.0, (display.0 - width - 8.0).max(8.0));
@@ -1017,7 +1066,7 @@ fn tooltip_rect(
 /// body comes from the compositor's analytic glass pass; this foreground only
 /// supplies a minimal tint and the text.
 fn render_tooltip(frame: &mut Frame, label: &str, rect: Rect, alpha: f32) {
-    let label = truncate(label, 32);
+    let label = ellipsize(frame, label, 12.5, (rect.w - 22.0).max(0.0));
     let opacity = |base: u8| (base as f32 * alpha.clamp(0.0, 1.0)).round() as u8;
     let original = frame.theme();
     frame.set_theme(original.with_fg(Color::rgba(242, 244, 250, opacity(255))));
@@ -1182,7 +1231,7 @@ fn render_live_preview_chrome(
             .as_deref()
             .or(window.app_id.as_deref())
             .unwrap_or("Untitled");
-        let label = truncate(title, (label_rect.w / 7.0).max(5.0) as usize);
+        let label = ellipsize(frame, title, 11.5, (label_rect.w - 16.0).max(0.0));
         frame.layer(
             &format!("aegis-dock-live-preview-label-{index}"),
             label_rect,

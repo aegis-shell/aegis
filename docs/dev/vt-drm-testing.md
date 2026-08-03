@@ -92,6 +92,37 @@ For presentation-loop changes, also complete this focused pass:
    the modes in the test result; independent mixed-refresh pacing requires
    separately submitted presentation domains.
 
+For presentation-plan or KMS plane changes, complete this additional pass:
+
+1. Start with a normal multi-window desktop. Confirm the startup
+   `plane allocation` message reports one primary plane per active output,
+   the maximum compatible cursor-plane assignment, and overlay offload as
+   disabled.
+2. Open one opaque dma-buf client that covers the complete physical domain,
+   then hide all shell chrome. Confirm `direct scanout active` appears once
+   and does not repeat every frame.
+3. Move the hardware cursor. Confirm the client remains in direct scanout and
+   the update does not trigger a full compositor frame. Repeat with a setup
+   that lacks a usable cursor plane and confirm a visible software cursor
+   reports `software-cursor` instead.
+4. Open the window switcher with `Super+Tab`. Confirm
+   `compositor reclaimed the primary plane` appears on the first successful
+   switcher frame. The old client must retain fullscreen state and keyboard
+   focus while the selection is only being previewed.
+5. Cancel the switcher and confirm the original client remains focused. Open
+   it again, choose another client, and confirm focus and stacking change only
+   when the switcher closes.
+6. Trigger a screenshot or output capture while a client is otherwise
+   eligible. Confirm composition is selected and the capture contains shell
+   and client pixels from the same presented frame.
+7. Switch VTs or hotplug an output while direct scanout is active. Confirm the
+   resumed session begins with a full compositor frame and does not reuse
+   framebuffer ownership from the retired backend epoch.
+
+Use the
+[Rendering and KMS Plane Reference](../reference/rendering.md) for the full
+eligibility matrix, rejection-label meanings, and state transitions.
+
 From a terminal running inside aegis, inspect the live state and take a
 screenshot:
 

@@ -3,7 +3,7 @@
 //! Two floating, display-only status chips in minimal FPS-HUD style:
 //! system status (network, Bluetooth, battery), the StatusNotifierItem
 //! tray row, the clock, and the notification count on the left; workspace
-//! dots in the center. The top-right belongs to the frameless notification
+//! position markers in the center. The top-right belongs to the frameless notification
 //! toast strip, and the Agent Workspaces status lives in the command panel
 //! (ADR-0083). The chips
 //! reserve no space, accept no pointer input, and fade out when the cursor

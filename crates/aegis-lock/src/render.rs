@@ -376,7 +376,7 @@ impl LockRenderSurface {
             self.ui
                 .render(self.canvas.as_raw().cast::<lens::sys::flux_canvas>())?;
         }
-        self.canvas.end();
+        self.canvas.end_checked()?;
         frame.submit()?.present()?;
         Ok(())
     }

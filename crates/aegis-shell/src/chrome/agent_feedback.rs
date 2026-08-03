@@ -17,7 +17,7 @@ use aegis_core::workspace::WorkspaceSnapshot;
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{
-    AgentActivity, AgentInputKind, Chrome, ChromeEvents, HUD_HEIGHT, Localizer, Message, truncate,
+    AgentActivity, AgentInputKind, Chrome, ChromeEvents, HUD_HEIGHT, Localizer, Message, ellipsize,
 };
 
 const HOLD_FOR: Duration = Duration::from_secs(4);
@@ -313,6 +313,7 @@ fn render_pointer_feedback(
         .clamp(128.0, 290.0)
         .min((display.0 - 16.0).max(1.0));
     let label_rect = marker_label_rect(position, width, display);
+    let label = ellipsize(f, &label, 11.0, (label_rect.w - 14.0).max(0.0));
     f.layer(
         &format!("aegis-agent-label-{}", realm.0),
         label_rect,
@@ -332,7 +333,7 @@ fn render_pointer_feedback(
                     cross: Align::Center,
                     ..Default::default()
                 },
-                |f| f.label_compact_sized(&truncate(&label, 42), 11.0),
+                |f| f.label_compact_sized(&label, 11.0),
             );
         },
     );
@@ -360,6 +361,7 @@ fn render_background_activity(
         w: width,
         h: BACKGROUND_HEIGHT,
     };
+    let label = ellipsize(f, &label, 11.0, (rect.w - 31.0).max(0.0));
     let accent = realm_color(realm).with_alpha(alpha);
     f.layer(
         &format!("aegis-agent-background-{}", realm.0),
@@ -392,7 +394,7 @@ fn render_background_activity(
                         },
                         |_| {},
                     );
-                    f.label_compact_sized(&truncate(&label, 52), 11.0);
+                    f.label_compact_sized(&label, 11.0);
                 },
             );
         },
@@ -405,7 +407,7 @@ fn activity_label(
     i18n: &Localizer,
     pointer_visible: bool,
 ) -> String {
-    let realm = truncate(&activity.realm_label, 18);
+    let realm = &activity.realm_label;
     let operation = operation_label(activity.kind, i18n);
     let state_suffix = if state == RealmState::Paused {
         format!(" · {}", i18n.text(Message::RealmPaused))
@@ -664,6 +666,6 @@ mod tests {
             operation_label(AgentInputKind::Click { button: 0x111 }, &zh),
             "右键点击"
         );
-        assert_eq!(truncate("智能体正在操作", 5), "智能体正…");
+        assert_eq!(crate::truncate("智能体正在操作", 5), "智能体正…");
     }
 }

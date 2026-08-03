@@ -157,21 +157,19 @@ pub(super) fn chip_opts(fade: f32) -> OverlayOpts {
     }
 }
 
-pub(super) fn workspace_dot_color(active: bool) -> Color {
+pub(super) fn workspace_dot_color(intensity: f32) -> Color {
     let primary = Design::dark().hud_foreground.primary;
-    if active {
-        primary.with_alpha(248)
-    } else {
-        primary.with_alpha(78)
-    }
+    let intensity = intensity.clamp(0.0, 1.0);
+    let alpha = (78.0 + (248.0 - 78.0) * intensity).round() as u8;
+    primary.with_alpha(alpha)
 }
 
-pub(super) fn workspace_dot_diameter(active: bool) -> f32 {
-    if active {
-        WORKSPACE_ACTIVE_DOT
-    } else {
-        WORKSPACE_INACTIVE_DOT
-    }
+pub(super) fn workspace_dot_diameter() -> f32 {
+    WORKSPACE_DOT_DIAMETER
+}
+
+pub(super) fn workspace_dot_intensity(index: usize, position: f32) -> f32 {
+    (1.0 - (index as f32 - position).abs()).clamp(0.0, 1.0)
 }
 
 pub(super) fn centered_layer() -> OverlayOpts {

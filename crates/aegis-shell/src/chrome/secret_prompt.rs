@@ -13,7 +13,7 @@
 
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
-use crate::{BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Reserved, truncate};
+use crate::{BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Reserved, ellipsize};
 use aegis_core::input::{KeyAction, KeyChar, key_action};
 use aegis_core::window::Window;
 use aegis_design::{Design, themes};
@@ -212,7 +212,12 @@ impl Chrome for SecretPrompt {
             |_| {},
         );
 
-        let title = truncate(&self.title, 72);
+        let title = ellipsize(
+            frame,
+            &self.title,
+            15.0,
+            (layout.title.w - frame.theme().padding() * 2.0).max(0.0),
+        );
         frame.layer(
             "aegis-secret-prompt-title",
             layout.title,
@@ -225,7 +230,12 @@ impl Chrome for SecretPrompt {
         );
 
         if let Some(reason_rect) = layout.reason {
-            let reason = truncate(self.reason.as_deref().unwrap_or_default(), 84);
+            let reason = ellipsize(
+                frame,
+                self.reason.as_deref().unwrap_or_default(),
+                11.5,
+                reason_rect.w,
+            );
             frame.layer(
                 "aegis-secret-prompt-reason",
                 reason_rect,

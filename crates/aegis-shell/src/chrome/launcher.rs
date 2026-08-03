@@ -15,7 +15,7 @@ use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Them
 
 use crate::{
     AppCatalog, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet, Localizer, Message,
-    Reserved, WindowAction,
+    Reserved, WindowAction, ellipsize,
 };
 use aegis_core::app::Entry;
 use aegis_core::input::{KeyAction, KeyChar, key_action};
@@ -91,7 +91,6 @@ struct Cell {
     app_index: usize,
     filtered_position: usize,
     label: String,
-    running: bool,
     selected: bool,
     icon: Option<*mut c_void>,
 }
@@ -380,11 +379,15 @@ impl Chrome for Launcher {
             .map(|(slot, &app_index)| {
                 let entry = &self.brain.apps()[app_index];
                 let filtered_position = start + slot;
+                let label = if self.brain.is_running(app_index) {
+                    format!("• {}", entry.name)
+                } else {
+                    entry.name.clone()
+                };
                 Cell {
                     app_index,
                     filtered_position,
-                    label: truncate_label(&entry.name, layout.cell_w),
-                    running: self.brain.is_running(app_index),
+                    label: ellipsize(frame, &label, 12.5, (layout.cell_w - 14.0).max(0.0)),
                     selected: filtered_position == selection,
                     icon: self.entry_icon(entry),
                 }
@@ -418,7 +421,20 @@ impl Chrome for Launcher {
         let search_rect = Self::search_rect_for_display((display.x, display.y), progress);
         let search_w = search_rect.w;
         let search_y = search_rect.y;
-        let query_metrics = frame.measure_text(self.brain.query(), SEARCH_FONT_SIZE);
+        let search_text_width = (search_w - SEARCH_TEXT_X - 16.0).max(0.0);
+        let shown_query = ellipsize(
+            frame,
+            self.brain.query(),
+            SEARCH_FONT_SIZE,
+            search_text_width,
+        );
+        let shown_placeholder = ellipsize(
+            frame,
+            i18n.text(Message::SearchApplications),
+            SEARCH_FONT_SIZE,
+            search_text_width,
+        );
+        let query_metrics = frame.measure_text(&shown_query, SEARCH_FONT_SIZE);
         let font_metrics = frame.measure_text("Ag", SEARCH_FONT_SIZE);
         let caret_rect = search_caret_rect(search_rect, query_metrics.width, font_metrics.height);
         if pressed {
@@ -446,17 +462,14 @@ impl Chrome for Launcher {
                             // Keep the placeholder on the exact same text
                             // origin as a real query. Its caret is an overlay
                             // below so the caret does not consume layout width.
-                            frame.label_compact_sized(
-                                i18n.text(Message::SearchApplications),
-                                SEARCH_FONT_SIZE,
-                            );
+                            frame.label_compact_sized(&shown_placeholder, SEARCH_FONT_SIZE);
                         } else {
                             // The regular label carries theme padding, which
                             // shifts text inside this fixed-height field. The
                             // compact form keeps its measured box vertically
                             // centred; the caret is overlaid at the shaped text
                             // edge below so it does not alter layout.
-                            frame.label_compact_sized(self.brain.query(), SEARCH_FONT_SIZE);
+                            frame.label_compact_sized(&shown_query, SEARCH_FONT_SIZE);
                         }
                     },
                 );
@@ -553,12 +566,7 @@ impl Chrome for Launcher {
                         },
                         |frame| {
                             render_app_icon(frame, cell.icon, icon_size, progress);
-                            let label = if cell.running {
-                                format!("• {}", cell.label)
-                            } else {
-                                cell.label.clone()
-                            };
-                            frame.label_sized(&label, 12.5);
+                            frame.label_compact_sized(&cell.label, 12.5);
                         },
                     );
                 },
@@ -874,17 +882,6 @@ fn alpha(base: u8, progress: f32) -> u8 {
     (base as f32 * progress.clamp(0.0, 1.0)).round() as u8
 }
 
-fn truncate_label(label: &str, cell_width: f32) -> String {
-    let limit = ((cell_width / 7.2).floor() as usize).clamp(10, 22);
-    let count = label.chars().count();
-    if count <= limit {
-        return label.to_string();
-    }
-    let mut shortened: String = label.chars().take(limit.saturating_sub(1)).collect();
-    shortened.push('…');
-    shortened
-}
-
 fn sized(width: f32, height: f32) -> LayoutOpts {
     LayoutOpts {
         width,
@@ -1108,12 +1105,5 @@ mod tests {
         let snapped_down = reduced.advance_visibility(0.0, 0.016);
         assert_eq!(snapped_down, 0.0);
         assert!(!reduced.anim_active);
-    }
-
-    #[test]
-    fn label_truncation_is_unicode_safe() {
-        let label = truncate_label("非常长的应用程序名称不会切断字符", 80.0);
-        assert!(label.ends_with('…'));
-        assert!(label.is_char_boundary(label.len()));
     }
 }

@@ -11,7 +11,7 @@
 
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
-use crate::{BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Reserved, truncate};
+use crate::{BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Reserved, ellipsize};
 use aegis_core::input::{KeyAction, KeyChar, key_action};
 use aegis_core::window::Window;
 use aegis_design::{Design, themes};
@@ -276,7 +276,12 @@ impl Chrome for CapabilityPrompt {
             |_| {},
         );
 
-        let title = truncate(&self.title, 72);
+        let title = ellipsize(
+            frame,
+            &self.title,
+            15.0,
+            (layout.title.w - frame.theme().padding() * 2.0).max(0.0),
+        );
         frame.layer(
             "aegis-capability-prompt-title",
             layout.title,
@@ -289,7 +294,12 @@ impl Chrome for CapabilityPrompt {
         );
 
         if let (Some(warning), Some(rect)) = (&self.warning, layout.warning) {
-            let warning = truncate(&format!("Warning: {warning}"), 96);
+            let warning = ellipsize(
+                frame,
+                &format!("Warning: {warning}"),
+                12.0,
+                (rect.w - 12.0).max(0.0),
+            );
             frame.layer(
                 "aegis-capability-prompt-warning",
                 rect,
@@ -364,8 +374,18 @@ impl Chrome for CapabilityPrompt {
                 w: (row.x + row.w - check.x - CHECK - 14.0).max(0.0),
                 h: ROW_H,
             };
-            let label = truncate(&group.label, 48);
             let gated = group.gated;
+            let gated_width = if gated {
+                frame.measure_text(GATED_NOTE, 11.0).width + 6.0
+            } else {
+                0.0
+            };
+            let label = ellipsize(
+                frame,
+                &group.label,
+                13.0,
+                (text.w - gated_width - frame.theme().padding() * 2.0).max(0.0),
+            );
             frame.layer(
                 &format!("aegis-capability-prompt-label-{index}"),
                 text,

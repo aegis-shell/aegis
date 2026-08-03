@@ -94,10 +94,99 @@ static SURFACE_IMPL: ffi::wl_surface_interface_impl = ffi::wl_surface_interface_
     damage_buffer: surface_damage_buffer,
 };
 
+/// Maximum number of exact rectangles retained for one surface between
+/// presentations. Wayland clients control the damage list, so the compositor
+/// must put a hard bound on both memory and region-subtraction work. Crossing
+/// the bound degrades conservatively to one bounding box; normal clients keep
+/// their exact disjoint damage all the way to output/effect invalidation.
+pub(crate) const MAX_COMMITTED_DAMAGE_RECTS: usize = 64;
+
+fn normalise_damage_rect(rect: aegis_core::Rect) -> Option<aegis_core::Rect> {
+    if rect.is_empty() {
+        return None;
+    }
+    // Keep Rect's later `origin + size` arithmetic representable. Damage is
+    // clipped to the actual surface before use, so coordinates beyond the i32
+    // domain carry no additional information.
+    let x0 = i64::from(rect.origin.x);
+    let y0 = i64::from(rect.origin.y);
+    let x1 = (x0 + i64::from(rect.size.w)).min(i64::from(i32::MAX));
+    let y1 = (y0 + i64::from(rect.size.h)).min(i64::from(i32::MAX));
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some(aegis_core::Rect::new(
+        rect.origin.x,
+        rect.origin.y,
+        (x1 - x0) as i32,
+        (y1 - y0) as i32,
+    ))
+}
+
+fn damage_bbox(rects: &[aegis_core::Rect]) -> Option<aegis_core::Rect> {
+    let first = *rects.first()?;
+    let mut x0 = i64::from(first.origin.x);
+    let mut y0 = i64::from(first.origin.y);
+    let mut x1 = x0 + i64::from(first.size.w);
+    let mut y1 = y0 + i64::from(first.size.h);
+    for rect in &rects[1..] {
+        let rx0 = i64::from(rect.origin.x);
+        let ry0 = i64::from(rect.origin.y);
+        x0 = x0.min(rx0);
+        y0 = y0.min(ry0);
+        x1 = x1.max(rx0 + i64::from(rect.size.w));
+        y1 = y1.max(ry0 + i64::from(rect.size.h));
+    }
+    let width = x1 - x0;
+    let height = y1 - y0;
+    if width <= 0 || height <= 0 || width > i64::from(i32::MAX) || height > i64::from(i32::MAX) {
+        // A single Rect cannot conservatively represent this span. The caller
+        // must promote the surface to unknown/full damage rather than silently
+        // truncating one side of the region.
+        return None;
+    }
+    Some(aegis_core::Rect::new(
+        x0.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        y0.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        width as i32,
+        height as i32,
+    ))
+}
+
+/// Add `rect` to an exact, disjoint damage region. Subtracting existing
+/// coverage from the new rectangle avoids both duplicate work and the false
+/// dirty pixels introduced by a bounding-box union.
+fn insert_damage_rect(region: &mut Vec<aegis_core::Rect>, rect: aegis_core::Rect) -> bool {
+    let Some(rect) = normalise_damage_rect(rect) else {
+        return false;
+    };
+    let mut fragments = vec![rect];
+    for existing in region.iter().copied() {
+        let mut next = Vec::new();
+        for fragment in fragments {
+            next.extend(fragment.subtract(existing));
+        }
+        fragments = next;
+        if fragments.is_empty() {
+            return false;
+        }
+    }
+    region.extend(fragments);
+    if region.len() > MAX_COMMITTED_DAMAGE_RECTS {
+        let bbox = damage_bbox(region);
+        region.clear();
+        if let Some(bbox) = bbox {
+            region.push(bbox);
+        } else {
+            return true;
+        }
+    }
+    false
+}
+
 /// Merge one commit's damage into the not-yet-presented surface damage.
-/// Keep a single bounding box: KMS consumes a conservative box and the
-/// renderer's row upload is cheaper with one bounded region than with an
-/// unbounded list after a burst of commits.
+/// Rectangles remain exact and disjoint under the bounded region budget so a
+/// small video update cannot invalidate unrelated backdrop/chrome pixels.
 pub(crate) fn accumulate_committed_damage(
     rec: &mut SurfaceRec,
     pending: Vec<aegis_core::Rect>,
@@ -111,36 +200,12 @@ pub(crate) fn accumulate_committed_damage(
         rec.committed_damage_full = true;
         return;
     }
-    let mut bbox = rec.committed_damage.first().copied();
-    for rect in rec
-        .committed_damage
-        .iter()
-        .skip(1)
-        .chain(pending.iter())
-        .copied()
-    {
-        bbox = Some(match bbox {
-            Some(old) => {
-                let x0 = old.origin.x.min(rect.origin.x);
-                let y0 = old.origin.y.min(rect.origin.y);
-                let x1 = old
-                    .origin
-                    .x
-                    .saturating_add(old.size.w)
-                    .max(rect.origin.x.saturating_add(rect.size.w));
-                let y1 = old
-                    .origin
-                    .y
-                    .saturating_add(old.size.h)
-                    .max(rect.origin.y.saturating_add(rect.size.h));
-                aegis_core::Rect::new(x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0))
-            }
-            None => rect,
-        });
-    }
-    rec.committed_damage.clear();
-    if let Some(rect) = bbox {
-        rec.committed_damage.push(rect);
+    for rect in pending {
+        if insert_damage_rect(&mut rec.committed_damage, rect) {
+            rec.committed_damage.clear();
+            rec.committed_damage_full = true;
+            break;
+        }
     }
 }
 
@@ -492,11 +557,12 @@ pub(crate) unsafe extern "C" fn surface_commit(
                 // damaged rows onto the retained snapshot yields the new frame
                 // without a full-buffer memcpy (and without the per-commit
                 // allocation — the snapshot Vec is reused while its size holds).
-                // Empty damage carries no information and forces a full copy, as
-                // do a transform or buffer scale (damage is surface-local and
-                // would not map 1:1 onto buffer pixels). The guard mirrors the
-                // renderer's incremental-upload guard exactly; the two paths
-                // must always agree or the texture would tear.
+                // Empty damage carries no information and forces a full copy,
+                // as does a transform (surface-local rectangles do not map
+                // axis-for-axis onto the retained buffer). Integer buffer scale
+                // is mapped explicitly below. The guard mirrors the renderer's
+                // incremental-upload guard exactly; the two paths must always
+                // agree or the texture would tear.
                 let shm = ffi::wl_shm_buffer_get(buffer);
                 if !shm.is_null() {
                     let w = ffi::wl_shm_buffer_get_width(shm);
@@ -537,14 +603,10 @@ pub(crate) unsafe extern "C" fn surface_commit(
                             for d in &damage {
                                 let x = d.origin.x.saturating_mul(scale).max(0).min(w);
                                 let y = d.origin.y.saturating_mul(scale).max(0).min(h);
-                                let x1 = (d.origin.x + d.size.w)
-                                    .saturating_mul(scale)
-                                    .max(0)
-                                    .min(w);
-                                let y1 = (d.origin.y + d.size.h)
-                                    .saturating_mul(scale)
-                                    .max(0)
-                                    .min(h);
+                                let x1 =
+                                    (d.origin.x + d.size.w).saturating_mul(scale).max(0).min(w);
+                                let y1 =
+                                    (d.origin.y + d.size.h).saturating_mul(scale).max(0).min(h);
                                 let cw = (x1 - x) as usize;
                                 let ch = (y1 - y) as usize;
                                 if cw == 0 || ch == 0 {

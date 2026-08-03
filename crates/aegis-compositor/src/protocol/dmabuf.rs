@@ -16,6 +16,9 @@ const DRM_FORMAT_XBGR8888: u32 = 0x3432_4258;
 /// do not advertise INVALID/implicit and let clients select a layout we cannot
 /// validate or sample.
 const DRM_FORMAT_MOD_LINEAR: u64 = 0;
+/// `zwp_linux_dmabuf_feedback_v1_tranche_flags.scanout` from the stable
+/// linux-dmabuf v1 protocol XML.
+const ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FLAGS_SCANOUT: u32 = 1;
 
 // Linux memfd flags and seals. The feedback format table becomes immutable
 // before its fd is transferred to libwayland/client code.
@@ -25,6 +28,25 @@ const F_SEAL_SHRINK: i32 = 0x0002;
 const F_SEAL_GROW: i32 = 0x0004;
 const F_SEAL_WRITE: i32 = 0x0008;
 const F_ADD_SEALS: i32 = 1033;
+
+/// One live v4 feedback subscription. Keeping the optional surface identity
+/// lets a future per-surface plane policy reorder tranches without changing
+/// resource lifecycle; it is deliberately opaque today and is never
+/// dereferenced after the request returns.
+#[derive(Clone, Copy)]
+pub(crate) struct DmabufFeedbackResource {
+    resource: *mut ffi::wl_resource,
+    surface: Option<usize>,
+}
+
+/// The dynamic part of the feedback stream as clients actually observe it.
+/// Renderer formats and MAIN_DEVICE are immutable for a Server lifetime; only
+/// the preferred KMS scanout tranche changes after hotplug/reconfigure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DmabufFeedbackSignature {
+    scanout_device: Option<u64>,
+    scanout_indices: Vec<u16>,
+}
 
 unsafe extern "C" {
     fn memfd_create(name: *const std::os::raw::c_char, flags: u32) -> i32;
@@ -169,6 +191,59 @@ fn dmabuf_format_pairs(formats: &[aegis_core::dmabuf::DmabufFormat]) -> Vec<(u32
     pairs
 }
 
+/// Indices into the renderer's feedback table that are also accepted by all
+/// active primary planes. Keeping the renderer table as the sole table makes
+/// every advertised SCANOUT pair safe to import when direct scanout later
+/// falls back to composition.
+fn scanout_format_indices(
+    renderer_pairs: &[(u32, u64)],
+    scanout_formats: &[aegis_core::dmabuf::DmabufFormat],
+) -> Vec<u16> {
+    // Unlike the renderer table, an empty scanout table means "no KMS
+    // capability available" and must not inherit the legacy LINEAR fallback.
+    let scanout_pairs = scanout_formats
+        .iter()
+        .flat_map(|format| {
+            format
+                .modifiers
+                .iter()
+                .map(move |&modifier| (format.fourcc, modifier))
+        })
+        .collect::<HashSet<_>>();
+    renderer_pairs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, pair)| scanout_pairs.contains(pair).then_some(index as u16))
+        .collect()
+}
+
+fn feedback_signature(
+    renderer_formats: &[aegis_core::dmabuf::DmabufFormat],
+    scanout_formats: &[aegis_core::dmabuf::DmabufFormat],
+    scanout_device: Option<u64>,
+) -> DmabufFeedbackSignature {
+    let mut renderer_pairs = dmabuf_format_pairs(renderer_formats);
+    renderer_pairs.truncate(usize::from(u16::MAX) + 1);
+    let scanout_indices = scanout_format_indices(&renderer_pairs, scanout_formats);
+    let Some(scanout_device) = scanout_device else {
+        return DmabufFeedbackSignature {
+            scanout_device: None,
+            scanout_indices: Vec::new(),
+        };
+    };
+    if scanout_indices.is_empty() {
+        DmabufFeedbackSignature {
+            scanout_device: None,
+            scanout_indices,
+        }
+    } else {
+        DmabufFeedbackSignature {
+            scanout_device: Some(scanout_device),
+            scanout_indices,
+        }
+    }
+}
+
 /// Serialize the linux-dmabuf v4 table ABI: u32 fourcc, four zero padding
 /// bytes, u64 modifier, all in native endianness.
 fn format_table_bytes(pairs: &[(u32, u64)]) -> Vec<u8> {
@@ -218,39 +293,14 @@ fn borrowed_wl_array<T>(values: &[T]) -> ffi::wl_array {
     }
 }
 
-unsafe fn create_dmabuf_feedback(
-    client: *mut ffi::wl_client,
-    dmabuf: *mut ffi::wl_resource,
-    id: u32,
-) {
+/// Send one complete linux-dmabuf feedback batch. Clients keep their previous
+/// feedback current until the final DONE, so rebuilding the sealed table
+/// before posting the first event makes an allocation failure non-destructive.
+unsafe fn send_dmabuf_feedback(feedback: *mut ffi::wl_resource, state: &State) -> bool {
     unsafe {
-        let version = ffi::wl_resource_get_version(dmabuf);
-        let feedback = ffi::wl_resource_create(
-            client,
-            &ffi::zwp_linux_dmabuf_feedback_v1_interface,
-            version,
-            id,
-        );
-        if feedback.is_null() {
-            return;
-        }
-
-        let state = ffi::wl_resource_get_user_data(dmabuf) as *mut State;
-        ffi::wl_resource_set_implementation(
-            feedback,
-            &FEEDBACK_IMPL as *const _ as *const c_void,
-            state.cast(),
-            None,
-        );
-        let Some(state) = state.as_ref() else {
-            log::error!("[dmabuf] feedback requested without compositor state");
-            ffi::wl_resource_destroy(feedback);
-            return;
-        };
         let Some(main_device) = state.dmabuf_main_device else {
             log::error!("[dmabuf] v4 feedback requested without a main DRM device");
-            ffi::wl_resource_destroy(feedback);
-            return;
+            return false;
         };
 
         let mut pairs = dmabuf_format_pairs(&state.dmabuf_formats);
@@ -265,8 +315,7 @@ unsafe fn create_dmabuf_feedback(
         }
         if pairs.is_empty() {
             log::error!("[dmabuf] renderer exposed no usable format/modifier pairs");
-            ffi::wl_resource_destroy(feedback);
-            return;
+            return false;
         }
         let table = format_table_bytes(&pairs);
         let table_size = u32::try_from(table.len()).expect("dmabuf feedback table fits u32");
@@ -274,8 +323,7 @@ unsafe fn create_dmabuf_feedback(
             Ok(fd) => fd,
             Err(error) => {
                 log::error!("[dmabuf] cannot create feedback format table: {error}");
-                ffi::wl_resource_destroy(feedback);
-                return;
+                return false;
             }
         };
 
@@ -287,20 +335,51 @@ unsafe fn create_dmabuf_feedback(
             table_size,
         );
 
-        // `dev_t` is sent as an opaque native byte array. The host supplies
-        // the node matching Flux's Vulkan physical device, preferring its
-        // render node and falling back to the KMS primary node.
-        let device = [main_device];
-        let mut device_array = borrowed_wl_array(&device);
+        // `dev_t` is sent as an opaque native byte array. MAIN_DEVICE names
+        // the renderer; a preferred SCANOUT tranche below may target the KMS
+        // primary node separately.
+        let main_device_bytes = [main_device];
+        let mut main_device_array = borrowed_wl_array(&main_device_bytes);
         ffi::wl_resource_post_event(
             feedback,
             ffi::ZWP_LINUX_DMABUF_FEEDBACK_V1_MAIN_DEVICE,
-            &mut device_array as *mut ffi::wl_array,
+            &mut main_device_array as *mut ffi::wl_array,
         );
+
+        // Prefer buffers that both Flux can import and every active primary
+        // plane can scan out. This tranche must precede the renderer fallback
+        // so Mesa/Firefox chooses a KMS-compatible modifier for video frames.
+        let scanout_indices = scanout_format_indices(&pairs, &state.dmabuf_scanout_formats);
+        if let Some(scanout_device) = state.dmabuf_scanout_device
+            && !scanout_indices.is_empty()
+        {
+            let scanout_device_bytes = [scanout_device];
+            let mut scanout_device_array = borrowed_wl_array(&scanout_device_bytes);
+            ffi::wl_resource_post_event(
+                feedback,
+                ffi::ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_TARGET_DEVICE,
+                &mut scanout_device_array as *mut ffi::wl_array,
+            );
+            ffi::wl_resource_post_event(
+                feedback,
+                ffi::ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FLAGS,
+                ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FLAGS_SCANOUT,
+            );
+            let mut scanout_indices_array = borrowed_wl_array(&scanout_indices);
+            ffi::wl_resource_post_event(
+                feedback,
+                ffi::ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FORMATS,
+                &mut scanout_indices_array as *mut ffi::wl_array,
+            );
+            ffi::wl_resource_post_event(feedback, ffi::ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_DONE);
+        }
+
+        // Mandatory renderer fallback: every entry in the table remains
+        // sampleable/importable even when scanout is unavailable at runtime.
         ffi::wl_resource_post_event(
             feedback,
             ffi::ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_TARGET_DEVICE,
-            &mut device_array as *mut ffi::wl_array,
+            &mut main_device_array as *mut ffi::wl_array,
         );
         ffi::wl_resource_post_event(
             feedback,
@@ -319,6 +398,61 @@ unsafe fn create_dmabuf_feedback(
         );
         ffi::wl_resource_post_event(feedback, ffi::ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_DONE);
         ffi::wl_resource_post_event(feedback, ffi::ZWP_LINUX_DMABUF_FEEDBACK_V1_DONE);
+        true
+    }
+}
+
+unsafe extern "C" fn feedback_resource_destroy(resource: *mut ffi::wl_resource) {
+    unsafe {
+        let state = ffi::wl_resource_get_user_data(resource) as *mut State;
+        let Some(state) = state.as_mut() else {
+            return;
+        };
+        state
+            .dmabuf_feedback_resources
+            .retain(|feedback| feedback.resource != resource);
+    }
+}
+
+unsafe fn create_dmabuf_feedback(
+    client: *mut ffi::wl_client,
+    dmabuf: *mut ffi::wl_resource,
+    id: u32,
+    surface: Option<*mut ffi::wl_resource>,
+) {
+    unsafe {
+        let version = ffi::wl_resource_get_version(dmabuf);
+        let feedback = ffi::wl_resource_create(
+            client,
+            &ffi::zwp_linux_dmabuf_feedback_v1_interface,
+            version,
+            id,
+        );
+        if feedback.is_null() {
+            return;
+        }
+
+        let state = ffi::wl_resource_get_user_data(dmabuf) as *mut State;
+        ffi::wl_resource_set_implementation(
+            feedback,
+            &FEEDBACK_IMPL as *const _ as *const c_void,
+            state.cast(),
+            Some(feedback_resource_destroy),
+        );
+        let Some(state) = state.as_mut() else {
+            log::error!("[dmabuf] feedback requested without compositor state");
+            ffi::wl_resource_destroy(feedback);
+            return;
+        };
+        state
+            .dmabuf_feedback_resources
+            .push(DmabufFeedbackResource {
+                resource: feedback,
+                surface: surface.map(|surface| surface as usize),
+            });
+        if !send_dmabuf_feedback(feedback, state) {
+            ffi::wl_resource_destroy(feedback);
+        }
     }
 }
 
@@ -327,18 +461,63 @@ unsafe extern "C" fn dmabuf_get_default_feedback(
     dmabuf: *mut ffi::wl_resource,
     id: u32,
 ) {
-    unsafe { create_dmabuf_feedback(client, dmabuf, id) };
+    unsafe { create_dmabuf_feedback(client, dmabuf, id, None) };
 }
 
 unsafe extern "C" fn dmabuf_get_surface_feedback(
     client: *mut ffi::wl_client,
     dmabuf: *mut ffi::wl_resource,
     id: u32,
-    _surface: *mut ffi::wl_resource,
+    surface: *mut ffi::wl_resource,
 ) {
-    // Aegis currently has one render device and one format preference set.
-    // Surface feedback still matters: Mesa requests it to select that device.
-    unsafe { create_dmabuf_feedback(client, dmabuf, id) };
+    // Surface feedback currently carries the same safe renderer/primary-plane
+    // intersection as default feedback. Its identity is retained so future
+    // per-surface tranche ordering does not require a lifecycle redesign.
+    unsafe { create_dmabuf_feedback(client, dmabuf, id, Some(surface)) };
+}
+
+impl Server {
+    /// Replace the preferred KMS scanout capabilities and update every live
+    /// linux-dmabuf v4 feedback subscription. A semantically identical set
+    /// (including reordered/duplicated modifiers) is a no-op, avoiding churn
+    /// and needless Firefox buffer-pool reallocation after benign output
+    /// refreshes.
+    pub fn update_dmabuf_feedback(
+        &mut self,
+        scanout_formats: Vec<aegis_core::dmabuf::DmabufFormat>,
+        scanout_device: Option<u64>,
+    ) -> bool {
+        let previous = feedback_signature(
+            &self.state.dmabuf_formats,
+            &self.state.dmabuf_scanout_formats,
+            self.state.dmabuf_scanout_device,
+        );
+        let next = feedback_signature(&self.state.dmabuf_formats, &scanout_formats, scanout_device);
+
+        self.state.dmabuf_scanout_formats = scanout_formats;
+        self.state.dmabuf_scanout_device = scanout_device;
+        if previous == next {
+            return false;
+        }
+
+        // Clone only the small, pointer-sized subscription descriptors. The
+        // event loop is single-threaded and resource destroy callbacks cannot
+        // interleave with this iteration.
+        let feedbacks = self.state.dmabuf_feedback_resources.clone();
+        for feedback in feedbacks {
+            // Keep the surface/default distinction alive in the update path;
+            // both intentionally use the same policy until per-plane feedback
+            // is introduced.
+            let _surface = feedback.surface;
+            unsafe {
+                if !send_dmabuf_feedback(feedback.resource, self.state.as_ref()) {
+                    log::warn!("[dmabuf] could not refresh a live feedback object");
+                }
+            }
+        }
+        unsafe { ffi::wl_display_flush_clients(self.state.display) };
+        true
+    }
 }
 
 unsafe extern "C" fn dmabuf_create_params(
@@ -544,6 +723,110 @@ mod tests {
                 (DRM_FORMAT_XRGB8888, 0),
                 (DRM_FORMAT_ARGB8888, 0),
             ]
+        );
+    }
+
+    #[test]
+    fn scanout_indices_are_renderer_ordered_and_intersected() {
+        let renderer_pairs = vec![
+            (DRM_FORMAT_XRGB8888, 5),
+            (DRM_FORMAT_XRGB8888, 0),
+            (DRM_FORMAT_ARGB8888, 9),
+            (DRM_FORMAT_ARGB8888, 0),
+        ];
+        let scanout_formats = vec![
+            aegis_core::dmabuf::DmabufFormat {
+                fourcc: DRM_FORMAT_ARGB8888,
+                modifiers: vec![9, 77],
+            },
+            aegis_core::dmabuf::DmabufFormat {
+                fourcc: DRM_FORMAT_XRGB8888,
+                modifiers: vec![0],
+            },
+        ];
+        assert_eq!(
+            scanout_format_indices(&renderer_pairs, &scanout_formats),
+            vec![1, 2],
+            "only renderer-importable scanout pairs survive, in renderer preference order"
+        );
+    }
+
+    #[test]
+    fn empty_scanout_intersection_produces_no_preferred_tranche_indices() {
+        let renderer_pairs = vec![(DRM_FORMAT_XRGB8888, 5)];
+        let scanout_formats = vec![aegis_core::dmabuf::DmabufFormat {
+            fourcc: DRM_FORMAT_ARGB8888,
+            modifiers: vec![5],
+        }];
+        assert!(scanout_format_indices(&renderer_pairs, &scanout_formats).is_empty());
+        assert!(scanout_format_indices(&renderer_pairs, &[]).is_empty());
+    }
+
+    #[test]
+    fn feedback_signature_is_semantic_and_renderer_ordered() {
+        let renderer = vec![
+            aegis_core::dmabuf::DmabufFormat {
+                fourcc: DRM_FORMAT_XRGB8888,
+                modifiers: vec![5, 0],
+            },
+            aegis_core::dmabuf::DmabufFormat {
+                fourcc: DRM_FORMAT_ARGB8888,
+                modifiers: vec![9],
+            },
+        ];
+        let first = vec![
+            aegis_core::dmabuf::DmabufFormat {
+                fourcc: DRM_FORMAT_ARGB8888,
+                modifiers: vec![9],
+            },
+            aegis_core::dmabuf::DmabufFormat {
+                fourcc: DRM_FORMAT_XRGB8888,
+                modifiers: vec![0, 5],
+            },
+        ];
+        let reordered_with_duplicates = vec![
+            aegis_core::dmabuf::DmabufFormat {
+                fourcc: DRM_FORMAT_XRGB8888,
+                modifiers: vec![5, 5, 0],
+            },
+            aegis_core::dmabuf::DmabufFormat {
+                fourcc: DRM_FORMAT_ARGB8888,
+                modifiers: vec![9, 9],
+            },
+        ];
+
+        assert_eq!(
+            feedback_signature(&renderer, &first, Some(10)),
+            feedback_signature(&renderer, &reordered_with_duplicates, Some(10)),
+            "KMS enumeration order and duplicate modifiers must not trigger a new feedback batch"
+        );
+        assert_ne!(
+            feedback_signature(&renderer, &first, Some(10)),
+            feedback_signature(&renderer, &first, Some(11)),
+            "a changed target device changes an advertised scanout tranche"
+        );
+    }
+
+    #[test]
+    fn feedback_signature_ignores_device_without_scanout_intersection() {
+        let renderer = vec![aegis_core::dmabuf::DmabufFormat {
+            fourcc: DRM_FORMAT_XRGB8888,
+            modifiers: vec![5],
+        }];
+        let unsupported = vec![aegis_core::dmabuf::DmabufFormat {
+            fourcc: DRM_FORMAT_ARGB8888,
+            modifiers: vec![5],
+        }];
+
+        assert_eq!(
+            feedback_signature(&renderer, &unsupported, Some(10)),
+            feedback_signature(&renderer, &[], Some(11)),
+            "no scanout tranche is emitted in either case, so client-visible feedback is unchanged"
+        );
+        assert_eq!(
+            feedback_signature(&renderer, &renderer, None),
+            feedback_signature(&renderer, &[], Some(11)),
+            "format indices cannot be advertised without a target device"
         );
     }
 }

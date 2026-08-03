@@ -19,6 +19,7 @@ mod presentation;
 mod presentation_state;
 mod realm;
 mod rendering;
+mod scanout;
 mod secret_prompt;
 mod session;
 mod settings;
@@ -44,6 +45,7 @@ use presentation::*;
 use presentation_state::*;
 use realm::*;
 use rendering::*;
+use scanout::*;
 use secret_prompt::*;
 use state::*;
 use stream::*;
@@ -230,25 +232,30 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // before the icon pass so the effective output scale (backend-reported
     // geometry plus any `[[output]]` override) is known when icons decode.
     let dmabuf_main_device = host.dmabuf_feedback_device(&device);
+    let dmabuf_scanout_formats = host.dmabuf_scanout_formats();
+    let dmabuf_scanout_device = host.dmabuf_scanout_device();
     if host.name() == "drm" && dmabuf_main_device.is_none() {
         log::warn!(
             "drm: linux-dmabuf v4 feedback disabled because the main DRM device is unknown; \
              OpenGL clients may fall back to software rendering"
         );
     }
-    let mut server = aegis_compositor::Server::new_with_render_caps_and_device(
+    let mut server = aegis_compositor::Server::new_with_dmabuf_feedback(
         flux::dmabuf_supported(&device),
         flux::dmabuf_sync_supported(&device),
         aegis_render::formats_with_modifiers(&device),
         dmabuf_main_device,
+        dmabuf_scanout_formats,
+        dmabuf_scanout_device,
     )?;
     server.set_outputs(host.output_infos());
     log::info!("server: listening on WAYLAND_DISPLAY={}", server.socket());
-    // A committing client must wake the frame loop the same way input does:
-    // the backends poll the server's event-loop fd so an idle compositor
-    // stops waiting out the one-second maintenance tick (it would otherwise
-    // throttle frame-callback-driven clients to ~1fps).
-    host.set_wakeup_fd(server.event_loop_fd());
+    // Client commits and capture-worker completions share one pollable wakeup
+    // fd. Capture post-processing can therefore leave the compositor fully
+    // idle and still deliver a freshly encoded clipboard immediately, instead
+    // of posing as animation until the one-second maintenance tick.
+    capture_worker.register_server_wakeup_fd(server.event_loop_fd())?;
+    host.set_wakeup_fd(capture_worker.wakeup_fd());
     // Publish the session environment now that the socket name is known, so
     // launched clients and D-Bus-activated services can connect back.
     session::publish(server.socket(), host.name() == "nested");
@@ -871,7 +878,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         clear,
         frame_count,
         retired_defer,
-        scanout_taken: false,
+        primary_plane_state: PrimaryPlaneState::default(),
+        scanout_telemetry: ScanoutTelemetry::new(),
         keyboard_capture,
         keymap,
         system_status,
@@ -915,6 +923,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         last_realm_revision,
         last_outputs_revision,
         last_surface_gens: std::collections::HashMap::new(),
+        surface_gens_scratch: std::collections::HashMap::new(),
         last_notif_revision: None,
         last_chrome_mode: None,
         last_session_locked: false,

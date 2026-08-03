@@ -17,6 +17,7 @@ pub(super) fn draw_direct_desktop_scene(
     renderer: &mut aegis_render::Renderer,
     server: &aegis_compositor::Server,
     geometry: RenderGeometry,
+    render_area: Option<flux::CanvasRenderArea>,
     overview: bool,
     window_switcher: Option<&aegis_shell::WindowSwitcherPresentation>,
     live_previews: &[aegis_shell::LivePreviewPresentation],
@@ -30,11 +31,21 @@ pub(super) fn draw_direct_desktop_scene(
         .as_ref()
         .is_some_and(|wallpaper| wallpaper.has_model())
     {
-        canvas.end();
+        canvas.end_checked()?;
         if let Some(wallpaper) = wallpaper.as_mut() {
             wallpaper.draw_model(device, frame);
         }
-        canvas.begin(frame, None)?;
+        canvas.begin_pass(
+            frame,
+            flux::CanvasPassOptions {
+                clear: None,
+                antialias: flux::CanvasAntialias::None,
+                // Preserve the output pass' damage bound after the model's
+                // depth pass temporarily leaves Canvas recording.
+                render_area,
+                skip_stencil: true,
+            },
+        )?;
     }
     if overview {
         draw_overview_scene(canvas, device, renderer, server, logical_size, scale);

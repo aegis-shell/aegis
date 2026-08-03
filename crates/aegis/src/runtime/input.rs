@@ -11,6 +11,29 @@ pub(super) struct FrameState {
     pub(super) pending_screenshots: Vec<PendingScreenshot>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct KeybindingInvocation {
+    action: aegis_core::keybind::Action,
+    cursor: (f32, f32),
+    /// Modifier state at the triggering key press, not at the end of the
+    /// backend batch. A batch may contain both Tab and the following Super
+    /// release; collapsing those edges would turn a preview step into an
+    /// immediate focus change.
+    super_held: bool,
+}
+
+fn keybinding_invocation(
+    action: aegis_core::keybind::Action,
+    cursor: (f32, f32),
+    key: aegis_core::input::KeyChar,
+) -> KeybindingInvocation {
+    KeybindingInvocation {
+        action,
+        cursor,
+        super_held: key.mods.has(aegis_core::input::Mods::SUPER),
+    }
+}
+
 impl FrameState {
     /// Preserve edge-triggered chrome input while the presentation backend
     /// owns an in-flight frame. Level state comes from the newest snapshot;
@@ -317,6 +340,202 @@ impl CompositorRuntime {
         }
     }
 
+    fn dispatch_keybinding(&mut self, invocation: KeybindingInvocation, session_locked: bool) {
+        use aegis_core::keybind::Action;
+
+        let KeybindingInvocation {
+            action,
+            cursor,
+            super_held,
+        } = invocation;
+        let ts = self.start.elapsed().as_millis() as u64;
+        let origin = aegis_ipc::Origin::Keybinding;
+        match action {
+            Action::ToggleLauncher => self.shell.toggle(),
+            Action::TogglePrism => self.shell.toggle_prism(),
+            Action::ToggleOverview => self.shell.toggle_overview(),
+            Action::ToggleCommandPanel => self.shell.toggle_command_panel(),
+            Action::CloseFocused => {
+                if let Some(id) = self.server.focused_toplevel_id() {
+                    let cmd = aegis_ipc::Command::Close { id };
+                    apply_command_and_journal(
+                        &mut self.server,
+                        &self.notif_queue,
+                        &mut self.quit_requested,
+                        cmd,
+                        &self.ipc,
+                        &self.journal,
+                        ts,
+                        origin,
+                    );
+                }
+            }
+            Action::CycleFocus => {
+                if super_held {
+                    self.shell.start_window_switcher();
+                    self.server.start_window_switcher();
+                }
+                let cmd = aegis_ipc::Command::Cycle { forward: true };
+                apply_command_and_journal(
+                    &mut self.server,
+                    &self.notif_queue,
+                    &mut self.quit_requested,
+                    cmd,
+                    &self.ipc,
+                    &self.journal,
+                    ts,
+                    origin,
+                );
+            }
+            Action::CycleFocusBack => {
+                if super_held {
+                    self.shell.start_window_switcher();
+                    self.server.start_window_switcher();
+                }
+                let cmd = aegis_ipc::Command::Cycle { forward: false };
+                apply_command_and_journal(
+                    &mut self.server,
+                    &self.notif_queue,
+                    &mut self.quit_requested,
+                    cmd,
+                    &self.ipc,
+                    &self.journal,
+                    ts,
+                    origin,
+                );
+            }
+            Action::WorkspaceNext => {
+                let cmd = aegis_ipc::Command::SwitchWorkspace {
+                    dir: aegis_core::workspace::Switch::Next,
+                };
+                apply_command_and_journal(
+                    &mut self.server,
+                    &self.notif_queue,
+                    &mut self.quit_requested,
+                    cmd,
+                    &self.ipc,
+                    &self.journal,
+                    ts,
+                    origin,
+                );
+            }
+            Action::WorkspacePrev => {
+                let cmd = aegis_ipc::Command::SwitchWorkspace {
+                    dir: aegis_core::workspace::Switch::Prev,
+                };
+                apply_command_and_journal(
+                    &mut self.server,
+                    &self.notif_queue,
+                    &mut self.quit_requested,
+                    cmd,
+                    &self.ipc,
+                    &self.journal,
+                    ts,
+                    origin,
+                );
+            }
+            Action::ToggleTiling => {
+                let cmd = aegis_ipc::Command::ToggleTiling;
+                apply_command_and_journal(
+                    &mut self.server,
+                    &self.notif_queue,
+                    &mut self.quit_requested,
+                    cmd,
+                    &self.ipc,
+                    &self.journal,
+                    ts,
+                    origin,
+                );
+            }
+            Action::Lock => self.idle_process.lock_now(),
+            Action::Quit => {
+                let cmd = aegis_ipc::Command::Quit;
+                apply_command_and_journal(
+                    &mut self.server,
+                    &self.notif_queue,
+                    &mut self.quit_requested,
+                    cmd,
+                    &self.ipc,
+                    &self.journal,
+                    ts,
+                    origin,
+                );
+            }
+            Action::Screenshot => {
+                // Refuse to open the selector while locked or inactive; the
+                // selector itself also suppresses confirmation in those
+                // states, but this avoids the modal entirely.
+                if session_locked || !self.host.is_active() {
+                    log::debug!("screenshot: suppressed while locked or inactive");
+                    return;
+                }
+                if self.shell.screenshot_active() {
+                    // Print toggles the selector closed again.
+                    self.shell.start_screenshot();
+                } else {
+                    // Open through the freeze session: the next frame
+                    // snapshots the whole trigger frame (chrome included)
+                    // and the selector opens on top of it.
+                    let cursor = self.capture_cursor_state_at(cursor);
+                    self.screenshot_freeze.request_open(Some(cursor));
+                }
+            }
+        }
+    }
+
+    fn flush_physical_input_segment(
+        &mut self,
+        forwarded: &mut Vec<aegis_core::input::InputEvent>,
+        forwarded_keys: &mut Vec<Option<aegis_compositor::PreparedKeyboardEvent>>,
+        candidates: &mut Vec<KeybindingInvocation>,
+        session_locked: bool,
+    ) {
+        if forwarded.is_empty() {
+            debug_assert!(forwarded_keys.is_empty());
+            debug_assert!(candidates.is_empty());
+            return;
+        }
+
+        let actions = self
+            .server
+            .forward_prepared_input(forwarded, forwarded_keys, &self.keymap);
+        let fallback_super_held = self
+            .server
+            .depressed_modifiers()
+            .has(aegis_core::input::Mods::SUPER);
+        let mut candidate_at = 0;
+        for action in actions {
+            let invocation = candidates[candidate_at..]
+                .iter()
+                .position(|candidate| candidate.action == action)
+                .map(|offset| {
+                    candidate_at += offset + 1;
+                    candidates[candidate_at - 1]
+                })
+                .unwrap_or(KeybindingInvocation {
+                    action,
+                    cursor: self.input_acc.cursor,
+                    super_held: fallback_super_held,
+                });
+            self.dispatch_keybinding(invocation, session_locked);
+        }
+        forwarded.clear();
+        forwarded_keys.clear();
+        candidates.clear();
+    }
+
+    fn finish_keyboard_switcher_if_released(&mut self, super_held: bool) {
+        // Swipe-driven switching has no held modifier and commits on
+        // SwipeEnd instead.
+        if self.swipe.as_ref().is_none_or(|swipe| !swipe.switcher)
+            && (self.shell.window_switcher_active() || self.server.window_switcher_active())
+            && !super_held
+        {
+            self.shell.finish_window_switcher();
+            self.server.finish_window_switcher();
+        }
+    }
+
     pub(super) fn process_input(
         &mut self,
         work: IterationWork,
@@ -433,10 +652,11 @@ impl CompositorRuntime {
         // the matching release, even when the overlay opens or closes between
         // those two events.
         let keyboard_captured = !session_locked && self.shell.captures_keyboard();
-        let mut captured_actions = Vec::new();
-        let mut client_action_candidates = Vec::new();
         let mut event_cursor = pointer_before;
         let mut chrome_owned_key_events = vec![false; events.len()];
+        let mut chrome_key_chars = vec![None; events.len()];
+        let mut chrome_actions = vec![None; events.len()];
+        let mut client_action_candidates = vec![None; events.len()];
         let mut prepared_key_events = vec![None; events.len()];
         if !events.is_empty() {
             for (event_index, ev) in events.iter().enumerate() {
@@ -494,7 +714,8 @@ impl CompositorRuntime {
                             // screenshot binding retain its exact trigger
                             // coordinates even if this input batch contains a
                             // later motion event.
-                            client_action_candidates.push((action, event_cursor));
+                            client_action_candidates[event_index] =
+                                Some(keybinding_invocation(action, event_cursor, key));
                         }
 
                         if chrome_owned {
@@ -523,16 +744,11 @@ impl CompositorRuntime {
                                     self.keymap
                                         .match_key_during_keyboard_capture(kc.mods, kc.keysym)
                                 }) {
-                                    captured_actions.push((action, event_cursor));
+                                    chrome_actions[event_index] =
+                                        Some(keybinding_invocation(action, event_cursor, kc));
                                 } else {
-                                    self.shell.key_char(kc);
+                                    chrome_key_chars[event_index] = Some(kc);
                                 }
-                            }
-                            // VT switch keys stay compositor-owned while
-                            // chrome owns their sequence.
-                            if let Some(vt) = self.server.take_vt_switch() {
-                                log::info!("{}: VT switch requested to tty{vt}", self.host.name());
-                                self.host.switch_vt(vt);
                             }
                         }
                     }
@@ -560,21 +776,75 @@ impl CompositorRuntime {
                 }
             }
             // Route the batch a second time with compositor overlays removed
-            // from the client stream. Pointer motion into chrome becomes one
-            // leave; buttons and scroll are consumed until the pointer exits.
-            // This prevents a dock/workspace/launcher click from also clicking
-            // the client window visually underneath it.
+            // from the client stream. Flush at shortcut and held-modifier
+            // boundaries so their effects occur in physical event order. In
+            // particular, a Super release commits the preview before a later
+            // click or wheel frame in this same backend batch is routed.
             let display = self.input_acc.display_size;
             let mut route_cursor = pointer_before;
             let mut forwarded = Vec::with_capacity(events.len() + 1);
             let mut forwarded_keys = Vec::new();
+            let mut forwarded_candidates = Vec::new();
             for (event_index, ev) in events.iter().copied().enumerate() {
                 use aegis_core::input::InputEvent::*;
                 match ev {
-                    Key { .. } if chrome_owned_key_events[event_index] => {}
-                    Key { .. } => {
+                    Key { code, state } if chrome_owned_key_events[event_index] => {
+                        self.flush_physical_input_segment(
+                            &mut forwarded,
+                            &mut forwarded_keys,
+                            &mut forwarded_candidates,
+                            session_locked,
+                        );
+                        if let Some(invocation) = chrome_actions[event_index] {
+                            self.dispatch_keybinding(invocation, session_locked);
+                        } else if let Some(key) = chrome_key_chars[event_index] {
+                            self.shell.key_char(key);
+                        }
+                        // Escape cancels instead of committing when the later
+                        // Super release from this batch is observed.
+                        if self.shell.take_window_switcher_cancel() {
+                            self.server.cancel_window_switcher();
+                            self.shell.finish_window_switcher();
+                        }
+                        let super_held_at_event = prepared_key_events[event_index]
+                            .and_then(|prepared| prepared.key_char())
+                            .is_some_and(|key| key.mods.has(aegis_core::input::Mods::SUPER));
+                        if !state.is_pressed()
+                            && matches!(
+                                code,
+                                aegis_core::input::KEY_LEFTMETA | aegis_core::input::KEY_RIGHTMETA
+                            )
+                            && !super_held_at_event
+                        {
+                            self.finish_keyboard_switcher_if_released(false);
+                        }
+                    }
+                    Key { code, state } => {
                         forwarded.push(ev);
                         forwarded_keys.push(prepared_key_events[event_index]);
+                        if let Some(candidate) = client_action_candidates[event_index] {
+                            forwarded_candidates.push(candidate);
+                        }
+                        let super_held_at_event = prepared_key_events[event_index]
+                            .and_then(|prepared| prepared.key_char())
+                            .is_some_and(|key| key.mods.has(aegis_core::input::Mods::SUPER));
+                        let super_released = !state.is_pressed()
+                            && matches!(
+                                code,
+                                aegis_core::input::KEY_LEFTMETA | aegis_core::input::KEY_RIGHTMETA
+                            )
+                            && !super_held_at_event;
+                        if client_action_candidates[event_index].is_some() || super_released {
+                            self.flush_physical_input_segment(
+                                &mut forwarded,
+                                &mut forwarded_keys,
+                                &mut forwarded_candidates,
+                                session_locked,
+                            );
+                        }
+                        if super_released {
+                            self.finish_keyboard_switcher_if_released(false);
+                        }
                     }
                     PointerMotion { x, y } => {
                         self.synthetic_pointer_active = false;
@@ -689,25 +959,14 @@ impl CompositorRuntime {
                     _ => forwarded.push(ev),
                 }
             }
-            let forwarded_actions =
-                self.server
-                    .forward_prepared_input(&forwarded, &forwarded_keys, &self.keymap);
-            let mut actions = captured_actions;
-            let mut candidate_at = 0;
-            for action in forwarded_actions {
-                let position = client_action_candidates[candidate_at..]
-                    .iter()
-                    .position(|(candidate, _)| *candidate == action)
-                    .map(|offset| {
-                        candidate_at += offset + 1;
-                        client_action_candidates[candidate_at - 1].1
-                    })
-                    .unwrap_or(self.input_acc.cursor);
-                actions.push((action, position));
-            }
-            // Escape is delivered to switcher chrome above. Cancel the
-            // compositor session before release handling in the same backend
-            // batch can otherwise commit its preview target.
+            self.flush_physical_input_segment(
+                &mut forwarded,
+                &mut forwarded_keys,
+                &mut forwarded_candidates,
+                session_locked,
+            );
+            // Safety net for a chrome implementation that raises cancellation
+            // outside the key path above.
             if self.shell.take_window_switcher_cancel() {
                 self.server.cancel_window_switcher();
                 self.shell.finish_window_switcher();
@@ -716,161 +975,13 @@ impl CompositorRuntime {
                 .server
                 .depressed_modifiers()
                 .has(aegis_core::input::Mods::SUPER);
-            // The keyboard path ends the switcher when Super is released.
-            // Yield while a swipe-driven switcher is in flight: no modifier
-            // is held for the gesture, and `claim_swipe` closes the switcher
-            // itself on SwipeEnd.
-            if self.swipe.as_ref().is_none_or(|swipe| !swipe.switcher)
-                && (self.shell.window_switcher_active() || self.server.window_switcher_active())
-                && !super_held
-            {
-                self.shell.finish_window_switcher();
-                self.server.finish_window_switcher();
-            }
+            self.finish_keyboard_switcher_if_released(super_held);
             // Ctrl+Alt+Fn: the compositor performs console VT switches itself
             // through libseat (the kernel never sees the key once libinput
             // owns evdev). No-op on the nested backend.
             if let Some(vt) = self.server.take_vt_switch() {
                 log::info!("{}: VT switch requested to tty{vt}", self.host.name());
                 self.host.switch_vt(vt);
-            }
-            // Dispatch ordinary global bindings plus the explicitly
-            // modal-safe bindings recovered above while chrome had capture.
-            for (action, action_cursor) in actions {
-                use aegis_core::keybind::Action;
-                let ts = self.start.elapsed().as_millis() as u64;
-                let origin = aegis_ipc::Origin::Keybinding;
-                match action {
-                    Action::ToggleLauncher => self.shell.toggle(),
-                    Action::TogglePrism => self.shell.toggle_prism(),
-                    Action::ToggleOverview => self.shell.toggle_overview(),
-                    Action::ToggleCommandPanel => self.shell.toggle_command_panel(),
-                    Action::CloseFocused => {
-                        if let Some(id) = self.server.focused_toplevel_id() {
-                            let cmd = aegis_ipc::Command::Close { id };
-                            apply_command_and_journal(
-                                &mut self.server,
-                                &self.notif_queue,
-                                &mut self.quit_requested,
-                                cmd,
-                                &self.ipc,
-                                &self.journal,
-                                ts,
-                                origin,
-                            );
-                        }
-                    }
-                    Action::CycleFocus => {
-                        if super_held {
-                            self.shell.start_window_switcher();
-                            self.server.start_window_switcher();
-                        }
-                        let cmd = aegis_ipc::Command::Cycle { forward: true };
-                        apply_command_and_journal(
-                            &mut self.server,
-                            &self.notif_queue,
-                            &mut self.quit_requested,
-                            cmd,
-                            &self.ipc,
-                            &self.journal,
-                            ts,
-                            origin,
-                        );
-                    }
-                    Action::CycleFocusBack => {
-                        if super_held {
-                            self.shell.start_window_switcher();
-                            self.server.start_window_switcher();
-                        }
-                        let cmd = aegis_ipc::Command::Cycle { forward: false };
-                        apply_command_and_journal(
-                            &mut self.server,
-                            &self.notif_queue,
-                            &mut self.quit_requested,
-                            cmd,
-                            &self.ipc,
-                            &self.journal,
-                            ts,
-                            origin,
-                        );
-                    }
-                    Action::WorkspaceNext => {
-                        let cmd = aegis_ipc::Command::SwitchWorkspace {
-                            dir: aegis_core::workspace::Switch::Next,
-                        };
-                        apply_command_and_journal(
-                            &mut self.server,
-                            &self.notif_queue,
-                            &mut self.quit_requested,
-                            cmd,
-                            &self.ipc,
-                            &self.journal,
-                            ts,
-                            origin,
-                        );
-                    }
-                    Action::WorkspacePrev => {
-                        let cmd = aegis_ipc::Command::SwitchWorkspace {
-                            dir: aegis_core::workspace::Switch::Prev,
-                        };
-                        apply_command_and_journal(
-                            &mut self.server,
-                            &self.notif_queue,
-                            &mut self.quit_requested,
-                            cmd,
-                            &self.ipc,
-                            &self.journal,
-                            ts,
-                            origin,
-                        );
-                    }
-                    Action::ToggleTiling => {
-                        let cmd = aegis_ipc::Command::ToggleTiling;
-                        apply_command_and_journal(
-                            &mut self.server,
-                            &self.notif_queue,
-                            &mut self.quit_requested,
-                            cmd,
-                            &self.ipc,
-                            &self.journal,
-                            ts,
-                            origin,
-                        );
-                    }
-                    Action::Lock => self.idle_process.lock_now(),
-                    Action::Quit => {
-                        let cmd = aegis_ipc::Command::Quit;
-                        apply_command_and_journal(
-                            &mut self.server,
-                            &self.notif_queue,
-                            &mut self.quit_requested,
-                            cmd,
-                            &self.ipc,
-                            &self.journal,
-                            ts,
-                            origin,
-                        );
-                    }
-                    Action::Screenshot => {
-                        // Refuse to open the selector while locked or inactive;
-                        // the selector itself also suppresses confirmation in
-                        // those states, but this avoids the modal entirely.
-                        if session_locked || !self.host.is_active() {
-                            log::debug!("screenshot: suppressed while locked or inactive");
-                            continue;
-                        }
-                        if self.shell.screenshot_active() {
-                            // Print toggles the selector closed again.
-                            self.shell.start_screenshot();
-                        } else {
-                            // Open through the freeze session: the next frame
-                            // snapshots the whole trigger frame (chrome
-                            // included) and the selector opens on top of it.
-                            let cursor = self.capture_cursor_state_at(action_cursor);
-                            self.screenshot_freeze.request_open(Some(cursor));
-                        }
-                    }
-                }
             }
         }
 
@@ -1039,6 +1150,15 @@ impl CompositorRuntime {
             }
             self.host.set_buffer_scale();
             self.server.set_outputs(self.host.output_infos());
+            // KMS plane capabilities can change when a connector is added,
+            // removed, or remodeset. Existing linux-dmabuf v4 feedback
+            // objects are subscriptions, so refresh their preferred scanout
+            // tranche after the backend and advertised outputs agree on the
+            // new topology. Semantically unchanged capabilities are a no-op.
+            self.server.update_dmabuf_feedback(
+                self.host.dmabuf_scanout_formats(),
+                self.host.dmabuf_scanout_device(),
+            );
             // The logical extent follows the fresh server geometry (backend
             // + overrides), so a scale override or a hotplug to a
             // different-scale output re-lays the chrome out correctly.
@@ -1238,6 +1358,23 @@ mod tests {
             .map(|value| *value as u8)
             .collect::<Vec<_>>();
         assert_eq!(text, b"ab");
+    }
+
+    #[test]
+    fn keybinding_invocation_keeps_the_trigger_edge_modifier_state() {
+        let invocation = keybinding_invocation(
+            aegis_core::keybind::Action::CycleFocus,
+            (20.0, 30.0),
+            aegis_core::input::KeyChar {
+                keysym: aegis_core::input::XKB_KEY_Tab,
+                ch: None,
+                mods: aegis_core::input::Mods::SUPER,
+            },
+        );
+        let end_of_batch_mods = aegis_core::input::Mods::NONE;
+
+        assert!(invocation.super_held);
+        assert!(!end_of_batch_mods.has(aegis_core::input::Mods::SUPER));
     }
 
     #[test]

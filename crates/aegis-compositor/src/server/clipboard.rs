@@ -38,6 +38,18 @@ impl Server {
     ) -> Result<(), ClipboardError> {
         install_owned_clipboard(self.state.as_mut(), seat, payloads)
     }
+
+    /// Arc-preserving variant for large compositor-produced payloads such as
+    /// screenshots. The capture worker and the clipboard selection can share
+    /// one immutable PNG allocation while the worker finishes the independent
+    /// atomic disk write.
+    pub fn set_clipboard_data_shared(
+        &mut self,
+        seat: SeatId,
+        payloads: Vec<(String, std::sync::Arc<[u8]>)>,
+    ) -> Result<(), ClipboardError> {
+        install_owned_clipboard_shared(self.state.as_mut(), seat, payloads)
+    }
 }
 
 fn install_owned_clipboard(
@@ -45,7 +57,22 @@ fn install_owned_clipboard(
     seat: SeatId,
     payloads: Vec<(String, Vec<u8>)>,
 ) -> Result<(), ClipboardError> {
-    let selection = build_owned_selection(payloads)?;
+    install_owned_clipboard_shared(
+        state,
+        seat,
+        payloads
+            .into_iter()
+            .map(|(mime, bytes)| (mime, std::sync::Arc::from(bytes)))
+            .collect(),
+    )
+}
+
+fn install_owned_clipboard_shared(
+    state: &mut State,
+    seat: SeatId,
+    payloads: Vec<(String, std::sync::Arc<[u8]>)>,
+) -> Result<(), ClipboardError> {
+    let selection = build_owned_selection_shared(payloads)?;
     let Some(_guard) = ActiveSeatGuard::enter(state, seat) else {
         return Err(ClipboardError::SeatUnavailable(seat));
     };
@@ -53,7 +80,19 @@ fn install_owned_clipboard(
     Ok(())
 }
 
+#[cfg(test)]
 fn build_owned_selection(payloads: Vec<(String, Vec<u8>)>) -> Result<Selection, ClipboardError> {
+    build_owned_selection_shared(
+        payloads
+            .into_iter()
+            .map(|(mime, bytes)| (mime, std::sync::Arc::from(bytes)))
+            .collect(),
+    )
+}
+
+fn build_owned_selection_shared(
+    payloads: Vec<(String, std::sync::Arc<[u8]>)>,
+) -> Result<Selection, ClipboardError> {
     if payloads.is_empty() {
         return Err(ClipboardError::Empty);
     }
@@ -82,7 +121,7 @@ fn build_owned_selection(payloads: Vec<(String, Vec<u8>)>) -> Result<Selection, 
             return Err(ClipboardError::TooLarge);
         }
         mime_types.push(mime.clone());
-        owned.push((mime, std::sync::Arc::<[u8]>::from(bytes)));
+        owned.push((mime, bytes));
     }
 
     Ok(Selection {
@@ -171,6 +210,21 @@ mod tests {
             ]),
             Err(ClipboardError::DuplicateMime(_))
         ));
+    }
+
+    #[test]
+    fn shared_clipboard_keeps_the_original_payload_allocation() {
+        let png: std::sync::Arc<[u8]> = std::sync::Arc::from(&b"png-bytes"[..]);
+        let selection =
+            build_owned_selection_shared(vec![("image/png".into(), std::sync::Arc::clone(&png))])
+                .unwrap();
+        let installed = selection
+            .owned
+            .as_ref()
+            .unwrap()
+            .payload("image/png")
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&png, &installed));
     }
 
     #[test]

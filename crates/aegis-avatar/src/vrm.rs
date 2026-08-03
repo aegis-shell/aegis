@@ -239,7 +239,9 @@ impl Model {
             ATLAS_SIZE as f32,
             ATLAS_SIZE as f32 * 0.5,
         );
-        self.canvas.end_target();
+        self.canvas
+            .end_target_checked()
+            .map_err(|error| VrmError::Render(self.source_path.clone(), error))?;
         // The lock screen samples `texture()` directly. Only an explicitly
         // requested debug dump adds the GPU copy to the readable surface;
         // release builds have neither this pass nor a CPU readback path.
@@ -255,7 +257,9 @@ impl Model {
                 ATLAS_SIZE as f32,
                 ATLAS_SIZE as f32,
             );
-            self.canvas.end();
+            self.canvas
+                .end_checked()
+                .map_err(|error| VrmError::Render(self.source_path.clone(), error))?;
         }
         frame
             .submit()

@@ -27,6 +27,7 @@ impl CompositorRuntime {
                 // which it was accepted. Never replay chrome edges or a
                 // screenshot across a target-availability boundary.
                 self.refuse_suspended_frame();
+                self.primary_plane_state.invalidate();
                 if reason == PresentationAvailability::BackendUnavailable {
                     self.invalidate_input_epoch();
                 }
@@ -37,6 +38,7 @@ impl CompositorRuntime {
                 // preserves input. Losing VT/session ownership afterwards
                 // must still invalidate that older input epoch.
                 self.refuse_suspended_frame();
+                self.primary_plane_state.invalidate();
                 self.invalidate_input_epoch();
                 self.previous_render_at = now;
             }
@@ -160,9 +162,11 @@ impl CompositorRuntime {
     }
 
     fn update_animation_state(&mut self) {
-        self.animating = self.shell.anim_pending()
-            || self.server.transitions_pending()
-            || self.capture_worker.is_busy();
+        // Capture post-processing is background work with its own pollable
+        // completion wakeup. Treating it as animation used to schedule full
+        // compositor frames at the output refresh rate throughout PNG encode
+        // and fsync, exactly when the machine was already under load.
+        self.animating = self.shell.anim_pending() || self.server.transitions_pending();
     }
 
     fn queue_frame_state(&mut self, frame: FrameState) {

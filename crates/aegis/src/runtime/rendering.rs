@@ -8,6 +8,65 @@ use super::*;
 /// pyramid, so the full-resolution target only costs the region render.
 pub(super) const BACKDROP_DOWNSAMPLE: u32 = 1;
 
+/// Convert output damage to the single physical-pixel rectangle accepted by
+/// Vulkan dynamic rendering. `None` deliberately means a full-destination
+/// pass: both `FrameDamage::Full` and the conservative empty-area fallback
+/// must leave scissoring disabled.
+pub(super) fn frame_damage_render_area(repaint: &FrameDamage) -> Option<flux::CanvasRenderArea> {
+    repaint.area_union().and_then(|rect| {
+        (!rect.is_empty()).then_some(flux::CanvasRenderArea {
+            x: rect.origin.x,
+            y: rect.origin.y,
+            width: rect.size.w as u32,
+            height: rect.size.h as u32,
+        })
+    })
+}
+
+/// Resume the output after the no-stencil client/image pass for arbitrary
+/// compositor UI. Lens may emit path fills whose correct winding semantics
+/// require stencil, so shell drawing must never share Aegis's optimized
+/// no-stencil base pass. `render_area` is copied from that base pass so the
+/// split preserves partial-repaint bounds while `clear: None` preserves every
+/// pixel already composited below the UI.
+pub(super) fn begin_stencil_frame_overlay(
+    canvas: &flux::Canvas,
+    frame: &flux::Frame<'_>,
+    render_area: Option<flux::CanvasRenderArea>,
+) -> Result<(), flux::Error> {
+    canvas.begin_pass(
+        frame,
+        flux::CanvasPassOptions {
+            clear: None,
+            antialias: flux::CanvasAntialias::None,
+            render_area,
+            skip_stencil: false,
+        },
+    )
+}
+
+/// Target-pass counterpart to [`begin_stencil_frame_overlay`]. Screenshot
+/// freeze capture initially records only opaque wallpaper/client image work
+/// without stencil, then resumes through this helper before baking Lens chrome
+/// into the target.
+pub(super) fn begin_stencil_target_overlay(
+    canvas: &flux::Canvas,
+    frame: &flux::Frame<'_>,
+    target: &flux::Image,
+    render_area: Option<flux::CanvasRenderArea>,
+) -> Result<(), flux::Error> {
+    canvas.begin_target_pass(
+        frame,
+        target,
+        flux::CanvasPassOptions {
+            clear: None,
+            antialias: flux::CanvasAntialias::None,
+            render_area,
+            skip_stencil: false,
+        },
+    )
+}
+
 /// Begin a compositor canvas pass without Flux's clear-triggered 4x MSAA.
 ///
 /// Legacy Flux selects its multisample render-and-resolve path whenever a
@@ -32,6 +91,7 @@ pub(super) fn begin_opaque_frame(
             clear: Some(clear),
             antialias: flux::CanvasAntialias::None,
             render_area: None,
+            skip_stencil: true,
         },
     )
 }
@@ -44,41 +104,32 @@ pub(super) fn begin_opaque_frame_repaint(
     frame: &flux::Frame<'_>,
     _size: (u32, u32),
     clear: u32,
-    repaint: FrameDamage,
+    repaint: &FrameDamage,
 ) -> Result<(), flux::Error> {
     debug_assert_eq!(clear >> 24, 0xff, "compositor pass clear must be opaque");
-    match repaint {
-        FrameDamage::Area(rect) if !rect.is_empty() => canvas.begin_pass(
+    // Vulkan's renderArea is a single rectangle, so the pass is bounded by the
+    // UNION of the dirty-rect list even though the KMS hint carries every rect.
+    // (A list smaller than its union means pixels inside the union but outside
+    // every rect are re-cleared to the opaque background, which is harmless for
+    // an opaque compositor pass: they were already that colour.)
+    match frame_damage_render_area(repaint) {
+        Some(render_area) => canvas.begin_pass(
             frame,
             flux::CanvasPassOptions {
                 clear: Some(clear),
                 antialias: flux::CanvasAntialias::None,
-                render_area: Some(flux::CanvasRenderArea {
-                    x: rect.origin.x,
-                    y: rect.origin.y,
-                    width: rect.size.w as u32,
-                    height: rect.size.h as u32,
-                }),
+                render_area: Some(render_area),
+                skip_stencil: true,
             },
         )?,
-        FrameDamage::Area(_) => {
-            debug_assert!(false, "empty compositor repaint area");
+        None => {
             canvas.begin_pass(
                 frame,
                 flux::CanvasPassOptions {
                     clear: Some(clear),
                     antialias: flux::CanvasAntialias::None,
                     render_area: None,
-                },
-            )?;
-        }
-        FrameDamage::Full | FrameDamage::None => {
-            canvas.begin_pass(
-                frame,
-                flux::CanvasPassOptions {
-                    clear: Some(clear),
-                    antialias: flux::CanvasAntialias::None,
-                    render_area: None,
+                    skip_stencil: true,
                 },
             )?;
         }
@@ -101,8 +152,82 @@ pub(super) fn begin_opaque_target(
             clear: Some(clear),
             antialias: flux::CanvasAntialias::None,
             render_area: None,
+            skip_stencil: true,
         },
     )
+}
+
+/// One connected backdrop capture/compute region in physical pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct BackdropCaptureRegion {
+    pub(super) origin: (u32, u32),
+    pub(super) extent: (u32, u32),
+}
+
+/// Connected groups of declared backdrop regions in physical pixels,
+/// expanded by the blur footprint and aligned to the capture grid.
+///
+/// Keeping disjoint groups separate is critical: a top HUD plus a bottom Dock
+/// must not turn into one full-output compute dispatch merely because their
+/// bounding box spans the screen. Overlapping padded regions are merged
+/// transitively so no blur pass writes the same pixels twice.
+pub(super) fn blur_capture_regions(
+    regions: &[aegis_shell::BackdropRegion],
+    logical_size: (u32, u32),
+    physical_size: (u32, u32),
+    scale: f32,
+    sigma: f32,
+) -> Vec<BackdropCaptureRegion> {
+    let pad = 3.0 * sigma * scale;
+    let align = BACKDROP_DOWNSAMPLE as f32;
+    let mut merged: Vec<(u32, u32, u32, u32)> = Vec::new();
+    for region in regions {
+        let x = region.x.max(0.0);
+        let y = region.y.max(0.0);
+        let w = region.w.max(0.0).min(logical_size.0 as f32 - x) * scale;
+        let h = region.h.max(0.0).min(logical_size.1 as f32 - y) * scale;
+        if w <= 0.0 || h <= 0.0 {
+            continue;
+        }
+        let mut rect = (
+            ((((x * scale) - pad) / align).floor() * align).max(0.0) as u32,
+            ((((y * scale) - pad) / align).floor() * align).max(0.0) as u32,
+            ((((x * scale + w) + pad) / align).ceil() * align).min(physical_size.0 as f32) as u32,
+            ((((y * scale + h) + pad) / align).ceil() * align).min(physical_size.1 as f32) as u32,
+        );
+        if rect.2 <= rect.0 || rect.3 <= rect.1 {
+            continue;
+        }
+
+        // Merge every transitively overlapping/touching padded rectangle.
+        // `swap_remove` keeps the loop allocation-free after the small Vec
+        // grows to the number of active chrome bodies.
+        let mut index = 0;
+        while index < merged.len() {
+            let other = merged[index];
+            if rect.0 <= other.2 && other.0 <= rect.2 && rect.1 <= other.3 && other.1 <= rect.3 {
+                rect = (
+                    rect.0.min(other.0),
+                    rect.1.min(other.1),
+                    rect.2.max(other.2),
+                    rect.3.max(other.3),
+                );
+                merged.swap_remove(index);
+                index = 0;
+            } else {
+                index += 1;
+            }
+        }
+        merged.push(rect);
+    }
+    merged.sort_unstable_by_key(|rect| (rect.1, rect.0));
+    merged
+        .into_iter()
+        .map(|(x0, y0, x1, y1)| BackdropCaptureRegion {
+            origin: (x0, y0),
+            extent: (x1 - x0, y1 - y0),
+        })
+        .collect()
 }
 
 /// Union of the declared backdrop regions in physical pixels, expanded by
@@ -124,37 +249,106 @@ pub(super) fn blur_capture_bounds(
     scale: f32,
     sigma: f32,
 ) -> ((u32, u32), (u32, u32)) {
-    let mut x0 = f32::INFINITY;
-    let mut y0 = f32::INFINITY;
-    let mut x1 = f32::NEG_INFINITY;
-    let mut y1 = f32::NEG_INFINITY;
-    for region in regions {
-        // Same clamping as the composition pass: regions are logical and
-        // may extend past the output edge.
-        let x = region.x.max(0.0);
-        let y = region.y.max(0.0);
-        let w = region.w.max(0.0).min(logical_size.0 as f32 - x) * scale;
-        let h = region.h.max(0.0).min(logical_size.1 as f32 - y) * scale;
-        if w <= 0.0 || h <= 0.0 {
-            continue;
-        }
-        x0 = x0.min(x * scale);
-        y0 = y0.min(y * scale);
-        x1 = x1.max(x * scale + w);
-        y1 = y1.max(y * scale + h);
-    }
-    if !x0.is_finite() {
+    let connected = blur_capture_regions(regions, logical_size, physical_size, scale, sigma);
+    if connected.is_empty() {
         return ((0, 0), physical_size);
     }
-    let pad = 3.0 * sigma * scale;
-    let align = BACKDROP_DOWNSAMPLE as f32;
-    let ox = (((x0 - pad) / align).floor() * align).max(0.0);
-    let oy = (((y0 - pad) / align).floor() * align).max(0.0);
-    let ex = ((x1 + pad) / align).ceil() * align;
-    let ey = ((y1 + pad) / align).ceil() * align;
-    let ex = ex.max(ox + align).min(physical_size.0 as f32);
-    let ey = ey.max(oy + align).min(physical_size.1 as f32);
-    ((ox as u32, oy as u32), ((ex - ox) as u32, (ey - oy) as u32))
+    let x0 = connected
+        .iter()
+        .map(|region| region.origin.0)
+        .min()
+        .unwrap();
+    let y0 = connected
+        .iter()
+        .map(|region| region.origin.1)
+        .min()
+        .unwrap();
+    let x1 = connected
+        .iter()
+        .map(|region| region.origin.0 + region.extent.0)
+        .max()
+        .unwrap();
+    let y1 = connected
+        .iter()
+        .map(|region| region.origin.1 + region.extent.1)
+        .max()
+        .unwrap();
+    ((x0, y0), (x1 - x0, y1 - y0))
+}
+
+/// Map physical-output capture regions into the reusable capture image.
+/// Origins round down and far edges round up so downsampling never drops a
+/// source pixel required by the blur footprint.
+pub(super) fn blur_regions_in_capture(
+    regions: &[BackdropCaptureRegion],
+    capture_origin: (u32, u32),
+    capture_extent: (u32, u32),
+    capture_size: (u32, u32),
+) -> Vec<flux::BlurRegion> {
+    let scale_x = capture_size.0 as f32 / capture_extent.0.max(1) as f32;
+    let scale_y = capture_size.1 as f32 / capture_extent.1.max(1) as f32;
+    regions
+        .iter()
+        .filter_map(|region| {
+            let rel_x0 = region.origin.0.saturating_sub(capture_origin.0);
+            let rel_y0 = region.origin.1.saturating_sub(capture_origin.1);
+            let rel_x1 = region
+                .origin
+                .0
+                .saturating_add(region.extent.0)
+                .saturating_sub(capture_origin.0);
+            let rel_y1 = region
+                .origin
+                .1
+                .saturating_add(region.extent.1)
+                .saturating_sub(capture_origin.1);
+            let x0 = ((rel_x0 as f32 * scale_x).floor() as u32).min(capture_size.0);
+            let y0 = ((rel_y0 as f32 * scale_y).floor() as u32).min(capture_size.1);
+            let x1 = ((rel_x1 as f32 * scale_x).ceil() as u32).min(capture_size.0);
+            let y1 = ((rel_y1 as f32 * scale_y).ceil() as u32).min(capture_size.1);
+            (x1 > x0 && y1 > y0).then_some(flux::BlurRegion {
+                x: x0,
+                y: y0,
+                width: x1 - x0,
+                height: y1 - y0,
+            })
+        })
+        .collect()
+}
+
+/// Map logical backdrop bodies into capture-target pixels. These rectangles
+/// are used only as Canvas clips while material output is persisted in the
+/// per-slot transparent composite cache.
+pub(super) fn backdrop_regions_in_capture(
+    regions: &[aegis_shell::BackdropRegion],
+    capture_origin: (u32, u32),
+    capture_extent: (u32, u32),
+    capture_size: (u32, u32),
+    output_scale: f32,
+) -> Vec<flux::BlurRegion> {
+    let ratio_x = capture_size.0 as f32 / capture_extent.0.max(1) as f32;
+    let ratio_y = capture_size.1 as f32 / capture_extent.1.max(1) as f32;
+    regions
+        .iter()
+        .filter_map(|region| {
+            let x0 = (region.x.max(0.0) * output_scale - capture_origin.0 as f32) * ratio_x;
+            let y0 = (region.y.max(0.0) * output_scale - capture_origin.1 as f32) * ratio_y;
+            let x1 =
+                ((region.x + region.w).max(0.0) * output_scale - capture_origin.0 as f32) * ratio_x;
+            let y1 =
+                ((region.y + region.h).max(0.0) * output_scale - capture_origin.1 as f32) * ratio_y;
+            let x0 = x0.floor().max(0.0).min(capture_size.0 as f32) as u32;
+            let y0 = y0.floor().max(0.0).min(capture_size.1 as f32) as u32;
+            let x1 = x1.ceil().max(0.0).min(capture_size.0 as f32) as u32;
+            let y1 = y1.ceil().max(0.0).min(capture_size.1 as f32) as u32;
+            (x1 > x0 && y1 > y0).then_some(flux::BlurRegion {
+                x: x0,
+                y: y0,
+                width: x1 - x0,
+                height: y1 - y0,
+            })
+        })
+        .collect()
 }
 
 /// Convert output-logical liquid-glass declarations into coordinates of the
@@ -192,8 +386,122 @@ pub(super) fn liquid_glass_groups(
 
 pub(super) struct BackdropCapture {
     image: flux::Image,
+    /// Transparent, already-composited frost/liquid result sampled by the
+    /// output pass. Keeping this separate from the captured desktop is what
+    /// lets a slot skip both capture and compute when its source footprint did
+    /// not change.
+    composite: flux::Image,
     size: (u32, u32),
     format: flux::Format,
+    valid: bool,
+}
+
+struct ScreenshotCapture {
+    image: flux::Image,
+    size: (u32, u32),
+    format: flux::Format,
+}
+
+/// Exact backdrop configuration. Float values are stored as IEEE bit patterns
+/// so equality is collision-free and every geometry/material change
+/// invalidates all per-slot effect caches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BackdropCacheKey {
+    capture_origin: (u32, u32),
+    capture_extent: (u32, u32),
+    physical_size: (u32, u32),
+    sigma: u32,
+    scale: u32,
+    model_active: bool,
+    capture_regions: Vec<BackdropCaptureRegion>,
+    frost_regions: Vec<[u32; 4]>,
+    liquid_regions: Vec<[u32; 10]>,
+    scene_overlays: Vec<u64>,
+}
+
+impl BackdropCacheKey {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new(
+        capture_origin: (u32, u32),
+        capture_extent: (u32, u32),
+        physical_size: (u32, u32),
+        sigma: f32,
+        scale: f32,
+        model_active: bool,
+        capture_regions: &[BackdropCaptureRegion],
+        frost_regions: &[aegis_shell::BackdropRegion],
+        liquid_regions: &[aegis_shell::LiquidGlassRegion],
+        window_switcher: Option<&aegis_shell::WindowSwitcherPresentation>,
+        live_previews: &[aegis_shell::LivePreviewPresentation],
+    ) -> Self {
+        fn push_rect(out: &mut Vec<u64>, rect: aegis_core::Rect) {
+            out.extend([
+                rect.origin.x as u64,
+                rect.origin.y as u64,
+                rect.size.w as u64,
+                rect.size.h as u64,
+            ]);
+        }
+        let mut scene_overlays = Vec::new();
+        if let Some(switcher) = window_switcher {
+            scene_overlays.push(1);
+            scene_overlays.push(switcher.visibility.to_bits() as u64);
+            push_rect(&mut scene_overlays, switcher.panel);
+            scene_overlays.push(switcher.cards.len() as u64);
+            for card in &switcher.cards {
+                scene_overlays.push(card.window.0);
+                push_rect(&mut scene_overlays, card.geometry.preview);
+            }
+        } else {
+            scene_overlays.push(0);
+        }
+        scene_overlays.push(live_previews.len() as u64);
+        for preview in live_previews {
+            scene_overlays.push(preview.cards.len() as u64);
+            for card in &preview.cards {
+                scene_overlays.push(card.window.0);
+                push_rect(&mut scene_overlays, card.geometry.preview);
+            }
+        }
+        Self {
+            capture_origin,
+            capture_extent,
+            physical_size,
+            sigma: sigma.to_bits(),
+            scale: scale.to_bits(),
+            model_active,
+            capture_regions: capture_regions.to_vec(),
+            frost_regions: frost_regions
+                .iter()
+                .map(|region| {
+                    [
+                        region.x.to_bits(),
+                        region.y.to_bits(),
+                        region.w.to_bits(),
+                        region.h.to_bits(),
+                    ]
+                })
+                .collect(),
+            liquid_regions: liquid_regions
+                .iter()
+                .map(|region| {
+                    [
+                        region.bounds.x.to_bits(),
+                        region.bounds.y.to_bits(),
+                        region.bounds.w.to_bits(),
+                        region.bounds.h.to_bits(),
+                        region.corner_radius.to_bits(),
+                        region.opacity.to_bits(),
+                        region.shadow_alpha.to_bits(),
+                        region.shadow_blur.to_bits(),
+                        region.shadow_offset_y.to_bits(),
+                        0,
+                    ]
+                })
+                .collect(),
+            scene_overlays,
+        }
+    }
 }
 
 /// Live desktop capture used behind the full-screen application launcher.
@@ -205,23 +513,50 @@ pub(super) struct LauncherBackdrop {
     blur: flux::BlurFilter,
     glass: flux::LiquidGlassFilter,
     captures: Vec<Option<BackdropCapture>>,
+    /// Source damage missed by each effect-cache slot while another slot was
+    /// presented. This mirrors swapchain damage history but is deliberately
+    /// independent from output/chrome damage.
+    source_slot_damage: Vec<FrameDamage>,
+    config: Option<BackdropCacheKey>,
     was_active: bool,
     failed_session: bool,
     unsupported: bool,
 }
 
-/// Borrowed composites produced from one shared backdrop capture. Frosted
-/// regions sample `blurred`; analytic glass regions are already SDF-masked in
-/// `liquid` and can be drawn once without rectangular clipping.
-pub(super) struct BackdropImages<'filter> {
-    pub(super) blurred: flux::BlurredImage<'filter>,
-    pub(super) liquid: Option<flux::LiquidGlassImage<'filter>>,
-}
-
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum BackdropPlan {
     Direct,
-    Capture,
+    /// Capture the desktop footprint and rebuild this frame slot's effect.
+    Refresh(Vec<BackdropCaptureRegion>),
+    /// Reuse the already-composited effect image for this frame slot.
+    Cached,
+}
+
+fn backdrop_refresh_regions(
+    valid: bool,
+    model_active: bool,
+    source_damage: &FrameDamage,
+    input_regions: &[BackdropCaptureRegion],
+) -> Vec<BackdropCaptureRegion> {
+    if model_active || !valid || matches!(source_damage, FrameDamage::Full) {
+        return input_regions.to_vec();
+    }
+    let FrameDamage::Area(damage) = source_damage else {
+        return Vec::new();
+    };
+    input_regions
+        .iter()
+        .copied()
+        .filter(|region| {
+            let input = aegis_core::Rect::new(
+                region.origin.0 as i32,
+                region.origin.1 as i32,
+                region.extent.0 as i32,
+                region.extent.1 as i32,
+            );
+            damage.iter().any(|dirty| dirty.intersect(input).is_some())
+        })
+        .collect()
 }
 
 impl LauncherBackdrop {
@@ -230,6 +565,8 @@ impl LauncherBackdrop {
             blur: flux::BlurFilter::new(device)?,
             glass: flux::LiquidGlassFilter::new(device)?,
             captures: Vec::new(),
+            source_slot_damage: Vec::new(),
+            config: None,
             was_active: false,
             failed_session: false,
             unsupported: false,
@@ -246,11 +583,16 @@ impl LauncherBackdrop {
         device: &flux::Device,
         surface: &flux::Surface,
         frame: &flux::Frame<'_>,
-        extent: (u32, u32),
+        config: BackdropCacheKey,
+        source_damage: &FrameDamage,
     ) -> BackdropPlan {
         if !active {
             self.was_active = false;
             self.failed_session = false;
+            self.config = None;
+            for capture in self.captures.iter_mut().flatten() {
+                capture.valid = false;
+            }
             return BackdropPlan::Direct;
         }
 
@@ -259,8 +601,19 @@ impl LauncherBackdrop {
         if opening {
             self.failed_session = false;
         }
+        let extent = config.capture_extent;
         if self.unsupported || self.failed_session || extent.0 == 0 || extent.1 == 0 {
             return BackdropPlan::Direct;
+        }
+
+        if self.config.as_ref() != Some(&config) {
+            self.config = Some(config.clone());
+            for capture in self.captures.iter_mut().flatten() {
+                capture.valid = false;
+            }
+            for pending in &mut self.source_slot_damage {
+                *pending = FrameDamage::Full;
+            }
         }
         let format = match surface.format() {
             flux::Format::FLUX_FORMAT_RGBA8_UNORM | flux::Format::FLUX_FORMAT_BGRA8_UNORM => {
@@ -283,19 +636,27 @@ impl LauncherBackdrop {
         if self.captures.len() <= slot {
             self.captures.resize_with(slot + 1, || None);
         }
+        if self.source_slot_damage.len() <= slot {
+            self.source_slot_damage.resize(slot + 1, FrameDamage::Full);
+        }
         let target_stale = self.captures[slot]
             .as_ref()
             .is_none_or(|capture| capture.size != size || capture.format != format);
         if target_stale {
-            match flux::Image::render_target(device, size.0, size.1, format) {
-                Ok(image) => {
+            match (
+                flux::Image::render_target(device, size.0, size.1, format),
+                flux::Image::render_target(device, size.0, size.1, format),
+            ) {
+                (Ok(image), Ok(composite)) => {
                     self.captures[slot] = Some(BackdropCapture {
                         image,
+                        composite,
                         size,
                         format,
+                        valid: false,
                     });
                 }
-                Err(error) => {
+                (Err(error), _) | (_, Err(error)) => {
                     log::warn!(
                         "launcher: failed to allocate realtime backdrop target ({error}); using translucent fallback"
                     );
@@ -304,7 +665,22 @@ impl LauncherBackdrop {
                 }
             }
         }
-        BackdropPlan::Capture
+        let missed =
+            union_frame_damage(self.source_slot_damage[slot].clone(), source_damage.clone());
+        let capture = self.captures[slot]
+            .as_ref()
+            .expect("backdrop target allocation succeeded");
+        let refresh_regions = backdrop_refresh_regions(
+            capture.valid,
+            config.model_active,
+            &missed,
+            &config.capture_regions,
+        );
+        if refresh_regions.is_empty() {
+            BackdropPlan::Cached
+        } else {
+            BackdropPlan::Refresh(refresh_regions)
+        }
     }
 
     pub(super) fn begin_capture(
@@ -312,11 +688,22 @@ impl LauncherBackdrop {
         canvas: &flux::Canvas,
         frame: &flux::Frame<'_>,
         clear: u32,
+        render_area: flux::CanvasRenderArea,
     ) -> bool {
         let Some(target) = self.target(frame) else {
             return false;
         };
-        if let Err(error) = begin_opaque_target(canvas, frame, target, clear) {
+        let result = canvas.begin_target_pass(
+            frame,
+            target,
+            flux::CanvasPassOptions {
+                clear: Some(clear),
+                antialias: flux::CanvasAntialias::None,
+                render_area: Some(render_area),
+                skip_stencil: true,
+            },
+        );
+        if let Err(error) = result {
             log::warn!(
                 "launcher: failed to begin backdrop capture ({error}); using translucent fallback"
             );
@@ -340,48 +727,208 @@ impl LauncherBackdrop {
             .map(|capture| capture.size)
     }
 
-    pub(super) fn end_capture_and_compose<'backdrop>(
-        &'backdrop mut self,
+    /// Finish a capture, rebuild the realtime effects, and persist the result
+    /// in this frame slot's transparent composite image. Later uses of the
+    /// same slot can sample that image without executing capture or compute.
+    pub(super) fn finish_refresh(
+        &mut self,
         canvas: &flux::Canvas,
         frame: &flux::Frame<'_>,
         sigma: f32,
+        blur_regions: &[flux::BlurRegion],
+        frost_regions: &[flux::BlurRegion],
+        all_backdrop_regions: &[flux::BlurRegion],
         glass_groups: &[flux::LiquidGlassGroup],
         glass_params: flux::LiquidGlassParams,
-    ) -> Option<BackdropImages<'backdrop>> {
-        canvas.end_target();
+    ) -> bool {
         let slot = frame.index() as usize;
-        let capture = self.captures.get(slot)?.as_ref()?;
-        match self.blur.apply(frame, &capture.image, sigma) {
-            Ok(blurred) => {
-                let liquid = if glass_groups.is_empty() {
-                    None
-                } else {
-                    match self.glass.apply(
-                        frame,
-                        &capture.image,
-                        &blurred,
-                        glass_groups,
-                        glass_params,
-                    ) {
-                        Ok(image) => Some(image),
-                        Err(error) => {
-                            log::warn!(
-                                "launcher: liquid-glass dispatch failed ({error}); using frost fallback"
-                            );
-                            None
-                        }
+        if let Err(error) = canvas.end_target_checked() {
+            log::warn!(
+                "launcher: backdrop capture pass failed ({error}); using translucent fallback"
+            );
+            self.failed_session = true;
+            if let Some(capture) = self.captures.get_mut(slot).and_then(Option::as_mut) {
+                capture.valid = false;
+            }
+            return false;
+        }
+        let Some(capture) = self.captures.get(slot).and_then(Option::as_ref) else {
+            return false;
+        };
+        let refreshed = (|| -> Result<(), flux::Error> {
+            let blurred = self
+                .blur
+                .apply_regions(frame, &capture.image, sigma, blur_regions)?;
+            let liquid = if glass_groups.is_empty() {
+                None
+            } else {
+                match self
+                    .glass
+                    .apply(frame, &capture.image, &blurred, glass_groups, glass_params)
+                {
+                    Ok(image) => Some(image),
+                    Err(error) => {
+                        log::warn!(
+                            "launcher: liquid-glass dispatch failed ({error}); using frost fallback"
+                        );
+                        None
                     }
-                };
-                Some(BackdropImages { blurred, liquid })
+                }
+            };
+            let drawn_frost_regions = if liquid.is_some() {
+                frost_regions
+            } else {
+                // Liquid dispatch failure intentionally degrades each analytic
+                // body to the same cached frost material instead of leaving a
+                // transparent hole.
+                all_backdrop_regions
+            };
+
+            // Clear and rewrite only the disconnected padded input regions.
+            // Geometry/material changes allocate or invalidate the target, so
+            // every pixel that could contain an old effect is covered here.
+            for region in blur_regions {
+                canvas.begin_target_pass(
+                    frame,
+                    &capture.composite,
+                    flux::CanvasPassOptions {
+                        clear: Some(flux::rgba(0, 0, 0, 0)),
+                        antialias: flux::CanvasAntialias::None,
+                        render_area: Some(flux::CanvasRenderArea {
+                            x: region.x as i32,
+                            y: region.y as i32,
+                            width: region.width,
+                            height: region.height,
+                        }),
+                        skip_stencil: true,
+                    },
+                )?;
+                for frost in drawn_frost_regions {
+                    canvas.save();
+                    canvas.clip_rect(
+                        frost.x as f32,
+                        frost.y as f32,
+                        frost.width as f32,
+                        frost.height as f32,
+                    );
+                    blurred.draw(
+                        canvas,
+                        0.0,
+                        0.0,
+                        capture.size.0 as f32,
+                        capture.size.1 as f32,
+                    );
+                    canvas.restore();
+                }
+                if let Some(image) = liquid.as_ref() {
+                    image.draw(
+                        canvas,
+                        0.0,
+                        0.0,
+                        capture.size.0 as f32,
+                        capture.size.1 as f32,
+                    );
+                }
+                canvas.end_target_checked()?;
+            }
+            Ok(())
+        })();
+        match refreshed {
+            Ok(()) => {
+                if let Some(capture) = self.captures.get_mut(slot).and_then(Option::as_mut) {
+                    capture.valid = true;
+                }
+                true
             }
             Err(error) => {
                 log::warn!(
                     "launcher: realtime backdrop dispatch failed ({error}); using translucent fallback"
                 );
                 self.failed_session = true;
-                None
+                if let Some(capture) = self.captures.get_mut(slot).and_then(Option::as_mut) {
+                    capture.valid = false;
+                }
+                false
             }
         }
+    }
+
+    /// Draw this frame slot's persistent transparent effect image.
+    pub(super) fn draw_cached(
+        &self,
+        canvas: &flux::Canvas,
+        frame: &flux::Frame<'_>,
+        origin: (u32, u32),
+        extent: (u32, u32),
+    ) -> bool {
+        let Some(capture) = self
+            .captures
+            .get(frame.index() as usize)
+            .and_then(Option::as_ref)
+            .filter(|capture| capture.valid)
+        else {
+            return false;
+        };
+        // The transparent cache is initialized only inside the disconnected
+        // padded effect regions. Never sample undefined pixels between/outside
+        // those regions (notably the large gap between a HUD and Dock).
+        let Some(config) = self.config.as_ref() else {
+            return false;
+        };
+        for region in &config.capture_regions {
+            canvas.save();
+            canvas.clip_rect(
+                region.origin.0 as f32,
+                region.origin.1 as f32,
+                region.extent.0 as f32,
+                region.extent.1 as f32,
+            );
+            canvas.draw_image(
+                &capture.composite,
+                origin.0 as f32,
+                origin.1 as f32,
+                extent.0 as f32,
+                extent.1 as f32,
+            );
+            canvas.restore();
+        }
+        true
+    }
+
+    /// Draw the unfiltered capture as an opaque output base. This is valid
+    /// only on a refresh frame whose capture covers the complete output.
+    pub(super) fn draw_capture_opaque(
+        &self,
+        canvas: &flux::Canvas,
+        frame: &flux::Frame<'_>,
+        extent: (u32, u32),
+    ) -> bool {
+        let Some(capture) = self
+            .captures
+            .get(frame.index() as usize)
+            .and_then(Option::as_ref)
+        else {
+            return false;
+        };
+        canvas.draw_image_opaque(&capture.image, 0.0, 0.0, extent.0 as f32, extent.1 as f32);
+        true
+    }
+
+    /// Force every slot to rebuild on the next active backdrop frame. Used by
+    /// overview and screenshot-freeze modes, which replace the sampled scene.
+    pub(super) fn invalidate(&mut self) {
+        for capture in self.captures.iter_mut().flatten() {
+            capture.valid = false;
+        }
+        for pending in &mut self.source_slot_damage {
+            *pending = FrameDamage::Full;
+        }
+    }
+
+    /// Advance source-damage history only after the output was successfully
+    /// presented, matching the lifetime of the corresponding frame slot.
+    pub(super) fn record_present(&mut self, slot: usize, source_damage: FrameDamage) {
+        record_composite_present(&mut self.source_slot_damage, slot, source_damage);
     }
 }
 
@@ -415,7 +962,7 @@ pub(super) struct CaptureCursorState {
 }
 
 pub(super) struct ScreenshotFreeze {
-    captures: Vec<Option<BackdropCapture>>,
+    captures: Vec<Option<ScreenshotCapture>>,
     active_slot: Option<usize>,
     /// Logical cursor state sampled synchronously with the trigger, before a
     /// later input batch or capture frame can move it.
@@ -565,7 +1112,7 @@ impl ScreenshotFreeze {
         if stale {
             match flux::Image::render_target(device, surface_size.0, surface_size.1, format) {
                 Ok(image) => {
-                    self.captures[slot] = Some(BackdropCapture {
+                    self.captures[slot] = Some(ScreenshotCapture {
                         image,
                         size: surface_size,
                         format,
@@ -616,21 +1163,72 @@ pub(super) fn draw_client_scene(
     let surface_order = server.client_surface_frame_order();
     let overlay_shm = server.overlay_frames();
     let overlay_dmabuf = server.overlay_dmabuf_frames();
-    let windows = server.windows();
+    let windows = server.render_windows();
     renderer.gc(shm
         .iter()
         .map(|frame| frame.id)
         .chain(dmabuf.iter().map(|frame| frame.id))
         .chain(overlay_shm.iter().map(|frame| frame.id))
         .chain(overlay_dmabuf.iter().map(|frame| frame.id)));
-    renderer.draw_surfaces_ordered_with_window_shadows(
-        device,
-        canvas,
-        &surface_order,
-        &shm,
-        &dmabuf,
-        &windows,
-    );
+    if let Some(slide) = server.workspace_slide_presentation() {
+        let output = slide.output;
+        let animated_windows = slide
+            .layers
+            .iter()
+            .flat_map(|layer| layer.windows.iter().copied())
+            .collect::<std::collections::HashSet<_>>();
+        let static_windows = shm
+            .iter()
+            .filter_map(|frame| frame.window)
+            .chain(dmabuf.iter().filter_map(|frame| frame.window))
+            .filter(|window| !animated_windows.contains(window))
+            .collect::<std::collections::HashSet<_>>();
+        if !static_windows.is_empty() {
+            renderer.draw_workspace_surface_layer(
+                device,
+                canvas,
+                &surface_order,
+                &shm,
+                &dmabuf,
+                aegis_render::WorkspaceSurfaceLayer::new(&windows, &static_windows),
+            );
+        }
+        for layer in slide.layers {
+            let window_filter = layer
+                .windows
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>();
+            canvas.save();
+            // The page clip moves with the page, while the output framebuffer
+            // supplies the final viewport clip. Adjacent pages therefore meet
+            // at one exact edge and can never paint over one another.
+            canvas.clip_rect(
+                output.origin.x as f32 + layer.offset_x,
+                output.origin.y as f32,
+                output.size.w as f32,
+                output.size.h as f32,
+            );
+            canvas.translate(layer.offset_x, 0.0);
+            renderer.draw_workspace_surface_layer(
+                device,
+                canvas,
+                &surface_order,
+                &shm,
+                &dmabuf,
+                aegis_render::WorkspaceSurfaceLayer::new(&windows, &window_filter),
+            );
+            canvas.restore();
+        }
+    } else {
+        renderer.draw_surfaces_ordered_with_window_shadows(
+            device,
+            canvas,
+            &surface_order,
+            &shm,
+            &dmabuf,
+            &windows,
+        );
+    }
     canvas.restore();
 }
 
@@ -853,7 +1451,15 @@ pub(super) fn draw_window_switcher_scene(
         .iter()
         .map(|frame| frame.id)
         .chain(dmabuf.iter().map(|frame| frame.id)));
-    renderer.draw_surfaces_ordered_mapped(device, canvas, &surface_order, &shm, &dmabuf, &map);
+    renderer.draw_surfaces_ordered_mapped_with_opacity(
+        device,
+        canvas,
+        &surface_order,
+        &shm,
+        &dmabuf,
+        &map,
+        presentation.visibility,
+    );
     canvas.restore();
 }
 
@@ -957,108 +1563,78 @@ pub(super) fn draw_software_cursor(
     }
 }
 
-impl CompositorRuntime {
-    /// Pick a client dma-buf to page-flip directly onto the primary plane,
-    /// bypassing the Vulkan composite. This is the fullscreen-game fast path.
-    ///
-    /// The bar is intentionally high and fully conservative: a miss here
-    /// merely composites (always correct), while a false hit would scan out a
-    /// wrong/tearing buffer or drop the cursor. The candidate must:
-    ///
-    ///   - be the *only* visible dmabuf toplevel;
-    ///   - cover the whole output at (0,0) with a `Normal` transform and no
-    ///     viewport source/destination clipping;
-    ///   - have a post-transform buffer size equal to the output's;
-    ///   - be acceptable to the active primary plane
-    ///     ([`Host::supports_scanout`]); and
-    ///   - have nothing else to composite: a visible cursor needs either a
-    ///     KMS cursor plane or the composite, and no client overlay, shell
-    ///     chrome, blur, transition, capture, or lock may be active.
-    ///
-    /// `physical_size` is the output's pixel dimensions; `cursor_hidden`
-    /// reflects the current cursor visibility state.
-    pub(super) fn pick_scanout_candidate(
-        &self,
-        physical_size: (u32, u32),
-        cursor_hidden: bool,
-    ) -> Option<aegis_core::SurfaceDmabuf> {
-        // Nothing should be composited on top of the client: shell animations,
-        // overview/switcher, backdrop blur, or a software cursor all need the
-        // framebuffer and disqualify direct scanout.
-        if self.shell.anim_pending()
-            || self.shell.overview_active()
-            || self.shell.window_switcher_active()
-            || self.shell.backdrop_blur_sigma() > 0.0
-            || self.server.session_locked()
-            || self.server.transitions_pending()
-            || self.capture_worker.is_busy()
-            || self.pending_capture.is_some()
-            || self.pending_realm_capture.is_some()
-            || self.screenshot_freeze.armed
-            || self.shell.requires_composition()
-        {
-            return None;
-        }
-        // Client cursor surfaces, drag icons, and other protocol overlays are
-        // separate scene elements. They cannot ride the compositor-owned KMS
-        // cursor plane, so never drop them merely because the base toplevel is
-        // scanout-compatible.
-        if !self.server.overlay_frames().is_empty()
-            || !self.server.overlay_dmabuf_frames().is_empty()
-        {
-            return None;
-        }
-        // A software cursor is painted into the composite. When it is visible
-        // the direct-scanout path would drop it, so only take scanout when the
-        // cursor is hidden. Nested mode owns no scanout and is excluded by the
-        // supports_scanout check below.
-        if self.host.uses_software_cursor() && !cursor_hidden {
-            return None;
-        }
-        // A scanout buffer must be the only visible client surface, not just
-        // the only dma-buf toplevel. Otherwise an shm popup or either kind of
-        // subsurface would silently disappear.
-        if !self.server.client_surface_frames().is_empty() {
-            return None;
-        }
-        let all_dmabufs = self.server.client_surface_dmabuf_frames();
-        if all_dmabufs.len() != 1 {
-            return None;
-        }
-        let mut frames = self.server.toplevel_dmabuf_frames();
-        if frames.len() != 1 || frames[0].id != all_dmabufs[0].id {
-            return None;
-        }
-        let f = frames.pop()?;
-        // Direct scanout only honors the trivial placement: identity transform,
-        // origin at (0,0), and no viewport source/destination crop. A rotated
-        // or sub-rect client must be composited.
-        if f.geometry.transform != aegis_core::Transform::Normal
-            || f.geometry.position != (aegis_core::Point { x: 0, y: 0 })
-            || f.geometry.viewport_src.is_some()
-            || f.geometry.viewport_dst.is_some()
-        {
-            return None;
-        }
-        // The buffer must exactly fill the output; a size mismatch would need
-        // hardware scaling (not configured here) or letterboxing.
-        if (f.width as u32, f.height as u32) != physical_size {
-            return None;
-        }
-        // The primary plane must accept this fourcc/modifier pair.
-        if !self.host.supports_scanout(f.drm_format, f.modifier) {
-            return None;
-        }
-        Some(f)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn region(x: f32, y: f32, w: f32, h: f32) -> aegis_shell::BackdropRegion {
         aegis_shell::BackdropRegion { x, y, w, h }
+    }
+
+    #[test]
+    fn backdrop_refresh_is_driven_by_source_footprint() {
+        let input = [
+            BackdropCaptureRegion {
+                origin: (0, 0),
+                extent: (1920, 80),
+            },
+            BackdropCaptureRegion {
+                origin: (0, 1000),
+                extent: (1920, 80),
+            },
+        ];
+        let video_above_dock = FrameDamage::Area(vec![aegis_core::Rect::new(100, 100, 800, 450)]);
+        assert!(backdrop_refresh_regions(true, false, &video_above_dock, &input,).is_empty());
+        let video_under_dock = FrameDamage::Area(vec![aegis_core::Rect::new(100, 1020, 800, 60)]);
+        assert_eq!(
+            backdrop_refresh_regions(true, false, &video_under_dock, &input),
+            vec![input[1]]
+        );
+        assert_eq!(
+            backdrop_refresh_regions(false, false, &FrameDamage::None, &input),
+            input
+        );
+        assert_eq!(
+            backdrop_refresh_regions(true, true, &FrameDamage::None, &input),
+            input
+        );
+    }
+
+    #[test]
+    fn backdrop_cache_key_tracks_geometry_and_material_exactly() {
+        let capture = [BackdropCaptureRegion {
+            origin: (0, 1000),
+            extent: (1920, 80),
+        }];
+        let frost = [region(0.0, 1040.0, 1920.0, 40.0)];
+        let base = BackdropCacheKey::new(
+            (0, 1000),
+            (1920, 80),
+            (1920, 1080),
+            12.0,
+            1.0,
+            false,
+            &capture,
+            &frost,
+            &[],
+            None,
+            &[],
+        );
+        let sigma_changed = BackdropCacheKey::new(
+            (0, 1000),
+            (1920, 80),
+            (1920, 1080),
+            12.5,
+            1.0,
+            false,
+            &capture,
+            &frost,
+            &[],
+            None,
+            &[],
+        );
+        assert_ne!(base, sigma_changed);
+        assert_eq!(base, base.clone());
     }
 
     #[test]
@@ -1115,6 +1691,77 @@ mod tests {
         );
         assert_eq!(origin, (0, 0));
         assert_eq!(size, (1920, 1080));
+    }
+
+    #[test]
+    fn capture_regions_keep_top_bar_and_bottom_dock_disjoint() {
+        let regions = blur_capture_regions(
+            &[
+                region(0.0, 0.0, 1920.0, 32.0),
+                region(400.0, 1040.0, 1120.0, 40.0),
+            ],
+            (1920, 1080),
+            (1920, 1080),
+            1.0,
+            12.0,
+        );
+        assert_eq!(
+            regions,
+            vec![
+                BackdropCaptureRegion {
+                    origin: (0, 0),
+                    extent: (1920, 68),
+                },
+                BackdropCaptureRegion {
+                    origin: (364, 1004),
+                    extent: (1192, 76),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn capture_regions_merge_overlapping_blur_footprints_transitively() {
+        let regions = blur_capture_regions(
+            &[
+                region(100.0, 100.0, 40.0, 40.0),
+                region(170.0, 100.0, 40.0, 40.0),
+                region(240.0, 100.0, 40.0, 40.0),
+            ],
+            (400, 300),
+            (400, 300),
+            1.0,
+            12.0,
+        );
+        assert_eq!(
+            regions,
+            vec![BackdropCaptureRegion {
+                origin: (64, 64),
+                extent: (252, 112),
+            }]
+        );
+    }
+
+    #[test]
+    fn capture_regions_map_outward_into_downsampled_target() {
+        let mapped = blur_regions_in_capture(
+            &[BackdropCaptureRegion {
+                origin: (101, 121),
+                extent: (81, 41),
+            }],
+            (50, 100),
+            (400, 200),
+            (200, 100),
+        );
+        assert_eq!(
+            mapped,
+            vec![flux::BlurRegion {
+                x: 25,
+                y: 10,
+                width: 41,
+                height: 21,
+            }]
+        );
     }
 
     #[test]
@@ -1217,7 +1864,7 @@ mod tests {
                 flux::rgba(expected[0], expected[1], expected[2], expected[3]),
             )
             .unwrap();
-            canvas.end();
+            canvas.end_checked().unwrap();
             frame.submit().unwrap().present().unwrap();
 
             let mut pixels = vec![0; size.0 as usize * size.1 as usize * 4];
@@ -1232,7 +1879,7 @@ mod tests {
     }
 
     #[test]
-    fn damaged_opaque_frame_preserves_pixels_outside_the_scissor() {
+    fn damaged_base_and_stencil_overlay_preserve_pixels_outside_the_scissor() {
         let Ok(device) = flux::Device::new(true, &[], &[], 1) else {
             return;
         };
@@ -1242,19 +1889,35 @@ mod tests {
 
         let frame = surface.begin_frame().unwrap();
         begin_opaque_frame(&canvas, &frame, flux::rgba(200, 30, 20, 255)).unwrap();
-        canvas.end();
+        canvas.end_checked().unwrap();
         frame.submit().unwrap().present().unwrap();
 
         let frame = surface.begin_frame().unwrap();
+        let repaint = FrameDamage::Area(vec![aegis_core::Rect::new(8, 6, 10, 9)]);
         begin_opaque_frame_repaint(
             &canvas,
             &frame,
             size,
             flux::rgba(10, 80, 220, 255),
-            FrameDamage::Area(aegis_core::Rect::new(8, 6, 10, 9)),
+            &repaint,
         )
         .unwrap();
-        canvas.end();
+        // End the optimized image/base pass, then exercise the exact pass
+        // boundary used before Lens. A self-intersecting fill is intentional:
+        // Flux rejects it from a no-stencil pass, so successful checked end
+        // proves the overlay really has stencil rather than merely being a
+        // second no-stencil LOAD pass.
+        canvas.end_checked().unwrap();
+        begin_stencil_frame_overlay(&canvas, &frame, frame_damage_render_area(&repaint)).unwrap();
+        let arena = flux::Arena::with_capacity(4096).unwrap();
+        let path = flux::Path::new(&arena).unwrap();
+        path.move_to(11.0, 8.0)
+            .line_to(15.0, 12.0)
+            .line_to(11.0, 12.0)
+            .line_to(15.0, 8.0)
+            .close();
+        canvas.fill_path(&path, &flux::Paint::solid(flux::rgba(20, 220, 70, 255)));
+        canvas.end_checked().unwrap();
         frame.submit().unwrap().present().unwrap();
 
         let mut pixels = vec![0; size.0 as usize * size.1 as usize * 4];
@@ -1264,5 +1927,24 @@ mod tests {
         assert_eq!(pixel(9, 7), [10, 80, 220, 255]);
         assert_eq!(pixel(17, 14), [10, 80, 220, 255]);
         assert_eq!(pixel(18, 15), [200, 30, 20, 255]);
+    }
+
+    #[test]
+    fn frame_damage_render_area_uses_the_exact_union() {
+        let damage = FrameDamage::Area(vec![
+            aegis_core::Rect::new(11, 7, 5, 9),
+            aegis_core::Rect::new(29, 3, 4, 8),
+        ]);
+        assert_eq!(
+            frame_damage_render_area(&damage),
+            Some(flux::CanvasRenderArea {
+                x: 11,
+                y: 3,
+                width: 22,
+                height: 13,
+            })
+        );
+        assert_eq!(frame_damage_render_area(&FrameDamage::Full), None);
+        assert_eq!(frame_damage_render_area(&FrameDamage::None), None);
     }
 }

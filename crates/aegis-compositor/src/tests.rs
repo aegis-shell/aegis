@@ -607,6 +607,103 @@ fn new_with_render_caps_carries_dmabuf_format_table() {
     );
 }
 
+#[test]
+fn new_with_dmabuf_feedback_carries_separate_scanout_capabilities() {
+    use aegis_core::dmabuf::{DRM_FORMAT_XRGB8888, DmabufFormat};
+
+    if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+        eprintln!("skipping: XDG_RUNTIME_DIR not set");
+        return;
+    }
+    const RENDER_MODIFIER: u64 = 0x0100_0000_0000_0001;
+    const SCANOUT_MODIFIER: u64 = 0x0100_0000_0000_0002;
+    const MAIN_DEVICE: u64 = 0x100;
+    const SCANOUT_DEVICE: u64 = 0x200;
+    let server = Server::new_with_dmabuf_feedback(
+        true,
+        true,
+        vec![DmabufFormat {
+            fourcc: DRM_FORMAT_XRGB8888,
+            modifiers: vec![RENDER_MODIFIER, SCANOUT_MODIFIER],
+        }],
+        Some(MAIN_DEVICE),
+        vec![DmabufFormat {
+            fourcc: DRM_FORMAT_XRGB8888,
+            modifiers: vec![SCANOUT_MODIFIER],
+        }],
+        Some(SCANOUT_DEVICE),
+    )
+    .expect("Server::new_with_dmabuf_feedback");
+
+    assert_eq!(server.state.dmabuf_main_device, Some(MAIN_DEVICE));
+    assert_eq!(server.state.dmabuf_scanout_device, Some(SCANOUT_DEVICE));
+    assert_eq!(server.state.dmabuf_scanout_formats.len(), 1);
+    assert_eq!(
+        server.state.dmabuf_scanout_formats[0].modifiers,
+        vec![SCANOUT_MODIFIER]
+    );
+}
+
+#[test]
+fn dmabuf_feedback_update_skips_semantically_identical_capabilities() {
+    use aegis_core::dmabuf::{DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB8888, DmabufFormat};
+
+    if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+        eprintln!("skipping: XDG_RUNTIME_DIR not set");
+        return;
+    }
+    let renderer = vec![
+        DmabufFormat {
+            fourcc: DRM_FORMAT_XRGB8888,
+            modifiers: vec![1, 2],
+        },
+        DmabufFormat {
+            fourcc: DRM_FORMAT_ARGB8888,
+            modifiers: vec![3],
+        },
+    ];
+    let initial_scanout = vec![
+        DmabufFormat {
+            fourcc: DRM_FORMAT_XRGB8888,
+            modifiers: vec![2, 1],
+        },
+        DmabufFormat {
+            fourcc: DRM_FORMAT_ARGB8888,
+            modifiers: vec![3],
+        },
+    ];
+    let mut server =
+        Server::new_with_dmabuf_feedback(true, true, renderer, Some(10), initial_scanout, Some(20))
+            .expect("Server::new_with_dmabuf_feedback");
+
+    assert!(
+        !server.update_dmabuf_feedback(
+            vec![
+                DmabufFormat {
+                    fourcc: DRM_FORMAT_ARGB8888,
+                    modifiers: vec![3, 3],
+                },
+                DmabufFormat {
+                    fourcc: DRM_FORMAT_XRGB8888,
+                    modifiers: vec![1, 2, 1],
+                },
+            ],
+            Some(20),
+        ),
+        "enumeration order and duplicate modifiers do not change the advertised tranche"
+    );
+    assert!(
+        server.update_dmabuf_feedback(
+            vec![DmabufFormat {
+                fourcc: DRM_FORMAT_XRGB8888,
+                modifiers: vec![2],
+            }],
+            Some(20),
+        ),
+        "removing an advertised scanout pair must publish a new batch"
+    );
+}
+
 /// linux-dmabuf v4 is only useful if a real client can consume the feedback
 /// object and its memfd-backed format table without a protocol error.
 #[test]
@@ -628,6 +725,7 @@ fn dmabuf_v4_feedback_roundtrips_through_wayland_info() {
 
     let mut child = match std::process::Command::new("wayland-info")
         .env("WAYLAND_DISPLAY", server.socket())
+        .env("WAYLAND_DEBUG", "client")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -641,8 +739,19 @@ fn dmabuf_v4_feedback_roundtrips_through_wayland_info() {
     };
 
     let mut exited = false;
+    let mut feedback_updated = false;
     for _ in 0..2_000 {
         server.dispatch();
+        if !feedback_updated && !server.state.dmabuf_feedback_resources.is_empty() {
+            feedback_updated = true;
+            assert!(server.update_dmabuf_feedback(
+                vec![aegis_core::dmabuf::DmabufFormat {
+                    fourcc: aegis_core::dmabuf::DRM_FORMAT_XRGB8888,
+                    modifiers: vec![aegis_core::dmabuf::DRM_FORMAT_MOD_LINEAR],
+                }],
+                Some(main_device),
+            ));
+        }
         if child.try_wait().expect("poll wayland-info").is_some() {
             exited = true;
             break;
@@ -667,6 +776,37 @@ fn dmabuf_v4_feedback_roundtrips_through_wayland_info() {
     assert!(
         dmabuf_global.is_some_and(|line| line.contains("version:  4")),
         "linux-dmabuf v4 global missing:\n{stdout}"
+    );
+    assert!(
+        feedback_updated,
+        "wayland-info did not keep a v4 feedback subscription alive long enough to refresh"
+    );
+    let mut done_per_feedback = std::collections::HashMap::<&str, usize>::new();
+    for line in stderr.lines() {
+        let Some(start) = line.find("zwp_linux_dmabuf_feedback_v1") else {
+            continue;
+        };
+        let object_and_event = &line[start..];
+        let Some(done) = object_and_event.find(".done()") else {
+            continue;
+        };
+        *done_per_feedback
+            .entry(&object_and_event[..done])
+            .or_default() += 1;
+    }
+    assert!(
+        done_per_feedback.values().any(|count| *count >= 2),
+        "the same feedback object did not consume both complete DONE rounds; counts={done_per_feedback:?}\n{stderr}"
+    );
+    for _ in 0..16 {
+        server.dispatch();
+        if server.state.dmabuf_feedback_resources.is_empty() {
+            break;
+        }
+    }
+    assert!(
+        server.state.dmabuf_feedback_resources.is_empty(),
+        "disconnect must destroy and untrack every live feedback resource"
     );
 }
 
@@ -1303,6 +1443,85 @@ fn physical_observer_mirror_blocks_click_through_without_taking_focus() {
 }
 
 #[test]
+fn switcher_preview_does_not_restack_and_stationary_rehit_tracks_the_commit() {
+    let mut state = State::new(std::ptr::null_mut());
+    let selected_window = aegis_core::window::WindowId(1);
+    let old_top_window = aegis_core::window::WindowId(2);
+    let client = state.authority.register_client(None);
+    state
+        .authority
+        .create_interaction_group(client, &[selected_window, old_top_window], HUMAN_REALM)
+        .unwrap();
+    let workspace = state
+        .workspaces
+        .current_workspace(state.output)
+        .expect("bootstrap workspace");
+    state.workspaces.place_toplevel(workspace, selected_window);
+    state.workspaces.place_toplevel(workspace, old_top_window);
+
+    let make_surface = |window: aegis_core::window::WindowId, resource: usize| -> Box<SurfaceRec> {
+        let mut surface = Box::new(SurfaceRec::new(resource as *mut ffi::wl_resource));
+        surface.mapped = true;
+        surface.xdg_toplevel = surface.resource;
+        surface.width = 100;
+        surface.height = 100;
+        surface.window.id = window;
+        surface.window.size = aegis_core::Size { w: 100, h: 100 };
+        surface
+    };
+    let mut selected = make_surface(selected_window, 0x100);
+    let mut old_top = make_surface(old_top_window, 0x200);
+    state.surfaces = vec![selected.as_mut(), old_top.as_mut()];
+    state.pointer_x = 10.0;
+    state.pointer_y = 10.0;
+    state.pointer_focus = old_top.resource;
+    state.keyboard_focus = old_top.resource;
+
+    // Avoid Server::drop and focus event posting: these are synthetic
+    // resources in a pure stacking/hit-test fixture.
+    let mut server = std::mem::ManuallyDrop::new(Server {
+        state: Box::new(state),
+        socket: String::new(),
+        realm_portals: Vec::new(),
+        epoch: std::time::Instant::now(),
+    });
+    assert_eq!(
+        server.stationary_pointer_rehit_target(),
+        Some(old_top.resource)
+    );
+
+    server.start_window_switcher();
+    server.cycle_focus(true);
+
+    assert_eq!(server.focused_toplevel_id(), Some(old_top_window));
+    assert_eq!(
+        server
+            .state
+            .surfaces
+            .iter()
+            .map(|surface| unsafe { (**surface).window.id })
+            .collect::<Vec<_>>(),
+        vec![selected_window, old_top_window],
+        "previewing must not raise or focus the selected candidate"
+    );
+    assert_eq!(
+        server.window_switcher_snapshot().unwrap().1,
+        Some(selected_window)
+    );
+    server.cancel_window_switcher();
+
+    server.raise_toplevel(selected.resource);
+
+    assert_eq!(
+        server.stationary_pointer_rehit_target(),
+        Some(selected.resource),
+        "the next click or axis frame must target the newly raised window"
+    );
+    server.state.implicit_grab_active = true;
+    assert_eq!(server.stationary_pointer_rehit_target(), None);
+}
+
+#[test]
 fn window_snapshot_drops_an_unmapped_toplevel() {
     let mut state = State::new(std::ptr::null_mut());
     let window = aegis_core::window::WindowId(77);
@@ -1819,7 +2038,10 @@ fn surface_damage_accumulates_until_present_and_full_is_sticky() {
     );
     assert_eq!(
         surface.committed_damage,
-        vec![aegis_core::Rect::new(10, 5, 100, 55)]
+        vec![
+            aegis_core::Rect::new(10, 20, 30, 40),
+            aegis_core::Rect::new(100, 5, 10, 10),
+        ]
     );
     assert!(!surface.committed_damage_full);
 
@@ -1832,6 +2054,59 @@ fn surface_damage_accumulates_until_present_and_full_is_sticky() {
     accumulate_committed_damage(&mut surface, vec![aegis_core::Rect::new(1, 1, 2, 2)], false);
     assert!(surface.committed_damage.is_empty());
     assert!(surface.committed_damage_full);
+}
+
+#[test]
+fn surface_damage_region_subtracts_overlap_without_inventing_bbox_pixels() {
+    let mut surface = SurfaceRec::new(std::ptr::null_mut());
+    accumulate_committed_damage(
+        &mut surface,
+        vec![aegis_core::Rect::new(0, 0, 10, 10)],
+        false,
+    );
+    accumulate_committed_damage(
+        &mut surface,
+        vec![aegis_core::Rect::new(5, 5, 10, 10)],
+        false,
+    );
+
+    assert!(aegis_core::Rect::new(0, 0, 10, 10).fully_covered_by(&surface.committed_damage));
+    assert!(aegis_core::Rect::new(5, 5, 10, 10).fully_covered_by(&surface.committed_damage));
+    assert!(
+        !surface
+            .committed_damage
+            .iter()
+            .any(|rect| rect.contains(aegis_core::Point { x: 12, y: 2 })),
+        "the overlap union must not dirty the bounding-box-only corner"
+    );
+}
+
+#[test]
+fn surface_damage_region_caps_pathological_client_lists() {
+    let mut surface = SurfaceRec::new(std::ptr::null_mut());
+    let rects = (0..=MAX_COMMITTED_DAMAGE_RECTS)
+        .map(|index| aegis_core::Rect::new((index * 2) as i32, 0, 1, 1))
+        .collect();
+    accumulate_committed_damage(&mut surface, rects, false);
+
+    assert_eq!(surface.committed_damage.len(), 1);
+    assert_eq!(
+        surface.committed_damage[0],
+        aegis_core::Rect::new(0, 0, (MAX_COMMITTED_DAMAGE_RECTS * 2 + 1) as i32, 1)
+    );
+}
+
+#[test]
+fn surface_damage_region_promotes_unrepresentable_span_to_full() {
+    let mut surface = SurfaceRec::new(std::ptr::null_mut());
+    let mut rects = (0..MAX_COMMITTED_DAMAGE_RECTS)
+        .map(|index| aegis_core::Rect::new(i32::MIN + (index as i32 * 2), 0, 1, 1))
+        .collect::<Vec<_>>();
+    rects.push(aegis_core::Rect::new(i32::MAX - 1, 0, 1, 1));
+    accumulate_committed_damage(&mut surface, rects, false);
+
+    assert!(surface.committed_damage_full);
+    assert!(surface.committed_damage.is_empty());
 }
 
 #[test]
@@ -1886,7 +2161,7 @@ fn committed_opaque_region_culls_a_fully_covered_window_tree() {
     )]);
 
     state.surfaces = vec![background.as_mut(), foreground.as_mut()];
-    let server = std::mem::ManuallyDrop::new(Server {
+    let mut server = std::mem::ManuallyDrop::new(Server {
         state: Box::new(state),
         socket: String::new(),
         realm_portals: Vec::new(),
@@ -1900,6 +2175,25 @@ fn committed_opaque_region_culls_a_fully_covered_window_tree() {
         output.size.w,
         output.size.h,
     )]);
+    // An actively moving foreground cannot safely occlude the pixels it is
+    // moving away from/to.
+    foreground.window.transition = Some(aegis_core::transition::WindowTransition {
+        from: aegis_core::Rect::new(0, 0, output.size.w / 2, output.size.h / 2),
+        started_ms: server.now_ms(),
+        duration_ms: 60_000,
+    });
+    assert!(!server.occluded_window_ids().contains(&background_id));
+
+    // Once the transition settles it is normalized out of model state. The
+    // same opaque foreground must immediately resume contributing coverage,
+    // otherwise a covered video window continues rendering indefinitely.
+    foreground.window.transition = Some(aegis_core::transition::WindowTransition {
+        from: aegis_core::Rect::new(0, 0, output.size.w / 2, output.size.h / 2),
+        started_ms: 0,
+        duration_ms: 0,
+    });
+    assert_eq!(server.settle_finished_transitions(), 1);
+    assert!(foreground.window.transition.is_none());
     let occluded = server.occluded_window_ids();
     assert!(occluded.contains(&background_id));
     assert!(!occluded.contains(&foreground_id));

@@ -35,10 +35,7 @@ pub const WL_SHM_FORMAT_XRGB8888: u32 = 1;
 /// SHM ingestion) must go through this predicate instead of re-listing fourccs,
 /// so adding a new alpha-free format can never silently diverge between them.
 pub fn is_format_opaque(fourcc: u32) -> bool {
-    matches!(
-        fourcc,
-        DRM_FORMAT_XRGB8888 | DRM_FORMAT_XBGR8888
-    )
+    matches!(fourcc, DRM_FORMAT_XRGB8888 | DRM_FORMAT_XBGR8888)
 }
 
 /// Whether a Wayland SHM format code has an undefined (padding) alpha byte that

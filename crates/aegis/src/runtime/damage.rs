@@ -1,18 +1,117 @@
 use super::*;
 
+/// Hard bound for damage carried across swapchain-slot history. Wayland
+/// surface commits are independently capped upstream, but combining many
+/// surfaces and several missed frames could otherwise grow this Vec without
+/// bound. Above the cap we conservatively fall back to one bounding box.
+const MAX_FRAME_DAMAGE_RECTS: usize = 64;
+
 /// Output-level damage for one presentation frame.
 ///
 /// The pipeline is conservative by design: any uncertainty resolves to
 /// [`FrameDamage::Full`] (or to not skipping), because a missed region leaves
 /// stale pixels on screen while an over-large region only costs a hint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Area` carries a *list* of disjoint physical-pixel rectangles rather than a
+/// single bounding box, so two unrelated dirty regions (e.g. a video window
+/// plus a status-clock tick) reach the KMS `FB_DAMAGE_CLIPS` hint as two clips
+/// instead of being unioned into one rect that spans the whole output — which
+/// would defeat PSR2 / panel self-refresh. Vulkan's render pass takes a single
+/// `renderArea`, so the renderer feeds it the *union* of the list (see
+/// [`FrameDamage::area_union`]); the per-rect fidelity is preserved only for
+/// the KMS hint.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum FrameDamage {
     /// Nothing visible changed: rendering and presentation may be skipped.
     None,
     /// Conservative full-output damage.
     Full,
-    /// Tight bounding box in physical desktop (framebuffer) pixels.
-    Area(aegis_core::Rect),
+    /// One or more dirty rectangles in physical desktop (framebuffer) pixels.
+    /// Always non-empty; empty damage is represented as [`FrameDamage::None`].
+    Area(Vec<aegis_core::Rect>),
+}
+
+impl FrameDamage {
+    pub(super) fn from_rects(rects: Vec<aegis_core::Rect>) -> Self {
+        let rects = normalize_damage_rects(rects);
+        if rects.is_empty() {
+            FrameDamage::None
+        } else {
+            FrameDamage::Area(rects)
+        }
+    }
+    /// The single-rect union of the damage, in physical pixels, or `None` when
+    /// there is no area damage (None) or the whole output is dirty (Full).
+    /// Used wherever a single rectangle is required (Vulkan `renderArea`).
+    pub(super) fn area_union(&self) -> Option<aegis_core::Rect> {
+        match self {
+            FrameDamage::Area(rects) => {
+                let mut union: Option<aegis_core::Rect> = None;
+                for r in rects {
+                    union_bbox(&mut union, *r);
+                }
+                union
+            }
+            _ => None,
+        }
+    }
+
+    /// The list of physical damage rectangles, or `None` for None/Full. The
+    /// KMS `FB_DAMAGE_CLIPS` hint consumes this directly. Borrows the rects so
+    /// the caller can still inspect the original `FrameDamage` afterwards.
+    pub(super) fn area_rects(&self) -> Option<&[aegis_core::Rect]> {
+        match self {
+            FrameDamage::Area(rects) => Some(rects),
+            _ => None,
+        }
+    }
+
+    /// Add a set of physical rectangles to this damage verdict.
+    pub(super) fn with_rects(self, rects: impl IntoIterator<Item = aegis_core::Rect>) -> Self {
+        union_frame_damage(self, FrameDamage::from_rects(rects.into_iter().collect()))
+    }
+}
+
+fn normalize_damage_rects(mut rects: Vec<aegis_core::Rect>) -> Vec<aegis_core::Rect> {
+    rects.retain(|rect| !rect.is_empty());
+    rects.sort_unstable_by_key(|rect| (rect.origin.y, rect.origin.x, rect.size.h, rect.size.w));
+    rects.dedup();
+
+    // Removing a rectangle contained by another is exact and cheaply keeps
+    // common repeated/full-surface reports compact.
+    let mut index = 0;
+    while index < rects.len() {
+        let contained = rects.iter().enumerate().any(|(other_index, other)| {
+            other_index != index && rects[index].fully_covered_by(&[*other])
+        });
+        if contained {
+            rects.remove(index);
+        } else {
+            index += 1;
+        }
+    }
+
+    if rects.len() > MAX_FRAME_DAMAGE_RECTS {
+        let mut bbox = None;
+        for rect in rects {
+            union_bbox(&mut bbox, rect);
+        }
+        bbox.into_iter().collect()
+    } else {
+        rects
+    }
+}
+
+/// Damage assessment split by consumer.
+///
+/// `output` includes chrome-only changes (hover, clock, notifications, cursor
+/// fallback) and controls the final swapchain repaint. `backdrop_source`
+/// contains only changes to the desktop scene sampled by backdrop effects.
+/// Keeping these separate prevents a Dock hover or status-clock tick from
+/// needlessly recapturing and reblurring otherwise unchanged client pixels.
+pub(super) struct AssessedFrameDamage {
+    pub(super) output: FrameDamage,
+    pub(super) backdrop_source: FrameDamage,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -26,14 +125,15 @@ pub(super) struct DamageAssessment {
     pub physical_size: (u32, u32),
 }
 
-fn union_frame_damage(left: FrameDamage, right: FrameDamage) -> FrameDamage {
+pub(super) fn union_frame_damage(left: FrameDamage, right: FrameDamage) -> FrameDamage {
     match (left, right) {
         (FrameDamage::Full, _) | (_, FrameDamage::Full) => FrameDamage::Full,
-        (FrameDamage::None, damage) | (damage, FrameDamage::None) => damage,
-        (FrameDamage::Area(left), FrameDamage::Area(right)) => {
-            let mut union = Some(left);
-            union_bbox(&mut union, right);
-            FrameDamage::Area(union.expect("two non-empty rectangles have a union"))
+        (FrameDamage::None, FrameDamage::Area(rects))
+        | (FrameDamage::Area(rects), FrameDamage::None) => FrameDamage::from_rects(rects),
+        (FrameDamage::None, FrameDamage::None) => FrameDamage::None,
+        (FrameDamage::Area(mut left), FrameDamage::Area(right)) => {
+            left.extend(right);
+            FrameDamage::from_rects(left)
         }
     }
 }
@@ -48,7 +148,11 @@ pub(super) fn composite_repaint_for_slot(
     if slots.len() <= slot {
         slots.resize(slot + 1, FrameDamage::Full);
     }
-    union_frame_damage(slots[slot], current)
+    // `slots[slot]` holds damage accumulated while this image was not scanned
+    // out. Take it (leaving None) so the slot starts fresh for the next cycle;
+    // `record_composite_present` re-seeds it for other slots.
+    let pending = std::mem::replace(&mut slots[slot], FrameDamage::None);
+    union_frame_damage(pending, current)
 }
 
 /// Advance ring-image damage history only after a successful presentation.
@@ -64,16 +168,25 @@ pub(super) fn record_composite_present(
         if index == slot {
             *pending = FrameDamage::None;
         } else {
-            *pending = union_frame_damage(*pending, current);
+            // Fold `current` into the other slots. Clone it for each: ring
+            // depth is small (2–3 images) and this runs once per presented
+            // frame, not per draw.
+            *pending = union_frame_damage(
+                std::mem::replace(pending, FrameDamage::None),
+                current.clone(),
+            );
         }
     }
 }
 
 /// Damage contributed by client surface commits, in compositor logical
-/// coordinates.
+/// coordinates. `Area` preserves the *list* of disjoint dirty rectangles so
+/// unrelated regions (a video window and a clock tick) are not unioned into
+/// one spanning rect before reaching the KMS hint.
+#[derive(Clone)]
 enum ClientDamage {
     None,
-    Area(aegis_core::Rect),
+    Area(Vec<aegis_core::Rect>),
     Full,
 }
 
@@ -87,50 +200,39 @@ pub(super) struct SurfaceDamageBaseline {
     height: i32,
 }
 
-/// Union of one surface's changed region in compositor logical coordinates:
-/// the (clamped) damage rects translated by the surface's compositor
-/// position, or the whole surface rect when the commit carried no usable
-/// damage information (`damage` empty). The clamping mirrors the renderer's
-/// incremental-upload path so both agree on what "usable damage" means.
+/// One surface's changed region(s) in compositor logical coordinates: the
+/// (clamped) damage rects translated by the surface's compositor position, or
+/// the whole surface rect when the commit carried no usable damage information
+/// (`damage` empty). Each damage rect is preserved individually rather than
+/// unioned, so disjoint dirty regions stay disjoint for the KMS hint. The
+/// clamping mirrors the renderer's incremental-upload path so both agree on
+/// what "usable damage" means.
 fn surface_damage_logical(
     position: aegis_core::Point,
     width: i32,
     height: i32,
     damage: &[aegis_core::Rect],
-) -> Option<aegis_core::Rect> {
+) -> Vec<aegis_core::Rect> {
     if width <= 0 || height <= 0 {
-        return None;
+        return Vec::new();
     }
     if damage.is_empty() {
-        return Some(aegis_core::Rect::new(position.x, position.y, width, height));
+        return vec![aegis_core::Rect::new(position.x, position.y, width, height)];
     }
-    let mut x0 = i32::MAX;
-    let mut y0 = i32::MAX;
-    let mut x1 = i32::MIN;
-    let mut y1 = i32::MIN;
+    let mut out = Vec::with_capacity(damage.len());
+    let surface = aegis_core::Rect::new(0, 0, width, height);
     for d in damage {
-        let x = d.origin.x.max(0).min(width - 1);
-        let y = d.origin.y.max(0).min(height - 1);
-        let w = d.size.w.max(0).min(width - x);
-        let h = d.size.h.max(0).min(height - y);
-        if w == 0 || h == 0 {
+        let Some(clipped) = d.intersect(surface) else {
             continue;
-        }
-        x0 = x0.min(x);
-        y0 = y0.min(y);
-        x1 = x1.max(x + w);
-        y1 = y1.max(y + h);
+        };
+        out.push(aegis_core::Rect::new(
+            position.x.saturating_add(clipped.origin.x),
+            position.y.saturating_add(clipped.origin.y),
+            clipped.size.w,
+            clipped.size.h,
+        ));
     }
-    if x0 < x1 && y0 < y1 {
-        Some(aegis_core::Rect::new(
-            position.x.saturating_add(x0),
-            position.y.saturating_add(y0),
-            x1.saturating_sub(x0),
-            y1.saturating_sub(y0),
-        ))
-    } else {
-        None
-    }
+    out
 }
 
 fn union_bbox(bbox: &mut Option<aegis_core::Rect>, rect: aegis_core::Rect) {
@@ -196,8 +298,7 @@ pub(super) fn wall_clock_minute() -> u64 {
 /// Record one visible surface into the generation diff. Returns `true` when
 /// this surface alone forces full damage: it appeared since the last
 /// assessment, or its contents changed in a way that cannot be mapped to a
-/// rectangle (buffer transform, wp_viewport, or an in-flight window
-/// transition).
+/// rectangle (wp_viewport, or an in-flight window transition).
 struct SurfaceDamageSample<'a> {
     id: usize,
     generation: u64,
@@ -211,7 +312,7 @@ fn accumulate_surface(
     old: &std::collections::HashMap<usize, SurfaceDamageBaseline>,
     new: &mut std::collections::HashMap<usize, SurfaceDamageBaseline>,
     sample: SurfaceDamageSample<'_>,
-    bbox: &mut Option<aegis_core::Rect>,
+    rects: &mut Vec<aegis_core::Rect>,
 ) -> bool {
     let SurfaceDamageSample {
         id,
@@ -252,12 +353,13 @@ fn accumulate_surface(
         return false;
     }
     // Damage here is already in surface-local logical coordinates — the server
-    // applied the buffer transform at commit (see Transform::map_buffer_rect_to_surface)
-    // — so a non-identity transform does NOT force a full-output repaint here.
-    // Only the cases that genuinely break the logical→physical mapping remain
-    // unmappable: wp_viewport crop/destination (they change which buffer pixels
-    // map to which surface pixels) and an in-flight transition_size (it draws
-    // the surface at a size unrelated to the buffer-implied logical extent).
+    // applied the buffer transform at commit (see
+    // Transform::map_buffer_rect_to_surface) — so a non-identity transform does
+    // NOT force a full-output repaint here. Only the cases that genuinely break
+    // the logical→physical mapping remain unmappable: wp_viewport
+    // crop/destination (they change which buffer pixels map to which surface
+    // pixels) and an in-flight transition_size (it draws the surface at a size
+    // unrelated to the buffer-implied logical extent).
     let mappable = geometry.viewport_src.is_none()
         && geometry.viewport_dst.is_none()
         && geometry.transition_size.is_none();
@@ -275,14 +377,14 @@ fn accumulate_surface(
     };
     let logical_width = (lw as f32 / scale).round().max(1.0) as i32;
     let logical_height = (lh as f32 / scale).round().max(1.0) as i32;
-    if let Some(area) = surface_damage_logical(
+    // Preserve each dirty rect individually rather than unioning, so disjoint
+    // regions stay disjoint for the KMS FB_DAMAGE_CLIPS hint.
+    rects.extend(surface_damage_logical(
         geometry.position,
         logical_width,
         logical_height,
         damage.unwrap_or(&[]),
-    ) {
-        union_bbox(bbox, area);
-    }
+    ));
     false
 }
 
@@ -293,10 +395,15 @@ impl CompositorRuntime {
     /// draw pulls: toplevels, subsurfaces, overlays (including the client
     /// cursor surface), and lock surfaces.
     fn client_damage(&mut self) -> ClientDamage {
-        let old = std::mem::take(&mut self.last_surface_gens);
-        let mut new: std::collections::HashMap<usize, SurfaceDamageBaseline> =
-            std::collections::HashMap::with_capacity(old.len());
-        let mut bbox: Option<aegis_core::Rect> = None;
+        // Double-buffer the per-surface generation map: swap in place instead
+        // of allocating a fresh HashMap every frame. The now-old map is cleared
+        // and refilled, avoiding per-frame heap churn.
+        std::mem::swap(&mut self.last_surface_gens, &mut self.surface_gens_scratch);
+        let old = &self.surface_gens_scratch;
+        let new = &mut self.last_surface_gens;
+        new.clear();
+        new.reserve(old.len());
+        let mut rects: Vec<aegis_core::Rect> = Vec::new();
         let mut full = false;
 
         let server = &self.server;
@@ -307,8 +414,8 @@ impl CompositorRuntime {
         ] {
             for frame in &frames {
                 full |= accumulate_surface(
-                    &old,
-                    &mut new,
+                    old,
+                    new,
                     SurfaceDamageSample {
                         id: frame.id,
                         generation: frame.generation,
@@ -317,7 +424,7 @@ impl CompositorRuntime {
                         width: frame.width,
                         height: frame.height,
                     },
-                    &mut bbox,
+                    &mut rects,
                 );
             }
         }
@@ -330,8 +437,8 @@ impl CompositorRuntime {
         ] {
             for frame in &frames {
                 full |= accumulate_surface(
-                    &old,
-                    &mut new,
+                    old,
+                    new,
                     SurfaceDamageSample {
                         id: frame.id,
                         generation: frame.generation,
@@ -340,7 +447,7 @@ impl CompositorRuntime {
                         width: frame.width,
                         height: frame.height,
                     },
-                    &mut bbox,
+                    &mut rects,
                 );
             }
         }
@@ -348,15 +455,14 @@ impl CompositorRuntime {
         // was behind it; only its old rectangle is known to be stale, but its
         // stacking interplay is not tracked, so stay conservative.
         full |= old.keys().any(|id| !new.contains_key(id));
-        self.last_surface_gens = new;
+        self.surface_gens_scratch.clear();
 
         if full {
             ClientDamage::Full
+        } else if rects.is_empty() {
+            ClientDamage::None
         } else {
-            match bbox {
-                Some(rect) => ClientDamage::Area(rect),
-                None => ClientDamage::None,
-            }
+            ClientDamage::Area(rects)
         }
     }
 
@@ -365,7 +471,10 @@ impl CompositorRuntime {
     /// to [`FrameDamage::Full`]. [`FrameDamage::None`] is the only verdict
     /// that lets the caller skip rendering entirely, so the burden of proof
     /// is on "nothing changed".
-    pub(super) fn assess_frame_damage(&mut self, assessment: DamageAssessment) -> FrameDamage {
+    pub(super) fn assess_frame_damage(
+        &mut self,
+        assessment: DamageAssessment,
+    ) -> AssessedFrameDamage {
         let DamageAssessment {
             had_input,
             session_locked,
@@ -388,12 +497,11 @@ impl CompositorRuntime {
             self.shell.captures_keyboard(),
             self.shell.screenshot_active(),
         );
-        let full = self.frame_count == 0
+        let base_full = self.frame_count == 0
             || self.force_full_redraw
             // Any input event may start a chrome hover/press redraw or move
             // the software cursor; input is rare while truly idle, so treat
             // it as full damage rather than tracking hover precisely.
-            || had_input
             || session_locked != self.last_session_locked
             || (software_cursor
                 && self.last_presented_cursor != Some((cursor_shape, cursor_hidden)))
@@ -432,31 +540,78 @@ impl CompositorRuntime {
             // frame after each minute rollover.
             || self.last_present_minute != Some(wall_clock_minute());
 
+        // Only conditions that change pixels in the desktop scene sampled by
+        // a backdrop belong here. Pure shell/input/clock/notification damage
+        // still repaints the output, but must not invalidate the expensive
+        // capture + blur cache.
+        let backdrop_full = self.frame_count == 0
+            || self.force_full_redraw
+            || session_locked != self.last_session_locked
+            || self.server.transitions_pending()
+            || self.wallpaper.as_ref().is_some_and(|w| {
+                w.has_model()
+                    || w.next_frame_in()
+                        .is_some_and(|remaining| remaining.is_zero())
+            })
+            || self.last_windows_hash != Some(self.server.windows_signature())
+            || self.last_ws_sig != Some(self.server.workspace_signature())
+            || self.last_outputs_revision != Some(self.server.outputs_revision())
+            || self.last_realm_revision != Some(self.server.realm_revision())
+            // The switcher/live-preview scene is captured below chrome and is
+            // therefore backdrop source content, unlike ordinary shell UI.
+            || self.shell.window_switcher_active()
+                != self
+                    .last_chrome_mode
+                    .map(|(_, switcher, _, _)| switcher)
+                    .unwrap_or(false);
+
+        let output_full = base_full || had_input;
+
         self.last_session_locked = session_locked;
         self.last_notif_revision = Some(notif_revision);
         self.last_chrome_mode = Some(chrome_mode);
         self.chrome_dirty = false;
 
-        if full {
-            return FrameDamage::Full;
-        }
-        // Building borrowed views for every shm/dma-buf surface is only
-        // worthwhile when client content is the remaining possible source of
-        // damage. Input, animations, topology/chrome changes and capture
-        // already require a full frame; deferring this scan avoids duplicate
-        // scene traversal on the compositor's hottest paths. Any generations
-        // skipped here remain different and are conservatively picked up once
-        // the full-damage condition clears.
-        let client = self.client_damage();
-        match client {
+        // Even when output chrome forces a full repaint, collect client damage
+        // unless the backdrop source itself is already known to be full. This
+        // keeps the effect invalidation precise and advances surface baselines
+        // instead of rediscovering old client commits on a later frame.
+        let client = (!backdrop_full).then(|| self.client_damage());
+        let map_client = |client: ClientDamage| match client {
             ClientDamage::None => FrameDamage::None,
             ClientDamage::Full => FrameDamage::Full,
-            // A logical area that does not map cleanly onto the framebuffer
-            // must not silently become "no damage".
-            ClientDamage::Area(rect) => match logical_to_physical(rect, scale, physical_size) {
-                Some(physical) => FrameDamage::Area(physical),
-                None => FrameDamage::Full,
-            },
+            // Each logical rect is mapped to physical independently, preserving
+            // disjoint regions for the KMS hint. A logical area that does not
+            // map cleanly onto the framebuffer must not silently become "no
+            // damage": if any rect is unmappable the whole frame is Full.
+            ClientDamage::Area(logical) => {
+                let mut physical = Vec::with_capacity(logical.len());
+                for rect in logical {
+                    match logical_to_physical(rect, scale, physical_size) {
+                        Some(p) => physical.push(p),
+                        None => return FrameDamage::Full,
+                    }
+                }
+                if physical.is_empty() {
+                    FrameDamage::None
+                } else {
+                    FrameDamage::from_rects(physical)
+                }
+            }
+        };
+        let backdrop_source = if backdrop_full {
+            FrameDamage::Full
+        } else {
+            map_client(client.clone().unwrap_or(ClientDamage::None))
+        };
+        let output = if output_full {
+            FrameDamage::Full
+        } else {
+            map_client(client.unwrap_or(ClientDamage::None))
+        };
+        AssessedFrameDamage {
+            output,
+            backdrop_source,
         }
     }
 }
@@ -474,7 +629,7 @@ mod tests {
             600,
             &[aegis_core::Rect::new(10, 20, 30, 40)],
         );
-        assert_eq!(area, Some(aegis_core::Rect::new(110, 70, 30, 40)));
+        assert_eq!(area, vec![aegis_core::Rect::new(110, 70, 30, 40)]);
         // Out-of-bounds damage clamps like the renderer's upload path.
         let clamped = surface_damage_logical(
             aegis_core::Point { x: 0, y: 0 },
@@ -482,10 +637,33 @@ mod tests {
             600,
             &[aegis_core::Rect::new(-20, 590, 900, 50)],
         );
-        assert_eq!(clamped, Some(aegis_core::Rect::new(0, 590, 800, 10)));
+        assert_eq!(clamped, vec![aegis_core::Rect::new(0, 590, 800, 10)]);
+        // Partial negative damage clips by intersection rather than moving the
+        // origin to zero while preserving the original width.
+        let partial_negative = surface_damage_logical(
+            aegis_core::Point { x: 10, y: 20 },
+            800,
+            600,
+            &[aegis_core::Rect::new(-20, 10, 30, 20)],
+        );
+        assert_eq!(
+            partial_negative,
+            vec![aegis_core::Rect::new(10, 30, 10, 20)]
+        );
+        // A report wholly outside the surface contributes no invented edge
+        // damage.
+        assert!(
+            surface_damage_logical(
+                aegis_core::Point { x: 0, y: 0 },
+                800,
+                600,
+                &[aegis_core::Rect::new(-50, 10, 20, 20)],
+            )
+            .is_empty()
+        );
         // No damage information damages the whole surface.
         let whole = surface_damage_logical(aegis_core::Point { x: 5, y: 6 }, 800, 600, &[]);
-        assert_eq!(whole, Some(aegis_core::Rect::new(5, 6, 800, 600)));
+        assert_eq!(whole, vec![aegis_core::Rect::new(5, 6, 800, 600)]);
         // Fully degenerate damage reports nothing.
         let degenerate = surface_damage_logical(
             aegis_core::Point { x: 0, y: 0 },
@@ -493,7 +671,24 @@ mod tests {
             600,
             &[aegis_core::Rect::new(10, 10, 0, 0)],
         );
-        assert_eq!(degenerate, None);
+        assert!(degenerate.is_empty());
+        // Disjoint damage rects are preserved individually, not unioned.
+        let disjoint = surface_damage_logical(
+            aegis_core::Point { x: 0, y: 0 },
+            800,
+            600,
+            &[
+                aegis_core::Rect::new(10, 10, 5, 5),
+                aegis_core::Rect::new(500, 400, 8, 8),
+            ],
+        );
+        assert_eq!(
+            disjoint,
+            vec![
+                aegis_core::Rect::new(10, 10, 5, 5),
+                aegis_core::Rect::new(500, 400, 8, 8),
+            ]
+        );
     }
 
     #[test]
@@ -506,14 +701,44 @@ mod tests {
 
     #[test]
     fn frame_damage_union_preserves_full_and_joins_areas() {
-        let a = FrameDamage::Area(aegis_core::Rect::new(10, 20, 30, 40));
-        let b = FrameDamage::Area(aegis_core::Rect::new(0, 50, 20, 20));
+        let a = FrameDamage::Area(vec![aegis_core::Rect::new(10, 20, 30, 40)]);
+        let b = FrameDamage::Area(vec![aegis_core::Rect::new(0, 50, 20, 20)]);
+        // Lists concatenate; the union is recoverable via area_union.
+        let joined = union_frame_damage(a, b);
         assert_eq!(
-            union_frame_damage(a, b),
-            FrameDamage::Area(aegis_core::Rect::new(0, 20, 40, 50))
+            joined.area_union(),
+            Some(aegis_core::Rect::new(0, 20, 40, 50))
         );
-        assert_eq!(union_frame_damage(FrameDamage::None, a), a);
-        assert_eq!(union_frame_damage(FrameDamage::Full, a), FrameDamage::Full);
+        assert_eq!(
+            union_frame_damage(FrameDamage::None, joined.clone()),
+            joined
+        );
+        assert_eq!(
+            union_frame_damage(FrameDamage::Full, joined),
+            FrameDamage::Full
+        );
+    }
+
+    #[test]
+    fn frame_damage_history_is_deduplicated_and_bounded() {
+        let repeated = vec![aegis_core::Rect::new(1, 2, 3, 4); 100];
+        assert_eq!(
+            FrameDamage::from_rects(repeated),
+            FrameDamage::Area(vec![aegis_core::Rect::new(1, 2, 3, 4)])
+        );
+
+        let disjoint: Vec<_> = (0..=MAX_FRAME_DAMAGE_RECTS)
+            .map(|index| aegis_core::Rect::new(index as i32 * 2, 0, 1, 1))
+            .collect();
+        assert_eq!(
+            FrameDamage::from_rects(disjoint),
+            FrameDamage::Area(vec![aegis_core::Rect::new(
+                0,
+                0,
+                (MAX_FRAME_DAMAGE_RECTS as i32) * 2 + 1,
+                1,
+            )])
+        );
     }
 
     #[test]
@@ -538,30 +763,32 @@ mod tests {
 
     #[test]
     fn ring_slot_damage_accumulates_missed_frames() {
-        let first = FrameDamage::Area(aegis_core::Rect::new(10, 10, 20, 20));
-        let second = FrameDamage::Area(aegis_core::Rect::new(40, 40, 10, 10));
+        let first = FrameDamage::Area(vec![aegis_core::Rect::new(10, 10, 20, 20)]);
+        let second = FrameDamage::Area(vec![aegis_core::Rect::new(40, 40, 10, 10)]);
         let mut slots = Vec::new();
 
         // Every ring image begins undefined and therefore repaints in full on
         // its first acquisition.
         assert_eq!(
-            composite_repaint_for_slot(&mut slots, 0, first),
+            composite_repaint_for_slot(&mut slots, 0, first.clone()),
             FrameDamage::Full
         );
-        record_composite_present(&mut slots, 0, first);
+        record_composite_present(&mut slots, 0, first.clone());
         assert_eq!(slots, [FrameDamage::None]);
 
         assert_eq!(
-            composite_repaint_for_slot(&mut slots, 1, second),
+            composite_repaint_for_slot(&mut slots, 1, second.clone()),
             FrameDamage::Full
         );
-        record_composite_present(&mut slots, 1, second);
+        record_composite_present(&mut slots, 1, second.clone());
         // Slot zero missed the second frame; when it comes around again, its
         // repaint includes both that history and the new frame's damage.
-        assert_eq!(slots, [second, FrameDamage::None]);
+        assert_eq!(slots, [second.clone(), FrameDamage::None]);
+        let combined = composite_repaint_for_slot(&mut slots, 0, first);
+        // The combined damage covers both rects (union spans 10..50).
         assert_eq!(
-            composite_repaint_for_slot(&mut slots, 0, first),
-            FrameDamage::Area(aegis_core::Rect::new(10, 10, 40, 40))
+            combined.area_union(),
+            Some(aegis_core::Rect::new(10, 10, 40, 40))
         );
     }
 
@@ -584,7 +811,7 @@ mod tests {
         let mut moved = geometry;
         moved.position.x += 1;
         let mut new = std::collections::HashMap::new();
-        let mut bbox = None;
+        let mut rects = Vec::new();
         assert!(accumulate_surface(
             &old,
             &mut new,
@@ -596,9 +823,9 @@ mod tests {
                 width: 100,
                 height: 80,
             },
-            &mut bbox,
+            &mut rects,
         ));
-        assert_eq!(bbox, None);
+        assert!(rects.is_empty());
     }
 
     #[test]
@@ -618,7 +845,7 @@ mod tests {
             },
         );
         let mut new = std::collections::HashMap::new();
-        let mut bbox = None;
+        let mut rects = Vec::new();
         assert!(!accumulate_surface(
             &old,
             &mut new,
@@ -630,9 +857,9 @@ mod tests {
                 width: 100,
                 height: 80,
             },
-            &mut bbox,
+            &mut rects,
         ));
-        assert_eq!(bbox, Some(aegis_core::Rect::new(12, 23, 4, 5)));
+        assert_eq!(rects, vec![aegis_core::Rect::new(12, 23, 4, 5)]);
     }
 
     #[test]
@@ -653,7 +880,7 @@ mod tests {
             },
         );
         let mut new = std::collections::HashMap::new();
-        let mut bbox = None;
+        let mut rects = Vec::new();
         assert!(!accumulate_surface(
             &old,
             &mut new,
@@ -665,8 +892,8 @@ mod tests {
                 width: 200,
                 height: 160,
             },
-            &mut bbox,
+            &mut rects,
         ));
-        assert_eq!(bbox, Some(aegis_core::Rect::new(12, 23, 4, 5)));
+        assert_eq!(rects, vec![aegis_core::Rect::new(12, 23, 4, 5)]);
     }
 }

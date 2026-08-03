@@ -14,7 +14,9 @@ use std::time::{Duration, Instant};
 
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
-use crate::{AppCatalog, BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Reserved};
+use crate::{
+    AppCatalog, BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Reserved, ellipsize,
+};
 use aegis_core::input::{KeyAction, KeyChar, key_action};
 use aegis_core::window::Window;
 use aegis_design::{Design, themes};
@@ -299,7 +301,12 @@ impl Chrome for AppPicker {
         );
 
         if let Some(subject_rect) = layout.subject {
-            let subject = crate::truncate(self.subject.as_deref().unwrap_or_default(), 84);
+            let subject = ellipsize(
+                frame,
+                self.subject.as_deref().unwrap_or_default(),
+                11.5,
+                subject_rect.w,
+            );
             frame.layer(
                 "aegis-app-picker-subject",
                 subject_rect,
@@ -332,6 +339,9 @@ impl Chrome for AppPicker {
                 clicked_row = Some(row_index);
             }
             let selected = self.selected == row_index;
+            let row = &self.rows[row_index];
+            let icon = self.icon(row);
+            let row_name = ellipsize(frame, &row.name, 13.0, (rect.w - 48.0).max(0.0));
             let bg = if selected {
                 design.colors.application_active
             } else if hovered {
@@ -352,8 +362,6 @@ impl Chrome for AppPicker {
                 |frame| {
                     frame.row_ex(&stretch(rect), |frame| {
                         frame.spacer(10.0);
-                        let row = &self.rows[row_index];
-                        let icon = self.icon(row);
                         frame.column_ex(
                             &LayoutOpts {
                                 width: ICON,
@@ -371,7 +379,7 @@ impl Chrome for AppPicker {
                             },
                         );
                         frame.spacer(8.0);
-                        frame.label_compact_sized(&crate::truncate(&row.name, 48), 13.0);
+                        frame.label_compact_sized(&row_name, 13.0);
                     });
                 },
             );

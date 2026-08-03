@@ -64,7 +64,135 @@ fn close_raw_fences(fences: &mut [i32]) {
     }
 }
 
+/// Whether a scanout carrying a producer acquire fence may be committed to
+/// the selected primary planes without violating explicit-sync semantics.
+///
+/// An absent fence uses the dma-buf's implicit synchronization. A present
+/// sync_file, however, must be passed to every primary plane through
+/// \`IN_FENCE_FD\`; silently dropping it can expose a buffer while Firefox is
+/// still rendering into it and produce a partially updated/"split" frame.
+fn scanout_acquire_fence_supported(has_acquire_fence: bool, all_planes_support: bool) -> bool {
+    !has_acquire_fence || all_planes_support
+}
+
+fn dmabuf_identity(fd: BorrowedFd<'_>) -> std::io::Result<DmabufIdentity> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `fd` is live for the call and fstat initializes the complete
+    // `libc::stat` object on success.
+    if unsafe { libc::fstat(fd.as_raw_fd(), stat.as_mut_ptr()) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let stat = unsafe { stat.assume_init() };
+    Ok(DmabufIdentity {
+        device: stat.st_dev,
+        inode: stat.st_ino,
+    })
+}
+
+fn composite_fb_reapable(reusable: bool, users: u32) -> bool {
+    !reusable && users == 0
+}
+
+fn composite_fb_slot_conflicts(existing: CompositeFbKey, candidate: CompositeFbKey) -> bool {
+    existing.epoch == candidate.epoch && existing.slot == candidate.slot && existing != candidate
+}
+
 impl DrmBackend {
+    /// Start a new Flux surface/storage epoch. Existing cache entries stay
+    /// alive while `current` or `retiring` references them, then are reaped.
+    pub(super) fn invalidate_composite_fb_cache(&mut self) {
+        self.composite_fb_epoch = self.composite_fb_epoch.wrapping_add(1);
+        for entry in self.composite_fb_cache.values_mut() {
+            entry.reusable = false;
+        }
+        self.reap_composite_fb_cache();
+    }
+
+    /// Forget cache records after libseat revoked and closed the old DRM fd.
+    /// The kernel already destroyed those framebuffer/GEM handles, so issuing
+    /// cleanup ioctls against the replacement fd would be both wrong and
+    /// potentially destructive if handle numbers were reused.
+    pub(super) fn forget_composite_fb_cache(&mut self) {
+        self.composite_fb_cache.clear();
+        self.composite_fb_reap.clear();
+        self.composite_fb_epoch = self.composite_fb_epoch.wrapping_add(1);
+    }
+
+    /// Destroy all cache-owned resources while the originating DRM fd is live.
+    pub(super) fn destroy_composite_fb_cache(&mut self) {
+        self.composite_fb_reap.clear();
+        self.composite_fb_reap
+            .extend(self.composite_fb_cache.keys().copied());
+        let keys = std::mem::take(&mut self.composite_fb_reap);
+        for key in &keys {
+            if let Some(entry) = self.composite_fb_cache.remove(key) {
+                debug_assert_eq!(entry.users, 0, "destroying a referenced cache entry");
+                let card = self.card();
+                if let Err(error) = card.destroy_framebuffer(entry.framebuffer) {
+                    log::warn!("DRM: failed to destroy cached framebuffer: {error}");
+                }
+                if let Err(error) = card.close_buffer(entry.gem) {
+                    log::warn!("DRM: failed to close cached GEM handle: {error}");
+                }
+            }
+        }
+        self.composite_fb_reap = keys;
+    }
+
+    pub(super) fn reap_composite_fb_cache(&mut self) {
+        self.composite_fb_reap.clear();
+        self.composite_fb_reap
+            .extend(self.composite_fb_cache.iter().filter_map(|(key, entry)| {
+                composite_fb_reapable(entry.reusable, entry.users).then_some(*key)
+            }));
+        let keys = std::mem::take(&mut self.composite_fb_reap);
+        for key in &keys {
+            if let Some(entry) = self.composite_fb_cache.remove(key) {
+                let card = self.card();
+                if let Err(error) = card.destroy_framebuffer(entry.framebuffer) {
+                    log::warn!("DRM: failed to destroy stale cached framebuffer: {error}");
+                }
+                if let Err(error) = card.close_buffer(entry.gem) {
+                    log::warn!("DRM: failed to close stale cached GEM handle: {error}");
+                }
+            }
+        }
+        self.composite_fb_reap = keys;
+    }
+
+    fn import_composite_framebuffer(
+        &self,
+        fd: BorrowedFd<'_>,
+        width: u32,
+        height: u32,
+        stride: u32,
+        modifier: DrmModifier,
+        format: DrmFourcc,
+    ) -> Result<(control::framebuffer::Handle, BufferHandle), DrmError> {
+        let card = self.card();
+        let gem = card.prime_fd_to_buffer(fd)?;
+        let buffer = ImportedBuffer {
+            size: (width, height),
+            stride,
+            modifier,
+            format,
+            offset: 0,
+            gem,
+        };
+        let flags = if modifier == DrmModifier::Invalid {
+            FbCmd2Flags::empty()
+        } else {
+            FbCmd2Flags::MODIFIERS
+        };
+        match card.add_planar_framebuffer(&buffer, flags) {
+            Ok(framebuffer) => Ok((framebuffer, gem)),
+            Err(error) => {
+                let _ = card.close_buffer(gem);
+                Err(error.into())
+            }
+        }
+    }
+
     /// Acquire the seat, choose a connected DRM card/output, enable atomic
     /// modesetting, and attach libinput to the same seat. `configured_modes`
     /// carries the config's per-connector `mode` requests (ADR-0028) so the
@@ -172,6 +300,12 @@ impl DrmBackend {
             .iter()
             .filter(|output| output.cursor.is_some())
             .count();
+        log::info!(
+            "drm: plane allocation: {} primary assigned, {} cursor assigned, {} overlay available (overlay offload disabled)",
+            displays.outputs.len(),
+            cursor_planes,
+            displays.overlay.available,
+        );
         if cursor_planes == displays.outputs.len() {
             log::info!(
                 "drm: hardware cursor enabled on every output (maximum {}x{})",
@@ -200,6 +334,9 @@ impl DrmBackend {
             pending_flips: HashSet::new(),
             current: None,
             retiring: None,
+            composite_fb_cache: HashMap::new(),
+            composite_fb_epoch: 0,
+            composite_fb_reap: Vec::new(),
             cursor_buffers: Vec::new(),
             cursor_state: None,
             cursor_plane_active: false,
@@ -230,11 +367,25 @@ impl DrmBackend {
 
     /// Create Flux's exportable offscreen target at the selected display mode.
     pub fn create_surface(&mut self, device: &flux::Device) -> Result<flux::Surface, DrmError> {
+        // A recreated Flux surface reuses slot numbers for different VkImages.
+        // Advance the epoch before allocating it so an equal-size recreation
+        // can never hit a framebuffer imported from the previous surface.
+        self.invalidate_composite_fb_cache();
         let (width, height) = self.physical_size();
         let surface =
             flux::Surface::offscreen_dmabuf(device, width, height, &self.displays.modifiers)?;
         if !surface.is_exportable() {
             return Err(DrmError::DmabufUnsupported);
+        }
+        if let Some(modifier) = surface.dmabuf_modifier() {
+            log::info!(
+                "drm: compositor output modifier {modifier:#018x}{}",
+                if modifier == u64::from(DrmModifier::Linear) {
+                    " (LINEAR fallback)"
+                } else {
+                    " (device-native tiled)"
+                }
+            );
         }
         // Remember which intersection the surface was built with; a hotplug
         // that changes it flags the surface stale until it is recreated here.
@@ -245,7 +396,7 @@ impl DrmBackend {
             .displays
             .outputs
             .iter()
-            .all(|output| output.props.plane_in_fence_fd.is_some())
+            .all(|output| output.primary.props.in_fence_fd.is_some())
             && self.sync_capable;
         log::info!(
             "drm: explicit synchronization {}",
@@ -408,6 +559,7 @@ impl DrmBackend {
                 gem,
                 slot: 0,
                 acquire_fence,
+                ownership: ScanoutOwnership::TransientClient,
             }),
             Err(error) => {
                 let _ = card.close_buffer(gem);
@@ -420,7 +572,7 @@ impl DrmBackend {
         &mut self,
         surface: &flux::Surface,
         frame: flux::SubmittedFrame<'_>,
-        damage: Option<aegis_core::Rect>,
+        damage: Option<&[aegis_core::Rect]>,
     ) -> Result<Option<OwnedFd>, DrmError> {
         if !self.active || !self.render_ready || !self.outputs_powered {
             return Err(DrmError::Inactive);
@@ -443,21 +595,23 @@ impl DrmBackend {
             .map(OwnedFd::try_clone)
             .transpose()?;
         let scanout = self.import_scanout(dmabuf)?;
-        self.commit_scanout(scanout, damage, false)?;
+        self.commit_scanout(scanout, damage, PrimaryPlaneFrame::Composited)?;
         Ok(completion_fence)
     }
 
     /// Page-flip a single client dma-buf directly onto the primary plane,
-    /// bypassing the Vulkan composite entirely. This is the fullscreen-game
-    /// fast path: a fullscreen, unoccluded, opaque client surface whose
-    /// `(fourcc, modifier)` the plane accepts is imported and committed as-is.
+    /// bypassing the Vulkan composite entirely. This is the full-output client
+    /// fast path: an unoccluded, opaque surface whose actual buffer geometry
+    /// covers the output and whose `(fourcc, modifier)` the plane accepts is
+    /// imported and committed as-is. XDG fullscreen/maximized state is not a
+    /// KMS eligibility criterion.
     /// No flux frame is involved, so this is called instead of (not alongside)
     /// [`Self::present`]. Any kernel import/commit failure is reported as an error
     /// so the runtime falls back to compositing the next frame.
     pub fn present_scanout(
         &mut self,
         client: &aegis_core::SurfaceDmabuf,
-        damage: Option<aegis_core::Rect>,
+        damage: Option<&[aegis_core::Rect]>,
     ) -> Result<Option<OwnedFd>, DrmError> {
         if !self.active || !self.render_ready || !self.outputs_powered {
             return Err(DrmError::Inactive);
@@ -471,6 +625,18 @@ impl DrmBackend {
         let format =
             DrmFourcc::try_from(client.drm_format).map_err(|_| DrmError::ScanoutUnsupported)?;
         let modifier = DrmModifier::from(client.modifier);
+        let all_planes_support_in_fence = self
+            .displays
+            .outputs
+            .iter()
+            .all(|output| output.primary.props.in_fence_fd.is_some());
+        if !scanout_acquire_fence_supported(client.acquire_fence >= 0, all_planes_support_in_fence)
+        {
+            // Never guess that implicit synchronization also covers an
+            // explicitly supplied producer fence. The runtime will composite
+            // this frame instead; Flux imports and waits on the same fence.
+            return Err(DrmError::ScanoutUnsupported);
+        }
         // Duplicate the client fd and optional acquire fence: the server owns
         // the originals, which stay live for future commits.
         let dup_fd = unsafe { libc::dup(client.fd) };
@@ -479,14 +645,13 @@ impl DrmBackend {
         }
         let owned = unsafe { OwnedFd::from_raw_fd(dup_fd) };
         let dup_fence = if client.acquire_fence >= 0 {
-            // Two independent dups: one consumed by the kernel at commit
-            // (import_scanout_client stores it on the Scanout, which
-            // commit_scanout nulls after the IN_FENCE_FD is imported), and a
-            // second returned as the per-frame completion signal so the
-            // renderer's present-ack path stays unchanged.
+            // The duplicate is consumed by KMS through IN_FENCE_FD. Failure to
+            // duplicate is a direct-scanout rejection, never permission to
+            // drop the client's synchronization contract.
             unsafe { BorrowedFd::borrow_raw(client.acquire_fence) }
                 .try_clone_to_owned()
-                .ok()
+                .map(Some)
+                .map_err(|_| DrmError::ScanoutUnsupported)?
         } else {
             None
         };
@@ -502,7 +667,8 @@ impl DrmBackend {
             },
             dup_fence,
         )?;
-        let completion_fence = self.commit_scanout(scanout, damage, true)?;
+        let completion_fence =
+            self.commit_scanout(scanout, damage, PrimaryPlaneFrame::DirectClient)?;
         if completion_fence.is_none() {
             // Older KMS drivers lack CRTC OUT_FENCE_PTR. Preserve correct
             // wl_buffer release semantics by waiting for the page flip only
@@ -537,13 +703,13 @@ impl DrmBackend {
             // unambiguous CRTC target on drivers that do not emit events for
             // a cursor-only property delta.
             request.add_property(
-                output.plane,
-                output.props.plane_fb_id,
+                output.primary.handle,
+                output.primary.props.fb_id,
                 property::Value::Framebuffer(Some(framebuffer)),
             );
             request.add_property(
-                output.plane,
-                output.props.plane_crtc_id,
+                output.primary.handle,
+                output.primary.props.crtc_id,
                 property::Value::CRTC(Some(output.crtc)),
             );
             add_cursor_plane_to_commit(
@@ -596,43 +762,134 @@ impl DrmBackend {
         self.card.as_ref().expect("DRM card exists until drop")
     }
 
-    pub(super) fn import_scanout(&self, dmabuf: flux::SurfaceDmabuf) -> Result<Scanout, DrmError> {
-        let card = self.card();
-        let gem = card.prime_fd_to_buffer(dmabuf.fd.as_fd())?;
+    pub(super) fn import_scanout(
+        &mut self,
+        dmabuf: flux::SurfaceDmabuf,
+    ) -> Result<Scanout, DrmError> {
         let modifier = DrmModifier::from(dmabuf.modifier);
-        let buffer = ImportedBuffer {
-            size: (dmabuf.width, dmabuf.height),
+        let format = self.displays.format;
+        let identity = match dmabuf_identity(dmabuf.fd.as_fd()) {
+            Ok(identity) => Some(identity),
+            Err(error) => {
+                // Identity is an optimization prerequisite, not a presentation
+                // prerequisite. Fall back to one-shot ownership instead of
+                // rejecting an otherwise valid frame.
+                log::warn!(
+                    "drm: cannot identify compositor dma-buf; disabling framebuffer reuse for this frame: {error}"
+                );
+                None
+            }
+        };
+
+        let key = identity.map(|identity| CompositeFbKey {
+            epoch: self.composite_fb_epoch,
+            slot: dmabuf.slot,
+            identity,
+            width: dmabuf.width,
+            height: dmabuf.height,
             stride: dmabuf.stride,
-            modifier,
-            format: self.displays.format,
-            offset: 0,
-            gem,
-        };
-        let flags = if modifier == DrmModifier::Invalid {
-            FbCmd2Flags::empty()
-        } else {
-            FbCmd2Flags::MODIFIERS
-        };
-        match card.add_planar_framebuffer(&buffer, flags) {
-            Ok(framebuffer) => Ok(Scanout {
+            fourcc: format as u32,
+            modifier: dmabuf.modifier,
+        });
+
+        if let Some(key) = key {
+            // A slot is expected to keep one backing object for the life of a
+            // Flux surface. If it changes, retire the former entry rather than
+            // trusting slot alone; current/retiring references defer cleanup.
+            for (cached_key, entry) in &mut self.composite_fb_cache {
+                if composite_fb_slot_conflicts(*cached_key, key) {
+                    entry.reusable = false;
+                }
+            }
+            self.reap_composite_fb_cache();
+
+            if let Some(entry) = self.composite_fb_cache.get_mut(&key) {
+                entry.reusable = true;
+                entry.users = entry
+                    .users
+                    .checked_add(1)
+                    .expect("scanout cache user overflow");
+                return Ok(Scanout {
+                    framebuffer: entry.framebuffer,
+                    gem: entry.gem,
+                    slot: dmabuf.slot,
+                    acquire_fence: dmabuf.acquire_fence,
+                    ownership: ScanoutOwnership::Cached(key),
+                });
+            }
+
+            let (framebuffer, gem) = self.import_composite_framebuffer(
+                dmabuf.fd.as_fd(),
+                dmabuf.width,
+                dmabuf.height,
+                dmabuf.stride,
+                modifier,
+                format,
+            )?;
+            self.composite_fb_cache.insert(
+                key,
+                CachedCompositeFb {
+                    framebuffer,
+                    gem,
+                    users: 1,
+                    reusable: true,
+                },
+            );
+            Ok(Scanout {
                 framebuffer,
                 gem,
                 slot: dmabuf.slot,
                 acquire_fence: dmabuf.acquire_fence,
-            }),
-            Err(error) => {
-                let _ = card.close_buffer(gem);
-                Err(error.into())
-            }
+                ownership: ScanoutOwnership::Cached(key),
+            })
+        } else {
+            let (framebuffer, gem) = self.import_composite_framebuffer(
+                dmabuf.fd.as_fd(),
+                dmabuf.width,
+                dmabuf.height,
+                dmabuf.stride,
+                modifier,
+                format,
+            )?;
+            Ok(Scanout {
+                framebuffer,
+                gem,
+                slot: dmabuf.slot,
+                acquire_fence: dmabuf.acquire_fence,
+                ownership: ScanoutOwnership::TransientCompositor,
+            })
         }
     }
 
     pub(super) fn commit_scanout(
         &mut self,
         mut scanout: Scanout,
-        damage: Option<aegis_core::Rect>,
-        request_completion_fence: bool,
+        damage: Option<&[aegis_core::Rect]>,
+        frame: PrimaryPlaneFrame,
     ) -> Result<Option<OwnedFd>, DrmError> {
+        if !scanout.ownership.matches_frame(frame) {
+            // Source and lifetime are one contract. Reject a mismatched future
+            // caller before it can request client release fences for a
+            // compositor image or omit them for a client buffer.
+            self.release_scanout(scanout);
+            return Err(DrmError::ScanoutUnsupported);
+        }
+        let all_planes_support_in_fence = self
+            .displays
+            .outputs
+            .iter()
+            .all(|output| output.primary.props.in_fence_fd.is_some());
+        if !scanout_acquire_fence_supported(
+            scanout.acquire_fence.is_some(),
+            all_planes_support_in_fence,
+        ) {
+            // Keep the invariant at the shared commit boundary as well as the
+            // direct-scanout preflight, so future callers cannot accidentally
+            // submit an unfinished producer buffer to a plane that cannot wait
+            // for it.
+            self.release_scanout(scanout);
+            return Err(DrmError::ScanoutUnsupported);
+        }
         let mut request = atomic::AtomicModeReq::new();
         let acquire_fd = scanout
             .acquire_fence
@@ -642,7 +899,7 @@ impl DrmBackend {
         // Per-commit FB_DAMAGE_CLIPS blobs, destroyed once the commit ioctl
         // has run (the kernel references the blob, it does not borrow ours).
         let mut damage_blobs: Vec<u64> = Vec::new();
-        let use_out_fences = request_completion_fence
+        let use_out_fences = frame.needs_kms_completion_fence()
             && self
                 .displays
                 .outputs
@@ -651,6 +908,8 @@ impl DrmBackend {
         let mut out_fence_fds = vec![-1_i32; self.displays.outputs.len()];
         for output in &self.displays.outputs {
             let props = output.props;
+            let primary = &output.primary;
+            let plane_props = primary.props;
             let (width, height) = output.mode.size();
             add_cursor_plane_to_commit(
                 &mut request,
@@ -670,58 +929,58 @@ impl DrmBackend {
                 property::Value::Boolean(true),
             );
             request.add_property(
-                output.plane,
-                props.plane_fb_id,
+                primary.handle,
+                plane_props.fb_id,
                 property::Value::Framebuffer(Some(scanout.framebuffer)),
             );
             request.add_property(
-                output.plane,
-                props.plane_crtc_id,
+                primary.handle,
+                plane_props.crtc_id,
                 property::Value::CRTC(Some(output.crtc)),
             );
             request.add_property(
-                output.plane,
-                props.plane_src_x,
+                primary.handle,
+                plane_props.src_x,
                 property::Value::UnsignedRange((output.x as u64) << 16),
             );
             request.add_property(
-                output.plane,
-                props.plane_src_y,
+                primary.handle,
+                plane_props.src_y,
                 property::Value::UnsignedRange((output.y as u64) << 16),
             );
             request.add_property(
-                output.plane,
-                props.plane_src_w,
+                primary.handle,
+                plane_props.src_w,
                 property::Value::UnsignedRange((width as u64) << 16),
             );
             request.add_property(
-                output.plane,
-                props.plane_src_h,
+                primary.handle,
+                plane_props.src_h,
                 property::Value::UnsignedRange((height as u64) << 16),
             );
             request.add_property(
-                output.plane,
-                props.plane_crtc_x,
+                primary.handle,
+                plane_props.crtc_x,
                 property::Value::SignedRange(0),
             );
             request.add_property(
-                output.plane,
-                props.plane_crtc_y,
+                primary.handle,
+                plane_props.crtc_y,
                 property::Value::SignedRange(0),
             );
             request.add_property(
-                output.plane,
-                props.plane_crtc_w,
+                primary.handle,
+                plane_props.crtc_w,
                 property::Value::UnsignedRange(width as u64),
             );
             request.add_property(
-                output.plane,
-                props.plane_crtc_h,
+                primary.handle,
+                plane_props.crtc_h,
                 property::Value::UnsignedRange(height as u64),
             );
-            if let Some(in_fence) = props.plane_in_fence_fd {
+            if let Some(in_fence) = plane_props.in_fence_fd {
                 request.add_property(
-                    output.plane,
+                    primary.handle,
                     in_fence,
                     property::Value::SignedRange(acquire_fd as i64),
                 );
@@ -731,38 +990,42 @@ impl DrmBackend {
             // kernel stickiness. An untouched output gets blob 0 (NULL: "no
             // damage information", which drivers must read as full damage),
             // never an empty clip list.
-            if let Some(clips_prop) = props.plane_fb_damage_clips {
+            if let Some(clips_prop) = plane_props.fb_damage_clips {
                 let (w32, h32) = (u32::from(width), u32::from(height));
-                let value = match damage_clip_for_output(damage, output.x, output.y, w32, h32) {
-                    Some(rect) => {
-                        let full = [
-                            output.x as i32,
-                            output.y as i32,
-                            (output.x + w32) as i32,
-                            (output.y + h32) as i32,
-                        ];
-                        let full_blob = output.full_damage_blob.as_ref().map(|(value, _)| *value);
-                        if rect == full
-                            && let Some(value) = full_blob
-                        {
+                let clips = damage_clip_for_output(damage, output.x, output.y, w32, h32);
+                let full = [
+                    output.x as i32,
+                    output.y as i32,
+                    (output.x + w32) as i32,
+                    (output.y + h32) as i32,
+                ];
+                let full_blob = primary.full_damage_blob.as_ref().map(|(value, _)| *value);
+                // An empty clip list means the output is untouched: a NULL
+                // (zero) hint, which KMS reads as "no damage information".
+                // A single clip equal to the whole output reuses the
+                // pre-allocated full-damage blob. Otherwise build a blob from
+                // every clip so disjoint regions stay separate for PSR2.
+                let value = if clips.is_empty() {
+                    property::Value::Blob(0)
+                } else if clips.len() == 1
+                    && clips[0] == full
+                    && let Some(value) = full_blob
+                {
+                    value
+                } else {
+                    match self.card().create_property_blob(&clips[..]) {
+                        Ok(value @ property::Value::Blob(id)) => {
+                            damage_blobs.push(id);
                             value
-                        } else {
-                            match self.card().create_property_blob(&[rect][..]) {
-                                Ok(value @ property::Value::Blob(id)) => {
-                                    damage_blobs.push(id);
-                                    value
-                                }
-                                // Fall back to "no damage information"
-                                // (conservative full) if the blob cannot be
-                                // allocated: a missing or NULL hint is always
-                                // safe, a wrong one is not.
-                                _ => full_blob.unwrap_or(property::Value::Blob(0)),
-                            }
                         }
+                        // Fall back to "no damage information"
+                        // (conservative full) if the blob cannot be
+                        // allocated: a missing or NULL hint is always
+                        // safe, a wrong one is not.
+                        _ => full_blob.unwrap_or(property::Value::Blob(0)),
                     }
-                    None => property::Value::Blob(0),
                 };
-                request.add_property(output.plane, clips_prop, value);
+                request.add_property(primary.handle, clips_prop, value);
             }
         }
         let mut flags = AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT;
@@ -865,5 +1128,61 @@ impl DrmBackend {
             return Err(DrmError::FlipTimeout);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(epoch: u64, slot: u32, inode: u64) -> CompositeFbKey {
+        CompositeFbKey {
+            epoch,
+            slot,
+            identity: DmabufIdentity { device: 7, inode },
+            width: 3072,
+            height: 1920,
+            stride: 12_288,
+            fourcc: DrmFourcc::Xrgb8888 as u32,
+            modifier: u64::from(DrmModifier::Linear),
+        }
+    }
+
+    #[test]
+    fn dmabuf_identity_is_stable_across_duplicated_fds() {
+        let first = std::fs::File::open("/dev/null").unwrap();
+        let duplicate = first.try_clone().unwrap();
+        assert_eq!(
+            dmabuf_identity(first.as_fd()).unwrap(),
+            dmabuf_identity(duplicate.as_fd()).unwrap()
+        );
+    }
+
+    #[test]
+    fn cache_key_rejects_same_slot_with_new_storage() {
+        let original = key(4, 1, 100);
+        assert!(!composite_fb_slot_conflicts(original, original));
+        assert!(composite_fb_slot_conflicts(original, key(4, 1, 101)));
+        assert!(!composite_fb_slot_conflicts(original, key(4, 2, 101)));
+        // Epoch invalidation handles old-surface entries globally; a key from
+        // another epoch must not evict the candidate slot in the new epoch.
+        assert!(!composite_fb_slot_conflicts(original, key(5, 1, 101)));
+    }
+
+    #[test]
+    fn invalidated_cache_entry_waits_for_last_scanout_reference() {
+        assert!(!composite_fb_reapable(true, 0));
+        assert!(!composite_fb_reapable(false, 1));
+        assert!(composite_fb_reapable(false, 0));
+    }
+
+    #[test]
+    fn scanout_requires_in_fence_support_only_for_explicit_acquire_fences() {
+        // An implicit-sync buffer does not need the optional plane property.
+        assert!(scanout_acquire_fence_supported(false, false));
+        // An explicit producer fence is safe only when every selected primary
+        // plane can import it into the same atomic commit.
+        assert!(scanout_acquire_fence_supported(true, true));
+        assert!(!scanout_acquire_fence_supported(true, false));
     }
 }

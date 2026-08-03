@@ -1060,6 +1060,62 @@ struct WindowSwitcherSession {
     last_forward: bool,
 }
 
+const WORKSPACE_SLIDE_DURATION_MS: u64 = 220;
+
+#[derive(Debug, Clone, Copy)]
+struct WorkspaceSlideLayer {
+    workspace: aegis_core::workspace::WorkspaceId,
+    from_x: f32,
+    to_x: f32,
+}
+
+/// Render-only horizontal motion for a committed workspace switch. Input,
+/// focus, IPC, and the workspace model all move to the destination
+/// immediately; this record keeps the source surfaces paintable just long
+/// enough for both desktops to cross the output edge.
+#[derive(Debug)]
+struct WorkspaceSlide {
+    output: aegis_core::Rect,
+    layers: Vec<WorkspaceSlideLayer>,
+    started_ms: u64,
+    duration_ms: u64,
+}
+
+/// One independently composited workspace page during a horizontal switch.
+#[derive(Debug, Clone)]
+pub struct WorkspaceSlideLayerPresentation {
+    pub windows: Vec<aegis_core::window::WindowId>,
+    pub offset_x: f32,
+}
+
+/// Render-time workspace strip. Each layer must be clipped and drawn
+/// independently so windows from separate workspaces never share one Z-order.
+#[derive(Debug, Clone)]
+pub struct WorkspaceSlidePresentation {
+    pub output: aegis_core::Rect,
+    pub layers: Vec<WorkspaceSlideLayerPresentation>,
+}
+
+impl WorkspaceSlide {
+    fn is_active_at(&self, now_ms: u64) -> bool {
+        self.duration_ms > 0 && now_ms.saturating_sub(self.started_ms) < self.duration_ms
+    }
+
+    fn offset_at(&self, workspace: aegis_core::workspace::WorkspaceId, now_ms: u64) -> Option<f32> {
+        if !self.is_active_at(now_ms) {
+            return None;
+        }
+        let layer = self
+            .layers
+            .iter()
+            .find(|layer| layer.workspace == workspace)?;
+        let elapsed = now_ms.saturating_sub(self.started_ms);
+        let progress =
+            aegis_core::transition::ease_out_cubic(elapsed as f32 / self.duration_ms as f32);
+        Some(layer.from_x + (layer.to_x - layer.from_x) * progress)
+    }
+}
+
 /// Server-wide state. Its address is handed to the C bind callbacks, so it is
 /// boxed and never moved out.
 pub(crate) struct State {
@@ -1108,7 +1164,14 @@ pub(crate) struct State {
     /// pointer to the end and updates affected live records' slot indices.
     /// Iterators must skip null entries.
     surfaces: Vec<*mut SurfaceRec>,
+    /// Monotonic millisecond timestamp of the last compatibility frame
+    /// callback sent to surfaces that were not visible on the physical
+    /// output.  Hidden clients get a low-rate heartbeat instead of being
+    /// driven at the output refresh rate (which otherwise lets a covered
+    /// browser/video keep producing buffers and waking the compositor).
+    last_background_frame_callback_ms: u32,
     window_switcher: Option<WindowSwitcherSession>,
+    workspace_slide: Option<WorkspaceSlide>,
     /// Every `wl_output` resource clients have bound. Resent in full when the
     /// output geometry (mode/scale/transform) changes so bound clients update.
     pub(crate) output_resources: Vec<*mut ffi::wl_resource>,
@@ -1119,6 +1182,11 @@ pub(crate) struct State {
     /// together with the wl_output reconfigure path.
     pub(crate) xdg_output_resources: Vec<*mut ffi::wl_resource>,
     pub(crate) xdg_output_links: std::collections::HashMap<usize, *mut ffi::wl_resource>,
+    /// Live linux-dmabuf v4 feedback objects. Unlike one-shot globals, a
+    /// feedback object stays subscribed: whenever the active KMS plane
+    /// capabilities change the compositor sends another complete feedback
+    /// batch and the client atomically adopts it at `done`.
+    pub(crate) dmabuf_feedback_resources: Vec<DmabufFeedbackResource>,
     /// Live ext-idle-notify and idle-inhibit protocol resources. Per-object
     /// timer/role state is owned by resource user data in `extensions.rs`.
     pub(crate) idle_notifications: Vec<*mut ffi::wl_resource>,
@@ -1219,12 +1287,18 @@ pub(crate) struct State {
     /// allocate GPU-optimal (tiled/compressed) buffers instead of LINEAR.
     /// Drives the format/modifier events in `dmabuf_bind`.
     pub(crate) dmabuf_formats: Vec<aegis_core::dmabuf::DmabufFormat>,
+    /// Format/modifier pairs that every active primary plane accepts for
+    /// direct scanout. Feedback intersects this with the renderer table before
+    /// advertising the preferred SCANOUT tranche.
+    pub(crate) dmabuf_scanout_formats: Vec<aegis_core::dmabuf::DmabufFormat>,
     /// Linux `dev_t` of the renderer's preferred DRM node. When present the
     /// linux-dmabuf global is advertised at v4 and feedback objects use this
-    /// as both `main_device` and the render tranche target. Without this,
-    /// Mesa cannot reliably select the compositor's GPU and may fall back to
-    /// llvmpipe.
+    /// as `main_device` and the renderer fallback tranche target. Without
+    /// this, Mesa cannot reliably select the compositor's GPU and may fall
+    /// back to llvmpipe.
     pub(crate) dmabuf_main_device: Option<u64>,
+    /// Linux `dev_t` of the KMS node targeted by the SCANOUT tranche.
+    pub(crate) dmabuf_scanout_device: Option<u64>,
     next_window_id: u64,
 }
 
@@ -1316,11 +1390,14 @@ impl State {
             damaged_windows: std::collections::BTreeSet::new(),
             pending_realm_damage: std::collections::BTreeMap::new(),
             surfaces: Vec::new(),
+            last_background_frame_callback_ms: 0,
             window_switcher: None,
+            workspace_slide: None,
             output_resources: Vec::new(),
             output_globals: Vec::new(),
             xdg_output_resources: Vec::new(),
             xdg_output_links: std::collections::HashMap::new(),
+            dmabuf_feedback_resources: Vec::new(),
             idle_notifications: Vec::new(),
             idle_inhibitors: Vec::new(),
             ipc_idle_inhibit: false,
@@ -1361,7 +1438,9 @@ impl State {
             window_state_path,
             remember_window_positions: true,
             dmabuf_formats: Vec::new(),
+            dmabuf_scanout_formats: Vec::new(),
             dmabuf_main_device: None,
+            dmabuf_scanout_device: None,
             next_window_id: 1,
         }
     }

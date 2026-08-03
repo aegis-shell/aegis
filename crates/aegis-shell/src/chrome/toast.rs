@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
-use crate::{Chrome, ChromeEvents, Localizer, truncate};
+use crate::{Chrome, ChromeEvents, Localizer, ellipsize};
 use aegis_core::notify::{Notification, NotificationQueue};
 use aegis_core::window::Window;
 use aegis_core::workspace::WorkspaceSnapshot;
@@ -155,9 +155,12 @@ impl Chrome for Toast {
                         ..Default::default()
                     },
                     |f| {
-                        f.label_compact_sized(&truncate(&title, 42), 12.0);
+                        let text_width = (rect.w - 18.0).max(0.0);
+                        let title = ellipsize(f, &title, 12.0, text_width);
+                        f.label_compact_sized(&title, 12.0);
                         if !n.body.is_empty() {
-                            f.label_compact_sized(&truncate(&n.body, 52), 10.5);
+                            let body = ellipsize(f, &n.body, 10.5, text_width);
+                            f.label_compact_sized(&body, 10.5);
                         }
                     },
                 );
@@ -183,8 +186,8 @@ mod tests {
 
     #[test]
     fn toast_copy_is_unicode_safe_and_bounded() {
-        assert_eq!(truncate("Fuji connected", 20), "Fuji connected");
-        assert_eq!(truncate("真实通知已经联通", 6), "真实通知已…");
+        assert_eq!(crate::truncate("Fuji connected", 20), "Fuji connected");
+        assert_eq!(crate::truncate("真实通知已经联通", 6), "真实通知已…");
     }
 
     #[test]

@@ -4,12 +4,14 @@
 //! What used to be the interactive status bar is now two floating frosted
 //! chips composited over the desktop: system status (network, Bluetooth,
 //! battery), the StatusNotifierItem tray row, the clock, and the
-//! notification count on the left; workspace dots in the center. The
+//! notification count on the left; workspace markers in the center. The
 //! top-right belongs to the frameless notification toast strip
 //! (ADR-0083), and the Agent Workspaces status moved to the command panel
-//! (`aegis-command-panel`). The chips reserve no space (tiled and
-//! maximized windows run underneath), accept no pointer input (clicks fall
-//! through to windows), and fade out when the cursor approaches. Every
+//! (`aegis-command-panel`). The chips reserve no space (tiled and maximized
+//! windows run underneath), accept no pointer input (clicks fall
+//! through to windows), and fade out when the cursor approaches. A visible
+//! fullscreen window owns the output presentation, so the HUD contributes no
+//! pixels or backdrop work in that immersive state. Every
 //! interaction the bar once hosted moved to the command panel.
 
 use std::collections::HashMap;
@@ -36,9 +38,9 @@ mod rendering;
 
 use rendering::*;
 
-const WORKSPACE_SLOT_W: f32 = 18.0;
-const WORKSPACE_ACTIVE_DOT: f32 = 8.0;
-const WORKSPACE_INACTIVE_DOT: f32 = 6.0;
+const WORKSPACE_DOT_DIAMETER: f32 = 7.0;
+const WORKSPACE_DOT_GAP: f32 = 11.0;
+const MIN_WORKSPACE_SLOTS: usize = 2;
 const CHIP_TOP: f32 = 8.0;
 const CHIP_SIDE: f32 = 8.0;
 const CHIP_PAD_X: f32 = 10.0;
@@ -55,6 +57,7 @@ const BACKDROP_BLUR_SIGMA: f32 = 12.0;
 /// Cursor distance from a chip at which the chip fades out (ADR-0080).
 const FADE_PROXIMITY: f32 = 56.0;
 const FADE_RATE: f32 = 14.0;
+const WORKSPACE_POSITION_RATE: f32 = 18.0;
 
 /// Chip slots in the layout/fade arrays.
 const LEFT: usize = 0;
@@ -83,8 +86,34 @@ impl Default for ChipLayout {
     }
 }
 
+fn workspace_indicator_state(workspaces: &WorkspaceSnapshot) -> Option<(usize, usize)> {
+    let output = workspaces.outputs.first()?;
+    if output.workspaces.is_empty() {
+        return None;
+    }
+    let active = output
+        .current
+        .and_then(|current| {
+            output
+                .workspaces
+                .iter()
+                .position(|workspace| workspace.id == current)
+        })
+        .unwrap_or(0);
+    Some((output.workspaces.len().max(MIN_WORKSPACE_SLOTS), active))
+}
+
+fn workspace_indicator_width(slots: usize) -> f32 {
+    let dots = slots as f32 * WORKSPACE_DOT_DIAMETER;
+    let gaps = slots.saturating_sub(1) as f32 * WORKSPACE_DOT_GAP;
+    dots + gaps + CHIP_PAD_X * 2.0
+}
+
 /// The display-only HUD.
 pub struct Hud {
+    /// A visible fullscreen window owns the output presentation. While true
+    /// the HUD is semantically dormant: it draws no pixels, requests no
+    /// backdrop, and advertises no animation/composition work.
     fullscreen_active: bool,
     reduced_motion: bool,
     icons: IconSet,
@@ -108,6 +137,11 @@ pub struct Hud {
     /// Notification list cache keyed by the queue's revision; re-cloned only
     /// when the queue actually changes.
     notification_cache: Option<(u64, Arc<Vec<Notification>>)>,
+    /// Eased slot coordinate used to cross-fade brightness between workspace
+    /// spheres without changing their geometry.
+    workspace_position: f32,
+    workspace_target: f32,
+    workspace_position_initialized: bool,
 }
 
 /// Render-thread half of the StatusNotifierItem tray: the shared snapshot
@@ -186,6 +220,9 @@ impl Hud {
             layout: ChipLayout::default(),
             frame_prepared: false,
             notification_cache: None,
+            workspace_position: 0.0,
+            workspace_target: 0.0,
+            workspace_position_initialized: false,
         }
     }
 
@@ -325,14 +362,9 @@ impl Hud {
         };
         layout.visible[LEFT] = true;
 
-        // Center chip: workspace dots.
-        let slots = workspaces
-            .outputs
-            .first()
-            .map(|output| output.workspaces.len())
-            .unwrap_or(0);
-        if slots > 0 {
-            let w = slots as f32 * WORKSPACE_SLOT_W + CHIP_PAD_X * 2.0;
+        // Center chip: workspace position markers.
+        if let Some((slots, _)) = workspace_indicator_state(workspaces) {
+            let w = workspace_indicator_width(slots);
             layout.chips[CENTER] = Rect {
                 x: (display.0 - w) * 0.5,
                 y,
@@ -382,6 +414,27 @@ impl Hud {
         }
     }
 
+    fn advance_workspace_position(&mut self, dt: f32, workspaces: &WorkspaceSnapshot) {
+        let Some((_, active)) = workspace_indicator_state(workspaces) else {
+            self.workspace_position_initialized = false;
+            self.workspace_position = 0.0;
+            self.workspace_target = 0.0;
+            return;
+        };
+        self.workspace_target = active as f32;
+        if !self.workspace_position_initialized || self.reduced_motion {
+            self.workspace_position = self.workspace_target;
+            self.workspace_position_initialized = true;
+            return;
+        }
+        let dt = dt.clamp(0.0, 1.0 / 15.0);
+        let follow = 1.0 - (-WORKSPACE_POSITION_RATE * dt).exp();
+        self.workspace_position += (self.workspace_target - self.workspace_position) * follow;
+        if (self.workspace_target - self.workspace_position).abs() < 0.002 {
+            self.workspace_position = self.workspace_target;
+        }
+    }
+
     fn prepare_frame_state(&mut self, input: &Input, workspaces: &WorkspaceSnapshot) {
         self.refresh_status();
         let raw = input.as_raw();
@@ -396,6 +449,7 @@ impl Hud {
             fold.hidden,
         );
         self.advance_fade(raw.dt_seconds.max(0.0), (raw.cursor.x, raw.cursor.y));
+        self.advance_workspace_position(raw.dt_seconds.max(0.0), workspaces);
         self.frame_prepared = true;
     }
 }
@@ -591,43 +645,43 @@ impl Chrome for Hud {
             );
         }
 
-        // ---- Center chip: workspace dots ---------------------------------
+        // ---- Center chip: workspace position markers ---------------------
         if layout.visible[CENTER] && self.chip_fade[CENTER] > 0.01 {
             let fade = self.chip_fade[CENTER];
             let chip = layout.chips[CENTER];
             f.layer("aegis-hud-chip-center", chip, &chip_opts(fade), |f| {
                 f.column_ex(&sized(chip.w, chip.h), |_| {});
             });
-            if let Some(output) = workspaces.outputs.first() {
+            if let Some((slots, _)) = workspace_indicator_state(workspaces) {
                 let mut x = chip.x + CHIP_PAD_X;
-                for workspace in &output.workspaces {
-                    let slot = Rect {
-                        x,
-                        y: chip.y,
-                        w: WORKSPACE_SLOT_W,
-                        h: chip.h,
-                    };
-                    x += WORKSPACE_SLOT_W;
-                    let active = output.current == Some(workspace.id);
-                    let diameter = workspace_dot_diameter(active);
+                for index in 0..slots {
+                    let diameter = workspace_dot_diameter();
+                    let intensity = workspace_dot_intensity(index, self.workspace_position);
                     let dot = Rect {
-                        x: slot.x + (slot.w - diameter) * 0.5,
-                        y: slot.y + (slot.h - diameter) * 0.5,
+                        x,
+                        y: chip.y + (chip.h - diameter) * 0.5,
                         w: diameter,
                         h: diameter,
                     };
+                    x += diameter + WORKSPACE_DOT_GAP;
                     let contour_width = Design::dark().hud_foreground.glyph_contour_width;
                     let contour_diameter = diameter + contour_width * 2.0;
                     let contour = Rect {
-                        x: slot.x + (slot.w - contour_diameter) * 0.5,
-                        y: slot.y + (slot.h - contour_diameter) * 0.5,
+                        x: dot.x - contour_width,
+                        y: dot.y - contour_width,
                         w: contour_diameter,
                         h: contour_diameter,
                     };
+                    let id = workspaces
+                        .outputs
+                        .first()
+                        .and_then(|output| output.workspaces.get(index))
+                        .map(|workspace| workspace.id.0.to_string())
+                        .unwrap_or_else(|| format!("preview-{index}"));
                     f.layer(
-                        &format!("aegis-hud-workspace-contour-{}", workspace.id.0),
+                        &format!("aegis-hud-workspace-contour-{id}"),
                         contour,
-                        &OverlayOpts::default(),
+                        &centered_layer(),
                         |f| {
                             f.column_ex(
                                 &sized_fill(
@@ -641,15 +695,15 @@ impl Chrome for Hud {
                         },
                     );
                     f.layer(
-                        &format!("aegis-hud-workspace-dot-{}", workspace.id.0),
+                        &format!("aegis-hud-workspace-dot-{id}"),
                         dot,
-                        &OverlayOpts::default(),
+                        &centered_layer(),
                         |f| {
                             f.column_ex(
                                 &sized_fill(
                                     diameter,
                                     diameter,
-                                    fade_color(workspace_dot_color(active), fade),
+                                    fade_color(workspace_dot_color(intensity), fade),
                                     diameter * 0.5,
                                 ),
                                 |_| {},
@@ -672,8 +726,8 @@ impl Chrome for Hud {
     }
 
     fn update_windows(&mut self, windows: &[Window]) {
-        // A fullscreen window owns the whole output; the HUD gets out of the
-        // way entirely, as the bar always has.
+        // Only fullscreen owns the whole output. Maximized windows retain the
+        // HUD, matching the shell's visible chrome policy.
         self.fullscreen_active = SpaceUse::from_windows(windows) == SpaceUse::Fullscreen;
     }
 
@@ -698,26 +752,32 @@ impl Chrome for Hud {
             .iter()
             .zip(self.chip_target.iter())
             .any(|(fade, target)| (fade - target).abs() > 0.002)
+            || (self.workspace_position - self.workspace_target).abs() > 0.002
     }
 
     fn requires_composition(&self) -> bool {
         !self.fullscreen_active
+            && self
+                .chip_fade
+                .iter()
+                .zip(self.layout.visible.iter())
+                .any(|(fade, visible)| *visible && *fade > 0.01)
+    }
+
+    fn persistent_decoration(&self) -> bool {
+        true
     }
 
     fn set_reduced_motion(&mut self, reduced: bool) {
         self.reduced_motion = reduced;
         if reduced {
             self.chip_fade = self.chip_target;
+            self.workspace_position = self.workspace_target;
         }
     }
 
     fn backdrop_blur_sigma(&self) -> f32 {
-        let any_visible = self
-            .chip_fade
-            .iter()
-            .zip(self.layout.visible.iter())
-            .any(|(fade, visible)| *visible && *fade > 0.01);
-        if self.fullscreen_active || !any_visible {
+        if !self.requires_composition() {
             0.0
         } else {
             BACKDROP_BLUR_SIGMA

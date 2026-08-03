@@ -119,6 +119,45 @@ fn stacked_resize_target<T: Copy>(
 }
 
 impl Server {
+    /// Resolve the pointer target after a compositor-side stacking change
+    /// without inventing physical motion. `None` means an active grab owns
+    /// focus and it must remain pinned; `Some(null)` means the stationary
+    /// pointer is over no client surface.
+    pub(crate) fn stationary_pointer_rehit_target(&self) -> Option<*mut ffi::wl_resource> {
+        if self.state.drag.is_some()
+            || self.state.interactive.is_some()
+            || self.state.implicit_grab_active
+            || self.state.compositor_pointer_grab
+        {
+            return None;
+        }
+        let (x, y) = (self.state.pointer_x, self.state.pointer_y);
+        let focus = if self.state.active_seat == HUMAN_SEAT
+            && self
+                .resize_target_at(x, y, aegis_core::window::RESIZE_OUTER_MARGIN)
+                .is_some()
+        {
+            std::ptr::null_mut()
+        } else {
+            self.hit_test_focus(x, y)
+        };
+        Some(focus)
+    }
+
+    /// Keep Wayland pointer focus coherent with a window raised under a
+    /// stationary cursor. Without this enter/leave transition, the next
+    /// button or axis event is delivered to the surface that was topmost
+    /// before the keyboard switch.
+    pub(crate) fn rehit_pointer_after_stack_change(&mut self) {
+        let Some(focus) = self.stationary_pointer_rehit_target() else {
+            return;
+        };
+        if focus != self.state.pointer_focus {
+            self.change_pointer_focus(focus);
+            unsafe { ffi::wl_display_flush_clients(self.state.display) };
+        }
+    }
+
     pub(crate) fn pointer_motion(&mut self, x: f32, y: f32) {
         // Relative delta from the previous motion event (for relative-pointer
         // clients). Computed before pointer_x/y are overwritten.

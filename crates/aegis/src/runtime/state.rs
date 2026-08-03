@@ -92,9 +92,13 @@ pub(super) struct CompositorRuntime {
     pub(super) clear: u32,
     pub(super) frame_count: u64,
     pub(super) retired_defer: Option<u64>,
-    /// Whether the previous frame took the direct-scanout fast path. Used only
-    /// to log the activation once per scanout session; compositing resets it.
-    pub(super) scanout_taken: bool,
+    /// Content owner of the primary plane after the last successful present.
+    /// Failed submissions never advance this state.
+    pub(super) primary_plane_state: PrimaryPlaneState,
+    /// Bounded primary-plane rejection counters and rate-limited diagnostics.
+    /// Kept independently from `primary_plane_state` so a persistent video client
+    /// explains why it is composited instead of failing silently every frame.
+    pub(super) scanout_telemetry: ScanoutTelemetry,
     pub(super) keyboard_capture: aegis_core::input::KeyboardCaptureState,
     pub(super) keymap: aegis_core::keybind::Keymap,
     pub(super) system_status: aegis_shell::SystemStatus,
@@ -158,6 +162,10 @@ pub(super) struct CompositorRuntime {
     /// Per-surface content generations at the last damage assessment; a
     /// mismatch marks that surface's region damaged.
     pub(super) last_surface_gens: std::collections::HashMap<usize, SurfaceDamageBaseline>,
+    /// Scratch double-buffer for [`Self::last_surface_gens`]: `client_damage`
+    /// swaps the two in place and clears the now-old one, so the per-frame
+    /// generation map is never freshly heap-allocated.
+    pub(super) surface_gens_scratch: std::collections::HashMap<usize, SurfaceDamageBaseline>,
     pub(super) last_notif_revision: Option<u64>,
     /// (overview, window switcher, keyboard capture, screenshot selector) at
     /// the last assessment — modal chrome changes outside signed paths.

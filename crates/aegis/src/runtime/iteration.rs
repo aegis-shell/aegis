@@ -36,6 +36,17 @@ impl CompositorRuntime {
         // woke this iteration must become visible before a pending Realm or
         // desktop capture can be handed to its requester.
         self.server.dispatch();
+        // A transition is live state only until its animation deadline. The
+        // animation scheduler wakes this terminal iteration even without a
+        // client commit, so retire settled records before any scene,
+        // occlusion, callback, or capture query observes them.
+        self.server.settle_finished_transitions();
+        // The host polls a mux containing both the Wayland event-loop fd and
+        // the capture worker's completion eventfd. Drain readiness only after
+        // server dispatch, then consume the completion channel below. This
+        // preserves event-driven idle sleep without turning worker activity
+        // into compositor animation.
+        self.capture_worker.drain_wakeup();
         self.idle_process.maintain();
         let outputs_powered = self.host.outputs_powered();
         if !self.server.session_locked() && !outputs_powered {
@@ -109,40 +120,77 @@ impl CompositorRuntime {
             );
         }
         while let Ok(completion) = self.capture_worker.completions.try_recv() {
+            let finishes_reserved_job = completion.finishes_reserved_job();
             match completion {
-                CaptureCompletion::Screenshot {
+                CaptureCompletion::ScreenshotEncoded {
+                    path,
+                    origin,
+                    security_generation,
+                    encoded,
+                } => {
+                    if self.capture_worker.permits(security_generation)
+                        && screenshot_updates_human_clipboard(origin)
+                    {
+                        match encoded {
+                            Ok(png) => {
+                                // Publish the immutable PNG immediately. The
+                                // worker retains the same Arc while it performs
+                                // the independent atomic file write.
+                                if let Err(error) = self.server.set_clipboard_data_shared(
+                                    aegis_core::realm::HUMAN_SEAT,
+                                    vec![("image/png".to_owned(), png)],
+                                ) {
+                                    log::warn!(
+                                        "screenshot clipboard publication failed for {path}: {error}"
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                log::warn!("screenshot encoding failed for {path}: {error}");
+                            }
+                        }
+                    }
+                }
+                CaptureCompletion::ScreenshotSaved {
                     path,
                     command,
                     ts_mono_ms,
                     origin,
                     security_generation,
-                    encoded,
+                    png,
                     written,
                 } => {
                     let result = if self.capture_worker.permits(security_generation) {
-                        encoded.and_then(|png| {
-                            // The worker already committed the atomic write +
-                            // rename; only the clipboard convenience (which
-                            // needs the main-loop server) stays here.
-                            written?;
+                        written.and_then(|()| {
+                            // The durable file now exists. Refresh the early
+                            // image-only selection with its URI convenience,
+                            // sharing the same PNG allocation rather than
+                            // copying the multi-megabyte payload again.
                             if screenshot_updates_human_clipboard(origin) {
-                                let mut payloads = vec![("image/png".to_owned(), png)];
-                                match screenshot_uri_list(&path) {
-                                    Ok(uri_list) => {
-                                        payloads.push(("text/uri-list".to_owned(), uri_list));
+                                if let Some(png) = png {
+                                    let mut payloads = vec![("image/png".to_owned(), png)];
+                                    match screenshot_uri_list(&path) {
+                                        Ok(uri_list) => payloads.push((
+                                            "text/uri-list".to_owned(),
+                                            std::sync::Arc::from(uri_list),
+                                        )),
+                                        Err(error) => {
+                                            log::warn!(
+                                                "screenshot clipboard URI unavailable: {error}"
+                                            );
+                                        }
                                     }
-                                    Err(error) => {
-                                        log::warn!("screenshot clipboard URI unavailable: {error}");
+                                    if let Err(error) = self.server.set_clipboard_data_shared(
+                                        aegis_core::realm::HUMAN_SEAT,
+                                        payloads,
+                                    ) {
+                                        // Saving remains successful. Clipboard
+                                        // publication is a desktop convenience
+                                        // and cannot rewrite an applied capture.
+                                        log::warn!(
+                                            "screenshot clipboard publication failed: {error}"
+                                        );
                                     }
-                                }
-                                if let Err(error) = self
-                                    .server
-                                    .set_clipboard_data(aegis_core::realm::HUMAN_SEAT, payloads)
-                                {
-                                    // Saving the screenshot remains successful. Clipboard
-                                    // publication is an additional desktop convenience and
-                                    // must not rewrite an already-applied capture as refused.
-                                    log::warn!("screenshot clipboard publication failed: {error}");
                                 }
                             }
                             Ok(())
@@ -224,12 +272,11 @@ impl CompositorRuntime {
                     {
                         self.deliver_stream_frame(frame);
                     }
-                    // Stream jobs never reserve the worker lane, so there is
-                    // nothing to release for this completion.
-                    continue;
                 }
             }
-            self.capture_worker.release();
+            if finishes_reserved_job {
+                self.capture_worker.release();
+            }
         }
         if self.pending_capture.is_some() {
             let readiness = self.surface.read_pixels_ready().map_err(|error| {

@@ -1,14 +1,37 @@
 use crate::*;
 
+/// Hidden surfaces retain a low-rate callback heartbeat so clients which use
+/// frame callbacks for housekeeping do not stall forever.  The value mirrors
+/// the established compositor practice of roughly one callback per second,
+/// while leaving margin for a 1 s maintenance timer to arrive slightly early.
+const BACKGROUND_FRAME_CALLBACK_INTERVAL_MS: u32 = 995;
+
+fn background_frame_callback_due(now_ms: u32, previous_ms: u32) -> bool {
+    now_ms.wrapping_sub(previous_ms) >= BACKGROUND_FRAME_CALLBACK_INTERVAL_MS
+}
+
 impl Server {
-    /// The set of toplevel ids on the current workspace of each output — the
-    /// only surfaces the renderer, chrome, and input may touch (ADR-0025).
+    /// The authoritative interaction-visible set: current-workspace
+    /// toplevels on every output. Presentation may temporarily extend this
+    /// through [`Self::render_visible`] during a workspace slide; input,
+    /// focus, and chrome never do (ADR-0025).
     pub(crate) fn visible(&self) -> std::collections::HashSet<aegis_core::window::WindowId> {
         self.state
             .workspaces
             .visible_toplevels()
             .into_iter()
             .collect()
+    }
+
+    fn root_render_delta(&self, root: &SurfaceRec) -> (i32, i32) {
+        self.transition_render_rect(root)
+            .map(|rect| {
+                (
+                    rect.origin.x - root.position.x,
+                    rect.origin.y - root.position.y,
+                )
+            })
+            .unwrap_or((0, 0))
     }
 
     /// Toplevel ids whose complete surface tree is covered by opaque pixels in
@@ -22,7 +45,7 @@ impl Server {
         // Occlusion is a physical-desktop optimization. While the session lock
         // or overview is active the renderer draws a different scene, and
         // excluding windows here would starve lock-screen compositing.
-        if self.state.session_lock_phase.is_active() {
+        if self.state.session_lock_phase.is_active() || self.workspace_slide_pending() {
             return std::collections::HashSet::new();
         }
         let visible = self.visible();
@@ -47,7 +70,7 @@ impl Server {
         let output = self.output_logical_rect();
         for pointer in stacked.iter().rev() {
             let root = unsafe { &**pointer };
-            if root.window.transition.is_some() {
+            if self.transition_render_rect(root).is_some() {
                 continue;
             }
 
@@ -91,10 +114,9 @@ impl Server {
                     size: surface_logical_size(surface),
                 };
                 let alpha_free_dmabuf = surface.content_is_dmabuf
-                    && surface
-                        .dmabuf
-                        .as_ref()
-                        .is_some_and(|buffer| aegis_core::dmabuf::is_format_opaque(buffer.drm_format));
+                    && surface.dmabuf.as_ref().is_some_and(|buffer| {
+                        aegis_core::dmabuf::is_format_opaque(buffer.drm_format)
+                    });
                 if alpha_free_dmabuf && let Some(rect) = intersect_rect(surface_rect, output) {
                     opaque_coverage.push(rect);
                 }
@@ -141,7 +163,7 @@ impl Server {
     /// frames; global backing-type or subsurface passes break window
     /// occlusion.
     pub fn client_surface_frame_order(&self) -> Vec<usize> {
-        let visible = self.visible();
+        let visible = self.render_visible();
         let occluded = self.occluded_window_ids();
         self.client_surface_frame_order_for_realm(HUMAN_REALM, Some(&visible), Some(&occluded))
     }
@@ -205,8 +227,16 @@ impl Server {
 
     /// Mapped xdg-toplevel and xdg-popup surfaces backed by shm (CPU pixels).
     pub fn toplevel_frames(&self) -> Vec<SurfacePixels<'_>> {
-        let visible = self.visible();
+        let visible = self.render_visible();
         let occluded = self.occluded_window_ids();
+        self.toplevel_frames_with(&visible, &occluded)
+    }
+
+    fn toplevel_frames_with(
+        &self,
+        visible: &std::collections::HashSet<aegis_core::window::WindowId>,
+        occluded: &std::collections::HashSet<aegis_core::window::WindowId>,
+    ) -> Vec<SurfacePixels<'_>> {
         self.state
             .surfaces
             .iter()
@@ -219,7 +249,9 @@ impl Server {
                 s.mapped
                     && (!s.xdg_toplevel.is_null() || !s.xdg_popup.is_null())
                     && !root.is_null()
-                    && unsafe { !(*root).window.minimized || (*root).window.transition.is_some() }
+                    && unsafe {
+                        !(*root).window.minimized || self.transition_render_rect(&*root).is_some()
+                    }
                     && !s.content_is_dmabuf
                     && !s.pixels.is_empty()
                     && visible.contains(unsafe { &(*root).window.id })
@@ -234,11 +266,16 @@ impl Server {
                 // at the interpolated rect; the model stays at the target.
                 // The origin delta carries the whole subsurface tree with it.
                 let render_rect = self.transition_render_rect(s);
+                let root =
+                    unsafe { surface_root_toplevel(s as *const SurfaceRec as *mut SurfaceRec) };
+                let delta = if root.is_null() {
+                    (0, 0)
+                } else {
+                    self.root_render_delta(unsafe { &*root })
+                };
                 let mut origin = surface_draw_origin(s);
-                if let Some(r) = render_rect {
-                    origin.x += r.origin.x - s.position.x;
-                    origin.y += r.origin.y - s.position.y;
-                }
+                origin.x += delta.0;
+                origin.y += delta.1;
                 SurfacePixels {
                     id: s.resource as usize,
                     window: if s.xdg_toplevel.is_null() {
@@ -277,8 +314,16 @@ impl Server {
     /// before Flux consumes the duplicate. The server keeps ownership until
     /// the backing buffer is replaced or destroyed.
     pub fn toplevel_dmabuf_frames(&self) -> Vec<SurfaceDmabuf> {
-        let visible = self.visible();
+        let visible = self.render_visible();
         let occluded = self.occluded_window_ids();
+        self.toplevel_dmabuf_frames_with(&visible, &occluded)
+    }
+
+    fn toplevel_dmabuf_frames_with(
+        &self,
+        visible: &std::collections::HashSet<aegis_core::window::WindowId>,
+        occluded: &std::collections::HashSet<aegis_core::window::WindowId>,
+    ) -> Vec<SurfaceDmabuf> {
         self.state
             .surfaces
             .iter()
@@ -304,11 +349,16 @@ impl Server {
             .filter_map(|s| {
                 let db = s.dmabuf.as_ref()?;
                 let render_rect = self.transition_render_rect(s);
+                let root =
+                    unsafe { surface_root_toplevel(s as *const SurfaceRec as *mut SurfaceRec) };
+                let delta = if root.is_null() {
+                    (0, 0)
+                } else {
+                    self.root_render_delta(unsafe { &*root })
+                };
                 let mut origin = surface_draw_origin(s);
-                if let Some(r) = render_rect {
-                    origin.x += r.origin.x - s.position.x;
-                    origin.y += r.origin.y - s.position.y;
-                }
+                origin.x += delta.0;
+                origin.y += delta.1;
                 Some(SurfaceDmabuf {
                     id: s.resource as usize,
                     window: if s.xdg_toplevel.is_null() {
@@ -353,9 +403,11 @@ impl Server {
     /// The returned vector is an unordered backing store. Composite it
     /// against [`client_surface_frame_order`](Self::client_surface_frame_order).
     pub fn client_surface_frames(&self) -> Vec<SurfacePixels<'_>> {
-        let mut frames = self.toplevel_frames();
-        frames.extend(self.subsurface_frames_below());
-        frames.extend(self.subsurface_frames_above());
+        let visible = self.render_visible();
+        let occluded = self.occluded_window_ids();
+        let mut frames = self.toplevel_frames_with(&visible, &occluded);
+        frames.extend(self.subsurface_frames_below_with(&visible, &occluded));
+        frames.extend(self.subsurface_frames_above_with(&visible, &occluded));
         frames
     }
 
@@ -364,9 +416,11 @@ impl Server {
     /// The returned vector is an unordered backing store. Composite it
     /// against [`client_surface_frame_order`](Self::client_surface_frame_order).
     pub fn client_surface_dmabuf_frames(&self) -> Vec<SurfaceDmabuf> {
-        let mut frames = self.toplevel_dmabuf_frames();
-        frames.extend(self.subsurface_dmabuf_frames_below());
-        frames.extend(self.subsurface_dmabuf_frames_above());
+        let visible = self.render_visible();
+        let occluded = self.occluded_window_ids();
+        let mut frames = self.toplevel_dmabuf_frames_with(&visible, &occluded);
+        frames.extend(self.subsurface_dmabuf_frames_below_with(&visible, &occluded));
+        frames.extend(self.subsurface_dmabuf_frames_above_with(&visible, &occluded));
         frames
     }
 
@@ -844,6 +898,14 @@ impl Server {
         self.collect_subsurfaces_shm(false)
     }
 
+    fn subsurface_frames_below_with(
+        &self,
+        visible: &std::collections::HashSet<aegis_core::window::WindowId>,
+        occluded: &std::collections::HashSet<aegis_core::window::WindowId>,
+    ) -> Vec<SurfacePixels<'_>> {
+        self.collect_subsurfaces_shm_with(false, visible, occluded)
+    }
+
     /// As [`subsurface_frames_below`](Self::subsurface_frames_below) for
     /// surfaces whose most recent stacking request was `place_above` (or the
     /// default). These render *over* their parent toplevel.
@@ -851,14 +913,38 @@ impl Server {
         self.collect_subsurfaces_shm(true)
     }
 
+    fn subsurface_frames_above_with(
+        &self,
+        visible: &std::collections::HashSet<aegis_core::window::WindowId>,
+        occluded: &std::collections::HashSet<aegis_core::window::WindowId>,
+    ) -> Vec<SurfacePixels<'_>> {
+        self.collect_subsurfaces_shm_with(true, visible, occluded)
+    }
+
     /// Mapped dma-buf-backed subsurfaces below their parent.
     pub fn subsurface_dmabuf_frames_below(&self) -> Vec<SurfaceDmabuf> {
         self.collect_subsurfaces_dmabuf(false)
     }
 
+    fn subsurface_dmabuf_frames_below_with(
+        &self,
+        visible: &std::collections::HashSet<aegis_core::window::WindowId>,
+        occluded: &std::collections::HashSet<aegis_core::window::WindowId>,
+    ) -> Vec<SurfaceDmabuf> {
+        self.collect_subsurfaces_dmabuf_with(false, visible, occluded)
+    }
+
     /// Mapped dma-buf-backed subsurfaces above their parent.
     pub fn subsurface_dmabuf_frames_above(&self) -> Vec<SurfaceDmabuf> {
         self.collect_subsurfaces_dmabuf(true)
+    }
+
+    fn subsurface_dmabuf_frames_above_with(
+        &self,
+        visible: &std::collections::HashSet<aegis_core::window::WindowId>,
+        occluded: &std::collections::HashSet<aegis_core::window::WindowId>,
+    ) -> Vec<SurfaceDmabuf> {
+        self.collect_subsurfaces_dmabuf_with(true, visible, occluded)
     }
 
     pub fn realm_subsurface_frames_below(&self, realm: RealmId) -> Vec<SurfacePixels<'_>> {
@@ -1094,8 +1180,17 @@ impl Server {
     }
 
     pub(crate) fn collect_subsurfaces_shm(&self, want_above: bool) -> Vec<SurfacePixels<'_>> {
-        let visible = self.visible();
+        let visible = self.render_visible();
         let occluded = self.occluded_window_ids();
+        self.collect_subsurfaces_shm_with(want_above, &visible, &occluded)
+    }
+
+    fn collect_subsurfaces_shm_with(
+        &self,
+        want_above: bool,
+        visible: &std::collections::HashSet<aegis_core::window::WindowId>,
+        occluded: &std::collections::HashSet<aegis_core::window::WindowId>,
+    ) -> Vec<SurfacePixels<'_>> {
         let mut out = Vec::new();
         for role_pointer in self.state.live_surfaces() {
             let role_surface = unsafe { &*role_pointer };
@@ -1122,15 +1217,7 @@ impl Server {
             }
             // ADR-0029: the toplevel's in-flight transition shifts its whole
             // subsurface tree by the same delta.
-            let delta = self
-                .transition_render_rect(root_surface)
-                .map(|r| {
-                    (
-                        r.origin.x - root_surface.position.x,
-                        r.origin.y - root_surface.position.y,
-                    )
-                })
-                .unwrap_or((0, 0));
+            let delta = self.root_render_delta(root_surface);
             for &child_ptr in &role_surface.children {
                 if child_ptr.is_null() {
                     continue;
@@ -1150,8 +1237,9 @@ impl Server {
     /// subsurface's descendants render relative to it, so the whole subtree
     /// of a below-child still renders under the root toplevel. An unmapped
     /// node hides its entire subtree, per `wl_subsurface` mapping rules.
-    /// `delta` shifts every emitted origin by the root's in-flight window
-    /// transition (ADR-0029); (0, 0) outside transitions.
+    /// `delta` shifts every emitted origin by the root's in-flight geometry
+    /// transition (ADR-0029); (0, 0) outside transitions. Workspace motion is
+    /// applied later to the complete, independently clipped workspace page.
     pub(crate) fn collect_subtree_shm<'a>(
         s: &'a SurfaceRec,
         out: &mut Vec<SurfacePixels<'a>>,
@@ -1209,8 +1297,17 @@ impl Server {
     }
 
     pub(crate) fn collect_subsurfaces_dmabuf(&self, want_above: bool) -> Vec<SurfaceDmabuf> {
-        let visible = self.visible();
+        let visible = self.render_visible();
         let occluded = self.occluded_window_ids();
+        self.collect_subsurfaces_dmabuf_with(want_above, &visible, &occluded)
+    }
+
+    fn collect_subsurfaces_dmabuf_with(
+        &self,
+        want_above: bool,
+        visible: &std::collections::HashSet<aegis_core::window::WindowId>,
+        occluded: &std::collections::HashSet<aegis_core::window::WindowId>,
+    ) -> Vec<SurfaceDmabuf> {
         let mut out = Vec::new();
         for role_pointer in self.state.live_surfaces() {
             let role_surface = unsafe { &*role_pointer };
@@ -1235,15 +1332,7 @@ impl Server {
             {
                 continue;
             }
-            let delta = self
-                .transition_render_rect(root_surface)
-                .map(|r| {
-                    (
-                        r.origin.x - root_surface.position.x,
-                        r.origin.y - root_surface.position.y,
-                    )
-                })
-                .unwrap_or((0, 0));
+            let delta = self.root_render_delta(root_surface);
             for &child_ptr in &role_surface.children {
                 if child_ptr.is_null() {
                     continue;
@@ -1331,15 +1420,42 @@ impl Server {
             .any(|p| !p.is_null() && unsafe { !(*p).frame_callbacks.is_empty() })
     }
 
-    /// Fire and clear all pending frame callbacks, pacing clients to the output.
-    /// `time_ms` is a millisecond timestamp from a monotonic clock.
+    /// Fire pending frame callbacks for surfaces that are actually visible on
+    /// the physical output. Covered, minimized, off-workspace and unmapped
+    /// surfaces receive only a low-rate compatibility heartbeat.
+    ///
+    /// This distinction is essential for an occlusion-aware compositor: if a
+    /// covered browser keeps receiving callbacks at 120 Hz, a playing video
+    /// continues producing buffers and waking the compositor even though none
+    /// of those pixels can reach the output. `time_ms` is a millisecond
+    /// timestamp from a monotonic clock.
     pub fn send_frame_callbacks(&mut self, time_ms: u32) -> usize {
+        let visible = self.visible();
+        let occluded = self.occluded_window_ids();
+        let session_locked = self.state.session_lock_phase.is_active();
+        let transition_now_ms = self.now_ms();
+        let background_due =
+            background_frame_callback_due(time_ms, self.state.last_background_frame_callback_ms);
         let mut sent = 0;
+        let mut sent_background = false;
         for &p in &self.state.surfaces {
             if p.is_null() {
                 continue;
             }
+            let physically_visible = unsafe {
+                surface_receives_output_frame_callback(
+                    p,
+                    &visible,
+                    &occluded,
+                    session_locked,
+                    transition_now_ms,
+                )
+            };
+            if !physically_visible && !background_due {
+                continue;
+            }
             let rec = unsafe { &mut *p };
+            let before = sent;
             for cb in rec.frame_callbacks.drain(..) {
                 unsafe {
                     ffi::wl_resource_post_event(cb, ffi::WL_CALLBACK_DONE, time_ms);
@@ -1347,6 +1463,10 @@ impl Server {
                 }
                 sent += 1;
             }
+            sent_background |= !physically_visible && sent != before;
+        }
+        if sent_background {
+            self.state.last_background_frame_callback_ms = time_ms;
         }
         unsafe { ffi::wl_display_flush_clients(self.state.display) };
         sent
@@ -1416,6 +1536,51 @@ impl Server {
     }
 }
 
+/// Whether a surface contributes pixels to the physical output whose vblank
+/// paces this callback. The root toplevel owns workspace/minimize/occlusion
+/// visibility for its complete popup/subsurface tree. Protocol-owned overlay
+/// roles without a toplevel root are visible only while mapped. During a
+/// session lock, only the lock surface is output-visible.
+unsafe fn surface_receives_output_frame_callback(
+    surface: *mut SurfaceRec,
+    visible: &std::collections::HashSet<aegis_core::window::WindowId>,
+    occluded: &std::collections::HashSet<aegis_core::window::WindowId>,
+    session_locked: bool,
+    transition_now_ms: u64,
+) -> bool {
+    // SAFETY: callers iterate `State::surfaces`, whose non-null entries remain
+    // live for the duration of this single-threaded server operation.
+    let rec = unsafe { &*surface };
+    if !rec.mapped {
+        return false;
+    }
+    if !rec.session_lock_surface.is_null() {
+        return session_locked;
+    }
+    if session_locked {
+        return false;
+    }
+    // SAFETY: the live surface tree owns every parent/root pointer until its
+    // destroy handler detaches children.
+    let root = unsafe { surface_root_toplevel(surface) };
+    if !root.is_null() {
+        // SAFETY: `root` belongs to the same live surface tree as `surface`.
+        let root = unsafe { &*root };
+        return root.mapped
+            && (!root.window.minimized
+                || root
+                    .window
+                    .transition
+                    .is_some_and(|transition| transition.is_active_at(transition_now_ms)))
+            && visible.contains(&root.window.id)
+            && !occluded.contains(&root.window.id);
+    }
+    rec.cursor_role
+        || rec.drag_icon_role
+        || rec.input_popup_role
+        || !rec.input_popup_surface.is_null()
+}
+
 /// Flatten one xdg-role surface and its wl_subsurface descendants into Wayland
 /// paint order. The server owns the tree; the renderer only receives resource
 /// ids and frame payloads.
@@ -1455,8 +1620,11 @@ fn cursor_surface_position(
 
 #[cfg(test)]
 mod tests {
-    use super::cursor_surface_position;
-    use aegis_core::Point;
+    use super::{
+        BACKGROUND_FRAME_CALLBACK_INTERVAL_MS, background_frame_callback_due,
+        cursor_surface_position, surface_receives_output_frame_callback,
+    };
+    use aegis_core::{Point, transition::WindowTransition, window::WindowId};
 
     #[test]
     fn cursor_surface_override_preserves_trigger_position_and_hotspot() {
@@ -1464,5 +1632,51 @@ mod tests {
             cursor_surface_position((120.6, 79.4), Point { x: 7, y: 11 }, Point { x: 2, y: -3 },),
             Point { x: 116, y: 65 },
         );
+    }
+
+    #[test]
+    fn hidden_frame_callback_heartbeat_is_rate_limited_and_wrap_safe() {
+        assert!(!background_frame_callback_due(
+            BACKGROUND_FRAME_CALLBACK_INTERVAL_MS - 1,
+            0,
+        ));
+        assert!(background_frame_callback_due(
+            BACKGROUND_FRAME_CALLBACK_INTERVAL_MS,
+            0,
+        ));
+        let previous = u32::MAX - 200;
+        assert!(!background_frame_callback_due(700, previous));
+        assert!(background_frame_callback_due(800, previous));
+    }
+
+    #[test]
+    fn minimized_surface_is_callback_visible_only_during_an_active_transition() {
+        let mut surface = Box::new(crate::SurfaceRec::new(
+            1usize as *mut crate::ffi::wl_resource,
+        ));
+        surface.mapped = true;
+        surface.xdg_toplevel = surface.resource;
+        surface.window.id = WindowId(7);
+        surface.window.minimized = true;
+        let visible = std::collections::HashSet::from([surface.window.id]);
+        let occluded = std::collections::HashSet::new();
+
+        surface.window.transition = Some(WindowTransition {
+            from: aegis_core::Rect::new(0, 0, 100, 100),
+            started_ms: 10,
+            duration_ms: 100,
+        });
+        assert!(unsafe {
+            surface_receives_output_frame_callback(surface.as_mut(), &visible, &occluded, false, 50)
+        });
+        assert!(!unsafe {
+            surface_receives_output_frame_callback(
+                surface.as_mut(),
+                &visible,
+                &occluded,
+                false,
+                110,
+            )
+        });
     }
 }

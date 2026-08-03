@@ -181,6 +181,14 @@ hardware directly with libinput input and libseat session ownership. Both
 implement one `Backend` trait so the server, renderer, and shell are written
 once.
 
+In a direct session, display ownership determines renderer ownership. The
+KMS primary node granted by libseat identifies the physical GPU, and Flux
+must select a Vulkan device whose primary or render-node identity belongs to
+that GPU. A mismatch is a startup error rather than an implicit cross-GPU
+copy path. This keeps dma-buf modifiers, synchronization, power policy, and
+scanout under one explicit device boundary. See
+[ADR-0100](../adr/0100-strict-kms-vulkan-device-affinity.md).
+
 Rendering and event dispatch have separate ownership. A submitted DRM frame
 belongs to one **presentation domain** until every CRTC in its atomic batch
 reports a page flip. Client requests, input, hotplug, and session events
@@ -189,6 +197,26 @@ redraw. The current domain spans all active outputs because they share one
 desktop framebuffer and atomic commit. This preserves the real backend
 boundary instead of pretending the outputs can retire independently. See
 [ADR-0077](../adr/0077-presentation-domain-redraw-state-machine.md).
+
+### Presentation Plans and Plane Roles
+
+Direct sessions have two presentation paths. The normal path composites the
+desktop, live glass, shell chrome, protocol overlays, and capture work into a
+framebuffer for the primary plane. The fast path assigns one opaque,
+full-output client buffer directly to that plane when the visible scene needs
+nothing else. Eligibility follows the pixels and synchronization contract,
+not merely a window's fullscreen state.
+
+Every active output has one assigned primary plane and may have an independent
+cursor plane. Overlay planes are discovered but remain compositor-owned policy:
+arbitrary desktop layers and backdrop-dependent effects are not offloaded
+without a complete atomic capability proof. Opening the window switcher makes
+composition mandatory, so the fullscreen buffer yields the primary plane while
+its protocol state remains intact. See
+[ADR-0101](../adr/0101-dual-presentation-paths-and-conservative-kms-plane-allocation.md).
+The exact eligibility conditions, rejection labels, and diagnostic messages
+are listed in the
+[Rendering and KMS Plane Reference](../reference/rendering.md).
 
 The nested backend, and the server itself, use raw libwayland over FFI
 rather than a higher-level framework
@@ -209,15 +237,17 @@ Each frame follows this sequence:
    buffers. Input is routed through the owning Realm seat. Events received
    during an in-flight presentation preserve their edge information while
    coalescing into one next redraw.
-3. A queued redraw opens one synchronous render transaction. The renderer
-   imports or refreshes only changed client content, composites the mapped
-   surface trees, and draws wallpaper and shell chrome. A no-damage result
-   skips both rendering and presentation.
+3. A queued redraw plans primary-plane ownership from the complete visible
+   scene. One eligible client buffer takes the direct path. Every other scene
+   opens a synchronous render transaction, imports or refreshes changed client
+   content, composites the mapped surface trees, and draws wallpaper and shell
+   chrome. A no-damage result skips both rendering and presentation.
 4. A successful nested submission returns pacing to the outer compositor. A
-   successful DRM submission transfers the complete atomic batch to KMS and
-   waits asynchronously for every CRTC page flip. Pending client frame
-   callbacks complete on successful submission; callback-only work uses an
-   estimated refresh boundary without creating an empty atomic commit.
+   successful DRM submission transfers either primary-plane source, plus the
+   cursor plane when available, as one atomic batch and waits asynchronously
+   for every CRTC page flip. Pending client frame callbacks complete on
+   successful submission; callback-only work uses an estimated refresh
+   boundary without creating an empty atomic commit.
 5. VT loss or output recreation cancels the old presentation epoch. Resume
    rebuilds the backend resources and presents a full frame before incremental
    damage resumes.

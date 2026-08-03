@@ -223,6 +223,7 @@ impl DrmBackend {
                 self.current = None;
                 self.retiring = None;
                 self.pending_flips.clear();
+                self.forget_composite_fb_cache();
                 self.hotplug_pending = false;
                 match open_card_and_outputs(&self.seat, &self.configured_modes) {
                     Ok((card, displays)) => {

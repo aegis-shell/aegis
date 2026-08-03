@@ -49,7 +49,7 @@ impl CompositorRuntime {
             (self.input_acc.cursor.1 * scale).round() as i32,
         );
         // Upload and place compositor-owned theme cursors on dedicated KMS
-        // planes before deciding whether a fullscreen client can scan out
+        // planes before deciding whether a full-output client can scan out
         // directly. The cheap Arc clone ends the CursorCache borrow before
         // mutating the host; cursor buffers themselves are cached by exact
         // pixels in the DRM backend.
@@ -107,7 +107,12 @@ impl CompositorRuntime {
             .flatten();
         let failed_human_freeze = human_screenshot_session && self.screenshot_freeze.failed;
         let mut capturing_frozen_screenshot = false;
-        let mut damage = self.assess_frame_damage(DamageAssessment {
+        // Resolve chrome's next-frame geometry before damage assessment and
+        // plane assignment. An input-only hidden Dock can therefore turn a
+        // bottom-edge entry into visible animation even while the previous
+        // frames were direct-scanned-out and no canvas pass was running.
+        self.shell.prepare_backdrop(&input);
+        let assessed_damage = self.assess_frame_damage(DamageAssessment {
             had_input,
             session_locked,
             cursor_hidden,
@@ -116,6 +121,8 @@ impl CompositorRuntime {
             scale,
             physical_size,
         });
+        let mut damage = assessed_damage.output;
+        let backdrop_source_damage = assessed_damage.backdrop_source;
         let cursor_plane_changed = self.host.supports_hardware_cursor()
             && (self.last_presented_cursor != Some((cursor_shape, cursor_hidden))
                 || (!cursor_hidden
@@ -125,7 +132,6 @@ impl CompositorRuntime {
             && frame_capture.is_none()
             && self.pending_capture.is_none()
             && self.pending_realm_capture.is_none()
-            && !self.capture_worker.is_busy()
             && !self.screenshot_freeze.armed
             && !self.server.lock_confirmation_pending()
             && !self.server.retired_buffers_pending();
@@ -161,15 +167,10 @@ impl CompositorRuntime {
                 Err(error) => return Err(error.into()),
             }
         }
-        let present_damage = match damage {
-            FrameDamage::Area(rect) => Some(rect),
-            _ => None,
-        };
         if matches!(damage, FrameDamage::None)
             && frame_capture.is_none()
             && self.pending_capture.is_none()
             && self.pending_realm_capture.is_none()
-            && !self.capture_worker.is_busy()
             && !self.screenshot_freeze.armed
             && !self.server.lock_confirmation_pending()
             && !self.server.retired_buffers_pending()
@@ -187,10 +188,12 @@ impl CompositorRuntime {
                     > 0;
             return Ok(PresentationOutcome::NoDamage { callbacks_sent });
         }
-        // Direct-scanout fast path: a single fullscreen, opaque dmabuf client
-        // covering the whole output (and nothing else needing compositing) can
+        // Direct-scanout fast path: a single opaque dma-buf client whose actual
+        // geometry covers the whole output (and nothing else needing
+        // compositing) can
         // be page-flipped directly onto the primary plane, skipping the Vulkan
-        // composite. This is the fullscreen-game zero-GPU-cost path. A miss or
+        // composite. This is the primary-plane zero-GPU-cost path for games,
+        // maximized video, and semantic fullscreen alike. A miss or
         // a kernel rejection falls through to the normal composite below.
         //
         // While scanout is active the renderer never composites, so the damage
@@ -199,16 +202,19 @@ impl CompositorRuntime {
         // to it. Leaving scanout must therefore force a full redraw the next
         // composite, or the fallback frame could skip rendering and show a
         // frozen image.
-        let was_scanout = self.scanout_taken;
-        let scanout_candidate = frame_capture
-            .is_none()
-            .then(|| self.pick_scanout_candidate(physical_size, cursor_hidden))
-            .flatten();
-        if let Some(candidate) = scanout_candidate {
-            match self.host.present_scanout(&candidate, present_damage) {
+        let was_scanout = self.primary_plane_state.is_direct();
+        let primary_plane_plan =
+            self.plan_primary_plane(physical_size, cursor_hidden, frame_capture.is_some());
+        if let Some(candidate) = primary_plane_plan.direct_candidate() {
+            match self.host.present_scanout(candidate, damage.area_rects()) {
                 Ok(completion_fence) => {
-                    self.scanout_taken = true;
-                    if !was_scanout {
+                    let entered_scanout = self.primary_plane_state.commit_direct(candidate.id);
+                    self.scanout_telemetry.record_success();
+                    // No backdrop slot was maintained while the compositor
+                    // was bypassed. Re-entering composition must rebuild from
+                    // the then-current desktop rather than reuse an old effect.
+                    self.launcher_backdrop.invalidate();
+                    if entered_scanout {
                         log::info!(
                             "{}: direct scanout active for {:#x} (mod {:#x}); composite bypassed",
                             self.host.name(),
@@ -221,7 +227,7 @@ impl CompositorRuntime {
                     // stays correct, fire client frame callbacks to keep
                     // pacing, and re-anchor the cursor/minute baselines the
                     // skip-render path consults. Captures and screenshots are
-                    // disqualified by pick_scanout_candidate, so none run here.
+                    // disqualified by the primary-plane plan, so none run here.
                     self.server.acknowledge_presented_surface_damage();
                     if self.server.retired_buffers_pending() {
                         self.server.release_retired_buffers(
@@ -239,10 +245,16 @@ impl CompositorRuntime {
                 }
                 Err(error) => {
                     // Any rejection (unsupported format, EACCES, reconfigure,
-                    // flip timeout) disables scanout for this frame and falls
-                    // through to compositing. A non-transient ScanoutUnsupported
-                    // just composites; transient DRM errors retry below.
-                    self.scanout_taken = false;
+                    // flip timeout) falls through to compositing. Do not change
+                    // primary-plane state yet: the previous framebuffer still
+                    // owns the plane until the fallback commit succeeds.
+                    if matches!(error, HostError::Drm(DrmError::ScanoutUnsupported)) {
+                        self.scanout_telemetry.record_rejection(
+                            self.host.name(),
+                            ScanoutRejectReason::KmsRejected,
+                            true,
+                        );
+                    }
                     if matches!(error, HostError::Drm(DrmError::CursorFallback)) {
                         // The backend disabled the KMS cursor after rejecting
                         // this commit. The same frame must include the
@@ -270,8 +282,12 @@ impl CompositorRuntime {
                     }
                 }
             }
-        } else {
-            self.scanout_taken = false;
+        } else if let Some(rejection) = primary_plane_plan.rejection() {
+            self.scanout_telemetry.record_rejection(
+                self.host.name(),
+                rejection.reason,
+                rejection.plausible_candidate,
+            );
         }
         // Scanout was active last frame but is no longer eligible (a window
         // appeared, the cursor moved, chrome opened…): force a full composite so
@@ -279,18 +295,29 @@ impl CompositorRuntime {
         if was_scanout {
             self.force_full_redraw = true;
             damage = FrameDamage::Full;
+            self.launcher_backdrop.invalidate();
         }
         match self.surface.begin_frame() {
             Ok(mut frame) => {
                 let frame_slot = frame.index() as usize;
-                let repaint =
+                // `repaint` also contains damage missed by this swapchain
+                // slot; only this logical frame's damage may be fanned out to
+                // the other slots after present, otherwise first-use Full
+                // damage circulates around the ring forever.
+                let mut presented_damage = damage.clone();
+                let mut repaint =
                     composite_repaint_for_slot(&mut self.composite_slot_damage, frame_slot, damage);
+                // Exact physical render area of the currently open output
+                // base pass. Full-output and offscreen-target passes leave it
+                // as `None`. If visible Lens chrome is drawn below, the base
+                // no-stencil pass is ended and a stencil-capable LOAD pass is
+                // reopened with this same area.
+                let mut output_render_area: Option<flux::CanvasRenderArea> = None;
                 self.renderer.begin_frame();
                 let render_geometry = RenderGeometry {
                     logical_size,
                     scale,
                 };
-                self.shell.prepare_backdrop(&input);
                 let switcher_state = self.server.window_switcher_snapshot();
                 let switcher_windows = self.server.windows();
                 let (switcher_order, switcher_selected) = switcher_state
@@ -351,7 +378,58 @@ impl CompositorRuntime {
                     });
                 let (capture_origin, capture_extent) =
                     capture_bounds.unwrap_or(((0, 0), physical_size));
+                // Keep disconnected chrome bodies disconnected all the way
+                // through Optics' blur pyramid.  The capture image remains a
+                // single allocation (needed by the shared frost/liquid
+                // composition), but the compute passes no longer dispatch
+                // the otherwise-empty bounding box between a top HUD and a
+                // bottom Dock.
+                let capture_regions = if blur_sigma > 0.0 && !backdrop_regions.is_empty() {
+                    if model_active {
+                        vec![BackdropCaptureRegion {
+                            origin: (0, 0),
+                            extent: physical_size,
+                        }]
+                    } else {
+                        blur_capture_regions(
+                            &backdrop_regions,
+                            logical_size,
+                            physical_size,
+                            scale,
+                            blur_sigma,
+                        )
+                    }
+                } else {
+                    Vec::new()
+                };
+                let capture_target_extent = (
+                    capture_extent.0.div_ceil(BACKDROP_DOWNSAMPLE).max(1),
+                    capture_extent.1.div_ceil(BACKDROP_DOWNSAMPLE).max(1),
+                );
+                let frost_backdrop_regions: Vec<_> = backdrop_regions
+                    .iter()
+                    .copied()
+                    .filter(|region| {
+                        !liquid_glass_regions
+                            .iter()
+                            .any(|glass| glass.bounds == *region)
+                    })
+                    .collect();
+                let backdrop_key = BackdropCacheKey::new(
+                    capture_origin,
+                    capture_extent,
+                    physical_size,
+                    blur_sigma,
+                    scale,
+                    model_active,
+                    &capture_regions,
+                    &frost_backdrop_regions,
+                    &liquid_glass_regions,
+                    window_switcher.as_ref(),
+                    &live_previews,
+                );
                 let backdrop_plan = if overview_active || self.screenshot_freeze.armed {
+                    self.launcher_backdrop.invalidate();
                     BackdropPlan::Direct
                 } else {
                     self.launcher_backdrop.prepare(
@@ -359,18 +437,37 @@ impl CompositorRuntime {
                         &self.device,
                         &self.surface,
                         &frame,
-                        capture_extent,
+                        backdrop_key,
+                        &backdrop_source_damage,
                     )
                 };
+                let refresh_capture_regions = match &backdrop_plan {
+                    BackdropPlan::Refresh(regions) => regions.clone(),
+                    BackdropPlan::Direct | BackdropPlan::Cached => Vec::new(),
+                };
+                let capture_work_regions = blur_regions_in_capture(
+                    &refresh_capture_regions,
+                    capture_origin,
+                    capture_extent,
+                    capture_target_extent,
+                );
+                let refresh_requested = matches!(&backdrop_plan, BackdropPlan::Refresh(_));
+                let capture_started = capture_work_regions.first().is_some_and(|region| {
+                    self.launcher_backdrop.begin_capture(
+                        &self.canvas,
+                        &frame,
+                        self.clear,
+                        flux::CanvasRenderArea {
+                            x: region.x as i32,
+                            y: region.y as i32,
+                            width: region.width,
+                            height: region.height,
+                        },
+                    )
+                });
 
                 match backdrop_plan {
-                    BackdropPlan::Capture
-                        if self.launcher_backdrop.begin_capture(
-                            &self.canvas,
-                            &frame,
-                            self.clear,
-                        ) =>
-                    {
+                    BackdropPlan::Refresh(_) if capture_started => {
                         let capture_size = self
                             .launcher_backdrop
                             .capture_size(&frame)
@@ -378,63 +475,118 @@ impl CompositorRuntime {
                         let capture_ratio = capture_size.0 as f32 / capture_extent.0.max(1) as f32;
                         let capture_scale = scale * capture_ratio;
 
-                        // The capture target only covers `capture_extent`:
-                        // shift the scene so the capture origin lands at
-                        // (0, 0) of the target. The origin is (0, 0) for a
-                        // live 3D wallpaper, whose model pass below re-begins
-                        // the target and so drops this offset.
-                        self.canvas.save();
-                        self.canvas.translate(
-                            -(capture_origin.0 as f32) * capture_ratio,
-                            -(capture_origin.1 as f32) * capture_ratio,
-                        );
-
-                        draw_wallpaper_background(
-                            &self.canvas,
-                            &self.device,
-                            &mut self.wallpaper,
-                            logical_size,
-                            capture_scale,
-                        );
-
-                        if model_active {
-                            self.canvas.end_target();
-                            if let Some(target) = self.launcher_backdrop.target(&frame) {
-                                if let Some(wallpaper) = self.wallpaper.as_mut() {
-                                    wallpaper.draw_model_to(&self.device, &mut frame, target);
+                        let mut capture_ok = true;
+                        for (index, region) in capture_work_regions.iter().enumerate() {
+                            if index > 0 {
+                                if let Err(error) = self.canvas.end_target_checked() {
+                                    log::warn!(
+                                        "launcher: backdrop capture pass failed ({error}); using translucent fallback"
+                                    );
+                                    capture_ok = false;
+                                    break;
                                 }
-                                self.canvas.begin_target(&frame, target, None)?;
+                                if !self.launcher_backdrop.begin_capture(
+                                    &self.canvas,
+                                    &frame,
+                                    self.clear,
+                                    flux::CanvasRenderArea {
+                                        x: region.x as i32,
+                                        y: region.y as i32,
+                                        width: region.width,
+                                        height: region.height,
+                                    },
+                                ) {
+                                    capture_ok = false;
+                                    break;
+                                }
                             }
-                        }
 
-                        draw_client_scene(
-                            &self.canvas,
-                            &self.device,
-                            &mut self.renderer,
-                            &self.server,
-                            capture_scale,
-                        );
-                        if let Some(presentation) = window_switcher.as_ref() {
-                            draw_window_switcher_scene(
+                            // The capture target only covers `capture_extent`:
+                            // shift the scene so the capture origin lands at
+                            // (0, 0). Render-area scissoring means disconnected
+                            // HUD/Dock bands do not shade the empty pixels
+                            // between them.
+                            self.canvas.save();
+                            self.canvas.translate(
+                                -(capture_origin.0 as f32) * capture_ratio,
+                                -(capture_origin.1 as f32) * capture_ratio,
+                            );
+
+                            draw_wallpaper_background(
                                 &self.canvas,
                                 &self.device,
-                                &mut self.renderer,
-                                &self.server,
+                                &mut self.wallpaper,
                                 logical_size,
                                 capture_scale,
-                                presentation,
                             );
-                        } else {
-                            draw_live_preview_scenes(
+
+                            if model_active {
+                                if let Err(error) = self.canvas.end_target_checked() {
+                                    log::warn!(
+                                        "launcher: backdrop capture pass failed ({error}); using translucent fallback"
+                                    );
+                                    self.canvas.restore();
+                                    capture_ok = false;
+                                    break;
+                                }
+                                if let Some(target) = self.launcher_backdrop.target(&frame) {
+                                    if let Some(wallpaper) = self.wallpaper.as_mut() {
+                                        wallpaper.draw_model_to(&self.device, &mut frame, target);
+                                    }
+                                    if let Err(error) = self.canvas.begin_target_pass(
+                                        &frame,
+                                        target,
+                                        flux::CanvasPassOptions {
+                                            clear: None,
+                                            antialias: flux::CanvasAntialias::None,
+                                            render_area: Some(flux::CanvasRenderArea {
+                                                x: region.x as i32,
+                                                y: region.y as i32,
+                                                width: region.width,
+                                                height: region.height,
+                                            }),
+                                            skip_stencil: true,
+                                        },
+                                    ) {
+                                        log::warn!(
+                                            "launcher: failed to resume backdrop capture ({error}); using translucent fallback"
+                                        );
+                                        self.canvas.restore();
+                                        capture_ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            draw_client_scene(
                                 &self.canvas,
                                 &self.device,
                                 &mut self.renderer,
                                 &self.server,
                                 capture_scale,
-                                &live_previews,
                             );
+                            if let Some(presentation) = window_switcher.as_ref() {
+                                draw_window_switcher_scene(
+                                    &self.canvas,
+                                    &self.device,
+                                    &mut self.renderer,
+                                    &self.server,
+                                    logical_size,
+                                    capture_scale,
+                                    presentation,
+                                );
+                            } else {
+                                draw_live_preview_scenes(
+                                    &self.canvas,
+                                    &self.device,
+                                    &mut self.renderer,
+                                    &self.server,
+                                    capture_scale,
+                                    &live_previews,
+                                );
+                            }
+                            self.canvas.restore();
                         }
-                        self.canvas.restore();
                         let glass_groups = liquid_glass_groups(
                             &liquid_glass_regions,
                             capture_origin,
@@ -442,24 +594,124 @@ impl CompositorRuntime {
                             capture_ratio,
                         );
                         let capture_pixel_scale = scale * capture_ratio;
-                        let composites = self.launcher_backdrop.end_capture_and_compose(
+                        let capture_covers_output = capture_origin == (0, 0)
+                            && capture_extent == physical_size
+                            && capture_size == physical_size
+                            && capture_work_regions.len() == 1
+                            && capture_work_regions[0]
+                                == (flux::BlurRegion {
+                                    x: 0,
+                                    y: 0,
+                                    width: capture_size.0,
+                                    height: capture_size.1,
+                                });
+                        let frost_capture_regions = backdrop_regions_in_capture(
+                            &frost_backdrop_regions,
+                            capture_origin,
+                            capture_extent,
+                            capture_size,
+                            scale,
+                        );
+                        let all_backdrop_capture_regions = backdrop_regions_in_capture(
+                            &backdrop_regions,
+                            capture_origin,
+                            capture_extent,
+                            capture_size,
+                            scale,
+                        );
+                        let refreshed = capture_ok
+                            && self.launcher_backdrop.finish_refresh(
+                                &self.canvas,
+                                &frame,
+                                blur_sigma * capture_scale,
+                                &capture_work_regions,
+                                &frost_capture_regions,
+                                &all_backdrop_capture_regions,
+                                &glass_groups,
+                                flux::LiquidGlassParams {
+                                    refraction: 8.0 * capture_pixel_scale,
+                                    chromatic_aberration: 1.25 * capture_pixel_scale,
+                                    edge_width: 18.0 * capture_pixel_scale,
+                                    ..Default::default()
+                                },
+                            );
+
+                        // Refreshing the sampled input may change every visible
+                        // effect pixel even when the source damage itself lies
+                        // just outside the glass body (inside the blur radius).
+                        // Add those regions to the final output repaint.
+                        let effect_damage: Vec<_> = refresh_capture_regions
+                            .iter()
+                            .map(|region| {
+                                aegis_core::Rect::new(
+                                    region.origin.0 as i32,
+                                    region.origin.1 as i32,
+                                    region.extent.0 as i32,
+                                    region.extent.1 as i32,
+                                )
+                            })
+                            .collect();
+                        repaint = repaint.with_rects(effect_damage.clone());
+                        presented_damage = presented_damage.with_rects(effect_damage);
+                        output_render_area = frame_damage_render_area(&repaint);
+                        begin_opaque_frame_repaint(
                             &self.canvas,
                             &frame,
-                            blur_sigma * capture_scale,
-                            &glass_groups,
-                            flux::LiquidGlassParams {
-                                refraction: 8.0 * capture_pixel_scale,
-                                chromatic_aberration: 1.25 * capture_pixel_scale,
-                                edge_width: 18.0 * capture_pixel_scale,
-                                ..Default::default()
-                            },
-                        );
-                        begin_opaque_frame(&self.canvas, &frame, self.clear)?;
-                        // Preserve the live desktop everywhere, then replace
-                        // only the component-declared glass regions with the
-                        // shared blurred capture. This is a true backdrop
-                        // effect rather than a full-screen blur hidden under
-                        // an opaque top-bar colour.
+                            physical_size,
+                            self.clear,
+                            &repaint,
+                        )?;
+                        if capture_covers_output
+                            && refreshed
+                            && self.launcher_backdrop.draw_capture_opaque(
+                                &self.canvas,
+                                &frame,
+                                physical_size,
+                            )
+                        {
+                            // The capture pass already rendered this exact
+                            // desktop.  Reuse it as the base output rather than
+                            // acquiring every client dma-buf and drawing the
+                            // complete scene a second time in the same frame.
+                        } else {
+                            // A local capture has no pixels for the rest of the
+                            // output (or the effect failed), so draw the normal
+                            // desktop base once before overlaying the effect.
+                            draw_direct_desktop_scene(
+                                &self.canvas,
+                                &self.device,
+                                &mut frame,
+                                &mut self.wallpaper,
+                                &mut self.renderer,
+                                &self.server,
+                                render_geometry,
+                                output_render_area,
+                                overview_active,
+                                window_switcher.as_ref(),
+                                &live_previews,
+                            )?;
+                        }
+                        if refreshed {
+                            self.launcher_backdrop.draw_cached(
+                                &self.canvas,
+                                &frame,
+                                capture_origin,
+                                capture_extent,
+                            );
+                        }
+                    }
+                    BackdropPlan::Cached => {
+                        // The desktop still repaints normally, but the effect
+                        // image is only sampled. No capture, blur, or liquid
+                        // compute is recorded for this frame.
+                        output_render_area = frame_damage_render_area(&repaint);
+                        begin_opaque_frame_repaint(
+                            &self.canvas,
+                            &frame,
+                            physical_size,
+                            self.clear,
+                            &repaint,
+                        )?;
                         draw_direct_desktop_scene(
                             &self.canvas,
                             &self.device,
@@ -468,68 +720,37 @@ impl CompositorRuntime {
                             &mut self.renderer,
                             &self.server,
                             render_geometry,
+                            output_render_area,
                             overview_active,
                             window_switcher.as_ref(),
                             &live_previews,
                         )?;
-                        if let Some(images) = composites {
-                            let liquid_available = images.liquid.is_some();
-                            for region in &backdrop_regions {
-                                // Optics already applied the exact rounded SDF
-                                // and alpha to liquid bodies. Only legacy frost
-                                // regions still need a rectangular clip.
-                                if liquid_available
-                                    && liquid_glass_regions
-                                        .iter()
-                                        .any(|glass| glass.bounds == *region)
-                                {
-                                    continue;
-                                }
-                                let x = region.x.max(0.0) * scale;
-                                let y = region.y.max(0.0) * scale;
-                                let w = region
-                                    .w
-                                    .max(0.0)
-                                    .min(logical_size.0 as f32 - region.x.max(0.0))
-                                    * scale;
-                                let h = region
-                                    .h
-                                    .max(0.0)
-                                    .min(logical_size.1 as f32 - region.y.max(0.0))
-                                    * scale;
-                                if w <= 0.0 || h <= 0.0 {
-                                    continue;
-                                }
-                                self.canvas.save();
-                                self.canvas.clip_rect(x, y, w, h);
-                                // The blurred image covers exactly the
-                                // capture bounds; stretching it over that
-                                // rect (instead of the full frame) keeps the
-                                // scene-to-blur sampling identity.
-                                images.blurred.draw(
-                                    &self.canvas,
-                                    capture_origin.0 as f32,
-                                    capture_origin.1 as f32,
-                                    capture_extent.0 as f32,
-                                    capture_extent.1 as f32,
-                                );
-                                self.canvas.restore();
-                            }
-                            if let Some(image) = images.liquid.as_ref() {
-                                // Transparent outside every analytic body; a
-                                // single draw composites all Dock/HUD shapes
-                                // with no clip rectangle and no dead corners.
-                                image.draw(
-                                    &self.canvas,
-                                    capture_origin.0 as f32,
-                                    capture_origin.1 as f32,
-                                    capture_extent.0 as f32,
-                                    capture_extent.1 as f32,
-                                );
-                            }
-                        }
+                        self.launcher_backdrop.draw_cached(
+                            &self.canvas,
+                            &frame,
+                            capture_origin,
+                            capture_extent,
+                        );
                     }
-                    BackdropPlan::Capture | BackdropPlan::Direct => {
+                    BackdropPlan::Refresh(_) | BackdropPlan::Direct => {
+                        if refresh_requested {
+                            // Capture setup failed. Repaint the previous effect
+                            // footprint with the direct scene so stale cached
+                            // glass cannot survive in this swapchain image.
+                            let effect_damage: Vec<_> = refresh_capture_regions
+                                .iter()
+                                .map(|region| {
+                                    aegis_core::Rect::new(
+                                        region.origin.0 as i32,
+                                        region.origin.1 as i32,
+                                        region.extent.0 as i32,
+                                        region.extent.1 as i32,
+                                    )
+                                })
+                                .collect();
+                            repaint = repaint.with_rects(effect_damage.clone());
+                            presented_damage = presented_damage.with_rects(effect_damage);
+                        }
                         if self.screenshot_freeze.active() {
                             // Frozen: present only the trigger-frame
                             // snapshot; the selector draws on top below.
@@ -574,22 +795,36 @@ impl CompositorRuntime {
                                             scale,
                                         );
                                         if model_active {
-                                            self.canvas.end_target();
-                                            if let Some(wallpaper) = self.wallpaper.as_mut() {
-                                                wallpaper.draw_model_to(
-                                                    &self.device,
-                                                    &mut frame,
-                                                    target,
-                                                );
-                                            }
-                                            if let Err(error) =
-                                                self.canvas.begin_target(&frame, target, None)
-                                            {
+                                            if let Err(error) = self.canvas.end_target_checked() {
                                                 log::warn!(
                                                     "screenshot: freeze capture interrupted ({error}); falling back to live scene"
                                                 );
                                                 self.screenshot_freeze.failed = true;
                                                 in_target = false;
+                                            } else {
+                                                if let Some(wallpaper) = self.wallpaper.as_mut() {
+                                                    wallpaper.draw_model_to(
+                                                        &self.device,
+                                                        &mut frame,
+                                                        target,
+                                                    );
+                                                }
+                                                if let Err(error) = self.canvas.begin_target_pass(
+                                                    &frame,
+                                                    target,
+                                                    flux::CanvasPassOptions {
+                                                        clear: None,
+                                                        antialias: flux::CanvasAntialias::None,
+                                                        render_area: None,
+                                                        skip_stencil: true,
+                                                    },
+                                                ) {
+                                                    log::warn!(
+                                                        "screenshot: freeze capture interrupted ({error}); falling back to live scene"
+                                                    );
+                                                    self.screenshot_freeze.failed = true;
+                                                    in_target = false;
+                                                }
                                             }
                                         }
                                         if in_target {
@@ -620,18 +855,20 @@ impl CompositorRuntime {
                                     &mut self.renderer,
                                     &self.server,
                                     render_geometry,
+                                    None,
                                     overview_active,
                                     window_switcher.as_ref(),
                                     &live_previews,
                                 )?;
                             }
                         } else {
+                            output_render_area = frame_damage_render_area(&repaint);
                             begin_opaque_frame_repaint(
                                 &self.canvas,
                                 &frame,
                                 physical_size,
                                 self.clear,
-                                repaint,
+                                &repaint,
                             )?;
                             draw_direct_desktop_scene(
                                 &self.canvas,
@@ -641,6 +878,7 @@ impl CompositorRuntime {
                                 &mut self.renderer,
                                 &self.server,
                                 render_geometry,
+                                output_render_area,
                                 overview_active,
                                 window_switcher.as_ref(),
                                 &live_previews,
@@ -752,7 +990,30 @@ impl CompositorRuntime {
                 // Report the output scale so lens rasterises chrome crisply on
                 // a HiDPI host; layout and input stay in logical pixels.
                 self.shell.set_scale(scale);
-                unsafe { self.shell.render(self.canvas.as_raw() as *mut _, &input)? };
+                // The desktop/client pass intentionally has no stencil
+                // attachment. Lens is an arbitrary vector renderer and may
+                // emit winding/even-odd path fills, so visible shell chrome
+                // must run in a separate stencil-capable LOAD pass. Query the
+                // shell only after every snapshot/status update above: its
+                // `requires_composition` contract describes exact next-frame
+                // visible output (and defaults conservatively). When false,
+                // skip Lens replay entirely and retain the cheaper no-stencil
+                // base pass; this is the same policy direct scanout trusts.
+                let shell_requires_composition = self.shell.requires_composition();
+                if shell_requires_composition {
+                    if freeze_capturing && !self.screenshot_freeze.failed {
+                        self.canvas.end_target_checked()?;
+                        let target = self
+                            .screenshot_freeze
+                            .target(&frame)
+                            .expect("active freeze capture has an allocated target");
+                        begin_stencil_target_overlay(&self.canvas, &frame, target, None)?;
+                    } else {
+                        self.canvas.end_checked()?;
+                        begin_stencil_frame_overlay(&self.canvas, &frame, output_render_area)?;
+                    }
+                    unsafe { self.shell.render(self.canvas.as_raw() as *mut _, &input)? };
+                }
                 // Protocol overlays sit above ordinary shell chrome. A modal
                 // screenshot/picker owns the whole frame and suppresses live
                 // client overlays without changing Wayland keyboard focus.
@@ -801,7 +1062,7 @@ impl CompositorRuntime {
                 // screen. On failure the selector opens right away over the
                 // live scene instead.
                 if freeze_capturing && !self.screenshot_freeze.failed {
-                    self.canvas.end_target();
+                    self.canvas.end_target_checked()?;
                     let frozen_cursor = if human_screenshot_session && screenshot_include_cursor {
                         frozen_trigger_cursor
                             .filter(|cursor| !cursor.hidden && !cursor.client_surface)
@@ -1376,7 +1637,7 @@ impl CompositorRuntime {
                         );
                     }
                 }
-                self.canvas.end();
+                self.canvas.end_checked()?;
                 let mut capture_for_present = frame_capture.take().and_then(|capture| {
                     let FrameCapture {
                         crop,
@@ -1406,30 +1667,27 @@ impl CompositorRuntime {
                     } else {
                         None
                     };
-                    let readback = PendingReadback {
-                        width: physical_size.0,
-                        height: physical_size.1,
-                        crop: crop.map(|rect| {
-                            logical_rect_to_physical(
-                                rect,
-                                render_geometry.scale,
-                                physical_size.0,
-                                physical_size.1,
-                            )
-                        }),
+                    let physical_crop = crop.map(|rect| {
+                        logical_rect_to_physical(
+                            rect,
+                            render_geometry.scale,
+                            physical_size.0,
+                            physical_size.1,
+                        )
+                    });
+                    match request_frame_readback(
+                        &mut frame,
+                        physical_size,
+                        physical_crop,
                         cursor,
-                        security_generation: self.capture_worker.security_generation(),
-                    };
-                    match frame.request_readback() {
-                        Ok(()) => Some(PendingCapture { readback, target }),
-                        Err(error) => {
+                        self.capture_worker.security_generation(),
+                    ) {
+                        Ok(readback) => Some(PendingCapture { readback, target }),
+                        Err(reason) => {
                             refuse_capture_target(
                                 &self.capture_worker,
                                 target,
-                                format!(
-                                    "frame readback request: {error}{}",
-                                    flux_last_error_detail()
-                                ),
+                                reason,
                                 &self.journal,
                                 &self.ipc,
                             );
@@ -1453,7 +1711,10 @@ impl CompositorRuntime {
                     }
                 };
                 let completion_fence =
-                    match self.host.present(&self.surface, submitted, present_damage) {
+                    match self
+                        .host
+                        .present(&self.surface, submitted, repaint.area_rects())
+                    {
                         Ok(fence) => fence,
                         Err(error) => {
                             if let Some(capture) = capture_for_present.take() {
@@ -1499,7 +1760,20 @@ impl CompositorRuntime {
                             return Err(error.into());
                         }
                     };
-                record_composite_present(&mut self.composite_slot_damage, frame_slot, damage);
+                let left_scanout = self.primary_plane_state.commit_composited();
+                if left_scanout {
+                    log::info!(
+                        "{}: compositor reclaimed the primary plane",
+                        self.host.name()
+                    );
+                }
+                record_composite_present(
+                    &mut self.composite_slot_damage,
+                    frame_slot,
+                    presented_damage,
+                );
+                self.launcher_backdrop
+                    .record_present(frame_slot, backdrop_source_damage);
                 if let Some(capture) = capture_for_present {
                     debug_assert!(self.pending_capture.is_none());
                     self.pending_capture = Some(capture);

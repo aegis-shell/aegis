@@ -5,7 +5,7 @@ use aegis_core::window::{Window, WindowId};
 use aegis_design::{Design, materials, themes};
 use lens::{Frame, Input, LayoutOpts, Rect};
 
-use crate::{ChromeEvents, Localizer, Message, WindowAction, place_popup, truncate};
+use crate::{ChromeEvents, Localizer, Message, WindowAction, ellipsize, place_popup};
 
 const MENU_WIDTH: f32 = 236.0;
 const MENU_PAD: f32 = 7.0;
@@ -220,7 +220,7 @@ impl AppMenu {
                 format!("{state} {title}")
             };
             window_rows.push(Row {
-                label: truncate(&label, 29),
+                label,
                 action: if window.read_only {
                     MenuAction::None
                 } else {
@@ -348,7 +348,13 @@ impl AppMenu {
                     |frame| {
                         frame.size_next(bounds.w - MENU_PAD * 2.0, HEADER_HEIGHT);
                         frame.set_theme(themes::menu_heading(menu_theme, &design));
-                        frame.label_compact_sized(&truncate(&target.label, 29), 11.5);
+                        let heading = ellipsize(
+                            frame,
+                            &target.label,
+                            11.5,
+                            (bounds.w - MENU_PAD * 2.0).max(0.0),
+                        );
+                        frame.label_compact_sized(&heading, 11.5);
                         frame.set_theme(menu_theme);
                         let mut row_index = 0;
                         for (group_index, group) in groups.into_iter().enumerate() {
@@ -359,7 +365,14 @@ impl AppMenu {
                             for row in group {
                                 frame.size_next(bounds.w - MENU_PAD * 2.0, ROW_HEIGHT);
                                 frame.push_id(&format!("menu-row-{row_index}"));
-                                if frame.selectable(&row.label, false) {
+                                let label = ellipsize(
+                                    frame,
+                                    &row.label,
+                                    frame.theme().font_size(),
+                                    (bounds.w - MENU_PAD * 2.0 - frame.theme().padding() * 2.0)
+                                        .max(0.0),
+                                );
+                                if frame.selectable(&label, false) {
                                     selected = Some(row.action);
                                 }
                                 frame.pop_id();
@@ -456,7 +469,7 @@ mod tests {
 
     #[test]
     fn unicode_truncation_preserves_character_boundaries() {
-        assert_eq!(truncate("窗口操作", 3), "窗口…");
+        assert_eq!(crate::truncate("窗口操作", 3), "窗口…");
     }
 
     #[test]

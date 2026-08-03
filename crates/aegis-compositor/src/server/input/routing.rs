@@ -344,6 +344,21 @@ impl Server {
     /// mutation happens through xdg_toplevel requests from the owning client.
     pub fn windows(&self) -> Vec<aegis_core::window::Window> {
         let visible = self.visible();
+        self.windows_in_set(&visible)
+    }
+
+    /// Enumerate the presentation-visible windows. During a workspace slide
+    /// this includes retained source pages so their compositor-owned shadows
+    /// remain stable until the page leaves the output.
+    pub fn render_windows(&self) -> Vec<aegis_core::window::Window> {
+        let visible = self.render_visible();
+        self.windows_in_set(&visible)
+    }
+
+    fn windows_in_set(
+        &self,
+        visible: &std::collections::HashSet<aegis_core::window::WindowId>,
+    ) -> Vec<aegis_core::window::Window> {
         self.state
             .live_surfaces()
             .map(|p| unsafe { &*p })

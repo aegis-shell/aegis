@@ -347,7 +347,7 @@ mod tests {
         canvas
             .begin(&frame, Some(flux::rgba(2, 3, 6, 255)))
             .unwrap();
-        canvas.end();
+        canvas.end_checked().unwrap();
         model.draw(&device, &mut frame, None).unwrap();
         frame.submit().unwrap().present().unwrap();
 
@@ -375,14 +375,14 @@ mod tests {
         canvas
             .begin_target(&frame, &target, Some(flux::rgba(2, 3, 6, 255)))
             .unwrap();
-        canvas.end_target();
+        canvas.end_target_checked().unwrap();
         model.draw(&device, &mut frame, Some(&target)).unwrap();
         let blurred = blur.apply(&frame, &target, 3.0).unwrap();
         canvas
             .begin(&frame, Some(flux::rgba(0, 0, 0, 255)))
             .unwrap();
         blurred.draw(&canvas, 0.0, 0.0, 160.0, 96.0);
-        canvas.end();
+        canvas.end_checked().unwrap();
         frame.submit().unwrap().present().unwrap();
 
         let mut pixels = vec![0u8; 160 * 96 * 4];
@@ -408,13 +408,13 @@ mod tests {
         canvas
             .begin_target(&frame, &target, Some(flux::rgba(2, 3, 6, 255)))
             .unwrap();
-        canvas.end_target();
+        canvas.end_target_checked().unwrap();
         model.draw(&device, &mut frame, Some(&target)).unwrap();
 
         canvas
             .begin(&frame, Some(flux::rgba(2, 3, 6, 255)))
             .unwrap();
-        canvas.end();
+        canvas.end_checked().unwrap();
         model.draw(&device, &mut frame, None).unwrap();
         frame.submit().unwrap().present().unwrap();
 
