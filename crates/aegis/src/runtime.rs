@@ -1,4 +1,6 @@
 use crate::*;
+use aegis_authority::{ActorBinding, ObservationLeaseRegistry as ObservationRegistry};
+use aegis_ipc::CommandScopePolicy as _;
 
 mod agent_auth;
 mod app_pick;
@@ -12,12 +14,12 @@ mod damage;
 mod event_loop;
 mod idle;
 mod input;
+mod interaction_domain;
 mod ipc;
 mod iteration;
 mod pick;
 mod presentation;
 mod presentation_state;
-mod realm;
 mod rendering;
 mod scanout;
 mod secret_prompt;
@@ -38,12 +40,12 @@ use confirm_pick::*;
 use damage::*;
 use idle::*;
 use input::*;
+use interaction_domain::*;
 use ipc::*;
 use iteration::*;
 use pick::*;
 use presentation::*;
 use presentation_state::*;
-use realm::*;
 use rendering::*;
 use scanout::*;
 use secret_prompt::*;
@@ -120,13 +122,13 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         "aegis {} — autonomous surface shell",
         env!("CARGO_PKG_VERSION")
     );
-    match aegis_launcher::prepare_realm_host() {
+    match aegis_launcher::prepare_interaction_domain_host() {
         Ok(root) => log::info!(
-            "Realm cgroup host prepared under delegated root {}",
+            "Interaction Domain cgroup host prepared under delegated root {}",
             root.display()
         ),
         Err(error) => log::warn!(
-            "Realm application launch disabled until Aegis runs in its own \
+            "InteractionDomain application launch disabled until Aegis runs in its own \
              cpu/memory/pids-delegated systemd service: {error}"
         ),
     }
@@ -301,11 +303,11 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Dock, gestures, tiling, and key bindings.
     // Read-only physical mirrors get one compositor-owned guard responsible
     // for their disabled presentation and pointer ownership. The independent
-    // Realm seat remains the actual input-authority boundary in the server.
+    // Interaction Domain seat remains the actual input-authority boundary in the server.
     shell.add(Box::new(aegis_shell::ControlledWindowGuard::new()));
     // Agent input feedback is compositor-owned and non-interactive. Register
     // it above the mirror guard so activity remains legible, but below the HUD,
-    // notifications, and modal trusted chrome. Directed Realm capture renders
+    // notifications, and modal trusted chrome. Directed Interaction Domain capture renders
     // client surfaces directly and therefore never includes this layer.
     shell.add(Box::new(aegis_shell::AgentFeedback::new()));
     // The SNI tray service is spawned once and shared: the HUD reads the
@@ -348,9 +350,11 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     )));
     // Built-in applications share the launcher catalog with XDG entries but
     // render in-process through optics/lens. Immediate system controls live in
-    // the command panel (ADR-0080); Realm authority management remains its
+    // the command panel (ADR-0080); Interaction Domain authority management remains its
     // own surface.
-    shell.add(Box::new(aegis_ai_workspaces::AiWorkspaces::new()));
+    shell.add(Box::new(
+        aegis_interaction_manager::InteractionManager::new(),
+    ));
     // Interactive screenshot region selector, triggered by the Print key.
     shell.add(Box::new(aegis_shell::ScreenshotSelector::new()));
     // User-consent application picker (the AppChooser portal's compositor
@@ -387,13 +391,13 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Compositing of client surfaces.
     let renderer = aegis_render::Renderer::new();
-    let realm_processes = RealmProcesses::default();
-    let realm_render_targets: std::collections::BTreeMap<
-        aegis_core::realm::RealmId,
-        RealmRenderTarget,
+    let interaction_domain_processes = InteractionDomainProcesses::default();
+    let interaction_domain_render_targets: std::collections::BTreeMap<
+        aegis_core::interaction_domain::InteractionDomainId,
+        InteractionDomainRenderTarget,
     > = std::collections::BTreeMap::new();
-    let pending_realm_capture: Option<PendingRealmCapture> = None;
-    let realm_damage_sequence = 0u64;
+    let pending_interaction_domain_capture: Option<PendingInteractionDomainCapture> = None;
+    let interaction_domain_damage_sequence = 0u64;
     let start = std::time::Instant::now();
 
     // Wallpaper modes are persistent configuration: image, video, 3D, or a
@@ -675,12 +679,28 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (ipc_cmd_tx, ipc_cmd_rx) = std::sync::mpsc::channel::<IpcCommandRequest>();
     let (system_control_tx, system_control_rx) = std::sync::mpsc::channel::<SystemControlRequest>();
     let (capture_tx, capture_rx) = std::sync::mpsc::channel::<CaptureRequest>();
-    let (realm_control_tx, realm_control_rx) = std::sync::mpsc::channel::<RealmControlRequest>();
+    let (interaction_domain_control_tx, interaction_domain_control_rx) =
+        std::sync::mpsc::channel::<InteractionDomainControlRequest>();
     let (settings_control_tx, settings_control_rx) =
         std::sync::mpsc::channel::<SettingsControlRequest>();
     let (wallpaper_control_tx, wallpaper_control_rx) =
         std::sync::mpsc::channel::<WallpaperControlRequest>();
-    let (realm_capture_tx, realm_capture_rx) = std::sync::mpsc::channel::<RealmCaptureRequest>();
+    let (interaction_domain_capture_tx, interaction_domain_capture_rx) =
+        std::sync::mpsc::channel::<InteractionDomainCaptureRequest>();
+    let (interaction_domain_observe_tx, interaction_domain_observe_rx) =
+        std::sync::mpsc::sync_channel::<InteractionDomainObserveRequest>(1_024);
+    let (actor_action_tx, actor_action_rx) =
+        std::sync::mpsc::sync_channel::<InteractionDomainActorActionRequest>(1_024);
+    let (semantic_tree_update_tx, semantic_tree_update_rx) =
+        std::sync::mpsc::sync_channel::<SemanticTreeUpdateRequest>(256);
+    let (semantic_provider_revocation_tx, semantic_provider_revocation_rx) =
+        std::sync::mpsc::sync_channel::<aegis_semantic::SemanticProviderId>(256);
+    // Predispatch refusals can be generated without waiting for the main
+    // loop. Bound this lane so a hostile connection receives backpressure
+    // instead of accumulating unbounded token-revocation work.
+    let (observation_discard_tx, observation_discard_rx) =
+        std::sync::mpsc::sync_channel::<ObservationDiscardRequest>(1_024);
+    let (actor_disconnect_tx, actor_disconnect_rx) = std::sync::mpsc::channel::<u64>();
     let (stream_control_tx, stream_control_rx) = std::sync::mpsc::channel::<StreamControlRequest>();
     let (idle_control_tx, idle_control_rx) = std::sync::mpsc::channel::<IdleControlRequest>();
     let (pick_control_tx, pick_control_rx) = std::sync::mpsc::channel::<PickControlRequest>();
@@ -692,37 +712,51 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::sync::mpsc::channel::<ConfirmPickControlRequest>();
     let (capability_pick_control_tx, capability_pick_control_rx) =
         std::sync::mpsc::channel::<CapabilityPickControlRequest>();
-    let (journal_refusal_tx, journal_refusal_rx) =
-        std::sync::mpsc::channel::<JournalRefusalRequest>();
-    let (auth_event_tx, auth_event_rx) = std::sync::mpsc::channel::<AuthEventRequest>();
-    let journal =
-        std::sync::Arc::new(std::sync::Mutex::new(aegis_ipc::Journal::default_capacity()));
-    let (agent_registry, grant_store) = match std::env::var_os("XDG_DATA_HOME")
+    let data_home = std::env::var_os("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| {
             std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/share"))
-        }) {
-        Some(base) => (
-            PrincipalRegistry::load(base.join("aegis/principals.json")),
-            GrantStore::load(base.join("aegis/grants.json")),
-        ),
-        None => {
-            log::warn!(
-                "no XDG_DATA_HOME/HOME: agent principal registry and grants are session-only"
-            );
-            (PrincipalRegistry::in_memory(), GrantStore::in_memory())
-        }
-    };
-    let agent_lockdown = config.as_ref().map_or(true, |config| config.agent.lockdown);
+        })
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "XDG_DATA_HOME/HOME is required for durable audit and Actor identity state",
+            )
+        })?;
+    let journal = aegis_ipc::Journal::open_persistent(
+        aegis_ipc::DEFAULT_CAPACITY,
+        data_home.join("aegis/audit/events-v2.jsonl"),
+    )?;
+    let journal = std::sync::Arc::new(std::sync::Mutex::new(journal));
+    let mut agent_registry = PrincipalRegistry::load(data_home.join("aegis/principals.json"));
+    let grant_store = GrantStore::load(data_home.join("aegis/grants.json"));
+    let journal_broadcaster = aegis_ipc::JournalBroadcaster::default();
+    let (_, semantic_adapter_credential) = agent_registry
+        .register_ephemeral(
+            Some("Aegis AT-SPI adapter"),
+            vec![
+                aegis_ipc::ActorCapability::ObserveWindows,
+                aegis_ipc::ActorCapability::PublishAccessibilityTree,
+                aegis_ipc::ActorCapability::DispatchAccessibilityAction,
+            ],
+        )
+        .map_err(std::io::Error::other)?;
+    let agent_lockdown = config.as_ref().is_none_or(|config| config.agent.lockdown);
     let live = std::sync::Arc::new(LiveState::new(
         LiveChannels {
             commands: ipc_cmd_tx,
             system_controls: system_control_tx,
             capture: capture_tx,
-            realm_controls: realm_control_tx,
+            interaction_domain_controls: interaction_domain_control_tx,
             settings_controls: settings_control_tx,
             wallpaper_controls: wallpaper_control_tx,
-            realm_capture: realm_capture_tx,
+            interaction_domain_capture: interaction_domain_capture_tx,
+            interaction_domain_observe: interaction_domain_observe_tx,
+            actor_actions: actor_action_tx,
+            semantic_tree_updates: semantic_tree_update_tx,
+            semantic_provider_revocations: semantic_provider_revocation_tx,
+            observation_discards: observation_discard_tx,
+            actor_disconnects: actor_disconnect_tx,
             stream_controls: stream_control_tx,
             idle_controls: idle_control_tx,
             pick_controls: pick_control_tx,
@@ -730,8 +764,6 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
             secret_prompt_controls: secret_prompt_control_tx,
             confirm_pick_controls: confirm_pick_control_tx,
             capability_pick_controls: capability_pick_control_tx,
-            journal_refusals: journal_refusal_tx,
-            auth_events: auth_event_tx,
         },
         capture_worker.delivery_gate(),
         std::sync::Arc::clone(&notif_queue),
@@ -740,6 +772,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         agent_registry,
         grant_store,
         agent_lockdown,
+        start,
+        journal_broadcaster.clone(),
     ));
     let settings_revision = 0;
     live.set_settings(aegis_ipc::SettingsSnapshot {
@@ -756,7 +790,11 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let ipc: Option<aegis_ipc::Server> = match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(d) => {
             let path = std::path::PathBuf::from(d).join("aegis.sock");
-            match aegis_ipc::Server::start(&path, std::sync::Arc::clone(&live)) {
+            match aegis_ipc::Server::start_with_journal_broadcaster(
+                &path,
+                std::sync::Arc::clone(&live),
+                journal_broadcaster,
+            ) {
                 Ok(s) => {
                     log::info!("ipc: listening on {}", path.display());
                     Some(s)
@@ -783,6 +821,10 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         host.name() == "nested",
         ipc.is_some(),
     );
+    let semantic_adapter_process = session::SemanticAdapterProcess::start(
+        semantic_adapter_credential,
+        ipc.is_some() && host.name() != "nested",
+    );
     // Signature of the last broadcast window set, used to detect changes.
     let last_win_sig: Option<WindowEventSignature> = None;
     let last_space_use = None;
@@ -791,10 +833,10 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // keep the previously pushed copy otherwise.
     let last_windows_hash: Option<u64> = None;
     let last_ws_sig: Option<u64> = None;
-    let last_realm_revision: Option<u64> = None;
+    let last_interaction_domain_revision: Option<u64> = None;
     let last_outputs_revision: Option<u64> = None;
     let previous_agent_suspended = false;
-    let automatically_paused_realms = std::collections::BTreeSet::new();
+    let automatically_paused_interaction_domains = std::collections::BTreeSet::new();
     // Whether chrome reported a multi-frame animation in flight last frame.
     // While true the loop pumps non-blocking dispatches and renders at the
     // output's refresh cadence so the animation advances even with the
@@ -868,10 +910,10 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         gesture_map,
         swipe: None,
         renderer,
-        realm_processes,
-        realm_render_targets,
-        pending_realm_capture,
-        realm_damage_sequence,
+        interaction_domain_processes,
+        interaction_domain_render_targets,
+        pending_interaction_domain_capture,
+        interaction_domain_damage_sequence,
         agent_activity_sequence,
         start,
         wallpaper,
@@ -889,14 +931,23 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         config_writer,
         reload,
         idle_process,
+        semantic_adapter_process,
         quit_requested,
         ipc_cmd_rx,
         system_control_rx,
         capture_rx,
-        realm_control_rx,
+        interaction_domain_control_rx,
         settings_control_rx,
         wallpaper_control_rx,
-        realm_capture_rx,
+        interaction_domain_capture_rx,
+        interaction_domain_observe_rx,
+        actor_action_rx,
+        semantic_tree_update_rx,
+        semantic_provider_revocation_rx,
+        pending_semantic_actions: Vec::new(),
+        observation_discard_rx,
+        actor_disconnect_rx,
+        observations: ObservationRegistry::default(),
         stream_control_rx,
         idle_control_rx,
         pick_rx: pick_control_rx,
@@ -911,8 +962,6 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         capability_pick_rx: capability_pick_control_rx,
         pending_capability_pick: None,
         ipc_idle_inhibits: IdleInhibits::default(),
-        journal_refusal_rx,
-        auth_event_rx,
         journal,
         live,
         ipc,
@@ -920,7 +969,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         last_space_use,
         last_windows_hash,
         last_ws_sig,
-        last_realm_revision,
+        last_interaction_domain_revision,
         last_outputs_revision,
         last_surface_gens: std::collections::HashMap::new(),
         surface_gens_scratch: std::collections::HashMap::new(),
@@ -937,7 +986,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         pending_frame: None,
         settings_revision,
         previous_agent_suspended,
-        automatically_paused_realms,
+        automatically_paused_interaction_domains,
         animating,
         chrome_pointer_captured,
         synthetic_pointer_active,

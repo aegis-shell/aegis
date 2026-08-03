@@ -50,7 +50,7 @@ unsafe extern "C" fn cursor_shape_get_pointer(
         let state = ffi::wl_resource_get_user_data(mgr) as *mut State;
         let origin = (*state).seat_origin_for_resource(pointer);
         // A constructor request must either create the advertised object or
-        // raise a protocol/allocation error. The Realm can be paused after the
+        // raise a protocol/allocation error. The Interaction Domain can be paused after the
         // client receives wl_seat.capabilities(pointer) but before this request
         // is dispatched; silently returning in that race leaves the client
         // holding an id the server never created, so its eventual `destroy`

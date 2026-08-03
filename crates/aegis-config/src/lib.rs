@@ -28,10 +28,13 @@ pub use aegis_core::settings::{
 };
 use toml_edit::DocumentMut;
 
+mod migration;
+pub use migration::{ConfigMigration, MigrationOutcome, migrate_file, migrate_text};
+
 /// The schema `schema_version` this build understands. A file whose
 /// `schema_version` differs is rejected with a precise diagnostic rather
 /// than guessed at; bumping this is a real event documented in the CHANGELOG.
-pub const SUPPORTED_SCHEMA_VERSION: u32 = 1;
+pub const SUPPORTED_SCHEMA_VERSION: u32 = 2;
 
 /// The top-level configuration object, deserialized from the TOML file.
 ///
@@ -93,6 +96,11 @@ pub struct Config {
     #[serde(default)]
     pub wallpaper: WallpaperConfig,
 
+    /// Lock-screen presentation and its independently selected background,
+    /// written as a `[lock_screen]` table.
+    #[serde(default)]
+    pub lock_screen: LockScreenConfig,
+
     /// Per-output display policy (ADR-0028), written as `[[output]]`
     /// array-of-tables. Each entry overrides the backend-reported mode,
     /// scale, position, transform, or primary-output selection for one connector.
@@ -107,9 +115,9 @@ pub struct Config {
     pub agent: AgentConfig,
 
     /// Default-deny process sandbox policy for applications launched inside
-    /// Realms. Per-desktop-entry overrides are applied only to new launches.
+    /// Interaction Domains. Per-desktop-entry overrides are applied only to new launches.
     #[serde(default)]
-    pub realm_sandbox: RealmSandboxConfig,
+    pub interaction_domain_sandbox: InteractionDomainSandboxConfig,
 
     /// Screenshot tool configuration, written as `[screenshot]`.
     #[serde(default)]
@@ -173,6 +181,76 @@ pub struct AppearanceConfig {
     pub text_scale: Option<f64>,
 }
 
+/// The composition used by the first-party lock screen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LockScreenStyle {
+    /// Clock and credentials share a centered, portrait-friendly column.
+    Centered,
+    /// Full-bleed artwork with peripheral clock and lower-right credentials.
+    #[default]
+    Cinematic,
+}
+
+/// Source type for the lock screen's background. This is intentionally
+/// independent from [`WallpaperConfig`]: selecting a lock image must never
+/// mutate or implicitly inherit the desktop wallpaper.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LockScreenBackgroundMode {
+    /// The Aegis-provided lock artwork compiled into the lock client.
+    #[default]
+    Builtin,
+    /// A flat color, useful for restrained or high-contrast installations.
+    Solid,
+    /// A user-selected static image decoded by the wallpaper engine.
+    Image,
+}
+
+/// The `[lock_screen.background]` section.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LockScreenBackgroundConfig {
+    #[serde(default)]
+    pub mode: LockScreenBackgroundMode,
+    /// Image path for `image` mode. Relative paths resolve beside
+    /// `config.toml`.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Solid background in `#RRGGBB` form. Omission uses the scheme-aware
+    /// built-in solid.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// Strength of the legibility scrim placed over artwork.
+    #[serde(default = "default_lock_screen_dim")]
+    pub dim: f32,
+}
+
+const fn default_lock_screen_dim() -> f32 {
+    0.28
+}
+
+impl Default for LockScreenBackgroundConfig {
+    fn default() -> Self {
+        Self {
+            mode: LockScreenBackgroundMode::Builtin,
+            source: None,
+            color: None,
+            dim: default_lock_screen_dim(),
+        }
+    }
+}
+
+/// The `[lock_screen]` section.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LockScreenConfig {
+    #[serde(default)]
+    pub style: LockScreenStyle,
+    #[serde(default)]
+    pub background: LockScreenBackgroundConfig,
+}
+
 /// The `[agent]` section (ADR-0088): runtime authorization policy for
 /// capability-borrowing agents. Capability ceilings live in the
 /// compositor-held principal registry, not in configuration; the named
@@ -198,59 +276,38 @@ fn default_true() -> bool {
     true
 }
 
-/// The `[realm_sandbox]` policy and `[[realm_sandbox.app]]` overrides.
+/// The `[interaction_domain_sandbox]` policy and `[[interaction_domain_sandbox.app]]` overrides.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RealmSandboxConfig {
-    #[serde(default)]
-    pub network: bool,
-    #[serde(default)]
-    pub readable_paths: Vec<String>,
-    #[serde(default)]
-    pub writable_paths: Vec<String>,
-    #[serde(default = "default_realm_memory_mib")]
+pub struct InteractionDomainSandboxConfig {
+    #[serde(default = "default_interaction_domain_memory_mib")]
     pub memory_max_mib: u64,
-    #[serde(default = "default_realm_pids")]
+    #[serde(default = "default_interaction_domain_pids")]
     pub pids_max: u32,
-    #[serde(default = "default_realm_cpu_weight")]
+    #[serde(default = "default_interaction_domain_cpu_weight")]
     pub cpu_weight: u16,
     #[serde(default, rename = "app")]
-    pub apps: Vec<RealmSandboxAppConfig>,
+    pub apps: Vec<InteractionDomainSandboxAppConfig>,
 }
 
-impl Default for RealmSandboxConfig {
+impl Default for InteractionDomainSandboxConfig {
     fn default() -> Self {
         Self {
-            network: false,
-            readable_paths: Vec::new(),
-            writable_paths: Vec::new(),
-            memory_max_mib: default_realm_memory_mib(),
-            pids_max: default_realm_pids(),
-            cpu_weight: default_realm_cpu_weight(),
+            memory_max_mib: default_interaction_domain_memory_mib(),
+            pids_max: default_interaction_domain_pids(),
+            cpu_weight: default_interaction_domain_cpu_weight(),
             apps: Vec::new(),
         }
     }
 }
 
-impl RealmSandboxConfig {
-    pub fn policy_for(&self, desktop_id: &str) -> RealmSandboxPolicy {
-        let mut network = self.network;
-        let mut readable_paths = self.readable_paths.clone();
-        let mut writable_paths = self.writable_paths.clone();
+impl InteractionDomainSandboxConfig {
+    pub fn policy_for(&self, desktop_id: &str) -> InteractionDomainSandboxPolicy {
         let mut memory_max_mib = self.memory_max_mib;
         let mut pids_max = self.pids_max;
         let mut cpu_weight = self.cpu_weight;
 
         for app in self.apps.iter().filter(|app| app.desktop_id == desktop_id) {
-            if let Some(value) = app.network {
-                network = value;
-            }
-            if let Some(value) = &app.readable_paths {
-                readable_paths.clone_from(value);
-            }
-            if let Some(value) = &app.writable_paths {
-                writable_paths.clone_from(value);
-            }
             if let Some(value) = app.memory_max_mib {
                 memory_max_mib = value;
             }
@@ -262,10 +319,7 @@ impl RealmSandboxConfig {
             }
         }
 
-        RealmSandboxPolicy {
-            network,
-            readable_paths: readable_paths.into_iter().map(PathBuf::from).collect(),
-            writable_paths: writable_paths.into_iter().map(PathBuf::from).collect(),
+        InteractionDomainSandboxPolicy {
             memory_max_bytes: memory_max_mib * 1024 * 1024,
             pids_max,
             cpu_weight,
@@ -274,17 +328,11 @@ impl RealmSandboxConfig {
 }
 
 /// One exact desktop-entry override. Omitted fields inherit the enclosing
-/// `[realm_sandbox]` value; explicit empty path arrays remove inherited paths.
+/// `[interaction_domain_sandbox]` resource-budget value.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RealmSandboxAppConfig {
+pub struct InteractionDomainSandboxAppConfig {
     pub desktop_id: String,
-    #[serde(default)]
-    pub network: Option<bool>,
-    #[serde(default)]
-    pub readable_paths: Option<Vec<String>>,
-    #[serde(default)]
-    pub writable_paths: Option<Vec<String>>,
     #[serde(default)]
     pub memory_max_mib: Option<u64>,
     #[serde(default)]
@@ -294,24 +342,21 @@ pub struct RealmSandboxAppConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RealmSandboxPolicy {
-    pub network: bool,
-    pub readable_paths: Vec<PathBuf>,
-    pub writable_paths: Vec<PathBuf>,
+pub struct InteractionDomainSandboxPolicy {
     pub memory_max_bytes: u64,
     pub pids_max: u32,
     pub cpu_weight: u16,
 }
 
-fn default_realm_memory_mib() -> u64 {
+fn default_interaction_domain_memory_mib() -> u64 {
     8192
 }
 
-fn default_realm_pids() -> u32 {
+fn default_interaction_domain_pids() -> u32 {
     1024
 }
 
-fn default_realm_cpu_weight() -> u16 {
+fn default_interaction_domain_cpu_weight() -> u16 {
     100
 }
 
@@ -680,7 +725,7 @@ impl std::fmt::Display for Diagnostic {
     }
 }
 
-fn validate_realm_sandbox_limits(
+fn validate_interaction_domain_sandbox_limits(
     prefix: &str,
     memory_max_mib: u64,
     pids_max: u32,
@@ -704,17 +749,6 @@ fn validate_realm_sandbox_limits(
             Some(format!("{prefix}.cpu_weight")),
             "must be between 1 and 10000",
         ));
-    }
-}
-
-fn validate_realm_sandbox_paths(field: &str, paths: &[String], diagnostics: &mut Vec<Diagnostic>) {
-    for (index, path) in paths.iter().enumerate() {
-        if !Path::new(path).is_absolute() {
-            diagnostics.push(Diagnostic::new(
-                Some(format!("{field}.{index}")),
-                "must be an absolute path",
-            ));
-        }
     }
 }
 
@@ -783,6 +817,7 @@ impl Config {
             ));
         }
         validate_wallpaper(&cfg.wallpaper, &mut diagnostics);
+        validate_lock_screen(&cfg.lock_screen, &mut diagnostics);
         for (index, output) in cfg.outputs.iter().enumerate() {
             if output.connector.trim().is_empty() {
                 diagnostics.push(Diagnostic::new(
@@ -894,53 +929,31 @@ impl Config {
                 "must be between -1.0 and 1.0",
             ));
         }
-        validate_realm_sandbox_limits(
-            "realm_sandbox",
-            cfg.realm_sandbox.memory_max_mib,
-            cfg.realm_sandbox.pids_max,
-            cfg.realm_sandbox.cpu_weight,
+        validate_interaction_domain_sandbox_limits(
+            "interaction_domain_sandbox",
+            cfg.interaction_domain_sandbox.memory_max_mib,
+            cfg.interaction_domain_sandbox.pids_max,
+            cfg.interaction_domain_sandbox.cpu_weight,
             &mut diagnostics,
         );
-        validate_realm_sandbox_paths(
-            "realm_sandbox.readable_paths",
-            &cfg.realm_sandbox.readable_paths,
-            &mut diagnostics,
-        );
-        validate_realm_sandbox_paths(
-            "realm_sandbox.writable_paths",
-            &cfg.realm_sandbox.writable_paths,
-            &mut diagnostics,
-        );
-        for (index, app) in cfg.realm_sandbox.apps.iter().enumerate() {
-            let prefix = format!("realm_sandbox.app.{index}");
+        for (index, app) in cfg.interaction_domain_sandbox.apps.iter().enumerate() {
+            let prefix = format!("interaction_domain_sandbox.app.{index}");
             if app.desktop_id.trim().is_empty() {
                 diagnostics.push(Diagnostic::new(
                     Some(format!("{prefix}.desktop_id")),
                     "must not be empty",
                 ));
             }
-            validate_realm_sandbox_limits(
+            validate_interaction_domain_sandbox_limits(
                 &prefix,
                 app.memory_max_mib
-                    .unwrap_or(cfg.realm_sandbox.memory_max_mib),
-                app.pids_max.unwrap_or(cfg.realm_sandbox.pids_max),
-                app.cpu_weight.unwrap_or(cfg.realm_sandbox.cpu_weight),
+                    .unwrap_or(cfg.interaction_domain_sandbox.memory_max_mib),
+                app.pids_max
+                    .unwrap_or(cfg.interaction_domain_sandbox.pids_max),
+                app.cpu_weight
+                    .unwrap_or(cfg.interaction_domain_sandbox.cpu_weight),
                 &mut diagnostics,
             );
-            if let Some(paths) = &app.readable_paths {
-                validate_realm_sandbox_paths(
-                    &format!("{prefix}.readable_paths"),
-                    paths,
-                    &mut diagnostics,
-                );
-            }
-            if let Some(paths) = &app.writable_paths {
-                validate_realm_sandbox_paths(
-                    &format!("{prefix}.writable_paths"),
-                    paths,
-                    &mut diagnostics,
-                );
-            }
         }
         if cfg.screenshot.save_dir.trim().is_empty() {
             diagnostics.push(Diagnostic::new(
@@ -1252,6 +1265,68 @@ fn validate_wallpaper(config: &WallpaperConfig, diagnostics: &mut Vec<Diagnostic
                     ));
                 }
                 previous_depth = previous_depth.max(layer.depth);
+            }
+        }
+    }
+}
+
+fn validate_lock_screen(config: &LockScreenConfig, diagnostics: &mut Vec<Diagnostic>) {
+    let background = &config.background;
+    if !background.dim.is_finite() || !(0.0..=0.85).contains(&background.dim) {
+        diagnostics.push(Diagnostic::new(
+            Some("lock_screen.background.dim".into()),
+            "must be between 0.0 and 0.85",
+        ));
+    }
+    match background.mode {
+        LockScreenBackgroundMode::Builtin => {
+            if background.source.is_some() {
+                diagnostics.push(Diagnostic::new(
+                    Some("lock_screen.background.source".into()),
+                    "is only valid when lock_screen.background.mode is 'image'",
+                ));
+            }
+            if background.color.is_some() {
+                diagnostics.push(Diagnostic::new(
+                    Some("lock_screen.background.color".into()),
+                    "is only valid when lock_screen.background.mode is 'solid'",
+                ));
+            }
+        }
+        LockScreenBackgroundMode::Solid => {
+            if background.source.is_some() {
+                diagnostics.push(Diagnostic::new(
+                    Some("lock_screen.background.source".into()),
+                    "is only valid when lock_screen.background.mode is 'image'",
+                ));
+            }
+            if background
+                .color
+                .as_deref()
+                .is_some_and(|value| AccentColor::parse_hex(value).is_err())
+            {
+                diagnostics.push(Diagnostic::new(
+                    Some("lock_screen.background.color".into()),
+                    "must use #RRGGBB",
+                ));
+            }
+        }
+        LockScreenBackgroundMode::Image => {
+            if background
+                .source
+                .as_deref()
+                .is_none_or(|source| source.trim().is_empty())
+            {
+                diagnostics.push(Diagnostic::new(
+                    Some("lock_screen.background.source".into()),
+                    "is required when lock_screen.background.mode is 'image'",
+                ));
+            }
+            if background.color.is_some() {
+                diagnostics.push(Diagnostic::new(
+                    Some("lock_screen.background.color".into()),
+                    "is only valid when lock_screen.background.mode is 'solid'",
+                ));
             }
         }
     }

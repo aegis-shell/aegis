@@ -225,7 +225,7 @@ checks before completing work that crosses a backend boundary.
 | libinput devices and touchpad configuration | Not covered | Required |
 | libseat ownership, VT suspend/resume, and hotplug | Not covered | Required |
 | Software cursor on direct display | Not covered | Required |
-| Realm cgroup delegation | Direct run is insufficient | Packaged systemd service required |
+| Interaction Domain cgroup delegation | Direct run is insufficient | Packaged systemd service required |
 
 Use [VT/DRM Manual Testing](vt-drm-testing.md) when a change is ready to try on
 real display and input hardware, especially after changes to DRM/KMS,
@@ -257,8 +257,8 @@ The outer compositor owns physical outputs and input devices. Nested mode can
 observe its window size and scale, but it cannot modeset a monitor or configure
 a libinput device. Validate those controls under DRM/KMS.
 
-### Realm Launch Fails
+### Interaction Domain Launch Fails
 
 A direct `cargo run` process does not own the delegated cgroup hierarchy that
-Realm application sandboxes require. Use the packaged systemd service for
-Realm launch tests, as described in the [development setup](setup.md).
+Interaction Domain application sandboxes require. Use the packaged systemd service for
+Interaction Domain launch tests, as described in the [development setup](setup.md).

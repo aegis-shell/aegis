@@ -1,17 +1,19 @@
-//! Trusted visual feedback for input applied by an Agent Realm.
+//! Trusted visual feedback for input applied by an Agent Interaction Domain.
 //!
 //! The physical user's XDG cursor remains untouched. This component draws a
 //! separate crosshair, click pulse, movement trail, and operation label over a
 //! read-only human mirror. If the target is not visible, it draws a compact
 //! background-operation pill instead. Because this is Shell chrome, directed
-//! Realm capture never includes it and an Agent cannot steer from its own
+//! Interaction Domain capture never includes it and an Agent cannot steer from its own
 //! feedback layer.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use aegis_core::Point;
-use aegis_core::realm::{RealmId, RealmSnapshot, RealmState};
+use aegis_core::interaction_domain::{
+    InteractionDomainId, InteractionDomainSnapshot, InteractionDomainState,
+};
 use aegis_core::window::{Window, WindowId};
 use aegis_core::workspace::WorkspaceSnapshot;
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
@@ -31,8 +33,8 @@ const BACKGROUND_HEIGHT: f32 = 34.0;
 
 /// Non-interactive, compositor-owned projection of Agent input activity.
 pub struct AgentFeedback {
-    realms: RealmSnapshot,
-    activity: BTreeMap<RealmId, VisualActivity>,
+    interaction_domains: InteractionDomainSnapshot,
+    activity: BTreeMap<InteractionDomainId, VisualActivity>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,7 +59,8 @@ impl AgentFeedback {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            realms: aegis_core::realm::RealmModel::new().snapshot(),
+            interaction_domains: aegis_core::interaction_domain::InteractionDomainModel::new()
+                .snapshot(),
             activity: BTreeMap::new(),
         }
     }
@@ -80,31 +83,33 @@ impl Chrome for AgentFeedback {
         _out: &mut ChromeEvents,
     ) {
         let now = Instant::now();
-        let live_realms = self
-            .realms
-            .realms
+        let live_interaction_domains = self
+            .interaction_domains
+            .interaction_domains
             .iter()
-            .filter(|realm| realm.state != RealmState::Revoked)
-            .map(|realm| realm.id)
+            .filter(|interaction_domain| {
+                interaction_domain.state != InteractionDomainState::Revoked
+            })
+            .map(|interaction_domain| interaction_domain.id)
             .collect::<std::collections::BTreeSet<_>>();
-        self.activity.retain(|realm, activity| {
-            live_realms.contains(realm)
+        self.activity.retain(|interaction_domain, activity| {
+            live_interaction_domains.contains(interaction_domain)
                 && now.saturating_duration_since(activity.latest_at) < VISIBLE_FOR
         });
 
         let raw = input.as_raw();
         let display = (raw.display_size.x.max(1.0), raw.display_size.y.max(1.0));
-        let realms = &self.realms;
+        let interaction_domains = &self.interaction_domains;
         let mut background = Vec::new();
-        for (realm, activity) in &self.activity {
-            let realm_state = realms
-                .realms
+        for (interaction_domain, activity) in &self.activity {
+            let interaction_domain_state = interaction_domains
+                .interaction_domains
                 .iter()
-                .find(|candidate| candidate.id == *realm)
+                .find(|candidate| candidate.id == *interaction_domain)
                 .map(|candidate| candidate.state)
-                .unwrap_or(RealmState::Revoked);
+                .unwrap_or(InteractionDomainState::Revoked);
             let age = now.saturating_duration_since(activity.latest_at);
-            let alpha = activity_alpha(age, realm_state);
+            let alpha = activity_alpha(age, interaction_domain_state);
             let projected = activity
                 .pointer_window
                 .zip(activity.pointer_position)
@@ -120,26 +125,33 @@ impl Chrome for AgentFeedback {
             if let Some((_, position)) = projected {
                 render_pointer_feedback(
                     f,
-                    *realm,
+                    *interaction_domain,
                     activity,
                     position,
                     display,
-                    realm_state,
+                    interaction_domain_state,
                     alpha,
                     now,
                     i18n,
                 );
             } else {
-                background.push((*realm, activity, realm_state, alpha));
+                background.push((
+                    *interaction_domain,
+                    activity,
+                    interaction_domain_state,
+                    alpha,
+                ));
             }
         }
 
-        for (index, (realm, activity, realm_state, alpha)) in background.into_iter().enumerate() {
+        for (index, (interaction_domain, activity, interaction_domain_state, alpha)) in
+            background.into_iter().enumerate()
+        {
             render_background_activity(
                 f,
-                realm,
+                interaction_domain,
                 activity,
-                realm_state,
+                interaction_domain_state,
                 alpha,
                 display,
                 index,
@@ -150,27 +162,32 @@ impl Chrome for AgentFeedback {
 
     fn requires_composition(&self) -> bool {
         let now = Instant::now();
-        self.activity.iter().any(|(realm, activity)| {
+        self.activity.iter().any(|(interaction_domain, activity)| {
             now.saturating_duration_since(activity.latest_at) < VISIBLE_FOR
-                && self.realms.realms.iter().any(|candidate| {
-                    candidate.id == *realm && candidate.state != RealmState::Revoked
-                })
+                && self
+                    .interaction_domains
+                    .interaction_domains
+                    .iter()
+                    .any(|candidate| {
+                        candidate.id == *interaction_domain
+                            && candidate.state != InteractionDomainState::Revoked
+                    })
         })
     }
 
-    fn update_realms(&mut self, snapshot: &RealmSnapshot) {
-        self.realms = snapshot.clone();
-        self.activity.retain(|realm, _| {
-            snapshot
-                .realms
-                .iter()
-                .any(|candidate| candidate.id == *realm && candidate.state != RealmState::Revoked)
+    fn update_interaction_domains(&mut self, snapshot: &InteractionDomainSnapshot) {
+        self.interaction_domains = snapshot.clone();
+        self.activity.retain(|interaction_domain, _| {
+            snapshot.interaction_domains.iter().any(|candidate| {
+                candidate.id == *interaction_domain
+                    && candidate.state != InteractionDomainState::Revoked
+            })
         });
     }
 
     fn update_agent_activity(&mut self, activity: &AgentActivity) {
         let now = Instant::now();
-        match self.activity.get_mut(&activity.realm) {
+        match self.activity.get_mut(&activity.interaction_domain) {
             Some(state) => {
                 if activity.sequence <= state.latest.sequence {
                     return;
@@ -196,7 +213,7 @@ impl Chrome for AgentFeedback {
             }
             None => {
                 self.activity.insert(
-                    activity.realm,
+                    activity.interaction_domain,
                     VisualActivity {
                         latest: activity.clone(),
                         latest_at: now,
@@ -224,16 +241,16 @@ impl Chrome for AgentFeedback {
 #[allow(clippy::too_many_arguments)]
 fn render_pointer_feedback(
     f: &mut Frame,
-    realm: RealmId,
+    interaction_domain: InteractionDomainId,
     activity: &VisualActivity,
     position: Point,
     display: (f32, f32),
-    realm_state: RealmState,
+    interaction_domain_state: InteractionDomainState,
     alpha: u8,
     now: Instant,
     i18n: &Localizer,
 ) {
-    let accent = realm_color(realm).with_alpha(alpha);
+    let accent = interaction_domain_color(interaction_domain).with_alpha(alpha);
     if let (Some(previous), Some(pointer_at)) = (activity.previous_pointer, activity.pointer_at)
         && now.saturating_duration_since(pointer_at) < TRAIL_FOR
         && previous != position
@@ -244,7 +261,7 @@ fn render_pointer_feedback(
             let size = 4.0 + index as f32 * 1.5;
             render_shape(
                 f,
-                &format!("aegis-agent-trail-{}-{index}", realm.0),
+                &format!("aegis-agent-trail-{}-{index}", interaction_domain.0),
                 Rect {
                     x: x - size * 0.5,
                     y: y - size * 0.5,
@@ -267,10 +284,10 @@ fn render_pointer_feedback(
             let pulse_alpha = ((1.0 - progress) * f32::from(alpha)).round() as u8;
             render_shape(
                 f,
-                &format!("aegis-agent-click-pulse-{}", realm.0),
+                &format!("aegis-agent-click-pulse-{}", interaction_domain.0),
                 centered_rect(position, diameter),
                 Color::TRANSPARENT,
-                realm_color(realm).with_alpha(pulse_alpha),
+                interaction_domain_color(interaction_domain).with_alpha(pulse_alpha),
                 2.0,
                 diameter * 0.5,
             );
@@ -279,7 +296,7 @@ fn render_pointer_feedback(
 
     render_shape(
         f,
-        &format!("aegis-agent-marker-{}", realm.0),
+        &format!("aegis-agent-marker-{}", interaction_domain.0),
         centered_rect(position, MARKER_DIAMETER),
         Color::rgba(12, 15, 24, scaled_alpha(alpha, 3, 4)),
         accent,
@@ -288,7 +305,7 @@ fn render_pointer_feedback(
     );
     render_shape(
         f,
-        &format!("aegis-agent-marker-center-{}", realm.0),
+        &format!("aegis-agent-marker-center-{}", interaction_domain.0),
         centered_rect(position, 6.0),
         accent,
         Color::TRANSPARENT,
@@ -298,7 +315,7 @@ fn render_pointer_feedback(
     for (suffix, rect) in marker_ticks(position).into_iter() {
         render_shape(
             f,
-            &format!("aegis-agent-marker-{suffix}-{}", realm.0),
+            &format!("aegis-agent-marker-{suffix}-{}", interaction_domain.0),
             rect,
             accent,
             Color::TRANSPARENT,
@@ -307,7 +324,7 @@ fn render_pointer_feedback(
         );
     }
 
-    let label = activity_label(&activity.latest, realm_state, i18n, true);
+    let label = activity_label(&activity.latest, interaction_domain_state, i18n, true);
     let measured = f.measure_text(&label, 11.0).width;
     let width = (measured + 20.0)
         .clamp(128.0, 290.0)
@@ -315,7 +332,7 @@ fn render_pointer_feedback(
     let label_rect = marker_label_rect(position, width, display);
     let label = ellipsize(f, &label, 11.0, (label_rect.w - 14.0).max(0.0));
     f.layer(
-        &format!("aegis-agent-label-{}", realm.0),
+        &format!("aegis-agent-label-{}", interaction_domain.0),
         label_rect,
         &OverlayOpts {
             bg: Color::rgba(18, 21, 32, scaled_alpha(alpha, 9, 10)),
@@ -342,15 +359,15 @@ fn render_pointer_feedback(
 #[allow(clippy::too_many_arguments)]
 fn render_background_activity(
     f: &mut Frame,
-    realm: RealmId,
+    interaction_domain: InteractionDomainId,
     activity: &VisualActivity,
-    realm_state: RealmState,
+    interaction_domain_state: InteractionDomainState,
     alpha: u8,
     display: (f32, f32),
     index: usize,
     i18n: &Localizer,
 ) {
-    let label = activity_label(&activity.latest, realm_state, i18n, false);
+    let label = activity_label(&activity.latest, interaction_domain_state, i18n, false);
     let measured = f.measure_text(&label, 11.0).width;
     let width = (measured + 28.0)
         .clamp(190.0, 360.0)
@@ -362,9 +379,9 @@ fn render_background_activity(
         h: BACKGROUND_HEIGHT,
     };
     let label = ellipsize(f, &label, 11.0, (rect.w - 31.0).max(0.0));
-    let accent = realm_color(realm).with_alpha(alpha);
+    let accent = interaction_domain_color(interaction_domain).with_alpha(alpha);
     f.layer(
-        &format!("aegis-agent-background-{}", realm.0),
+        &format!("aegis-agent-background-{}", interaction_domain.0),
         rect,
         &OverlayOpts {
             bg: Color::rgba(18, 21, 32, scaled_alpha(alpha, 9, 10)),
@@ -403,25 +420,25 @@ fn render_background_activity(
 
 fn activity_label(
     activity: &AgentActivity,
-    state: RealmState,
+    state: InteractionDomainState,
     i18n: &Localizer,
     pointer_visible: bool,
 ) -> String {
-    let realm = &activity.realm_label;
+    let interaction_domain = &activity.interaction_domain_label;
     let operation = operation_label(activity.kind, i18n);
-    let state_suffix = if state == RealmState::Paused {
-        format!(" · {}", i18n.text(Message::RealmPaused))
+    let state_suffix = if state == InteractionDomainState::Paused {
+        format!(" · {}", i18n.text(Message::InteractionDomainPaused))
     } else {
         String::new()
     };
     if pointer_visible {
         format!(
-            "{} · {realm} · {operation}{state_suffix}",
+            "{} · {interaction_domain} · {operation}{state_suffix}",
             i18n.text(Message::AgentBadge)
         )
     } else {
         format!(
-            "{realm} · {} · {operation}{state_suffix}",
+            "{interaction_domain} · {} · {operation}{state_suffix}",
             i18n.text(Message::AgentOperating)
         )
     }
@@ -445,8 +462,8 @@ fn operation_label(kind: AgentInputKind, i18n: &Localizer) -> &'static str {
     }
 }
 
-fn activity_alpha(age: Duration, state: RealmState) -> u8 {
-    let state_alpha = if state == RealmState::Paused {
+fn activity_alpha(age: Duration, state: InteractionDomainState) -> u8 {
+    let state_alpha = if state == InteractionDomainState::Paused {
         150.0
     } else {
         255.0
@@ -463,7 +480,7 @@ fn scaled_alpha(alpha: u8, numerator: u16, denominator: u16) -> u8 {
     u8::try_from(scaled.min(255)).unwrap_or(255)
 }
 
-pub(super) fn realm_color(realm: RealmId) -> Color {
+pub(super) fn interaction_domain_color(interaction_domain: InteractionDomainId) -> Color {
     const PALETTE: [(u8, u8, u8); 6] = [
         (92, 214, 255),
         (255, 184, 76),
@@ -472,7 +489,7 @@ pub(super) fn realm_color(realm: RealmId) -> Color {
         (255, 111, 140),
         (139, 142, 255),
     ];
-    let index = usize::try_from(realm.0 % PALETTE.len() as u64).unwrap_or(0);
+    let index = usize::try_from(interaction_domain.0 % PALETTE.len() as u64).unwrap_or(0);
     let (r, g, b) = PALETTE[index];
     Color::rgba(r, g, b, 255)
 }
@@ -605,8 +622,8 @@ mod tests {
     fn activity(sequence: u64, kind: AgentInputKind, position: Option<Point>) -> AgentActivity {
         AgentActivity {
             sequence,
-            realm: RealmId(7),
-            realm_label: "Fuji".into(),
+            interaction_domain: InteractionDomainId(7),
+            interaction_domain_label: "Fuji".into(),
             window: WindowId(42),
             position,
             kind,
@@ -623,7 +640,10 @@ mod tests {
         ));
         feedback.update_agent_activity(&activity(2, AgentInputKind::Keyboard, None));
 
-        let visual = feedback.activity.get(&RealmId(7)).expect("activity");
+        let visual = feedback
+            .activity
+            .get(&InteractionDomainId(7))
+            .expect("activity");
         assert_eq!(visual.pointer_position, Some(Point { x: 120, y: 80 }));
         assert_eq!(visual.latest.kind, AgentInputKind::Keyboard);
         assert_eq!(
@@ -641,7 +661,10 @@ mod tests {
             AgentInputKind::Click { button: 0x110 },
             Some(Point { x: 1, y: 2 }),
         ));
-        let visual = feedback.activity.get(&RealmId(7)).expect("activity");
+        let visual = feedback
+            .activity
+            .get(&InteractionDomainId(7))
+            .expect("activity");
         assert_eq!(visual.latest.sequence, 2);
         assert_eq!(visual.pointer_position, None);
     }

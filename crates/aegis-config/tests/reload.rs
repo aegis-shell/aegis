@@ -41,7 +41,7 @@ fn load_reads_and_parses_a_real_file() {
     let path = scratch("good");
     fs::write(
         &path,
-        "schema_version = 1\n\
+        "schema_version = 2\n\
          [[keybind]]\n\
          mods = [\"super\"]\n\
          key = \"q\"\n\
@@ -73,14 +73,14 @@ fn invalid_file_reports_diagnostics_not_a_crash() {
 #[test]
 fn reload_watcher_reports_modify_create_and_delete() {
     let path = scratch("reload");
-    fs::write(&path, "schema_version = 1\n").unwrap();
+    fs::write(&path, "schema_version = 2\n").unwrap();
     let mut w = ReloadWatcher::at(&path);
     // Baseline captured at construction; no change yet.
     assert!(!w.changed(&path), "no change immediately after baseline");
 
     // Modify: a new mtime (after forcing resolution to advance).
     force_mtime_advance();
-    fs::write(&path, "schema_version = 1\n# edited\n").unwrap();
+    fs::write(&path, "schema_version = 2\n# edited\n").unwrap();
     assert!(w.changed(&path), "modification detected");
     assert!(!w.changed(&path), "reported once per transition");
 
@@ -91,7 +91,7 @@ fn reload_watcher_reports_modify_create_and_delete() {
 
     // Re-create.
     force_mtime_advance();
-    fs::write(&path, "schema_version = 1\n").unwrap();
+    fs::write(&path, "schema_version = 2\n").unwrap();
     assert!(w.changed(&path), "re-creation detected");
     fs::remove_file(&path).ok();
 }

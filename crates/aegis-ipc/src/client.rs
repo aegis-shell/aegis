@@ -12,22 +12,25 @@ use std::time::Duration;
 use crate::codec::{read_msg, write_msg};
 use crate::journal::JournalSnapshot;
 use crate::schema::{
-    AgentGrantInfo, AgentHello, AgentIssued, AgentPrincipalInfo, AppPickResult, Capabilities,
-    Command, ConfirmPickResult, Event, LeaseGrant, LeaseRequest, OpClass, PROTOCOL_VERSION,
-    PickKind, PickResult, RealmAction, RealmActionResult, Request, Response, Scope,
-    SecretPromptResult, SettingsAction, SettingsReceipt, SettingsSnapshot, StreamPixelFormat,
-    StreamTarget, SystemAction, SystemStatus,
+    ActorActionIntent, ActorActionReceipt, ActorCapability, ActorResource, AgentGrantInfo,
+    AgentHello, AgentIssued, AgentPrincipalInfo, AppPickResult, Command, ConfirmPickResult,
+    ConnectionCapabilities, Event, InteractionDomainAction, InteractionDomainActionResult,
+    LeaseGrant, LeaseRequest, ObservationToken, PROTOCOL_VERSION, PickKind, PickResult, Request,
+    ResourceGrant, ResourceGrantId, Response, Scope, SecretPromptResult, SemanticObservation,
+    SettingsAction, SettingsReceipt, SettingsSnapshot, StreamPixelFormat, StreamTarget,
+    SystemAction, SystemStatus,
 };
 
-/// Decoded Realm observation returned by [`Client::capture_realm`].
+/// Decoded Interaction Domain observation returned by [`Client::capture_interaction_domain`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapturedRealm {
-    pub realm: aegis_core::realm::RealmId,
+pub struct CapturedInteractionDomain {
+    pub interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
     pub width: u32,
     pub height: u32,
     pub scale_milli: u32,
     pub region: aegis_core::Rect,
-    pub placements: Vec<aegis_core::realm::RealmWindowPlacement>,
+    pub placements: Vec<aegis_core::interaction_domain::InteractionDomainWindowPlacement>,
+    pub observation: SemanticObservation,
     pub png: Vec<u8>,
     pub revision: u64,
 }
@@ -72,21 +75,22 @@ pub enum StreamMessage {
 /// granted capabilities are available via [`Client::caps`].
 pub struct Client {
     stream: UnixStream,
-    caps: Capabilities,
+    caps: ConnectionCapabilities,
     scope: Scope,
     lease: Option<LeaseGrant>,
+    session: Option<crate::ActorSessionSnapshot>,
     agent: Option<AgentIssued>,
 }
 
 impl Client {
     /// Connect requesting `query` only.
     pub fn connect(path: &Path) -> io::Result<Client> {
-        Self::connect_inner(path, Capabilities::QUERY, None)
+        Self::connect_inner(path, ConnectionCapabilities::QUERY, None)
     }
 
     /// Connect requesting a specific capability set. The server may grant a
     /// subset (intersected with its policy, with `query` forced on).
-    pub fn connect_with(path: &Path, requested: Capabilities) -> io::Result<Client> {
+    pub fn connect_with(path: &Path, requested: ConnectionCapabilities) -> io::Result<Client> {
         Self::connect_inner(path, requested, None)
     }
 
@@ -95,7 +99,7 @@ impl Client {
     /// local peer cannot retain the worker indefinitely.
     pub fn connect_with_timeout(
         path: &Path,
-        requested: Capabilities,
+        requested: ConnectionCapabilities,
         timeout: Duration,
     ) -> io::Result<Client> {
         Self::connect_inner_with_timeout(path, requested, None, None, Some(timeout))
@@ -106,7 +110,7 @@ impl Client {
     /// silently granting an unrestricted connection.
     pub fn connect_scoped(
         path: &Path,
-        requested: Capabilities,
+        requested: ConnectionCapabilities,
         scope: impl Into<String>,
     ) -> io::Result<Client> {
         Self::connect_inner(path, requested, Some(scope.into()))
@@ -117,7 +121,7 @@ impl Client {
     /// blocking client on a worker thread.
     pub fn connect_scoped_with_timeout(
         path: &Path,
-        requested: Capabilities,
+        requested: ConnectionCapabilities,
         scope: impl Into<String>,
         timeout: Duration,
     ) -> io::Result<Client> {
@@ -133,7 +137,7 @@ impl Client {
     /// [`Client::agent_issued`].
     pub fn connect_agent_with_timeout(
         path: &Path,
-        requested: Capabilities,
+        requested: ConnectionCapabilities,
         scope: Option<String>,
         agent: AgentHello,
         timeout: Duration,
@@ -143,7 +147,7 @@ impl Client {
 
     fn connect_inner(
         path: &Path,
-        requested: Capabilities,
+        requested: ConnectionCapabilities,
         scope_name: Option<String>,
     ) -> io::Result<Client> {
         Self::connect_inner_with_timeout(path, requested, scope_name, None, None)
@@ -151,7 +155,7 @@ impl Client {
 
     fn connect_inner_with_timeout(
         path: &Path,
-        requested: Capabilities,
+        requested: ConnectionCapabilities,
         scope_name: Option<String>,
         agent: Option<AgentHello>,
         timeout: Option<Duration>,
@@ -170,14 +174,15 @@ impl Client {
             },
         )?;
         let resp: Response = read_msg(&mut stream)?;
-        let (caps, scope, lease, agent) = match resp {
+        let (caps, scope, lease, session, agent) = match resp {
             Response::Hello {
                 version,
                 caps,
                 scope,
                 lease,
+                session,
                 agent,
-            } if version == PROTOCOL_VERSION => (caps, scope, lease, agent),
+            } if version == PROTOCOL_VERSION => (caps, scope, lease, session, agent),
             Response::Error { message } => {
                 return Err(io::Error::new(io::ErrorKind::ConnectionRefused, message));
             }
@@ -193,12 +198,13 @@ impl Client {
             caps,
             scope,
             lease,
+            session,
             agent,
         })
     }
 
     /// The capabilities the server actually granted at the handshake.
-    pub fn caps(&self) -> Capabilities {
+    pub fn caps(&self) -> ConnectionCapabilities {
         self.caps
     }
 
@@ -209,6 +215,10 @@ impl Client {
 
     pub fn lease(&self) -> Option<LeaseGrant> {
         self.lease
+    }
+
+    pub fn session(&self) -> Option<&crate::ActorSessionSnapshot> {
+        self.session.as_ref()
     }
 
     /// The pairing outcome when this client connected with an `AgentHello`
@@ -319,8 +329,8 @@ impl Client {
     pub fn set_agent_ceiling(
         &mut self,
         principal: &str,
-        pregranted: Vec<OpClass>,
-        gated: Vec<OpClass>,
+        pregranted: Vec<ActorCapability>,
+        gated: Vec<ActorCapability>,
     ) -> io::Result<()> {
         write_msg(
             &mut self.stream,
@@ -346,8 +356,8 @@ impl Client {
     pub fn register_agent(
         &mut self,
         label: Option<&str>,
-        pregranted: Vec<OpClass>,
-        gated: Vec<OpClass>,
+        pregranted: Vec<ActorCapability>,
+        gated: Vec<ActorCapability>,
     ) -> io::Result<(String, String)> {
         write_msg(
             &mut self.stream,
@@ -371,7 +381,7 @@ impl Client {
     }
 
     /// Drop one recorded runtime grant.
-    pub fn revoke_agent_grant(&mut self, principal: &str, op: OpClass) -> io::Result<()> {
+    pub fn revoke_agent_grant(&mut self, principal: &str, op: ActorCapability) -> io::Result<()> {
         write_msg(
             &mut self.stream,
             &Request::RevokeAgentGrant {
@@ -452,22 +462,28 @@ impl Client {
         self.command(Command::InjectInput { id, actions })
     }
 
-    pub fn inject_realm_input(
+    pub fn inject_interaction_domain_input(
         &mut self,
-        realm: aegis_core::realm::RealmId,
-        id: aegis_core::window::WindowId,
+        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+        target: aegis_core::semantic::SemanticObjectId,
+        observation: ObservationToken,
         actions: Vec<aegis_core::input::SyntheticInputAction>,
-    ) -> io::Result<()> {
-        self.command(Command::InjectRealmInput { realm, id, actions })
+    ) -> io::Result<ActorActionReceipt> {
+        self.act_in_interaction_domain(ActorActionIntent {
+            interaction_domain,
+            target,
+            observation,
+            actions: vec![aegis_core::semantic::SemanticActionIntent::SyntheticInput { actions }],
+        })
     }
 
-    pub fn launch_in_realm(
+    pub fn launch_in_interaction_domain(
         &mut self,
-        realm: aegis_core::realm::RealmId,
+        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
         desktop_id: impl Into<String>,
     ) -> io::Result<()> {
-        self.command(Command::LaunchInRealm {
-            realm,
+        self.command(Command::LaunchInInteractionDomain {
+            interaction_domain,
             desktop_id: desktop_id.into(),
         })
     }
@@ -601,14 +617,16 @@ impl Client {
         }
     }
 
-    pub fn realms(&mut self) -> io::Result<aegis_core::realm::RealmSnapshot> {
-        write_msg(&mut self.stream, &Request::GetRealms)?;
+    pub fn interaction_domains(
+        &mut self,
+    ) -> io::Result<aegis_core::interaction_domain::InteractionDomainSnapshot> {
+        write_msg(&mut self.stream, &Request::GetInteractionDomains)?;
         match read_msg::<_, Response>(&mut self.stream)? {
-            Response::Realms { snapshot } => Ok(snapshot),
+            Response::InteractionDomains { snapshot } => Ok(snapshot),
             Response::Error { message } => Err(io::Error::other(message)),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("expected Realms, got {other:?}"),
+                format!("expected InteractionDomains, got {other:?}"),
             )),
         }
     }
@@ -669,34 +687,86 @@ impl Client {
         }
     }
 
-    pub fn realm_action(&mut self, action: RealmAction) -> io::Result<RealmActionResult> {
-        write_msg(&mut self.stream, &Request::Realm { action })?;
+    pub fn interaction_domain_action(
+        &mut self,
+        action: InteractionDomainAction,
+    ) -> io::Result<InteractionDomainActionResult> {
+        write_msg(&mut self.stream, &Request::InteractionDomain { action })?;
         match read_msg::<_, Response>(&mut self.stream)? {
-            Response::Realm { result } => Ok(result),
+            Response::InteractionDomain { result } => Ok(result),
             Response::Error { message } => Err(io::Error::other(message)),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("expected Realm, got {other:?}"),
+                format!("expected InteractionDomain, got {other:?}"),
             )),
         }
     }
 
-    pub fn capture_realm(
+    pub fn observe_interaction_domain(
         &mut self,
-        realm: aegis_core::realm::RealmId,
-        region: Option<aegis_core::Rect>,
-    ) -> io::Result<CapturedRealm> {
-        write_msg(&mut self.stream, &Request::CaptureRealm { realm, region })?;
+        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+    ) -> io::Result<SemanticObservation> {
+        write_msg(
+            &mut self.stream,
+            &Request::ObserveInteractionDomain { interaction_domain },
+        )?;
         match read_msg::<_, Response>(&mut self.stream)? {
-            Response::CaptureRealm { capture } if capture.realm == realm => {
+            Response::InteractionDomainObserved { observation }
+                if observation.snapshot.interaction_domain == interaction_domain =>
+            {
+                Ok(observation)
+            }
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected InteractionDomainObserved, got {other:?}"),
+            )),
+        }
+    }
+
+    pub fn act_in_interaction_domain(
+        &mut self,
+        intent: ActorActionIntent,
+    ) -> io::Result<ActorActionReceipt> {
+        write_msg(
+            &mut self.stream,
+            &Request::ActInInteractionDomain { intent },
+        )?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::ActorActionCommitted { receipt } => Ok(receipt),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected ActorActionCommitted, got {other:?}"),
+            )),
+        }
+    }
+
+    pub fn capture_interaction_domain(
+        &mut self,
+        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+        region: Option<aegis_core::Rect>,
+    ) -> io::Result<CapturedInteractionDomain> {
+        write_msg(
+            &mut self.stream,
+            &Request::CaptureInteractionDomain {
+                interaction_domain,
+                region,
+            },
+        )?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::CaptureInteractionDomain { capture }
+                if capture.interaction_domain == interaction_domain =>
+            {
                 let png = crate::blob::receive(&self.stream, capture.png_bytes)?;
-                Ok(CapturedRealm {
-                    realm: capture.realm,
+                Ok(CapturedInteractionDomain {
+                    interaction_domain: capture.interaction_domain,
                     width: capture.width,
                     height: capture.height,
                     scale_milli: capture.scale_milli,
                     region: capture.region,
                     placements: capture.placements,
+                    observation: capture.observation,
                     png,
                     revision: capture.revision,
                 })
@@ -704,7 +774,7 @@ impl Client {
             Response::Error { message } => Err(io::Error::other(message)),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("expected CaptureRealm, got {other:?}"),
+                format!("expected CaptureInteractionDomain, got {other:?}"),
             )),
         }
     }
@@ -807,13 +877,163 @@ impl Client {
         title: String,
         reason: Option<String>,
     ) -> io::Result<SecretPromptResult> {
-        write_msg(&mut self.stream, &Request::PromptSecret { title, reason })?;
+        let resource = ActorResource::secret_prompt(&title, reason.as_deref());
+        let grant = self.request_resource_grant(resource, Duration::from_secs(5 * 60), 1)?;
+        write_msg(
+            &mut self.stream,
+            &Request::PromptSecret {
+                resource_grant: grant.id,
+                title,
+                reason,
+            },
+        )?;
         match read_msg::<_, Response>(&mut self.stream)? {
             Response::SecretPrompted { result } => Ok(result),
             Response::Error { message } => Err(io::Error::other(message)),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("expected SecretPrompted, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Request a short-lived, exact resource handle bound to this Actor
+    /// session. Filesystem, network, secret, and payment authorities use this
+    /// path rather than ambient booleans.
+    pub fn request_resource_grant(
+        &mut self,
+        resource: ActorResource,
+        ttl: Duration,
+        uses: u32,
+    ) -> io::Result<ResourceGrant> {
+        let ttl_ms = u64::try_from(ttl.as_millis()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "resource ttl is too large")
+        })?;
+        write_msg(
+            &mut self.stream,
+            &Request::RequestResourceGrant {
+                resource,
+                ttl_ms,
+                uses,
+            },
+        )?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::ResourceGranted { grant } => Ok(grant),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected ResourceGranted, got {other:?}"),
+            )),
+        }
+    }
+
+    pub fn consume_resource_grant(
+        &mut self,
+        id: ResourceGrantId,
+        resource: ActorResource,
+    ) -> io::Result<ResourceGrant> {
+        write_msg(
+            &mut self.stream,
+            &Request::ConsumeResourceGrant { id, resource },
+        )?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::ResourceGrantConsumed { grant } => Ok(grant),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected ResourceGrantConsumed, got {other:?}"),
+            )),
+        }
+    }
+
+    pub fn revoke_resource_grant(&mut self, id: ResourceGrantId) -> io::Result<()> {
+        write_msg(&mut self.stream, &Request::RevokeResourceGrant { id })?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::ResourceGrantRevoked {} => Ok(()),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected ResourceGrantRevoked, got {other:?}"),
+            )),
+        }
+    }
+
+    pub fn publish_accessibility_tree(
+        &mut self,
+        update: aegis_semantic::AccessibilityTreeUpdate,
+    ) -> io::Result<()> {
+        write_msg(
+            &mut self.stream,
+            &Request::PublishAccessibilityTree { update },
+        )?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::AccessibilityTreePublished {} => Ok(()),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected AccessibilityTreePublished, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Fetch kernel-process-bound windows for a trusted accessibility
+    /// provider. Ordinary window observers cannot call this endpoint.
+    pub fn accessibility_windows(
+        &mut self,
+    ) -> io::Result<Vec<aegis_semantic::AccessibilityWindowBinding>> {
+        write_msg(&mut self.stream, &Request::GetAccessibilityWindows)?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::AccessibilityWindows { windows } => Ok(windows),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected AccessibilityWindows, got {other:?}"),
+            )),
+        }
+    }
+
+    pub fn next_accessibility_action(
+        &mut self,
+        timeout: Duration,
+    ) -> io::Result<Option<aegis_semantic::SemanticActionRequest>> {
+        let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+        write_msg(
+            &mut self.stream,
+            &Request::NextAccessibilityAction { timeout_ms },
+        )?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::AccessibilityAction { request } => Ok(request),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected AccessibilityAction, got {other:?}"),
+            )),
+        }
+    }
+
+    pub fn complete_accessibility_action(
+        &mut self,
+        request_id: u64,
+        result: Result<(), String>,
+    ) -> io::Result<()> {
+        let (success, message) = match result {
+            Ok(()) => (true, None),
+            Err(message) => (false, Some(message)),
+        };
+        write_msg(
+            &mut self.stream,
+            &Request::CompleteAccessibilityAction {
+                request_id,
+                success,
+                message,
+            },
+        )?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::AccessibilityActionCompleted {} => Ok(()),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected AccessibilityActionCompleted, got {other:?}"),
             )),
         }
     }

@@ -1,7 +1,7 @@
 use super::*;
 
 use aegis_core::input::{ButtonState, TextInputEvent, TextInputState};
-use aegis_core::realm::SeatId;
+use aegis_core::interaction_domain::SeatId;
 
 const MAX_SURROUNDING_TEXT_BYTES: usize = 4_000;
 

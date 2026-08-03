@@ -216,7 +216,7 @@ pub(in crate::runtime) fn read_picked_pixel(capture: CapturedPixels) -> Result<[
         .read_pixels(&mut full_rgba)
         .map_err(|error| format!("picked-pixel copy: {error}"))?;
     // Region readback already rebases the picked rectangle to (0, 0). Keep
-    // accepting a legacy CPU crop for full-frame/Realm sources during the
+    // accepting a legacy CPU crop for full-frame/Interaction Domain sources during the
     // transition to region-capable targets.
     let (x, y) = capture.crop.map_or((0, 0), |crop| {
         (

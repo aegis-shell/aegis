@@ -8,13 +8,13 @@
 //! Current components:
 //!
 //! - [`AgentFeedback`] — trusted, non-interactive visual feedback for input
-//!   applied by an Agent Realm's independent seat.
+//!   applied by an Agent Interaction Domain's independent seat.
 //! - [`Launcher`] — a top-center toggle that expands into a centered list of
 //!   every enumerated `.desktop` entry; click a row to launch it (ADR-0022).
 //!
 //! Larger components have graduated to their own crates on top of the same
 //! contract (ADR-0021): the dock lives in `aegis-dock`, Prism in
-//! `aegis-prism`, AI Workspaces in `aegis-ai-workspaces`, the HUD in
+//! `aegis-prism`, AI Workspaces in `aegis-interaction-manager`, the HUD in
 //! `aegis-hud`, and the command panel in `aegis-command-panel`.
 
 mod agent_feedback;

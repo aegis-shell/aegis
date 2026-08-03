@@ -2,8 +2,9 @@
 //!
 //! Defining the surface here lets `clap` generate help, version, shell
 //! completions, and per-subcommand usage. The dispatcher in [`super`]
-//! matches on [`Command`] / [`RealmCmd`] instead of raw strings.
+//! matches on [`Command`] / [`InteractionDomainCmd`] instead of raw strings.
 
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use aegis_core::Rect;
@@ -36,7 +37,7 @@ impl Cli {
 }
 
 /// Top-level domains. Transport details stay internal: users address displays,
-/// windows, workspaces, notifications, Realms, and session services directly.
+/// windows, workspaces, notifications, Interaction Domains, and session services directly.
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {
     /// Start the compositor explicitly.
@@ -66,15 +67,21 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<JournalCmd>,
     },
-    /// Manage Agent Workspaces and Realm authority; lists by default.
-    Realm {
+    /// Manage Agent Workspaces and Interaction Domain authority; lists by default.
+    #[command(name = "interaction-domain")]
+    InteractionDomain {
         #[command(subcommand)]
-        command: Option<RealmCmd>,
+        command: Option<InteractionDomainCmd>,
     },
     /// Manage agent permissions and grants; lists by default.
     Permissions {
         #[command(subcommand)]
         command: Option<PermissionsCmd>,
+    },
+    /// Validate or explicitly migrate the local Aegis configuration.
+    Config {
+        #[command(subcommand)]
+        command: Option<ConfigCmd>,
     },
     /// Inspect and control immediate live-system state; shows status by default.
     System {
@@ -89,6 +96,21 @@ pub enum Command {
     Completions { shell: clap_complete::Shell },
     /// Request compositor shutdown.
     Quit,
+}
+
+/// Local configuration operations. They never contact a running compositor.
+#[derive(Debug, clap::Subcommand)]
+pub enum ConfigCmd {
+    /// Validate the current schema and every semantic configuration invariant.
+    Validate {
+        /// Configuration file; defaults to the XDG Aegis config path.
+        path: Option<PathBuf>,
+    },
+    /// Migrate a supported legacy schema after writing a durable backup.
+    Migrate {
+        /// Configuration file; defaults to the XDG Aegis config path.
+        path: Option<PathBuf>,
+    },
 }
 
 /// Commands grouped under `aegis display`. With no command, displays are
@@ -205,45 +227,48 @@ pub enum SystemCmd {
     DoNotDisturb { state: OnOff },
 }
 
-/// Subcommands grouped under `aegis realm`. They all share the
+/// Subcommands grouped under `aegis interaction-domain`. They all share the
 /// owner-only admin scope and lease negotiation in the dispatcher.
 #[derive(Debug, clap::Subcommand)]
-pub enum RealmCmd {
-    /// List the authority revision, Realms, states, seats, and controlled-window counts.
+pub enum InteractionDomainCmd {
+    /// List the authority revision, Interaction Domains, states, seats, and controlled-window counts.
     List,
-    /// Create an active agent Realm with a virtual output and pointer/keyboard seat.
+    /// Create an active agent Interaction Domain with a virtual output and pointer/keyboard seat.
     Create {
-        /// Human-readable label for the new Realm.
+        /// Human-readable label for the new Interaction Domain.
         #[arg(default_value = "AI Workspace")]
         label: String,
     },
-    /// Atomically pause a Realm and freeze its managed cgroups.
-    Pause { realm: u64 },
-    /// Resume a paused Realm and its managed cgroups.
-    Resume { realm: u64 },
-    /// Transfer the window's complete interaction group to another Realm.
+    /// Atomically pause an Interaction Domain and freeze its managed cgroups.
+    Pause { interaction_domain: u64 },
+    /// Resume a paused Interaction Domain and its managed cgroups.
+    Resume { interaction_domain: u64 },
+    /// Transfer the window's complete interaction group to another Interaction Domain.
     Transfer {
         window: u64,
-        realm: u64,
-        /// Do not retain the source Realm as a read-only observer.
+        interaction_domain: u64,
+        /// Do not retain the source Interaction Domain as a read-only observer.
         #[arg(long)]
         no_mirror: bool,
     },
     /// Launch an enumerated desktop entry through a private mount-scoped portal.
-    Launch { realm: u64, desktop_id: String },
-    /// Capture the Realm's directed virtual output atomically.
+    Launch {
+        interaction_domain: u64,
+        desktop_id: String,
+    },
+    /// Capture the Interaction Domain's directed virtual output atomically.
     Capture {
-        realm: u64,
+        interaction_domain: u64,
         /// Destination path. Defaults to a timestamped PNG in the screenshot directory.
         path: Option<String>,
         /// Capture a region instead of the full virtual output, formatted `x,y,w,h`.
         #[arg(long, value_name = "X,Y,W,H")]
         region: Option<Region>,
     },
-    /// Permanently revoke a Realm and return controlled groups to `fallback`.
+    /// Permanently revoke an Interaction Domain and return controlled groups to `fallback`.
     Revoke {
-        realm: u64,
-        /// Realm id to receive the revoked Realm's interaction groups.
+        interaction_domain: u64,
+        /// Interaction Domain id to receive the revoked domain's interaction groups.
         #[arg(default_value = "1")]
         fallback: u64,
     },
@@ -259,7 +284,7 @@ pub enum PermissionsCmd {
     Revoke {
         principal: String,
         #[arg(value_parser = op_class)]
-        op: aegis_ipc::OpClass,
+        op: aegis_ipc::ActorCapability,
     },
     /// Forget a principal: its credential dies and its grants are dropped.
     Forget { principal: String },
@@ -273,10 +298,10 @@ pub enum PermissionsCmd {
         principal: String,
         /// Operations usable immediately (comma-separated names).
         #[arg(long, value_delimiter = ',', value_parser = op_class)]
-        pregrant: Vec<aegis_ipc::OpClass>,
+        pregrant: Vec<aegis_ipc::ActorCapability>,
         /// Operations gated by the interactive runtime grant.
         #[arg(long, value_delimiter = ',', value_parser = op_class)]
-        gated: Vec<aegis_ipc::OpClass>,
+        gated: Vec<aegis_ipc::ActorCapability>,
     },
     /// Register a principal ahead of time (administrator pre-provisioning)
     /// and print the credential to plant in the agent's identity store.
@@ -284,16 +309,17 @@ pub enum PermissionsCmd {
         label: Option<String>,
         /// Operations usable immediately (comma-separated names).
         #[arg(long, value_delimiter = ',', value_parser = op_class)]
-        pregrant: Vec<aegis_ipc::OpClass>,
+        pregrant: Vec<aegis_ipc::ActorCapability>,
         /// Operations gated by the interactive runtime grant.
         #[arg(long, value_delimiter = ',', value_parser = op_class)]
-        gated: Vec<aegis_ipc::OpClass>,
+        gated: Vec<aegis_ipc::ActorCapability>,
     },
 }
 
 /// Parse an operation-family name for `permissions` arguments.
-fn op_class(value: &str) -> Result<aegis_ipc::OpClass, String> {
-    aegis_ipc::OpClass::from_name(value).ok_or_else(|| format!("unknown operation '{value}'"))
+fn op_class(value: &str) -> Result<aegis_ipc::ActorCapability, String> {
+    aegis_ipc::ActorCapability::from_name(value)
+        .ok_or_else(|| format!("unknown operation '{value}'"))
 }
 
 /// A workspace switch target: an adjacent direction or a concrete id.

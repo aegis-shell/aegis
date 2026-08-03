@@ -9,7 +9,7 @@ use std::os::fd::{FromRawFd, OwnedFd};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use aegis_lock::{AuthResult, LockAction, LockState, PresentationMode, lock_layout};
+use aegis_lock::{AuthResult, LockAction, LockState, PresentationMode};
 use identity::Identity;
 use render::{Graphics, LockRenderSurface};
 use smithay_client_toolkit::{
@@ -69,9 +69,11 @@ struct AppData {
     auth_rx: Receiver<AuthResult>,
     ready_fd: Option<OwnedFd>,
     modifiers: Modifiers,
+    active_layout: u32,
     layout_names: Vec<String>,
     touch_points: HashMap<i32, (wl_surface::WlSurface, (f64, f64))>,
     visual_progress: f32,
+    feedback_was_animating: bool,
     last_update: Instant,
     last_clock_minute: u64,
     dirty: bool,
@@ -125,9 +127,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         auth_rx,
         ready_fd,
         modifiers: Modifiers::default(),
+        active_layout: 0,
         layout_names: Vec::new(),
         touch_points: HashMap::new(),
         visual_progress: 1.0,
+        feedback_was_animating: false,
         last_update: now,
         last_clock_minute: clock_minute(),
         dirty: true,
@@ -276,7 +280,7 @@ impl AppData {
                 self.lock_state.reveal(now);
                 LockAction::None
             }
-            Keysym::BackSpace => {
+            Keysym::BackSpace | Keysym::Delete | Keysym::KP_Delete => {
                 self.lock_state.backspace(now);
                 LockAction::None
             }
@@ -315,44 +319,14 @@ impl AppData {
 
     fn pointer_activity(
         &mut self,
-        surface: &wl_surface::WlSurface,
-        position: (f64, f64),
-        submit: bool,
+        _surface: &wl_surface::WlSurface,
+        _position: (f64, f64),
+        _submit: bool,
     ) {
         let now = Instant::now();
-        let revealed = self.lock_state.reveal(now);
-        let action = if submit && self.securely_presented() && self.submit_hit(surface, position) {
-            let action = self.lock_state.submit(now);
-            Some(action)
-        } else {
-            None
-        };
-        let submitted = action
-            .as_ref()
-            .is_some_and(|action| !matches!(action, LockAction::None));
-        if let Some(action) = action {
-            self.handle_action(action);
-        }
-        if revealed || submitted {
+        if self.lock_state.reveal(now) {
             self.dirty = true;
         }
-    }
-
-    fn submit_hit(&self, surface: &wl_surface::WlSurface, position: (f64, f64)) -> bool {
-        let Some(entry) = self
-            .outputs
-            .iter()
-            .find(|entry| entry.lock.wl_surface() == surface)
-        else {
-            return false;
-        };
-        let layout = lock_layout(entry.logical_size.0 as f32, entry.logical_size.1 as f32);
-        let field_x = (layout.width - layout.field_width) * 0.5;
-        let arrow_x = field_x + layout.field_width - layout.field_height;
-        position.0 >= arrow_x as f64
-            && position.0 <= (field_x + layout.field_width) as f64
-            && position.1 >= layout.field_y as f64
-            && position.1 <= (layout.field_y + layout.field_height) as f64
     }
 
     fn securely_presented(&self) -> bool {
@@ -371,9 +345,18 @@ impl AppData {
             self.handle_action(action);
             self.dirty = true;
         }
-        if self.lock_state.tick(now) {
+        let (state_changed, action) = self.lock_state.tick(now);
+        if state_changed {
             self.dirty = true;
         }
+        self.handle_action(action);
+        let feedback_animating = self
+            .graphics
+            .feedback_animation_active(&self.lock_state, now);
+        if feedback_animating || self.feedback_was_animating {
+            self.dirty = true;
+        }
+        self.feedback_was_animating = feedback_animating;
 
         let target = if self.lock_state.presentation() == PresentationMode::Engaged {
             1.0
@@ -421,10 +404,18 @@ impl AppData {
         (self.visual_progress - target).abs() > 0.001
             || (avatar_visible && self.graphics.avatar_is_animated())
             || self.graphics.avatar_reload_pending()
+            // Authentication results arrive through a polled std channel.
+            // Keep dispatch latency bounded even when reduced motion turns
+            // the visible validation sweep into a static treatment.
+            || self.lock_state.validation_pending()
+            || self
+                .graphics
+                .feedback_animation_active(&self.lock_state, Instant::now())
     }
 
     fn render_all(&mut self) {
         self.dirty = false;
+        let now = Instant::now();
         for entry in &mut self.outputs {
             let Some(render) = &mut entry.render else {
                 continue;
@@ -434,6 +425,7 @@ impl AppData {
                 &self.lock_state,
                 &self.identity,
                 self.visual_progress,
+                now,
             ) {
                 self.fail(error.to_string());
                 break;
@@ -757,6 +749,7 @@ impl KeyboardHandler for AppData {
         layout: u32,
     ) {
         self.modifiers = modifiers;
+        self.active_layout = layout;
         let layout = self.layout_names.get(layout as usize).cloned();
         self.lock_state
             .set_keyboard_status(modifiers.caps_lock, layout);
@@ -787,11 +780,18 @@ impl KeyboardHandler for AppData {
             xkbcommon::xkb::KEYMAP_COMPILE_NO_FLAGS,
         ) else {
             self.layout_names.clear();
+            self.lock_state
+                .set_keyboard_status(self.modifiers.caps_lock, None);
+            self.dirty = true;
             return;
         };
         self.layout_names = (0..keymap.num_layouts())
             .map(|index| keymap.layout_get_name(index).to_owned())
             .collect();
+        let layout = self.layout_names.get(self.active_layout as usize).cloned();
+        self.lock_state
+            .set_keyboard_status(self.modifiers.caps_lock, layout);
+        self.dirty = true;
     }
 }
 

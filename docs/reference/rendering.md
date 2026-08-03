@@ -37,7 +37,7 @@ Every condition in this table must hold for the direct plan.
 | Geometry | Buffer transform is normal and no source or destination viewport is active |
 | Opacity | The format has no alpha channel, or the declared opaque region covers the complete logical surface |
 | Shell | No visible shell pixels, overview, window switcher, transition, or live backdrop effect requires composition |
-| Capture | No frame capture, screenshot freeze, or Realm capture is pending |
+| Capture | No frame capture, screenshot freeze, or Interaction Domain capture is pending |
 | Session | The session is unlocked and the presentation target is active |
 | Cursor | The cursor is hidden or every active output has a compatible hardware cursor plane |
 | KMS format | Every active primary plane accepts the client format and modifier |
@@ -55,7 +55,7 @@ Direct-scanout rejection telemetry uses the following stable labels.
 | Label | Meaning |
 |-------|---------|
 | `session-locked` | The lock scene owns the output |
-| `capture-pending` | Output, screenshot, or Realm capture requires a composited frame |
+| `capture-pending` | Output, screenshot, or Interaction Domain capture requires a composited frame |
 | `screenshot-freeze` | A screenshot freeze session owns the visible frame |
 | `surface-transition` | A client-surface transition is active |
 | `overview` | Overview mode is visible |

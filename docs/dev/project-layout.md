@@ -9,22 +9,26 @@ Where code lives and where new files belong. For the conceptual design, see
 aegis/
   Cargo.toml            workspace
   crates/
-    aegis-core/          shared model: geometry, surface tree, outputs, focus, apps
-    aegis-protocols/     shared generated Wayland protocol interface tables
+    aegis-core/          shared model: geometry, semantics, Interaction Domains, outputs, focus, apps
+    aegis-authority/     transport-neutral Actor capabilities, identities, observations, transactions
+    aegis-semantic/      validated application accessibility trees and semantic action routing
+    aegis-audit/         bounded projection and hash-chained durable event persistence
+    aegis-wayland-protocols/     shared generated Wayland protocol interface tables
     aegis-compositor/        Wayland server: socket, globals, object lifecycle
     aegis-backend/       presentation + input targets (nested, DRM/KMS + libinput + libseat)
     aegis-render/        compositing through flux
     aegis-shell/         compositor chrome host and contract through lens
     aegis-dock/          bottom-center dock chrome component
     aegis-prism/         compact application-search chrome component
-    aegis-ai-workspaces/  Agent Realm lifecycle and authority UI
+    aegis-interaction-manager/  Agent Interaction Domain lifecycle and authority UI
     aegis-settings/       standalone modular System Settings application
+    aegis-atspi/          supervised out-of-process AT-SPI semantic adapter
     aegis-hud/           display-only HUD status chips (system status, workspace dots, clock, SNI tray)
     aegis-command-panel/ full-screen modal command panel (quick settings, tray, notifications)
     aegis-wallpaper/     image, video, 3D, and parallax background layer
     aegis-avatar/        user-avatar loading and rendering: still images and VRM models
     aegis-config/        TOML schema, typed atomic persistence, loader, live reload
-    aegis-ipc/           versioned IPC and introspection over a unix socket
+    aegis-ipc/           Actor capability broker and introspection over a unix socket
     aegis-commands/    domain command parser and IPC dispatcher (lib-only)
     aegis-agent/         the in-tree agent runtime CLI (`aegis-agent`), internal persona: fuji (宓姬)
 
@@ -53,22 +57,26 @@ compatible Aegis tag; none of its crates are workspace members here. See
 
 | Crate | Purpose | Design reference |
 |-------|---------|------------------|
-| [`aegis-core`](../../crates/aegis-core/README.md) | Backend- and renderer-agnostic types | [ADR-0001](../adr/0001-scope-and-responsibility-boundary.md) |
-| [`aegis-protocols`](../../crates/aegis-protocols/README.md) | Shared generated Wayland protocol tables for client and server | [ADR-0002](../adr/0002-hand-rolled-wayland-server.md) |
+| [`aegis-core`](../../crates/aegis-core/README.md) | Backend- and renderer-agnostic geometry, semantic, Interaction Domain, and authority types | [ADR-0001](../adr/0001-scope-and-responsibility-boundary.md), [ADR-0102](../adr/0102-actor-scoped-semantic-observation-and-transactional-actions.md) |
+| [`aegis-authority`](../../crates/aegis-authority/README.md) | Transport-neutral Actor capabilities, live bindings, identity profiles, observation leases, and action preconditions | [ADR-0103](../adr/0103-actor-authority-and-interaction-domain-architecture.md) |
+| [`aegis-semantic`](../../crates/aegis-semantic/README.md) | Bounded accessibility-tree validation, window-local identity namespacing, provider ownership, and semantic action routing | [ADR-0104](../adr/0104-actor-sessions-resource-grants-and-accessibility-adapter.md) |
+| [`aegis-audit`](../../crates/aegis-audit/README.md) | Bounded live event projection and owner-only, hash-chained durable event store | [ADR-0104](../adr/0104-actor-sessions-resource-grants-and-accessibility-adapter.md) |
+| [`aegis-wayland-protocols`](../../crates/aegis-wayland-protocols/README.md) | Shared generated Wayland protocol tables for client and server | [ADR-0002](../adr/0002-hand-rolled-wayland-server.md) |
 | [`aegis-compositor`](../../crates/aegis-compositor/README.md) | Wayland server socket, globals, and object lifecycle | [ADR-0002](../adr/0002-hand-rolled-wayland-server.md) |
 | [`aegis-backend`](../../crates/aegis-backend/README.md) | The `Backend` trait and its implementations | [ADR-0002](../adr/0002-hand-rolled-wayland-server.md), [ADR-0003](../adr/0003-nested-first-bring-up.md) |
 | [`aegis-render`](../../crates/aegis-render/README.md) | Client buffers to flux textures, scene to output | [ADR-0004](../adr/0004-client-buffers-via-flux-dmabuf-import.md) |
 | [`aegis-shell`](../../crates/aegis-shell/README.md) | Chrome host, `Chrome` contract, and shared components on lens | [ADR-0021](../adr/0021-chrome-component-trait.md) |
 | [`aegis-dock`](../../crates/aegis-dock/README.md) | Bottom-center dock chrome component | [ADR-0019](../adr/0019-dock-as-bottom-center-overlay.md), [ADR-0021](../adr/0021-chrome-component-trait.md) |
 | [`aegis-prism`](../../crates/aegis-prism/README.md) | Compact Spotlight-style application search component | [ADR-0021](../adr/0021-chrome-component-trait.md), [ADR-0044](../adr/0044-dock-and-control-center-crates.md) |
-| [`aegis-ai-workspaces`](../../crates/aegis-ai-workspaces/README.md) | Compositor-owned Agent Realm lifecycle and authority UI | [ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md) |
+| [`aegis-interaction-manager`](../../crates/aegis-interaction-manager/README.md) | Compositor-owned Agent Interaction Domain lifecycle and authority UI | [ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md) |
 | [`aegis-settings`](../../crates/aegis-settings/README.md) | Standalone modular System Settings application | [ADR-0069](../adr/0069-documentation-owned-installation-and-throwaway-development-staging.md) |
+| [`aegis-atspi`](../../crates/aegis-atspi/README.md) | Supervised out-of-process AT-SPI semantic observation and action adapter | [ADR-0104](../adr/0104-actor-sessions-resource-grants-and-accessibility-adapter.md) |
 | [`aegis-hud`](../../crates/aegis-hud/README.md) | Display-only HUD status chips with the StatusNotifierItem tray row | [ADR-0080](../adr/0080-hud-status-chips-and-sao-command-panel.md), [ADR-0081](../adr/0081-hud-and-command-panel-naming.md) |
 | [`aegis-command-panel`](../../crates/aegis-command-panel/README.md) | Full-screen modal command panel: quick settings, tray activation, and notifications | [ADR-0080](../adr/0080-hud-status-chips-and-sao-command-panel.md), [ADR-0081](../adr/0081-hud-and-command-panel-naming.md) |
 | [`aegis-wallpaper`](../../crates/aegis-wallpaper/README.md) | Image, video, 3D, and parallax background layer | [ADR-0018](../adr/0018-wallpaper-crate.md), [ADR-0092](../adr/0092-explicit-wallpaper-modes-and-continuous-parallax.md) |
 | [`aegis-avatar`](../../crates/aegis-avatar/README.md) | User-avatar loading and rendering: still images and VRM models | [ADR-0080](../adr/0080-avatar-crate-xdg-conformant-vrm-aware.md) |
 | [`aegis-config`](../../crates/aegis-config/README.md) | Versioned TOML schema, typed atomic persistence, loader, and mtime-based live reload | [ADR-0026](../adr/0026-configuration-system.md) |
-| [`aegis-ipc`](../../crates/aegis-ipc/README.md) | Versioned schema and codec over a unix socket; the extension/automation surface | [ADR-0027](../adr/0027-ipc-and-introspection.md) |
+| [`aegis-ipc`](../../crates/aegis-ipc/README.md) | Versioned Actor identity, capability, semantic observation, action, and audit protocol over a unix socket | [ADR-0027](../adr/0027-ipc-and-introspection.md), [ADR-0102](../adr/0102-actor-scoped-semantic-observation-and-transactional-actions.md) |
 | [`aegis-commands`](../../crates/aegis-commands/README.md) | Domain command parser, IPC dispatcher, and output formatter; no installed binary | [ADR-0093](../adr/0093-unified-domain-oriented-aegis-command-surface.md) |
 | [`aegis-mcp`](../../crates/aegis-mcp/README.md) | The platform's scoped MCP bridge for any agent (`aegis-mcp`) | [ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md), [ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md) |
 | [`aegis-agent`](../../crates/aegis-agent/README.md) | Aegis agent runtime: self-contained agent CLI (`aegis-agent`), internal persona fuji | [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md), [ADR-0089](../adr/0089-aegis-agent-product-and-fuji-identity-rename.md) |
@@ -93,16 +101,24 @@ compatible Aegis tag; none of its crates are workspace members here. See
   configuration file or call its backing service. Compositor-owned settings
   use revisioned `aegis-ipc` transactions. System-owned settings use a separate
   authorized service adapter.
-- TOML parsing, schema validation, comment-preserving typed edits, and atomic
-  replacement belong in `aegis-config`. Authorization, live application, and
-  serialization of concurrent edits belong in the compositor runtime.
+- TOML parsing, schema validation, explicit comment-preserving migrations,
+  typed edits, and atomic replacement belong in `aegis-config`.
+  Authorization, live application, and serialization of concurrent edits
+  belong in the compositor runtime.
 - A rendering or texture capability missing from flux is added to flux, not
   worked around in aegis; see
   [ADR-0001](../adr/0001-scope-and-responsibility-boundary.md).
 - Generic agent execution and product policy belong in `aegis-agent`, the
   self-contained runtime whose internal persona remains fuji. Aegis-specific
-  capability borrowing and Realm adaptation belong in the separately
+  capability borrowing and Interaction Domain adaptation belong in the separately
   launched `aegis-mcp` process, never in the agent or compositor binary.
+- Actor capability vocabulary, sessions, exact resource grants, observation
+  leases, and action preconditions belong in `aegis-authority`. Untrusted
+  accessibility graph validation belongs in `aegis-semantic`; AT-SPI and
+  toolkit calls belong in `aegis-atspi`; generic durable event persistence
+  belongs in `aegis-audit`; wire framing belongs in `aegis-ipc`; and effect
+  commit belongs at the compositor boundary. Agent plans and long-term memory
+  do not enter any of those crates.
 - Cross-binding pointer casts (between the `flux` and `lens` `flux_*`
   types) stay localized at the call seam, not spread through the code.
 

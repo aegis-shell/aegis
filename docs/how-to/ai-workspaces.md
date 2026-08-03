@@ -3,6 +3,10 @@
 Agent Workspaces isolate an agent's pointer, keyboard, focus, rendering, and
 application process tree from the physical desktop.
 
+“Agent Workspace” is the product term shown in the UI. Each workspace is
+backed by an `InteractionDomain`, the compositor's security and routing
+primitive; it is not a normal desktop workspace.
+
 ## Create a Workspace
 
 1. Open **Agent Workspaces** from the application launcher (`Super+A`).
@@ -16,25 +20,25 @@ portal.
 The command-line equivalent is:
 
 ```bash
-aegis realm create "Research"
-aegis realm list
+aegis interaction-domain create "Research"
+aegis interaction-domain list
 ```
 
 ## Transfer a Running Window
 
 1. Press `Super+O` to open Overview.
-2. Drag a window thumbnail to an active Realm on the right shelf.
-3. Release the pointer over the Realm.
+2. Drag a window thumbnail to an active Interaction Domain on the right shelf.
+3. Release the pointer over the Interaction Domain.
 
 aegis transfers the window's complete interaction group in one transaction.
-The agent Realm becomes the only input authority. The physical desktop keeps
+The agent Interaction Domain becomes the only input authority. The physical desktop keeps
 a read-only mirror by default, so the window stays visible but does not
 receive physical clicks or keystrokes. The mirror is also an input barrier:
 clicks do not pass through it to a window underneath.
 
-Identify the mirror by its subdued guard and Realm status label. Hover over
+Identify the mirror by its subdued guard and Interaction Domain status label. Hover over
 it to see the `not-allowed` cursor. The guard remains visible between Agent
-operations and while the Realm is paused; the Agent's short-lived movement,
+operations and while the Interaction Domain is paused; the Agent's short-lived movement,
 click, scroll, or keyboard feedback appears separately above it.
 
 Drag the mirror to **Physical desktop** in Overview to return control.
@@ -42,102 +46,120 @@ Drag the mirror to **Physical desktop** in Overview to return control.
 Use the CLI when the graphical shell is unavailable:
 
 ```bash
-aegis realm transfer 42 2
-aegis realm transfer 42 1
+aegis interaction-domain transfer 42 2
+aegis interaction-domain transfer 42 1
 ```
 
 Add `--no-mirror` to remove the source presentation after transfer.
 
 ## Launch an Isolated Application
 
-Run aegis through the packaged systemd user service. Realm launches require
+Run aegis through the packaged systemd user service. Interaction Domain launches require
 delegated `cpu`, `memory`, and `pids` cgroup v2 controllers; starting aegis
 directly from a shared terminal scope keeps desktop use available but makes
-Realm application launch fail closed.
+Interaction Domain application launch fail closed.
 
 ```bash
 systemctl --user daemon-reload
 systemctl --user start aegis.service
 ```
 
-Launch a desktop entry directly inside a Realm when the application process
+Launch a desktop entry directly inside an Interaction Domain when the application process
 also needs isolation:
 
 ```bash
-aegis realm launch 2 org.mozilla.firefox.desktop
+aegis interaction-domain launch 2 org.mozilla.firefox.desktop
 ```
 
 The new window appears on the physical desktop as the same guarded read-only
-mirror used for transferred windows. The Agent Realm's independent seat owns
+mirror used for transferred windows. The Agent Interaction Domain's independent seat owns
 its pointer, keyboard, focus, modifiers, and grabs from the first toplevel.
 Physical clicks, typing, window gestures, and Dock window actions cannot
 operate it. Return control by opening Overview and dragging the mirror to
 **Physical desktop**.
 
-Realm launches deny network and host-file access by default. They expose only
+Interaction Domain launches deny network and host-file access. They expose only
 the sandbox's mount-scoped Wayland portal and GPU render nodes, and run
 without Linux capabilities in isolated user, mount, PID, IPC, UTS, cgroup,
 and network namespaces. The host must provide `/usr/bin/bwrap`.
 
-Grant only the capabilities one desktop entry needs in
+Set only the resource budget one desktop entry needs in
 `~/.config/aegis/config.toml`:
 
 ```toml
-[realm_sandbox]
+[interaction_domain_sandbox]
 memory_max_mib = 8192
 pids_max = 1024
 cpu_weight = 100
 
-[[realm_sandbox.app]]
+[[interaction_domain_sandbox.app]]
 desktop_id = "org.mozilla.firefox.desktop"
-network = true
-readable_paths = ["/home/alice/Research"]
-writable_paths = ["/home/alice/Downloads"]
+memory_max_mib = 4096
 ```
 
-These grants apply to new launches. Revoke and relaunch an existing sandbox
-after narrowing its policy.
+Host network sharing and static host-path mounts are intentionally not
+configurable. They would be ambient application authority and could not
+enforce an exact Actor capability such as `https://amazon.com` or one file.
+Resource-aware services must instead consume a short-lived, exact grant bound
+to the requesting Actor session.
 
 Transferring an already running window changes compositor input and
 presentation authority. It cannot retroactively place that existing process
-inside Linux namespaces. Relaunch the application with `realm launch` when
+inside Linux namespaces. Relaunch the application with `interaction-domain launch` when
 process, filesystem, or network isolation is required.
 
 ## Observe a Workspace
 
+Agents should read semantic state before requesting pixels. In `aegis-mcp`,
+call `interaction_domain_observe` to receive the Interaction Domain's compositor-owned window objects
+and a short-lived observation token. Each object includes a stable semantic
+id, state, declared actions, bounds, target-local size, and revision.
+
+To act, pass that single-use token to `interaction_domain_input` with the selected
+semantic target and bounded actions. The compositor consumes the token and aborts
+the complete batch if the connection, principal, Interaction Domain authority, semantic
+target, seat, or coordinates changed. Obtain a new observation before every
+dependent action. A successful response contains a committed action receipt;
+a queued response or old screenshot is not sufficient evidence.
+
 Capture the directed virtual output without exposing physical-desktop chrome
-or another Realm:
+or another Interaction Domain:
 
 ```bash
-aegis realm capture 2
-aegis realm capture 2 /tmp/research.png
+aegis interaction-domain capture 2
+aegis interaction-domain capture 2 /tmp/research.png
 ```
 
-Realm captures are refused while the session is locked, the seat is inactive,
-or the Realm is paused or revoked. In-flight captures are invalidated when
-the security state changes.
+Interaction Domain captures are refused while the session is locked, the seat is inactive,
+or the Interaction Domain is paused or revoked. In-flight captures are invalidated when
+the security state changes. A capture includes a correlated semantic
+observation token, but pixel access remains a separate capability and is a
+fallback for applications whose internal controls are not semantically
+available. Pixels and coordinates alone never authorize input.
 
-Long-running observers can use `aegis events`. A `RealmDamaged` event
-identifies the changed Realm and virtual-output damage; request
-`aegis realm capture` only after that event instead of polling continuously.
+Trusted local operators can use `aegis events`. An `InteractionDomainDamaged` event
+identifies the changed Interaction Domain and virtual-output damage; request
+`aegis interaction-domain capture` only after that event instead of polling continuously.
+Authenticated Actors use filtered snapshot and journal polling until a
+principal- and resource-filtered push lane is available.
 
 ## Pause or Revoke a Workspace
 
 Use **Pause** in Agent Workspaces, or run:
 
 ```bash
-aegis realm pause 2
-aegis realm resume 2
+aegis interaction-domain pause 2
+aegis interaction-domain resume 2
 ```
 
-Pausing disables the Realm seat and freezes every compositor-managed sandbox
+Pausing disables the Interaction Domain seat and freezes every compositor-managed sandbox
 cgroup. Session lock and an inactive virtual terminal apply the same
 suspension automatically.
 
 Use **Revoke**, confirm the destructive action, or run:
 
 ```bash
-aegis realm revoke 2
+aegis interaction-domain revoke 2
 ```
 
 Revocation is permanent. It transfers controlled interaction groups back to
@@ -154,12 +176,12 @@ create a second application instance.
 
 An application does not need multi-seat support: aegis conservatively places
 all toplevels owned by one Wayland client connection in one interaction group,
-and that complete group has one controlling Realm at a time. Native multi-seat
+and that complete group has one controlling Interaction Domain at a time. Native multi-seat
 behavior is detected only so seat resources can be routed correctly; aegis does
-not automatically split one client connection across Realms. A sandbox portal
+not automatically split one client connection across Interaction Domains. A sandbox portal
 supports multiple Wayland connections made by one multi-process application
 instance; that transport behavior is separate from multi-seat input.
 
-See the [Configuration Reference](../reference/config.md#realm-sandbox) for
-launch policy and the [IPC Reference](../reference/ipc.md#realm-authority)
-for Realm transactions, output limits, leases, and scope rules.
+See the [Configuration Reference](../reference/config.md#interaction-domain-sandbox) for
+launch policy and the [IPC Reference](../reference/ipc.md#interaction-domain-authority)
+for Interaction Domain transactions, output limits, leases, and scope rules.

@@ -8,8 +8,8 @@ use aegis_ipc::{Handler, Server};
 struct EntryHandler;
 
 impl Handler for EntryHandler {
-    fn policy_caps(&self) -> aegis_ipc::Capabilities {
-        aegis_ipc::Capabilities::QUERY
+    fn policy_caps(&self) -> aegis_ipc::ConnectionCapabilities {
+        aegis_ipc::ConnectionCapabilities::QUERY
     }
 
     fn windows(&self) -> Vec<Window> {
@@ -41,7 +41,7 @@ impl Handler for EntryHandler {
         }
     }
 
-    fn command(&self, _conn_id: u64, _command: aegis_ipc::Command) {}
+    fn command(&self, _conn_id: u64, _subject: Option<&str>, _command: aegis_ipc::Command) {}
 }
 
 #[test]

@@ -8,7 +8,7 @@
 //! [`Shell::add`], and renders itself each frame from the shared snapshot
 //! and input. Larger components live in their own crates on top of the same
 //! contract (the dock in `aegis-dock`, Prism in `aegis-prism`, AI Workspaces
-//! in `aegis-ai-workspaces`, the HUD in `aegis-hud`, and the command panel
+//! in `aegis-interaction-manager`, the HUD in `aegis-hud`, and the command panel
 //! in `aegis-command-panel`). Adding
 //! or removing a chrome surface is a component change, not a core change.
 //!
@@ -50,7 +50,9 @@ pub use text::{ellipsize, truncate};
 pub const HUD_HEIGHT: f32 = 32.0;
 
 use aegis_core::app::{ApplicationTarget, BuiltInApplication, Entry};
-use aegis_core::realm::{RealmId, RealmSnapshot, RealmState};
+use aegis_core::interaction_domain::{
+    InteractionDomainId, InteractionDomainSnapshot, InteractionDomainState,
+};
 use aegis_core::window::Window;
 use aegis_core::workspace::WorkspaceSnapshot;
 
@@ -58,15 +60,15 @@ use aegis_core::workspace::WorkspaceSnapshot;
 /// compositor chrome for the physical user.
 ///
 /// This is deliberately presentation-only: it grants no authority, carries
-/// no key contents, and is never part of an Agent Realm capture.
+/// no key contents, and is never part of an Agent Interaction Domain capture.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentActivity {
     /// Monotonic compositor-local ordering token.
     pub sequence: u64,
-    /// Realm whose independent logical seat applied the operation.
-    pub realm: RealmId,
-    /// Human-readable Realm label captured with the operation.
-    pub realm_label: String,
+    /// Interaction Domain whose independent logical seat applied the operation.
+    pub interaction_domain: InteractionDomainId,
+    /// Human-readable Interaction Domain label captured with the operation.
+    pub interaction_domain_label: String,
     /// Toplevel that received the operation.
     pub window: aegis_core::window::WindowId,
     /// Applied compositor-global pointer position, when applicable.
@@ -250,28 +252,28 @@ pub enum WindowAction {
     Close(aegis_core::window::WindowId),
 }
 
-/// Trusted Realm-management intent emitted by compositor-owned chrome.
+/// Trusted Interaction Domain-management intent emitted by compositor-owned chrome.
 ///
 /// The shell never mutates compositor authority directly. The main loop
-/// translates these values into the same optimistic Realm transactions used
+/// translates these values into the same optimistic Interaction Domain transactions used
 /// by IPC clients, preserving one validation and commit path.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RealmIntent {
+pub enum InteractionDomainIntent {
     Create {
         label: String,
     },
     SetState {
-        realm: RealmId,
-        state: RealmState,
+        interaction_domain: InteractionDomainId,
+        state: InteractionDomainState,
         expected_revision: u64,
     },
     Revoke {
-        realm: RealmId,
+        interaction_domain: InteractionDomainId,
         expected_revision: u64,
     },
     TransferWindow {
         window: aegis_core::window::WindowId,
-        target: RealmId,
+        target: InteractionDomainId,
         retain_source_as_observer: bool,
         expected_revision: u64,
     },
@@ -369,9 +371,9 @@ pub struct ChromeEvents {
     /// Drained by the main loop, which updates `[dock] pinned` in the config
     /// and refreshes the dock catalog.
     pub dock_pin_actions: Vec<PinAction>,
-    /// Ordered Realm lifecycle and authority mutations requested by trusted
+    /// Ordered Interaction Domain lifecycle and authority mutations requested by trusted
     /// shell surfaces.
-    pub realm_intents: Vec<RealmIntent>,
+    pub interaction_domain_intents: Vec<InteractionDomainIntent>,
 }
 
 impl ChromeEvents {
@@ -456,9 +458,9 @@ pub trait Chrome {
     /// presentation copy so the render trait remains focused on frame data.
     fn update_resource_stats(&mut self, _stats: &ResourceStats) {}
 
-    /// Receive the complete Realm authority snapshot. Only trusted
+    /// Receive the complete Interaction Domain authority snapshot. Only trusted
     /// compositor-owned components consume this high-level state.
-    fn update_realms(&mut self, _snapshot: &RealmSnapshot) {}
+    fn update_interaction_domains(&mut self, _snapshot: &InteractionDomainSnapshot) {}
 
     /// Receive one Agent input operation after the compositor successfully
     /// applied it. Components must treat this as ephemeral presentation data,
@@ -808,7 +810,7 @@ pub struct Shell {
     i18n: Localizer,
     system_status: SystemStatus,
     resource_stats: ResourceStats,
-    realms: RealmSnapshot,
+    interaction_domains: InteractionDomainSnapshot,
     /// The most recently pushed host application catalog, seeded into every
     /// registered component (including ones added later) by [`Shell::add`].
     catalog: AppCatalog,
@@ -844,7 +846,8 @@ impl Shell {
                 i18n: Localizer::from_env(),
                 system_status: SystemStatus::default(),
                 resource_stats: ResourceStats::default(),
-                realms: aegis_core::realm::RealmModel::new().snapshot(),
+                interaction_domains: aegis_core::interaction_domain::InteractionDomainModel::new()
+                    .snapshot(),
                 catalog: AppCatalog::default(),
                 events: ChromeEvents::default(),
                 components: Vec::new(),
@@ -859,7 +862,7 @@ impl Shell {
     pub fn add(&mut self, mut component: Box<dyn Chrome>) {
         component.update_system_status(&self.system_status);
         component.update_resource_stats(&self.resource_stats);
-        component.update_realms(&self.realms);
+        component.update_interaction_domains(&self.interaction_domains);
         component.set_reduced_motion(self.reduced_motion);
         component.update_app_catalog(&self.catalog);
         component.update_windows(&self.windows);
@@ -975,12 +978,12 @@ impl Shell {
         }
     }
 
-    /// Replace the Realm authority snapshot and notify the overview and
+    /// Replace the Interaction Domain authority snapshot and notify the overview and
     /// AI Workspaces before their next frame.
-    pub fn set_realms(&mut self, snapshot: RealmSnapshot) {
-        self.realms = snapshot;
+    pub fn set_interaction_domains(&mut self, snapshot: InteractionDomainSnapshot) {
+        self.interaction_domains = snapshot;
         for component in self.components.iter_mut() {
-            component.update_realms(&self.realms);
+            component.update_interaction_domains(&self.interaction_domains);
         }
     }
 
@@ -1002,9 +1005,9 @@ impl Shell {
         std::mem::take(&mut self.events.dock_pin_actions)
     }
 
-    /// Drain trusted Realm-management intents in UI order.
-    pub fn take_realm_intents(&mut self) -> Vec<RealmIntent> {
-        std::mem::take(&mut self.events.realm_intents)
+    /// Drain trusted Interaction Domain-management intents in UI order.
+    pub fn take_interaction_domain_intents(&mut self) -> Vec<InteractionDomainIntent> {
+        std::mem::take(&mut self.events.interaction_domain_intents)
     }
 
     /// Drain the workspace id the chrome asked to switch to this frame, if

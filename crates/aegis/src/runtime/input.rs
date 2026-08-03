@@ -101,9 +101,9 @@ fn append_c_text(dst: &mut [std::os::raw::c_char], src: &[std::os::raw::c_char])
     dst[dst_len + copied] = 0;
 }
 
-fn agent_activities_from_applied_input(
-    realm: aegis_core::realm::RealmId,
-    realm_label: &str,
+pub(super) fn agent_activities_from_applied_input(
+    interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+    interaction_domain_label: &str,
     window: aegis_core::window::WindowId,
     actions: &[aegis_core::input::SyntheticInputAction],
     events: &[aegis_core::input::InputEvent],
@@ -147,8 +147,8 @@ fn agent_activities_from_applied_input(
             *sequence = sequence.saturating_add(1);
             Some(aegis_shell::AgentActivity {
                 sequence: *sequence,
-                realm,
-                realm_label: realm_label.to_owned(),
+                interaction_domain,
+                interaction_domain_label: interaction_domain_label.to_owned(),
                 window,
                 position,
                 kind,
@@ -551,14 +551,15 @@ impl CompositorRuntime {
             self.shell.finish_window_switcher();
             self.server.cancel_window_switcher();
         }
-        let realm_revision = self.server.realm_snapshot().revision;
-        for (realm, damage) in self.server.take_realm_damage() {
-            self.realm_damage_sequence = self.realm_damage_sequence.saturating_add(1);
+        let interaction_domain_revision = self.server.interaction_domain_snapshot().revision;
+        for (interaction_domain, damage) in self.server.take_interaction_domain_damage() {
+            self.interaction_domain_damage_sequence =
+                self.interaction_domain_damage_sequence.saturating_add(1);
             if let Some(ipc) = &self.ipc {
-                ipc.broadcast(aegis_ipc::Event::RealmDamaged {
-                    realm,
-                    sequence: self.realm_damage_sequence,
-                    revision: realm_revision,
+                ipc.broadcast(aegis_ipc::Event::InteractionDomainDamaged {
+                    interaction_domain,
+                    sequence: self.interaction_domain_damage_sequence,
+                    revision: interaction_domain_revision,
                     damage,
                 });
             }
@@ -1034,67 +1035,6 @@ impl CompositorRuntime {
                         }
                     }
                 }
-                aegis_ipc::Command::InjectRealmInput { realm, id, actions } => {
-                    let realm_snapshot = self.server.realm_snapshot();
-                    let realm_label = realm_snapshot
-                        .realms
-                        .iter()
-                        .find(|candidate| candidate.id == *realm)
-                        .map(|candidate| candidate.label.clone())
-                        .unwrap_or_else(|| format!("Realm {}", realm.0));
-                    let seat = realm_snapshot
-                        .seats
-                        .iter()
-                        .find(|seat| seat.realm == *realm && seat.enabled)
-                        .map(|seat| seat.id);
-                    let Some(seat) = seat else {
-                        journal_effect_and_broadcast(
-                            &self.journal,
-                            &self.ipc,
-                            ts,
-                            origin,
-                            cmd.clone(),
-                            aegis_ipc::Effect::Refused {
-                                reason: "realm has no active seat".into(),
-                            },
-                        );
-                        continue;
-                    };
-                    let Some(events) = self
-                        .server
-                        .prepare_agent_synthetic_input(seat, *id, actions)
-                    else {
-                        journal_effect_and_broadcast(
-                            &self.journal,
-                            &self.ipc,
-                            ts,
-                            origin,
-                            cmd.clone(),
-                            aegis_ipc::Effect::Refused {
-                                reason: "invalid, stale, or unauthorized realm target".into(),
-                            },
-                        );
-                        continue;
-                    };
-                    match self.server.forward_agent_input_to(seat, *id, &events) {
-                        Ok(()) => {
-                            for activity in agent_activities_from_applied_input(
-                                *realm,
-                                &realm_label,
-                                *id,
-                                actions,
-                                &events,
-                                &mut self.agent_activity_sequence,
-                            ) {
-                                self.shell.report_agent_activity(activity);
-                            }
-                            aegis_ipc::Effect::Applied
-                        }
-                        Err(error) => aegis_ipc::Effect::Refused {
-                            reason: error.to_string(),
-                        },
-                    }
-                }
                 _ => unreachable!(),
             };
             journal_effect_and_broadcast(&self.journal, &self.ipc, ts, origin, cmd, effect);
@@ -1248,7 +1188,7 @@ impl CompositorRuntime {
                 .inset(self.server.output_logical_rect()),
         );
 
-        for request in self.realm_capture_rx.try_iter() {
+        for request in self.interaction_domain_capture_rx.try_iter() {
             if self.server.session_locked() || !self.host.is_active() {
                 let _ = request
                     .reply
@@ -1261,21 +1201,36 @@ impl CompositorRuntime {
                     .send(Err("another capture is still being processed".into()));
                 continue;
             }
-            match begin_realm_capture(
-                &mut self.realm_render_targets,
+            match begin_interaction_domain_capture(
+                &mut self.interaction_domain_render_targets,
                 &self.device,
                 &mut self.renderer,
                 &self.server,
-                request.realm,
+                request.interaction_domain,
                 request.region,
                 self.capture_worker.security_generation(),
             ) {
                 Ok(prepared) => {
-                    self.pending_realm_capture = Some(PendingRealmCapture {
-                        readback: prepared.readback,
-                        context: prepared.context,
-                        reply: request.reply,
-                    });
+                    let mut context = prepared.context;
+                    match self.observations.issue_bounded(
+                        request.actor,
+                        context.semantic.clone(),
+                        request.max_observations,
+                    ) {
+                        Ok(observation) => {
+                            context.observation = Some(observation);
+                            self.pending_interaction_domain_capture =
+                                Some(PendingInteractionDomainCapture {
+                                    readback: prepared.readback,
+                                    context,
+                                    reply: request.reply,
+                                });
+                        }
+                        Err(reason) => {
+                            self.capture_worker.release();
+                            let _ = request.reply.send(Err(reason));
+                        }
+                    }
                 }
                 Err(reason) => {
                     self.capture_worker.release();
@@ -1300,7 +1255,7 @@ mod tests {
     use super::*;
     use aegis_core::Point;
     use aegis_core::input::{ButtonState, InputEvent, SyntheticInputAction};
-    use aegis_core::realm::RealmId;
+    use aegis_core::interaction_domain::InteractionDomainId;
     use aegis_core::window::WindowId;
 
     fn frame(input: aegis_shell::Input, had_input: bool) -> FrameState {
@@ -1411,7 +1366,7 @@ mod tests {
         ];
         let mut sequence = 40;
         let feedback = agent_activities_from_applied_input(
-            RealmId(7),
+            InteractionDomainId(7),
             "Fuji",
             WindowId(42),
             &actions,
@@ -1441,7 +1396,7 @@ mod tests {
         }];
         let mut sequence = 3;
         let feedback = agent_activities_from_applied_input(
-            RealmId(7),
+            InteractionDomainId(7),
             "Fuji",
             WindowId(42),
             &actions,

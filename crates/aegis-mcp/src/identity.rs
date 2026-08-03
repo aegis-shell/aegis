@@ -9,15 +9,33 @@
 use std::io::Write as _;
 use std::path::PathBuf;
 
-use crate::realm::scope_key;
+use crate::interaction_domain::scope_key;
 
 const IDENTITY_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct StoredIdentity {
     version: u32,
     principal: String,
     credential: String,
+}
+
+impl std::fmt::Debug for StoredIdentity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StoredIdentity")
+            .field("version", &self.version)
+            .field("principal", &self.principal)
+            .field("credential", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for StoredIdentity {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        self.credential.zeroize();
+    }
 }
 
 /// A loaded pairing identity plus its persistence location.
@@ -37,10 +55,7 @@ impl IdentityStore {
             };
         };
         let path = dir.join(format!("identity-{}.json", scope_key(key)));
-        let identity = std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<StoredIdentity>(&bytes).ok())
-            .filter(|identity| identity.version == IDENTITY_VERSION);
+        let identity = read_identity(&path).ok().flatten();
         Self {
             path: Some(path),
             identity: std::sync::Mutex::new(identity),
@@ -104,6 +119,7 @@ impl IdentityStore {
 
 fn persist(path: &PathBuf, identity: &StoredIdentity) -> Result<(), String> {
     use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+    use zeroize::Zeroize as _;
     let parent = path
         .parent()
         .ok_or_else(|| format!("{} has no parent", path.display()))?;
@@ -111,14 +127,14 @@ fn persist(path: &PathBuf, identity: &StoredIdentity) -> Result<(), String> {
         .map_err(|error| format!("create {}: {error}", parent.display()))?;
     std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
         .map_err(|error| format!("protect {}: {error}", parent.display()))?;
-    let bytes = serde_json::to_vec_pretty(identity).map_err(|error| error.to_string())?;
     let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
     match std::fs::remove_file(&tmp) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("remove stale {}: {error}", tmp.display())),
     }
-    {
+    let mut bytes = serde_json::to_vec_pretty(identity).map_err(|error| error.to_string())?;
+    let write_result = (|| {
         let mut handle = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -130,14 +146,63 @@ fn persist(path: &PathBuf, identity: &StoredIdentity) -> Result<(), String> {
             .map_err(|error| format!("write {}: {error}", tmp.display()))?;
         handle
             .sync_all()
-            .map_err(|error| format!("sync {}: {error}", tmp.display()))?;
-    }
+            .map_err(|error| format!("sync {}: {error}", tmp.display()))
+    })();
+    bytes.zeroize();
+    write_result?;
     std::fs::rename(&tmp, path).map_err(|error| format!("replace {}: {error}", path.display()))?;
     let parent_handle = std::fs::File::open(parent)
         .map_err(|error| format!("open {}: {error}", parent.display()))?;
     parent_handle
         .sync_all()
         .map_err(|error| format!("sync {}: {error}", parent.display()))
+}
+
+fn read_identity(path: &std::path::Path) -> Result<Option<StoredIdentity>, String> {
+    use std::io::Read as _;
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
+    use zeroize::Zeroize as _;
+
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("open {}: {error}", path.display())),
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("inspect {}: {error}", path.display()))?;
+    if !metadata.file_type().is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o077 != 0
+        || metadata.nlink() != 1
+        || metadata.len() > 64 * 1024
+    {
+        return Err(format!("unsafe identity file {}", path.display()));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    if let Err(error) = file.read_to_end(&mut bytes) {
+        bytes.zeroize();
+        return Err(format!("read {}: {error}", path.display()));
+    }
+    let result = serde_json::from_slice::<StoredIdentity>(&bytes)
+        .map_err(|error| format!("decode {}: {error}", path.display()))
+        .and_then(|identity| {
+            let valid = identity.version == IDENTITY_VERSION
+                && aegis_ipc::ActorPrincipal::new(identity.principal.clone()).is_ok()
+                && !identity.credential.is_empty()
+                && identity.credential.len() <= 512
+                && identity.credential.is_ascii()
+                && !identity.credential.chars().any(char::is_control);
+            valid
+                .then_some(identity)
+                .ok_or_else(|| format!("invalid identity file {}", path.display()))
+        });
+    bytes.zeroize();
+    result.map(Some)
 }
 
 #[cfg(test)]
@@ -163,7 +228,7 @@ mod tests {
         let mode = std::os::unix::fs::PermissionsExt::mode(
             &std::fs::metadata(dir.join(format!(
                 "identity-{}.json",
-                crate::realm::scope_key("Codex")
+                crate::interaction_domain::scope_key("Codex")
             )))
             .unwrap()
             .permissions(),

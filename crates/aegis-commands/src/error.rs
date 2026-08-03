@@ -23,12 +23,12 @@ pub enum CliError {
     /// Filesystem error writing a capture or creating a directory.
     #[error("{0}")]
     Fs(String),
-    /// A Realm id of `0` was supplied; the protocol reserves it.
-    #[error("Realm id zero is invalid")]
-    ZeroRealmId,
-    /// A Realm argument referenced an unknown id in a fallback slot.
-    #[error("fallback Realm {0} is invalid")]
-    InvalidFallbackRealm(u64),
+    /// An Interaction Domain id of `0` was supplied; the protocol reserves it.
+    #[error("Interaction Domain id zero is invalid")]
+    ZeroInteractionDomainId,
+    /// An Interaction Domain argument referenced an unknown id in a fallback slot.
+    #[error("fallback Interaction Domain {0} is invalid")]
+    InvalidFallbackInteractionDomain(u64),
 }
 
 impl CliError {

@@ -13,6 +13,10 @@ rust-version.workspace = true
 # the wire format. No flux, lens, or Wayland dependency, so the codec and a
 # loopback server are unit-testable in isolation. See ADR-0027.
 aegis-core = { workspace = true, features = ["serde"] }
+aegis-authority.workspace = true
+aegis-semantic.workspace = true
+aegis-audit.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 libc.workspace = true
+zeroize.workspace = true

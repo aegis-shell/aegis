@@ -2,30 +2,42 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aegis_core::input::SyntheticInputAction;
-use aegis_core::realm::{HUMAN_REALM, RealmId, RealmMutation, RealmState};
+use aegis_core::interaction_domain::{
+    HUMAN_INTERACTION_DOMAIN, InteractionDomainId, InteractionDomainMutation,
+    InteractionDomainState,
+};
+use aegis_core::semantic::{SemanticActionIntent, SemanticObjectId};
 use aegis_core::window::WindowId;
 use aegis_core::workspace::{Switch, WorkspaceId};
 use aegis_core::{Point, Rect};
 use aegis_ipc::{
-    Capabilities, Client, Command, Effect, JournalMutation, OpClass, RealmAction,
-    RealmActionResult, Scope,
+    ActorCapability, Client, Command, ConnectionCapabilities, Effect, InteractionDomainAction,
+    InteractionDomainActionResult, JournalMutation, ObservationToken, Scope,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::BridgeConfig;
-use crate::realm::{ManagedRealm, RealmSession, RealmSessionError};
+use crate::interaction_domain::{
+    InteractionDomainSession, InteractionDomainSessionError, ManagedInteractionDomain,
+};
 
 const MAX_JOURNAL_ENTRIES: usize = 200;
 const MAX_APP_RESULTS: usize = 200;
 const MAX_INPUT_ACTIONS: usize = 64;
 const MAX_INLINE_MCP_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_PENDING_OBSERVATIONS: usize = 64;
 
-/// Capabilities and resource/operation allowlists observed at startup.
+struct PendingObservation {
+    expires_at: Instant,
+    client: Client,
+}
+
+/// ConnectionCapabilities and resource/operation allowlists observed at startup.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ToolGrant {
-    pub capabilities: Capabilities,
+    pub capabilities: ConnectionCapabilities,
     pub scope: Scope,
 }
 
@@ -36,7 +48,7 @@ pub struct SmokeReport {
     pub mode: &'static str,
     pub label: String,
     pub notification: SmokeNotificationReport,
-    pub realm: SmokeRealmReport,
+    pub interaction_domain: SmokeInteractionDomainReport,
     pub visual: SmokeVisualReport,
 }
 
@@ -49,7 +61,7 @@ pub struct SmokeNotificationReport {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub struct SmokeRealmReport {
+pub struct SmokeInteractionDomainReport {
     pub id: u64,
     pub created_by_smoke: bool,
     pub lifecycle: Vec<String>,
@@ -126,962 +138,45 @@ impl ToolCallResult {
 pub struct AegisPlatform {
     config: BridgeConfig,
     grant: ToolGrant,
-    realm: RealmSession,
+    interaction_domain: InteractionDomainSession,
     identity: crate::identity::IdentityStore,
+    /// Keep the exact authenticated IPC connection that received each
+    /// observation alive until `interaction_domain_input` consumes it. Observation leases
+    /// are connection-bound by the compositor; opening a fresh connection for
+    /// the next MCP tool call would correctly invalidate the token.
+    pending_observations: std::collections::BTreeMap<String, PendingObservation>,
 }
 
-impl AegisPlatform {
-    /// Probe the compositor grant and acquire the per-scope Realm recovery lock.
-    pub fn connect(config: BridgeConfig) -> Result<Self, PlatformError> {
-        config.validate()?;
-        let identity =
-            crate::identity::IdentityStore::load(config.data_dir.clone(), &config.instance_id);
-        let client = connect_with(&config, &identity, config.io_timeout)?;
-        let principal = identity
-            .principal()
-            .ok_or(PlatformError::MissingAuthenticatedIdentity)?;
-        let grant = ToolGrant {
-            capabilities: client.caps(),
-            scope: client.scope().clone(),
-        };
-        Ok(Self {
-            realm: RealmSession::acquire(&config, &principal)?,
-            config,
-            grant,
-            identity,
-        })
-    }
-
-    pub fn grant(&self) -> &ToolGrant {
-        &self.grant
-    }
-
-    /// Names exposed through `tools/list` under the current startup grant.
-    pub fn tool_names(&self) -> Vec<&'static str> {
-        self.definitions()
-            .into_iter()
-            .map(|definition| definition.name)
-            .collect()
-    }
-
-    /// Exercise a real, reversible compositor mutation and Realm lifecycle.
-    ///
-    /// The notification is re-read from compositor state rather than treating
-    /// an IPC `Ok` as proof. A newly created test Realm is synchronously
-    /// transitioned through paused and active states, left visible for
-    /// `observation`, then revoked. A recovered pre-existing Realm is only
-    /// observed and preserved so smoke testing never takes authority away from
-    /// user work.
-    pub fn smoke(&mut self, observation: Duration) -> Result<SmokeReport, PlatformError> {
-        self.smoke_with_input(observation, None)
-    }
-
-    /// Run the live smoke test and optionally transfer one explicitly selected
-    /// human-controlled window long enough to apply a harmless pointer move.
-    /// The move is verified through the compositor journal and the window is
-    /// returned to the human Realm during cleanup.
-    pub fn smoke_with_input(
-        &mut self,
-        observation: Duration,
-        input_window: Option<WindowId>,
-    ) -> Result<SmokeReport, PlatformError> {
-        let mut required = vec![
-            ToolKind::PostNotification,
-            ToolKind::RealmEnsure,
-            ToolKind::RealmSetState,
-            ToolKind::RealmReset,
-        ];
-        if input_window.is_some() {
-            required.extend([ToolKind::RealmTransferWindow, ToolKind::RealmInput]);
-        }
-        for kind in required {
-            if !kind.allowed(&self.grant) {
-                return Err(PlatformError::NotGranted(
-                    kind.definition().name.to_string(),
-                ));
-            }
-        }
-
-        let mut client = self.connect_ipc_grant()?;
-        let (_, existing) = self.realm.locate(&mut client)?;
-        let marker = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let tag = format!("{:06x}", marker & 0xff_ffff);
-        let started_summary = format!("aegis-mcp ↔ Aegis · {tag}");
-        client.command(Command::Notify {
-            summary: started_summary.clone(),
-            body: "Live notification verified. Agent Realm smoke is running.".into(),
-            app_id: Some("aegis-mcp".into()),
-            external_id: None,
-        })?;
-        let started_notification = self.wait_for_notification(&mut client, &started_summary)?;
-
-        let created_by_smoke = existing.is_none();
-        let managed = match existing {
-            Some(managed) => managed,
-            None => self.ensure_realm(&mut client)?,
-        };
-        let mut lifecycle = vec![self.verified_realm_state(&mut client, managed.id)?];
-        let mut input_probe = None;
-
-        let cleanup = if created_by_smoke {
-            let paused_for = observation.min(Duration::from_secs(2));
-            let active_for = observation.saturating_sub(paused_for);
-            let exercise = (|| {
-                self.set_smoke_realm_state(&mut client, managed.id, RealmState::Paused)?;
-                lifecycle.push(self.verified_realm_state(&mut client, managed.id)?);
-                if !paused_for.is_zero() {
-                    std::thread::sleep(paused_for);
-                }
-                self.set_smoke_realm_state(&mut client, managed.id, RealmState::Active)?;
-                lifecycle.push(self.verified_realm_state(&mut client, managed.id)?);
-                if let Some(window) = input_window {
-                    input_probe =
-                        Some(self.exercise_agent_pointer(&mut client, managed.id, window)?);
-                }
-                if !active_for.is_zero() {
-                    std::thread::sleep(active_for);
-                }
-                Ok::<(), PlatformError>(())
-            })();
-
-            // Cleanup is attempted even if a transition or verification
-            // failed, so a diagnostic run does not strand authority.
-            let revoked = self.realm.revoke(&mut client);
-            if let Err(error) = exercise {
-                return match revoked {
-                    Ok(_) => Err(error),
-                    Err(cleanup) => Err(PlatformError::SmokeVerification(format!(
-                        "{error}; cleanup also failed: {cleanup}"
-                    ))),
-                };
-            }
-            if !revoked? {
-                return Err(PlatformError::SmokeVerification(
-                    "new smoke Realm was not present during cleanup".into(),
-                ));
-            }
-            let snapshot = client.realms()?;
-            if snapshot
-                .realms
-                .iter()
-                .any(|realm| realm.id == managed.id && realm.state != RealmState::Revoked)
-            {
-                return Err(PlatformError::SmokeVerification(
-                    "smoke Realm remained live after revocation".into(),
-                ));
-            }
-            lifecycle.push("revoked".into());
-            if let Some(probe) = input_probe.as_mut() {
-                probe.window_restored_to_human = self
-                    .window_control_realm(&mut client, WindowId(probe.window_id))?
-                    == Some(HUMAN_REALM);
-                if !probe.window_restored_to_human {
-                    return Err(PlatformError::SmokeVerification(format!(
-                        "window {} did not return to the human Realm after smoke revocation",
-                        probe.window_id
-                    )));
-                }
-            }
-            "revoked_test_realm"
-        } else {
-            let exercise = (|| {
-                if let Some(window) = input_window {
-                    if self.verified_realm_state(&mut client, managed.id)? != "active" {
-                        return Err(PlatformError::SmokeVerification(
-                            "the recovered managed Realm is paused; resume or reset it before an input smoke probe"
-                                .into(),
-                        ));
-                    }
-                    input_probe =
-                        Some(self.exercise_agent_pointer(&mut client, managed.id, window)?);
-                }
-                if !observation.is_zero() {
-                    std::thread::sleep(observation);
-                }
-                Ok::<(), PlatformError>(())
-            })();
-            let restore = input_window
-                .map(|window| self.restore_smoke_window(&mut client, window))
-                .transpose();
-            if let Err(error) = exercise {
-                return match restore {
-                    Ok(_) => Err(error),
-                    Err(cleanup) => Err(PlatformError::SmokeVerification(format!(
-                        "{error}; window cleanup also failed: {cleanup}"
-                    ))),
-                };
-            }
-            restore?;
-            if let Some(probe) = input_probe.as_mut() {
-                probe.window_restored_to_human = self
-                    .window_control_realm(&mut client, WindowId(probe.window_id))?
-                    == Some(HUMAN_REALM);
-                if !probe.window_restored_to_human {
-                    return Err(PlatformError::SmokeVerification(format!(
-                        "window {} did not return to the human Realm after the smoke probe",
-                        probe.window_id
-                    )));
-                }
-            }
-            "preserved_existing_realm"
-        };
-
-        let summary = format!("aegis-mcp ↔ Aegis · passed · {tag}");
-        client.command(Command::Notify {
-            summary: summary.clone(),
-            body: "Notification and Agent Realm controls were applied and verified.".into(),
-            app_id: Some("aegis-mcp".into()),
-            external_id: None,
-        })?;
-        let notification = self.wait_for_notification(&mut client, &summary)?;
-
-        Ok(SmokeReport {
-            status: "passed",
-            mode: "live",
-            label: self.config.label.clone(),
-            notification: SmokeNotificationReport {
-                started_id: started_notification.id,
-                id: notification.id,
-                summary,
-                observed_in_compositor_state: true,
-            },
-            realm: SmokeRealmReport {
-                id: managed.id.0,
-                created_by_smoke,
-                lifecycle,
-                cleanup,
-            },
-            visual: SmokeVisualReport {
-                status_indicator: "persistent while the Agent Realm is live",
-                details_surface: "click the status indicator to open AI Workspaces",
-                observation_millis: observation.as_millis(),
-                input_probe,
-            },
-        })
-    }
-
-    fn exercise_agent_pointer(
-        &self,
-        client: &mut Client,
-        realm: RealmId,
-        window: WindowId,
-    ) -> Result<SmokeInputReport, PlatformError> {
-        let target = client
-            .windows()?
-            .into_iter()
-            .find(|candidate| candidate.id == window)
-            .ok_or_else(|| {
-                PlatformError::SmokeVerification(format!(
-                    "window {} is not visible on the physical desktop",
-                    window.0
-                ))
-            })?;
-        if target.read_only || target.size.w <= 0 || target.size.h <= 0 {
-            return Err(PlatformError::SmokeVerification(format!(
-                "window {} is not a live human-controlled input target",
-                window.0
-            )));
-        }
-        if self.window_control_realm(client, window)? != Some(HUMAN_REALM) {
-            return Err(PlatformError::SmokeVerification(format!(
-                "window {} is not currently controlled by the human Realm",
-                window.0
-            )));
-        }
-
-        let local_position = Point {
-            x: (target.size.w / 2).clamp(0, target.size.w - 1),
-            y: (target.size.h / 2).clamp(0, target.size.h - 1),
-        };
-        let snapshot = client.realms()?;
-        let result = client.realm_action(RealmAction::Transact {
-            expected_revision: Some(snapshot.revision),
-            mutations: vec![RealmMutation::TransferWindow {
-                window,
-                target: realm,
-                retain_source_as_observer: true,
-            }],
-        })?;
-        if !matches!(result, RealmActionResult::TransactionCommitted { .. }) {
-            return Err(PlatformError::UnexpectedResponse);
-        }
-
-        let baseline = client.journal(0)?.latest_seq;
-        let command = Command::InjectRealmInput {
-            realm,
-            id: window,
-            actions: vec![SyntheticInputAction::PointerMove {
-                position: local_position,
-            }],
-        };
-        client.command(command.clone())?;
-        let deadline = Instant::now() + self.config.io_timeout;
-        loop {
-            let journal = client.journal(baseline)?;
-            if let Some(entry) = journal.entries.into_iter().find(|entry| {
-                matches!(
-                    &entry.mutation,
-                    JournalMutation::Command { cmd } if cmd == &command
-                )
-            }) {
-                return match entry.effect {
-                    Effect::Applied => Ok(SmokeInputReport {
-                        window_id: window.0,
-                        action: "pointer_move",
-                        local_position,
-                        journal_sequence: entry.seq,
-                        applied: true,
-                        window_restored_to_human: false,
-                    }),
-                    Effect::Refused { reason } => Err(PlatformError::SmokeVerification(format!(
-                        "Agent pointer smoke was refused: {reason}"
-                    ))),
-                    Effect::NoOp => Err(PlatformError::SmokeVerification(
-                        "Agent pointer smoke was recorded as a no-op".into(),
-                    )),
-                };
-            }
-            if Instant::now() >= deadline {
-                return Err(PlatformError::SmokeVerification(
-                    "Agent pointer smoke was queued but no journal decision appeared".into(),
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-    }
-
-    fn restore_smoke_window(
-        &self,
-        client: &mut Client,
-        window: WindowId,
-    ) -> Result<(), PlatformError> {
-        let snapshot = client.realms()?;
-        if self.window_control_realm(client, window)? == Some(HUMAN_REALM) {
-            return Ok(());
-        }
-        let result = client.realm_action(RealmAction::Transact {
-            expected_revision: Some(snapshot.revision),
-            mutations: vec![RealmMutation::TransferWindow {
-                window,
-                target: HUMAN_REALM,
-                retain_source_as_observer: false,
-            }],
-        })?;
-        if !matches!(result, RealmActionResult::TransactionCommitted { .. }) {
-            return Err(PlatformError::UnexpectedResponse);
-        }
-        Ok(())
-    }
-
-    fn window_control_realm(
-        &self,
-        client: &mut Client,
-        window: WindowId,
-    ) -> Result<Option<RealmId>, PlatformError> {
-        Ok(client
-            .realms()?
-            .interaction_groups
-            .into_iter()
-            .find(|group| group.windows.contains(&window))
-            .map(|group| group.control_realm))
-    }
-
-    pub(crate) fn definitions(&self) -> Vec<ToolDefinition> {
-        ToolKind::ALL
-            .iter()
-            .copied()
-            .filter(|kind| kind.allowed(&self.grant))
-            .map(ToolKind::definition)
-            .collect()
-    }
-
-    /// Refresh the credential-bound ceiling before publishing a catalog.
-    /// This makes administrative ceiling changes visible on the next
-    /// `tools/list` instead of retaining the process-start snapshot.
-    pub(crate) fn refreshed_definitions(&mut self) -> Result<Vec<ToolDefinition>, PlatformError> {
-        let client = self.connect_ipc()?;
-        self.grant = ToolGrant {
-            capabilities: client.caps(),
-            scope: client.scope().clone(),
-        };
-        Ok(self.definitions())
-    }
-
-    pub(crate) fn call(
-        &mut self,
-        name: &str,
-        arguments: Value,
-    ) -> Result<ToolCallResult, PlatformError> {
-        let kind = ToolKind::from_name(name)
-            .ok_or_else(|| PlatformError::UnknownTool(name.to_string()))?;
-        if !kind.allowed(&self.grant) {
-            return Err(PlatformError::NotGranted(name.to_string()));
-        }
-        self.invoke(kind, arguments)
-    }
-
-    /// Best-effort normal shutdown. Failure is returned so the CLI can report
-    /// that the recovery record was intentionally retained for the next run.
-    pub fn shutdown(&mut self) -> Result<(), PlatformError> {
-        if !self.config.revoke_on_exit {
-            return Ok(());
-        }
-        let mut client = self.connect_ipc_grant()?;
-        let (_, managed) = self.realm.locate(&mut client)?;
-        if managed.is_none() {
-            return Ok(());
-        }
-        if !self.can_revoke_realm() {
-            return Err(PlatformError::RealmCleanupNotGranted);
-        }
-        self.realm.revoke(&mut client)?;
-        Ok(())
-    }
-
-    fn invoke(
-        &mut self,
-        kind: ToolKind,
-        arguments: Value,
-    ) -> Result<ToolCallResult, PlatformError> {
-        match kind {
-            ToolKind::DesktopSnapshot => {
-                parse::<NoArgs>(arguments)?;
-                let mut client = self.connect_ipc()?;
-                Ok(ToolCallResult::json(json!({
-                    "grant": self.grant,
-                    "windows": client.windows()?,
-                    "workspaces": client.workspaces()?,
-                    "outputs": client.outputs()?,
-                    "realms": client.realms()?
-                })))
-            }
-            ToolKind::DesktopJournal => {
-                let args: JournalArgs = parse(arguments)?;
-                let limit = args.limit.unwrap_or(MAX_JOURNAL_ENTRIES);
-                if !(1..=MAX_JOURNAL_ENTRIES).contains(&limit) {
-                    return Err(invalid(format!(
-                        "limit must be from 1 through {MAX_JOURNAL_ENTRIES}"
-                    )));
-                }
-                let mut client = self.connect_ipc()?;
-                let mut snapshot = client.journal(args.since.unwrap_or(0))?;
-                snapshot.entries.truncate(limit);
-                let next_since = snapshot
-                    .entries
-                    .last()
-                    .map_or(args.since.unwrap_or(0), |entry| entry.seq);
-                Ok(ToolCallResult::json(json!({
-                    "snapshot": snapshot,
-                    "next_since": next_since
-                })))
-            }
-            ToolKind::AppsList => self.list_apps(arguments),
-            ToolKind::FocusWindow => self.command(
-                window_command(arguments, |id| Command::Focus { id })?,
-                "focus_window",
-            ),
-            ToolKind::MinimizeWindow => self.command(
-                window_command(arguments, |id| Command::Minimize { id })?,
-                "minimize_window",
-            ),
-            ToolKind::CloseWindow => self.command(
-                window_command(arguments, |id| Command::Close { id })?,
-                "close_window",
-            ),
-            ToolKind::MoveWindowToWorkspace => {
-                let args: MoveArgs = parse(arguments)?;
-                self.command(
-                    Command::MoveToWorkspace {
-                        window: window_id(args.window_id)?,
-                        workspace: workspace_id(args.workspace_id)?,
-                    },
-                    "move_window_to_workspace",
-                )
-            }
-            ToolKind::SwitchWorkspace => {
-                let args: DirectionArgs = parse(arguments)?;
-                let dir = match args.direction.as_str() {
-                    "next" => Switch::Next,
-                    "previous" => Switch::Prev,
-                    _ => return Err(invalid("direction must be `next` or `previous`")),
-                };
-                self.command(Command::SwitchWorkspace { dir }, "switch_workspace")
-            }
-            ToolKind::SwitchWorkspaceTo => {
-                let args: WorkspaceArgs = parse(arguments)?;
-                self.command(
-                    Command::SwitchWorkspaceTo {
-                        id: workspace_id(args.workspace_id)?,
-                    },
-                    "switch_workspace_to",
-                )
-            }
-            ToolKind::SetWindowGeometry => {
-                let args: GeometryArgs = parse(arguments)?;
-                let rect = rect(args.x, args.y, args.width, args.height)?;
-                self.command(
-                    Command::SetWindowGeometry {
-                        id: window_id(args.window_id)?,
-                        rect,
-                    },
-                    "set_window_geometry",
-                )
-            }
-            ToolKind::ToggleTiling => {
-                parse::<NoArgs>(arguments)?;
-                self.command(Command::ToggleTiling, "toggle_tiling")
-            }
-            ToolKind::ToggleOverview => {
-                parse::<NoArgs>(arguments)?;
-                self.command(Command::ToggleOverview, "toggle_overview")
-            }
-            ToolKind::PostNotification => {
-                let args: NotificationArgs = parse(arguments)?;
-                if args.summary.trim().is_empty() {
-                    return Err(invalid("summary must not be empty"));
-                }
-                self.command(
-                    Command::Notify {
-                        summary: args.summary,
-                        body: args.body.unwrap_or_default(),
-                        app_id: Some("aegis-mcp".into()),
-                        external_id: None,
-                    },
-                    "post_notification",
-                )
-            }
-            ToolKind::RealmStatus => self.realm_status(arguments),
-            ToolKind::RealmEnsure => self.realm_ensure(arguments),
-            ToolKind::RealmLaunchApp => self.realm_launch(arguments),
-            ToolKind::RealmTransferWindow => self.realm_transfer(arguments),
-            ToolKind::RealmSetState => self.realm_set_state(arguments),
-            ToolKind::RealmCapture => self.realm_capture(arguments),
-            ToolKind::RealmInput => self.realm_input(arguments),
-            ToolKind::RealmReset => self.realm_reset(arguments),
-        }
-    }
-
-    fn connect_ipc(&self) -> Result<Client, PlatformError> {
-        connect_with(&self.config, &self.identity, self.config.io_timeout)
-    }
-
-    /// Connect for a mutation call that may block on an interactive runtime
-    /// grant (ADR-0088). The compositor's interaction timeout is 300 s, so
-    /// these calls get a bound beyond it; query calls keep the configured
-    /// I/O timeout.
-    fn connect_ipc_grant(&self) -> Result<Client, PlatformError> {
-        connect_with(&self.config, &self.identity, GRANT_TIMEOUT)
-    }
-
-    fn wait_for_notification(
-        &self,
-        client: &mut Client,
-        summary: &str,
-    ) -> Result<aegis_core::notify::Notification, PlatformError> {
-        let deadline = Instant::now() + self.config.io_timeout;
-        loop {
-            if let Some(notification) = client.notifications()?.into_iter().find(|notification| {
-                notification.summary == summary
-                    && notification.app_id.as_deref() == Some("aegis-mcp")
-            }) {
-                return Ok(notification);
-            }
-            if Instant::now() >= deadline {
-                return Err(PlatformError::SmokeVerification(
-                    "notification was acknowledged but did not appear in compositor state".into(),
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-    }
-
-    fn set_smoke_realm_state(
-        &self,
-        client: &mut Client,
-        realm: aegis_core::realm::RealmId,
-        state: RealmState,
-    ) -> Result<(), PlatformError> {
-        let snapshot = client.realms()?;
-        let result = client.realm_action(RealmAction::Transact {
-            expected_revision: Some(snapshot.revision),
-            mutations: vec![RealmMutation::SetState { realm, state }],
-        })?;
-        if !matches!(result, RealmActionResult::TransactionCommitted { .. }) {
-            return Err(PlatformError::UnexpectedResponse);
-        }
-        Ok(())
-    }
-
-    fn verified_realm_state(
-        &self,
-        client: &mut Client,
-        realm: aegis_core::realm::RealmId,
-    ) -> Result<String, PlatformError> {
-        let snapshot = client.realms()?;
-        let state = snapshot
-            .realms
-            .iter()
-            .find(|candidate| candidate.id == realm)
-            .map(|candidate| candidate.state)
-            .ok_or_else(|| {
-                PlatformError::SmokeVerification(format!(
-                    "Realm {} was committed but was not queryable",
-                    realm.0
-                ))
-            })?;
-        Ok(match state {
-            RealmState::Active => "active",
-            RealmState::Paused => "paused",
-            RealmState::Revoked => "revoked",
-        }
-        .into())
-    }
-
-    fn command(
-        &self,
-        command: Command,
-        operation: &'static str,
-    ) -> Result<ToolCallResult, PlatformError> {
-        let mut client = self.connect_ipc_grant()?;
-        client.command(command)?;
-        Ok(ToolCallResult::json(json!({
-            "status": "queued",
-            "operation": operation,
-            "verified": false
-        })))
-    }
-
-    fn list_apps(&self, arguments: Value) -> Result<ToolCallResult, PlatformError> {
-        let args: AppsArgs = parse(arguments)?;
-        let limit = args.limit.unwrap_or(50);
-        if !(1..=MAX_APP_RESULTS).contains(&limit) {
-            return Err(invalid(format!(
-                "limit must be from 1 through {MAX_APP_RESULTS}"
-            )));
-        }
-        let query = args.query.unwrap_or_default().trim().to_ascii_lowercase();
-        let apps = aegis_desktop_entries::enumerate()
-            .into_iter()
-            .filter(|entry| {
-                query.is_empty()
-                    || entry.id.to_ascii_lowercase().contains(&query)
-                    || entry.name.to_ascii_lowercase().contains(&query)
-                    || entry.summary().to_ascii_lowercase().contains(&query)
-                    || entry
-                        .keywords
-                        .iter()
-                        .any(|keyword| keyword.to_ascii_lowercase().contains(&query))
-            })
-            .take(limit)
-            .map(|entry| {
-                json!({
-                    "desktop_id": entry.id,
-                    "name": entry.name,
-                    "summary": entry.summary(),
-                    "categories": entry.categories,
-                    "terminal": entry.terminal
-                })
-            })
-            .collect::<Vec<_>>();
-        Ok(ToolCallResult::json(json!({
-            "count": apps.len(),
-            "apps": apps
-        })))
-    }
-
-    fn realm_status(&mut self, arguments: Value) -> Result<ToolCallResult, PlatformError> {
-        parse::<NoArgs>(arguments)?;
-        let mut client = self.connect_ipc()?;
-        let (snapshot, managed) = self.realm.locate(&mut client)?;
-        let realm = managed.and_then(|managed| {
-            snapshot
-                .realms
-                .iter()
-                .find(|realm| realm.id == managed.id)
-                .cloned()
-        });
-        let groups = managed.map_or_else(Vec::new, |managed| {
-            snapshot
-                .interaction_groups
-                .iter()
-                .filter(|group| {
-                    group.control_realm == managed.id || group.observer_realms.contains(&managed.id)
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-        });
-        Ok(ToolCallResult::json(json!({
-            "managed": realm.is_some(),
-            "realm": realm,
-            "interaction_groups": groups,
-            "revision": snapshot.revision
-        })))
-    }
-
-    fn realm_ensure(&mut self, arguments: Value) -> Result<ToolCallResult, PlatformError> {
-        parse::<NoArgs>(arguments)?;
-        let mut client = self.connect_ipc_grant()?;
-        let managed = self.ensure_realm(&mut client)?;
-        Ok(ToolCallResult::json(json!({
-            "status": "active_or_recovered",
-            "realm_id": managed.id.0,
-            "revision": managed.revision,
-            "label": self.config.realm_label
-        })))
-    }
-
-    fn realm_launch(&mut self, arguments: Value) -> Result<ToolCallResult, PlatformError> {
-        let args: LaunchArgs = parse(arguments)?;
-        if args.desktop_id.trim().is_empty() {
-            return Err(invalid("desktop_id must not be empty"));
-        }
-        let known = aegis_desktop_entries::enumerate()
-            .iter()
-            .any(|entry| entry.id == args.desktop_id);
-        if !known {
-            return Err(invalid(format!(
-                "desktop_id {:?} is not in the current XDG application catalog; call apps_list first",
-                args.desktop_id
-            )));
-        }
-        let mut client = self.connect_ipc_grant()?;
-        let managed = self.ensure_realm(&mut client)?;
-        client.launch_in_realm(managed.id, &args.desktop_id)?;
-        Ok(ToolCallResult::json(json!({
-            "status": "queued",
-            "operation": "realm_launch_app",
-            "realm_id": managed.id.0,
-            "desktop_id": args.desktop_id,
-            "verified": false
-        })))
-    }
-
-    fn realm_transfer(&mut self, arguments: Value) -> Result<ToolCallResult, PlatformError> {
-        let args: TransferArgs = parse(arguments)?;
-        let window = window_id(args.window_id)?;
-        let mut client = self.connect_ipc_grant()?;
-        let (target, retain_source_as_observer) = match args.target.as_str() {
-            "agent" => {
-                let managed = self.ensure_realm(&mut client)?;
-                (managed.id, args.retain_source_as_observer.unwrap_or(true))
-            }
-            "human" => {
-                let (_, managed) = self.realm.locate(&mut client)?;
-                if managed.is_none() {
-                    return Err(PlatformError::NoManagedRealm);
-                }
-                (HUMAN_REALM, args.retain_source_as_observer.unwrap_or(false))
-            }
-            _ => return Err(invalid("target must be `agent` or `human`")),
-        };
-        let snapshot = client.realms()?;
-        let result = client.realm_action(RealmAction::Transact {
-            expected_revision: Some(snapshot.revision),
-            mutations: vec![RealmMutation::TransferWindow {
-                window,
-                target,
-                retain_source_as_observer,
-            }],
-        })?;
-        let RealmActionResult::TransactionCommitted { receipt } = result else {
-            return Err(PlatformError::UnexpectedResponse);
-        };
-        Ok(ToolCallResult::json(json!({
-            "status": "committed",
-            "target": args.target,
-            "receipt": receipt
-        })))
-    }
-
-    fn realm_set_state(&mut self, arguments: Value) -> Result<ToolCallResult, PlatformError> {
-        let args: StateArgs = parse(arguments)?;
-        let state = match args.state.as_str() {
-            "active" => RealmState::Active,
-            "paused" => RealmState::Paused,
-            _ => return Err(invalid("state must be `active` or `paused`")),
-        };
-        let mut client = self.connect_ipc_grant()?;
-        let managed = self.existing_realm(&mut client)?;
-        let result = client.realm_action(RealmAction::Transact {
-            expected_revision: Some(managed.revision),
-            mutations: vec![RealmMutation::SetState {
-                realm: managed.id,
-                state,
-            }],
-        })?;
-        let RealmActionResult::TransactionCommitted { receipt } = result else {
-            return Err(PlatformError::UnexpectedResponse);
-        };
-        Ok(ToolCallResult::json(json!({
-            "status": "committed",
-            "state": args.state,
-            "receipt": receipt
-        })))
-    }
-
-    fn realm_capture(&mut self, arguments: Value) -> Result<ToolCallResult, PlatformError> {
-        let args: CaptureArgs = parse(arguments)?;
-        let region = args.region.map(TryInto::try_into).transpose()?;
-        let mut client = self.connect_ipc_grant()?;
-        let managed = self.existing_realm(&mut client)?;
-        let capture = client.capture_realm(managed.id, region)?;
-        let image_path = self.realm.store_capture(&capture.png)?;
-        let image_bytes = capture.png.len();
-        let image_png = (image_bytes <= MAX_INLINE_MCP_IMAGE_BYTES).then_some(capture.png);
-        Ok(ToolCallResult {
-            value: json!({
-                "realm_id": capture.realm.0,
-                "width": capture.width,
-                "height": capture.height,
-                "scale_milli": capture.scale_milli,
-                "region": capture.region,
-                "placements": capture.placements,
-                "revision": capture.revision,
-                "image_bytes": image_bytes,
-                "image_attached": image_png.is_some(),
-                "image_path": image_path
-            }),
-            image_png,
-        })
-    }
-
-    fn realm_input(&mut self, arguments: Value) -> Result<ToolCallResult, PlatformError> {
-        let args: InputArgs = parse(arguments)?;
-        if args.actions.is_empty() || args.actions.len() > MAX_INPUT_ACTIONS {
-            return Err(invalid(format!(
-                "actions must contain from 1 through {MAX_INPUT_ACTIONS} entries"
-            )));
-        }
-        let actions = args
-            .actions
-            .into_iter()
-            .map(TryInto::try_into)
-            .collect::<Result<Vec<_>, PlatformError>>()?;
-        let mut client = self.connect_ipc_grant()?;
-        let managed = self.existing_realm(&mut client)?;
-        client.inject_realm_input(managed.id, window_id(args.window_id)?, actions)?;
-        Ok(ToolCallResult::json(json!({
-            "status": "queued",
-            "operation": "realm_input",
-            "realm_id": managed.id.0,
-            "window_id": args.window_id,
-            "verified": false
-        })))
-    }
-
-    fn realm_reset(&mut self, arguments: Value) -> Result<ToolCallResult, PlatformError> {
-        parse::<NoArgs>(arguments)?;
-        let mut client = self.connect_ipc_grant()?;
-        let revoked = self.realm.revoke(&mut client)?;
-        Ok(ToolCallResult::json(json!({
-            "status": if revoked { "revoked" } else { "not_initialized" },
-            "fallback_realm_id": HUMAN_REALM.0
-        })))
-    }
-
-    fn ensure_realm(&mut self, client: &mut Client) -> Result<ManagedRealm, PlatformError> {
-        let (_, managed) = self.realm.locate(client)?;
-        if let Some(managed) = managed {
-            return Ok(managed);
-        }
-        if !self.realm_op_allowed(OpClass::CreateRealm) {
-            return Err(PlatformError::RealmCreationNotGranted);
-        }
-        self.realm.ensure(client).map_err(Into::into)
-    }
-
-    fn existing_realm(&mut self, client: &mut Client) -> Result<ManagedRealm, PlatformError> {
-        let (_, managed) = self.realm.locate(client)?;
-        managed.ok_or(PlatformError::NoManagedRealm)
-    }
-
-    fn realm_op_allowed(&self, op: OpClass) -> bool {
-        let listed = |ops: &Option<Vec<OpClass>>| ops.as_ref().is_some_and(|ops| ops.contains(&op));
-        self.grant.capabilities.realm
-            && (listed(&self.grant.scope.ops) || listed(&self.grant.scope.ask_ops))
-    }
-
-    fn can_revoke_realm(&self) -> bool {
-        self.realm_op_allowed(OpClass::RevokeRealm)
-    }
-}
-
-fn connect_with(
-    config: &BridgeConfig,
-    identity: &crate::identity::IdentityStore,
-    post_timeout: Duration,
-) -> Result<Client, PlatformError> {
-    // The first connection may block on the interactive pairing prompt, so
-    // the handshake gets a generous bound; per-request I/O falls back to the
-    // configured timeout right after.
-    let handshake_timeout = config.io_timeout.max(GRANT_TIMEOUT);
-    let client = Client::connect_agent_with_timeout(
-        &config.socket_path,
-        Capabilities {
-            query: true,
-            control: true,
-            input: true,
-            session: false,
-            realm: true,
-        },
-        None,
-        aegis_ipc::AgentHello {
-            label: Some(config.label.clone()),
-            requested: catalog_ops(),
-            credential: identity.credential(),
-        },
-        handshake_timeout,
-    )
-    .map_err(|source| PlatformError::Connect {
-        socket: config.socket_path.clone(),
-        label: config.label.clone(),
-        source,
-    })?;
-    client
-        .set_io_timeout(Some(post_timeout))
-        .map_err(|source| PlatformError::Connect {
-            socket: config.socket_path.clone(),
-            label: config.label.clone(),
-            source,
-        })?;
-    if let Some(issued) = client.agent_issued() {
-        if let Some(credential) = &issued.credential {
-            identity
-                .store(&issued.principal, credential)
-                .map_err(PlatformError::Identity)?;
-        } else {
-            identity
-                .confirm_principal(&issued.principal)
-                .map_err(PlatformError::Identity)?;
-        }
-    }
-    Ok(client)
-}
+mod platform;
 
 /// The operation families this bridge can ever request: the catalog the
 /// pairing prompt shows and the compositor-approved ceiling is checked
 /// against (ADR-0088).
-fn catalog_ops() -> Vec<OpClass> {
+fn catalog_ops() -> Vec<ActorCapability> {
     vec![
-        OpClass::Focus,
-        OpClass::Minimize,
-        OpClass::Close,
-        OpClass::MoveToWorkspace,
-        OpClass::SwitchWorkspace,
-        OpClass::SwitchWorkspaceTo,
-        OpClass::SetWindowGeometry,
-        OpClass::ToggleTiling,
-        OpClass::ToggleOverview,
-        OpClass::Notify,
-        OpClass::CreateRealm,
-        OpClass::TransactRealm,
-        OpClass::RevokeRealm,
-        OpClass::CaptureRealm,
-        OpClass::LaunchInRealm,
-        OpClass::InjectRealmInput,
+        ActorCapability::ObserveWindows,
+        ActorCapability::ObserveWorkspaces,
+        ActorCapability::ObserveOutputs,
+        ActorCapability::ObserveNotifications,
+        ActorCapability::ObserveJournal,
+        ActorCapability::ObserveInteractionDomains,
+        ActorCapability::Focus,
+        ActorCapability::Minimize,
+        ActorCapability::Close,
+        ActorCapability::MoveToWorkspace,
+        ActorCapability::SwitchWorkspace,
+        ActorCapability::SwitchWorkspaceTo,
+        ActorCapability::SetWindowGeometry,
+        ActorCapability::ToggleTiling,
+        ActorCapability::ToggleOverview,
+        ActorCapability::Notify,
+        ActorCapability::CreateInteractionDomain,
+        ActorCapability::TransactInteractionDomain,
+        ActorCapability::RevokeInteractionDomain,
+        ActorCapability::CaptureInteractionDomain,
+        ActorCapability::ObserveInteractionDomain,
+        ActorCapability::LaunchInInteractionDomain,
+        ActorCapability::InjectInteractionDomainInput,
     ]
 }
 
@@ -1100,18 +195,19 @@ enum ToolKind {
     ToggleTiling,
     ToggleOverview,
     PostNotification,
-    RealmStatus,
-    RealmEnsure,
-    RealmLaunchApp,
-    RealmTransferWindow,
-    RealmSetState,
-    RealmCapture,
-    RealmInput,
-    RealmReset,
+    InteractionDomainStatus,
+    InteractionDomainEnsure,
+    InteractionDomainLaunchApp,
+    InteractionDomainTransferWindow,
+    InteractionDomainSetState,
+    InteractionDomainObserve,
+    InteractionDomainCapture,
+    InteractionDomainInput,
+    InteractionDomainReset,
 }
 
 impl ToolKind {
-    const ALL: [Self; 21] = [
+    const ALL: [Self; 22] = [
         Self::DesktopSnapshot,
         Self::DesktopJournal,
         Self::AppsList,
@@ -1125,14 +221,15 @@ impl ToolKind {
         Self::ToggleTiling,
         Self::ToggleOverview,
         Self::PostNotification,
-        Self::RealmStatus,
-        Self::RealmEnsure,
-        Self::RealmLaunchApp,
-        Self::RealmTransferWindow,
-        Self::RealmSetState,
-        Self::RealmCapture,
-        Self::RealmInput,
-        Self::RealmReset,
+        Self::InteractionDomainStatus,
+        Self::InteractionDomainEnsure,
+        Self::InteractionDomainLaunchApp,
+        Self::InteractionDomainTransferWindow,
+        Self::InteractionDomainSetState,
+        Self::InteractionDomainObserve,
+        Self::InteractionDomainCapture,
+        Self::InteractionDomainInput,
+        Self::InteractionDomainReset,
     ];
 
     fn from_name(name: &str) -> Option<Self> {
@@ -1143,49 +240,105 @@ impl ToolKind {
     }
 
     fn allowed(self, grant: &ToolGrant) -> bool {
-        if matches!(
-            self,
-            Self::DesktopSnapshot | Self::DesktopJournal | Self::AppsList | Self::RealmStatus
-        ) {
-            return grant.capabilities.query;
+        let observes = |op| {
+            grant
+                .scope
+                .ops
+                .as_ref()
+                .is_some_and(|operations| operations.contains(&op))
+        };
+        match self {
+            Self::DesktopSnapshot => {
+                return grant.capabilities.query
+                    && [
+                        ActorCapability::ObserveWindows,
+                        ActorCapability::ObserveWorkspaces,
+                        ActorCapability::ObserveOutputs,
+                        ActorCapability::ObserveInteractionDomains,
+                    ]
+                    .into_iter()
+                    .all(observes);
+            }
+            Self::DesktopJournal => {
+                return grant.capabilities.query && observes(ActorCapability::ObserveJournal);
+            }
+            Self::InteractionDomainStatus => {
+                return grant.capabilities.query
+                    && observes(ActorCapability::ObserveInteractionDomains);
+            }
+            Self::AppsList => return grant.capabilities.query,
+            _ => {}
         }
         let (capability, op) = match self {
-            Self::FocusWindow => (grant.capabilities.control, OpClass::Focus),
-            Self::MinimizeWindow => (grant.capabilities.control, OpClass::Minimize),
-            Self::CloseWindow => (grant.capabilities.control, OpClass::Close),
-            Self::MoveWindowToWorkspace => (grant.capabilities.control, OpClass::MoveToWorkspace),
-            Self::SwitchWorkspace => (grant.capabilities.control, OpClass::SwitchWorkspace),
-            Self::SwitchWorkspaceTo => (grant.capabilities.control, OpClass::SwitchWorkspaceTo),
-            Self::SetWindowGeometry => (grant.capabilities.control, OpClass::SetWindowGeometry),
-            Self::ToggleTiling => (grant.capabilities.control, OpClass::ToggleTiling),
-            Self::ToggleOverview => (grant.capabilities.control, OpClass::ToggleOverview),
-            Self::PostNotification => (grant.capabilities.control, OpClass::Notify),
-            Self::RealmEnsure => (grant.capabilities.realm, OpClass::CreateRealm),
-            Self::RealmLaunchApp => (grant.capabilities.realm, OpClass::LaunchInRealm),
-            Self::RealmTransferWindow | Self::RealmSetState => {
-                (grant.capabilities.realm, OpClass::TransactRealm)
+            Self::FocusWindow => (grant.capabilities.control, ActorCapability::Focus),
+            Self::MinimizeWindow => (grant.capabilities.control, ActorCapability::Minimize),
+            Self::CloseWindow => (grant.capabilities.control, ActorCapability::Close),
+            Self::MoveWindowToWorkspace => {
+                (grant.capabilities.control, ActorCapability::MoveToWorkspace)
             }
-            Self::RealmCapture => (grant.capabilities.realm, OpClass::CaptureRealm),
-            Self::RealmInput => (grant.capabilities.input, OpClass::InjectRealmInput),
-            Self::RealmReset => (grant.capabilities.realm, OpClass::RevokeRealm),
-            Self::DesktopSnapshot | Self::DesktopJournal | Self::AppsList | Self::RealmStatus => {
+            Self::SwitchWorkspace => (grant.capabilities.control, ActorCapability::SwitchWorkspace),
+            Self::SwitchWorkspaceTo => (
+                grant.capabilities.control,
+                ActorCapability::SwitchWorkspaceTo,
+            ),
+            Self::SetWindowGeometry => (
+                grant.capabilities.control,
+                ActorCapability::SetWindowGeometry,
+            ),
+            Self::ToggleTiling => (grant.capabilities.control, ActorCapability::ToggleTiling),
+            Self::ToggleOverview => (grant.capabilities.control, ActorCapability::ToggleOverview),
+            Self::PostNotification => (grant.capabilities.control, ActorCapability::Notify),
+            Self::InteractionDomainEnsure => (
+                grant.capabilities.interaction_domain,
+                ActorCapability::CreateInteractionDomain,
+            ),
+            Self::InteractionDomainLaunchApp => (
+                grant.capabilities.interaction_domain,
+                ActorCapability::LaunchInInteractionDomain,
+            ),
+            Self::InteractionDomainTransferWindow | Self::InteractionDomainSetState => (
+                grant.capabilities.interaction_domain,
+                ActorCapability::TransactInteractionDomain,
+            ),
+            Self::InteractionDomainCapture => (
+                grant.capabilities.interaction_domain,
+                ActorCapability::CaptureInteractionDomain,
+            ),
+            Self::InteractionDomainObserve => (
+                grant.capabilities.query,
+                ActorCapability::ObserveInteractionDomain,
+            ),
+            Self::InteractionDomainInput => (
+                grant.capabilities.input,
+                ActorCapability::InjectInteractionDomainInput,
+            ),
+            Self::InteractionDomainReset => (
+                grant.capabilities.interaction_domain,
+                ActorCapability::RevokeInteractionDomain,
+            ),
+            Self::DesktopSnapshot
+            | Self::DesktopJournal
+            | Self::AppsList
+            | Self::InteractionDomainStatus => {
                 unreachable!("query tools returned above")
             }
         };
-        let listed = |ops: &Option<Vec<OpClass>>| ops.as_ref().is_some_and(|ops| ops.contains(&op));
+        let listed =
+            |ops: &Option<Vec<ActorCapability>>| ops.as_ref().is_some_and(|ops| ops.contains(&op));
         let requestable = listed(&grant.scope.ops) || listed(&grant.scope.ask_ops);
         capability
             && if matches!(
                 self,
-                Self::RealmEnsure
-                    | Self::RealmLaunchApp
-                    | Self::RealmTransferWindow
-                    | Self::RealmSetState
-                    | Self::RealmCapture
-                    | Self::RealmInput
-                    | Self::RealmReset
+                Self::InteractionDomainEnsure
+                    | Self::InteractionDomainLaunchApp
+                    | Self::InteractionDomainTransferWindow
+                    | Self::InteractionDomainSetState
+                    | Self::InteractionDomainObserve
+                    | Self::InteractionDomainCapture
+                    | Self::InteractionDomainInput
+                    | Self::InteractionDomainReset
             ) {
-                // Realm and input operations are never inherited from an
+                // Interaction Domain and input operations are never inherited from an
                 // omitted op allowlist; mirror the compositor's fail-closed
                 // rule. Runtime-gated operations stay advertised: calling
                 // them asks the user first (ADR-0088).
@@ -1201,7 +354,7 @@ impl ToolKind {
         match self {
             Self::DesktopSnapshot => definition(
                 "desktop_snapshot",
-                "Read current Aegis windows, workspaces, outputs, all Realms, and this connector's granted scope. Call before addressing desktop objects by id.",
+                "Read current Aegis windows, workspaces, outputs, all Interaction Domains, and this connector's granted scope. Call before addressing desktop objects by id.",
                 empty(),
                 true,
                 false,
@@ -1215,7 +368,7 @@ impl ToolKind {
             ),
             Self::AppsList => definition(
                 "apps_list",
-                "Search the host XDG application catalog. Use the returned desktop_id with realm_launch_app; never invent desktop ids.",
+                "Search the host XDG application catalog. Use the returned desktop_id with interaction_domain_launch_app; never invent desktop ids.",
                 json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":MAX_APP_RESULTS}},"additionalProperties":false}),
                 true,
                 false,
@@ -1290,58 +443,65 @@ impl ToolKind {
                 false,
                 false,
             ),
-            Self::RealmStatus => definition(
-                "realm_status",
-                "Inspect only the Agent Realm managed by this bridge connector and its controlled or observed interaction groups. Does not create a Realm.",
+            Self::InteractionDomainStatus => definition(
+                "interaction_domain_status",
+                "Inspect only the Agent Interaction Domain managed by this bridge connector and its controlled or observed interaction groups. Does not create an Interaction Domain.",
                 empty(),
                 true,
                 false,
             ),
-            Self::RealmEnsure => definition(
-                "realm_ensure",
-                "Create or recover this connector's private Agent Realm. The Realm id is managed internally and is never caller-selected.",
+            Self::InteractionDomainEnsure => definition(
+                "interaction_domain_ensure",
+                "Create or recover this connector's private Agent Interaction Domain. The Interaction Domain id is managed internally and is never caller-selected.",
                 empty(),
                 false,
                 false,
             ),
-            Self::RealmLaunchApp => definition(
-                "realm_launch_app",
-                "Launch one catalogued desktop application inside the bridge-managed private Agent Realm and sandbox. Call apps_list first.",
+            Self::InteractionDomainLaunchApp => definition(
+                "interaction_domain_launch_app",
+                "Launch one catalogued desktop application inside the bridge-managed private Agent Interaction Domain and sandbox. Call apps_list first.",
                 json!({"type":"object","properties":{"desktop_id":{"type":"string","minLength":1,"maxLength":512}},"required":["desktop_id"],"additionalProperties":false}),
                 false,
                 false,
             ),
-            Self::RealmTransferWindow => definition(
-                "realm_transfer_window",
-                "Atomically transfer interaction authority for a window into the Agent Realm or back to the human Realm. Human observation is retained by default when transferring to the Agent Realm.",
+            Self::InteractionDomainTransferWindow => definition(
+                "interaction_domain_transfer_window",
+                "Atomically transfer interaction authority for a window into the Agent Interaction Domain or back to the human Interaction Domain. Human observation is retained by default when transferring to the Agent Interaction Domain.",
                 json!({"type":"object","properties":{"window_id":{"type":"integer","minimum":1},"target":{"type":"string","enum":["agent","human"]},"retain_source_as_observer":{"type":"boolean"}},"required":["window_id","target"],"additionalProperties":false}),
                 false,
                 false,
             ),
-            Self::RealmSetState => definition(
-                "realm_set_state",
-                "Pause or resume the bridge-managed Realm using an optimistic Realm transaction.",
+            Self::InteractionDomainSetState => definition(
+                "interaction_domain_set_state",
+                "Pause or resume the bridge-managed Interaction Domain using an optimistic Interaction Domain transaction.",
                 json!({"type":"object","properties":{"state":{"type":"string","enum":["active","paused"]}},"required":["state"],"additionalProperties":false}),
                 false,
                 false,
             ),
-            Self::RealmCapture => definition(
-                "realm_capture",
-                "Capture only the Agent Realm's directed virtual output. Returns layout metadata, an owner-only PNG path, and an attached image when it is within the inline limit; never captures compositor chrome or another Realm.",
+            Self::InteractionDomainObserve => definition(
+                "interaction_domain_observe",
+                "Read compositor-owned semantic objects for the Agent Interaction Domain without receiving pixels. Returns a short-lived, single-use observation token for interaction_domain_input.",
+                empty(),
+                true,
+                false,
+            ),
+            Self::InteractionDomainCapture => definition(
+                "interaction_domain_capture",
+                "Capture only the Agent Interaction Domain's directed virtual output. Returns layout metadata, an owner-only PNG path, and an attached image when it is within the inline limit; never captures compositor chrome or another Interaction Domain.",
                 json!({"type":"object","properties":{"region":{"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"width":{"type":"integer","minimum":1},"height":{"type":"integer","minimum":1}},"required":["x","y","width","height"],"additionalProperties":false}},"additionalProperties":false}),
                 false,
                 false,
             ),
-            Self::RealmInput => definition(
-                "realm_input",
-                "Inject a bounded batch of target-local pointer, click, scroll, or evdev key-press actions through the Agent Realm's independent seat. Call realm_capture first and use its placement metadata.",
+            Self::InteractionDomainInput => definition(
+                "interaction_domain_input",
+                "Atomically validate and commit a bounded target-local input batch through the Agent Interaction Domain's independent seat. Pass the single-use observation token returned by interaction_domain_observe or interaction_domain_capture; state changes abort instead of clicking stale coordinates.",
                 input_schema(),
                 false,
                 false,
             ),
-            Self::RealmReset => definition(
-                "realm_reset",
-                "Permanently revoke the bridge-managed Realm and atomically return its controlled windows to the human Realm. Use only when the user explicitly requests reset or shutdown.",
+            Self::InteractionDomainReset => definition(
+                "interaction_domain_reset",
+                "Permanently revoke the bridge-managed Interaction Domain and atomically return its controlled windows to the human Interaction Domain. Use only when the user explicitly requests reset or shutdown.",
                 empty(),
                 false,
                 true,
@@ -1379,13 +539,22 @@ fn input_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "window_id": {"type": "integer", "minimum": 1},
+            "target_window_id": {"type": "integer", "minimum": 1, "description":"Owning window id from semantic.id.window"},
+            "target_local_id": {"type": "integer", "minimum": 0, "description":"Window-scoped semantic id; 0 denotes the window root"},
+            "observation_token": {"type": "string", "minLength": 32, "maxLength": 128},
             "actions": {
                 "type": "array",
                 "minItems": 1,
                 "maxItems": MAX_INPUT_ACTIONS,
                 "items": {
                     "oneOf": [
+                        {"type":"object","properties":{"type":{"const":"invoke"}},"required":["type"],"additionalProperties":false},
+                        {"type":"object","properties":{"type":{"const":"focus"}},"required":["type"],"additionalProperties":false},
+                        {"type":"object","properties":{"type":{"const":"set_value"},"value":{"type":"string","maxLength":16384}},"required":["type","value"],"additionalProperties":false},
+                        {"type":"object","properties":{"type":{"const":"type_text"},"text":{"type":"string","maxLength":16384}},"required":["type","text"],"additionalProperties":false},
+                        {"type":"object","properties":{"type":{"const":"select"},"selected":{"type":"boolean"}},"required":["type","selected"],"additionalProperties":false},
+                        {"type":"object","properties":{"type":{"const":"expand"}},"required":["type"],"additionalProperties":false},
+                        {"type":"object","properties":{"type":{"const":"collapse"}},"required":["type"],"additionalProperties":false},
                         {"type":"object","properties":{"type":{"const":"pointer_move"},"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0}},"required":["type","x","y"],"additionalProperties":false},
                         {"type":"object","properties":{"type":{"const":"click"},"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0},"button":{"type":"string","enum":["left","right","middle","side","extra"]}},"required":["type","x","y","button"],"additionalProperties":false},
                         {"type":"object","properties":{"type":{"const":"scroll"},"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0},"dx":{"type":"number","minimum":-1000,"maximum":1000},"dy":{"type":"number","minimum":-1000,"maximum":1000}},"required":["type","x","y","dx","dy"],"additionalProperties":false},
@@ -1394,7 +563,7 @@ fn input_schema() -> Value {
                 }
             }
         },
-        "required": ["window_id", "actions"],
+        "required": ["target_window_id", "observation_token", "actions"],
         "additionalProperties": false
     })
 }
@@ -1552,17 +721,52 @@ impl TryFrom<RegionArgs> for Rect {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InputArgs {
-    window_id: u64,
+    target_window_id: u64,
+    #[serde(default)]
+    target_local_id: u64,
+    observation_token: String,
     actions: Vec<InputActionArgs>,
+}
+
+fn semantic_object_id(window: u64, local: u64) -> Result<SemanticObjectId, PlatformError> {
+    let window = (window != 0).then_some(window).ok_or_else(|| {
+        invalid("semantic target_window_id must identify a non-zero owning window")
+    })?;
+    Ok(SemanticObjectId {
+        window: aegis_core::window::WindowId(window),
+        local,
+    })
 }
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum InputActionArgs {
+    Invoke,
+    Focus,
+    SetValue { value: String },
+    TypeText { text: String },
+    Select { selected: bool },
+    Expand,
+    Collapse,
     PointerMove { x: i32, y: i32 },
     Click { x: i32, y: i32, button: String },
     Scroll { x: i32, y: i32, dx: f32, dy: f32 },
     KeyPress { code: u32 },
+}
+
+fn semantic_action(value: InputActionArgs) -> Result<SemanticActionIntent, PlatformError> {
+    Ok(match value {
+        InputActionArgs::Invoke => SemanticActionIntent::Invoke,
+        InputActionArgs::Focus => SemanticActionIntent::Focus,
+        InputActionArgs::SetValue { value } => SemanticActionIntent::SetValue { value },
+        InputActionArgs::TypeText { text } => SemanticActionIntent::TypeText { text },
+        InputActionArgs::Select { selected } => SemanticActionIntent::Select { selected },
+        InputActionArgs::Expand => SemanticActionIntent::Expand,
+        InputActionArgs::Collapse => SemanticActionIntent::Collapse,
+        synthetic => SemanticActionIntent::SyntheticInput {
+            actions: vec![SyntheticInputAction::try_from(synthetic)?],
+        },
+    })
 }
 
 impl TryFrom<InputActionArgs> for SyntheticInputAction {
@@ -1614,6 +818,7 @@ impl TryFrom<InputActionArgs> for SyntheticInputAction {
                 }
                 Ok(Self::KeyPress { code })
             }
+            _ => Err(invalid("semantic action is not a synthetic input fallback")),
         }
     }
 }
@@ -1635,13 +840,21 @@ pub enum PlatformError {
     UnknownTool(String),
     #[error("tool {0:?} is not present in the compositor's granted named scope")]
     NotGranted(String),
-    #[error("the managed agent Realm does not exist")]
-    NoManagedRealm,
-    #[error("creating the managed agent Realm requires CreateRealm in the named scope")]
-    RealmCreationNotGranted,
-    #[error("graceful Realm cleanup requires RevokeRealm in the named scope")]
-    RealmCleanupNotGranted,
-    #[error("Aegis returned an unexpected Realm action response")]
+    #[error("the managed Agent Interaction Domain does not exist")]
+    NoManagedInteractionDomain,
+    #[error(
+        "the observation token is unknown, expired, already consumed, or belongs to another MCP process"
+    )]
+    UnknownObservation,
+    #[error(
+        "creating the managed Agent Interaction Domain requires CreateInteractionDomain in the named scope"
+    )]
+    InteractionDomainCreationNotGranted,
+    #[error(
+        "graceful Interaction Domain cleanup requires RevokeInteractionDomain in the named scope"
+    )]
+    InteractionDomainCleanupNotGranted,
+    #[error("Aegis returned an unexpected Interaction Domain action response")]
     UnexpectedResponse,
     #[error("the compositor handshake did not bind an authenticated agent identity")]
     MissingAuthenticatedIdentity,
@@ -1651,13 +864,13 @@ pub enum PlatformError {
     SmokeVerification(String),
     #[error(transparent)]
     Config(#[from] crate::ConfigError),
-    #[error("managed Realm lifecycle failed: {0}")]
-    Realm(String),
+    #[error("managed Interaction Domain lifecycle failed: {0}")]
+    InteractionDomain(String),
 }
 
-impl From<RealmSessionError> for PlatformError {
-    fn from(error: RealmSessionError) -> Self {
-        Self::Realm(error.to_string())
+impl From<InteractionDomainSessionError> for PlatformError {
+    fn from(error: InteractionDomainSessionError) -> Self {
+        Self::InteractionDomain(error.to_string())
     }
 }
 
@@ -1665,14 +878,14 @@ impl From<RealmSessionError> for PlatformError {
 mod tests {
     use super::*;
 
-    fn grant(ops: Option<Vec<OpClass>>) -> ToolGrant {
+    fn grant(ops: Option<Vec<ActorCapability>>) -> ToolGrant {
         ToolGrant {
-            capabilities: Capabilities {
+            capabilities: ConnectionCapabilities {
                 query: true,
                 control: true,
                 input: true,
                 session: false,
-                realm: true,
+                interaction_domain: true,
             },
             scope: Scope {
                 ops,
@@ -1682,16 +895,22 @@ mod tests {
     }
 
     #[test]
-    fn realm_tools_require_explicit_high_risk_operations() {
+    fn interaction_domain_tools_require_explicit_high_risk_operations() {
         let unscoped = grant(None);
         assert!(ToolKind::FocusWindow.allowed(&unscoped));
-        assert!(!ToolKind::RealmCapture.allowed(&unscoped));
-        assert!(!ToolKind::RealmInput.allowed(&unscoped));
+        assert!(!ToolKind::InteractionDomainObserve.allowed(&unscoped));
+        assert!(!ToolKind::InteractionDomainCapture.allowed(&unscoped));
+        assert!(!ToolKind::InteractionDomainInput.allowed(&unscoped));
 
-        let scoped = grant(Some(vec![OpClass::CaptureRealm, OpClass::InjectRealmInput]));
-        assert!(ToolKind::RealmCapture.allowed(&scoped));
-        assert!(ToolKind::RealmInput.allowed(&scoped));
-        assert!(!ToolKind::RealmReset.allowed(&scoped));
+        let scoped = grant(Some(vec![
+            ActorCapability::ObserveInteractionDomain,
+            ActorCapability::CaptureInteractionDomain,
+            ActorCapability::InjectInteractionDomainInput,
+        ]));
+        assert!(ToolKind::InteractionDomainObserve.allowed(&scoped));
+        assert!(ToolKind::InteractionDomainCapture.allowed(&scoped));
+        assert!(ToolKind::InteractionDomainInput.allowed(&scoped));
+        assert!(!ToolKind::InteractionDomainReset.allowed(&scoped));
     }
 
     #[test]
@@ -1719,9 +938,20 @@ mod tests {
             .iter()
             .map(|kind| kind.definition().name)
             .collect::<Vec<_>>();
-        assert!(names.contains(&"realm_capture"));
+        assert!(names.contains(&"interaction_domain_capture"));
+        assert!(names.contains(&"interaction_domain_observe"));
         assert!(names.contains(&"apps_list"));
-        assert_eq!(names.len(), 21);
+        assert_eq!(names.len(), 22);
+    }
+
+    #[test]
+    fn legacy_realm_tool_names_are_rejected_and_not_advertised() {
+        assert_eq!(ToolKind::from_name("realm_observe"), None);
+        let names = ToolKind::ALL
+            .iter()
+            .map(|kind| kind.definition().name)
+            .collect::<Vec<_>>();
+        assert!(!names.iter().any(|name| name.starts_with("realm_")));
     }
 
     #[test]

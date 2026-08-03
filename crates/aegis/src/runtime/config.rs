@@ -562,7 +562,7 @@ pub(super) fn build_gesture_map(
 }
 
 /// Built-in trusted named IPC scopes for ordinary owner control, agent
-/// administration, Realm administration, and portal consent (ADR-0090).
+/// administration, Interaction Domain administration, and portal consent (ADR-0090).
 /// Config-declared agent scopes were removed in protocol v18 (ADR-0088);
 /// agent capability ceilings now come from the compositor-held principal
 /// registry.
@@ -574,22 +574,22 @@ pub(super) fn builtin_ipc_scopes() -> std::collections::HashMap<String, aegis_ip
                 windows: None,
                 workspaces: None,
                 outputs: None,
-                realms: None,
+                interaction_domains: None,
                 ops: Some(vec![
-                    aegis_ipc::OpClass::Focus,
-                    aegis_ipc::OpClass::Minimize,
-                    aegis_ipc::OpClass::Close,
-                    aegis_ipc::OpClass::SetWindowGeometry,
-                    aegis_ipc::OpClass::SwitchWorkspace,
-                    aegis_ipc::OpClass::SwitchWorkspaceTo,
-                    aegis_ipc::OpClass::MoveToWorkspace,
-                    aegis_ipc::OpClass::ToggleTiling,
-                    aegis_ipc::OpClass::SystemControl,
-                    aegis_ipc::OpClass::Notify,
-                    aegis_ipc::OpClass::DismissNotification,
-                    aegis_ipc::OpClass::Screenshot,
-                    aegis_ipc::OpClass::ScreenshotRegion,
-                    aegis_ipc::OpClass::ToggleOverview,
+                    aegis_ipc::ActorCapability::Focus,
+                    aegis_ipc::ActorCapability::Minimize,
+                    aegis_ipc::ActorCapability::Close,
+                    aegis_ipc::ActorCapability::SetWindowGeometry,
+                    aegis_ipc::ActorCapability::SwitchWorkspace,
+                    aegis_ipc::ActorCapability::SwitchWorkspaceTo,
+                    aegis_ipc::ActorCapability::MoveToWorkspace,
+                    aegis_ipc::ActorCapability::ToggleTiling,
+                    aegis_ipc::ActorCapability::SystemControl,
+                    aegis_ipc::ActorCapability::Notify,
+                    aegis_ipc::ActorCapability::DismissNotification,
+                    aegis_ipc::ActorCapability::Screenshot,
+                    aegis_ipc::ActorCapability::ScreenshotRegion,
+                    aegis_ipc::ActorCapability::ToggleOverview,
                 ]),
                 ask_ops: None,
             },
@@ -604,19 +604,20 @@ pub(super) fn builtin_ipc_scopes() -> std::collections::HashMap<String, aegis_ip
             },
         ),
         (
-            aegis_ipc::LOCAL_REALM_ADMIN_SCOPE.to_string(),
+            aegis_ipc::LOCAL_INTERACTION_DOMAIN_ADMIN_SCOPE.to_string(),
             aegis_ipc::Scope {
                 windows: None,
                 workspaces: None,
                 outputs: None,
-                realms: None,
+                interaction_domains: None,
                 ops: Some(vec![
-                    aegis_ipc::OpClass::InjectRealmInput,
-                    aegis_ipc::OpClass::CreateRealm,
-                    aegis_ipc::OpClass::TransactRealm,
-                    aegis_ipc::OpClass::RevokeRealm,
-                    aegis_ipc::OpClass::CaptureRealm,
-                    aegis_ipc::OpClass::LaunchInRealm,
+                    aegis_ipc::ActorCapability::InjectInteractionDomainInput,
+                    aegis_ipc::ActorCapability::CreateInteractionDomain,
+                    aegis_ipc::ActorCapability::TransactInteractionDomain,
+                    aegis_ipc::ActorCapability::RevokeInteractionDomain,
+                    aegis_ipc::ActorCapability::CaptureInteractionDomain,
+                    aegis_ipc::ActorCapability::ObserveInteractionDomain,
+                    aegis_ipc::ActorCapability::LaunchInInteractionDomain,
                 ]),
                 ask_ops: None,
             },
@@ -632,18 +633,18 @@ pub(super) fn builtin_ipc_scopes() -> std::collections::HashMap<String, aegis_ip
                 windows: None,
                 workspaces: None,
                 outputs: None,
-                realms: None,
+                interaction_domains: None,
                 ops: Some(vec![
-                    aegis_ipc::OpClass::CaptureOutput,
-                    aegis_ipc::OpClass::StreamOutput,
-                    aegis_ipc::OpClass::IdleInhibit,
-                    aegis_ipc::OpClass::PickTarget,
-                    aegis_ipc::OpClass::PickApp,
-                    aegis_ipc::OpClass::Notify,
-                    aegis_ipc::OpClass::DismissNotification,
-                    aegis_ipc::OpClass::PromptSecret,
-                    aegis_ipc::OpClass::PickConfirm,
-                    aegis_ipc::OpClass::SetWallpaper,
+                    aegis_ipc::ActorCapability::CaptureOutput,
+                    aegis_ipc::ActorCapability::StreamOutput,
+                    aegis_ipc::ActorCapability::IdleInhibit,
+                    aegis_ipc::ActorCapability::PickTarget,
+                    aegis_ipc::ActorCapability::PickApp,
+                    aegis_ipc::ActorCapability::Notify,
+                    aegis_ipc::ActorCapability::DismissNotification,
+                    aegis_ipc::ActorCapability::PromptSecret,
+                    aegis_ipc::ActorCapability::PickConfirm,
+                    aegis_ipc::ActorCapability::SetWallpaper,
                 ]),
                 ask_ops: None,
             },
@@ -651,57 +652,65 @@ pub(super) fn builtin_ipc_scopes() -> std::collections::HashMap<String, aegis_ip
     ])
 }
 
-pub(super) fn authorize_realm_action_against_snapshot(
+pub(super) fn authorize_interaction_domain_action_against_snapshot(
     scope: &aegis_ipc::Scope,
-    action: &aegis_ipc::RealmAction,
-    snapshot: &aegis_core::realm::RealmSnapshot,
+    action: &aegis_ipc::InteractionDomainAction,
+    snapshot: &aegis_core::interaction_domain::InteractionDomainSnapshot,
 ) -> Result<(), String> {
-    if !scope.permits_realm_action(action) {
+    if !scope.permits_interaction_domain_action(action) {
         return Err("out of scope".into());
     }
-    authorize_realm_action_groups_against_snapshot(scope, action, snapshot)
+    authorize_interaction_domain_action_groups_against_snapshot(scope, action, snapshot)
 }
 
-/// Reauthorization for a Realm action whose operation family was approved
+/// Reauthorization for an Interaction Domain action whose operation family was approved
 /// by a runtime grant (ADR-0088): identical to
-/// [`authorize_realm_action_against_snapshot`] except the operation
+/// [`authorize_interaction_domain_action_against_snapshot`] except the operation
 /// allowlist is already satisfied by the grant, so only the resource
 /// allowlists (and the interaction-group smuggling guard) apply.
-pub(super) fn authorize_realm_action_granted_against_snapshot(
+pub(super) fn authorize_interaction_domain_action_granted_against_snapshot(
     scope: &aegis_ipc::Scope,
-    action: &aegis_ipc::RealmAction,
-    snapshot: &aegis_core::realm::RealmSnapshot,
+    action: &aegis_ipc::InteractionDomainAction,
+    snapshot: &aegis_core::interaction_domain::InteractionDomainSnapshot,
 ) -> Result<(), String> {
-    if !scope.permits_realm_action_resources(action) {
+    if !scope.permits_interaction_domain_action_resources(action) {
         return Err("out of scope".into());
     }
-    authorize_realm_action_groups_against_snapshot(scope, action, snapshot)
+    authorize_interaction_domain_action_groups_against_snapshot(scope, action, snapshot)
 }
 
-/// The interaction-group smuggling guard shared by both Realm
+/// The interaction-group smuggling guard shared by both Interaction Domain
 /// reauthorization paths: a group-level mutation expands to every affected
 /// window, so an allowlisted member cannot smuggle sibling windows across
-/// realms.
-fn authorize_realm_action_groups_against_snapshot(
+/// interaction domains.
+fn authorize_interaction_domain_action_groups_against_snapshot(
     scope: &aegis_ipc::Scope,
-    action: &aegis_ipc::RealmAction,
-    snapshot: &aegis_core::realm::RealmSnapshot,
+    action: &aegis_ipc::InteractionDomainAction,
+    snapshot: &aegis_core::interaction_domain::InteractionDomainSnapshot,
 ) -> Result<(), String> {
-    let aegis_ipc::RealmAction::Transact { mutations, .. } = action else {
+    let aegis_ipc::InteractionDomainAction::Transact { mutations, .. } = action else {
         return Ok(());
     };
     for mutation in mutations {
         let group = match mutation {
-            aegis_core::realm::RealmMutation::TransferWindow { window, .. } => snapshot
+            aegis_core::interaction_domain::InteractionDomainMutation::TransferWindow {
+                window,
+                ..
+            } => snapshot
                 .interaction_groups
                 .iter()
                 .find(|group| group.windows.contains(window)),
-            aegis_core::realm::RealmMutation::SetObserver { group, .. } => snapshot
+            aegis_core::interaction_domain::InteractionDomainMutation::SetObserver {
+                group,
+                ..
+            } => snapshot
                 .interaction_groups
                 .iter()
                 .find(|candidate| candidate.id == *group),
-            aegis_core::realm::RealmMutation::ConfigureOutput { .. }
-            | aegis_core::realm::RealmMutation::SetState { .. } => None,
+            aegis_core::interaction_domain::InteractionDomainMutation::ConfigureOutput {
+                ..
+            }
+            | aegis_core::interaction_domain::InteractionDomainMutation::SetState { .. } => None,
         };
         if group.is_some_and(|group| {
             group
@@ -710,7 +719,8 @@ fn authorize_realm_action_groups_against_snapshot(
                 .any(|window| !scope.permits_window(*window))
         }) {
             return Err(
-                "out of scope: Realm mutation affects another interaction-group window".into(),
+                "out of scope: Interaction Domain mutation affects another interaction-group window"
+                    .into(),
             );
         }
     }

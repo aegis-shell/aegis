@@ -21,7 +21,7 @@ static DATA_DEVICE_IMPL: ffi::wl_data_device_interface_impl = ffi::wl_data_devic
     // wl_data_device gained release in v2. The global is advertised at v3,
     // so the implementation table must include opcode 2; otherwise
     // libwayland dispatches through memory past the Rust table when clients
-    // release a dynamically removed Realm seat's data device.
+    // release a dynamically removed Interaction Domain seat's data device.
     release: res_destroy,
 };
 

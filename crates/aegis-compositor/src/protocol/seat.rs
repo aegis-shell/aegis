@@ -142,7 +142,7 @@ pub(crate) fn seat_wire_capabilities(state: &State, seat: SeatId) -> u32 {
         return 0;
     };
     if runtime.id != seat
-        || runtime.realm != model.realm
+        || runtime.interaction_domain != model.interaction_domain
         || runtime.principal != model.principal
         || !model.enabled
     {
@@ -179,7 +179,7 @@ unsafe extern "C" fn seat_resource_destroy(resource: *mut ffi::wl_resource) {
 }
 
 // Each pointer resource is tracked by its owning SeatRuntime so the main loop
-// can fan events out without crossing realm boundaries.
+// can fan events out without crossing interaction domain boundaries.
 unsafe extern "C" fn seat_get_pointer(
     client: *mut ffi::wl_client,
     seat: *mut ffi::wl_resource,

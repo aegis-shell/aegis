@@ -6,7 +6,7 @@ binary.
 
 ## Responsibilities
 
-- Parse display, window, workspace, notification, Realm, permission, system,
+- Parse display, window, workspace, notification, Interaction Domain, permission, system,
   event, and journal commands.
 - Connect to the compositor IPC socket and negotiate capabilities.
 - Format query results for humans or as JSON.

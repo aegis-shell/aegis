@@ -9,17 +9,21 @@ mod cli;
 mod error;
 
 pub use cli::{
-    Cli, Command, DisplayCmd, JournalCmd, LayoutState, NotificationCmd, OnOff, PermissionsCmd,
-    RealmCmd, Region, SystemCmd, WindowCmd, WorkspaceCmd, WorkspaceTarget,
+    Cli, Command, ConfigCmd, DisplayCmd, InteractionDomainCmd, JournalCmd, LayoutState,
+    NotificationCmd, OnOff, PermissionsCmd, Region, SystemCmd, WindowCmd, WorkspaceCmd,
+    WorkspaceTarget,
 };
 pub use error::CliError;
 
 use std::path::Path;
 
-use aegis_core::realm::{
-    RealmId, RealmMutation, RealmSnapshot, RealmState, SeatCapabilities, VirtualOutput,
+use aegis_core::interaction_domain::{
+    InteractionDomainId, InteractionDomainMutation, InteractionDomainSnapshot,
+    InteractionDomainState, SeatCapabilities, VirtualOutput,
 };
-use aegis_ipc::{Capabilities, Client, Event, RealmAction, RealmActionResult};
+use aegis_ipc::{
+    Client, ConnectionCapabilities, Event, InteractionDomainAction, InteractionDomainActionResult,
+};
 use clap::{CommandFactory, Parser};
 use serde::Serialize;
 
@@ -98,9 +102,14 @@ fn dispatch_command(socket: &Path, cli: Cli) -> Result<String, CliError> {
         Cmd::Workspace { command } => dispatch_workspace(socket, command, json),
         Cmd::Notification { command } => dispatch_notification(socket, command, json),
         Cmd::Journal { command } => dispatch_journal(socket, command, json),
-        Cmd::Realm { command } => dispatch_realm(socket, command.unwrap_or(RealmCmd::List), json),
+        Cmd::InteractionDomain { command } => {
+            dispatch_interaction_domain(socket, command.unwrap_or(InteractionDomainCmd::List), json)
+        }
         Cmd::Permissions { command } => {
             dispatch_permissions(socket, command.unwrap_or(PermissionsCmd::List), json)
+        }
+        Cmd::Config { command } => {
+            dispatch_config(command.unwrap_or(ConfigCmd::Validate { path: None }), json)
         }
         Cmd::System { command } => {
             dispatch_system(socket, command.unwrap_or(SystemCmd::Status), json)
@@ -126,6 +135,101 @@ fn dispatch_command(socket: &Path, cli: Cli) -> Result<String, CliError> {
             client.command(aegis_ipc::Command::Quit).map_err(io_err)?;
             Ok(receipt("quit requested", json))
         }
+    }
+}
+
+fn dispatch_config(command: ConfigCmd, json: bool) -> Result<String, CliError> {
+    let resolve_path = |path: Option<std::path::PathBuf>| {
+        path.or_else(aegis_config::default_path).ok_or_else(|| {
+            CliError::Fs(
+                "$XDG_CONFIG_HOME and HOME are unset; provide an explicit config path".into(),
+            )
+        })
+    };
+    match command {
+        ConfigCmd::Validate { path } => {
+            let path = resolve_path(path)?;
+            match aegis_config::load(&path).map_err(config_error)? {
+                Some(config) => {
+                    if json {
+                        Ok(serde_json::json!({
+                            "path": path,
+                            "schema_version": config.schema_version,
+                            "valid": true,
+                        })
+                        .to_string())
+                    } else {
+                        Ok(format!(
+                            "configuration valid: {} (schema {})",
+                            path.display(),
+                            config.schema_version
+                        ))
+                    }
+                }
+                None => Err(CliError::Fs(format!(
+                    "configuration does not exist: {}",
+                    path.display()
+                ))),
+            }
+        }
+        ConfigCmd::Migrate { path } => {
+            let path = resolve_path(path)?;
+            match aegis_config::migrate_file(&path).map_err(config_error)? {
+                aegis_config::MigrationOutcome::AlreadyCurrent { version, .. } => {
+                    if json {
+                        Ok(serde_json::json!({
+                            "path": path,
+                            "schema_version": version,
+                            "migrated": false,
+                        })
+                        .to_string())
+                    } else {
+                        Ok(format!(
+                            "configuration already current: {} (schema {version})",
+                            path.display()
+                        ))
+                    }
+                }
+                aegis_config::MigrationOutcome::Migrated {
+                    backup,
+                    from_version,
+                    to_version,
+                    ..
+                } => {
+                    if json {
+                        Ok(serde_json::json!({
+                            "path": path,
+                            "backup": backup,
+                            "from_schema_version": from_version,
+                            "to_schema_version": to_version,
+                            "migrated": true,
+                        })
+                        .to_string())
+                    } else {
+                        Ok(format!(
+                            "migrated {} from schema {from_version} to {to_version}; backup: {}",
+                            path.display(),
+                            backup.display()
+                        ))
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn config_error(error: aegis_config::LoadError) -> CliError {
+    match error {
+        aegis_config::LoadError::Invalid { path, diagnostics } => CliError::Fs(format!(
+            "{}: {}",
+            path.display(),
+            diagnostics
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
+        )),
+        other => CliError::Fs(other.to_string()),
     }
 }
 
@@ -469,6 +573,12 @@ fn dispatch_permissions(
                 principal: String,
                 credential: String,
             }
+            impl Drop for Registered {
+                fn drop(&mut self) {
+                    use zeroize::Zeroize as _;
+                    self.credential.zeroize();
+                }
+            }
             let registered = Registered {
                 principal,
                 credential,
@@ -522,113 +632,130 @@ fn format_permissions(
     out.trim_end().to_string()
 }
 
-fn op_names(ops: &[aegis_ipc::OpClass]) -> String {
+fn op_names(ops: &[aegis_ipc::ActorCapability]) -> String {
     ops.iter()
         .map(|op| format!("{op:?}"))
         .collect::<Vec<_>>()
         .join(", ")
 }
 
-fn dispatch_realm(socket: &Path, action: RealmCmd, json: bool) -> Result<String, CliError> {
-    let caps = Capabilities {
+fn dispatch_interaction_domain(
+    socket: &Path,
+    action: InteractionDomainCmd,
+    json: bool,
+) -> Result<String, CliError> {
+    let caps = ConnectionCapabilities {
         query: true,
         control: true,
         input: false,
         session: true,
-        realm: true,
+        interaction_domain: true,
     };
-    let mut client = Client::connect_scoped(socket, caps, aegis_ipc::LOCAL_REALM_ADMIN_SCOPE)
-        .map_err(connect_err)?;
+    let mut client = Client::connect_scoped(
+        socket,
+        caps,
+        aegis_ipc::LOCAL_INTERACTION_DOMAIN_ADMIN_SCOPE,
+    )
+    .map_err(connect_err)?;
     match action {
-        RealmCmd::List => {
-            let snapshot = client.realms().map_err(io_err)?;
-            Ok(render(&snapshot, json, format_realms))
+        InteractionDomainCmd::List => {
+            let snapshot = client.interaction_domains().map_err(io_err)?;
+            Ok(render(&snapshot, json, format_interaction_domains))
         }
-        RealmCmd::Create { label } => {
+        InteractionDomainCmd::Create { label } => {
             let result = client
-                .realm_action(RealmAction::Create {
+                .interaction_domain_action(InteractionDomainAction::Create {
                     label,
                     capabilities: SeatCapabilities::POINTER_KEYBOARD,
                     output: Some(VirtualOutput::DEFAULT_AGENT),
                 })
                 .map_err(io_err)?;
-            format_realm_action(result, json)
+            format_interaction_domain_action(result, json)
         }
-        RealmCmd::Pause { realm } => {
-            let realm = validate_realm_id(realm)?;
-            let snapshot = client.realms().map_err(io_err)?;
+        InteractionDomainCmd::Pause { interaction_domain } => {
+            let interaction_domain = validate_interaction_domain_id(interaction_domain)?;
+            let snapshot = client.interaction_domains().map_err(io_err)?;
             let result = client
-                .realm_action(RealmAction::Transact {
+                .interaction_domain_action(InteractionDomainAction::Transact {
                     expected_revision: Some(snapshot.revision),
-                    mutations: vec![RealmMutation::SetState {
-                        realm,
-                        state: RealmState::Paused,
+                    mutations: vec![InteractionDomainMutation::SetState {
+                        interaction_domain,
+                        state: InteractionDomainState::Paused,
                     }],
                 })
                 .map_err(io_err)?;
-            format_realm_action(result, json)
+            format_interaction_domain_action(result, json)
         }
-        RealmCmd::Resume { realm } => {
-            let realm = validate_realm_id(realm)?;
-            let snapshot = client.realms().map_err(io_err)?;
+        InteractionDomainCmd::Resume { interaction_domain } => {
+            let interaction_domain = validate_interaction_domain_id(interaction_domain)?;
+            let snapshot = client.interaction_domains().map_err(io_err)?;
             let result = client
-                .realm_action(RealmAction::Transact {
+                .interaction_domain_action(InteractionDomainAction::Transact {
                     expected_revision: Some(snapshot.revision),
-                    mutations: vec![RealmMutation::SetState {
-                        realm,
-                        state: RealmState::Active,
+                    mutations: vec![InteractionDomainMutation::SetState {
+                        interaction_domain,
+                        state: InteractionDomainState::Active,
                     }],
                 })
                 .map_err(io_err)?;
-            format_realm_action(result, json)
+            format_interaction_domain_action(result, json)
         }
-        RealmCmd::Transfer {
+        InteractionDomainCmd::Transfer {
             window,
-            realm,
+            interaction_domain,
             no_mirror,
         } => {
-            let realm = validate_realm_id(realm)?;
+            let interaction_domain = validate_interaction_domain_id(interaction_domain)?;
             let window = aegis_core::window::WindowId(window);
-            let snapshot = client.realms().map_err(io_err)?;
+            let snapshot = client.interaction_domains().map_err(io_err)?;
             let result = client
-                .realm_action(RealmAction::Transact {
+                .interaction_domain_action(InteractionDomainAction::Transact {
                     expected_revision: Some(snapshot.revision),
-                    mutations: vec![RealmMutation::TransferWindow {
+                    mutations: vec![InteractionDomainMutation::TransferWindow {
                         window,
-                        target: realm,
+                        target: interaction_domain,
                         retain_source_as_observer: !no_mirror,
                     }],
                 })
                 .map_err(io_err)?;
-            format_realm_action(result, json)
+            format_interaction_domain_action(result, json)
         }
-        RealmCmd::Launch { realm, desktop_id } => {
-            let realm = validate_realm_id(realm)?;
+        InteractionDomainCmd::Launch {
+            interaction_domain,
+            desktop_id,
+        } => {
+            let interaction_domain = validate_interaction_domain_id(interaction_domain)?;
             client
-                .launch_in_realm(realm, desktop_id.clone())
+                .launch_in_interaction_domain(interaction_domain, desktop_id.clone())
                 .map_err(io_err)?;
             Ok(receipt(
-                format!("launch of {desktop_id} queued in Realm {}", realm.0),
+                format!(
+                    "launch of {desktop_id} queued in Interaction Domain {}",
+                    interaction_domain.0
+                ),
                 json,
             ))
         }
-        RealmCmd::Capture {
-            realm,
+        InteractionDomainCmd::Capture {
+            interaction_domain,
             path,
             region,
         } => {
-            let realm = validate_realm_id(realm)?;
+            let interaction_domain = validate_interaction_domain_id(interaction_domain)?;
             let capture = client
-                .capture_realm(realm, region.map(Into::into))
+                .capture_interaction_domain(interaction_domain, region.map(Into::into))
                 .map_err(io_err)?;
             let path = match path {
                 Some(p) => std::path::PathBuf::from(p),
-                None => realm_capture_path(&aegis_config::default_screenshot_dir(), realm)?,
+                None => interaction_domain_capture_path(
+                    &aegis_config::default_screenshot_dir(),
+                    interaction_domain,
+                )?,
             };
             atomic_write(&path, &capture.png)?;
             if json {
                 serde_json::to_string(&serde_json::json!({
-                    "realm": capture.realm,
+                    "interaction_domain": capture.interaction_domain,
                     "width": capture.width,
                     "height": capture.height,
                     "scale_milli": capture.scale_milli,
@@ -640,8 +767,8 @@ fn dispatch_realm(socket: &Path, action: RealmCmd, json: bool) -> Result<String,
                 .map_err(|e| CliError::Io(e.to_string()))
             } else {
                 Ok(format!(
-                    "captured Realm {} at {}x{} (r{}) → {}",
-                    realm.0,
+                    "captured Interaction Domain {} at {}x{} (r{}) → {}",
+                    interaction_domain.0,
                     capture.width,
                     capture.height,
                     capture.revision,
@@ -649,22 +776,25 @@ fn dispatch_realm(socket: &Path, action: RealmCmd, json: bool) -> Result<String,
                 ))
             }
         }
-        RealmCmd::Revoke { realm, fallback } => {
-            let realm = validate_realm_id(realm)?;
+        InteractionDomainCmd::Revoke {
+            interaction_domain,
+            fallback,
+        } => {
+            let interaction_domain = validate_interaction_domain_id(interaction_domain)?;
             let fallback = if fallback == 0 {
-                return Err(CliError::InvalidFallbackRealm(fallback));
+                return Err(CliError::InvalidFallbackInteractionDomain(fallback));
             } else {
-                RealmId(fallback)
+                InteractionDomainId(fallback)
             };
-            let snapshot = client.realms().map_err(io_err)?;
+            let snapshot = client.interaction_domains().map_err(io_err)?;
             let result = client
-                .realm_action(RealmAction::Revoke {
-                    realm,
+                .interaction_domain_action(InteractionDomainAction::Revoke {
+                    interaction_domain,
                     fallback,
                     expected_revision: Some(snapshot.revision),
                 })
                 .map_err(io_err)?;
-            format_realm_action(result, json)
+            format_interaction_domain_action(result, json)
         }
     }
 }
@@ -684,12 +814,12 @@ pub fn run_subscribe_journal(socket: &Path) -> Result<(), CliError> {
 }
 
 fn run_stream(socket: &Path, journal: bool, json: bool) -> Result<(), CliError> {
-    let caps = Capabilities {
+    let caps = ConnectionCapabilities {
         query: true,
         control: false,
         input: false,
         session: false,
-        realm: false,
+        interaction_domain: false,
     };
     let mut client = Client::connect_with(socket, caps).map_err(connect_err)?;
     if journal {
@@ -718,27 +848,27 @@ fn run_stream(socket: &Path, journal: bool, json: bool) -> Result<(), CliError> 
 
 // ---- capability constants ----------------------------------------------
 
-fn query_caps() -> Capabilities {
-    Capabilities {
+fn query_caps() -> ConnectionCapabilities {
+    ConnectionCapabilities {
         query: true,
         control: false,
         input: false,
         session: false,
-        realm: false,
+        interaction_domain: false,
     }
 }
 
-fn control_caps() -> Capabilities {
-    Capabilities {
+fn control_caps() -> ConnectionCapabilities {
+    ConnectionCapabilities {
         query: true,
         control: true,
         input: false,
         session: true,
-        realm: false,
+        interaction_domain: false,
     }
 }
 
-fn owner_client(socket: &Path, caps: Capabilities) -> std::io::Result<Client> {
+fn owner_client(socket: &Path, caps: ConnectionCapabilities) -> std::io::Result<Client> {
     Client::connect_scoped(socket, caps, aegis_ipc::LOCAL_OWNER_ADMIN_SCOPE)
 }
 
@@ -750,11 +880,11 @@ fn io_err(e: std::io::Error) -> CliError {
     CliError::Io(e.to_string())
 }
 
-fn validate_realm_id(raw: u64) -> Result<RealmId, CliError> {
+fn validate_interaction_domain_id(raw: u64) -> Result<InteractionDomainId, CliError> {
     if raw == 0 {
-        return Err(CliError::ZeroRealmId);
+        return Err(CliError::ZeroInteractionDomainId);
     }
-    Ok(RealmId(raw))
+    Ok(InteractionDomainId(raw))
 }
 
 // ---- tiny renderer helper: collapse the `if json { } else { }` pattern ---
@@ -783,7 +913,10 @@ fn receipt(message: impl Into<String>, json: bool) -> String {
 
 // ---- path helpers --------------------------------------------------------
 
-fn realm_capture_path(dir: &Path, realm: RealmId) -> Result<std::path::PathBuf, CliError> {
+fn interaction_domain_capture_path(
+    dir: &Path,
+    interaction_domain: InteractionDomainId,
+) -> Result<std::path::PathBuf, CliError> {
     std::fs::create_dir_all(dir).map_err(|e| {
         CliError::Fs(format!(
             "create screenshot directory {}: {e}",
@@ -794,7 +927,10 @@ fn realm_capture_path(dir: &Path, realm: RealmId) -> Result<std::path::PathBuf, 
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    Ok(dir.join(format!("aegis-realm-{}-{ms}.png", realm.0)))
+    Ok(dir.join(format!(
+        "aegis-interaction-domain-{}-{ms}.png",
+        interaction_domain.0
+    )))
 }
 
 /// Generate a timestamped screenshot path and ensure its parent exists.
@@ -864,24 +1000,27 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
 
 // ---- human-readable formatters ------------------------------------------
 
-fn format_realm_action(result: RealmActionResult, json: bool) -> Result<String, CliError> {
+fn format_interaction_domain_action(
+    result: InteractionDomainActionResult,
+    json: bool,
+) -> Result<String, CliError> {
     if json {
         return serde_json::to_string(&result).map_err(|e| CliError::Io(e.to_string()));
     }
     Ok(match result {
-        RealmActionResult::Created { bundle } => format!(
-            "created Realm {} with seat {} (r{}); launches use private mount-scoped portals",
-            bundle.realm.0, bundle.seat.0, bundle.revision
+        InteractionDomainActionResult::Created { bundle } => format!(
+            "created Interaction Domain {} with seat {} (r{}); launches use private mount-scoped portals",
+            bundle.interaction_domain.0, bundle.seat.0, bundle.revision
         ),
-        RealmActionResult::TransactionCommitted { receipt } => format!(
-            "committed {} Realm mutation(s), r{} → r{}",
+        InteractionDomainActionResult::TransactionCommitted { receipt } => format!(
+            "committed {} Interaction Domain mutation(s), r{} → r{}",
             receipt.results.len(),
             receipt.before_revision,
             receipt.after_revision
         ),
-        RealmActionResult::Revoked { receipt } => format!(
-            "revoked Realm {}; {} interaction group(s) returned to Realm {} (r{})",
-            receipt.realm.0,
+        InteractionDomainActionResult::Revoked { receipt } => format!(
+            "revoked Interaction Domain {}; {} interaction group(s) returned to Interaction Domain {} (r{})",
+            receipt.interaction_domain.0,
             receipt.transferred_groups.len(),
             receipt.fallback.0,
             receipt.revision
@@ -889,25 +1028,30 @@ fn format_realm_action(result: RealmActionResult, json: bool) -> Result<String, 
     })
 }
 
-fn format_realms(snapshot: &RealmSnapshot) -> String {
+fn format_interaction_domains(snapshot: &InteractionDomainSnapshot) -> String {
     let mut out = format!("authority revision {}\n", snapshot.revision);
-    for realm in &snapshot.realms {
+    for interaction_domain in &snapshot.interaction_domains {
         let seats = snapshot
             .seats
             .iter()
-            .filter(|seat| seat.realm == realm.id)
+            .filter(|seat| seat.interaction_domain == interaction_domain.id)
             .map(|seat| seat.name.as_str())
             .collect::<Vec<_>>()
             .join(",");
         let windows = snapshot
             .interaction_groups
             .iter()
-            .filter(|group| group.control_realm == realm.id)
+            .filter(|group| group.control_interaction_domain == interaction_domain.id)
             .map(|group| group.windows.len())
             .sum::<usize>();
         out.push_str(&format!(
             "{:<5} {:<20} {:?} {:?} seats=[{}] windows={}\n",
-            realm.id.0, realm.label, realm.kind, realm.state, seats, windows
+            interaction_domain.id.0,
+            interaction_domain.label,
+            interaction_domain.kind,
+            interaction_domain.state,
+            seats,
+            windows
         ));
     }
     out
@@ -1130,17 +1274,19 @@ pub fn format_event(ev: &Event) -> String {
                 format_mutation(&entry.mutation)
             )
         }
-        Event::RealmsChanged { revision } => format!("realms changed r{revision}"),
+        Event::InteractionDomainsChanged { revision } => {
+            format!("interaction_domains changed r{revision}")
+        }
         Event::SettingsChanged { revision } => format!("settings changed r{revision}"),
         Event::SystemStatusChanged => "system status changed".into(),
-        Event::RealmDamaged {
-            realm,
+        Event::InteractionDomainDamaged {
+            interaction_domain,
             sequence,
             revision,
             ..
         } => format!(
-            "realm {} damaged {} at authority revision {}",
-            realm.0, sequence, revision
+            "interaction_domain {} damaged {} at authority revision {}",
+            interaction_domain.0, sequence, revision
         ),
         Event::StreamFrame {
             stream_id,

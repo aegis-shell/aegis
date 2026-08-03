@@ -81,11 +81,13 @@ pub(super) struct CompositorRuntime {
     /// gesture is running.
     pub(super) swipe: Option<SwipeState>,
     pub(super) renderer: aegis_render::Renderer,
-    pub(super) realm_processes: RealmProcesses,
-    pub(super) realm_render_targets:
-        std::collections::BTreeMap<aegis_core::realm::RealmId, RealmRenderTarget>,
-    pub(super) pending_realm_capture: Option<PendingRealmCapture>,
-    pub(super) realm_damage_sequence: u64,
+    pub(super) interaction_domain_processes: InteractionDomainProcesses,
+    pub(super) interaction_domain_render_targets: std::collections::BTreeMap<
+        aegis_core::interaction_domain::InteractionDomainId,
+        InteractionDomainRenderTarget,
+    >,
+    pub(super) pending_interaction_domain_capture: Option<PendingInteractionDomainCapture>,
+    pub(super) interaction_domain_damage_sequence: u64,
     pub(super) agent_activity_sequence: u64,
     pub(super) start: std::time::Instant,
     pub(super) wallpaper: Option<aegis_wallpaper::Wallpaper>,
@@ -118,14 +120,28 @@ pub(super) struct CompositorRuntime {
     pub(super) reload: Option<aegis_config::ReloadWatcher>,
     /// Supervised ext-idle-notify policy client for this session.
     pub(super) idle_process: session::IdleProcess,
+    /// Supervised out-of-process accessibility semantic adapter.
+    pub(super) semantic_adapter_process: session::SemanticAdapterProcess,
     pub(super) quit_requested: bool,
     pub(super) ipc_cmd_rx: std::sync::mpsc::Receiver<IpcCommandRequest>,
     pub(super) system_control_rx: std::sync::mpsc::Receiver<SystemControlRequest>,
     pub(super) capture_rx: std::sync::mpsc::Receiver<CaptureRequest>,
-    pub(super) realm_control_rx: std::sync::mpsc::Receiver<RealmControlRequest>,
+    pub(super) interaction_domain_control_rx:
+        std::sync::mpsc::Receiver<InteractionDomainControlRequest>,
     pub(super) settings_control_rx: std::sync::mpsc::Receiver<SettingsControlRequest>,
     pub(super) wallpaper_control_rx: std::sync::mpsc::Receiver<WallpaperControlRequest>,
-    pub(super) realm_capture_rx: std::sync::mpsc::Receiver<RealmCaptureRequest>,
+    pub(super) interaction_domain_capture_rx:
+        std::sync::mpsc::Receiver<InteractionDomainCaptureRequest>,
+    pub(super) interaction_domain_observe_rx:
+        std::sync::mpsc::Receiver<InteractionDomainObserveRequest>,
+    pub(super) actor_action_rx: std::sync::mpsc::Receiver<InteractionDomainActorActionRequest>,
+    pub(super) semantic_tree_update_rx: std::sync::mpsc::Receiver<SemanticTreeUpdateRequest>,
+    pub(super) semantic_provider_revocation_rx:
+        std::sync::mpsc::Receiver<aegis_semantic::SemanticProviderId>,
+    pub(super) pending_semantic_actions: Vec<PendingSemanticActorAction>,
+    pub(super) observation_discard_rx: std::sync::mpsc::Receiver<ObservationDiscardRequest>,
+    pub(super) actor_disconnect_rx: std::sync::mpsc::Receiver<u64>,
+    pub(super) observations: ObservationRegistry,
     pub(super) stream_control_rx: std::sync::mpsc::Receiver<StreamControlRequest>,
     pub(super) idle_control_rx: std::sync::mpsc::Receiver<IdleControlRequest>,
     /// Interactive-pick controls from IPC connection threads (ADR-0054), the
@@ -144,8 +160,6 @@ pub(super) struct CompositorRuntime {
     pub(super) pending_capability_pick: Option<PendingCapabilityPick>,
     /// IPC connections currently holding a surfaceless idle inhibitor.
     pub(super) ipc_idle_inhibits: IdleInhibits,
-    pub(super) journal_refusal_rx: std::sync::mpsc::Receiver<JournalRefusalRequest>,
-    pub(super) auth_event_rx: std::sync::mpsc::Receiver<AuthEventRequest>,
     pub(super) journal: std::sync::Arc<std::sync::Mutex<aegis_ipc::Journal>>,
     pub(super) live: std::sync::Arc<LiveState>,
     pub(super) ipc: Option<aegis_ipc::Server>,
@@ -156,7 +170,7 @@ pub(super) struct CompositorRuntime {
     /// `Server::windows()` clone only happens when this changes.
     pub(super) last_windows_hash: Option<u64>,
     pub(super) last_ws_sig: Option<u64>,
-    pub(super) last_realm_revision: Option<u64>,
+    pub(super) last_interaction_domain_revision: Option<u64>,
     pub(super) last_outputs_revision: Option<u64>,
     // ----- output damage pipeline (see runtime/damage.rs) -----
     /// Per-surface content generations at the last damage assessment; a
@@ -182,7 +196,7 @@ pub(super) struct CompositorRuntime {
     /// frame so the status-bar clock cannot go stale while idle.
     pub(super) last_present_minute: Option<u64>,
     /// Shell mutations applied outside the signed paths (status poller,
-    /// config reload, app rescan, IPC settings/Realm control) since the last
+    /// config reload, app rescan, IPC settings/Interaction Domain control) since the last
     /// assessment.
     pub(super) chrome_dirty: bool,
     /// Set when the output was resized/recreated; the next frame must render
@@ -194,7 +208,8 @@ pub(super) struct CompositorRuntime {
     pub(super) pending_frame: Option<FrameState>,
     pub(super) settings_revision: u64,
     pub(super) previous_agent_suspended: bool,
-    pub(super) automatically_paused_realms: std::collections::BTreeSet<aegis_core::realm::RealmId>,
+    pub(super) automatically_paused_interaction_domains:
+        std::collections::BTreeSet<aegis_core::interaction_domain::InteractionDomainId>,
     pub(super) animating: bool,
     pub(super) chrome_pointer_captured: bool,
     pub(super) synthetic_pointer_active: bool,

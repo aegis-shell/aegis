@@ -257,7 +257,7 @@ system_prompt_append = "Be terse."
 [permissions]
 default = "deny"
 bash = "ask"
-"mcp__aegis__realm_input" = "allow"
+"mcp__aegis__interaction_domain_input" = "allow"
 
 [mcp.aegis]
 command = ["aegis-mcp"]
@@ -271,7 +271,9 @@ paths = ["/opt/skills"]
         assert_eq!(config.agent.max_turns, 12);
         assert_eq!(config.permissions.mode_for("bash"), PermissionMode::Ask);
         assert_eq!(
-            config.permissions.mode_for("mcp__aegis__realm_input"),
+            config
+                .permissions
+                .mode_for("mcp__aegis__interaction_domain_input"),
             PermissionMode::Allow
         );
         assert_eq!(config.permissions.mode_for("unknown"), PermissionMode::Deny);

@@ -1,7 +1,7 @@
 # aegis-launcher
 
 `aegis-launcher` starts ordinary detached desktop applications and
-compositor-owned, sandboxed Realm applications with the appropriate display
+compositor-owned, sandboxed Interaction Domain applications with the appropriate display
 environment and lifecycle.
 
 ## Responsibilities
@@ -11,10 +11,10 @@ environment and lifecycle.
 - Honor `Terminal=true` with a configurable terminal emulator.
 - Start the process in a new session through `setsid --fork`.
 - Redirect detached standard streams away from the compositor.
-- Launch Realm applications through fail-closed bubblewrap namespaces with
-  explicit filesystem and network grants.
+- Launch Interaction Domain applications through fail-closed bubblewrap namespaces with
+  no host network or user-file mounts.
 - Return a managed sandbox handle that can pause, resume, terminate, and reap
-  the complete Realm cgroup.
+  the complete Interaction Domain cgroup.
 
 ## Boundaries
 
@@ -32,15 +32,15 @@ shutdown. The host must provide `/usr/bin/setsid`.
 child and returns an error for a nonzero exit.
 
 `launch_managed` requires `LaunchOpts::sandbox` and `/usr/bin/bwrap`. Managed
-Realm processes are compositor-owned: dropping the handle kills and reaps the
-sandbox. Bubblewrap receives a mount-scoped Realm Wayland listener, read-only
+Interaction Domain processes are compositor-owned: dropping the handle kills and reaps the
+sandbox. Bubblewrap receives a mount-scoped Interaction Domain Wayland listener, read-only
 system files, ephemeral home/tmp, and GPU render nodes by default. Its host
 socket path is unlinked before application execution is released, while the
 private mount continues to support multiple Wayland connections. Network,
 KMS device nodes, the session bus, and host user files are absent.
 
 Managed launch also requires cgroup v2 with delegated `cpu`, `memory`, and
-`pids` controllers. `prepare_realm_host` creates the compositor host leaf;
+`pids` controllers. `prepare_interaction_domain_host` creates the compositor host leaf;
 successful launches always install hard memory and process limits plus CPU
 weight. Missing isolation or delegation rejects the launch.
 
@@ -58,10 +58,10 @@ if let Some(application) = applications.first() {
 Implement `LaunchSource` to launch a compatible model without performing a
 desktop-entry scan.
 
-Use `launch_managed` for Realm lifecycle ownership:
+Use `launch_managed` for Interaction Domain lifecycle ownership:
 
 ```rust
-let mut process = aegis_launch::launch_managed(application, &realm_options)?;
+let mut process = aegis_launch::launch_managed(application, &interaction_domain_options)?;
 process.pause()?;
 process.resume()?;
 process.terminate()?;

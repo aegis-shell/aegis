@@ -7,6 +7,7 @@
 
 use serde::{Serialize, de::DeserializeOwned};
 use std::io::{self, Read, Write};
+use zeroize::Zeroize as _;
 
 /// Frames larger than this are rejected before allocation, bounding the
 /// memory a misbehaving peer can make the reader reserve.
@@ -14,17 +15,21 @@ pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
 /// Serialize and write one framed message, then flush.
 pub fn write_msg<W: Write, T: Serialize>(w: &mut W, msg: &T) -> io::Result<()> {
-    let bytes = serde_json::to_vec(msg).map_err(json_io_err)?;
+    let mut bytes = serde_json::to_vec(msg).map_err(json_io_err)?;
     if bytes.len() > MAX_FRAME {
+        bytes.zeroize();
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("frame length {} exceeds {MAX_FRAME}", bytes.len()),
         ));
     }
     let len = bytes.len() as u32;
-    w.write_all(&len.to_le_bytes())?;
-    w.write_all(&bytes)?;
-    w.flush()
+    let result = w
+        .write_all(&len.to_le_bytes())
+        .and_then(|_| w.write_all(&bytes))
+        .and_then(|_| w.flush());
+    bytes.zeroize();
+    result
 }
 
 /// Read and deserialize one framed message. Any read error — including the
@@ -42,7 +47,9 @@ pub fn read_msg<R: Read, T: DeserializeOwned>(r: &mut R) -> io::Result<T> {
     }
     let mut bytes = vec![0u8; len];
     r.read_exact(&mut bytes)?;
-    serde_json::from_slice(&bytes).map_err(json_io_err)
+    let result = serde_json::from_slice(&bytes).map_err(json_io_err);
+    bytes.zeroize();
+    result
 }
 
 fn json_io_err(e: serde_json::Error) -> io::Error {
@@ -59,7 +66,7 @@ mod tests {
     fn round_trip_through_a_buffer() {
         let req = Request::Hello {
             version: PROTOCOL_VERSION,
-            caps: crate::schema::Capabilities::QUERY,
+            caps: crate::schema::ConnectionCapabilities::QUERY,
             scope: None,
             lease: None,
             agent: None,

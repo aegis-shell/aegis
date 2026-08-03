@@ -8,7 +8,7 @@ use crate::tools::{AegisPlatform, PlatformError, ToolCallResult, ToolDefinition}
 
 const MCP_PROTOCOL_VERSION: &str = "2026-07-28";
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
-const SERVER_INSTRUCTIONS: &str = "Use desktop_snapshot before desktop ids. The Agent Realm handle is bridge-managed: never ask for or invent a raw Realm id. Capture before Realm input and verify queued effects with a fresh capture or journal.";
+const SERVER_INSTRUCTIONS: &str = "Use desktop_snapshot before desktop ids. The Agent Interaction Domain handle is bridge-managed: never ask for or invent a raw Interaction Domain id. Capture before Interaction Domain input and verify queued effects with a fresh capture or journal.";
 
 trait ToolHost {
     fn definitions(&mut self) -> Result<Vec<ToolDefinition>, PlatformError>;
@@ -62,7 +62,7 @@ impl ToolHost for LazyAegisPlatform {
 }
 
 /// Serve newline-delimited MCP JSON-RPC on stdin/stdout until the client
-/// closes the pipe, then apply the configured graceful Realm shutdown policy.
+/// closes the pipe, then apply the configured graceful Interaction Domain shutdown policy.
 pub fn serve(platform: &mut AegisPlatform) -> Result<(), McpError> {
     let stdin = io::stdin();
     let stdout = io::stdout();
@@ -74,7 +74,7 @@ pub fn serve(platform: &mut AegisPlatform) -> Result<(), McpError> {
 /// Serve from configuration and connect to the native capability broker only
 /// when the client first lists or calls a tool. This lets a
 /// `server/discover` request remain side-effect free and fast: protocol
-/// discovery must not create a principal, prompt the user, or acquire Realm
+/// discovery must not create a principal, prompt the user, or acquire Interaction Domain
 /// authority.
 pub fn serve_config(config: BridgeConfig) -> Result<(), McpError> {
     let mut host = LazyAegisPlatform {
@@ -416,7 +416,7 @@ pub enum McpError {
     Json(#[from] serde_json::Error),
     #[error("MCP request exceeds the {0}-byte limit")]
     RequestTooLarge(usize),
-    #[error("graceful Realm shutdown failed; recovery state was retained: {0}")]
+    #[error("graceful Interaction Domain shutdown failed; recovery state was retained: {0}")]
     Shutdown(PlatformError),
 }
 

@@ -11,48 +11,79 @@ use std::collections::HashSet;
 use std::io::{Read as _, Write as _};
 use std::path::PathBuf;
 
-use aegis_ipc::{AgentIdentity, OpClass, PairedAgent};
+use aegis_ipc::{ActorCapability, AgentIdentity, PairedAgent};
+
+const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_PRINCIPALS: usize = 4_096;
+const MAX_GRANTS: usize = 16_384;
 
 /// Operation families a self-registered agent may request. Component-only
-/// operations (portal picks, output capture and streaming, wallpaper, idle
-/// inhibition, global input, session control, plain screenshots) are never
+/// operations (target/application picks, output capture and streaming,
+/// wallpaper, idle inhibition, global input, session control, plain
+/// screenshots) are never
 /// agent-requestable: they belong to platform components, not to borrowing
 /// agents.
-pub(crate) const AGENT_REQUESTABLE: &[OpClass] = &[
-    OpClass::Focus,
-    OpClass::Minimize,
-    OpClass::Close,
-    OpClass::Move,
-    OpClass::SetWindowGeometry,
-    OpClass::Cycle,
-    OpClass::SwitchWorkspace,
-    OpClass::SwitchWorkspaceTo,
-    OpClass::MoveToWorkspace,
-    OpClass::ToggleTiling,
-    OpClass::ToggleOverview,
-    OpClass::Notify,
-    OpClass::DismissNotification,
-    OpClass::InjectRealmInput,
-    OpClass::CreateRealm,
-    OpClass::TransactRealm,
-    OpClass::RevokeRealm,
-    OpClass::CaptureRealm,
-    OpClass::LaunchInRealm,
+pub(crate) const AGENT_REQUESTABLE: &[ActorCapability] = &[
+    ActorCapability::ObserveWindows,
+    ActorCapability::ObserveWorkspaces,
+    ActorCapability::ObserveOutputs,
+    ActorCapability::ObserveNotifications,
+    ActorCapability::ObserveJournal,
+    ActorCapability::ObserveInteractionDomains,
+    ActorCapability::ObserveSettings,
+    ActorCapability::ObserveSystem,
+    ActorCapability::Focus,
+    ActorCapability::Minimize,
+    ActorCapability::Close,
+    ActorCapability::Move,
+    ActorCapability::SetWindowGeometry,
+    ActorCapability::Cycle,
+    ActorCapability::SwitchWorkspace,
+    ActorCapability::SwitchWorkspaceTo,
+    ActorCapability::MoveToWorkspace,
+    ActorCapability::ToggleTiling,
+    ActorCapability::ToggleOverview,
+    ActorCapability::Notify,
+    ActorCapability::DismissNotification,
+    ActorCapability::ReadFile,
+    ActorCapability::WriteFile,
+    ActorCapability::AccessNetworkOrigin,
+    ActorCapability::PromptSecret,
+    ActorCapability::RequestPayment,
+    ActorCapability::InjectInteractionDomainInput,
+    ActorCapability::CreateInteractionDomain,
+    ActorCapability::TransactInteractionDomain,
+    ActorCapability::RevokeInteractionDomain,
+    ActorCapability::CaptureInteractionDomain,
+    ActorCapability::ObserveInteractionDomain,
+    ActorCapability::LaunchInInteractionDomain,
+];
+
+const SYSTEM_COMPONENT_CAPABILITIES: &[ActorCapability] = &[
+    ActorCapability::ObserveWindows,
+    ActorCapability::PublishAccessibilityTree,
+    ActorCapability::DispatchAccessibilityAction,
 ];
 
 /// Operation families that always route through the interactive runtime
 /// grant on first use, however the ceiling was approved: destructive,
 /// privacy-sensitive, or authority-transferring (ADR-0088).
-pub(crate) fn is_runtime_gated(op: OpClass) -> bool {
+pub(crate) fn is_runtime_gated(op: ActorCapability) -> bool {
     matches!(
         op,
-        OpClass::Close
-            | OpClass::InjectRealmInput
-            | OpClass::CreateRealm
-            | OpClass::TransactRealm
-            | OpClass::RevokeRealm
-            | OpClass::CaptureRealm
-            | OpClass::LaunchInRealm
+        ActorCapability::Close
+            | ActorCapability::ReadFile
+            | ActorCapability::WriteFile
+            | ActorCapability::AccessNetworkOrigin
+            | ActorCapability::PromptSecret
+            | ActorCapability::RequestPayment
+            | ActorCapability::InjectInteractionDomainInput
+            | ActorCapability::CreateInteractionDomain
+            | ActorCapability::TransactInteractionDomain
+            | ActorCapability::RevokeInteractionDomain
+            | ActorCapability::CaptureInteractionDomain
+            | ActorCapability::ObserveInteractionDomain
+            | ActorCapability::LaunchInInteractionDomain
     )
 }
 
@@ -72,8 +103,8 @@ pub(crate) struct PrincipalRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     pub credential_sha256: String,
-    pub pregranted: Vec<OpClass>,
-    pub gated: Vec<OpClass>,
+    pub pregranted: Vec<ActorCapability>,
+    pub gated: Vec<ActorCapability>,
     pub created_at: u64,
 }
 
@@ -81,6 +112,10 @@ pub(crate) struct PrincipalRecord {
 pub(crate) struct PrincipalRegistry {
     path: Option<PathBuf>,
     principals: Vec<PrincipalRecord>,
+    /// First-party component identities valid only for this compositor
+    /// process. They participate in normal credential lookup and live
+    /// ceiling refresh but are never serialized to the durable registry.
+    ephemeral: Vec<PrincipalRecord>,
     /// Lowercased labels whose pairing was denied this session; repeat
     /// requests are refused without prompting again.
     denied: HashSet<String>,
@@ -91,12 +126,14 @@ impl PrincipalRegistry {
     /// corrupt or version-mismatched file also starts empty (fail-closed)
     /// and is logged — never silently trusted.
     pub(crate) fn load(path: PathBuf) -> Self {
-        let principals = match std::fs::read(&path) {
-            Ok(bytes) => match serde_json::from_slice::<RegistryFile>(&bytes) {
-                Ok(file) if file.version == REGISTRY_VERSION => file.principals,
+        let principals = match read_private_state(&path) {
+            Ok(Some(bytes)) => match serde_json::from_slice::<RegistryFile>(&bytes) {
+                Ok(file) if file.version == REGISTRY_VERSION && valid_registry_file(&file) => {
+                    file.principals
+                }
                 Ok(file) => {
                     log::warn!(
-                        "agent registry {}: unsupported version {}, starting empty",
+                        "agent registry {}: unsupported or invalid version {}, starting empty",
                         path.display(),
                         file.version
                     );
@@ -110,10 +147,10 @@ impl PrincipalRegistry {
                     Vec::new()
                 }
             },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Ok(None) => Vec::new(),
             Err(error) => {
                 log::warn!(
-                    "agent registry {}: cannot read ({error}), starting empty",
+                    "agent registry {}: unsafe or unreadable ({error}), starting empty",
                     path.display()
                 );
                 Vec::new()
@@ -122,16 +159,19 @@ impl PrincipalRegistry {
         Self {
             path: Some(path),
             principals,
+            ephemeral: Vec::new(),
             denied: HashSet::new(),
         }
     }
 
     /// A session-only registry for sessions without a durable data
     /// directory. Pairings then live only until the compositor exits.
+    #[cfg(test)]
     pub(crate) fn in_memory() -> Self {
         Self {
             path: None,
             principals: Vec::new(),
+            ephemeral: Vec::new(),
             denied: HashSet::new(),
         }
     }
@@ -141,11 +181,16 @@ impl PrincipalRegistry {
         let digest = sha256_hex(credential.as_bytes());
         self.principals
             .iter()
-            .find(|record| record.credential_sha256 == digest)
-            .map(|record| AgentIdentity {
-                principal: record.id.clone(),
-                pregranted: record.pregranted.clone(),
-                gated: record.gated.clone(),
+            .chain(&self.ephemeral)
+            .find(|record| constant_time_eq(record.credential_sha256.as_bytes(), digest.as_bytes()))
+            .and_then(|record| {
+                aegis_authority::ActorPrincipal::new(record.id.clone())
+                    .ok()
+                    .map(|principal| AgentIdentity {
+                        principal,
+                        pregranted: record.pregranted.clone(),
+                        gated: record.gated.clone(),
+                    })
             })
     }
 
@@ -155,11 +200,16 @@ impl PrincipalRegistry {
     pub(crate) fn identity_for_principal(&self, principal: &str) -> Option<AgentIdentity> {
         self.principals
             .iter()
+            .chain(&self.ephemeral)
             .find(|record| record.id == principal)
-            .map(|record| AgentIdentity {
-                principal: record.id.clone(),
-                pregranted: record.pregranted.clone(),
-                gated: record.gated.clone(),
+            .and_then(|record| {
+                aegis_authority::ActorPrincipal::new(record.id.clone())
+                    .ok()
+                    .map(|principal| AgentIdentity {
+                        principal,
+                        pregranted: record.pregranted.clone(),
+                        gated: record.gated.clone(),
+                    })
             })
     }
 
@@ -167,7 +217,7 @@ impl PrincipalRegistry {
     /// by the pairing prompt to warn about look-alike installations
     /// (ADR-0088 TOFU continuity).
     pub(crate) fn label_collision(&self, label: &str) -> bool {
-        self.principals.iter().any(|record| {
+        self.principals.iter().chain(&self.ephemeral).any(|record| {
             record
                 .label
                 .as_deref()
@@ -192,7 +242,7 @@ impl PrincipalRegistry {
     pub(crate) fn issue(
         &mut self,
         label: Option<&str>,
-        requested: &[OpClass],
+        requested: &[ActorCapability],
     ) -> Result<PairedAgent, String> {
         let mut pregranted = Vec::new();
         let mut gated = Vec::new();
@@ -209,7 +259,7 @@ impl PrincipalRegistry {
         let (principal, credential) =
             self.register_record(label, pregranted.clone(), gated.clone())?;
         Ok(PairedAgent {
-            principal,
+            principal: aegis_authority::ActorPrincipal::new(principal).map_err(str::to_owned)?,
             credential,
             pregranted,
             gated,
@@ -224,6 +274,7 @@ impl PrincipalRegistry {
     /// Rename a principal's display label (`None` clears it). Unknown id
     /// errors.
     pub(crate) fn rename(&mut self, principal: &str, label: Option<&str>) -> Result<(), String> {
+        validate_label(label)?;
         let Some(record) = self
             .principals
             .iter_mut()
@@ -268,8 +319,8 @@ impl PrincipalRegistry {
     pub(crate) fn set_ceiling(
         &mut self,
         principal: &str,
-        pregranted: Vec<OpClass>,
-        gated: Vec<OpClass>,
+        pregranted: Vec<ActorCapability>,
+        gated: Vec<ActorCapability>,
     ) -> Result<(), String> {
         let (pregranted, gated) = validate_explicit_ceiling(pregranted, gated)?;
         let Some(index) = self
@@ -299,11 +350,49 @@ impl PrincipalRegistry {
     pub(crate) fn register(
         &mut self,
         label: Option<&str>,
-        pregranted: Vec<OpClass>,
-        gated: Vec<OpClass>,
+        pregranted: Vec<ActorCapability>,
+        gated: Vec<ActorCapability>,
     ) -> Result<(String, String), String> {
         let (pregranted, gated) = validate_explicit_ceiling(pregranted, gated)?;
         self.register_record(label, pregranted, gated)
+    }
+
+    /// Provision a first-party process identity for this compositor
+    /// lifetime. The returned credential is passed over an inherited pipe;
+    /// neither the cleartext credential nor its digest reaches disk.
+    pub(crate) fn register_ephemeral(
+        &mut self,
+        label: Option<&str>,
+        pregranted: Vec<ActorCapability>,
+    ) -> Result<(String, String), String> {
+        if pregranted.is_empty() {
+            return Err("system component capability ceiling is empty".into());
+        }
+        let mut seen = Vec::new();
+        for capability in &pregranted {
+            if !SYSTEM_COMPONENT_CAPABILITIES.contains(capability) {
+                return Err(format!(
+                    "operation {capability:?} is not available to an ephemeral system component"
+                ));
+            }
+            if seen.contains(capability) {
+                return Err(format!(
+                    "system component ceiling contains duplicate operation {capability:?}"
+                ));
+            }
+            seen.push(*capability);
+        }
+        let principal = format!("prin_{}", random_hex(8)?);
+        let credential = random_hex(32)?;
+        self.ephemeral.push(PrincipalRecord {
+            id: principal.clone(),
+            label: label.map(str::to_owned),
+            credential_sha256: sha256_hex(credential.as_bytes()),
+            pregranted,
+            gated: Vec::new(),
+            created_at: now_epoch(),
+        });
+        Ok((principal, credential))
     }
 
     /// Shared tail of [`PrincipalRegistry::issue`] and
@@ -313,11 +402,12 @@ impl PrincipalRegistry {
     fn register_record(
         &mut self,
         label: Option<&str>,
-        pregranted: Vec<OpClass>,
-        gated: Vec<OpClass>,
+        pregranted: Vec<ActorCapability>,
+        gated: Vec<ActorCapability>,
     ) -> Result<(String, String), String> {
+        validate_label(label)?;
         let principal = format!("prin_{}", random_hex(8)?);
-        let credential = random_hex(32)?;
+        let mut credential = random_hex(32)?;
         self.principals.push(PrincipalRecord {
             id: principal.clone(),
             label: label.map(str::to_owned),
@@ -328,6 +418,8 @@ impl PrincipalRegistry {
         });
         if let Err(error) = self.save() {
             self.principals.pop();
+            use zeroize::Zeroize as _;
+            credential.zeroize();
             return Err(error);
         }
         Ok((principal, credential))
@@ -362,7 +454,7 @@ struct GrantsFile {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct GrantRecord {
     pub principal: String,
-    pub op: OpClass,
+    pub op: ActorCapability,
     pub allow: bool,
     pub granted_at: u64,
 }
@@ -375,9 +467,9 @@ pub(crate) struct GrantStore {
     path: Option<PathBuf>,
     /// Durable decisions, persisted on every change.
     grants: Vec<GrantRecord>,
-    /// Session-only decisions `(principal, op, allow)`. `OpClass` has no
+    /// Session-only decisions `(principal, op, allow)`. `ActorCapability` has no
     /// `Hash`, so lookup is linear over this short vec.
-    session: Vec<(String, OpClass, bool)>,
+    session: Vec<(String, ActorCapability, bool)>,
 }
 
 impl GrantStore {
@@ -385,12 +477,14 @@ impl GrantStore {
     /// or version-mismatched file also starts empty (fail-closed) and is
     /// logged — never silently trusted.
     pub(crate) fn load(path: PathBuf) -> Self {
-        let grants = match std::fs::read(&path) {
-            Ok(bytes) => match serde_json::from_slice::<GrantsFile>(&bytes) {
-                Ok(file) if file.version == GRANTS_VERSION => file.grants,
+        let grants = match read_private_state(&path) {
+            Ok(Some(bytes)) => match serde_json::from_slice::<GrantsFile>(&bytes) {
+                Ok(file) if file.version == GRANTS_VERSION && valid_grants_file(&file) => {
+                    file.grants
+                }
                 Ok(file) => {
                     log::warn!(
-                        "agent grants {}: unsupported version {}, starting empty",
+                        "agent grants {}: unsupported or invalid version {}, starting empty",
                         path.display(),
                         file.version
                     );
@@ -404,10 +498,10 @@ impl GrantStore {
                     Vec::new()
                 }
             },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Ok(None) => Vec::new(),
             Err(error) => {
                 log::warn!(
-                    "agent grants {}: cannot read ({error}), starting empty",
+                    "agent grants {}: unsafe or unreadable ({error}), starting empty",
                     path.display()
                 );
                 Vec::new()
@@ -421,6 +515,7 @@ impl GrantStore {
     }
 
     /// A session-only store for sessions without a durable data directory.
+    #[cfg(test)]
     pub(crate) fn in_memory() -> Self {
         Self {
             path: None,
@@ -431,7 +526,7 @@ impl GrantStore {
 
     /// The recorded decision for one principal and operation, if any.
     /// Session decisions win over durable ones.
-    pub(crate) fn decision_for(&self, principal: &str, op: OpClass) -> Option<bool> {
+    pub(crate) fn decision_for(&self, principal: &str, op: ActorCapability) -> Option<bool> {
         if let Some((_, _, allow)) = self
             .session
             .iter()
@@ -451,7 +546,7 @@ impl GrantStore {
     pub(crate) fn record(
         &mut self,
         principal: &str,
-        op: OpClass,
+        op: ActorCapability,
         allow: bool,
         session: bool,
     ) -> Result<(), String> {
@@ -495,7 +590,7 @@ impl GrantStore {
 
     /// Drop one decision from both scopes and persist. Revoking a grant
     /// that was never recorded is not an error.
-    pub(crate) fn revoke(&mut self, principal: &str, op: OpClass) -> Result<(), String> {
+    pub(crate) fn revoke(&mut self, principal: &str, op: ActorCapability) -> Result<(), String> {
         let previous_session = self.session.clone();
         let previous_grants = self.grants.clone();
         self.session
@@ -525,7 +620,7 @@ impl GrantStore {
     pub(crate) fn list(&self, filter: Option<&str>) -> Vec<aegis_ipc::AgentGrantInfo> {
         self.grants
             .iter()
-            .filter(|record| filter.map_or(true, |principal| record.principal == principal))
+            .filter(|record| filter.is_none_or(|principal| record.principal == principal))
             .map(|record| aegis_ipc::AgentGrantInfo {
                 principal: record.principal.clone(),
                 op: record.op,
@@ -556,8 +651,8 @@ impl GrantStore {
 }
 
 /// One requestable capability family projected for the pairing checklist:
-/// a stable machine key (the `OpClass` variant name, parseable back with
-/// [`OpClass::from_name`]), a human label, and whether first use is
+/// a stable machine key (the `ActorCapability` variant name, parseable back with
+/// [`ActorCapability::from_name`]), a human label, and whether first use is
 /// runtime-gated (ADR-0088).
 pub(crate) struct CapabilityGroupData {
     pub key: &'static str,
@@ -568,7 +663,7 @@ pub(crate) struct CapabilityGroupData {
 /// The checklist rows for a pairing request: the requested set filtered
 /// down to the agent-requestable families and deduplicated, each marked
 /// with its runtime-gated flag.
-pub(crate) fn capability_groups(requested: &[OpClass]) -> Vec<CapabilityGroupData> {
+pub(crate) fn capability_groups(requested: &[ActorCapability]) -> Vec<CapabilityGroupData> {
     AGENT_REQUESTABLE
         .iter()
         .filter(|op| requested.contains(op))
@@ -580,29 +675,43 @@ pub(crate) fn capability_groups(requested: &[OpClass]) -> Vec<CapabilityGroupDat
         .collect()
 }
 
-/// The stable machine key of an agent-requestable family: its `OpClass`
-/// variant name, which [`OpClass::from_name`] parses back.
-fn op_key(op: OpClass) -> &'static str {
+/// The stable machine key of an agent-requestable family: its `ActorCapability`
+/// variant name, which [`ActorCapability::from_name`] parses back.
+fn op_key(op: ActorCapability) -> &'static str {
     match op {
-        OpClass::Focus => "Focus",
-        OpClass::Minimize => "Minimize",
-        OpClass::Close => "Close",
-        OpClass::Move => "Move",
-        OpClass::SetWindowGeometry => "SetWindowGeometry",
-        OpClass::Cycle => "Cycle",
-        OpClass::SwitchWorkspace => "SwitchWorkspace",
-        OpClass::SwitchWorkspaceTo => "SwitchWorkspaceTo",
-        OpClass::MoveToWorkspace => "MoveToWorkspace",
-        OpClass::ToggleTiling => "ToggleTiling",
-        OpClass::ToggleOverview => "ToggleOverview",
-        OpClass::Notify => "Notify",
-        OpClass::DismissNotification => "DismissNotification",
-        OpClass::InjectRealmInput => "InjectRealmInput",
-        OpClass::CreateRealm => "CreateRealm",
-        OpClass::TransactRealm => "TransactRealm",
-        OpClass::RevokeRealm => "RevokeRealm",
-        OpClass::CaptureRealm => "CaptureRealm",
-        OpClass::LaunchInRealm => "LaunchInRealm",
+        ActorCapability::ObserveWindows => "ObserveWindows",
+        ActorCapability::ObserveWorkspaces => "ObserveWorkspaces",
+        ActorCapability::ObserveOutputs => "ObserveOutputs",
+        ActorCapability::ObserveNotifications => "ObserveNotifications",
+        ActorCapability::ObserveJournal => "ObserveJournal",
+        ActorCapability::ObserveInteractionDomains => "ObserveInteractionDomains",
+        ActorCapability::ObserveSettings => "ObserveSettings",
+        ActorCapability::ObserveSystem => "ObserveSystem",
+        ActorCapability::Focus => "Focus",
+        ActorCapability::Minimize => "Minimize",
+        ActorCapability::Close => "Close",
+        ActorCapability::Move => "Move",
+        ActorCapability::SetWindowGeometry => "SetWindowGeometry",
+        ActorCapability::Cycle => "Cycle",
+        ActorCapability::SwitchWorkspace => "SwitchWorkspace",
+        ActorCapability::SwitchWorkspaceTo => "SwitchWorkspaceTo",
+        ActorCapability::MoveToWorkspace => "MoveToWorkspace",
+        ActorCapability::ToggleTiling => "ToggleTiling",
+        ActorCapability::ToggleOverview => "ToggleOverview",
+        ActorCapability::Notify => "Notify",
+        ActorCapability::DismissNotification => "DismissNotification",
+        ActorCapability::ReadFile => "ReadFile",
+        ActorCapability::WriteFile => "WriteFile",
+        ActorCapability::AccessNetworkOrigin => "AccessNetworkOrigin",
+        ActorCapability::PromptSecret => "PromptSecret",
+        ActorCapability::RequestPayment => "RequestPayment",
+        ActorCapability::InjectInteractionDomainInput => "InjectInteractionDomainInput",
+        ActorCapability::CreateInteractionDomain => "CreateInteractionDomain",
+        ActorCapability::TransactInteractionDomain => "TransactInteractionDomain",
+        ActorCapability::RevokeInteractionDomain => "RevokeInteractionDomain",
+        ActorCapability::CaptureInteractionDomain => "CaptureInteractionDomain",
+        ActorCapability::ObserveInteractionDomain => "ObserveInteractionDomain",
+        ActorCapability::LaunchInInteractionDomain => "LaunchInInteractionDomain",
         // Component-only families never reach the pairing checklist:
         // `capability_groups` filters them out first.
         _ => unreachable!("op_key is only called for agent-requestable ops"),
@@ -619,10 +728,10 @@ fn deny_key(label: Option<&str>) -> String {
 /// meaning. Runtime-gated families may never be placed in `pregranted`, and
 /// duplicate, overlapping, or component-only families are rejected.
 fn validate_explicit_ceiling(
-    pregranted: Vec<OpClass>,
-    gated: Vec<OpClass>,
-) -> Result<(Vec<OpClass>, Vec<OpClass>), String> {
-    let validate_group = |name: &str, ops: &[OpClass]| -> Result<(), String> {
+    pregranted: Vec<ActorCapability>,
+    gated: Vec<ActorCapability>,
+) -> Result<(Vec<ActorCapability>, Vec<ActorCapability>), String> {
+    let validate_group = |name: &str, ops: &[ActorCapability]| -> Result<(), String> {
         let mut seen = Vec::new();
         for op in ops {
             if !AGENT_REQUESTABLE.contains(op) {
@@ -648,6 +757,77 @@ fn validate_explicit_ceiling(
         ));
     }
     Ok((pregranted, gated))
+}
+
+fn validate_label(label: Option<&str>) -> Result<(), String> {
+    if label.is_some_and(|label| {
+        label.trim().is_empty() || label.len() > 256 || label.chars().any(char::is_control)
+    }) {
+        return Err("Agent label is empty, oversized, or contains control characters".into());
+    }
+    Ok(())
+}
+
+fn valid_registry_file(file: &RegistryFile) -> bool {
+    if file.principals.len() > MAX_PRINCIPALS {
+        return false;
+    }
+    file.principals.iter().enumerate().all(|(index, record)| {
+        aegis_authority::ActorPrincipal::new(record.id.clone()).is_ok()
+            && validate_label(record.label.as_deref()).is_ok()
+            && record.credential_sha256.len() == 64
+            && record
+                .credential_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            && validate_explicit_ceiling(record.pregranted.clone(), record.gated.clone()).is_ok()
+            && !file.principals[..index].iter().any(|previous| {
+                previous.id == record.id || previous.credential_sha256 == record.credential_sha256
+            })
+    })
+}
+
+fn valid_grants_file(file: &GrantsFile) -> bool {
+    file.grants.len() <= MAX_GRANTS
+        && file.grants.iter().enumerate().all(|(index, record)| {
+            aegis_authority::ActorPrincipal::new(record.principal.clone()).is_ok()
+                && AGENT_REQUESTABLE.contains(&record.op)
+                && !file.grants[..index].iter().any(|previous| {
+                    previous.principal == record.principal && previous.op == record.op
+                })
+        })
+}
+
+fn read_private_state(path: &std::path::Path) -> Result<Option<Vec<u8>>, String> {
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
+
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("open {}: {error}", path.display())),
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("inspect {}: {error}", path.display()))?;
+    if !metadata.file_type().is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o077 != 0
+        || metadata.nlink() != 1
+        || metadata.len() > MAX_STATE_BYTES
+    {
+        return Err(format!(
+            "{} has unsafe ownership, mode, type, link count, or size",
+            path.display()
+        ));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.read_to_end(&mut bytes)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    Ok(Some(bytes))
 }
 
 /// Crash-durable, owner-only replacement used by both authorization stores.
@@ -700,12 +880,25 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
+        == 0
+}
+
 fn random_hex(bytes: usize) -> Result<String, String> {
+    use zeroize::Zeroize as _;
     let mut buf = vec![0u8; bytes];
     std::fs::File::open("/dev/urandom")
         .and_then(|mut file| file.read_exact(&mut buf))
         .map_err(|error| format!("read /dev/urandom: {error}"))?;
-    Ok(buf.iter().map(|byte| format!("{byte:02x}")).collect())
+    let encoded = buf.iter().map(|byte| format!("{byte:02x}")).collect();
+    buf.zeroize();
+    Ok(encoded)
 }
 
 #[cfg(test)]
@@ -732,27 +925,33 @@ mod tests {
             .issue(
                 Some("Codex"),
                 &[
-                    OpClass::Focus,
-                    OpClass::CaptureRealm,
-                    OpClass::Focus,
-                    OpClass::PickConfirm, // component-only, must be dropped
+                    ActorCapability::Focus,
+                    ActorCapability::CaptureInteractionDomain,
+                    ActorCapability::Focus,
+                    ActorCapability::PickConfirm, // component-only, must be dropped
                 ],
             )
             .expect("issue");
-        assert_eq!(paired.pregranted, vec![OpClass::Focus]);
-        assert_eq!(paired.gated, vec![OpClass::CaptureRealm]);
+        assert_eq!(paired.pregranted, vec![ActorCapability::Focus]);
+        assert_eq!(
+            paired.gated,
+            vec![ActorCapability::CaptureInteractionDomain]
+        );
 
         let identity = registry.lookup(&paired.credential).expect("recognized");
         assert_eq!(identity.principal, paired.principal);
-        assert_eq!(identity.pregranted, vec![OpClass::Focus]);
-        assert_eq!(identity.gated, vec![OpClass::CaptureRealm]);
+        assert_eq!(identity.pregranted, vec![ActorCapability::Focus]);
+        assert_eq!(
+            identity.gated,
+            vec![ActorCapability::CaptureInteractionDomain]
+        );
         assert!(registry.lookup("forged").is_none());
         assert_eq!(
             registry
                 .identity_for_principal(&paired.principal)
                 .expect("live principal")
                 .gated,
-            vec![OpClass::CaptureRealm]
+            vec![ActorCapability::CaptureInteractionDomain]
         );
     }
 
@@ -761,7 +960,7 @@ mod tests {
         let path = scratch();
         let mut registry = PrincipalRegistry::load(path.clone());
         let paired = registry
-            .issue(Some("Codex"), &[OpClass::Notify])
+            .issue(Some("Codex"), &[ActorCapability::Notify])
             .expect("issue");
         drop(registry);
 
@@ -789,9 +988,70 @@ mod tests {
     }
 
     #[test]
+    fn unsafe_or_semantically_invalid_registry_files_start_empty() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let path = scratch();
+        let mut registry = PrincipalRegistry::load(path.clone());
+        let paired = registry
+            .issue(Some("Codex"), &[ActorCapability::Focus])
+            .unwrap();
+        drop(registry);
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            PrincipalRegistry::load(path.clone())
+                .lookup(&paired.credential)
+                .is_none(),
+            "group/world-readable credential registry was trusted"
+        );
+
+        let invalid = RegistryFile {
+            version: REGISTRY_VERSION,
+            principals: vec![PrincipalRecord {
+                id: "prin_invalid".into(),
+                label: Some("Injected".into()),
+                credential_sha256: "0".repeat(64),
+                pregranted: vec![ActorCapability::PickConfirm],
+                gated: Vec::new(),
+                created_at: 1,
+            }],
+        };
+        std::fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(
+            PrincipalRegistry::load(path.clone())
+                .principals()
+                .is_empty()
+        );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn labels_are_bounded_at_the_registry_boundary() {
+        let mut registry = PrincipalRegistry::in_memory();
+        assert!(
+            registry
+                .issue(Some(" "), &[ActorCapability::Focus])
+                .is_err()
+        );
+        assert!(
+            registry
+                .register(
+                    Some(&"x".repeat(257)),
+                    vec![ActorCapability::Focus],
+                    Vec::new(),
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
     fn label_collision_and_session_denial_are_tracked() {
         let mut registry = PrincipalRegistry::in_memory();
-        registry.issue(Some("Codex"), &[OpClass::Focus]).unwrap();
+        registry
+            .issue(Some("Codex"), &[ActorCapability::Focus])
+            .unwrap();
         assert!(registry.label_collision("codex"));
         assert!(!registry.label_collision("OpenCode"));
 
@@ -804,10 +1064,10 @@ mod tests {
     #[test]
     fn capability_groups_filter_dedup_and_mark_gated() {
         let groups = capability_groups(&[
-            OpClass::Focus,
-            OpClass::CaptureRealm,
-            OpClass::Focus,
-            OpClass::PickConfirm, // component-only, must be dropped
+            ActorCapability::Focus,
+            ActorCapability::CaptureInteractionDomain,
+            ActorCapability::Focus,
+            ActorCapability::PickConfirm, // component-only, must be dropped
         ]);
         assert_eq!(groups.len(), 2);
         let focus = &groups[0];
@@ -815,8 +1075,8 @@ mod tests {
         assert_eq!(focus.label, "Focus windows");
         assert!(!focus.gated);
         let capture = &groups[1];
-        assert_eq!(capture.key, "CaptureRealm");
-        assert_eq!(capture.label, "Capture its Realm's screen");
+        assert_eq!(capture.key, "CaptureInteractionDomain");
+        assert_eq!(capture.label, "Capture its Interaction Domain");
         assert!(capture.gated);
     }
 
@@ -826,7 +1086,7 @@ mod tests {
         assert_eq!(groups.len(), AGENT_REQUESTABLE.len());
         for group in &groups {
             assert_eq!(
-                OpClass::from_name(group.key).map(|op| op.label()),
+                ActorCapability::from_name(group.key).map(|op| op.label()),
                 Some(group.label)
             );
         }
@@ -835,7 +1095,9 @@ mod tests {
     #[test]
     fn rename_forget_and_set_ceiling_manage_principals() {
         let mut registry = PrincipalRegistry::in_memory();
-        let paired = registry.issue(Some("Codex"), &[OpClass::Focus]).unwrap();
+        let paired = registry
+            .issue(Some("Codex"), &[ActorCapability::Focus])
+            .unwrap();
 
         registry.rename(&paired.principal, Some("Renamed")).unwrap();
         assert_eq!(registry.principals()[0].label.as_deref(), Some("Renamed"));
@@ -846,12 +1108,15 @@ mod tests {
         registry
             .set_ceiling(
                 &paired.principal,
-                vec![OpClass::Focus],
-                vec![OpClass::Close],
+                vec![ActorCapability::Focus],
+                vec![ActorCapability::Close],
             )
             .unwrap();
-        assert_eq!(registry.principals()[0].pregranted, vec![OpClass::Focus]);
-        assert_eq!(registry.principals()[0].gated, vec![OpClass::Close]);
+        assert_eq!(
+            registry.principals()[0].pregranted,
+            vec![ActorCapability::Focus]
+        );
+        assert_eq!(registry.principals()[0].gated, vec![ActorCapability::Close]);
         assert!(
             registry
                 .set_ceiling("prin_missing", vec![], vec![])
@@ -871,14 +1136,14 @@ mod tests {
         let (principal, credential) = registry
             .register(
                 Some("Provisioned"),
-                vec![OpClass::Focus],
-                vec![OpClass::Close],
+                vec![ActorCapability::Focus],
+                vec![ActorCapability::Close],
             )
             .expect("register");
         let identity = registry.lookup(&credential).expect("recognized");
-        assert_eq!(identity.principal, principal);
-        assert_eq!(identity.pregranted, vec![OpClass::Focus]);
-        assert_eq!(identity.gated, vec![OpClass::Close]);
+        assert_eq!(identity.principal.as_str(), principal);
+        assert_eq!(identity.pregranted, vec![ActorCapability::Focus]);
+        assert_eq!(identity.gated, vec![ActorCapability::Close]);
         assert_eq!(
             registry.principals()[0].label.as_deref(),
             Some("Provisioned")
@@ -886,19 +1151,46 @@ mod tests {
     }
 
     #[test]
+    fn ephemeral_component_identity_is_recognized_but_never_persisted() {
+        let path = scratch();
+        let mut registry = PrincipalRegistry::load(path.clone());
+        let (principal, credential) = registry
+            .register_ephemeral(
+                Some("Aegis AT-SPI adapter"),
+                vec![ActorCapability::PublishAccessibilityTree],
+            )
+            .unwrap();
+        assert_eq!(
+            registry.lookup(&credential).unwrap().principal.as_str(),
+            principal
+        );
+        assert!(!path.exists(), "ephemeral registration wrote durable state");
+
+        let reloaded = PrincipalRegistry::load(path.clone());
+        assert!(reloaded.lookup(&credential).is_none());
+        cleanup(&path);
+    }
+
+    #[test]
     fn explicit_ceilings_reject_unsafe_or_ambiguous_assignments() {
         let mut registry = PrincipalRegistry::in_memory();
-        let paired = registry.issue(Some("Codex"), &[OpClass::Focus]).unwrap();
+        let paired = registry
+            .issue(Some("Codex"), &[ActorCapability::Focus])
+            .unwrap();
 
         assert!(
             registry
-                .set_ceiling(&paired.principal, vec![OpClass::Close], vec![])
+                .set_ceiling(&paired.principal, vec![ActorCapability::Close], vec![])
                 .unwrap_err()
                 .contains("must be runtime-gated")
         );
         assert!(
             registry
-                .set_ceiling(&paired.principal, vec![OpClass::PickConfirm], vec![],)
+                .set_ceiling(
+                    &paired.principal,
+                    vec![ActorCapability::PickConfirm],
+                    vec![],
+                )
                 .unwrap_err()
                 .contains("component-only")
         );
@@ -906,46 +1198,74 @@ mod tests {
             registry
                 .set_ceiling(
                     &paired.principal,
-                    vec![OpClass::Focus],
-                    vec![OpClass::Focus],
+                    vec![ActorCapability::Focus],
+                    vec![ActorCapability::Focus],
                 )
                 .unwrap_err()
                 .contains("both pregranted")
         );
-        assert_eq!(registry.principals()[0].pregranted, vec![OpClass::Focus]);
+        assert_eq!(
+            registry.principals()[0].pregranted,
+            vec![ActorCapability::Focus]
+        );
     }
 
     #[test]
     fn grant_session_decisions_win_over_durable_ones() {
         let mut store = GrantStore::in_memory();
-        assert_eq!(store.decision_for("prin_a", OpClass::Close), None);
+        assert_eq!(store.decision_for("prin_a", ActorCapability::Close), None);
 
-        store.record("prin_a", OpClass::Close, true, false).unwrap();
-        assert_eq!(store.decision_for("prin_a", OpClass::Close), Some(true));
+        store
+            .record("prin_a", ActorCapability::Close, true, false)
+            .unwrap();
+        assert_eq!(
+            store.decision_for("prin_a", ActorCapability::Close),
+            Some(true)
+        );
 
-        store.record("prin_a", OpClass::Close, false, true).unwrap();
-        assert_eq!(store.decision_for("prin_a", OpClass::Close), Some(false));
+        store
+            .record("prin_a", ActorCapability::Close, false, true)
+            .unwrap();
+        assert_eq!(
+            store.decision_for("prin_a", ActorCapability::Close),
+            Some(false)
+        );
 
         // A durable record supersedes the session decision.
-        store.record("prin_a", OpClass::Close, true, false).unwrap();
-        assert_eq!(store.decision_for("prin_a", OpClass::Close), Some(true));
+        store
+            .record("prin_a", ActorCapability::Close, true, false)
+            .unwrap();
+        assert_eq!(
+            store.decision_for("prin_a", ActorCapability::Close),
+            Some(true)
+        );
     }
 
     #[test]
     fn grant_store_survives_a_save_load_cycle() {
         let path = scratch();
         let mut store = GrantStore::load(path.clone());
-        store.record("prin_a", OpClass::Close, true, false).unwrap();
         store
-            .record("prin_b", OpClass::Notify, false, false)
+            .record("prin_a", ActorCapability::Close, true, false)
             .unwrap();
-        store.record("prin_a", OpClass::Focus, true, true).unwrap();
+        store
+            .record("prin_b", ActorCapability::Notify, false, false)
+            .unwrap();
+        store
+            .record("prin_a", ActorCapability::Focus, true, true)
+            .unwrap();
         drop(store);
 
         let reloaded = GrantStore::load(path.clone());
-        assert_eq!(reloaded.decision_for("prin_a", OpClass::Close), Some(true));
+        assert_eq!(
+            reloaded.decision_for("prin_a", ActorCapability::Close),
+            Some(true)
+        );
         // Session decisions are not persisted.
-        assert_eq!(reloaded.decision_for("prin_a", OpClass::Focus), None);
+        assert_eq!(
+            reloaded.decision_for("prin_a", ActorCapability::Focus),
+            None
+        );
         let mode = std::os::unix::fs::PermissionsExt::mode(
             &std::fs::metadata(&path).unwrap().permissions(),
         );
@@ -953,7 +1273,7 @@ mod tests {
 
         let listed = reloaded.list(Some("prin_a"));
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].op, OpClass::Close);
+        assert_eq!(listed[0].op, ActorCapability::Close);
         assert_eq!(listed[0].decision, aegis_ipc::AgentGrantDecision::Allow);
         assert!(listed[0].granted_at > 0);
         let all = reloaded.list(None);
@@ -965,20 +1285,33 @@ mod tests {
     #[test]
     fn grant_revoke_and_forget_principal_clear_decisions() {
         let mut store = GrantStore::in_memory();
-        store.record("prin_a", OpClass::Close, true, false).unwrap();
-        store.record("prin_a", OpClass::Focus, true, true).unwrap();
         store
-            .record("prin_b", OpClass::Close, false, false)
+            .record("prin_a", ActorCapability::Close, true, false)
+            .unwrap();
+        store
+            .record("prin_a", ActorCapability::Focus, true, true)
+            .unwrap();
+        store
+            .record("prin_b", ActorCapability::Close, false, false)
             .unwrap();
 
-        store.revoke("prin_a", OpClass::Close).unwrap();
-        assert_eq!(store.decision_for("prin_a", OpClass::Close), None);
-        assert_eq!(store.decision_for("prin_a", OpClass::Focus), Some(true));
-        assert_eq!(store.decision_for("prin_b", OpClass::Close), Some(false));
+        store.revoke("prin_a", ActorCapability::Close).unwrap();
+        assert_eq!(store.decision_for("prin_a", ActorCapability::Close), None);
+        assert_eq!(
+            store.decision_for("prin_a", ActorCapability::Focus),
+            Some(true)
+        );
+        assert_eq!(
+            store.decision_for("prin_b", ActorCapability::Close),
+            Some(false)
+        );
 
         store.forget_principal("prin_a");
-        assert_eq!(store.decision_for("prin_a", OpClass::Focus), None);
-        assert_eq!(store.decision_for("prin_b", OpClass::Close), Some(false));
+        assert_eq!(store.decision_for("prin_a", ActorCapability::Focus), None);
+        assert_eq!(
+            store.decision_for("prin_b", ActorCapability::Close),
+            Some(false)
+        );
     }
 
     #[test]
@@ -986,11 +1319,11 @@ mod tests {
         let path = scratch();
         std::fs::write(&path, b"not json").unwrap();
         let store = GrantStore::load(path.clone());
-        assert_eq!(store.decision_for("prin_a", OpClass::Close), None);
+        assert_eq!(store.decision_for("prin_a", ActorCapability::Close), None);
 
         std::fs::write(&path, br#"{"version":99,"grants":[]}"#).unwrap();
         let store = GrantStore::load(path.clone());
-        assert_eq!(store.decision_for("prin_a", OpClass::Close), None);
+        assert_eq!(store.decision_for("prin_a", ActorCapability::Close), None);
         cleanup(&path);
     }
 }

@@ -195,7 +195,7 @@ unsafe extern "C" fn idle_notifier_get_input(
 
 struct IdleNotificationRec {
     state: *mut State,
-    seat: aegis_core::realm::SeatId,
+    seat: aegis_core::interaction_domain::SeatId,
     resource: *mut ffi::wl_resource,
     timeout: std::time::Duration,
     activity_at: std::time::Instant,
@@ -279,9 +279,10 @@ unsafe fn idle_inhibitor_is_active(record: *mut IdleInhibitorRec) -> bool {
                 .workspaces
                 .visible_toplevels()
                 .contains(&(*root).window.id)
-            && (*(*record).state)
-                .authority
-                .seat_controls_window(aegis_core::realm::HUMAN_SEAT, (*root).window.id)
+            && (*(*record).state).authority.seat_controls_window(
+                aegis_core::interaction_domain::HUMAN_SEAT,
+                (*root).window.id,
+            )
     }
 }
 
@@ -339,7 +340,7 @@ pub(crate) unsafe fn idle_user_activity(state: *mut State) {
                 continue;
             }
             let record = ffi::wl_resource_get_user_data(*resource) as *mut IdleNotificationRec;
-            if !record.is_null() && (*record).seat == aegis_core::realm::HUMAN_SEAT {
+            if !record.is_null() && (*record).seat == aegis_core::interaction_domain::HUMAN_SEAT {
                 (*record).activity_at = now;
                 if (*record).idle {
                     (*record).idle = false;

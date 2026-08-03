@@ -44,9 +44,9 @@ impl Server {
         &mut self,
         seat: SeatId,
         events: &[aegis_core::input::InputEvent],
-    ) -> Result<(), RealmRuntimeError> {
+    ) -> Result<(), InteractionDomainRuntimeError> {
         let _guard = ActiveSeatGuard::enter(self.state.as_mut(), seat)
-            .ok_or(RealmRuntimeError::SeatUnavailable(seat))?;
+            .ok_or(InteractionDomainRuntimeError::SeatUnavailable(seat))?;
         self.forward_input_active(events, None);
         Ok(())
     }
@@ -60,16 +60,16 @@ impl Server {
         seat: SeatId,
         window: aegis_core::window::WindowId,
         events: &[aegis_core::input::InputEvent],
-    ) -> Result<(), RealmRuntimeError> {
+    ) -> Result<(), InteractionDomainRuntimeError> {
         if !self.state.authority.seat_controls_window(seat, window) {
-            return Err(RealmError::UnknownWindow(window).into());
+            return Err(InteractionDomainError::UnknownWindow(window).into());
         }
         let rec = self.find_surface_by_window_id(window);
         if rec.is_null() || unsafe { (*rec).xdg_toplevel.is_null() || !(*rec).mapped } {
-            return Err(RealmError::UnknownWindow(window).into());
+            return Err(InteractionDomainError::UnknownWindow(window).into());
         }
         let _guard = ActiveSeatGuard::enter(self.state.as_mut(), seat)
-            .ok_or(RealmRuntimeError::SeatUnavailable(seat))?;
+            .ok_or(InteractionDomainRuntimeError::SeatUnavailable(seat))?;
         self.state.synthetic_target = Some(window);
         self.change_keyboard_focus(unsafe { (*rec).resource });
         self.forward_input_active(events, None);
@@ -347,6 +347,40 @@ impl Server {
         self.windows_in_set(&visible)
     }
 
+    /// Process-bound window identities for the first-party AT-SPI adapter.
+    /// Keeping this separate from `windows()` prevents kernel process
+    /// credentials from leaking into ordinary observation responses.
+    pub fn accessibility_window_bindings(&self) -> Vec<aegis_semantic::AccessibilityWindowBinding> {
+        let visible = self.visible();
+        self.state
+            .live_surfaces()
+            .map(|surface| unsafe { &*surface })
+            .filter(|surface| {
+                surface.mapped
+                    && !surface.xdg_toplevel.is_null()
+                    && visible.contains(&surface.window.id)
+                    && self.state.authority.interaction_domain_observes_window(
+                        HUMAN_INTERACTION_DOMAIN,
+                        surface.window.id,
+                    )
+            })
+            .filter_map(|surface| {
+                let process_id = self
+                    .state
+                    .client_process_ids
+                    .get(&surface.client_id)
+                    .copied()?;
+                let mut window = surface.window.clone();
+                window.read_only = !self
+                    .state
+                    .authority
+                    .seat_controls_window(HUMAN_SEAT, window.id);
+                window.state.activated = self.seat_focuses_window(HUMAN_SEAT, window.id);
+                Some(aegis_semantic::AccessibilityWindowBinding { window, process_id })
+            })
+            .collect()
+    }
+
     /// Enumerate the presentation-visible windows. During a workspace slide
     /// this includes retained source pages so their compositor-owned shadows
     /// remain stable until the page leaves the output.
@@ -369,7 +403,7 @@ impl Server {
                     && self
                         .state
                         .authority
-                        .realm_observes_window(HUMAN_REALM, s.window.id)
+                        .interaction_domain_observes_window(HUMAN_INTERACTION_DOMAIN, s.window.id)
             })
             .map(|s| {
                 let mut w = s.window.clone();
@@ -412,7 +446,7 @@ impl Server {
                     && self
                         .state
                         .authority
-                        .realm_observes_window(HUMAN_REALM, s.window.id)
+                        .interaction_domain_observes_window(HUMAN_INTERACTION_DOMAIN, s.window.id)
             })
         {
             let w = &s.window;
@@ -459,7 +493,7 @@ impl Server {
 
     /// Whether compositor-owned physical chrome may mutate this window.
     /// Presentation-only mirrors deliberately return false even though they
-    /// remain visible and can be transferred through Realm management.
+    /// remain visible and can be transferred through Interaction Domain management.
     pub fn human_controls_window(&self, window: aegis_core::window::WindowId) -> bool {
         self.state
             .authority

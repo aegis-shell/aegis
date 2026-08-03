@@ -25,9 +25,9 @@ Rules that always apply:
 - Use tools to act on the world; never claim you changed something you did not verify.
 - A `status: queued` style result means intent accepted, not effect applied. Verify with a fresh \
 observation (snapshot, journal, or capture) before reporting success.
-- When `mcp__aegis__*` desktop tools are present, read the `aegis-desktop-realm` skill with \
-skill_read before operating windows, applications, or Realms.
-- Never use destructive operations (close_window, realm_reset, file deletion) without explicit \
+- When `mcp__aegis__*` desktop tools are present, read the `aegis-desktop-interaction` skill with \
+skill_read before operating windows, applications, or Interaction Domains.
+- Never use destructive operations (close_window, interaction_domain_reset, file deletion) without explicit \
 user intent.";
 
 /// Progress of one run, streamed to the UI.
@@ -279,7 +279,7 @@ fn system_prompt(agent: &AgentConfig, skills: &[Skill], has_aegis_mcp: bool) -> 
     if has_aegis_mcp {
         prompt.push_str(
             "\n\nThe `aegis` MCP server is connected: its tools observe and operate the live \
-             Aegis compositor. Treat window, workspace, and Realm ids as opaque and short-lived.",
+             Aegis compositor. Treat window, workspace, and Interaction Domain ids as opaque and short-lived.",
         );
     }
     if !skills.is_empty() {

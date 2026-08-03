@@ -1,5 +1,5 @@
 //! Link libwayland-client for the nested host window. The xdg-shell interface
-//! tables come from the shared `aegis-protocols` crate, so they are not generated
+//! tables come from the shared `aegis-wayland-protocols` crate, so they are not generated
 //! here.
 
 fn main() {

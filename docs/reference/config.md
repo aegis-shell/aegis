@@ -27,7 +27,7 @@ untouched.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `schema_version` | integer | required | Schema major version. Must be `1`. A different value is rejected with a diagnostic; bumping it is a documented migration event. |
+| `schema_version` | integer | required | Schema major version. Must be `2`. A different value is rejected with a diagnostic; supported migrations are explicit through `aegis config migrate`. |
 | `[[keybind]]` | array of tables | built-in defaults | Global key bindings. See [Key Bindings](#key-bindings) and [System Shortcuts](keyboard-shortcuts.md). |
 | `[[window_rule]]` | array of tables | none | Placement rules applied to newly-mapped toplevels. See [Window Rules](#window-rules). |
 | `[layout]` | table | gaps `8`, master_ratio `0.5` | Tiling policy parameters. See [Layout](#layout). |
@@ -36,12 +36,13 @@ untouched.
 | `[ui]` | table | `hicolor` icons, `default` 24 px cursor, borderless windows, full motion | Desktop-wide UI and window-presentation policy. See [UI](#ui). |
 | `[input.touchpad]` | table | touchpad defaults | Touchpad pointing, tapping, and scrolling profile. See [Touchpad](#touchpad). |
 | `[wallpaper]` | table | built-in image | Image, video, 3D, or multi-plane parallax wallpaper. See [Wallpaper](#wallpaper). |
+| `[lock_screen]` | table | cinematic layout, built-in lock artwork | Lock-screen composition and independently selected background. See [Lock Screen](#lock-screen). |
 | `[idle]` | table | dim 5 min, lock 10 min, display off 11 min, suspend 30 min | Ordered inactivity, session-lock, display-power, and suspend policy. See [Idle and Locking](#idle-and-locking). |
 | `[[output]]` | array of tables | none | Per-connector display policy: mode, scale, position, transform, primary. See [Outputs](#outputs). |
 | `[screenshot]` | table | XDG Pictures directory, cursor included | Screenshot output policy. See [Screenshots](#screenshots). |
 | `[appearance]` | table | system color scheme, normal contrast, standard fonts and scale | Desktop-wide color, contrast, and typography preferences. See [Appearance](#appearance). |
 | `[agent]` | table | lockdown on | Agent authorization policy: whether unpaired connections keep privileged capabilities. See [Agent Authorization](#agent-authorization). |
-| `[realm_sandbox]` | table | default deny | Network, filesystem, and cgroup policy for new Realm application launches. See [Realm Sandbox](#realm-sandbox). |
+| `[interaction_domain_sandbox]` | table | default deny | Process-resource budgets for new Interaction Domain application launches; network and host files remain isolated. See [Interaction Domain Sandbox](#interaction-domain-sandbox). |
 | `[dev]` | table | all off | Development-only escape hatches; planned for removal before release. See [Development Options](#development-options). |
 
 ## Environment
@@ -113,6 +114,48 @@ parallax.
 See
 [How to Configure the Wallpaper](../how-to/configure-wallpaper.md) for all
 four mode examples.
+
+## Lock Screen
+
+The `[lock_screen]` table selects the lock presentation independently from
+the desktop `[wallpaper]` table. `aegis-lock` reads it when a new lock client
+starts; saving the file changes the next lock screen, not an already secured
+one.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `style` | string | `"cinematic"` | `"cinematic"` places the clock at the upper right and a game-style credential rail at the lower right. `"centered"` uses the conventional centered identity column. |
+| `[lock_screen.background]` | table | built-in lock artwork | Background source and artwork scrim. It never inherits or mutates `[wallpaper]`. |
+
+The background table accepts these fields:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `mode` | string | `"builtin"` | `"builtin"`, `"solid"`, or `"image"`. |
+| `source` | string | none | Required static-image path in image mode. Relative paths resolve beside `config.toml`; invalid in other modes. |
+| `color` | string | scheme-aware solid | Optional `#RRGGBB` value in solid mode; invalid in other modes. |
+| `dim` | float | `0.28` | Dark artwork scrim from `0.0` through `0.85`. Solid backgrounds remain pure and do not receive this scrim. |
+
+```toml
+[lock_screen]
+style = "cinematic"
+
+[lock_screen.background]
+mode = "image"
+source = "wallpapers/lock-screen.png"
+dim = 0.24
+```
+
+Lock images use the shared wallpaper image decoder but retain their own
+source and lifecycle. A missing or undecodable custom image logs a warning and
+falls back to the bundled lock artwork so presentation failure cannot prevent
+locking. The cinematic style is typographic and does not load an avatar; the
+centered style's flat initial fallback follows `[appearance]` `color_scheme`
+and `accent_color` without a gradient or white overlay. A rejected credential
+briefly shakes its rail and holds it red instead of showing an error sentence;
+`[ui] reduced_motion = true` disables the shake while retaining the color.
+The neutral cinematic rail has no empty password slots, so it does not imply a
+fixed or expected password length.
 
 ## Layout
 
@@ -264,7 +307,7 @@ The `[screenshot]` table controls where the interactive screenshot selector
 writes PNG files and whether saved screenshots include the cursor. Changes
 apply on live reload. After a successful interactive capture, the compositor
 also publishes `image/png` and `text/uri-list` to the physical human seat's
-clipboard. IPC and Realm captures do not modify that clipboard.
+clipboard. IPC and Interaction Domain captures do not modify that clipboard.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -454,46 +497,58 @@ title = "calculator"
 role = "floating"
 ```
 
-## Realm Sandbox
+## Interaction Domain Sandbox
 
-`[realm_sandbox]` defines the default policy for applications launched with
-`LaunchInRealm`. `[[realm_sandbox.app]]` entries match an exact desktop-entry
-id. Later matching entries override only the fields they contain. Policy
-changes apply to new launches; revoke and relaunch a sandbox to narrow
-existing kernel grants.
+`[interaction_domain_sandbox]` defines the resource budget for applications launched with
+`LaunchInInteractionDomain`. `[[interaction_domain_sandbox.app]]` entries match an exact desktop-entry
+id. Later matching entries override only the fields they contain. Budget
+changes apply to new launches.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `network` | boolean | `false` | Share the host network namespace. When `false`, the sandbox receives an isolated network namespace and no resolver configuration. |
-| `readable_paths` | array of absolute paths | `[]` | Host files or directories mounted read-only at their canonical absolute paths. |
-| `writable_paths` | array of absolute paths | `[]` | Host files or directories mounted read-write at their canonical absolute paths. Protected `/proc`, `/dev`, `/run`, and `/sys` trees cannot be granted; system executable and configuration trees cannot be writable. |
 | `memory_max_mib` | integer | `8192` | Hard cgroup memory limit in MiB, 256–1,048,576. Swap is disabled and an out-of-memory event kills the sandbox as one group. |
 | `pids_max` | integer | `1024` | Hard cgroup process limit, 16–65,536. |
 | `cpu_weight` | integer | `100` | cgroup CPU weight, 1–10,000. |
-| `[[realm_sandbox.app]]` | array of tables | none | Exact per-desktop-entry overrides. |
+| `[[interaction_domain_sandbox.app]]` | array of tables | none | Exact per-desktop-entry overrides. |
 
-Each `[[realm_sandbox.app]]` table requires `desktop_id`. The other fields
-have the same types and limits as the default table. An omitted field
-inherits the default; an explicit empty path array removes inherited paths
-for that application.
+Each `[[interaction_domain_sandbox.app]]` table requires `desktop_id`. The
+resource-limit fields have the same types and bounds as the default table;
+an omitted field inherits the default.
 
 ```toml
-[realm_sandbox]
+[interaction_domain_sandbox]
 memory_max_mib = 8192
 pids_max = 1024
 cpu_weight = 100
 
-[[realm_sandbox.app]]
+[[interaction_domain_sandbox.app]]
 desktop_id = "org.mozilla.firefox.desktop"
-network = true
-readable_paths = ["/home/alice/Research"]
-writable_paths = ["/home/alice/Downloads"]
 memory_max_mib = 4096
 ```
 
-Every path must be absolute and must exist when the application launches.
-The launcher resolves symlinks before mounting and rejects protected or
-non-file/non-directory targets. Realm launch also requires `/usr/bin/bwrap`,
+Schema version 2 removes `network`, `readable_paths`, `writable_paths`, and
+the legacy `[realm_sandbox]` alias. They are rejected instead of silently
+granting ambient authority. Sandboxed applications always receive a private
+network namespace without resolver configuration and no host user-file
+mounts. Exact filesystem or origin access must pass through a broker that
+consumes an Actor-session resource grant; a capability ceiling or TOML entry
+alone cannot make the resource reachable.
+
+### Migrating Schema 1
+
+Run `aegis config migrate [path]`; the path defaults to the standard XDG
+Aegis configuration file. Migration is explicit and comment-preserving. It
+creates a synchronized, non-overwriting `config.toml.schema-v1.bak`-style
+backup with mode `0600` before atomically replacing the active file.
+
+Safe resource limits under `[realm_sandbox]` are moved to
+`[interaction_domain_sandbox]`. A legacy `network = true` or a non-empty
+`readable_paths`/`writable_paths` value has no safe schema-2 equivalent and
+therefore aborts migration with a diagnostic. Replace that ambient authority
+with an exact runtime resource grant, then rerun migration. Loading and live
+reload never perform migrations implicitly.
+
+Interaction Domain launch requires `/usr/bin/bwrap`,
 cgroup v2, and an Aegis systemd user service with delegated `cpu`, `memory`,
 and `pids` controllers. Missing isolation or controller support rejects the
 launch.
@@ -672,7 +727,7 @@ configured:
 ## Example
 
 ```toml
-schema_version = 1
+schema_version = 2
 
 [[keybind]]
 mods = ["super"]

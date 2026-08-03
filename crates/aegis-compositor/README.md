@@ -8,7 +8,7 @@ for aegis.
 - Create the Wayland display socket and advertise supported globals.
 - Own protocol objects, surface commits, buffers, seats, clipboard state, and
   extension lifecycles.
-- Own Realm authority routing, private launch listeners, virtual outputs, and
+- Own Interaction Domain authority routing, private launch listeners, virtual outputs, and
   read-only observation filtering.
 - Maintain window, focus, workspace, output, and interactive move/resize state.
 - Route backend-neutral input to clients and apply compositor actions.
@@ -26,8 +26,8 @@ and IPC crates.
 Creating a `Server` allocates a libwayland display and an automatically named
 Wayland socket. Dispatching it accepts clients and updates the surface tree;
 window-management methods translate compositor intents into protocol state and
-configure events. Activated Realm portals have no host pathname; dispatch
-accepts their sandbox-only connections and assigns Realm identity before
+configure events. Activated Interaction Domain portals have no host pathname; dispatch
+accepts their sandbox-only connections and assigns Interaction Domain identity before
 registry enumeration.
 
 Decoration-aware toplevels use compositor-owned, borderless frames by default:
@@ -47,7 +47,7 @@ Native editors publish text context through `zwp_text_input_v3`. On the
 physical seat, one host input method may consume that context through
 `zwp_input_method_v2`, grab the hardware keyboard, forward unhandled keys
 through its paired `zwp_virtual_keyboard_v1`, and present candidate surfaces
-as compositor-positioned overlays. Realm registries do not expose the
+as compositor-positioned overlays. Interaction Domain registries do not expose the
 input-method or virtual-keyboard manager globals. Destroyed keyboard resources
 are removed from forwarding without dereferencing their lifecycle tombstones.
 
@@ -79,5 +79,5 @@ This crate is an integration mechanism, not a standalone server binary.
 - [Wayland input-method decision](../../docs/adr/0062-wayland-input-method-v2-host-integration.md)
 - [Client surface compositing decision](../../docs/adr/0061-window-tree-atomic-client-surface-compositing.md)
 - [Workspace layout](../../docs/dev/project-layout.md)
-- [Realm and seat decision](../../docs/adr/0040-realms-seats-and-transferable-interaction-authority.md)
+- [Interaction Domain and seat decision](../../docs/adr/0040-realms-seats-and-transferable-interaction-authority.md)
 - [Explicit clipboard decision](../../docs/adr/0043-explicit-clipboard-only.md)

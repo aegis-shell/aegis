@@ -7,6 +7,100 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Actor-scoped Agent interaction
+
+- Hardened Actor IPC and accessibility supervision with bounded interactive
+  prompt/application/path inputs; exact normalized screenshot and wallpaper
+  paths; zeroized framing, secret, and credential response copies; trusted
+  owner/mode-checked `aegis-atspi` sibling execution with an environment
+  allowlist; and parent-directory synchronization when creating the durable
+  hash-chained audit store. Handshakes, identity files, capability lists, and
+  concurrent connections are bounded and semantically validated; credential
+  comparisons are constant-time and sensitive debug output is redacted.
+  Per-connection writer queues are bounded with non-blocking compositor
+  producers and slow-subscriber disconnect, and arbitrary refusal strings
+  are reduced to payload-free categories before durable logging.
+
+- Model Agents as authenticated Actors rather than virtual input devices
+  (ADR-0102 through ADR-0104). Actor contexts now compose a credential-bound principal,
+  independent observation and action capabilities, resource-filtered views,
+  an Interaction Domain seat and authority boundary, sandbox resources,
+  connection leases, and lifecycle cleanup.
+- Added compositor-owned semantic Interaction Domain observations with durable window-root
+  identities, state, declared actions, target-local bounds, and revisions.
+  Short-lived random observation tokens are principal-, connection-, and
+  domain-bound, single-use, and revoked on disconnect or failed precondition.
+- Replaced unguarded asynchronous domain input with synchronous
+  `ActInInteractionDomain` transactions. The main loop checks unchanged
+  authority and semantic state, validates the complete bounded action batch,
+  and returns a commit receipt; stale state aborts instead of clicking
+  coordinates from an old frame.
+- Split authenticated query access into explicit observation operations and
+  filter window, workspace, output, Interaction Domain, and journal projections by the
+  Actor's resources. Journal events now preserve the authenticated principal
+  and record dedicated `ActorAction` decisions without bearer tokens.
+- Added the transport-neutral `aegis-authority` policy kernel for
+  `ActorCapability`, identity profiles, live bindings, semantic observation
+  leases, and optimistic action validation. IPC now adapts these contracts
+  instead of owning them.
+- Added bounded Actor sessions with TTL, idle expiry, observation/action
+  quotas, and cascading disconnect/principal revocation. Exact filesystem,
+  network-origin, secret, and payment grant handles are random,
+  session/principal-bound, TTL/use-count limited, and separately audited.
+- Added `aegis-semantic` and the supervised out-of-process `aegis-atspi`
+  adapter. Accessibility trees are window-namespaced, graph/geometry/size
+  validated, revisioned, and provider-owned. The adapter correlates
+  kernel-authenticated Wayland and AT-SPI process identities before exact
+  title disambiguation; PID metadata is confined to a provider-only endpoint.
+  Provider capabilities are system-only and the adapter refuses unsupervised
+  startup.
+  Semantic actions recheck live AT-SPI preconditions immediately before
+  dispatch; adapter failure or stale state aborts instead of producing a
+  commit receipt.
+- Added `aegis-audit`, an owner-only append-and-sync event store with sequence
+  and SHA-256 chain verification. Session/resource/auth/action decisions are
+  durable before their IPC success response; append failure fail-stops the
+  compositor, and startup requires a resolvable XDG data directory. Action
+  audit retains shapes and byte counts, never observation
+  tokens, typed text, values, key codes, coordinates, exact paths, origins,
+  or payment details. Resource-grant refusals likewise retain only the
+  operation, capability family, and resource category with a fixed reason.
+- Decoupled Actor session ids from IPC connection ids and added live scope
+  bindings for asynchronous effects. Resource consumption, capture delivery,
+  and every stream frame now revalidate principal/named-scope revocation,
+  leases, capabilities, and window target allowlists at the final boundary.
+- Replaced raw command journaling with a privacy-minimized `AuditedCommand`
+  projection and added explicit `CapabilityUse` operations for high-risk
+  endpoints. Notification text, external ids, screenshot paths/regions, and
+  synthetic-input coordinates/codes no longer enter durable events.
+- Removed configurable host-network sharing and host-path mounts from
+  Interaction Domain launches. Config schema 2 rejects `network`,
+  `readable_paths`, `writable_paths`, and `[realm_sandbox]`; exact access must
+  be mediated by a consumer of an Actor-session resource grant.
+- Renamed the kernel boundary from `Realm` to `InteractionDomain`,
+  `aegis-ai-workspaces` to `aegis-interaction-manager`, and the ambiguous
+  `aegis-protocols` to `aegis-wayland-protocols`. Agent Workspaces remains the
+  user-facing product name.
+- Renamed MCP tools to `interaction_domain_*` and removed the old `realm_*`
+  calls, capability spellings, CLI alias, MCP label variable, and built-in
+  application id. Realm remains only in historical decisions and migration
+  notes, not in executable APIs.
+- IPC advances to protocol 24 for process-bound accessibility correlation.
+  Protocol 23 introduced Actor sessions, exact resource grants, and
+  accessibility tree/action transport; protocol 22 introduced the renamed
+  Interaction Domain wire contract.
+- Split the IPC server into Handler, connection, authorization, dispatch,
+  writer, and test modules; separated the schema and integration-test suites,
+  and extracted MCP platform and command-panel presentation implementations
+  from their former monolithic source files.
+- Split compositor State and protocol test groups and isolated presentation
+  capture binding. CI now rejects Rust modules above 2000 lines as an
+  architectural-review tripwire rather than permitting monolith allowlists.
+- Added local `aegis config validate` and explicit `aegis config migrate`
+  commands. Schema-1 migration preserves comments, durably backs up the
+  source, renames safe sandbox resource budgets, and refuses to discard
+  legacy ambient network or host-path authority.
+
 ### Portal boundary
 
 - Removed compositor FileChooser chrome, filesystem enumeration, runtime
@@ -43,6 +137,16 @@ project cuts a tagged release.
   matching the occlusion pass's notion of opaqueness. `aegis-core::dmabuf`
   gains a single `is_format_opaque` predicate as the source of truth for
   alpha-free DRM fourccs.
+
+### Lock screen
+
+- Added centered and cinematic lock-screen compositions with an independent
+  solid-color or image background, plus the development-only
+  `aegis-lock-preview` target for safe visual and interaction testing.
+- Unified credential validation behind the shared lock state machine. Pending
+  attempts retain and freeze their visible marks, reject edits and repeated
+  submissions, and use fixed-rate feedback that continues across retry
+  backoff and active authentication without depending on password length.
 
 ## [0.0.10] - 2026-08-02
 

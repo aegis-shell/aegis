@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -5,11 +6,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use aegis_core::realm::{HUMAN_REALM, RealmModel};
+use aegis_core::interaction_domain::{HUMAN_INTERACTION_DOMAIN, InteractionDomainModel};
 use aegis_core::window::{Window, WindowId};
 use aegis_ipc::{
-    Capabilities, Effect, Handler, Journal, JournalMutation, OpClass, Origin, RealmAction,
-    RealmActionResult, Server,
+    ActorCapability, ConnectionCapabilities, Effect, Handler, InteractionDomainAction,
+    InteractionDomainActionResult, Journal, JournalMutation, Origin, Server,
 };
 use serde_json::{Value, json};
 
@@ -20,9 +21,10 @@ fn scratch() -> PathBuf {
 }
 
 struct TestHandler {
-    realms: Mutex<RealmModel>,
+    interaction_domains: Mutex<InteractionDomainModel>,
     journal: Mutex<Journal>,
     notifications: Mutex<Vec<aegis_core::notify::Notification>>,
+    observations: Mutex<HashMap<String, u64>>,
 }
 
 impl Handler for TestHandler {
@@ -30,41 +32,51 @@ impl Handler for TestHandler {
         &self,
         _conn_id: u64,
         _label: Option<&str>,
-        _requested: &[OpClass],
+        _requested: &[ActorCapability],
     ) -> Result<aegis_ipc::PairedAgent, String> {
         Ok(aegis_ipc::PairedAgent {
-            principal: "prin_test".into(),
+            principal: aegis_ipc::ActorPrincipal::new("prin_test").unwrap(),
             credential: "cred_test".into(),
             pregranted: vec![
-                OpClass::CreateRealm,
-                OpClass::TransactRealm,
-                OpClass::RevokeRealm,
-                OpClass::CaptureRealm,
-                OpClass::LaunchInRealm,
-                OpClass::InjectRealmInput,
-                OpClass::Notify,
+                ActorCapability::ObserveWindows,
+                ActorCapability::ObserveWorkspaces,
+                ActorCapability::ObserveOutputs,
+                ActorCapability::ObserveNotifications,
+                ActorCapability::ObserveJournal,
+                ActorCapability::ObserveInteractionDomains,
+                ActorCapability::CreateInteractionDomain,
+                ActorCapability::TransactInteractionDomain,
+                ActorCapability::RevokeInteractionDomain,
+                ActorCapability::CaptureInteractionDomain,
+                ActorCapability::ObserveInteractionDomain,
+                ActorCapability::LaunchInInteractionDomain,
+                ActorCapability::InjectInteractionDomainInput,
+                ActorCapability::Notify,
             ],
             gated: vec![],
         })
     }
 
-    fn policy_caps(&self) -> Capabilities {
-        Capabilities {
+    fn policy_caps(&self) -> ConnectionCapabilities {
+        ConnectionCapabilities {
             query: true,
             control: true,
             input: true,
             session: false,
-            realm: true,
+            interaction_domain: true,
         }
     }
 
     fn windows(&self) -> Vec<Window> {
-        let realms = self.realms.lock().expect("realm lock");
+        let interaction_domains = self
+            .interaction_domains
+            .lock()
+            .expect("interaction_domain lock");
         let mut window = Window::new(WindowId(7));
         window.size = aegis_core::Size { w: 320, h: 180 };
-        window.read_only = realms
+        window.read_only = interaction_domains
             .interaction_group_for_window(window.id)
-            .is_some_and(|group| group.control_realm != HUMAN_REALM);
+            .is_some_and(|group| group.control_interaction_domain != HUMAN_INTERACTION_DOMAIN);
         vec![window]
     }
 
@@ -87,7 +99,7 @@ impl Handler for TestHandler {
         self.journal.lock().expect("journal lock").since(since)
     }
 
-    fn command(&self, conn_id: u64, cmd: aegis_ipc::Command) {
+    fn command(&self, conn_id: u64, subject: Option<&str>, cmd: aegis_ipc::Command) {
         if let aegis_ipc::Command::Notify {
             summary,
             body,
@@ -108,64 +120,74 @@ impl Handler for TestHandler {
         }
         self.journal.lock().expect("journal lock").append(
             0,
-            Origin::Ipc { conn_id },
-            JournalMutation::Command { cmd },
+            Origin::ipc(conn_id, subject),
+            JournalMutation::Command {
+                cmd: aegis_ipc::AuditedCommand::from(&cmd),
+            },
             Effect::Applied,
         );
     }
 
-    fn realms(&self) -> aegis_core::realm::RealmSnapshot {
-        self.realms.lock().expect("realm lock").snapshot()
+    fn interaction_domains(&self) -> aegis_core::interaction_domain::InteractionDomainSnapshot {
+        self.interaction_domains
+            .lock()
+            .expect("interaction_domain lock")
+            .snapshot()
     }
 
-    fn realm_action(
+    fn interaction_domain_action(
         &self,
         _conn_id: u64,
         subject: Option<&str>,
-        action: RealmAction,
-    ) -> Result<RealmActionResult, String> {
-        let mut realms = self.realms.lock().expect("realm lock");
+        action: InteractionDomainAction,
+    ) -> Result<InteractionDomainActionResult, String> {
+        let mut interaction_domains = self
+            .interaction_domains
+            .lock()
+            .expect("interaction_domain lock");
         match action {
-            RealmAction::Create {
+            InteractionDomainAction::Create {
                 label,
                 capabilities,
                 output,
             } => {
-                let bundle = realms.create_agent_realm_for_subject(
+                let bundle = interaction_domains.create_agent_interaction_domain_for_subject(
                     label,
                     capabilities,
                     subject.map(str::to_owned),
                 );
                 if let Some(output) = output {
-                    realms
-                        .configure_virtual_output(bundle.realm, output)
+                    interaction_domains
+                        .configure_virtual_output(bundle.interaction_domain, output)
                         .map_err(|error| error.to_string())?;
                 }
-                Ok(RealmActionResult::Created {
-                    bundle: aegis_core::realm::RealmBundle {
-                        revision: realms.revision(),
+                Ok(InteractionDomainActionResult::Created {
+                    bundle: aegis_core::interaction_domain::InteractionDomainBundle {
+                        revision: interaction_domains.revision(),
                         ..bundle
                     },
                 })
             }
-            RealmAction::Transact {
+            InteractionDomainAction::Transact {
                 expected_revision,
                 mutations,
-            } => realms
+            } => interaction_domains
                 .transact(expected_revision, &mutations)
-                .map(|receipt| RealmActionResult::TransactionCommitted { receipt })
+                .map(|receipt| InteractionDomainActionResult::TransactionCommitted { receipt })
                 .map_err(|error| error.to_string()),
-            RealmAction::Revoke {
-                realm,
+            InteractionDomainAction::Revoke {
+                interaction_domain,
                 fallback,
                 expected_revision,
             } => {
-                if expected_revision.is_some_and(|expected| expected != realms.revision()) {
+                if expected_revision
+                    .is_some_and(|expected| expected != interaction_domains.revision())
+                {
                     return Err("revision conflict".into());
                 }
-                realms
-                    .revoke_realm(realm, fallback)
-                    .map(|receipt| RealmActionResult::Revoked { receipt })
+                interaction_domains
+                    .revoke_interaction_domain(interaction_domain, fallback)
+                    .map(|receipt| InteractionDomainActionResult::Revoked { receipt })
                     .map_err(|error| error.to_string())
             }
         }
@@ -175,43 +197,163 @@ impl Handler for TestHandler {
         true
     }
 
-    fn capture_realm(
+    fn capture_interaction_domain(
         &self,
-        realm: aegis_core::realm::RealmId,
+        conn_id: u64,
+        _subject: Option<&str>,
+        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
         _region: Option<aegis_core::Rect>,
-    ) -> Result<aegis_ipc::CaptureRealmPayload, String> {
-        Ok(aegis_ipc::CaptureRealmPayload {
-            capture: aegis_ipc::RealmCapture {
-                realm,
+    ) -> Result<aegis_ipc::CaptureInteractionDomainPayload, String> {
+        let revision = self
+            .interaction_domains
+            .lock()
+            .expect("interaction_domain lock")
+            .revision();
+        self.observations
+            .lock()
+            .expect("observation lock")
+            .insert("a".repeat(64), conn_id);
+        Ok(aegis_ipc::CaptureInteractionDomainPayload {
+            capture: aegis_ipc::InteractionDomainCapture {
+                interaction_domain,
                 width: 1,
                 height: 1,
                 scale_milli: 1000,
                 region: aegis_core::Rect::new(0, 0, 1, 1),
                 placements: vec![],
+                observation: aegis_ipc::SemanticObservation {
+                    token: aegis_ipc::ObservationToken("a".repeat(64)),
+                    ttl_ms: 15_000,
+                    snapshot: aegis_core::semantic::SemanticSnapshot {
+                        interaction_domain,
+                        authority_revision: revision,
+                        objects: Vec::new(),
+                    },
+                },
                 png_bytes: 8,
-                revision: self.realms.lock().expect("realm lock").revision(),
+                revision,
             },
             // Signature prefix is sufficient for transport testing; image
             // decoding belongs to capture/render integration tests.
             png: b"\x89PNG\r\n\x1a\n".to_vec(),
         })
     }
+
+    fn observe_interaction_domain(
+        &self,
+        conn_id: u64,
+        _subject: Option<&str>,
+        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+    ) -> Result<aegis_ipc::SemanticObservation, String> {
+        let revision = self
+            .interaction_domains
+            .lock()
+            .expect("interaction_domain lock")
+            .revision();
+        self.observations
+            .lock()
+            .expect("observation lock")
+            .insert("b".repeat(64), conn_id);
+        Ok(aegis_ipc::SemanticObservation {
+            token: aegis_ipc::ObservationToken("b".repeat(64)),
+            ttl_ms: 15_000,
+            snapshot: aegis_core::semantic::SemanticSnapshot {
+                interaction_domain,
+                authority_revision: revision,
+                objects: vec![aegis_core::semantic::SemanticObject {
+                    id: aegis_core::semantic::SemanticObjectId::for_window(WindowId(7)),
+                    parent: None,
+                    window: WindowId(7),
+                    source: aegis_core::semantic::SemanticSource::Compositor,
+                    role: aegis_core::semantic::SemanticRole::Window,
+                    name: Some("smoke".into()),
+                    description: None,
+                    value: None,
+                    app_id: Some("visual-smoke.test".into()),
+                    bounds: aegis_core::Rect::new(0, 0, 320, 180),
+                    local_size: aegis_core::Size { w: 320, h: 180 },
+                    state: aegis_core::semantic::SemanticState {
+                        visible: true,
+                        enabled: true,
+                        ..Default::default()
+                    },
+                    actions: vec![aegis_core::semantic::SemanticAction::Pointer],
+                    revision: 1,
+                }],
+            },
+        })
+    }
+
+    fn act_in_interaction_domain(
+        &self,
+        conn_id: u64,
+        subject: Option<&str>,
+        _scope_name: Option<&str>,
+        _scope: aegis_ipc::Scope,
+        intent: aegis_ipc::ActorActionIntent,
+    ) -> Result<aegis_ipc::ActorActionReceipt, String> {
+        let owner = self
+            .observations
+            .lock()
+            .expect("observation lock")
+            .remove(&intent.observation.0);
+        if owner != Some(conn_id) {
+            return Err("observation belongs to another connection".into());
+        }
+        let revision = self
+            .interaction_domains
+            .lock()
+            .expect("interaction_domain lock")
+            .revision();
+        let receipt = aegis_ipc::ActorActionReceipt {
+            action_id: 1,
+            interaction_domain: intent.interaction_domain,
+            target: intent.target,
+            window: WindowId(7),
+            authority_revision: revision,
+            actions_applied: intent.actions.len() as u32,
+            committed_mono_ms: 0,
+        };
+        self.journal.lock().expect("journal lock").append(
+            0,
+            Origin::ipc(conn_id, subject),
+            JournalMutation::ActorAction {
+                action_id: Some(receipt.action_id),
+                interaction_domain: intent.interaction_domain,
+                target: intent.target,
+                window: Some(WindowId(7)),
+                actions: aegis_ipc::audit_semantic_actions(&intent.actions),
+                actions_truncated: false,
+                authority_revision: Some(revision),
+            },
+            Effect::Applied,
+        );
+        Ok(receipt)
+    }
+
+    fn connection_disconnected(&self, conn_id: u64) {
+        self.observations
+            .lock()
+            .expect("observation lock")
+            .retain(|_, owner| *owner != conn_id);
+    }
 }
 
 #[test]
-fn stdio_discovers_manages_captures_and_revokes_realm() {
+fn stdio_discovers_manages_captures_and_revokes_interaction_domain() {
     let runtime_dir = scratch();
     std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
     let socket = runtime_dir.join("aegis.sock");
-    let mut realms = RealmModel::new();
-    let client = realms.register_client(Some("visual-smoke.test".into()));
-    realms
-        .create_interaction_group(client, &[WindowId(7)], HUMAN_REALM)
+    let mut interaction_domains = InteractionDomainModel::new();
+    let client = interaction_domains.register_client(Some("visual-smoke.test".into()));
+    interaction_domains
+        .create_interaction_group(client, &[WindowId(7)], HUMAN_INTERACTION_DOMAIN)
         .expect("human-controlled smoke window");
     let handler = Arc::new(TestHandler {
-        realms: Mutex::new(realms),
+        interaction_domains: Mutex::new(interaction_domains),
         journal: Mutex::new(Journal::default_capacity()),
         notifications: Mutex::new(vec![]),
+        observations: Mutex::new(HashMap::new()),
     });
     let server = Server::start(&socket, Arc::clone(&handler)).expect("server");
 
@@ -220,7 +362,10 @@ fn stdio_discovers_manages_captures_and_revokes_realm() {
         .env("XDG_RUNTIME_DIR", &runtime_dir)
         .env("AEGIS_MCP_DATA_DIR", runtime_dir.join("data"))
         .env("AEGIS_MCP_INSTANCE_ID", "bridge-integration-test")
-        .env("AEGIS_MCP_REALM_LABEL", "Bridge integration test")
+        .env(
+            "AEGIS_MCP_INTERACTION_DOMAIN_LABEL",
+            "Bridge integration test",
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -234,9 +379,11 @@ fn stdio_discovers_manages_captures_and_revokes_realm() {
     let requests = [
         json!({"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":meta.clone()}}),
         json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":meta.clone()}}),
-        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"realm_ensure","arguments":{},"_meta":meta.clone()}}),
-        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"realm_capture","arguments":{},"_meta":meta.clone()}}),
-        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"realm_reset","arguments":{},"_meta":meta}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"interaction_domain_ensure","arguments":{},"_meta":meta.clone()}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"interaction_domain_observe","arguments":{},"_meta":meta.clone()}}),
+        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"interaction_domain_input","arguments":{"target_window_id":7,"target_local_id":0,"observation_token":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","actions":[{"type":"pointer_move","x":160,"y":90}]},"_meta":meta.clone()}}),
+        json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"interaction_domain_capture","arguments":{},"_meta":meta.clone()}}),
+        json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"interaction_domain_reset","arguments":{},"_meta":meta}}),
     ];
     {
         let stdin = child.stdin.as_mut().expect("child stdin");
@@ -257,7 +404,7 @@ fn stdio_discovers_manages_captures_and_revokes_realm() {
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("response json"))
         .collect::<Vec<_>>();
-    assert_eq!(responses.len(), 5);
+    assert_eq!(responses.len(), 7);
     assert_eq!(responses[0]["result"]["supportedVersions"][0], "2026-07-28");
     let names = responses[1]["result"]["tools"]
         .as_array()
@@ -265,20 +412,30 @@ fn stdio_discovers_manages_captures_and_revokes_realm() {
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect::<Vec<_>>();
-    assert!(names.contains(&"realm_capture"));
-    assert!(names.contains(&"realm_input"));
+    assert!(names.contains(&"interaction_domain_capture"));
+    assert!(names.contains(&"interaction_domain_observe"));
+    assert!(names.contains(&"interaction_domain_input"));
     assert_eq!(responses[2]["result"]["isError"], false);
-    assert_eq!(responses[3]["result"]["content"][1]["type"], "image");
+    assert_eq!(responses[3]["result"]["isError"], false);
     assert_eq!(responses[4]["result"]["isError"], false);
+    let input_result = responses[4]["result"]["content"][0]["text"]
+        .as_str()
+        .expect("interaction_domain_input JSON text");
+    assert!(input_result.contains(r#""status":"committed""#));
+    assert!(input_result.contains(r#""window":7"#));
+    assert!(input_result.contains(r#""local":0"#));
+    assert_eq!(responses[5]["result"]["content"][1]["type"], "image");
+    assert_eq!(responses[6]["result"]["isError"], false);
     assert!(
         handler
-            .realms
+            .interaction_domains
             .lock()
-            .expect("realm lock")
+            .expect("interaction_domain lock")
             .snapshot()
-            .realms
+            .interaction_domains
             .iter()
-            .any(|realm| realm.state == aegis_core::realm::RealmState::Revoked)
+            .any(|interaction_domain| interaction_domain.state
+                == aegis_core::interaction_domain::InteractionDomainState::Revoked)
     );
 
     let config =
@@ -300,10 +457,13 @@ fn stdio_discovers_manages_captures_and_revokes_realm() {
         2
     );
     assert_eq!(
-        report.realm.lifecycle,
+        report.interaction_domain.lifecycle,
         ["active", "paused", "active", "revoked"]
     );
-    assert_eq!(report.realm.cleanup, "revoked_test_realm");
+    assert_eq!(
+        report.interaction_domain.cleanup,
+        "revoked_test_interaction_domain"
+    );
     let input = report.visual.input_probe.expect("input probe evidence");
     assert_eq!(input.window_id, 7);
     assert_eq!(input.action, "pointer_move");
@@ -312,13 +472,13 @@ fn stdio_discovers_manages_captures_and_revokes_realm() {
     assert!(input.window_restored_to_human);
     assert_eq!(
         handler
-            .realms
+            .interaction_domains
             .lock()
-            .expect("realm lock")
+            .expect("interaction_domain lock")
             .interaction_group_for_window(WindowId(7))
             .expect("window group")
-            .control_realm,
-        HUMAN_REALM
+            .control_interaction_domain,
+        HUMAN_INTERACTION_DOMAIN
     );
 
     drop(server);

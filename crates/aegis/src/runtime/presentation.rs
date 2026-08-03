@@ -6,13 +6,8 @@ pub(super) enum PresentationOutcome {
     Retry,
 }
 
-struct FrameCapture {
-    crop: Option<aegis_core::Rect>,
-    target: CaptureTarget,
-    /// Cursor state sampled when a saved screenshot was requested. Output
-    /// capture, streams, and picker readbacks deliberately leave this empty.
-    cursor: Option<CaptureCursorState>,
-}
+mod capture;
+use capture::FrameCapture;
 
 impl CompositorRuntime {
     pub(super) fn render_and_present(
@@ -131,7 +126,7 @@ impl CompositorRuntime {
             && cursor_plane_changed
             && frame_capture.is_none()
             && self.pending_capture.is_none()
-            && self.pending_realm_capture.is_none()
+            && self.pending_interaction_domain_capture.is_none()
             && !self.screenshot_freeze.armed
             && !self.server.lock_confirmation_pending()
             && !self.server.retired_buffers_pending();
@@ -170,7 +165,7 @@ impl CompositorRuntime {
         if matches!(damage, FrameDamage::None)
             && frame_capture.is_none()
             && self.pending_capture.is_none()
-            && self.pending_realm_capture.is_none()
+            && self.pending_interaction_domain_capture.is_none()
             && !self.screenshot_freeze.armed
             && !self.server.lock_confirmation_pending()
             && !self.server.retired_buffers_pending()
@@ -927,7 +922,9 @@ impl CompositorRuntime {
                             s.broadcast(aegis_ipc::Event::SpaceUseChanged { state: space_use });
                         }
                     }
-                    self.live.set_windows(win_snapshot.clone());
+                    let accessibility_windows = self.server.accessibility_window_bindings();
+                    self.live
+                        .set_windows(win_snapshot.clone(), accessibility_windows);
                     self.shell.set_windows(win_snapshot);
                 }
                 // Mirror the workspace snapshot and broadcast `WorkspaceChanged`
@@ -961,15 +958,17 @@ impl CompositorRuntime {
                         );
                     }
                 }
-                let realm_revision = self.server.realm_revision();
-                if self.last_realm_revision != Some(realm_revision) {
-                    self.last_realm_revision = Some(realm_revision);
-                    let realm_snapshot = self.server.realm_snapshot();
-                    self.live.set_realms(realm_snapshot.clone());
-                    self.shell.set_realms(realm_snapshot);
+                let interaction_domain_revision = self.server.interaction_domain_revision();
+                if self.last_interaction_domain_revision != Some(interaction_domain_revision) {
+                    self.last_interaction_domain_revision = Some(interaction_domain_revision);
+                    let interaction_domain_snapshot = self.server.interaction_domain_snapshot();
+                    self.live
+                        .set_interaction_domains(interaction_domain_snapshot.clone());
+                    self.shell
+                        .set_interaction_domains(interaction_domain_snapshot);
                     if let Some(s) = self.ipc.as_ref() {
-                        s.broadcast(aegis_ipc::Event::RealmsChanged {
-                            revision: realm_revision,
+                        s.broadcast(aegis_ipc::Event::InteractionDomainsChanged {
+                            revision: interaction_domain_revision,
                         });
                     }
                 }
@@ -1350,7 +1349,7 @@ impl CompositorRuntime {
                         &self.ipc,
                         &self.journal,
                         ts,
-                        origin,
+                        origin.clone(),
                     );
                 }
                 for action in self.shell.take_window_actions() {
@@ -1387,7 +1386,7 @@ impl CompositorRuntime {
                         &self.ipc,
                         &self.journal,
                         ts,
-                        origin,
+                        origin.clone(),
                     );
                 }
                 if let Some(id) = self.shell.take_dismissed_notification() {
@@ -1400,7 +1399,7 @@ impl CompositorRuntime {
                         &self.ipc,
                         &self.journal,
                         ts,
-                        origin,
+                        origin.clone(),
                     );
                 }
                 if let Some(app) = self.shell.take_open_builtin() {
@@ -1413,57 +1412,72 @@ impl CompositorRuntime {
                         self.shell.open_builtin(app);
                     }
                 }
-                for intent in self.shell.take_realm_intents() {
-                    let action = realm_intent_to_action(intent);
-                    let before_revision = self.server.realm_snapshot().revision;
-                    let result = apply_realm_action(&mut self.server, None, action.clone());
+                for intent in self.shell.take_interaction_domain_intents() {
+                    let action = interaction_domain_intent_to_action(intent);
+                    let before_revision = self.server.interaction_domain_snapshot().revision;
+                    let result =
+                        apply_interaction_domain_action(&mut self.server, None, action.clone());
                     match &result {
                         Ok(_) => {
-                            for realm in realms_explicitly_stopped(&action) {
-                                self.automatically_paused_realms.remove(&realm);
+                            for interaction_domain in
+                                interaction_domains_explicitly_stopped(&action)
+                            {
+                                self.automatically_paused_interaction_domains
+                                    .remove(&interaction_domain);
                             }
-                            let invalidated = realm_action_invalidates_capture(&action);
+                            let invalidated =
+                                interaction_domain_action_invalidates_capture(&action);
                             if !invalidated.is_empty() {
                                 self.capture_worker.invalidate_security_context();
-                                if self.pending_realm_capture.as_ref().is_some_and(|pending| {
-                                    invalidated.contains(&pending.context.realm)
-                                }) {
+                                if self
+                                    .pending_interaction_domain_capture
+                                    .as_ref()
+                                    .is_some_and(|pending| {
+                                        invalidated.contains(&pending.context.interaction_domain)
+                                    })
+                                {
                                     let pending = self
-                                        .pending_realm_capture
+                                        .pending_interaction_domain_capture
                                         .take()
                                         .expect("capture invalidation predicate checked");
                                     refuse_capture_target(
                                         &self.capture_worker,
-                                        CaptureTarget::RealmReply {
+                                        CaptureTarget::InteractionDomainReply {
                                             context: pending.context,
                                             reply: pending.reply,
                                         },
-                                        "Realm authority changed before capture completed".into(),
+                                        "Interaction Domain authority changed before capture completed".into(),
                                         &self.journal,
                                         &self.ipc,
                                     );
                                 }
                             }
-                            if let aegis_ipc::RealmAction::Revoke { realm, .. } = &action {
-                                self.realm_render_targets.remove(realm);
+                            if let aegis_ipc::InteractionDomainAction::Revoke {
+                                interaction_domain,
+                                ..
+                            } = &action
+                            {
+                                self.interaction_domain_render_targets
+                                    .remove(interaction_domain);
                             }
-                            self.realm_processes.apply_committed_action(&action);
-                            let snapshot = self.server.realm_snapshot();
-                            self.last_realm_revision = Some(snapshot.revision);
-                            self.live.set_realms(snapshot.clone());
-                            self.shell.set_realms(snapshot.clone());
+                            self.interaction_domain_processes
+                                .apply_committed_action(&action);
+                            let snapshot = self.server.interaction_domain_snapshot();
+                            self.last_interaction_domain_revision = Some(snapshot.revision);
+                            self.live.set_interaction_domains(snapshot.clone());
+                            self.shell.set_interaction_domains(snapshot.clone());
                             if let Some(ipc) = &self.ipc {
-                                ipc.broadcast(aegis_ipc::Event::RealmsChanged {
+                                ipc.broadcast(aegis_ipc::Event::InteractionDomainsChanged {
                                     revision: snapshot.revision,
                                 });
                             }
                         }
                         Err(error) => {
-                            log::warn!("Realm action from shell refused: {error}");
+                            log::warn!("Interaction Domain action from shell refused: {error}");
                             let notification = self.notif_queue.lock().unwrap().push(
                                 "AI Workspace",
                                 error.clone(),
-                                Some(aegis_core::app::AI_WORKSPACES_ID.into()),
+                                Some(aegis_core::app::INTERACTION_MANAGER_ID.into()),
                                 ts,
                             );
                             if let Some(ipc) = &self.ipc {
@@ -1471,7 +1485,7 @@ impl CompositorRuntime {
                             }
                         }
                     }
-                    let after_revision = self.server.realm_revision();
+                    let after_revision = self.server.interaction_domain_revision();
                     let effect = match result {
                         Ok(_) => aegis_ipc::Effect::Applied,
                         Err(reason) => aegis_ipc::Effect::Refused { reason },
@@ -1481,7 +1495,7 @@ impl CompositorRuntime {
                         &self.ipc,
                         ts,
                         aegis_ipc::Origin::Chrome,
-                        aegis_ipc::JournalMutation::Realm {
+                        aegis_ipc::JournalMutation::InteractionDomain {
                             action,
                             before_revision,
                             after_revision,
@@ -1517,7 +1531,7 @@ impl CompositorRuntime {
                             &self.journal,
                             &self.ipc,
                             ts,
-                            origin,
+                            origin.clone(),
                             command,
                             effect,
                         );
@@ -1899,102 +1913,6 @@ impl CompositorRuntime {
         }
 
         Ok(PresentationOutcome::Submitted)
-    }
-
-    /// Drain one-shot and stream capture requests and bind at most one
-    /// readback to the upcoming presentation frame. Runs before the
-    /// render/skip decision so a bound capture always forces presentation.
-    /// The readback copy is recorded after every scene and cursor draw, so it
-    /// captures exactly the pixels submitted rather than a later re-render of
-    /// mutable state.
-    fn prepare_frame_capture(
-        &mut self,
-        session_locked: bool,
-        pending_screenshots: &mut Vec<PendingScreenshot>,
-    ) -> Option<FrameCapture> {
-        let mut frame_capture = None;
-        for req in self.capture_rx.try_iter() {
-            if session_locked || !self.host.is_active() {
-                let _ = req
-                    .reply
-                    .send(Err("session is locked or inactive".to_owned()));
-            } else if !self.capture_worker.reserve() {
-                let _ = req
-                    .reply
-                    .send(Err("another capture is still being processed".to_owned()));
-            } else {
-                frame_capture = Some(FrameCapture {
-                    crop: req.region,
-                    target: CaptureTarget::Reply { reply: req.reply },
-                    cursor: None,
-                });
-            }
-        }
-        for request in pending_screenshots.drain(..) {
-            let PendingScreenshot {
-                command: cmd,
-                ts_mono_ms: ts,
-                origin,
-                cursor,
-            } = request;
-            let aegis_ipc::Command::Screenshot { path, region } = &cmd else {
-                continue;
-            };
-            if session_locked || !self.host.is_active() {
-                journal_effect_and_broadcast(
-                    &self.journal,
-                    &self.ipc,
-                    ts,
-                    origin,
-                    cmd,
-                    aegis_ipc::Effect::Refused {
-                        reason: "session is locked or inactive".into(),
-                    },
-                );
-            } else if !self.capture_worker.reserve() {
-                journal_effect_and_broadcast(
-                    &self.journal,
-                    &self.ipc,
-                    ts,
-                    origin,
-                    cmd,
-                    aegis_ipc::Effect::Refused {
-                        reason: "another capture is still being processed".into(),
-                    },
-                );
-            } else {
-                frame_capture = Some(FrameCapture {
-                    crop: *region,
-                    target: CaptureTarget::Screenshot {
-                        path: path.clone(),
-                        command: cmd,
-                        ts_mono_ms: ts,
-                        origin,
-                    },
-                    cursor: Some(cursor),
-                });
-            }
-        }
-        // Stream fan-out (ADR-0052): when no one-shot capture claimed this
-        // frame's readback and the staging slot and worker lane are free,
-        // bind one readback shared by every due stream. One-shots keep
-        // priority; a locked or inactive session simply produces no stream
-        // frames (the stream survives).
-        if frame_capture.is_none()
-            && self.pending_capture.is_none()
-            && !self.stream_job_in_flight
-            && !session_locked
-            && self.host.is_active()
-            && !self.capture_worker.is_busy()
-            && !self.streams.due_ids(std::time::Instant::now()).is_empty()
-        {
-            frame_capture = Some(FrameCapture {
-                crop: None,
-                target: CaptureTarget::Stream,
-                cursor: None,
-            });
-        }
-        frame_capture
     }
 }
 

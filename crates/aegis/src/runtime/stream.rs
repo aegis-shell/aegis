@@ -19,7 +19,7 @@ const MIN_MAX_FPS: u32 = 1;
 const MAX_MAX_FPS: u32 = 60;
 
 /// One control message from an IPC connection thread, applied on the main
-/// loop. Mirrors the capture/realm-control request pattern.
+/// loop. Mirrors the capture/interaction domain-control request pattern.
 pub(super) struct StreamControlRequest {
     pub(super) conn_id: u64,
     pub(super) action: StreamControl,

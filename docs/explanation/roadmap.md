@@ -316,7 +316,7 @@ defined scope, never a special client of the compositor.
 
 **Status.** In progress. Durable window ids, the mutation journal, fail-closed
 named scopes and leases, deterministic floating-window geometry, bounded
-target-local input, sealed-descriptor pixel capture, independent Realm seats
+target-local input, sealed-descriptor pixel capture, independent Interaction Domain seats
 and virtual outputs, transferable interaction authority, damage-driven
 observation, and cgroup-owned application sandboxes are implemented
 ([ADR-0040](../adr/0040-realms-seats-and-transferable-interaction-authority.md)
@@ -329,9 +329,9 @@ The remaining
 desktop-dependent semantic surface (window-content capture per window,
 semantic element trees) stays open.
 
-The `aegis-mcp` integration now closes the client-side Realm loop:
+The `aegis-mcp` integration now closes the client-side Interaction Domain loop:
 fuji discovers scoped tools through MCP, while the bridge manages one
-recoverable Agent Realm across application launch, authority transfer,
+recoverable Agent Interaction Domain across application launch, authority transfer,
 directed capture, bounded input, and revocation. The renamed fuji agent is
 self-contained in this workspace; neither Praxion nor Neenee is required.
 Voice activation and shell-native conversation chrome remain follow-up product

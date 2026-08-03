@@ -6,7 +6,10 @@ static OUTPUT_IMPL: ffi::wl_output_interface_impl = ffi::wl_output_interface_imp
     release: res_destroy,
 };
 
-fn realm_output_info(realm: RealmId, output: VirtualOutput) -> aegis_core::output::OutputInfo {
+fn interaction_domain_output_info(
+    interaction_domain: InteractionDomainId,
+    output: VirtualOutput,
+) -> aegis_core::output::OutputInfo {
     let physical = |logical: u32| {
         u64::from(logical)
             .saturating_mul(u64::from(output.scale_milli))
@@ -14,7 +17,7 @@ fn realm_output_info(realm: RealmId, output: VirtualOutput) -> aegis_core::outpu
             .min(i32::MAX as u64) as i32
     };
     aegis_core::output::OutputInfo {
-        connector: format!("realm-{}", realm.0),
+        connector: format!("interaction_domain-{}", interaction_domain.0),
         geometry: aegis_core::output::OutputGeometry {
             mode: aegis_core::output::OutputMode {
                 width: physical(output.width),
@@ -29,38 +32,38 @@ fn realm_output_info(realm: RealmId, output: VirtualOutput) -> aegis_core::outpu
     }
 }
 
-pub(crate) fn output_realms_for_window(
+pub(crate) fn output_interaction_domains_for_window(
     state: &State,
     window: aegis_core::window::WindowId,
-) -> std::collections::BTreeSet<RealmId> {
+) -> std::collections::BTreeSet<InteractionDomainId> {
     state
         .authority
         .interaction_group_for_window(window)
         .map(|group| {
-            std::iter::once(group.control_realm)
-                .chain(group.observer_realms.iter().copied())
+            std::iter::once(group.control_interaction_domain)
+                .chain(group.observer_interaction_domains.iter().copied())
                 .collect()
         })
-        .unwrap_or_else(|| std::iter::once(HUMAN_REALM).collect())
+        .unwrap_or_else(|| std::iter::once(HUMAN_INTERACTION_DOMAIN).collect())
 }
 
-unsafe fn output_global_matches_realm(
+unsafe fn output_global_matches_interaction_domain(
     state: &State,
     global: *mut OutputGlobal,
-    realm: RealmId,
+    interaction_domain: InteractionDomainId,
 ) -> bool {
     unsafe {
         if global.is_null() || !(*global).active {
             return false;
         }
-        if realm == HUMAN_REALM {
-            (*global).realm.is_none()
+        if interaction_domain == HUMAN_INTERACTION_DOMAIN {
+            (*global).interaction_domain.is_none()
                 && state
                     .output_infos
                     .first()
                     .is_some_and(|primary| primary.connector == (*global).info.connector)
         } else {
-            (*global).realm == Some(realm)
+            (*global).interaction_domain == Some(interaction_domain)
         }
     }
 }
@@ -68,7 +71,7 @@ unsafe fn output_global_matches_realm(
 pub(crate) unsafe fn post_surface_output_event(
     state: &State,
     surface: *mut ffi::wl_resource,
-    realm: RealmId,
+    interaction_domain: InteractionDomainId,
     opcode: u32,
 ) {
     unsafe {
@@ -81,7 +84,7 @@ pub(crate) unsafe fn post_surface_output_event(
                 return false;
             }
             let global = ffi::wl_resource_get_user_data(*output) as *mut OutputGlobal;
-            output_global_matches_realm(state, global, realm)
+            output_global_matches_interaction_domain(state, global, interaction_domain)
         }) {
             ffi::wl_resource_post_event(surface, opcode, output);
         }
@@ -91,8 +94,8 @@ pub(crate) unsafe fn post_surface_output_event(
 pub(crate) unsafe fn update_windows_output_membership(
     state: &State,
     windows: &[aegis_core::window::WindowId],
-    before: &std::collections::BTreeSet<RealmId>,
-    after: &std::collections::BTreeSet<RealmId>,
+    before: &std::collections::BTreeSet<InteractionDomainId>,
+    after: &std::collections::BTreeSet<InteractionDomainId>,
 ) {
     unsafe {
         for pointer in state.live_surfaces() {
@@ -100,19 +103,19 @@ pub(crate) unsafe fn update_windows_output_membership(
             if root.is_null() || !windows.contains(&(*root).window.id) || !(*pointer).mapped {
                 continue;
             }
-            for realm in before.difference(after) {
+            for interaction_domain in before.difference(after) {
                 post_surface_output_event(
                     state,
                     (*pointer).resource,
-                    *realm,
+                    *interaction_domain,
                     ffi::WL_SURFACE_LEAVE,
                 );
             }
-            for realm in after.difference(before) {
+            for interaction_domain in after.difference(before) {
                 post_surface_output_event(
                     state,
                     (*pointer).resource,
-                    *realm,
+                    *interaction_domain,
                     ffi::WL_SURFACE_ENTER,
                 );
             }
@@ -120,37 +123,43 @@ pub(crate) unsafe fn update_windows_output_membership(
     }
 }
 
-pub(crate) unsafe fn create_realm_output_global(
+pub(crate) unsafe fn create_interaction_domain_output_global(
     state: &mut State,
-    realm: RealmId,
+    interaction_domain: InteractionDomainId,
     output: VirtualOutput,
 ) -> bool {
-    unsafe { create_output_global(state, realm_output_info(realm, output), Some(realm)) }
+    unsafe {
+        create_output_global(
+            state,
+            interaction_domain_output_info(interaction_domain, output),
+            Some(interaction_domain),
+        )
+    }
 }
 
-pub(crate) unsafe fn update_realm_output_global(
+pub(crate) unsafe fn update_interaction_domain_output_global(
     state: &mut State,
-    realm: RealmId,
+    interaction_domain: InteractionDomainId,
     output: VirtualOutput,
 ) {
     unsafe {
-        let info = realm_output_info(realm, output);
+        let info = interaction_domain_output_info(interaction_domain, output);
         let mut found = false;
         for global in &mut state.output_globals {
-            if global.realm == Some(realm) && global.active {
+            if global.interaction_domain == Some(interaction_domain) && global.active {
                 global.info = info.clone();
                 found = true;
             }
         }
         if !found {
-            create_realm_output_global(state, realm, output);
+            create_interaction_domain_output_global(state, interaction_domain, output);
         }
         for resource in state.output_resources.iter().copied().filter(|resource| {
             if resource.is_null() {
                 return false;
             }
             let global = ffi::wl_resource_get_user_data(*resource) as *mut OutputGlobal;
-            !global.is_null() && (*global).realm == Some(realm)
+            !global.is_null() && (*global).interaction_domain == Some(interaction_domain)
         }) {
             send_output_geometry(resource);
         }
@@ -160,13 +169,13 @@ pub(crate) unsafe fn update_realm_output_global(
 pub(crate) unsafe fn create_output_global(
     state: &mut State,
     info: aegis_core::output::OutputInfo,
-    realm: Option<RealmId>,
+    interaction_domain: Option<InteractionDomainId>,
 ) -> bool {
     unsafe {
         let mut record = Box::new(OutputGlobal {
             state: state as *mut State,
             info,
-            realm,
+            interaction_domain,
             global: std::ptr::null_mut(),
             active: true,
         });
@@ -194,7 +203,7 @@ pub(crate) unsafe fn reconcile_output_globals(
 ) {
     unsafe {
         for global in &mut state.output_globals {
-            if !global.active || global.realm.is_some() {
+            if !global.active || global.interaction_domain.is_some() {
                 continue;
             }
             if let Some(info) = outputs
@@ -210,7 +219,9 @@ pub(crate) unsafe fn reconcile_output_globals(
         }
         for output in outputs {
             let exists = state.output_globals.iter().any(|global| {
-                global.active && global.realm.is_none() && global.info.connector == output.connector
+                global.active
+                    && global.interaction_domain.is_none()
+                    && global.info.connector == output.connector
             });
             if !exists {
                 create_output_global(state, output.clone(), None);
@@ -366,9 +377,11 @@ unsafe extern "C" fn output_bind(
                 if root.is_null() {
                     continue;
                 }
-                if output_realms_for_window(state, (*root).window.id)
+                if output_interaction_domains_for_window(state, (*root).window.id)
                     .into_iter()
-                    .any(|realm| output_global_matches_realm(state, global, realm))
+                    .any(|interaction_domain| {
+                        output_global_matches_interaction_domain(state, global, interaction_domain)
+                    })
                 {
                     ffi::wl_resource_post_event((*pointer).resource, ffi::WL_SURFACE_ENTER, res);
                 }

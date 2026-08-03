@@ -45,12 +45,15 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 
 # aegis-mcp is the platform's MCP bridge; fuji (宓姬) is the in-tree agent
 # product. aegis exposes the bridge so any agent can discover scoped desktop
-# and Realm tools without linking the agent stack into the compositor
+# and Interaction Domain tools without linking the agent stack into the compositor
 # (ADR-0047, ADR-0050, ADR-0087).
 base64 = "0.22"
 fastrand = "2"
 getrandom = "0.3"
 notify = "8.2"
+sha2 = "0.10"
+atspi = { version = "0.30", features = ["zbus"] }
+async-io = "2"
 
 # Session D-Bus for the StatusNotifierItem system tray (aegis-tray, shared by
 # aegis-hud and aegis-command-panel).
@@ -86,9 +89,17 @@ ini = { package = "rust-ini", version = "0.20" }
 
 # Internal crates.
 aegis-core = { path = "crates/aegis-core" }
+# Hash-chained event persistence and bounded live audit projections.
+aegis-audit = { path = "crates/aegis-audit" }
+# Transport-neutral Actor identity, observation leases, and action policy.
+aegis-authority = { path = "crates/aegis-authority" }
+# Validated application accessibility trees and semantic dispatch routing.
+aegis-semantic = { path = "crates/aegis-semantic" }
+# Out-of-process AT-SPI accessibility adapter for semantic observations.
+aegis-atspi = { path = "crates/aegis-atspi" }
 # Shared tracing-based observability init installed once by every binary.
 aegis-logging = { path = "crates/aegis-logging" }
-aegis-protocols = { path = "crates/aegis-protocols" }
+aegis-wayland-protocols = { path = "crates/aegis-wayland-protocols" }
 aegis-compositor = { path = "crates/aegis-compositor" }
 aegis-backend = { path = "crates/aegis-backend" }
 aegis-render = { path = "crates/aegis-render" }
@@ -98,7 +109,7 @@ aegis-design = { path = "crates/aegis-design" }
 # Chrome components promoted out of aegis-shell (ADR-0044).
 aegis-dock = { path = "crates/aegis-dock" }
 aegis-prism = { path = "crates/aegis-prism" }
-aegis-ai-workspaces = { path = "crates/aegis-ai-workspaces" }
+aegis-interaction-manager = { path = "crates/aegis-interaction-manager" }
 # Display-only floating HUD status chips (ADR-0080).
 aegis-hud = { path = "crates/aegis-hud" }
 # SNI system tray service shared by shell chrome (ADR-0080).

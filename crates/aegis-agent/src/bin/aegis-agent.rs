@@ -27,7 +27,7 @@ max_turns = 32
 [permissions]
 default = \"ask\"                    # allow | ask | deny
 # bash = \"ask\"
-# \"mcp__aegis__realm_input\" = \"allow\"
+# \"mcp__aegis__interaction_domain_input\" = \"allow\"
 
 # Aegis desktop bridge — build with: cargo build --release -p aegis-mcp
 # [mcp.aegis]

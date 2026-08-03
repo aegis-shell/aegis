@@ -395,14 +395,155 @@ fn control_socket_path() -> Option<std::path::PathBuf> {
 }
 
 fn trusted_sibling_program(name: &str) -> std::io::Result<std::ffi::OsString> {
-    let path = std::env::current_exe()?.with_file_name(name);
-    if path.is_file() {
-        Ok(path.into_os_string())
-    } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("trusted sibling {name} binary is missing"),
-        ))
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    let current = std::env::current_exe()?;
+    let path = current.with_file_name(name);
+    let current_metadata = std::fs::symlink_metadata(&current)?;
+    let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!("trusted sibling {name} binary is missing: {error}"),
+        )
+    })?;
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "trusted sibling has no parent directory",
+        )
+    })?;
+    let parent_metadata = std::fs::symlink_metadata(parent)?;
+    let mode = metadata.permissions().mode();
+    if !metadata.file_type().is_file()
+        || !parent_metadata.file_type().is_dir()
+        || metadata.uid() != current_metadata.uid()
+        || parent_metadata.uid() != current_metadata.uid()
+        || mode & 0o111 == 0
+        || mode & 0o022 != 0
+        || parent_metadata.permissions().mode() & 0o022 != 0
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("trusted sibling {name} has unsafe ownership, mode, or parent"),
+        ));
+    }
+    Ok(path.into_os_string())
+}
+
+fn forward_adapter_environment(command: &mut std::process::Command) {
+    command.env_clear();
+    for name in [
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "AT_SPI_BUS_ADDRESS",
+        "LANG",
+        "LC_ALL",
+        "RUST_LOG",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+}
+
+/// Supervised, out-of-process accessibility adapter. Its credential is a
+/// compositor-lifetime secret delivered through stdin, never argv, the
+/// environment, or persistent storage. The process reconnects with the same
+/// ephemeral principal after crashes; dropping the compositor kills it and
+/// destroys the principal registry that recognizes the credential.
+pub(super) struct SemanticAdapterProcess {
+    child: Option<std::process::Child>,
+    credential: String,
+    available: bool,
+    restart_at: std::time::Instant,
+}
+
+impl SemanticAdapterProcess {
+    pub(super) fn start(credential: String, available: bool) -> Self {
+        let mut process = Self {
+            child: None,
+            credential,
+            available,
+            restart_at: std::time::Instant::now(),
+        };
+        if available {
+            process.spawn();
+        } else {
+            log::info!(
+                "session: semantic accessibility adapter disabled outside the production IPC session"
+            );
+        }
+        process
+    }
+
+    pub(super) fn maintain(&mut self) {
+        if !self.available {
+            return;
+        }
+        if let Some(status) = self
+            .child
+            .as_mut()
+            .and_then(|child| child.try_wait().ok())
+            .flatten()
+        {
+            self.child = None;
+            self.restart_at = std::time::Instant::now() + RESTART_BACKOFF;
+            log::warn!(
+                "session: semantic accessibility adapter exited ({status}); scheduling restart"
+            );
+        }
+        if self.child.is_none() && std::time::Instant::now() >= self.restart_at {
+            self.spawn();
+        }
+    }
+
+    fn spawn(&mut self) {
+        let program = match trusted_sibling_program("aegis-atspi") {
+            Ok(program) => program,
+            Err(error) => {
+                log::warn!("session: could not start aegis-atspi: {error}");
+                self.restart_at = std::time::Instant::now() + RESTART_BACKOFF;
+                return;
+            }
+        };
+        let mut command = std::process::Command::new(program);
+        forward_adapter_environment(&mut command);
+        command
+            .arg("--credential-stdin")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null());
+        match command.spawn() {
+            Ok(mut child) => {
+                let delivered = child.stdin.take().is_some_and(|mut stdin| {
+                    use std::io::Write as _;
+                    writeln!(stdin, "{}", self.credential).is_ok()
+                });
+                if delivered {
+                    log::info!("session: semantic accessibility adapter started");
+                    self.child = Some(child);
+                } else {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    log::warn!("session: could not deliver aegis-atspi credential");
+                    self.restart_at = std::time::Instant::now() + RESTART_BACKOFF;
+                }
+            }
+            Err(error) => {
+                log::warn!("session: could not start aegis-atspi: {error}");
+                self.restart_at = std::time::Instant::now() + RESTART_BACKOFF;
+            }
+        }
+    }
+}
+
+impl Drop for SemanticAdapterProcess {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        self.credential.zeroize();
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 

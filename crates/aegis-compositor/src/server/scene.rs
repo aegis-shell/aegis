@@ -149,9 +149,12 @@ impl Server {
     }
 
     /// Compatibility alias for
-    /// [`realm_client_surface_frame_order`](Self::realm_client_surface_frame_order).
-    pub fn realm_toplevel_frame_order(&self, realm: RealmId) -> Vec<usize> {
-        self.realm_client_surface_frame_order(realm)
+    /// [`interaction_domain_client_surface_frame_order`](Self::interaction_domain_client_surface_frame_order).
+    pub fn interaction_domain_toplevel_frame_order(
+        &self,
+        interaction_domain: InteractionDomainId,
+    ) -> Vec<usize> {
+        self.interaction_domain_client_surface_frame_order(interaction_domain)
     }
 
     /// Every mapped client surface id in physical-desktop paint order.
@@ -165,20 +168,29 @@ impl Server {
     pub fn client_surface_frame_order(&self) -> Vec<usize> {
         let visible = self.render_visible();
         let occluded = self.occluded_window_ids();
-        self.client_surface_frame_order_for_realm(HUMAN_REALM, Some(&visible), Some(&occluded))
+        self.client_surface_frame_order_for_interaction_domain(
+            HUMAN_INTERACTION_DOMAIN,
+            Some(&visible),
+            Some(&occluded),
+        )
     }
 
-    /// Every mapped client surface id in paint order for a directed Realm.
-    pub fn realm_client_surface_frame_order(&self, realm: RealmId) -> Vec<usize> {
-        if self.state.session_lock_phase.is_active() || self.realm_output(realm).is_none() {
+    /// Every mapped client surface id in paint order for a directed Interaction Domain.
+    pub fn interaction_domain_client_surface_frame_order(
+        &self,
+        interaction_domain: InteractionDomainId,
+    ) -> Vec<usize> {
+        if self.state.session_lock_phase.is_active()
+            || self.interaction_domain_output(interaction_domain).is_none()
+        {
             return Vec::new();
         }
-        self.client_surface_frame_order_for_realm(realm, None, None)
+        self.client_surface_frame_order_for_interaction_domain(interaction_domain, None, None)
     }
 
-    fn client_surface_frame_order_for_realm(
+    fn client_surface_frame_order_for_interaction_domain(
         &self,
-        realm: RealmId,
+        interaction_domain: InteractionDomainId,
         visible: Option<&std::collections::HashSet<aegis_core::window::WindowId>>,
         occluded: Option<&std::collections::HashSet<aegis_core::window::WindowId>>,
     ) -> Vec<usize> {
@@ -194,7 +206,7 @@ impl Server {
                     && self
                         .state
                         .authority
-                        .realm_observes_window(realm, surface.window.id)
+                        .interaction_domain_observes_window(interaction_domain, surface.window.id)
             })
             .collect::<Vec<_>>();
         let popups = self
@@ -259,7 +271,9 @@ impl Server {
                     && self
                         .state
                         .authority
-                        .realm_observes_window(HUMAN_REALM, unsafe { (*root).window.id })
+                        .interaction_domain_observes_window(HUMAN_INTERACTION_DOMAIN, unsafe {
+                            (*root).window.id
+                        })
             })
             .map(|s| {
                 // ADR-0029: while a transition is in flight the frame renders
@@ -344,7 +358,9 @@ impl Server {
                     && self
                         .state
                         .authority
-                        .realm_observes_window(HUMAN_REALM, unsafe { (*root).window.id })
+                        .interaction_domain_observes_window(HUMAN_INTERACTION_DOMAIN, unsafe {
+                            (*root).window.id
+                        })
             })
             .filter_map(|s| {
                 let db = s.dmabuf.as_ref()?;
@@ -424,11 +440,16 @@ impl Server {
         frames
     }
 
-    /// Directed offscreen scene for one realm. Unlike the physical desktop,
-    /// virtual realms are independent of the user's currently visible
-    /// workspace and use realm-local placements on their virtual output.
-    pub fn realm_toplevel_frames(&self, realm: RealmId) -> Vec<SurfacePixels<'_>> {
-        if self.state.session_lock_phase.is_active() || self.realm_output(realm).is_none() {
+    /// Directed offscreen scene for one interaction domain. Unlike the physical desktop,
+    /// virtual interaction domains are independent of the user's currently visible
+    /// workspace and use interaction domain-local placements on their virtual output.
+    pub fn interaction_domain_toplevel_frames(
+        &self,
+        interaction_domain: InteractionDomainId,
+    ) -> Vec<SurfacePixels<'_>> {
+        if self.state.session_lock_phase.is_active()
+            || self.interaction_domain_output(interaction_domain).is_none()
+        {
             return Vec::new();
         }
         self.state
@@ -447,7 +468,9 @@ impl Server {
                     || !self
                         .state
                         .authority
-                        .realm_observes_window(realm, unsafe { (*root).window.id })
+                        .interaction_domain_observes_window(interaction_domain, unsafe {
+                            (*root).window.id
+                        })
                 {
                     return None;
                 }
@@ -458,7 +481,11 @@ impl Server {
                     height: surface.height,
                     generation: surface.generation,
                     pixels: &surface.pixels,
-                    geometry: self.realm_surface_geometry(surface, root, realm)?,
+                    geometry: self.interaction_domain_surface_geometry(
+                        surface,
+                        root,
+                        interaction_domain,
+                    )?,
                     damage: &surface.committed_damage,
                     opaque_region: surface.opaque_region.as_deref(),
                 })
@@ -466,24 +493,35 @@ impl Server {
             .collect()
     }
 
-    /// All mapped client surfaces backed by shm for one directed Realm.
-    pub fn realm_client_surface_frames(&self, realm: RealmId) -> Vec<SurfacePixels<'_>> {
-        let mut frames = self.realm_toplevel_frames(realm);
-        frames.extend(self.realm_subsurface_frames_below(realm));
-        frames.extend(self.realm_subsurface_frames_above(realm));
+    /// All mapped client surfaces backed by shm for one directed Interaction Domain.
+    pub fn interaction_domain_client_surface_frames(
+        &self,
+        interaction_domain: InteractionDomainId,
+    ) -> Vec<SurfacePixels<'_>> {
+        let mut frames = self.interaction_domain_toplevel_frames(interaction_domain);
+        frames.extend(self.interaction_domain_subsurface_frames_below(interaction_domain));
+        frames.extend(self.interaction_domain_subsurface_frames_above(interaction_domain));
         frames
     }
 
-    /// All mapped client surfaces backed by dma-buf for one directed Realm.
-    pub fn realm_client_surface_dmabuf_frames(&self, realm: RealmId) -> Vec<SurfaceDmabuf> {
-        let mut frames = self.realm_toplevel_dmabuf_frames(realm);
-        frames.extend(self.realm_subsurface_dmabuf_frames_below(realm));
-        frames.extend(self.realm_subsurface_dmabuf_frames_above(realm));
+    /// All mapped client surfaces backed by dma-buf for one directed Interaction Domain.
+    pub fn interaction_domain_client_surface_dmabuf_frames(
+        &self,
+        interaction_domain: InteractionDomainId,
+    ) -> Vec<SurfaceDmabuf> {
+        let mut frames = self.interaction_domain_toplevel_dmabuf_frames(interaction_domain);
+        frames.extend(self.interaction_domain_subsurface_dmabuf_frames_below(interaction_domain));
+        frames.extend(self.interaction_domain_subsurface_dmabuf_frames_above(interaction_domain));
         frames
     }
 
-    pub fn realm_toplevel_dmabuf_frames(&self, realm: RealmId) -> Vec<SurfaceDmabuf> {
-        if self.state.session_lock_phase.is_active() || self.realm_output(realm).is_none() {
+    pub fn interaction_domain_toplevel_dmabuf_frames(
+        &self,
+        interaction_domain: InteractionDomainId,
+    ) -> Vec<SurfaceDmabuf> {
+        if self.state.session_lock_phase.is_active()
+            || self.interaction_domain_output(interaction_domain).is_none()
+        {
             return Vec::new();
         }
         self.state
@@ -501,7 +539,9 @@ impl Server {
                     || !self
                         .state
                         .authority
-                        .realm_observes_window(realm, unsafe { (*root).window.id })
+                        .interaction_domain_observes_window(interaction_domain, unsafe {
+                            (*root).window.id
+                        })
                 {
                     return None;
                 }
@@ -521,20 +561,27 @@ impl Server {
                     offset: dmabuf.offset,
                     stride: dmabuf.stride,
                     acquire_fence: dmabuf.acquire_fence,
-                    geometry: self.realm_surface_geometry(surface, root, realm)?,
+                    geometry: self.interaction_domain_surface_geometry(
+                        surface,
+                        root,
+                        interaction_domain,
+                    )?,
                 })
             })
             .collect()
     }
 
-    pub(crate) fn realm_surface_geometry(
+    pub(crate) fn interaction_domain_surface_geometry(
         &self,
         surface: &SurfaceRec,
         root: *mut SurfaceRec,
-        realm: RealmId,
+        interaction_domain: InteractionDomainId,
     ) -> Option<aegis_core::SurfaceGeometry> {
         let root = unsafe { &*root };
-        let placement = self.state.realm_placements.get(&(realm, root.window.id))?;
+        let placement = self
+            .state
+            .interaction_domain_placements
+            .get(&(interaction_domain, root.window.id))?;
         let root_size = if root.window.size.w > 0 && root.window.size.h > 0 {
             root.window.size
         } else {
@@ -947,28 +994,42 @@ impl Server {
         self.collect_subsurfaces_dmabuf_with(true, visible, occluded)
     }
 
-    pub fn realm_subsurface_frames_below(&self, realm: RealmId) -> Vec<SurfacePixels<'_>> {
-        self.collect_realm_subsurfaces_shm(realm, false)
-    }
-
-    pub fn realm_subsurface_frames_above(&self, realm: RealmId) -> Vec<SurfacePixels<'_>> {
-        self.collect_realm_subsurfaces_shm(realm, true)
-    }
-
-    pub fn realm_subsurface_dmabuf_frames_below(&self, realm: RealmId) -> Vec<SurfaceDmabuf> {
-        self.collect_realm_subsurfaces_dmabuf(realm, false)
-    }
-
-    pub fn realm_subsurface_dmabuf_frames_above(&self, realm: RealmId) -> Vec<SurfaceDmabuf> {
-        self.collect_realm_subsurfaces_dmabuf(realm, true)
-    }
-
-    pub(crate) fn collect_realm_subsurfaces_shm(
+    pub fn interaction_domain_subsurface_frames_below(
         &self,
-        realm: RealmId,
+        interaction_domain: InteractionDomainId,
+    ) -> Vec<SurfacePixels<'_>> {
+        self.collect_interaction_domain_subsurfaces_shm(interaction_domain, false)
+    }
+
+    pub fn interaction_domain_subsurface_frames_above(
+        &self,
+        interaction_domain: InteractionDomainId,
+    ) -> Vec<SurfacePixels<'_>> {
+        self.collect_interaction_domain_subsurfaces_shm(interaction_domain, true)
+    }
+
+    pub fn interaction_domain_subsurface_dmabuf_frames_below(
+        &self,
+        interaction_domain: InteractionDomainId,
+    ) -> Vec<SurfaceDmabuf> {
+        self.collect_interaction_domain_subsurfaces_dmabuf(interaction_domain, false)
+    }
+
+    pub fn interaction_domain_subsurface_dmabuf_frames_above(
+        &self,
+        interaction_domain: InteractionDomainId,
+    ) -> Vec<SurfaceDmabuf> {
+        self.collect_interaction_domain_subsurfaces_dmabuf(interaction_domain, true)
+    }
+
+    pub(crate) fn collect_interaction_domain_subsurfaces_shm(
+        &self,
+        interaction_domain: InteractionDomainId,
         want_above: bool,
     ) -> Vec<SurfacePixels<'_>> {
-        if self.state.session_lock_phase.is_active() || self.realm_output(realm).is_none() {
+        if self.state.session_lock_phase.is_active()
+            || self.interaction_domain_output(interaction_domain).is_none()
+        {
             return Vec::new();
         }
         let mut out = Vec::new();
@@ -989,7 +1050,7 @@ impl Server {
                 || !self
                     .state
                     .authority
-                    .realm_observes_window(realm, root_surface.window.id)
+                    .interaction_domain_observes_window(interaction_domain, root_surface.window.id)
             {
                 continue;
             }
@@ -999,10 +1060,10 @@ impl Server {
                 }
                 let child = unsafe { &*child_ptr };
                 if child.subsurface_above_parent == want_above {
-                    self.collect_realm_subtree_shm(
+                    self.collect_interaction_domain_subtree_shm(
                         child,
                         root,
-                        realm,
+                        interaction_domain,
                         root_surface.window.id,
                         &mut out,
                         0,
@@ -1013,11 +1074,11 @@ impl Server {
         out
     }
 
-    pub(crate) fn collect_realm_subtree_shm<'a>(
+    pub(crate) fn collect_interaction_domain_subtree_shm<'a>(
         &'a self,
         surface: &'a SurfaceRec,
         root: *mut SurfaceRec,
-        realm: RealmId,
+        interaction_domain: InteractionDomainId,
         window: aegis_core::window::WindowId,
         out: &mut Vec<SurfacePixels<'a>>,
         depth: u32,
@@ -1027,10 +1088,10 @@ impl Server {
         }
         for &child_ptr in &surface.children {
             if !child_ptr.is_null() && unsafe { !(*child_ptr).subsurface_above_parent } {
-                self.collect_realm_subtree_shm(
+                self.collect_interaction_domain_subtree_shm(
                     unsafe { &*child_ptr },
                     root,
-                    realm,
+                    interaction_domain,
                     window,
                     out,
                     depth + 1,
@@ -1039,7 +1100,8 @@ impl Server {
         }
         if !surface.content_is_dmabuf
             && !surface.pixels.is_empty()
-            && let Some(geometry) = self.realm_surface_geometry(surface, root, realm)
+            && let Some(geometry) =
+                self.interaction_domain_surface_geometry(surface, root, interaction_domain)
         {
             out.push(SurfacePixels {
                 window: Some(window),
@@ -1055,10 +1117,10 @@ impl Server {
         }
         for &child_ptr in &surface.children {
             if !child_ptr.is_null() && unsafe { (*child_ptr).subsurface_above_parent } {
-                self.collect_realm_subtree_shm(
+                self.collect_interaction_domain_subtree_shm(
                     unsafe { &*child_ptr },
                     root,
-                    realm,
+                    interaction_domain,
                     window,
                     out,
                     depth + 1,
@@ -1067,12 +1129,14 @@ impl Server {
         }
     }
 
-    pub(crate) fn collect_realm_subsurfaces_dmabuf(
+    pub(crate) fn collect_interaction_domain_subsurfaces_dmabuf(
         &self,
-        realm: RealmId,
+        interaction_domain: InteractionDomainId,
         want_above: bool,
     ) -> Vec<SurfaceDmabuf> {
-        if self.state.session_lock_phase.is_active() || self.realm_output(realm).is_none() {
+        if self.state.session_lock_phase.is_active()
+            || self.interaction_domain_output(interaction_domain).is_none()
+        {
             return Vec::new();
         }
         let mut out = Vec::new();
@@ -1093,7 +1157,7 @@ impl Server {
                 || !self
                     .state
                     .authority
-                    .realm_observes_window(realm, root_surface.window.id)
+                    .interaction_domain_observes_window(interaction_domain, root_surface.window.id)
             {
                 continue;
             }
@@ -1103,10 +1167,10 @@ impl Server {
                 }
                 let child = unsafe { &*child_ptr };
                 if child.subsurface_above_parent == want_above {
-                    self.collect_realm_subtree_dmabuf(
+                    self.collect_interaction_domain_subtree_dmabuf(
                         child,
                         root,
-                        realm,
+                        interaction_domain,
                         root_surface.window.id,
                         &mut out,
                         0,
@@ -1117,11 +1181,11 @@ impl Server {
         out
     }
 
-    pub(crate) fn collect_realm_subtree_dmabuf(
+    pub(crate) fn collect_interaction_domain_subtree_dmabuf(
         &self,
         surface: &SurfaceRec,
         root: *mut SurfaceRec,
-        realm: RealmId,
+        interaction_domain: InteractionDomainId,
         window: aegis_core::window::WindowId,
         out: &mut Vec<SurfaceDmabuf>,
         depth: u32,
@@ -1131,10 +1195,10 @@ impl Server {
         }
         for &child_ptr in &surface.children {
             if !child_ptr.is_null() && unsafe { !(*child_ptr).subsurface_above_parent } {
-                self.collect_realm_subtree_dmabuf(
+                self.collect_interaction_domain_subtree_dmabuf(
                     unsafe { &*child_ptr },
                     root,
-                    realm,
+                    interaction_domain,
                     window,
                     out,
                     depth + 1,
@@ -1144,7 +1208,7 @@ impl Server {
         if surface.content_is_dmabuf
             && let (Some(dmabuf), Some(geometry)) = (
                 surface.dmabuf.as_ref(),
-                self.realm_surface_geometry(surface, root, realm),
+                self.interaction_domain_surface_geometry(surface, root, interaction_domain),
             )
         {
             out.push(SurfaceDmabuf {
@@ -1167,10 +1231,10 @@ impl Server {
         }
         for &child_ptr in &surface.children {
             if !child_ptr.is_null() && unsafe { (*child_ptr).subsurface_above_parent } {
-                self.collect_realm_subtree_dmabuf(
+                self.collect_interaction_domain_subtree_dmabuf(
                     unsafe { &*child_ptr },
                     root,
-                    realm,
+                    interaction_domain,
                     window,
                     out,
                     depth + 1,
@@ -1208,10 +1272,10 @@ impl Server {
                 || root_surface.window.minimized
                 || !visible.contains(&root_surface.window.id)
                 || occluded.contains(&root_surface.window.id)
-                || !self
-                    .state
-                    .authority
-                    .realm_observes_window(HUMAN_REALM, root_surface.window.id)
+                || !self.state.authority.interaction_domain_observes_window(
+                    HUMAN_INTERACTION_DOMAIN,
+                    root_surface.window.id,
+                )
             {
                 continue;
             }
@@ -1325,10 +1389,10 @@ impl Server {
                 || root_surface.window.minimized
                 || !visible.contains(&root_surface.window.id)
                 || occluded.contains(&root_surface.window.id)
-                || !self
-                    .state
-                    .authority
-                    .realm_observes_window(HUMAN_REALM, root_surface.window.id)
+                || !self.state.authority.interaction_domain_observes_window(
+                    HUMAN_INTERACTION_DOMAIN,
+                    root_surface.window.id,
+                )
             {
                 continue;
             }
@@ -1651,9 +1715,9 @@ mod tests {
 
     #[test]
     fn minimized_surface_is_callback_visible_only_during_an_active_transition() {
-        let mut surface = Box::new(crate::SurfaceRec::new(
-            1usize as *mut crate::ffi::wl_resource,
-        ));
+        let mut surface = Box::new(crate::SurfaceRec::new(std::ptr::dangling_mut::<
+            crate::ffi::wl_resource,
+        >()));
         surface.mapped = true;
         surface.xdg_toplevel = surface.resource;
         surface.window.id = WindowId(7);

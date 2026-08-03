@@ -1,6 +1,6 @@
 # ADR-0074: Generic Agent Workspaces status surface
 
-- Status: Accepted
+- Status: Superseded by [ADR-0103](0103-actor-authority-and-interaction-domain-architecture.md)
 - Date: 2026-07-29
 
 ## Context

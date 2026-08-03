@@ -33,7 +33,7 @@ impl CompositorRuntime {
     ) -> Result<Option<IterationWork>, Box<dyn std::error::Error>> {
         // Process security-sensitive protocol transitions before completing
         // any pixel readback. In particular, an ext-session-lock request that
-        // woke this iteration must become visible before a pending Realm or
+        // woke this iteration must become visible before a pending Interaction Domain or
         // desktop capture can be handed to its requester.
         self.server.dispatch();
         // A transition is live state only until its animation deadline. The
@@ -48,6 +48,7 @@ impl CompositorRuntime {
         // into compositor animation.
         self.capture_worker.drain_wakeup();
         self.idle_process.maintain();
+        self.semantic_adapter_process.maintain();
         let outputs_powered = self.host.outputs_powered();
         if !self.server.session_locked() && !outputs_powered {
             self.idle_process
@@ -69,20 +70,40 @@ impl CompositorRuntime {
             .set_allowed(!self.server.session_locked() && self.host.is_active());
         let agent_suspended = self.server.session_locked() || !self.host.is_active();
         if agent_suspended && !self.previous_agent_suspended {
-            let snapshot = self.server.realm_snapshot();
-            for realm in snapshot.realms.into_iter().filter(|realm| {
-                realm.kind == aegis_core::realm::RealmKind::Agent
-                    && realm.state == aegis_core::realm::RealmState::Active
-            }) {
-                if self.server.pause_realm(realm.id).is_ok() {
-                    self.realm_processes.pause(realm.id);
-                    self.automatically_paused_realms.insert(realm.id);
+            self.observations.discard_all();
+            let snapshot = self.server.interaction_domain_snapshot();
+            for interaction_domain in
+                snapshot
+                    .interaction_domains
+                    .into_iter()
+                    .filter(|interaction_domain| {
+                        interaction_domain.kind
+                            == aegis_core::interaction_domain::InteractionDomainKind::Agent
+                            && interaction_domain.state
+                                == aegis_core::interaction_domain::InteractionDomainState::Active
+                    })
+            {
+                if self
+                    .server
+                    .pause_interaction_domain(interaction_domain.id)
+                    .is_ok()
+                {
+                    self.interaction_domain_processes
+                        .pause(interaction_domain.id);
+                    self.automatically_paused_interaction_domains
+                        .insert(interaction_domain.id);
                 }
             }
         } else if !agent_suspended && self.previous_agent_suspended {
-            for realm in std::mem::take(&mut self.automatically_paused_realms) {
-                if self.server.resume_realm(realm).is_ok() {
-                    self.realm_processes.resume(realm);
+            for interaction_domain in
+                std::mem::take(&mut self.automatically_paused_interaction_domains)
+            {
+                if self
+                    .server
+                    .resume_interaction_domain(interaction_domain)
+                    .is_ok()
+                {
+                    self.interaction_domain_processes.resume(interaction_domain);
                 }
             }
         }
@@ -97,14 +118,14 @@ impl CompositorRuntime {
                     &self.ipc,
                 );
             }
-            if let Some(pending) = self.pending_realm_capture.take() {
+            if let Some(pending) = self.pending_interaction_domain_capture.take() {
                 refuse_capture_target(
                     &self.capture_worker,
-                    CaptureTarget::RealmReply {
+                    CaptureTarget::InteractionDomainReply {
                         context: pending.context,
                         reply: pending.reply,
                     },
-                    "session locked before Realm capture completed".into(),
+                    "session locked before Interaction Domain capture completed".into(),
                     &self.journal,
                     &self.ipc,
                 );
@@ -129,7 +150,7 @@ impl CompositorRuntime {
                     encoded,
                 } => {
                     if self.capture_worker.permits(security_generation)
-                        && screenshot_updates_human_clipboard(origin)
+                        && screenshot_updates_human_clipboard(&origin)
                     {
                         match encoded {
                             Ok(png) => {
@@ -137,7 +158,7 @@ impl CompositorRuntime {
                                 // worker retains the same Arc while it performs
                                 // the independent atomic file write.
                                 if let Err(error) = self.server.set_clipboard_data_shared(
-                                    aegis_core::realm::HUMAN_SEAT,
+                                    aegis_core::interaction_domain::HUMAN_SEAT,
                                     vec![("image/png".to_owned(), png)],
                                 ) {
                                     log::warn!(
@@ -161,39 +182,34 @@ impl CompositorRuntime {
                     written,
                 } => {
                     let result = if self.capture_worker.permits(security_generation) {
-                        written.and_then(|()| {
+                        written.map(|()| {
                             // The durable file now exists. Refresh the early
                             // image-only selection with its URI convenience,
                             // sharing the same PNG allocation rather than
                             // copying the multi-megabyte payload again.
-                            if screenshot_updates_human_clipboard(origin) {
-                                if let Some(png) = png {
-                                    let mut payloads = vec![("image/png".to_owned(), png)];
-                                    match screenshot_uri_list(&path) {
-                                        Ok(uri_list) => payloads.push((
-                                            "text/uri-list".to_owned(),
-                                            std::sync::Arc::from(uri_list),
-                                        )),
-                                        Err(error) => {
-                                            log::warn!(
-                                                "screenshot clipboard URI unavailable: {error}"
-                                            );
-                                        }
-                                    }
-                                    if let Err(error) = self.server.set_clipboard_data_shared(
-                                        aegis_core::realm::HUMAN_SEAT,
-                                        payloads,
-                                    ) {
-                                        // Saving remains successful. Clipboard
-                                        // publication is a desktop convenience
-                                        // and cannot rewrite an applied capture.
-                                        log::warn!(
-                                            "screenshot clipboard publication failed: {error}"
-                                        );
+                            if screenshot_updates_human_clipboard(&origin)
+                                && let Some(png) = png
+                            {
+                                let mut payloads = vec![("image/png".to_owned(), png)];
+                                match screenshot_uri_list(&path) {
+                                    Ok(uri_list) => payloads.push((
+                                        "text/uri-list".to_owned(),
+                                        std::sync::Arc::from(uri_list),
+                                    )),
+                                    Err(error) => {
+                                        log::warn!("screenshot clipboard URI unavailable: {error}");
                                     }
                                 }
+                                if let Err(error) = self.server.set_clipboard_data_shared(
+                                    aegis_core::interaction_domain::HUMAN_SEAT,
+                                    payloads,
+                                ) {
+                                    // Saving remains successful. Clipboard
+                                    // publication is a desktop convenience
+                                    // and cannot rewrite an applied capture.
+                                    log::warn!("screenshot clipboard publication failed: {error}");
+                                }
                             }
-                            Ok(())
                         })
                     } else {
                         Err("capture authority changed before delivery".into())
@@ -226,14 +242,15 @@ impl CompositorRuntime {
                     };
                     let _ = reply.send(result);
                 }
-                CaptureCompletion::RealmReply {
+                CaptureCompletion::InteractionDomainReply {
                     reply,
                     security_generation,
+                    observation_token,
                     encoded,
                 } => {
-                    let current_revision = self.server.realm_snapshot().revision;
+                    let current_revision = self.server.interaction_domain_snapshot().revision;
                     let result = if !self.capture_worker.permits(security_generation) {
-                        Err("Realm capture authority changed before delivery".into())
+                        Err("Interaction Domain capture authority changed before delivery".into())
                     } else {
                         encoded.and_then(|capture| {
                             let captured_revision = capture.capture.revision;
@@ -241,14 +258,35 @@ impl CompositorRuntime {
                                 .then_some(capture)
                                 .ok_or_else(|| {
                                     format!(
-                                        "Realm authority changed before delivery \
+                                        "Interaction Domain authority changed before delivery \
                                          (captured r{}, current r{current_revision})",
                                         captured_revision
                                     )
                                 })
                         })
                     };
-                    let _ = reply.send(result);
+                    let result = match result {
+                        Ok(mut capture) => self
+                            .observations
+                            .refresh_for_delivery(&observation_token)
+                            .map(|observation| {
+                                capture.capture.observation = observation;
+                                capture
+                            }),
+                        Err(reason) => {
+                            self.observations.discard(&observation_token);
+                            Err(reason)
+                        }
+                    };
+                    let delivered_token = result
+                        .as_ref()
+                        .ok()
+                        .map(|capture| capture.capture.observation.token.clone());
+                    if reply.send(result).is_err()
+                        && let Some(token) = delivered_token
+                    {
+                        self.observations.discard(&token);
+                    }
                 }
                 CaptureCompletion::Pixel {
                     reply,
@@ -327,22 +365,27 @@ impl CompositorRuntime {
                 }
             }
         }
-        if self.pending_realm_capture.is_some() {
-            let realm = self
-                .pending_realm_capture
+        if self.pending_interaction_domain_capture.is_some() {
+            let interaction_domain = self
+                .pending_interaction_domain_capture
                 .as_ref()
                 .expect("checked above")
                 .context
-                .realm;
+                .interaction_domain;
             let readiness = self
-                .realm_render_targets
-                .get(&realm)
-                .ok_or_else(|| format!("realm {} render target disappeared", realm.0))
+                .interaction_domain_render_targets
+                .get(&interaction_domain)
+                .ok_or_else(|| {
+                    format!(
+                        "interaction_domain {} render target disappeared",
+                        interaction_domain.0
+                    )
+                })
                 .and_then(|target| {
                     target.surface.read_pixels_ready().map_err(|error| {
                         format!(
-                            "realm {} readback readiness: {error}{}",
-                            realm.0,
+                            "interaction_domain {} readback readiness: {error}{}",
+                            interaction_domain.0,
                             flux_last_error_detail()
                         )
                     })
@@ -350,12 +393,15 @@ impl CompositorRuntime {
             match readiness {
                 Ok(false) => {}
                 Ok(true) => {
-                    let pending = self.pending_realm_capture.take().expect("checked above");
+                    let pending = self
+                        .pending_interaction_domain_capture
+                        .take()
+                        .expect("checked above");
                     let target = self
-                        .realm_render_targets
-                        .get(&realm)
+                        .interaction_domain_render_targets
+                        .get(&interaction_domain)
                         .expect("readiness target disappeared");
-                    let reply_target = CaptureTarget::RealmReply {
+                    let reply_target = CaptureTarget::InteractionDomainReply {
                         context: pending.context,
                         reply: pending.reply,
                     };
@@ -377,10 +423,13 @@ impl CompositorRuntime {
                     }
                 }
                 Err(reason) => {
-                    let pending = self.pending_realm_capture.take().expect("checked above");
+                    let pending = self
+                        .pending_interaction_domain_capture
+                        .take()
+                        .expect("checked above");
                     refuse_capture_target(
                         &self.capture_worker,
-                        CaptureTarget::RealmReply {
+                        CaptureTarget::InteractionDomainReply {
                             context: pending.context,
                             reply: pending.reply,
                         },
@@ -612,34 +661,10 @@ impl CompositorRuntime {
             self.icon_scale = refreshed_scale;
         }
 
-        // Drain IPC control/session commands and apply them here on the main
-        // loop — the Wayland server state is not `Send`, so connection
-        // threads forward through the channel rather than touching it
-        // directly. Mirrors the chrome-intent drain below (ADR-0016/0027).
-        for request in self.journal_refusal_rx.try_iter() {
-            journal_mutation_effect_and_broadcast(
-                &self.journal,
-                &self.ipc,
-                self.start.elapsed().as_millis() as u64,
-                request.origin,
-                request.mutation,
-                aegis_ipc::Effect::Refused {
-                    reason: request.reason,
-                },
-            );
-        }
-        // Positive agent-authorization lifecycle events (ADR-0088), the
-        // applied counterpart of the refusals above.
-        for event in self.auth_event_rx.try_iter() {
-            journal_mutation_effect_and_broadcast(
-                &self.journal,
-                &self.ipc,
-                self.start.elapsed().as_millis() as u64,
-                event.origin,
-                event.mutation,
-                aegis_ipc::Effect::Applied,
-            );
-        }
+        // Expiry is timer-driven, not request-driven. Cascade it before
+        // other IPC work so idle Actors lose observations, resource grants,
+        // and semantic-provider authority promptly.
+        self.live.expire_due_actor_sessions();
         self.drain_idle_controls();
         self.drain_pick_controls();
         self.drain_app_pick_controls();
@@ -710,78 +735,91 @@ impl CompositorRuntime {
                 }
             }
         }
-        while let Ok(request) = self.realm_control_rx.try_recv() {
+        while let Ok(request) = self.interaction_domain_control_rx.try_recv() {
             let committed_action = request.action.clone();
-            let before_revision = self.server.realm_snapshot().revision;
+            let before_revision = self.server.interaction_domain_snapshot().revision;
             let allowed_while_locked = match &request.action {
-                aegis_ipc::RealmAction::Revoke { .. } => true,
-                aegis_ipc::RealmAction::Transact { mutations, .. } => {
+                aegis_ipc::InteractionDomainAction::Revoke { .. } => true,
+                aegis_ipc::InteractionDomainAction::Transact { mutations, .. } => {
                     !mutations.is_empty()
                         && mutations.iter().all(|mutation| {
                             matches!(
-                                mutation,
-                                aegis_core::realm::RealmMutation::SetState {
-                                    state: aegis_core::realm::RealmState::Paused,
-                                    ..
-                                }
-                            )
+                            mutation,
+                            aegis_core::interaction_domain::InteractionDomainMutation::SetState {
+                                state:
+                                    aegis_core::interaction_domain::InteractionDomainState::Paused,
+                                ..
+                            }
+                        )
                         })
                 }
-                aegis_ipc::RealmAction::Create { .. } => false,
+                aegis_ipc::InteractionDomainAction::Create { .. } => false,
             };
             let result = if self.server.session_locked() && !allowed_while_locked {
                 Err("session is locked".into())
             } else {
-                apply_realm_action(&mut self.server, request.subject, request.action)
+                apply_interaction_domain_action(&mut self.server, request.subject, request.action)
             };
             if result.is_ok() {
-                // This path updates the realm snapshot and `last_realm_revision`
+                // Every observation carries the global Interaction Domain authority
+                // revision. Revoke all outstanding leases at the same commit
+                // boundary instead of retaining tokens that can only fail.
+                self.observations.discard_all();
+                // This path updates the interaction domain snapshot and `last_interaction_domain_revision`
                 // ahead of the presentation fanout, so the signed revision
                 // compare cannot see the change; flag the chrome explicitly.
                 self.chrome_dirty = true;
-                for realm in realms_explicitly_stopped(&committed_action) {
-                    self.automatically_paused_realms.remove(&realm);
+                for interaction_domain in interaction_domains_explicitly_stopped(&committed_action)
+                {
+                    self.automatically_paused_interaction_domains
+                        .remove(&interaction_domain);
                 }
-                let invalidated = realm_action_invalidates_capture(&committed_action);
+                let invalidated = interaction_domain_action_invalidates_capture(&committed_action);
                 if !invalidated.is_empty() {
                     self.capture_worker.invalidate_security_context();
                     if self
-                        .pending_realm_capture
+                        .pending_interaction_domain_capture
                         .as_ref()
-                        .is_some_and(|pending| invalidated.contains(&pending.context.realm))
+                        .is_some_and(|pending| {
+                            invalidated.contains(&pending.context.interaction_domain)
+                        })
                     {
                         let pending = self
-                            .pending_realm_capture
+                            .pending_interaction_domain_capture
                             .take()
                             .expect("capture invalidation predicate checked");
                         refuse_capture_target(
                             &self.capture_worker,
-                            CaptureTarget::RealmReply {
+                            CaptureTarget::InteractionDomainReply {
                                 context: pending.context,
                                 reply: pending.reply,
                             },
-                            "Realm authority changed before capture completed".into(),
+                            "Interaction Domain authority changed before capture completed".into(),
                             &self.journal,
                             &self.ipc,
                         );
                     }
                 }
-                if let aegis_ipc::RealmAction::Revoke { realm, .. } = &committed_action {
-                    self.realm_render_targets.remove(realm);
+                if let aegis_ipc::InteractionDomainAction::Revoke {
+                    interaction_domain, ..
+                } = &committed_action
+                {
+                    self.interaction_domain_render_targets
+                        .remove(interaction_domain);
                 }
-                self.realm_processes
+                self.interaction_domain_processes
                     .apply_committed_action(&committed_action);
-                let snapshot = self.server.realm_snapshot();
-                self.last_realm_revision = Some(snapshot.revision);
-                self.live.set_realms(snapshot.clone());
-                self.shell.set_realms(snapshot.clone());
+                let snapshot = self.server.interaction_domain_snapshot();
+                self.last_interaction_domain_revision = Some(snapshot.revision);
+                self.live.set_interaction_domains(snapshot.clone());
+                self.shell.set_interaction_domains(snapshot.clone());
                 if let Some(ipc) = &self.ipc {
-                    ipc.broadcast(aegis_ipc::Event::RealmsChanged {
+                    ipc.broadcast(aegis_ipc::Event::InteractionDomainsChanged {
                         revision: snapshot.revision,
                     });
                 }
             }
-            let after_revision = self.server.realm_revision();
+            let after_revision = self.server.interaction_domain_revision();
             let effect = match &result {
                 Ok(_) => aegis_ipc::Effect::Applied,
                 Err(reason) => aegis_ipc::Effect::Refused {
@@ -793,10 +831,291 @@ impl CompositorRuntime {
                 &self.ipc,
                 self.start.elapsed().as_millis() as u64,
                 request.origin,
-                aegis_ipc::JournalMutation::Realm {
+                aegis_ipc::JournalMutation::InteractionDomain {
                     action: committed_action,
                     before_revision,
                     after_revision,
+                },
+                effect,
+            );
+            let _ = request.reply.send(result);
+        }
+        while let Ok(provider) = self.semantic_provider_revocation_rx.try_recv() {
+            self.server.revoke_semantic_provider(&provider);
+        }
+        while let Ok(request) = self.semantic_tree_update_rx.try_recv() {
+            let result = self
+                .server
+                .publish_accessibility_tree(request.provider, request.update);
+            let _ = request.reply.send(result);
+        }
+        while let Ok(request) = self.interaction_domain_observe_rx.try_recv() {
+            let result = if self.server.session_locked() || !self.host.is_active() {
+                Err("session is locked or inactive".into())
+            } else {
+                self.server
+                    .interaction_domain_semantic_snapshot(request.interaction_domain)
+                    .map_err(|error| error.to_string())
+                    .and_then(|snapshot| {
+                        self.observations.issue_bounded(
+                            request.actor,
+                            snapshot,
+                            request.max_observations,
+                        )
+                    })
+            };
+            let issued_token = result
+                .as_ref()
+                .ok()
+                .map(|observation| observation.token.clone());
+            if request.reply.send(result).is_err()
+                && let Some(token) = issued_token
+            {
+                self.observations.discard(&token);
+            }
+        }
+        // Drain disconnects after observations: if an observe request and
+        // EOF were queued in the same iteration, the just-issued token is
+        // revoked before any action request can consume it.
+        while let Ok(conn_id) = self.actor_disconnect_rx.try_recv() {
+            self.observations.discard_connection(conn_id);
+        }
+        while let Ok(request) = self.observation_discard_rx.try_recv() {
+            self.observations
+                .discard_for_actor(&request.actor, &request.token);
+        }
+        let mut pending_index = 0;
+        while pending_index < self.pending_semantic_actions.len() {
+            let completion = self.pending_semantic_actions[pending_index]
+                .completion
+                .try_recv();
+            let timed_out =
+                std::time::Instant::now() >= self.pending_semantic_actions[pending_index].deadline;
+            let resolved = match completion {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(
+                    "semantic provider disconnected before completion".into(),
+                )),
+                Err(std::sync::mpsc::TryRecvError::Empty) if timed_out => {
+                    Some(Err("semantic action dispatch timed out".into()))
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            };
+            let Some(provider_result) = resolved else {
+                pending_index += 1;
+                continue;
+            };
+            let pending = self.pending_semantic_actions.swap_remove(pending_index);
+            let result = provider_result.map(|()| aegis_ipc::ActorActionReceipt {
+                action_id: pending.action_id,
+                interaction_domain: pending.intent.interaction_domain,
+                target: pending.intent.target,
+                window: pending.window,
+                authority_revision: pending.authority_revision,
+                actions_applied: 1,
+                committed_mono_ms: self.start.elapsed().as_millis() as u64,
+            });
+            let timestamp = result.as_ref().map_or_else(
+                |_| self.start.elapsed().as_millis() as u64,
+                |receipt| receipt.committed_mono_ms,
+            );
+            let effect = result.as_ref().map_or_else(
+                |reason| aegis_ipc::Effect::Refused {
+                    reason: reason.clone(),
+                },
+                |_| aegis_ipc::Effect::Applied,
+            );
+            journal_mutation_effect_and_broadcast(
+                &self.journal,
+                &self.ipc,
+                timestamp,
+                pending.origin,
+                aegis_ipc::JournalMutation::ActorAction {
+                    action_id: result.as_ref().ok().map(|receipt| receipt.action_id),
+                    interaction_domain: pending.intent.interaction_domain,
+                    target: pending.intent.target,
+                    window: result.as_ref().ok().map(|receipt| receipt.window),
+                    actions: aegis_ipc::audit_semantic_actions(&pending.intent.actions),
+                    actions_truncated: false,
+                    authority_revision: result
+                        .as_ref()
+                        .ok()
+                        .map(|receipt| receipt.authority_revision),
+                },
+                effect,
+            );
+            let _ = pending.reply.send(result);
+        }
+
+        enum ActorActionDispatch {
+            Immediate(aegis_ipc::ActorActionReceipt),
+            Deferred(PendingSemanticActorAction),
+        }
+
+        while let Ok(request) = self.actor_action_rx.try_recv() {
+            let dispatch: Result<ActorActionDispatch, String> = if self.server.session_locked()
+                || !self.host.is_active()
+            {
+                self.observations.discard(&request.intent.observation);
+                Err("session is locked or inactive".into())
+            } else {
+                (|| {
+                    let current_scope = match self.live.revalidate_actor_action_scope(
+                        request.scope_name.as_deref(),
+                        &request.actor,
+                        &request.scope,
+                        request.intent.interaction_domain,
+                    ) {
+                        Ok(scope) => scope,
+                        Err(error) => {
+                            self.observations.discard(&request.intent.observation);
+                            return Err(error);
+                        }
+                    };
+                    let current = match self
+                        .server
+                        .interaction_domain_semantic_snapshot(request.intent.interaction_domain)
+                    {
+                        Ok(current) => current,
+                        Err(error) => {
+                            self.observations.discard(&request.intent.observation);
+                            return Err(error.to_string());
+                        }
+                    };
+                    let validated = self.observations.consume(
+                        &request.actor,
+                        &request.intent,
+                        &current,
+                        |window| current_scope.permits_window(window),
+                    )?;
+                    let interaction_domain_snapshot = self.server.interaction_domain_snapshot();
+                    let interaction_domain_label = interaction_domain_snapshot
+                        .interaction_domains
+                        .iter()
+                        .find(|interaction_domain| {
+                            interaction_domain.id == request.intent.interaction_domain
+                        })
+                        .map(|interaction_domain| interaction_domain.label.clone())
+                        .unwrap_or_else(|| {
+                            format!("InteractionDomain {}", request.intent.interaction_domain.0)
+                        });
+                    if validated.source == aegis_core::semantic::SemanticSource::Accessibility {
+                        let target = self
+                            .server
+                            .resolve_semantic_dispatch(request.intent.target)
+                            .ok_or_else(|| {
+                                "accessibility target lost its provider before dispatch".to_owned()
+                            })?;
+                        let action = request
+                            .intent
+                            .actions
+                            .first()
+                            .cloned()
+                            .ok_or_else(|| "semantic action is empty".to_owned())?;
+                        let completion = self.live.dispatch_accessibility_action(target, action)?;
+                        return Ok(ActorActionDispatch::Deferred(PendingSemanticActorAction {
+                            completion,
+                            deadline: std::time::Instant::now() + std::time::Duration::from_secs(5),
+                            origin: request.origin.clone(),
+                            intent: request.intent.clone(),
+                            action_id: validated.action_id,
+                            window: validated.window,
+                            authority_revision: validated.authority_revision,
+                            reply: request.reply.clone(),
+                        }));
+                    }
+                    let seat = interaction_domain_snapshot
+                        .seats
+                        .iter()
+                        .find(|seat| {
+                            seat.interaction_domain == request.intent.interaction_domain
+                                && seat.enabled
+                        })
+                        .map(|seat| seat.id)
+                        .ok_or_else(|| "InteractionDomain has no active seat".to_owned())?;
+                    let synthetic_actions =
+                        request
+                            .intent
+                            .actions
+                            .iter()
+                            .map(|action| match action {
+                                aegis_core::semantic::SemanticActionIntent::SyntheticInput {
+                                    actions,
+                                } => Ok(actions.as_slice()),
+                                _ => Err("application semantic action dispatch is unavailable"
+                                    .to_owned()),
+                            })
+                            .collect::<Result<Vec<_>, _>>()?
+                            .into_iter()
+                            .flatten()
+                            .cloned()
+                            .collect::<Vec<_>>();
+                    let events = self
+                        .server
+                        .prepare_agent_synthetic_input(seat, validated.window, &synthetic_actions)
+                        .ok_or_else(|| {
+                            "semantic action became invalid before input preparation".to_owned()
+                        })?;
+                    self.server
+                        .forward_agent_input_to(seat, validated.window, &events)
+                        .map_err(|error| error.to_string())?;
+                    for activity in agent_activities_from_applied_input(
+                        request.intent.interaction_domain,
+                        &interaction_domain_label,
+                        validated.window,
+                        &synthetic_actions,
+                        &events,
+                        &mut self.agent_activity_sequence,
+                    ) {
+                        self.shell.report_agent_activity(activity);
+                    }
+                    Ok(ActorActionDispatch::Immediate(
+                        aegis_ipc::ActorActionReceipt {
+                            action_id: validated.action_id,
+                            interaction_domain: request.intent.interaction_domain,
+                            target: request.intent.target,
+                            window: validated.window,
+                            authority_revision: validated.authority_revision,
+                            actions_applied: request.intent.actions.len() as u32,
+                            committed_mono_ms: self.start.elapsed().as_millis() as u64,
+                        },
+                    ))
+                })()
+            };
+            let result: Result<aegis_ipc::ActorActionReceipt, String> = match dispatch {
+                Ok(ActorActionDispatch::Deferred(pending)) => {
+                    self.pending_semantic_actions.push(pending);
+                    continue;
+                }
+                Ok(ActorActionDispatch::Immediate(receipt)) => Ok(receipt),
+                Err(reason) => Err(reason),
+            };
+            let ts = result.as_ref().map_or_else(
+                |_| self.start.elapsed().as_millis() as u64,
+                |receipt| receipt.committed_mono_ms,
+            );
+            let effect = match &result {
+                Ok(_) => aegis_ipc::Effect::Applied,
+                Err(reason) => aegis_ipc::Effect::Refused {
+                    reason: reason.clone(),
+                },
+            };
+            journal_mutation_effect_and_broadcast(
+                &self.journal,
+                &self.ipc,
+                ts,
+                request.origin,
+                aegis_ipc::JournalMutation::ActorAction {
+                    action_id: result.as_ref().ok().map(|receipt| receipt.action_id),
+                    interaction_domain: request.intent.interaction_domain,
+                    target: request.intent.target,
+                    window: result.as_ref().ok().map(|receipt| receipt.window),
+                    actions: aegis_ipc::audit_semantic_actions(&request.intent.actions),
+                    actions_truncated: false,
+                    authority_revision: result
+                        .as_ref()
+                        .ok()
+                        .map(|receipt| receipt.authority_revision),
                 },
                 effect,
             );
@@ -950,7 +1269,11 @@ impl CompositorRuntime {
                 journal_effect_and_broadcast(&self.journal, &self.ipc, ts, origin, cmd, effect);
                 continue;
             }
-            if let aegis_ipc::Command::LaunchInRealm { realm, desktop_id } = &cmd {
+            if let aegis_ipc::Command::LaunchInInteractionDomain {
+                interaction_domain,
+                desktop_id,
+            } = &cmd
+            {
                 let effect = match self
                     .launcher_apps
                     .iter()
@@ -960,7 +1283,7 @@ impl CompositorRuntime {
                         let launched = (|| -> Result<aegis_launcher::ManagedLaunch, String> {
                             let portal = self
                                 .server
-                                .prepare_realm_portal(*realm)
+                                .prepare_interaction_domain_portal(*interaction_domain)
                                 .map_err(|error| error.to_string())?;
                             let wayland_listener = portal
                                 .try_clone_listener()
@@ -969,21 +1292,20 @@ impl CompositorRuntime {
                             let sandbox_policy = self
                                 .config
                                 .as_ref()
-                                .map(|config| config.realm_sandbox.policy_for(&entry.id))
+                                .map(|config| {
+                                    config.interaction_domain_sandbox.policy_for(&entry.id)
+                                })
                                 .unwrap_or_else(|| {
-                                    aegis_config::RealmSandboxConfig::default()
+                                    aegis_config::InteractionDomainSandboxConfig::default()
                                         .policy_for(&entry.id)
                                 });
                             let opts = aegis_launcher::LaunchOpts {
-                                sandbox: Some(aegis_launcher::RealmSandbox {
-                                    realm_id: realm.0,
+                                sandbox: Some(aegis_launcher::InteractionDomainSandbox {
+                                    interaction_domain_id: interaction_domain.0,
                                     wayland_listener,
                                     wayland_socket_path,
                                     app_id: entry.id.clone(),
-                                    network: sandbox_policy.network,
-                                    writable_paths: sandbox_policy.writable_paths,
-                                    readable_paths: sandbox_policy.readable_paths,
-                                    limits: aegis_launcher::RealmResourceLimits {
+                                    limits: aegis_launcher::InteractionDomainResourceLimits {
                                         memory_max_bytes: sandbox_policy.memory_max_bytes,
                                         pids_max: sandbox_policy.pids_max,
                                         cpu_weight: sandbox_policy.cpu_weight,
@@ -994,19 +1316,20 @@ impl CompositorRuntime {
                             let launch = aegis_launcher::launch_managed(entry, &opts)
                                 .map_err(|error| error.to_string())?;
                             self.server
-                                .activate_realm_portal(portal)
+                                .activate_interaction_domain_portal(portal)
                                 .map_err(|error| error.to_string())?;
                             Ok(launch)
                         })();
                         match launched {
                             Ok(launch) => {
                                 log::info!(
-                                    "Realm {}: launched {} in sandbox cgroup (supervisor {})",
-                                    realm.0,
+                                    "InteractionDomain {}: launched {} in sandbox cgroup (supervisor {})",
+                                    interaction_domain.0,
                                     entry.id,
                                     launch.report().pid
                                 );
-                                self.realm_processes.insert(*realm, launch);
+                                self.interaction_domain_processes
+                                    .insert(*interaction_domain, launch);
                                 aegis_ipc::Effect::Applied
                             }
                             Err(reason) => aegis_ipc::Effect::Refused { reason },
@@ -1019,11 +1342,7 @@ impl CompositorRuntime {
                 journal_effect_and_broadcast(&self.journal, &self.ipc, ts, origin, cmd, effect);
                 continue;
             }
-            if matches!(
-                cmd,
-                aegis_ipc::Command::InjectInput { .. }
-                    | aegis_ipc::Command::InjectRealmInput { .. }
-            ) {
+            if matches!(cmd, aegis_ipc::Command::InjectInput { .. }) {
                 pending_synthetic_input.push((cmd, ts, origin));
                 continue;
             }
@@ -1104,8 +1423,8 @@ fn app_scan_due(
 }
 
 /// User-initiated compositor surfaces may update the physical clipboard.
-/// IPC and internal captures remain side-effect-free across the Realm boundary.
-pub(super) fn screenshot_updates_human_clipboard(origin: aegis_ipc::Origin) -> bool {
+/// IPC and internal captures remain side-effect-free across the Interaction Domain boundary.
+pub(super) fn screenshot_updates_human_clipboard(origin: &aegis_ipc::Origin) -> bool {
     matches!(
         origin,
         aegis_ipc::Origin::Chrome | aegis_ipc::Origin::Keybinding

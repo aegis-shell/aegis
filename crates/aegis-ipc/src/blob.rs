@@ -12,7 +12,7 @@ use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 
 const BLOB_MARKER: u8 = 0xfd;
-/// Covers the Realm model's 256-MiB maximum RGBA frame plus conservative PNG
+/// Covers the Interaction Domain model's 256-MiB maximum RGBA frame plus conservative PNG
 /// container/filter overhead while still bounding every receiver allocation.
 pub(crate) const MAX_BLOB_BYTES: u64 = 288 * 1024 * 1024;
 const REQUIRED_SEALS: libc::c_int =

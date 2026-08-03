@@ -173,7 +173,7 @@ impl Server {
                 extensions::xdg_decoration_manager_bind,
             );
             // Cross-client transient parenting for out-of-process portal
-            // dialogs. Both globals are visible to Realm clients: possession
+            // dialogs. Both globals are visible to Interaction Domain clients: possession
             // of an unguessable export handle is the explicit authority, and
             // the portal prompter must import handles from sandboxed apps.
             ffi::wl_global_create(
@@ -209,7 +209,7 @@ impl Server {
                 extensions::idle_inhibit_bind,
             );
             state
-                .realm_hidden_globals
+                .interaction_domain_hidden_globals
                 .insert(idle_inhibit_global as usize);
             ffi::wl_global_create(
                 display,
@@ -226,7 +226,7 @@ impl Server {
                 extensions::session_lock_bind,
             );
             state
-                .realm_hidden_globals
+                .interaction_domain_hidden_globals
                 .insert(session_lock_global as usize);
             ffi::wl_global_create(
                 display,
@@ -271,7 +271,7 @@ impl Server {
                 extensions::foreign_toplevel_bind,
             );
             state
-                .realm_hidden_globals
+                .interaction_domain_hidden_globals
                 .insert(foreign_toplevel_global as usize);
             ffi::wl_global_create(
                 display,
@@ -295,7 +295,7 @@ impl Server {
                 extensions::input_method_manager_bind,
             );
             state
-                .realm_hidden_globals
+                .interaction_domain_hidden_globals
                 .insert(input_method_global as usize);
             let virtual_keyboard_global = ffi::wl_global_create(
                 display,
@@ -305,7 +305,7 @@ impl Server {
                 extensions::virtual_keyboard_manager_bind,
             );
             state
-                .realm_hidden_globals
+                .interaction_domain_hidden_globals
                 .insert(virtual_keyboard_global as usize);
             ffi::wl_global_create(
                 display,
@@ -314,12 +314,16 @@ impl Server {
                 data,
                 extensions::xdg_activation_bind,
             );
-            ffi::wl_display_set_global_filter(display, Some(realm_global_filter), data);
+            ffi::wl_display_set_global_filter(
+                display,
+                Some(interaction_domain_global_filter),
+                data,
+            );
 
             Ok(Server {
                 state,
                 socket,
-                realm_portals: Vec::new(),
+                interaction_domain_portals: Vec::new(),
                 epoch: std::time::Instant::now(),
             })
         }

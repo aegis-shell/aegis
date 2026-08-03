@@ -27,6 +27,8 @@ jobs:
           components: rustfmt, clippy
       - name: Format check
         run: cargo fmt --all -- --check
+      - name: Rust module boundary check
+        run: scripts/check-rust-module-size.sh
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -36,16 +38,18 @@ jobs:
       - name: Clippy (flux-free crates)
         run: >-
           cargo clippy --locked
-          -p aegis-core -p aegis-config -p aegis-ipc -p aegis-desktop-entries
+          -p aegis-core -p aegis-authority -p aegis-semantic -p aegis-audit
+          -p aegis-config -p aegis-ipc -p aegis-desktop-entries
           -p aegis-launcher -p aegis-commands -p aegis-agent -p aegis-mcp -p aegis-idle
-          -p aegis-protocols -p aegis-compositor
+          -p aegis-atspi -p aegis-wayland-protocols -p aegis-compositor
           --all-targets -- -D warnings
       - name: Doc check (flux-free crates)
         run: >-
           cargo doc --locked --no-deps
-          -p aegis-core -p aegis-config -p aegis-ipc -p aegis-desktop-entries
+          -p aegis-core -p aegis-authority -p aegis-semantic -p aegis-audit
+          -p aegis-config -p aegis-ipc -p aegis-desktop-entries
           -p aegis-launcher -p aegis-commands -p aegis-agent -p aegis-mcp -p aegis-idle
-          -p aegis-protocols -p aegis-compositor
+          -p aegis-atspi -p aegis-wayland-protocols -p aegis-compositor
 
   flux-free-tests:
     runs-on: ubuntu-24.04
@@ -61,11 +65,12 @@ jobs:
       - name: Test flux-free crates
         run: >-
           cargo test --locked
-          -p aegis-core -p aegis-config -p aegis-ipc -p aegis-desktop-entries
+          -p aegis-core -p aegis-authority -p aegis-semantic -p aegis-audit
+          -p aegis-config -p aegis-ipc -p aegis-desktop-entries
           -p aegis-launcher -p aegis-commands -p aegis-agent -p aegis-mcp -p aegis-idle
-          -p aegis-compositor
-      - name: Build aegis-protocols
-        run: cargo build --locked -p aegis-protocols
+          -p aegis-atspi -p aegis-compositor
+      - name: Build aegis-wayland-protocols
+        run: cargo build --locked -p aegis-wayland-protocols
 
   # Exercise the downstream contract: Rust bindings come from the locked
   # optics Git source, while native libraries come from a system install.

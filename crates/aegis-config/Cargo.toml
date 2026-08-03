@@ -19,6 +19,10 @@ toml_edit = "0.22"
 # `$XDG_CONFIG_HOME` / `~/.config` resolution for the default config path.
 # Already a workspace dependency (aegis-desktop-entries uses it for XDG data dirs).
 dirs = { workspace = true }
+libc.workspace = true
 
 # Typed errors without handwritten Display/From impls (matches aegis-shell).
 thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -10,7 +10,8 @@ build = "build.rs"
 
 [dependencies]
 aegis-core = { workspace = true, features = ["serde"] }
-aegis-protocols = { workspace = true }
+aegis-semantic.workspace = true
+aegis-wayland-protocols = { workspace = true }
 log.workspace = true
 getrandom.workspace = true
 thiserror.workspace = true

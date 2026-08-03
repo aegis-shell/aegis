@@ -29,7 +29,7 @@ impl Server {
     /// Replace one seat's clipboard with immutable compositor-owned data.
     ///
     /// The selection is visible only to the focused client on `seat`; it is
-    /// never copied into another Realm. Payload transfer happens off the
+    /// never copied into another Interaction Domain. Payload transfer happens off the
     /// compositor thread and remains valid after the caller drops its bytes.
     pub fn set_clipboard_data(
         &mut self,
@@ -232,12 +232,12 @@ mod tests {
         let mut state = State::new(std::ptr::null_mut());
         let agent = state
             .authority
-            .create_agent_realm("clipboard-agent", SeatCapabilities::POINTER_KEYBOARD);
+            .create_agent_interaction_domain("clipboard-agent", SeatCapabilities::POINTER_KEYBOARD);
         state.seats.insert(
             agent.seat,
             Box::new(SeatRuntime::new(
                 agent.seat,
-                agent.realm,
+                agent.interaction_domain,
                 agent.principal,
                 SeatCapabilities::POINTER_KEYBOARD,
             )),

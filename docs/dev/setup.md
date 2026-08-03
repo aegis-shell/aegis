@@ -13,7 +13,7 @@ How to build and run aegis for development.
 | Wayland client and protocols | `wayland-client`, `wayland-protocols`, and `wayland-scanner` for the nested backend |
 | libxkbcommon | Server compiles the default keymap at startup for `wl_keyboard` |
 | A running Wayland session | `$WAYLAND_DISPLAY` must be set to run the nested backend |
-| bubblewrap + systemd user manager | Required for real Realm application sandbox tests |
+| bubblewrap + systemd user manager | Required for real Interaction Domain application sandbox tests |
 
 ## Choose your workflow
 
@@ -136,6 +136,7 @@ cargo run --locked -p aegis          # build & run (see Build and run below)
 cargo test --locked --workspace
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
+scripts/check-rust-module-size.sh
 ```
 
 This is the exact boundary the full CI job exercises: it installs the tagged
@@ -231,12 +232,12 @@ cargo test --locked --workspace
 the rest need either the sibling Optics Meson tree in the local workflow or
 the installed libraries in the canonical workflow.
 
-The ordinary workspace run skips kernel-level Realm launcher tests when the
+The ordinary workspace run skips kernel-level Interaction Domain launcher tests when the
 test process is not alone in a controller-delegated cgroup. Run those tests
 in the production topology with:
 
 ```bash
-scripts/test-realm-sandbox.sh
+scripts/test-interaction-domain-sandbox.sh
 ```
 
 The script starts the compiled `aegis-launcher` test binary as a transient
@@ -255,7 +256,7 @@ its process group.
 | Missing a `flux`, `flux-scene-graph`, `lens`, or `iris` pkg-config file | In the local workflow, build the sibling tree; in the canonical workflow, install the matching Optics release |
 | `vkCreateSwapchainKHR: function pointer was NULL` | `VK_KHR_swapchain` not enabled; the backend requests it, so check the flux device extensions |
 | `error while loading shared libraries: libflux*.so` / `liblens*.so` / `libiris*.so` | In the local workflow, rebuild after moving the Meson tree; in the canonical workflow, refresh the loader cache or configure the installed prefix |
-| `Realm cgroup isolation is unavailable` | Run Aegis in the packaged systemd user service; a shared terminal scope cannot satisfy controller delegation |
+| `Interaction Domain cgroup isolation is unavailable` | Run Aegis in the packaged systemd user service; a shared terminal scope cannot satisfy controller delegation |
 
 ## See Also
 

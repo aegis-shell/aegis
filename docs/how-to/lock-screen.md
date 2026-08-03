@@ -159,7 +159,39 @@ Aegis session from the recovery TTY and sign in again after fixing the host
 policy. Killing only `aegis-lock` cannot unlock the confirmed session and can
 leave it deliberately fail-closed.
 
+## Choose a Lock-Screen Presentation
+
+Set the lock composition and its background independently from the desktop
+wallpaper in `~/.config/aegis/config.toml`:
+
+```toml
+[lock_screen]
+style = "cinematic"
+
+[lock_screen.background]
+mode = "image"
+source = "wallpapers/lock-screen.png"
+dim = 0.24
+```
+
+`cinematic` places the clock at the upper right and the password interaction
+at the lower right without an avatar. It renders the display name in uppercase
+and reports a rejected credential through a red, briefly shaking rail rather
+than an error sentence. Use `centered` for the conventional centered identity
+column. `[ui] reduced_motion = true` keeps the red rejection state but disables
+the shake. The neutral rail has no empty password marks and therefore does not
+suggest an expected credential length. The image path is relative to the
+configuration file; it does not change or inherit `[wallpaper]`.
+
+Use `mode = "solid"` for a flat background. Set `color = "#RRGGBB"` or omit
+it for the scheme-aware default. A missing custom image falls back to the
+bundled lock artwork rather than preventing the lock client from presenting.
+The change applies the next time `aegis-lock` starts.
+
 ## Set a Lock-Screen Avatar
+
+Avatars are loaded only by the `centered` presentation. The `cinematic`
+presentation deliberately remains typographic.
 
 Place a still image in the Aegis data namespace. The first decodable file in
 this order is used:
@@ -173,7 +205,7 @@ this order is used:
 
 PNG, JPEG, WebP, GIF, BMP, ICO, TIFF, TGA, QOI, and PNM images are accepted.
 The image is cover-fit and circle-masked. An invalid or absent image falls
-back to the built-in gradient identity disc.
+back to a flat, scheme-aware identity disc with centered initials.
 
 A VRM 0.x or 1.0 model can instead be placed at:
 
@@ -212,7 +244,7 @@ allow about one second for an idle surface to observe it, plus a short debounce
 while writes settle. A complete replacement is decoded and uploaded before it
 becomes visible. If a save temporarily leaves malformed data, Aegis keeps the
 last-known-good avatar and retries; deleting all avatar sources deliberately
-switches to the gradient fallback. A reload keeps the current named motion
+switches to the flat initial fallback. A reload keeps the current named motion
 when that motion still exists in the replacement library.
 
 See [How to Configure Locking and Idle](lock-and-idle.md) for automatic

@@ -8,10 +8,13 @@
 
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
-use crate::{Chrome, ChromeEvents, CursorShape, Localizer, Message, RealmIntent};
+use crate::{Chrome, ChromeEvents, CursorShape, InteractionDomainIntent, Localizer, Message};
 use aegis_core::input::{KeyAction, KeyChar, key_action};
+use aegis_core::interaction_domain::{
+    InteractionDomain, InteractionDomainId, InteractionDomainKind, InteractionDomainSnapshot,
+    InteractionDomainState,
+};
 use aegis_core::overview as geom;
-use aegis_core::realm::{Realm, RealmId, RealmKind, RealmSnapshot, RealmState};
 use aegis_core::window::Window;
 use aegis_core::workspace::WorkspaceSnapshot;
 
@@ -35,12 +38,12 @@ pub struct Overview {
     /// Left button level last frame, so a click fires once on the press edge.
     prev_down: bool,
     /// Complete authority snapshot supplied by the compositor.
-    realms: RealmSnapshot,
+    interaction_domains: InteractionDomainSnapshot,
     /// Pressed window that may become a drag after crossing the threshold.
     drag_candidate: Option<aegis_core::window::WindowId>,
     drag_origin: Option<(f32, f32)>,
     dragging: bool,
-    realm_hovered: Option<RealmId>,
+    interaction_domain_hovered: Option<InteractionDomainId>,
     reduced_motion: bool,
 }
 
@@ -59,11 +62,12 @@ impl Overview {
             hovered: None,
             rail_hovered: None,
             prev_down: false,
-            realms: aegis_core::realm::RealmModel::new().snapshot(),
+            interaction_domains: aegis_core::interaction_domain::InteractionDomainModel::new()
+                .snapshot(),
             drag_candidate: None,
             drag_origin: None,
             dragging: false,
-            realm_hovered: None,
+            interaction_domain_hovered: None,
             reduced_motion: false,
         }
     }
@@ -87,37 +91,42 @@ impl Overview {
         (base as f32 * self.visibility).round() as u8
     }
 
-    fn live_realms(&self) -> Vec<Realm> {
-        self.realms
-            .realms
+    fn live_interaction_domains(&self) -> Vec<InteractionDomain> {
+        self.interaction_domains
+            .interaction_domains
             .iter()
-            .filter(|realm| realm.state != RealmState::Revoked)
-            .filter(|realm| {
-                realm.kind == RealmKind::Human
-                    || (realm.kind == RealmKind::Agent
+            .filter(|interaction_domain| {
+                interaction_domain.state != InteractionDomainState::Revoked
+            })
+            .filter(|interaction_domain| {
+                interaction_domain.kind == InteractionDomainKind::Human
+                    || (interaction_domain.kind == InteractionDomainKind::Agent
                         && self
-                            .realms
-                            .realms
+                            .interaction_domains
+                            .interaction_domains
                             .iter()
-                            .any(|candidate| candidate.kind == RealmKind::Agent))
+                            .any(|candidate| candidate.kind == InteractionDomainKind::Agent))
             })
             .cloned()
             .collect()
     }
 
-    fn control_realm_for_window(&self, window: aegis_core::window::WindowId) -> Option<RealmId> {
-        self.realms
+    fn control_interaction_domain_for_window(
+        &self,
+        window: aegis_core::window::WindowId,
+    ) -> Option<InteractionDomainId> {
+        self.interaction_domains
             .interaction_groups
             .iter()
             .find(|group| group.windows.contains(&window))
-            .map(|group| group.control_realm)
+            .map(|group| group.control_interaction_domain)
     }
 
     fn reset_drag(&mut self) {
         self.drag_candidate = None;
         self.drag_origin = None;
         self.dragging = false;
-        self.realm_hovered = None;
+        self.interaction_domain_hovered = None;
     }
 }
 
@@ -162,15 +171,19 @@ impl Chrome for Overview {
             })
             .unwrap_or_default();
         let has_rail = rail_tiles.len() > 1;
-        let live_realms = self.live_realms();
-        let has_realm_shelf = live_realms
+        let live_interaction_domains = self.live_interaction_domains();
+        let has_interaction_domain_shelf = live_interaction_domains
             .iter()
-            .any(|realm| realm.kind == RealmKind::Agent);
-        let area = geom::grid_area_with_realm_shelf(display, has_rail, has_realm_shelf);
+            .any(|interaction_domain| interaction_domain.kind == InteractionDomainKind::Agent);
+        let area = geom::grid_area_with_interaction_domain_shelf(
+            display,
+            has_rail,
+            has_interaction_domain_shelf,
+        );
         let slots = geom::grid(area, windows.len());
         let tiles = geom::rail(display, rail_tiles.len());
-        let realm_tiles = if has_realm_shelf {
-            geom::realm_shelf(display, live_realms.len())
+        let interaction_domain_tiles = if has_interaction_domain_shelf {
+            geom::interaction_domain_shelf(display, live_interaction_domains.len())
         } else {
             Vec::new()
         };
@@ -180,7 +193,7 @@ impl Chrome for Overview {
         // authority drag.
         self.hovered = None;
         self.rail_hovered = None;
-        self.realm_hovered = None;
+        self.interaction_domain_hovered = None;
         for (i, (slot, window)) in slots.iter().zip(windows.iter()).enumerate() {
             let cell = geom::fit(*slot, window.size);
             if contains_rect(cell, cursor.x, cursor.y) {
@@ -209,9 +222,14 @@ impl Chrome for Overview {
             }
         }
         if self.dragging {
-            for (realm, tile) in live_realms.iter().zip(realm_tiles.iter()) {
-                if contains_rect(*tile, cursor.x, cursor.y) && realm.state == RealmState::Active {
-                    self.realm_hovered = Some(realm.id);
+            for (interaction_domain, tile) in live_interaction_domains
+                .iter()
+                .zip(interaction_domain_tiles.iter())
+            {
+                if contains_rect(*tile, cursor.x, cursor.y)
+                    && interaction_domain.state == InteractionDomainState::Active
+                {
+                    self.interaction_domain_hovered = Some(interaction_domain.id);
                 }
             }
         }
@@ -219,15 +237,17 @@ impl Chrome for Overview {
         if released {
             if let Some(window) = self.drag_candidate {
                 if self.dragging {
-                    if let Some(target) = self.realm_hovered
-                        && self.control_realm_for_window(window) != Some(target)
+                    if let Some(target) = self.interaction_domain_hovered
+                        && self.control_interaction_domain_for_window(window) != Some(target)
                     {
-                        out.realm_intents.push(RealmIntent::TransferWindow {
-                            window,
-                            target,
-                            retain_source_as_observer: true,
-                            expected_revision: self.realms.revision,
-                        });
+                        out.interaction_domain_intents.push(
+                            InteractionDomainIntent::TransferWindow {
+                                window,
+                                target,
+                                retain_source_as_observer: true,
+                                expected_revision: self.interaction_domains.revision,
+                            },
+                        );
                     }
                 } else if self
                     .hovered
@@ -246,7 +266,7 @@ impl Chrome for Overview {
         if pressed
             && self.hovered.is_none()
             && self.rail_hovered.is_none()
-            && !realm_tiles
+            && !interaction_domain_tiles
                 .iter()
                 .any(|tile| contains_rect(*tile, cursor.x, cursor.y))
         {
@@ -294,13 +314,17 @@ impl Chrome for Overview {
             }
         }
 
-        // Realm shelf: active targets accept a dragged interaction group.
+        // Interaction Domain shelf: active targets accept a dragged interaction group.
         // Paused targets remain visible for state awareness but fail closed as
         // transfer destinations.
-        if has_realm_shelf {
-            for (i, (realm, tile)) in live_realms.iter().zip(realm_tiles.iter()).enumerate() {
-                let hovered = self.realm_hovered == Some(realm.id);
-                let active = realm.state == RealmState::Active;
+        if has_interaction_domain_shelf {
+            for (i, (interaction_domain, tile)) in live_interaction_domains
+                .iter()
+                .zip(interaction_domain_tiles.iter())
+                .enumerate()
+            {
+                let hovered = self.interaction_domain_hovered == Some(interaction_domain.id);
+                let active = interaction_domain.state == InteractionDomainState::Active;
                 let bg = if hovered {
                     Color::rgba(62, 124, 224, self.alpha(235))
                 } else if active {
@@ -308,21 +332,21 @@ impl Chrome for Overview {
                 } else {
                     Color::rgba(36, 37, 44, self.alpha(190))
                 };
-                let label = realm.label.clone();
-                let status = match realm.state {
-                    RealmState::Active => i18n.text(Message::RealmActive),
-                    RealmState::Paused => i18n.text(Message::RealmPaused),
-                    RealmState::Revoked => i18n.text(Message::RealmRevoked),
+                let label = interaction_domain.label.clone();
+                let status = match interaction_domain.state {
+                    InteractionDomainState::Active => i18n.text(Message::InteractionDomainActive),
+                    InteractionDomainState::Paused => i18n.text(Message::InteractionDomainPaused),
+                    InteractionDomainState::Revoked => i18n.text(Message::InteractionDomainRevoked),
                 };
-                let hint = if realm.kind == RealmKind::Human {
+                let hint = if interaction_domain.kind == InteractionDomainKind::Human {
                     i18n.text(Message::PhysicalDesktop)
                 } else if active {
                     i18n.text(Message::DropWindowHere)
                 } else {
-                    i18n.text(Message::RealmPaused)
+                    i18n.text(Message::InteractionDomainPaused)
                 };
                 frame.layer(
-                    &format!("aegis-overview-realm-{i}"),
+                    &format!("aegis-overview-interaction_domain-{i}"),
                     to_lens(*tile),
                     &OverlayOpts {
                         bg,
@@ -425,7 +449,7 @@ impl Chrome for Overview {
                 h: 48.0,
             };
             frame.layer(
-                "aegis-overview-realm-drag-ghost",
+                "aegis-overview-interaction_domain-drag-ghost",
                 ghost,
                 &OverlayOpts {
                     bg: Color::rgba(45, 88, 166, self.alpha(230)),
@@ -442,7 +466,9 @@ impl Chrome for Overview {
                             cross: Align::Center,
                             ..Default::default()
                         },
-                        |frame| frame.label_sized(i18n.text(Message::MoveToRealm), 11.0),
+                        |frame| {
+                            frame.label_sized(i18n.text(Message::MoveToInteractionDomain), 11.0)
+                        },
                     );
                 },
             );
@@ -520,8 +546,8 @@ impl Chrome for Overview {
         self.reduced_motion = reduced;
     }
 
-    fn update_realms(&mut self, snapshot: &RealmSnapshot) {
-        self.realms = snapshot.clone();
+    fn update_interaction_domains(&mut self, snapshot: &InteractionDomainSnapshot) {
+        self.interaction_domains = snapshot.clone();
     }
 }
 

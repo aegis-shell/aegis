@@ -1,6 +1,6 @@
 use super::encoding::{CapturedPixels, PendingReadback, encode_capture};
 use crate::runtime::commands::journal_effect_and_broadcast;
-use crate::runtime::realm::RealmCaptureContext;
+use crate::runtime::interaction_domain::InteractionDomainCaptureContext;
 
 /// Pollable completion wakeup shared by the capture worker and the compositor
 /// event loop. The backend currently accepts one auxiliary wakeup fd, so an
@@ -140,9 +140,9 @@ pub(in crate::runtime) enum CaptureTarget {
     Reply {
         reply: std::sync::mpsc::Sender<Result<aegis_ipc::CaptureOutputPayload, String>>,
     },
-    RealmReply {
-        context: RealmCaptureContext,
-        reply: std::sync::mpsc::Sender<Result<aegis_ipc::CaptureRealmPayload, String>>,
+    InteractionDomainReply {
+        context: InteractionDomainCaptureContext,
+        reply: std::sync::mpsc::Sender<Result<aegis_ipc::CaptureInteractionDomainPayload, String>>,
     },
     /// One user-picked pixel readback (ADR-0054). The main loop answers the
     /// waiting `PickTarget` IPC request with the colour.
@@ -173,10 +173,10 @@ enum CaptureJob {
         capture: CapturedPixels,
         reply: std::sync::mpsc::Sender<Result<aegis_ipc::CaptureOutputPayload, String>>,
     },
-    RealmReply {
+    InteractionDomainReply {
         capture: CapturedPixels,
-        context: RealmCaptureContext,
-        reply: std::sync::mpsc::Sender<Result<aegis_ipc::CaptureRealmPayload, String>>,
+        context: InteractionDomainCaptureContext,
+        reply: std::sync::mpsc::Sender<Result<aegis_ipc::CaptureInteractionDomainPayload, String>>,
     },
     Pixel {
         capture: CapturedPixels,
@@ -217,10 +217,11 @@ pub(in crate::runtime) enum CaptureCompletion {
         security_generation: u64,
         encoded: Result<aegis_ipc::CaptureOutputPayload, String>,
     },
-    RealmReply {
-        reply: std::sync::mpsc::Sender<Result<aegis_ipc::CaptureRealmPayload, String>>,
+    InteractionDomainReply {
+        reply: std::sync::mpsc::Sender<Result<aegis_ipc::CaptureInteractionDomainPayload, String>>,
         security_generation: u64,
-        encoded: Result<aegis_ipc::CaptureRealmPayload, String>,
+        observation_token: aegis_ipc::ObservationToken,
+        encoded: Result<aegis_ipc::CaptureInteractionDomainPayload, String>,
     },
     Pixel {
         reply: std::sync::mpsc::Sender<Result<aegis_ipc::PickResult, String>>,
@@ -309,7 +310,7 @@ impl CaptureWorker {
                                 worker_wake.as_ref(),
                                 CaptureCompletion::ScreenshotEncoded {
                                     path: path.clone(),
-                                    origin,
+                                    origin: origin.clone(),
                                     security_generation: generation,
                                     encoded: encoded.clone(),
                                 },
@@ -376,12 +377,20 @@ impl CaptureWorker {
                                 break;
                             }
                         }
-                        CaptureJob::RealmReply {
+                        CaptureJob::InteractionDomainReply {
                             capture,
                             context,
                             reply,
                         } => {
                             let generation = capture.security_generation;
+                            let observation_token = context
+                                .observation
+                                .as_ref()
+                                .expect(
+                                    "Interaction Domain capture must issue its observation lease before encoding",
+                                )
+                                .token
+                                .clone();
                             let encoded = if worker_allowed
                                 .load(std::sync::atomic::Ordering::Acquire)
                                 && generation
@@ -389,14 +398,17 @@ impl CaptureWorker {
                                         .load(std::sync::atomic::Ordering::Acquire)
                             {
                                 encode_capture(capture).map(|(width, height, png)| {
-                                    aegis_ipc::CaptureRealmPayload {
-                                        capture: aegis_ipc::RealmCapture {
-                                            realm: context.realm,
+                                    aegis_ipc::CaptureInteractionDomainPayload {
+                                        capture: aegis_ipc::InteractionDomainCapture {
+                                            interaction_domain: context.interaction_domain,
                                             width,
                                             height,
                                             scale_milli: context.scale_milli,
                                             region: context.region,
                                             placements: context.placements,
+                                            observation: context.observation.expect(
+                                                "Interaction Domain capture must issue its observation lease before encoding",
+                                            ),
                                             png_bytes: png.len() as u64,
                                             revision: context.revision,
                                         },
@@ -404,14 +416,15 @@ impl CaptureWorker {
                                     }
                                 })
                             } else {
-                                Err("session locked before Realm capture completed".into())
+                                Err("session locked before Interaction Domain capture completed".into())
                             };
                             if !send_completion(
                                 &completion_tx,
                                 worker_wake.as_ref(),
-                                CaptureCompletion::RealmReply {
+                                CaptureCompletion::InteractionDomainReply {
                                     reply,
                                     security_generation: generation,
+                                    observation_token,
                                     encoded,
                                 },
                             ) {
@@ -590,7 +603,7 @@ pub(in crate::runtime) fn refuse_capture_target(
         CaptureTarget::Reply { reply } => {
             let _ = reply.send(Err(reason));
         }
-        CaptureTarget::RealmReply { reply, .. } => {
+        CaptureTarget::InteractionDomainReply { reply, .. } => {
             let _ = reply.send(Err(reason));
         }
         CaptureTarget::Pixel { reply, .. } => {
@@ -623,11 +636,13 @@ pub(in crate::runtime) fn queue_captured_pixels(
             origin,
         },
         CaptureTarget::Reply { reply } => CaptureJob::Reply { capture, reply },
-        CaptureTarget::RealmReply { context, reply } => CaptureJob::RealmReply {
-            capture,
-            context,
-            reply,
-        },
+        CaptureTarget::InteractionDomainReply { context, reply } => {
+            CaptureJob::InteractionDomainReply {
+                capture,
+                context,
+                reply,
+            }
+        }
         CaptureTarget::Pixel { point, reply } => CaptureJob::Pixel {
             capture,
             point,
@@ -650,8 +665,8 @@ pub(in crate::runtime) fn queue_captured_pixels(
                 origin,
             },
             CaptureJob::Reply { reply, .. } => CaptureTarget::Reply { reply },
-            CaptureJob::RealmReply { context, reply, .. } => {
-                CaptureTarget::RealmReply { context, reply }
+            CaptureJob::InteractionDomainReply { context, reply, .. } => {
+                CaptureTarget::InteractionDomainReply { context, reply }
             }
             CaptureJob::Pixel { point, reply, .. } => CaptureTarget::Pixel { point, reply },
             CaptureJob::Stream { .. } => CaptureTarget::Stream,

@@ -366,7 +366,7 @@ impl CompositorRuntime {
             session_locked: self.server.session_locked(),
             capture_pending: frame_capture_pending
                 || self.pending_capture.is_some()
-                || self.pending_realm_capture.is_some(),
+                || self.pending_interaction_domain_capture.is_some(),
             screenshot_freeze: self.screenshot_freeze.armed,
             transition_pending: self.server.transitions_pending(),
             overview_active: self.shell.overview_active(),

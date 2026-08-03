@@ -5,12 +5,16 @@
 //! must re-emit the paths itself.
 
 fn main() {
-    // Keep the flux paths selected by the -sys crates ahead of unrelated
+    // Keep the Optics paths selected by the -sys crates ahead of unrelated
     // search paths introduced by dependencies such as Vulkan or FreeType
     // (aegis-backend emits `-L /usr/lib`, where stale system copies of the
     // optics libs may live). Emitting them from the terminal binary gives
     // them the intended link-search precedence.
-    for var in ["DEP_FLUX_RPATHS", "DEP_FLUX_SCENE_GRAPH_RPATHS"] {
+    for var in [
+        "DEP_LENS_RPATHS",
+        "DEP_FLUX_RPATHS",
+        "DEP_FLUX_SCENE_GRAPH_RPATHS",
+    ] {
         if let Ok(rpaths) = std::env::var(var) {
             for dir in rpaths.split(';').filter(|s| !s.is_empty()) {
                 println!("cargo:rustc-link-search=native={dir}");

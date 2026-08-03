@@ -16,6 +16,7 @@ aegis-core = { workspace = true, features = ["serde"] }
 aegis-config = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+zeroize.workspace = true
 clap = { version = "4", features = ["derive", "wrap_help", "string"] }
 clap_complete = "4"
 thiserror = { workspace = true }

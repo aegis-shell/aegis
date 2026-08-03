@@ -10,6 +10,7 @@ the other `docs/` sections; see the [documentation index](../index.md).
 | [Setup](setup.md) | Toolchain, dependencies, and build/run |
 | [Aegis and Optics Cross-Repository Development](cross-repository-development.md) | Worktree-isolated local patches, commit protection, and release promotion |
 | [Nested Backend Development](nested-backend.md) | Successful-build process replacement, scene restoration, and backend validation inside a Wayland session |
+| [Lock-Screen Testing](lock-screen-testing.md) | Development Preview, nested session-lock integration, agent pixel capture, and physical security validation |
 | [First-Party Application Development](first-party-applications.md) | Installation staging, application discovery, and focused test behavior for standalone system applications |
 | [Distribution Packaging](packaging.md) | Reproducible build inputs, complete install manifest, package integration, and validation |
 | [VT/DRM Manual Testing](vt-drm-testing.md) | Run and try the compositor on real display and input hardware |

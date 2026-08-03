@@ -3,7 +3,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const DEFAULT_REALM_LABEL: &str = "Aegis Agent";
+const DEFAULT_INTERACTION_DOMAIN_LABEL: &str = "Aegis Agent";
 const DEFAULT_IPC_TIMEOUT_SECS: u64 = 5;
 
 /// Runtime policy for one aegis-mcp bridge process.
@@ -17,15 +17,15 @@ pub struct BridgeConfig {
     pub label: String,
     /// Stable connector installation namespace. Unlike `label`, this value
     /// is never cosmetic: it partitions credentials, recovery locks, and
-    /// local Realm state so unrelated MCP hosts cannot accidentally share an
+    /// local Interaction Domain state so unrelated MCP hosts cannot accidentally share an
     /// agent identity.
     pub instance_id: String,
-    pub realm_label: String,
+    pub interaction_domain_label: String,
     /// Durable directory for the pairing identity. `None` keeps the
     /// identity session-only, which re-prompts at every start.
     pub data_dir: Option<PathBuf>,
     pub io_timeout: Duration,
-    /// Revoke the managed Realm on a graceful stdio shutdown. A process killed
+    /// Revoke the managed Interaction Domain on a graceful stdio shutdown. A process killed
     /// during connector refresh leaves a recovery record for the successor.
     pub revoke_on_exit: bool,
 }
@@ -38,7 +38,7 @@ impl fmt::Debug for BridgeConfig {
             .field("runtime_dir", &self.runtime_dir)
             .field("label", &self.label)
             .field("instance_id", &self.instance_id)
-            .field("realm_label", &self.realm_label)
+            .field("interaction_domain_label", &self.interaction_domain_label)
             .field("data_dir", &self.data_dir)
             .field("io_timeout", &self.io_timeout)
             .field("revoke_on_exit", &self.revoke_on_exit)
@@ -51,14 +51,14 @@ impl BridgeConfig {
         socket_path: impl Into<PathBuf>,
         runtime_dir: impl Into<PathBuf>,
         label: impl Into<String>,
-        realm_label: impl Into<String>,
+        interaction_domain_label: impl Into<String>,
     ) -> Result<Self, ConfigError> {
         let config = Self {
             socket_path: socket_path.into(),
             runtime_dir: runtime_dir.into(),
             label: label.into(),
             instance_id: "embedded".into(),
-            realm_label: realm_label.into(),
+            interaction_domain_label: interaction_domain_label.into(),
             data_dir: None,
             io_timeout: Duration::from_secs(DEFAULT_IPC_TIMEOUT_SECS),
             revoke_on_exit: false,
@@ -77,10 +77,11 @@ impl BridgeConfig {
         let socket_path = get("AEGIS_MCP_SOCKET")
             .map(PathBuf::from)
             .unwrap_or_else(|| runtime_dir.join("aegis.sock"));
-        let realm_label = optional_string(&mut get, "AEGIS_MCP_REALM_LABEL")?
-            .unwrap_or_else(|| DEFAULT_REALM_LABEL.to_string());
-        let label =
-            optional_string(&mut get, "AEGIS_MCP_LABEL")?.unwrap_or_else(|| realm_label.clone());
+        let interaction_domain_label =
+            optional_string(&mut get, "AEGIS_MCP_INTERACTION_DOMAIN_LABEL")?
+                .unwrap_or_else(|| DEFAULT_INTERACTION_DOMAIN_LABEL.to_string());
+        let label = optional_string(&mut get, "AEGIS_MCP_LABEL")?
+            .unwrap_or_else(|| interaction_domain_label.clone());
         let instance_id = optional_string(&mut get, "AEGIS_MCP_INSTANCE_ID")?
             .ok_or(ConfigError::Missing("AEGIS_MCP_INSTANCE_ID"))?;
         let data_dir = bridge_data_dir(&mut get);
@@ -97,7 +98,7 @@ impl BridgeConfig {
             runtime_dir,
             label,
             instance_id,
-            realm_label,
+            interaction_domain_label,
             data_dir,
             io_timeout,
             revoke_on_exit,
@@ -113,7 +114,7 @@ impl BridgeConfig {
         if !self.runtime_dir.is_absolute() {
             return Err(invalid(
                 "XDG_RUNTIME_DIR",
-                "path must be absolute so Realm recovery state is private and unambiguous",
+                "path must be absolute so Interaction Domain recovery state is private and unambiguous",
             ));
         }
         let label = self.label.trim();
@@ -123,10 +124,10 @@ impl BridgeConfig {
                 "length must be from 1 through 128 bytes",
             ));
         }
-        let realm_label = self.realm_label.trim();
-        if realm_label.is_empty() || realm_label.len() > 128 {
+        let interaction_domain_label = self.interaction_domain_label.trim();
+        if interaction_domain_label.is_empty() || interaction_domain_label.len() > 128 {
             return Err(invalid(
-                "AEGIS_MCP_REALM_LABEL",
+                "AEGIS_MCP_INTERACTION_DOMAIN_LABEL",
                 "length must be from 1 through 128 bytes",
             ));
         }
@@ -262,14 +263,14 @@ mod tests {
     }
 
     #[test]
-    fn defaults_have_no_provider_credentials_and_label_falls_back_to_realm_label() {
+    fn defaults_have_no_provider_credentials_and_label_falls_back_to_interaction_domain_label() {
         let config = load(&[
             ("XDG_RUNTIME_DIR", "/run/user/1000"),
             ("AEGIS_MCP_INSTANCE_ID", "test"),
         ])
         .expect("config");
         assert_eq!(config.label, "Aegis Agent");
-        assert_eq!(config.realm_label, "Aegis Agent");
+        assert_eq!(config.interaction_domain_label, "Aegis Agent");
         assert_eq!(
             config.socket_path,
             PathBuf::from("/run/user/1000/aegis.sock")

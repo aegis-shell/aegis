@@ -5,9 +5,9 @@ a running Aegis session. Running it with no subcommand, or with `run`, starts
 the compositor. Resource subcommands connect to
 `$XDG_RUNTIME_DIR/aegis.sock`.
 
-`--help`, `-h`, `--version`, and `completions` work without a running
-compositor or an `XDG_RUNTIME_DIR` value. Run `aegis <domain> --help` for
-per-domain usage.
+`--help`, `-h`, `--version`, `completions`, and `config` work without a
+running compositor or an `XDG_RUNTIME_DIR` value. Run `aegis <domain> --help`
+for per-domain usage.
 
 ## Startup and Local Commands
 
@@ -17,6 +17,18 @@ per-domain usage.
 | `aegis run` | Start the compositor explicitly. |
 | `aegis help`, `aegis --help`, `aegis -h` | Print local help without connecting. |
 | `aegis completions <shell>` | Print completions for `bash`, `zsh`, `fish`, `powershell`, or `elvish`. |
+
+## Configuration Commands
+
+| Command | Result |
+|---------|--------|
+| `aegis config` | Validate the standard XDG Aegis configuration file. |
+| `aegis config validate [path]` | Validate the current schema and every semantic invariant without contacting the compositor. |
+| `aegis config migrate [path]` | Explicitly migrate a supported legacy schema after creating a durable, non-overwriting owner-only backup. |
+
+Migration preserves comments and refuses legacy ambient network or host-path
+authority instead of silently dropping it. See the
+[configuration migration contract](config.md#migrating-schema-1).
 
 ## Display Commands
 
@@ -71,7 +83,7 @@ directory is `$XDG_PICTURES_DIR/screenshots`, falling back to
 | `aegis journal` | List all retained mutation-journal entries. |
 | `aegis journal list [--since <sequence>]` | List entries with a sequence greater than the supplied value. |
 | `aegis journal follow` | Stream detailed mutation-journal events. |
-| `aegis events` | Stream coarse window, display, workspace, notification, settings, live-system, and Realm events. |
+| `aegis events` | Stream coarse window, display, workspace, notification, settings, live-system, and Interaction Domain events. |
 
 ## Live System Commands
 
@@ -93,26 +105,26 @@ persistent compositor settings.
 Control acknowledgments mean the action was queued. Run
 `aegis system status` or `aegis events` to observe reconciled service state.
 
-## Realm Commands
+## Interaction Domain Commands
 
 | Command | Result |
 |---------|--------|
-| `aegis realm` | List Realms and authority state. |
-| `aegis realm list` | List the authority revision, Realms, states, seats, and controlled-window counts. |
-| `aegis realm create [label]` | Create an active agent Realm with a 1920×1080 virtual output and pointer/keyboard seat. |
-| `aegis realm pause <realm>` | Atomically pause a Realm and freeze its managed cgroups. |
-| `aegis realm resume <realm>` | Resume a paused Realm and its managed cgroups. |
-| `aegis realm transfer <window> <realm> [--no-mirror]` | Transfer the window's complete interaction group. The source remains a read-only observer unless `--no-mirror` is set. |
-| `aegis realm launch <realm> <desktop-id>` | Launch an enumerated desktop entry through a private mount-scoped portal and process sandbox. |
-| `aegis realm capture <realm> [path.png] [--region x,y,w,h]` | Capture the Realm's directed virtual output. |
-| `aegis realm revoke <realm> [fallback]` | Permanently revoke a Realm and return controlled groups to `fallback` (default Realm `1`). |
+| `aegis interaction-domain` | List Interaction Domains and authority state. |
+| `aegis interaction-domain list` | List the authority revision, Interaction Domains, states, seats, and controlled-window counts. |
+| `aegis interaction-domain create [label]` | Create an active agent Interaction Domain with a 1920×1080 virtual output and pointer/keyboard seat. |
+| `aegis interaction-domain pause <domain-id>` | Atomically pause an Interaction Domain and freeze its managed cgroups. |
+| `aegis interaction-domain resume <domain-id>` | Resume a paused Interaction Domain and its managed cgroups. |
+| `aegis interaction-domain transfer <window> <domain-id> [--no-mirror]` | Transfer the window's complete interaction group. The source remains a read-only observer unless `--no-mirror` is set. |
+| `aegis interaction-domain launch <domain-id> <desktop-id>` | Launch an enumerated desktop entry through a private mount-scoped portal and process sandbox. |
+| `aegis interaction-domain capture <domain-id> [path.png] [--region x,y,w,h]` | Capture the Interaction Domain's directed virtual output. |
+| `aegis interaction-domain revoke <domain-id> [fallback]` | Permanently revoke an Interaction Domain and return controlled groups to `fallback` (default Interaction Domain `1`). |
 
-Realm commands request the built-in `aegis-realm-admin` scope and a 15-minute
+Interaction Domain commands request the built-in `aegis-interaction-domain-admin` scope and a 15-minute
 connection-bound lease. The compositor socket is owner-only. Agent
 integrations borrow capabilities through pairing instead; see the
 [aegis-mcp bridge reference](aegis-mcp.md).
 
-Realm capture writes through a mode-`0600` temporary file, synchronizes it,
+Interaction Domain capture writes through a mode-`0600` temporary file, synchronizes it,
 and atomically renames it to the destination. A failed capture does not leave
 a partial PNG at the requested path.
 
@@ -140,7 +152,7 @@ a partial PNG at the requested path.
 Add `--json` or `-j` anywhere in a command to select machine-readable output.
 Queries print the IPC model, successful one-shot mutations print an
 `{"ok":true,"message":"..."}` receipt, and event streams print one JSON
-event per line. Realm lifecycle commands retain their richer structured
+event per line. Interaction Domain lifecycle commands retain their richer structured
 receipts and capture metadata.
 
 ```bash
@@ -148,7 +160,7 @@ aegis window --json
 aegis journal list --since 120 -j
 aegis system status --json
 aegis window focus 42 --json
-aegis realm --json
+aegis interaction-domain --json
 ```
 
 Human-readable output is intended for interactive use. Scripts should use

@@ -25,7 +25,7 @@ code. The executable selects the presentation backend from `AEGIS_BACKEND`:
 
 Running `aegis` composites client surfaces and shell chrome into a nested
 window or directly onto a KMS display, exposes a Wayland display to clients,
-and serves the control socket at `$XDG_RUNTIME_DIR/aegis.sock`. Realm
+and serves the control socket at `$XDG_RUNTIME_DIR/aegis.sock`. Interaction Domain
 application launch additionally requires the packaged systemd user service
 with delegated `cpu`, `memory`, and `pids` controllers; other compositor
 functions remain available when that preflight fails.

@@ -15,7 +15,9 @@ boundaries.
   physical display power management
 - Nested Wayland development and direct DRM/KMS presentation
 - Versioned local IPC with a command-line client and desktop portal backend
-- Isolated Agent Realms with cgroup and capability boundaries
+- Isolated Agent Interaction Domains with cgroup and capability boundaries
+- Structured semantic observation through a supervised out-of-process AT-SPI
+  adapter, observation-bound actions, and hash-chained Actor audit
 
 ## Quick Start
 
@@ -40,7 +42,7 @@ pkg-config --modversion flux flux-scene-graph lens iris
 From the Aegis repository root, start the compositor:
 
 ```bash
-cargo build --locked -p aegis-idle -p aegis-lock
+cargo build --locked -p aegis-idle -p aegis-lock -p aegis-atspi
 cargo run --locked -p aegis
 ```
 

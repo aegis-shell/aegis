@@ -8,28 +8,48 @@
 
 use std::path::PathBuf;
 
+pub use aegis_authority::{
+    ActorActionIntent, ActorActionReceipt, ActorCapability, ActorResource, AuthorizationDecision,
+    ObservationToken, ResourceGrant, ResourceGrantId, SemanticObservation,
+};
 use aegis_core::Rect;
 use aegis_core::input::SyntheticInputAction;
+use aegis_core::interaction_domain::{
+    InteractionDomainBundle, InteractionDomainId, InteractionDomainMutation,
+    InteractionDomainRevocation, InteractionDomainSnapshot, InteractionDomainTransactionReceipt,
+    InteractionDomainWindowPlacement, SeatCapabilities, VirtualOutput,
+};
 use aegis_core::notify::Notification;
 use aegis_core::output::OutputInfo;
-use aegis_core::realm::{
-    RealmBundle, RealmId, RealmMutation, RealmRevocation, RealmSnapshot, RealmTransactionReceipt,
-    RealmWindowPlacement, SeatCapabilities, VirtualOutput,
-};
+#[cfg(test)]
+use aegis_core::semantic::{SemanticAction, SemanticRole, SemanticSnapshot, SemanticState};
 pub use aegis_core::settings::{SettingsAction, SettingsReceipt, SettingsSnapshot};
 pub use aegis_core::system::{SystemAction, SystemStatus};
 use aegis_core::window::{SpaceUse, Window, WindowId};
-use aegis_core::workspace::{OutputId, Switch, WorkspaceId, WorkspaceSnapshot};
+use aegis_core::workspace::{Switch, WorkspaceId, WorkspaceSnapshot};
 
 use crate::journal::{JournalEntry, JournalSnapshot};
+pub use aegis_semantic::{
+    AccessibilityTreeUpdate, AccessibilityWindowBinding, SemanticActionRequest,
+};
 
 /// The protocol major version this build speaks. A client must offer the
-/// same major version at the [`Request::Hello`] handshake. Version 20 removes
-/// compositor filesystem selection (`PickFile`, `FilePicked`, and their
-/// scope/types); FileChooser is now a portal-owned process boundary. Version
-/// 19 binds
-/// Agent Realms to authenticated subjects, reauthorizes live agent ceilings,
-/// and separates owner/Realm/agent administration scopes. Version 18 adds
+/// same major version at the [`Request::Hello`] handshake. Version 24 binds
+/// accessibility windows to kernel-authenticated Wayland process ids before
+/// accepting AT-SPI trees. Version 23 adds
+/// explicit Actor sessions, exact resource-grant handles, and the bounded
+/// accessibility tree/action adapter protocol. Version 22 renamed the
+/// compositor authority boundary from Realm to Interaction Domain and moved
+/// observation-bound action contracts into the transport-neutral authority
+/// kernel. Version 21 made
+/// Interaction Domain input observation-bound and synchronous: semantic observations and
+/// captures issue short-lived, connection-bound tokens consumed by
+/// `ActInInteractionDomain`, which returns an authoritative main-loop receipt. Version 20
+/// removes compositor filesystem selection (`PickFile`, `FilePicked`, and
+/// their scope/types); FileChooser is now a portal-owned process boundary.
+/// Version 19 binds
+/// Agent Interaction Domains to authenticated subjects, reauthorizes live agent ceilings,
+/// and separates owner, Interaction Domain, and Agent administration scopes. Version 18 adds
 /// agent identity pairing (`Hello.agent`) and runtime-grantable `ask`
 /// operations on scopes (ADR-0088). Version 17 adds
 /// wallpaper mutation (`SetWallpaper` → `WallpaperSet`). Version 16 adds
@@ -51,12 +71,12 @@ use crate::journal::{JournalEntry, JournalSnapshot};
 /// `Event::StreamFrame`, `Event::StreamEnded`, `StreamOutputStop`,
 /// ADR-0052). Version 4 adds revisioned desktop-settings snapshots,
 /// subscriptions, and confirmed settings transactions.
-pub const PROTOCOL_VERSION: u32 = 20;
-/// Built-in owner-only scope used by native `aegis` commands for Realm
+pub const PROTOCOL_VERSION: u32 = 24;
+/// Built-in owner-only scope used by native `aegis` commands for Interaction Domain
 /// recovery and administration. The Unix socket remains user-private; naming
-/// this scope opts the connection into the high-risk Realm operation allowlist
+/// this scope opts the connection into the high-risk Interaction Domain operation allowlist
 /// and its time-bounded lease.
-pub const LOCAL_REALM_ADMIN_SCOPE: &str = "aegis-realm-admin";
+pub const LOCAL_INTERACTION_DOMAIN_ADMIN_SCOPE: &str = "aegis-interaction-domain-admin";
 /// Built-in owner-only scope dedicated to agent identity and grant
 /// administration. Keeping this separate from ordinary query/control
 /// connections prevents ambient local clients from enumerating credentials'
@@ -72,7 +92,7 @@ pub const LOCAL_OWNER_ADMIN_SCOPE: &str = "aegis-owner-admin";
 /// (`xdg-desktop-portal-aegis`, ADR-0095). It resolves to an explicit
 /// allowlist covering
 /// capture and streaming, idle inhibition, user-consent pickers and prompts,
-/// notifications, and wallpaper changes — and nothing else. Like the Realm
+/// notifications, and wallpaper changes — and nothing else. Like the Interaction Domain
 /// administration
 /// scope it does not weaken the socket's owner-only `0600` boundary; it opts
 /// the connection into an explicit high-risk operation allowlist and its
@@ -86,7 +106,7 @@ pub const LOCAL_PORTAL_SCOPE: &str = "aegis-portal";
 /// object so tool authors read it without decoding a bitmask. New fields use
 /// serde defaults so a version-2 peer that predates them negotiates them off.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Capabilities {
+pub struct ConnectionCapabilities {
     /// Read state and subscribe to events. Always granted.
     pub query: bool,
     /// Mutate windows, workspaces, and input focus.
@@ -96,19 +116,19 @@ pub struct Capabilities {
     pub input: bool,
     /// Session-level actions: quit, reload config, change outputs.
     pub session: bool,
-    /// Create, configure, transfer, pause, and revoke Realm authority.
+    /// Create, configure, transfer, pause, and revoke Interaction Domain authority.
     #[serde(default)]
-    pub realm: bool,
+    pub interaction_domain: bool,
 }
 
-impl Capabilities {
+impl ConnectionCapabilities {
     /// Query only.
     pub const QUERY: Self = Self {
         query: true,
         control: false,
         input: false,
         session: false,
-        realm: false,
+        interaction_domain: false,
     };
 
     /// Intersection of two capability sets. Used to fold the client's request
@@ -119,7 +139,7 @@ impl Capabilities {
             control: self.control && other.control,
             input: self.input && other.input,
             session: self.session && other.session,
-            realm: self.realm && other.realm,
+            interaction_domain: self.interaction_domain && other.interaction_domain,
         }
     }
 
@@ -132,7 +152,7 @@ impl Capabilities {
     }
 
     pub fn privileged(self) -> bool {
-        self.control || self.input || self.session || self.realm
+        self.control || self.input || self.session || self.interaction_domain
     }
 }
 
@@ -158,207 +178,26 @@ pub struct LeaseGrant {
     pub renewable: bool,
 }
 
-/// One operation family, used by [`Scope`] to enumerate which commands a
-/// scoped client may issue (ADR-0034). One variant per scoped `Command`;
-/// session commands (Quit) are governed by caps alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type")]
-pub enum OpClass {
-    Focus,
-    Minimize,
-    Close,
-    Move,
-    SetWindowGeometry,
-    InjectInput,
-    InjectRealmInput,
-    Cycle,
-    SwitchWorkspace,
-    SwitchWorkspaceTo,
-    MoveToWorkspace,
-    ToggleTiling,
-    SystemControl,
-    Notify,
-    DismissNotification,
-    Screenshot,
-    ScreenshotRegion,
-    ToggleOverview,
-    CaptureOutput,
-    StreamOutput,
-    /// Connection-scoped global idle inhibition (the Inhibit portal,
-    /// ADR-0075). Never inherited through `None`-means-all.
-    IdleInhibit,
-    /// Interactive, user-consent target picking (region, pixel, or window)
-    /// through compositor chrome (ADR-0054). Never inherited through
-    /// `None`-means-all: a pick reads back user-approved screen content.
-    PickTarget,
-    /// User-consent application picking through compositor chrome (the
-    /// AppChooser portal's compositor side). Never inherited through
-    /// `None`-means-all: the chosen app id is a user-authorization decision.
-    PickApp,
-    /// User-consent secret prompting through compositor chrome (the secret
-    /// vault's password unlock). Never inherited through `None`-means-all:
-    /// the typed secret crosses this channel.
-    PromptSecret,
-    /// User-consent yes/no confirmation through compositor chrome (portal
-    /// consent dialogs: Account, Access, DynamicLauncher). Never inherited
-    /// through `None`-means-all: the answer is a user-authorization decision.
-    PickConfirm,
-    /// Desktop wallpaper mutation (the Wallpaper portal). Never inherited
-    /// through `None`-means-all: it rewrites session-visible state.
-    SetWallpaper,
-    CreateRealm,
-    TransactRealm,
-    RevokeRealm,
-    CaptureRealm,
-    LaunchInRealm,
+/// IPC command-policy adapter for the transport-neutral [`Scope`].
+/// Resource axes and capability decisions live in `aegis-authority`; only
+/// knowledge of this protocol's concrete command vocabulary remains here.
+pub trait CommandScopePolicy {
+    fn permits_interaction_domain_action(&self, action: &InteractionDomainAction) -> bool;
+    fn permits_interaction_domain_action_resources(&self, action: &InteractionDomainAction)
+    -> bool;
+    fn permits(&self, command: &Command) -> bool;
+    fn permits_resources(&self, command: &Command) -> bool;
+    fn decide_command(&self, command: &Command) -> AuthorizationDecision;
+    fn decide_interaction_domain_action(
+        &self,
+        action: &InteractionDomainAction,
+    ) -> AuthorizationDecision;
 }
 
-impl OpClass {
-    /// Parse an operation name from configuration or CLI text. Accepts the
-    /// canonical variant name and its snake_case form, case-insensitively.
-    pub fn from_name(name: &str) -> Option<OpClass> {
-        match name.trim().to_ascii_lowercase().as_str() {
-            "focus" => Some(OpClass::Focus),
-            "minimize" => Some(OpClass::Minimize),
-            "close" => Some(OpClass::Close),
-            "move" => Some(OpClass::Move),
-            "setwindowgeometry" | "set_window_geometry" => Some(OpClass::SetWindowGeometry),
-            "injectinput" | "inject_input" => Some(OpClass::InjectInput),
-            "injectrealminput" | "inject_realm_input" => Some(OpClass::InjectRealmInput),
-            "createrealm" | "create_realm" => Some(OpClass::CreateRealm),
-            "transactrealm" | "transact_realm" => Some(OpClass::TransactRealm),
-            "revokerealm" | "revoke_realm" => Some(OpClass::RevokeRealm),
-            "capturerealm" | "capture_realm" => Some(OpClass::CaptureRealm),
-            "launchinrealm" | "launch_in_realm" => Some(OpClass::LaunchInRealm),
-            "cycle" => Some(OpClass::Cycle),
-            "switchworkspace" | "switch_workspace" => Some(OpClass::SwitchWorkspace),
-            "switchworkspaceto" | "switch_workspace_to" => Some(OpClass::SwitchWorkspaceTo),
-            "movetoworkspace" | "move_to_workspace" => Some(OpClass::MoveToWorkspace),
-            "toggletiling" | "toggle_tiling" => Some(OpClass::ToggleTiling),
-            "systemcontrol" | "system_control" => Some(OpClass::SystemControl),
-            "notify" => Some(OpClass::Notify),
-            "dismissnotification" | "dismiss_notification" => Some(OpClass::DismissNotification),
-            "screenshot" => Some(OpClass::Screenshot),
-            "screenshotregion" | "screenshot_region" => Some(OpClass::ScreenshotRegion),
-            "toggleoverview" | "toggle_overview" => Some(OpClass::ToggleOverview),
-            "captureoutput" | "capture_output" => Some(OpClass::CaptureOutput),
-            "streamoutput" | "stream_output" => Some(OpClass::StreamOutput),
-            "idleinhibit" | "idle_inhibit" => Some(OpClass::IdleInhibit),
-            "picktarget" | "pick_target" => Some(OpClass::PickTarget),
-            "pickapp" | "pick_app" => Some(OpClass::PickApp),
-            "promptsecret" | "prompt_secret" => Some(OpClass::PromptSecret),
-            "pickconfirm" | "pick_confirm" => Some(OpClass::PickConfirm),
-            "setwallpaper" | "set_wallpaper" => Some(OpClass::SetWallpaper),
-            _ => None,
-        }
-    }
+pub use aegis_authority::ActorScope as Scope;
 
-    /// A short human-readable label for consent prompts and permission
-    /// management surfaces.
-    pub fn label(self) -> &'static str {
-        match self {
-            OpClass::Focus => "Focus windows",
-            OpClass::Minimize => "Minimize windows",
-            OpClass::Close => "Close windows",
-            OpClass::Move => "Move windows interactively",
-            OpClass::SetWindowGeometry => "Resize and place windows",
-            OpClass::InjectInput => "Inject synthetic input",
-            OpClass::InjectRealmInput => "Inject input into its Realm",
-            OpClass::Cycle => "Cycle window focus",
-            OpClass::SwitchWorkspace => "Switch workspace",
-            OpClass::SwitchWorkspaceTo => "Switch to a workspace",
-            OpClass::MoveToWorkspace => "Move windows to workspaces",
-            OpClass::ToggleTiling => "Toggle tiling",
-            OpClass::SystemControl => "Control the session",
-            OpClass::Notify => "Send notifications",
-            OpClass::DismissNotification => "Dismiss notifications",
-            OpClass::Screenshot => "Take screenshots",
-            OpClass::ScreenshotRegion => "Take region screenshots",
-            OpClass::ToggleOverview => "Toggle the overview",
-            OpClass::CaptureOutput => "Capture screen outputs",
-            OpClass::StreamOutput => "Stream screen outputs",
-            OpClass::IdleInhibit => "Inhibit idle",
-            OpClass::PickTarget => "Pick screen targets",
-            OpClass::PickApp => "Pick applications",
-            OpClass::PromptSecret => "Prompt for secrets",
-            OpClass::PickConfirm => "Show confirmation dialogs",
-            OpClass::SetWallpaper => "Set the wallpaper",
-            OpClass::CreateRealm => "Create Agent Realms",
-            OpClass::TransactRealm => "Move windows between Realms",
-            OpClass::RevokeRealm => "Revoke Agent Realms",
-            OpClass::CaptureRealm => "Capture its Realm's screen",
-            OpClass::LaunchInRealm => "Launch apps in its Realm",
-        }
-    }
-}
-
-/// The three-way outcome of checking one operation against a scope
-/// (ADR-0088): pre-granted, requestable through an interactive user grant,
-/// or refused outright.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScopeDecision {
-    /// Pre-granted by the scope's `ops` (or unrestricted on that axis).
-    Permit,
-    /// Not pre-granted but named in the scope's `ask_ops`: a paired agent
-    /// may request it, prompting the user interactively.
-    Ask(OpClass),
-    /// Outside the scope ceiling.
-    Deny,
-}
-
-/// A resource-and-operation allowlist layered on top of capabilities
-/// (ADR-0034). `None` at any field means "unrestricted at this axis". The
-/// default (all fields `None`) is the unscoped back-compat behavior for
-/// ordinary operations. High-risk input is the exception: `InjectInput` must
-/// be explicitly present in `ops`.
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Scope {
-    /// Allowed window ids. `None` = all.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub windows: Option<Vec<WindowId>>,
-    /// Allowed workspace ids. `None` = all.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspaces: Option<Vec<WorkspaceId>>,
-    /// Allowed output ids. `None` = all.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub outputs: Option<Vec<OutputId>>,
-    /// Allowed Realm ids. `None` = all existing realms. Creating a new Realm
-    /// is governed only by the operation allowlist because its id does not
-    /// exist yet.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub realms: Option<Vec<RealmId>>,
-    /// Allowed operation families. `None` = all ordinary operations, but no
-    /// synthetic input.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ops: Option<Vec<OpClass>>,
-    /// Operation families the scope does not pre-grant but that a paired
-    /// agent may request at runtime through an interactive user grant
-    /// (ADR-0088). Never inherited: `None` means nothing is requestable.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ask_ops: Option<Vec<OpClass>>,
-}
-
-impl Scope {
-    /// The unscoped compatibility default. Synthetic input still requires an
-    /// explicit operation allowlist entry.
-    pub fn unscoped() -> Self {
-        Scope::default()
-    }
-
-    /// Whether `val` is allowed by the `None`-means-all allowlist.
-    fn allows<T: PartialEq + Copy>(opt: &Option<Vec<T>>, val: T) -> bool {
-        opt.as_ref().is_none_or(|v| v.contains(&val))
-    }
-
-    pub fn permits_window(&self, window: WindowId) -> bool {
-        Self::allows(&self.windows, window)
-    }
-
-    pub fn permits_realm(&self, realm: RealmId) -> bool {
-        Self::allows(&self.realms, realm)
-    }
-
-    pub fn permits_realm_action(&self, action: &RealmAction) -> bool {
+impl CommandScopePolicy for Scope {
+    fn permits_interaction_domain_action(&self, action: &InteractionDomainAction) -> bool {
         let op = action.op_class();
         if !self
             .ops
@@ -367,60 +206,63 @@ impl Scope {
         {
             return false;
         }
-        self.permits_realm_action_resources(action)
+        self.permits_interaction_domain_action_resources(action)
     }
 
-    /// The resource-allowlist half of [`Self::permits_realm_action`],
-    /// separated so the ask path enforces Realm and window allowlists
+    /// The resource-allowlist half of [`Self::permits_interaction_domain_action`],
+    /// separated so the ask path enforces Interaction Domain and window allowlists
     /// independently of the operation lists (ADR-0088). This is also the
     /// check applied once a runtime grant has authorized the operation
     /// itself.
-    pub fn permits_realm_action_resources(&self, action: &RealmAction) -> bool {
+    fn permits_interaction_domain_action_resources(
+        &self,
+        action: &InteractionDomainAction,
+    ) -> bool {
         match action {
-            RealmAction::Create { .. } => true,
-            RealmAction::Transact { mutations, .. } => mutations.iter().all(|mutation| {
-                let realm = match mutation {
-                    RealmMutation::TransferWindow { target, .. } => *target,
-                    RealmMutation::SetObserver { realm, .. }
-                    | RealmMutation::ConfigureOutput { realm, .. }
-                    | RealmMutation::SetState { realm, .. } => *realm,
-                };
-                Self::allows(&self.realms, realm)
-                    && match mutation {
-                        RealmMutation::TransferWindow { window, .. } => {
-                            Self::allows(&self.windows, *window)
+            InteractionDomainAction::Create { .. } => true,
+            InteractionDomainAction::Transact { mutations, .. } => {
+                mutations.iter().all(|mutation| {
+                    let interaction_domain = match mutation {
+                        InteractionDomainMutation::TransferWindow { target, .. } => *target,
+                        InteractionDomainMutation::SetObserver {
+                            interaction_domain, ..
                         }
-                        _ => true,
-                    }
-            }),
-            RealmAction::Revoke {
-                realm, fallback, ..
-            } => Self::allows(&self.realms, *realm) && Self::allows(&self.realms, *fallback),
+                        | InteractionDomainMutation::ConfigureOutput {
+                            interaction_domain, ..
+                        }
+                        | InteractionDomainMutation::SetState {
+                            interaction_domain, ..
+                        } => *interaction_domain,
+                    };
+                    self.permits_interaction_domain(interaction_domain)
+                        && match mutation {
+                            InteractionDomainMutation::TransferWindow { window, .. } => {
+                                self.permits_window(*window)
+                            }
+                            _ => true,
+                        }
+                })
+            }
+            InteractionDomainAction::Revoke {
+                interaction_domain,
+                fallback,
+                ..
+            } => {
+                self.permits_interaction_domain(*interaction_domain)
+                    && self.permits_interaction_domain(*fallback)
+            }
         }
-    }
-
-    pub fn permits_realm_capture(&self, realm: RealmId) -> bool {
-        self.ops
-            .as_ref()
-            .is_some_and(|operations| operations.contains(&OpClass::CaptureRealm))
-            && Self::allows(&self.realms, realm)
-    }
-
-    /// The Realm-allowlist half of [`Self::permits_realm_capture`], applied
-    /// once a runtime grant has authorized the capture itself (ADR-0088).
-    pub fn permits_realm_capture_target(&self, realm: RealmId) -> bool {
-        Self::allows(&self.realms, realm)
     }
 
     /// Whether this scope permits the given command (ADR-0034). Session
     /// commands bypass scope; control commands check ops + resources.
-    pub fn permits(&self, cmd: &Command) -> bool {
+    fn permits(&self, cmd: &Command) -> bool {
         let need = cmd.required_cap();
         if need.session {
             return true;
         }
-        if need.input || need.realm {
-            // Input and Realm lifecycle are high-risk capabilities with no
+        if need.input || need.interaction_domain {
+            // Input and Interaction Domain lifecycle are high-risk capabilities with no
             // compatibility caller: a named scope must opt in explicitly.
             if !self
                 .ops
@@ -438,10 +280,10 @@ impl Scope {
     }
 
     /// The resource-allowlist half of [`Self::permits`], separated so the
-    /// ask path enforces window/workspace/Realm allowlists independently of
+    /// ask path enforces window/workspace/Interaction Domain allowlists independently of
     /// the operation lists (ADR-0088). This is also the check applied once
     /// a runtime grant has authorized the operation itself.
-    pub fn permits_resources(&self, cmd: &Command) -> bool {
+    fn permits_resources(&self, cmd: &Command) -> bool {
         match cmd {
             Command::Focus { id }
             | Command::Minimize { id }
@@ -450,74 +292,55 @@ impl Scope {
             | Command::Close { id }
             | Command::Move { id }
             | Command::SetWindowGeometry { id, .. }
-            | Command::InjectInput { id, .. } => Self::allows(&self.windows, *id),
-            Command::InjectRealmInput { realm, id, .. } => {
-                Self::allows(&self.realms, *realm) && Self::allows(&self.windows, *id)
-            }
-            Command::LaunchInRealm { realm, .. } => Self::allows(&self.realms, *realm),
+            | Command::InjectInput { id, .. } => self.permits_window(*id),
+            Command::LaunchInInteractionDomain {
+                interaction_domain, ..
+            } => self.permits_interaction_domain(*interaction_domain),
             Command::MoveToWorkspace { window, workspace } => {
-                Self::allows(&self.windows, *window) && Self::allows(&self.workspaces, *workspace)
+                self.permits_window(*window) && self.permits_workspace(*workspace)
             }
-            Command::SwitchWorkspaceTo { id } => Self::allows(&self.workspaces, *id),
+            Command::SwitchWorkspaceTo { id } => self.permits_workspace(*id),
             _ => true,
         }
-    }
-
-    /// Whether `op` is requestable at runtime through an interactive user
-    /// grant (ADR-0088). Like the high-risk operations, askable operations
-    /// must be named explicitly; `None`-means-all never applies.
-    pub fn asks(&self, op: OpClass) -> bool {
-        self.ask_ops
-            .as_ref()
-            .is_some_and(|operations| operations.contains(&op))
     }
 
     /// Three-way command decision (ADR-0088): a pre-granted command wins; a
     /// command named in `ask_ops` whose resource allowlists pass is
     /// requestable through an interactive grant; anything else is refused.
-    pub fn decide_command(&self, cmd: &Command) -> ScopeDecision {
+    fn decide_command(&self, cmd: &Command) -> AuthorizationDecision {
         if self.permits(cmd) {
-            return ScopeDecision::Permit;
+            return AuthorizationDecision::Permit;
         }
         if !cmd.required_cap().session && self.asks(cmd.op_class()) && self.permits_resources(cmd) {
-            ScopeDecision::Ask(cmd.op_class())
+            AuthorizationDecision::Ask(cmd.op_class())
         } else {
-            ScopeDecision::Deny
+            AuthorizationDecision::Deny
         }
     }
 
-    /// Three-way Realm-action decision, mirroring [`Self::decide_command`].
-    pub fn decide_realm_action(&self, action: &RealmAction) -> ScopeDecision {
-        if self.permits_realm_action(action) {
-            return ScopeDecision::Permit;
+    /// Three-way Interaction Domain-action decision, mirroring [`Self::decide_command`].
+    fn decide_interaction_domain_action(
+        &self,
+        action: &InteractionDomainAction,
+    ) -> AuthorizationDecision {
+        if self.permits_interaction_domain_action(action) {
+            return AuthorizationDecision::Permit;
         }
         let op = action.op_class();
-        if self.asks(op) && self.permits_realm_action_resources(action) {
-            ScopeDecision::Ask(op)
+        if self.asks(op) && self.permits_interaction_domain_action_resources(action) {
+            AuthorizationDecision::Ask(op)
         } else {
-            ScopeDecision::Deny
-        }
-    }
-
-    /// Three-way Realm-capture decision, mirroring [`Self::decide_command`].
-    pub fn decide_realm_capture(&self, realm: RealmId) -> ScopeDecision {
-        if self.permits_realm_capture(realm) {
-            return ScopeDecision::Permit;
-        }
-        if self.asks(OpClass::CaptureRealm) && Self::allows(&self.realms, realm) {
-            ScopeDecision::Ask(OpClass::CaptureRealm)
-        } else {
-            ScopeDecision::Deny
+            AuthorizationDecision::Deny
         }
     }
 }
 
-/// Synchronous Realm lifecycle operation. Unlike ordinary compositor
+/// Synchronous Interaction Domain lifecycle operation. Unlike ordinary compositor
 /// commands, the response confirms commit and carries its authoritative
 /// receipt.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
-pub enum RealmAction {
+pub enum InteractionDomainAction {
     Create {
         label: String,
         capabilities: SeatCapabilities,
@@ -527,22 +350,22 @@ pub enum RealmAction {
     Transact {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_revision: Option<u64>,
-        mutations: Vec<RealmMutation>,
+        mutations: Vec<InteractionDomainMutation>,
     },
     Revoke {
-        realm: RealmId,
-        fallback: RealmId,
+        interaction_domain: InteractionDomainId,
+        fallback: InteractionDomainId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_revision: Option<u64>,
     },
 }
 
-impl RealmAction {
-    pub fn op_class(&self) -> OpClass {
+impl InteractionDomainAction {
+    pub fn op_class(&self) -> ActorCapability {
         match self {
-            Self::Create { .. } => OpClass::CreateRealm,
-            Self::Transact { .. } => OpClass::TransactRealm,
-            Self::Revoke { .. } => OpClass::RevokeRealm,
+            Self::Create { .. } => ActorCapability::CreateInteractionDomain,
+            Self::Transact { .. } => ActorCapability::TransactInteractionDomain,
+            Self::Revoke { .. } => ActorCapability::RevokeInteractionDomain,
         }
     }
 
@@ -554,10 +377,10 @@ impl RealmAction {
                 output,
             } => {
                 if label.trim().is_empty() || label.len() > 128 {
-                    return Err("realm label length is out of range");
+                    return Err("interaction_domain label length is out of range");
                 }
                 if !capabilities.pointer && !capabilities.keyboard && !capabilities.touch {
-                    return Err("realm must expose at least one input capability");
+                    return Err("interaction_domain must expose at least one input capability");
                 }
                 if output.is_some_and(|output| !output.validate()) {
                     return Err("virtual output parameters are invalid");
@@ -565,14 +388,14 @@ impl RealmAction {
                 Ok(())
             }
             Self::Transact { mutations, .. } if mutations.is_empty() || mutations.len() > 64 => {
-                Err("realm transaction size is out of range")
+                Err("interaction_domain transaction size is out of range")
             }
             Self::Transact { mutations, .. } => {
                 if mutations.iter().any(|mutation| {
                     matches!(
                         mutation,
-                        RealmMutation::SetState {
-                            state: aegis_core::realm::RealmState::Revoked,
+                        InteractionDomainMutation::SetState {
+                            state: aegis_core::interaction_domain::InteractionDomainState::Revoked,
                             ..
                         }
                     )
@@ -582,8 +405,12 @@ impl RealmAction {
                 Ok(())
             }
             Self::Revoke {
-                realm, fallback, ..
-            } if realm == fallback => Err("realm and fallback must differ"),
+                interaction_domain,
+                fallback,
+                ..
+            } if interaction_domain == fallback => {
+                Err("interaction_domain and fallback must differ")
+            }
             Self::Revoke { .. } => Ok(()),
         }
     }
@@ -591,10 +418,16 @@ impl RealmAction {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
-pub enum RealmActionResult {
-    Created { bundle: RealmBundle },
-    TransactionCommitted { receipt: RealmTransactionReceipt },
-    Revoked { receipt: RealmRevocation },
+pub enum InteractionDomainActionResult {
+    Created {
+        bundle: InteractionDomainBundle,
+    },
+    TransactionCommitted {
+        receipt: InteractionDomainTransactionReceipt,
+    },
+    Revoked {
+        receipt: InteractionDomainRevocation,
+    },
 }
 
 /// A mutation the compositor applies on its main loop. Mirrors the operations
@@ -627,17 +460,12 @@ pub enum Command {
         id: WindowId,
         actions: Vec<SyntheticInputAction>,
     },
-    /// Deliver target-local input through the independent seat owned by a
-    /// Realm. The compositor resolves the live seat and rechecks authority at
-    /// apply time; physical desktop focus and chrome are never consulted.
-    InjectRealmInput {
-        realm: RealmId,
-        id: WindowId,
-        actions: Vec<SyntheticInputAction>,
-    },
     /// Launch a desktop entry through a private mount-scoped Wayland portal
     /// and Linux namespace sandbox.
-    LaunchInRealm { realm: RealmId, desktop_id: String },
+    LaunchInInteractionDomain {
+        interaction_domain: InteractionDomainId,
+        desktop_id: String,
+    },
     /// Cycle keyboard focus. `forward = true` for next, `false` for previous. `control`.
     Cycle { forward: bool },
     /// Switch to an adjacent workspace on the focused output. `control`.
@@ -682,35 +510,35 @@ pub enum Command {
 
 impl Command {
     /// The capability a client must hold to issue this command.
-    pub fn required_cap(&self) -> Capabilities {
+    pub fn required_cap(&self) -> ConnectionCapabilities {
         match self {
-            Command::Quit => Capabilities {
+            Command::Quit => ConnectionCapabilities {
                 query: false,
                 control: false,
                 input: false,
                 session: true,
-                realm: false,
+                interaction_domain: false,
             },
-            Command::InjectInput { .. } | Command::InjectRealmInput { .. } => Capabilities {
+            Command::InjectInput { .. } => ConnectionCapabilities {
                 query: false,
                 control: false,
                 input: true,
                 session: false,
-                realm: false,
+                interaction_domain: false,
             },
-            Command::LaunchInRealm { .. } => Capabilities {
+            Command::LaunchInInteractionDomain { .. } => ConnectionCapabilities {
                 query: false,
                 control: false,
                 input: false,
                 session: false,
-                realm: true,
+                interaction_domain: true,
             },
-            _ => Capabilities {
+            _ => ConnectionCapabilities {
                 query: false,
                 control: true,
                 input: false,
                 session: false,
-                realm: false,
+                interaction_domain: false,
             },
         }
     }
@@ -723,6 +551,35 @@ impl Command {
         const MAX_INPUT_ACTIONS: usize = 64;
         const MAX_SCROLL_DELTA: f32 = 1_000.0;
         match self {
+            Command::Notify {
+                summary,
+                body,
+                app_id,
+                external_id,
+            } if summary.trim().is_empty()
+                || summary.len() > 1_024
+                || body.len() > 16_384
+                || app_id.as_ref().is_some_and(|value| value.len() > 512)
+                || external_id.as_ref().is_some_and(|value| value.len() > 512)
+                || summary.contains('\0')
+                || body.contains('\0')
+                || app_id.as_ref().is_some_and(|value| value.contains('\0'))
+                || external_id
+                    .as_ref()
+                    .is_some_and(|value| value.contains('\0')) =>
+            {
+                Err("notification fields are empty, oversized, or contain NUL")
+            }
+            Command::Screenshot { path, .. }
+                if aegis_authority::ActorResource::FilesystemPath {
+                    path: PathBuf::from(path),
+                    access: aegis_authority::FilesystemAccess::Write,
+                }
+                .validate()
+                .is_err() =>
+            {
+                Err("screenshot path must be bounded, absolute, and lexically normalized")
+            }
             Command::SetWindowGeometry { rect, .. }
             | Command::Screenshot {
                 region: Some(rect), ..
@@ -733,12 +590,12 @@ impl Command {
             {
                 Err("geometry size is out of range")
             }
-            Command::InjectInput { actions, .. } | Command::InjectRealmInput { actions, .. }
+            Command::InjectInput { actions, .. }
                 if actions.is_empty() || actions.len() > MAX_INPUT_ACTIONS =>
             {
                 Err("input action count is out of range")
             }
-            Command::InjectInput { actions, .. } | Command::InjectRealmInput { actions, .. } => {
+            Command::InjectInput { actions, .. } => {
                 for action in actions {
                     match *action {
                         SyntheticInputAction::Click { button, .. }
@@ -762,44 +619,49 @@ impl Command {
                 }
                 Ok(())
             }
-            Command::LaunchInRealm { desktop_id, .. }
-                if desktop_id.trim().is_empty() || desktop_id.len() > 512 =>
+            Command::LaunchInInteractionDomain { desktop_id, .. }
+                if desktop_id.trim().is_empty()
+                    || desktop_id.len() > 512
+                    || desktop_id
+                        .chars()
+                        .any(|character| matches!(character, '\0' | '/' | '\\'))
+                    || desktop_id == "."
+                    || desktop_id == ".." =>
             {
-                Err("desktop id length is out of range")
+                Err("desktop id is empty, oversized, or malformed")
             }
             Command::System { action } => action.validate(),
             _ => Ok(()),
         }
     }
 
-    /// The [`OpClass`] this command belongs to, for scope checks (ADR-0034).
-    /// Session commands (Quit) have no OpClass; scope does not apply to them.
-    pub fn op_class(&self) -> OpClass {
+    /// The [`ActorCapability`] this command belongs to, for scope checks (ADR-0034).
+    /// Session commands (Quit) have no ActorCapability; scope does not apply to them.
+    pub fn op_class(&self) -> ActorCapability {
         match self {
-            Command::Focus { .. } => OpClass::Focus,
-            Command::Minimize { .. } => OpClass::Minimize,
-            Command::SetMaximized { .. } => OpClass::SetWindowGeometry,
-            Command::SetAlwaysOnTop { .. } => OpClass::SetWindowGeometry,
-            Command::Close { .. } => OpClass::Close,
-            Command::Move { .. } => OpClass::Move,
-            Command::SetWindowGeometry { .. } => OpClass::SetWindowGeometry,
-            Command::InjectInput { .. } => OpClass::InjectInput,
-            Command::InjectRealmInput { .. } => OpClass::InjectRealmInput,
-            Command::LaunchInRealm { .. } => OpClass::LaunchInRealm,
-            Command::Cycle { .. } => OpClass::Cycle,
-            Command::SwitchWorkspace { .. } => OpClass::SwitchWorkspace,
-            Command::SwitchWorkspaceTo { .. } => OpClass::SwitchWorkspaceTo,
-            Command::MoveToWorkspace { .. } => OpClass::MoveToWorkspace,
-            Command::ToggleTiling => OpClass::ToggleTiling,
-            Command::System { .. } => OpClass::SystemControl,
-            Command::Notify { .. } => OpClass::Notify,
-            Command::DismissNotification { .. } => OpClass::DismissNotification,
+            Command::Focus { .. } => ActorCapability::Focus,
+            Command::Minimize { .. } => ActorCapability::Minimize,
+            Command::SetMaximized { .. } => ActorCapability::SetWindowGeometry,
+            Command::SetAlwaysOnTop { .. } => ActorCapability::SetWindowGeometry,
+            Command::Close { .. } => ActorCapability::Close,
+            Command::Move { .. } => ActorCapability::Move,
+            Command::SetWindowGeometry { .. } => ActorCapability::SetWindowGeometry,
+            Command::InjectInput { .. } => ActorCapability::InjectInput,
+            Command::LaunchInInteractionDomain { .. } => ActorCapability::LaunchInInteractionDomain,
+            Command::Cycle { .. } => ActorCapability::Cycle,
+            Command::SwitchWorkspace { .. } => ActorCapability::SwitchWorkspace,
+            Command::SwitchWorkspaceTo { .. } => ActorCapability::SwitchWorkspaceTo,
+            Command::MoveToWorkspace { .. } => ActorCapability::MoveToWorkspace,
+            Command::ToggleTiling => ActorCapability::ToggleTiling,
+            Command::System { .. } => ActorCapability::SystemControl,
+            Command::Notify { .. } => ActorCapability::Notify,
+            Command::DismissNotification { .. } => ActorCapability::DismissNotification,
             Command::Screenshot {
                 region: Some(_), ..
-            } => OpClass::ScreenshotRegion,
-            Command::Screenshot { region: None, .. } => OpClass::Screenshot,
-            Command::ToggleOverview => OpClass::ToggleOverview,
-            Command::Quit => OpClass::ToggleTiling, // unreachable: scope skips session cmds
+            } => ActorCapability::ScreenshotRegion,
+            Command::Screenshot { region: None, .. } => ActorCapability::Screenshot,
+            Command::ToggleOverview => ActorCapability::ToggleOverview,
+            Command::Quit => ActorCapability::ToggleTiling, // unreachable: scope skips session cmds
         }
     }
 }
@@ -827,21 +689,21 @@ pub enum Event {
     /// A mutation was applied and recorded in the journal (ADR-0033). Pushed
     /// only to connections that sent [`Request::SubscribeJournal`].
     Journal { entry: JournalEntry },
-    /// Realm authority, lifecycle, or presentation changed. Consumers re-query
+    /// Interaction Domain authority, lifecycle, or presentation changed. Consumers re-query
     /// the snapshot and can use `revision` to discard stale state.
-    RealmsChanged { revision: u64 },
+    InteractionDomainsChanged { revision: u64 },
     /// Persistent compositor settings changed. Consumers re-query with
     /// [`Request::GetSettings`] and discard snapshots older than `revision`.
     SettingsChanged { revision: u64 },
     /// Live host or compositor-owned session status changed. Consumers
     /// re-query with [`Request::GetSystemStatus`].
     SystemStatusChanged,
-    /// A Realm-directed scene changed. Damage is expressed in that Realm's
+    /// An Interaction Domain-directed scene changed. Damage is expressed in that Interaction Domain's
     /// virtual-output logical coordinates and is conservative: every changed
     /// pixel is included, but topology changes may invalidate the full output.
-    /// Pixels remain pull-based through `CaptureRealm`.
-    RealmDamaged {
-        realm: RealmId,
+    /// Pixels remain pull-based through `CaptureInteractionDomain`.
+    InteractionDomainDamaged {
+        interaction_domain: InteractionDomainId,
         sequence: u64,
         revision: u64,
         damage: Vec<Rect>,
@@ -962,14 +824,42 @@ pub enum AppPickResult {
 
 /// The outcome of a [`Request::PromptSecret`], delivered as
 /// [`Response::SecretPrompted`]. The value is the user's typed secret (a
-/// password, PIN, …); both ends zeroize their copies after use.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// password, PIN, …). The transport zeroizes its serialization buffers and
+/// the compositor zeroizes its response copy after sending; callers must
+/// zeroize the returned value immediately after use.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
 pub enum SecretPromptResult {
     /// The confirmed secret value.
     Secret { value: String },
     /// The user dismissed the prompt without confirming.
     Cancelled,
+}
+
+impl std::fmt::Debug for SecretPromptResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Secret { .. } => formatter.write_str("SecretPromptResult::Secret([REDACTED])"),
+            Self::Cancelled => formatter.write_str("SecretPromptResult::Cancelled"),
+        }
+    }
+}
+
+impl SecretPromptResult {
+    /// Erase a returned secret in place after its downstream consumer has
+    /// completed.
+    pub fn zeroize(&mut self) {
+        use zeroize::Zeroize as _;
+        if let Self::Secret { value } = self {
+            value.zeroize();
+        }
+    }
+}
+
+impl Drop for SecretPromptResult {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
 }
 
 /// The outcome of a [`Request::PickConfirm`], delivered as
@@ -983,7 +873,7 @@ pub enum ConfirmPickResult {
     Cancelled,
 }
 
-/// One atomic observation of a Realm's directed virtual output.
+/// One atomic observation of an Interaction Domain's directed virtual output.
 ///
 /// `region` and every placement use virtual-output logical coordinates.
 /// `width` and `height` are the encoded PNG's physical-pixel extent after
@@ -991,13 +881,17 @@ pub enum ConfirmPickResult {
 /// `revision` are captured together on the compositor thread, so callers can
 /// safely map a pixel observation back to target-local input coordinates.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RealmCapture {
-    pub realm: RealmId,
+pub struct InteractionDomainCapture {
+    pub interaction_domain: InteractionDomainId,
     pub width: u32,
     pub height: u32,
     pub scale_milli: u32,
     pub region: Rect,
-    pub placements: Vec<RealmWindowPlacement>,
+    pub placements: Vec<InteractionDomainWindowPlacement>,
+    /// Semantic state captured in the same compositor transaction as the
+    /// directed pixels. Its token is bound to the authenticated connection,
+    /// expires quickly, and is consumed by one [`Request::ActInInteractionDomain`].
+    pub observation: SemanticObservation,
     /// Byte length of the sealed PNG memfd sent immediately after this JSON
     /// response through `SCM_RIGHTS`.
     pub png_bytes: u64,
@@ -1009,7 +903,7 @@ pub struct RealmCapture {
 /// requested set, the user approves first contact through the pairing
 /// prompt, and the approved ceiling is enforced server-side on every
 /// request.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AgentHello {
     /// Display label for prompts and the permission manager. Cosmetic only:
     /// it authenticates nothing and the user may rename the principal at any
@@ -1019,18 +913,41 @@ pub struct AgentHello {
     /// The operation families the agent wants to borrow. The compositor
     /// filters this against the agent-requestable set before prompting.
     #[serde(default)]
-    pub requested: Vec<OpClass>,
+    pub requested: Vec<ActorCapability>,
     /// The credential issued at an earlier pairing, if this installation
     /// holds one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
 }
 
+impl std::fmt::Debug for AgentHello {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentHello")
+            .field("label", &self.label)
+            .field("requested", &self.requested)
+            .field(
+                "credential",
+                &self.credential.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
+}
+
+impl Drop for AgentHello {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        if let Some(credential) = &mut self.credential {
+            credential.zeroize();
+        }
+    }
+}
+
 /// The compositor's pairing reply carried on [`Response::Hello`]
 /// (ADR-0088). `credential` is present only when a new principal was issued
 /// during this handshake; the agent must persist it in durable owner-only
 /// storage and present it on every later connection.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AgentIssued {
     /// The opaque principal id this connection is bound to.
     pub principal: String,
@@ -1038,6 +955,28 @@ pub struct AgentIssued {
     /// recognized.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
+}
+
+impl std::fmt::Debug for AgentIssued {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentIssued")
+            .field("principal", &self.principal)
+            .field(
+                "credential",
+                &self.credential.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
+}
+
+impl Drop for AgentIssued {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        if let Some(credential) = &mut self.credential {
+            credential.zeroize();
+        }
+    }
 }
 
 /// A paired agent principal as reported by [`Response::AgentPrincipals`]
@@ -1050,9 +989,9 @@ pub struct AgentPrincipalInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// Ceiling operations usable immediately.
-    pub pregranted: Vec<OpClass>,
+    pub pregranted: Vec<ActorCapability>,
     /// Ceiling operations routed through the interactive runtime grant.
-    pub gated: Vec<OpClass>,
+    pub gated: Vec<ActorCapability>,
     /// Pairing time, unix epoch seconds.
     pub created_at: u64,
 }
@@ -1074,7 +1013,7 @@ pub struct AgentGrantInfo {
     /// The principal the grant belongs to.
     pub principal: String,
     /// The operation family the grant covers.
-    pub op: OpClass,
+    pub op: ActorCapability,
     /// The recorded decision.
     pub decision: AgentGrantDecision,
     /// Decision time, unix epoch seconds.
@@ -1090,7 +1029,7 @@ pub enum Request {
         /// The major protocol version the client speaks.
         version: u32,
         /// The capabilities the client wants.
-        caps: Capabilities,
+        caps: ConnectionCapabilities,
         /// Optional scope name (ADR-0034). Resolved by the server from its
         /// configuration; `None` means unscoped (back-compat).
         #[serde(default)]
@@ -1118,7 +1057,7 @@ pub enum Request {
     /// client detects gaps from evicted entries.
     GetJournal { since: u64 },
     /// Fetch the complete authority snapshot.
-    GetRealms,
+    GetInteractionDomains,
     /// List paired agent principals (ADR-0088). Requires `query`.
     GetAgentPrincipals,
     /// List recorded runtime grants, optionally filtered to one principal
@@ -1141,8 +1080,8 @@ pub enum Request {
     /// live lease.
     SetAgentCeiling {
         principal: String,
-        pregranted: Vec<OpClass>,
-        gated: Vec<OpClass>,
+        pregranted: Vec<ActorCapability>,
+        gated: Vec<ActorCapability>,
     },
     /// Register a principal ahead of time (administrator pre-provisioning).
     /// The reply carries the issued credential to plant in the agent's
@@ -1150,11 +1089,47 @@ pub enum Request {
     RegisterAgent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
-        pregranted: Vec<OpClass>,
-        gated: Vec<OpClass>,
+        pregranted: Vec<ActorCapability>,
+        gated: Vec<ActorCapability>,
     },
     /// Drop one recorded runtime grant. Requires `control` and a live lease.
-    RevokeAgentGrant { principal: String, op: OpClass },
+    RevokeAgentGrant {
+        principal: String,
+        op: ActorCapability,
+    },
+    /// Ask the authority broker for a short-lived, exact resource handle.
+    /// A capability ceiling alone never becomes filesystem, network,
+    /// secret, or payment authority without this session-bound grant.
+    RequestResourceGrant {
+        resource: ActorResource,
+        ttl_ms: u64,
+        uses: u32,
+    },
+    /// Consume one use of an exact resource grant. The expected resource is
+    /// echoed to prevent a leaked opaque id from becoming ambient authority.
+    ConsumeResourceGrant {
+        id: ResourceGrantId,
+        resource: ActorResource,
+    },
+    /// Revoke one resource grant owned by this Actor session.
+    RevokeResourceGrant { id: ResourceGrantId },
+    /// Fetch process-bound windows for the trusted accessibility adapter.
+    /// This is intentionally separate from `GetWindows`: process credentials
+    /// are never general observation data.
+    GetAccessibilityWindows,
+    /// Publish a complete accessibility-tree revision. Requires a paired
+    /// semantic-provider principal with `PublishAccessibilityTree`.
+    PublishAccessibilityTree { update: AccessibilityTreeUpdate },
+    /// Long-poll the next compositor-validated semantic action for this
+    /// provider. D-Bus execution stays in the adapter process.
+    NextAccessibilityAction { timeout_ms: u64 },
+    /// Complete a previously delivered semantic action.
+    CompleteAccessibilityAction {
+        request_id: u64,
+        success: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
     /// Fetch the compositor-owned persistent settings snapshot.
     GetSettings,
     /// Fetch live host and compositor-owned session status.
@@ -1166,8 +1141,8 @@ pub enum Request {
         expected_revision: Option<u64>,
         action: SettingsAction,
     },
-    /// Commit a Realm lifecycle operation and return its receipt.
-    Realm { action: RealmAction },
+    /// Commit an Interaction Domain lifecycle operation and return its receipt.
+    InteractionDomain { action: InteractionDomainAction },
     /// Submit a [`Command`]. Fire-and-forget: the server acknowledges queuing
     /// with [`Response::Ok`], not completion. Requires the command's capability.
     Do { cmd: Command },
@@ -1183,23 +1158,33 @@ pub enum Request {
     /// Capture the focused output as a PNG (M10 pixel capture). The response
     /// metadata is followed by a sealed memfd sent with `SCM_RIGHTS`.
     /// Privacy-sensitive: requires `control`, an explicit
-    /// [`OpClass::CaptureOutput`] entry in a named scope's `ops` (never
+    /// [`ActorCapability::CaptureOutput`] entry in a named scope's `ops` (never
     /// inherited), and is refused while the session is locked.
     /// When `region` is present, only that logical-pixel rectangle is captured.
     CaptureOutput {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         region: Option<Rect>,
     },
-    /// Capture one Realm's directed virtual output. Coordinates are Realm
-    /// logical pixels and never include compositor chrome or another Realm.
-    CaptureRealm {
-        realm: RealmId,
+    /// Capture one Interaction Domain's directed virtual output. Coordinates are Interaction Domain
+    /// logical pixels and never include compositor chrome or another Interaction Domain.
+    CaptureInteractionDomain {
+        interaction_domain: InteractionDomainId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         region: Option<Rect>,
     },
+    /// Read semantic objects for one Interaction Domain without receiving framebuffer
+    /// pixels. The returned observation is a short-lived precondition lease,
+    /// not action authority.
+    ObserveInteractionDomain {
+        interaction_domain: InteractionDomainId,
+    },
+    /// Commit one observation-bound input intent. Unlike [`Request::Do`],
+    /// this waits for main-loop validation and returns an authoritative
+    /// receipt or a refusal; the observation token is single-use.
+    ActInInteractionDomain { intent: ActorActionIntent },
     /// Start a continuous frame stream of the focused output (ADR-0052).
     /// Authorization mirrors [`Request::CaptureOutput`]: `control`, a live
-    /// lease, and an explicit [`OpClass::StreamOutput`] entry in the
+    /// lease, and an explicit [`ActorCapability::StreamOutput`] entry in the
     /// connection's named scope — never inherited. Frames arrive as
     /// [`Event::StreamFrame`] until [`Request::StreamOutputStop`],
     /// disconnect, or [`Event::StreamEnded`]. `max_fps` throttles delivery;
@@ -1218,7 +1203,7 @@ pub enum Request {
     /// Set or clear this connection's global idle inhibitor (the Inhibit
     /// portal, ADR-0075). Authorization mirrors
     /// [`Request::StreamOutputStart`]: `control`, a live lease, and an
-    /// explicit [`OpClass::IdleInhibit`] entry in the connection's named
+    /// explicit [`ActorCapability::IdleInhibit`] entry in the connection's named
     /// scope — never inherited. The inhibitor is surfaceless: while any
     /// connection holds one, idle notifications stay resumed. The server
     /// releases the inhibitor automatically when the owning connection
@@ -1229,7 +1214,7 @@ pub enum Request {
     /// selector opens, and the connection blocks until the user confirms or
     /// cancels (or the compositor's interaction timeout elapses). The user's
     /// choice is the authorization, but the request is still fail-closed:
-    /// `control`, a live lease, and an explicit [`OpClass::PickTarget`]
+    /// `control`, a live lease, and an explicit [`ActorCapability::PickTarget`]
     /// entry in the connection's named scope — never inherited — and it is
     /// refused while the session is locked. One pick at a time compositor-
     /// wide; a concurrent request is refused.
@@ -1253,6 +1238,7 @@ pub enum Request {
     /// [`SecretPromptResult::Secret`]. It uses fail-closed authorization and
     /// permits only one compositor prompt at a time; no capture is involved.
     PromptSecret {
+        resource_grant: ResourceGrantId,
         title: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
@@ -1271,26 +1257,30 @@ pub enum Request {
     /// Wallpaper portal). Decodes on the compositor main loop and swaps
     /// live; the reply is an authoritative receipt, not a queue
     /// acknowledgment. Fail-closed like the picks: `control`, a live lease,
-    /// and an explicit [`OpClass::SetWallpaper`] entry in the connection's
+    /// and an explicit [`ActorCapability::SetWallpaper`] entry in the connection's
     /// named scope — never inherited.
     SetWallpaper { path: PathBuf },
 }
 
 /// A server → client message.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
 pub enum Response {
     /// Handshake reply. Carries the negotiated version and the capabilities
     /// the server actually granted.
     Hello {
         version: u32,
-        caps: Capabilities,
+        caps: ConnectionCapabilities,
         /// The scope the server actually granted (ADR-0034). Unscoped if the
         /// client did not request a scope name.
         #[serde(default = "Scope::unscoped")]
         scope: Scope,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lease: Option<LeaseGrant>,
+        /// Explicit bounded Actor execution context. Unlike durable pairing,
+        /// this session expires and is revoked on disconnect.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<aegis_authority::ActorSessionSnapshot>,
         /// The pairing outcome when the client presented `Hello.agent`
         /// (ADR-0088). Carries a new credential only when one was issued.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1299,6 +1289,10 @@ pub enum Response {
     /// Reply to [`Request::GetWindows`].
     Windows {
         windows: Vec<Window>,
+    },
+    /// Reply to [`Request::GetAccessibilityWindows`].
+    AccessibilityWindows {
+        windows: Vec<AccessibilityWindowBinding>,
     },
     /// Reply to [`Request::GetWorkspaces`].
     Workspaces {
@@ -1316,8 +1310,8 @@ pub enum Response {
     Journal {
         snapshot: JournalSnapshot,
     },
-    Realms {
-        snapshot: RealmSnapshot,
+    InteractionDomains {
+        snapshot: InteractionDomainSnapshot,
     },
     /// Reply to [`Request::GetAgentPrincipals`].
     AgentPrincipals {
@@ -1333,6 +1327,19 @@ pub enum Response {
         principal: String,
         credential: String,
     },
+    ResourceGranted {
+        grant: ResourceGrant,
+    },
+    ResourceGrantConsumed {
+        grant: ResourceGrant,
+    },
+    ResourceGrantRevoked {},
+    AccessibilityTreePublished {},
+    AccessibilityAction {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request: Option<SemanticActionRequest>,
+    },
+    AccessibilityActionCompleted {},
     Settings {
         snapshot: SettingsSnapshot,
     },
@@ -1343,8 +1350,8 @@ pub enum Response {
     SettingsApplied {
         receipt: SettingsReceipt,
     },
-    Realm {
-        result: RealmActionResult,
+    InteractionDomain {
+        result: InteractionDomainActionResult,
     },
     /// Reply to [`Request::CaptureOutput`]: the output's physical size and
     /// length of the sealed PNG memfd that immediately follows it.
@@ -1354,8 +1361,16 @@ pub enum Response {
         /// Byte length of the sealed PNG memfd that follows this metadata.
         png_bytes: u64,
     },
-    CaptureRealm {
-        capture: RealmCapture,
+    CaptureInteractionDomain {
+        capture: InteractionDomainCapture,
+    },
+    /// Reply to [`Request::ObserveInteractionDomain`].
+    InteractionDomainObserved {
+        observation: SemanticObservation,
+    },
+    /// Reply to [`Request::ActInInteractionDomain`].
+    ActorActionCommitted {
+        receipt: ActorActionReceipt,
     },
     /// Reply to [`Request::StreamOutputStart`]: the stream id and the
     /// output's physical size and pixel format at start time.
@@ -1410,759 +1425,73 @@ pub enum Response {
     },
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn request_getwindows_serializes_as_tagged_unit() {
-        let json = serde_json::to_string(&Request::GetWindows).unwrap();
-        assert_eq!(json, r#"{"type":"GetWindows"}"#);
-    }
-
-    #[test]
-    fn hello_round_trips() {
-        let req = Request::Hello {
-            version: PROTOCOL_VERSION,
-            caps: Capabilities {
-                query: true,
-                control: false,
-                input: false,
-                session: true,
-                realm: false,
-            },
-            scope: None,
-            lease: Some(LeaseRequest::default()),
-            agent: None,
+impl std::fmt::Debug for Response {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let variant = match self {
+            Self::Hello { .. } => "Hello",
+            Self::Windows { .. } => "Windows",
+            Self::AccessibilityWindows { .. } => "AccessibilityWindows",
+            Self::Workspaces { .. } => "Workspaces",
+            Self::Notifications { .. } => "Notifications",
+            Self::Outputs { .. } => "Outputs",
+            Self::Journal { .. } => "Journal",
+            Self::InteractionDomains { .. } => "InteractionDomains",
+            Self::AgentPrincipals { .. } => "AgentPrincipals",
+            Self::AgentGrants { .. } => "AgentGrants",
+            Self::AgentRegistered { .. } => "AgentRegistered",
+            Self::ResourceGranted { .. } => "ResourceGranted",
+            Self::ResourceGrantConsumed { .. } => "ResourceGrantConsumed",
+            Self::ResourceGrantRevoked { .. } => "ResourceGrantRevoked",
+            Self::AccessibilityTreePublished { .. } => "AccessibilityTreePublished",
+            Self::AccessibilityAction { .. } => "AccessibilityAction",
+            Self::AccessibilityActionCompleted { .. } => "AccessibilityActionCompleted",
+            Self::Settings { .. } => "Settings",
+            Self::SystemStatus { .. } => "SystemStatus",
+            Self::SettingsApplied { .. } => "SettingsApplied",
+            Self::InteractionDomain { .. } => "InteractionDomain",
+            Self::CaptureOutput { .. } => "CaptureOutput",
+            Self::CaptureInteractionDomain { .. } => "CaptureInteractionDomain",
+            Self::InteractionDomainObserved { .. } => "InteractionDomainObserved",
+            Self::ActorActionCommitted { .. } => "ActorActionCommitted",
+            Self::StreamOutputStarted { .. } => "StreamOutputStarted",
+            Self::StreamOutputStopped { .. } => "StreamOutputStopped",
+            Self::IdleInhibitSet { .. } => "IdleInhibitSet",
+            Self::Picked { .. } => "Picked",
+            Self::AppPicked { .. } => "AppPicked",
+            Self::SecretPrompted { .. } => "SecretPrompted",
+            Self::ConfirmPicked { .. } => "ConfirmPicked",
+            Self::WallpaperSet { .. } => "WallpaperSet",
+            Self::LeaseRenewed { .. } => "LeaseRenewed",
+            Self::Ok => "Ok",
+            Self::Subscribed => "Subscribed",
+            Self::Error { .. } => "Error",
         };
-        let json = serde_json::to_string(&req).unwrap();
-        let back: Request = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, req);
-    }
-
-    #[test]
-    fn hello_with_agent_declaration_round_trips() {
-        let req = Request::Hello {
-            version: PROTOCOL_VERSION,
-            caps: Capabilities::QUERY,
-            scope: None,
-            lease: None,
-            agent: Some(AgentHello {
-                label: Some("Codex".into()),
-                requested: vec![OpClass::Focus, OpClass::CaptureRealm],
-                credential: Some("cred".into()),
-            }),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        let back: Request = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, req);
-    }
-
-    #[test]
-    fn response_hello_carries_pairing_outcome_only_when_present() {
-        let bare = Response::Hello {
-            version: PROTOCOL_VERSION,
-            caps: Capabilities::QUERY,
-            scope: Scope::unscoped(),
-            lease: None,
-            agent: None,
-        };
-        assert!(
-            serde_json::to_value(&bare).unwrap().get("agent").is_none(),
-            "absent pairing stays off the wire"
-        );
-        let paired = Response::Hello {
-            version: PROTOCOL_VERSION,
-            caps: Capabilities::QUERY,
-            scope: Scope::unscoped(),
-            lease: None,
-            agent: Some(AgentIssued {
-                principal: "prin_1".into(),
-                credential: Some("cred".into()),
-            }),
-        };
-        let json = serde_json::to_string(&paired).unwrap();
-        let back: Response = serde_json::from_str(&json).unwrap();
-        assert_eq!(
-            serde_json::to_value(back).unwrap(),
-            serde_json::to_value(&paired).unwrap(),
-            "pairing outcome round-trips"
-        );
-    }
-
-    #[test]
-    fn caps_intersect_and_force_query() {
-        let client = Capabilities {
-            query: true,
-            control: true,
-            input: true,
-            session: true,
-            realm: true,
-        };
-        let policy = Capabilities::QUERY; // query only
-        let granted = policy.intersect(client).with_query_always();
-        assert!(granted.query);
-        assert!(!granted.control);
-        assert!(!granted.input);
-        assert!(!granted.session);
-    }
-
-    #[test]
-    fn capabilities_from_older_v2_peer_default_input_off() {
-        let caps: Capabilities =
-            serde_json::from_str(r#"{"query":true,"control":true,"session":false}"#).unwrap();
-        assert!(caps.query);
-        assert!(caps.control);
-        assert!(!caps.input);
-    }
-
-    #[test]
-    fn windows_response_round_trips_with_a_window() {
-        let mut w = Window::new(WindowId(42));
-        w.title = Some("demo".into());
-        w.app_id = Some("org.example.app".into());
-        w.state.activated = true;
-        let resp = Response::Windows { windows: vec![w] };
-        let json = serde_json::to_string(&resp).unwrap();
-        let back: Response = serde_json::from_str(&json).unwrap();
-        match back {
-            Response::Windows { windows } => {
-                assert_eq!(windows.len(), 1);
-                assert_eq!(windows[0].id, WindowId(42));
-                assert_eq!(windows[0].title.as_deref(), Some("demo"));
-                assert!(windows[0].state.activated);
-            }
-            _ => panic!("expected Windows"),
-        }
-    }
-
-    #[test]
-    fn command_round_trips_and_tags() {
-        let cmd = Command::Close { id: WindowId(7) };
-        let json = serde_json::to_string(&cmd).unwrap();
-        assert!(json.contains(r#""type":"Close""#), "{json}");
-        assert!(json.contains(r#""id":7"#), "{json}");
-        let back: Command = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, cmd);
-    }
-
-    #[test]
-    fn minimize_command_round_trips_and_is_window_scoped() {
-        let cmd = Command::Minimize { id: WindowId(9) };
-        let json = serde_json::to_string(&cmd).unwrap();
-        assert_eq!(json, r#"{"type":"Minimize","id":9}"#);
-        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
-
-        let scope = Scope {
-            windows: Some(vec![WindowId(9)]),
-            ops: Some(vec![OpClass::Minimize]),
-            ..Scope::default()
-        };
-        assert!(scope.permits(&cmd));
-        assert!(!scope.permits(&Command::Minimize { id: WindowId(10) }));
-    }
-
-    #[test]
-    fn geometry_command_is_control_scoped_and_validated() {
-        let cmd = Command::SetWindowGeometry {
-            id: WindowId(9),
-            rect: Rect::new(10, 20, 800, 600),
-        };
-        let json = serde_json::to_string(&cmd).unwrap();
-        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
-        assert!(cmd.required_cap().control);
-        assert!(cmd.validate().is_ok());
-        assert!(
-            Command::SetWindowGeometry {
-                id: WindowId(9),
-                rect: Rect::new(0, 0, 0, 600),
-            }
-            .validate()
-            .is_err()
-        );
-
-        let scope = Scope {
-            windows: Some(vec![WindowId(9)]),
-            ops: Some(vec![OpClass::SetWindowGeometry]),
-            ..Scope::default()
-        };
-        assert!(scope.permits(&cmd));
-    }
-
-    #[test]
-    fn synthetic_input_is_separately_capability_and_window_scoped() {
-        let cmd = Command::InjectInput {
-            id: WindowId(9),
-            actions: vec![SyntheticInputAction::Click {
-                position: aegis_core::Point { x: 20, y: 30 },
-                button: 0x110,
-            }],
-        };
-        let json = serde_json::to_string(&cmd).unwrap();
-        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
-        let cap = cmd.required_cap();
-        assert!(cap.input);
-        assert!(!cap.control);
-        assert!(cmd.validate().is_ok());
-
-        let scope = Scope {
-            windows: Some(vec![WindowId(9)]),
-            ops: Some(vec![OpClass::InjectInput]),
-            ..Scope::default()
-        };
-        assert!(scope.permits(&cmd));
-        assert!(!scope.permits(&Command::InjectInput {
-            id: WindowId(10),
-            actions: vec![SyntheticInputAction::KeyPress { code: 30 }],
-        }));
-        assert!(
-            Command::InjectInput {
-                id: WindowId(9),
-                actions: vec![],
-            }
-            .validate()
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn required_cap_separates_control_and_session() {
-        assert!(Command::Focus { id: WindowId(1) }.required_cap().control);
-        assert!(Command::Cycle { forward: true }.required_cap().control);
-        assert!(Command::Quit.required_cap().session);
-        assert!(!Command::Quit.required_cap().control);
-        assert!(
-            Command::InjectInput {
-                id: WindowId(1),
-                actions: vec![SyntheticInputAction::KeyPress { code: 30 }],
-            }
-            .required_cap()
-            .input
-        );
-    }
-
-    #[test]
-    fn event_serializes_as_tagged_unit() {
-        let json = serde_json::to_string(&Event::WindowsChanged).unwrap();
-        assert_eq!(json, r#"{"type":"WindowsChanged"}"#);
-        let back: Event = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, Event::WindowsChanged);
-    }
-
-    #[test]
-    fn space_use_event_preserves_maximized_and_fullscreen() {
-        let maximized = Event::SpaceUseChanged {
-            state: SpaceUse::Maximized,
-        };
-        let fullscreen = Event::SpaceUseChanged {
-            state: SpaceUse::Fullscreen,
-        };
-        let maximized_json = serde_json::to_string(&maximized).unwrap();
-        let fullscreen_json = serde_json::to_string(&fullscreen).unwrap();
-        assert!(maximized_json.contains(r#""state":"maximized""#));
-        assert!(fullscreen_json.contains(r#""state":"fullscreen""#));
-        assert_ne!(maximized_json, fullscreen_json);
-        assert_eq!(
-            serde_json::from_str::<Event>(&fullscreen_json).unwrap(),
-            fullscreen
-        );
-    }
-
-    #[test]
-    fn set_maximized_command_round_trips_and_uses_geometry_authority() {
-        let command = Command::SetMaximized {
-            id: WindowId(42),
-            maximized: true,
-        };
-        let json = serde_json::to_string(&command).unwrap();
-        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), command);
-        assert_eq!(command.op_class(), OpClass::SetWindowGeometry);
-        assert!(command.required_cap().control);
-    }
-
-    #[test]
-    fn switch_workspace_command_round_trips() {
-        // A nested internally-tagged enum (Command variant carrying `Switch`).
-        let cmd = Command::SwitchWorkspace { dir: Switch::Next };
-        let json = serde_json::to_string(&cmd).unwrap();
-        assert!(json.contains(r#""type":"SwitchWorkspace""#), "{json}");
-        assert!(json.contains(r#""dir":{"type":"Next"}"#), "{json}");
-        let back: Command = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, cmd);
-    }
-
-    #[test]
-    fn toggle_tiling_command_round_trips() {
-        let json = serde_json::to_string(&Command::ToggleTiling).unwrap();
-        assert_eq!(json, r#"{"type":"ToggleTiling"}"#);
-        assert_eq!(
-            serde_json::from_str::<Command>(&json).unwrap(),
-            Command::ToggleTiling
-        );
-        assert!(Command::ToggleTiling.required_cap().control);
-    }
-
-    #[test]
-    fn system_control_command_has_a_stable_tagged_shape() {
-        let cmd = Command::System {
-            action: SystemAction::SetVolume { level: 55 },
-        };
-        let json = serde_json::to_string(&cmd).unwrap();
-        assert_eq!(
-            json,
-            r#"{"type":"System","action":{"type":"SetVolume","level":55}}"#
-        );
-        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
-        assert_eq!(cmd.op_class(), OpClass::SystemControl);
-        assert!(cmd.required_cap().control);
-        assert!(cmd.validate().is_ok());
-    }
-
-    #[test]
-    fn output_power_command_has_a_stable_tagged_shape() {
-        let cmd = Command::System {
-            action: SystemAction::SetOutputPower { powered: false },
-        };
-        let json = serde_json::to_string(&cmd).unwrap();
-        assert_eq!(
-            json,
-            r#"{"type":"System","action":{"type":"SetOutputPower","powered":false}}"#
-        );
-        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
-        assert!(cmd.required_cap().control);
-    }
-
-    #[test]
-    fn move_to_workspace_command_round_trips() {
-        let cmd = Command::MoveToWorkspace {
-            window: WindowId(42),
-            workspace: WorkspaceId(3),
-        };
-        let json = serde_json::to_string(&cmd).unwrap();
-        assert!(json.contains(r#""type":"MoveToWorkspace""#), "{json}");
-        assert!(
-            json.contains(r#""window":42"#) && json.contains(r#""workspace":3"#),
-            "{json}"
-        );
-        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
-        assert!(cmd.required_cap().control);
-    }
-
-    #[test]
-    fn dismiss_notification_command_round_trips() {
-        let cmd = Command::DismissNotification { id: 7 };
-        let json = serde_json::to_string(&cmd).unwrap();
-        assert_eq!(json, r#"{"type":"DismissNotification","id":7}"#);
-        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
-        assert!(cmd.required_cap().control);
-    }
-
-    #[test]
-    fn unscoped_scope_permits_everything() {
-        let s = Scope::unscoped();
-        assert!(s.permits(&Command::Focus { id: WindowId(1) }));
-        assert!(s.permits(&Command::Close { id: WindowId(99) }));
-        assert!(s.permits(&Command::Quit));
-        assert!(!s.permits(&Command::InjectInput {
-            id: WindowId(1),
-            actions: vec![SyntheticInputAction::KeyPress { code: 30 }],
-        }));
-    }
-
-    #[test]
-    fn scoped_ops_reject_unlisted_commands() {
-        let s = Scope {
-            ops: Some(vec![OpClass::Focus]),
-            ..Scope::default()
-        };
-        assert!(s.permits(&Command::Focus { id: WindowId(1) }));
-        assert!(!s.permits(&Command::Close { id: WindowId(1) }));
-    }
-
-    #[test]
-    fn scope_ask_ops_serialize_only_when_present() {
-        let with_ask = Scope {
-            ask_ops: Some(vec![OpClass::Close]),
-            ..Scope::default()
-        };
-        let json = serde_json::to_value(&with_ask).unwrap();
-        assert_eq!(json["ask_ops"], serde_json::json!([{ "type": "Close" }]));
-        assert_eq!(
-            serde_json::from_value::<Scope>(json).unwrap(),
-            with_ask,
-            "ask_ops round-trips"
-        );
-        assert!(
-            serde_json::to_value(Scope::default())
-                .unwrap()
-                .get("ask_ops")
-                .is_none(),
-            "absent ask_ops stays off the wire"
-        );
-    }
-
-    #[test]
-    fn ask_ops_make_unlisted_commands_requestable_not_permitted() {
-        let s = Scope {
-            ops: Some(vec![OpClass::Focus]),
-            ask_ops: Some(vec![OpClass::Close]),
-            ..Scope::default()
-        };
-        let close = Command::Close { id: WindowId(1) };
-        assert!(!s.permits(&close), "an ask entry never pre-grants");
-        assert_eq!(s.decide_command(&close), ScopeDecision::Ask(OpClass::Close));
-        assert_eq!(
-            s.decide_command(&Command::Focus { id: WindowId(1) }),
-            ScopeDecision::Permit
-        );
-        assert_eq!(
-            s.decide_command(&Command::Minimize { id: WindowId(1) }),
-            ScopeDecision::Deny,
-            "neither ops nor ask_ops names Minimize"
-        );
-    }
-
-    #[test]
-    fn ask_decision_still_enforces_resource_allowlists() {
-        let s = Scope {
-            windows: Some(vec![WindowId(1)]),
-            ops: Some(vec![OpClass::Focus]),
-            ask_ops: Some(vec![OpClass::Close]),
-            ..Scope::default()
-        };
-        assert_eq!(
-            s.decide_command(&Command::Close { id: WindowId(1) }),
-            ScopeDecision::Ask(OpClass::Close)
-        );
-        assert_eq!(
-            s.decide_command(&Command::Close { id: WindowId(9) }),
-            ScopeDecision::Deny,
-            "a window outside the allowlist is outside the ask ceiling"
-        );
-    }
-
-    #[test]
-    fn unscoped_scope_never_asks() {
-        let s = Scope::unscoped();
-        assert!(!s.asks(OpClass::Close));
-        assert_eq!(
-            s.decide_command(&Command::InjectRealmInput {
-                realm: RealmId(2),
-                id: WindowId(1),
-                actions: vec![],
-            }),
-            ScopeDecision::Deny,
-            "high-risk input stays fail-closed and never becomes askable"
-        );
-        assert_eq!(s.decide_realm_capture(RealmId(2)), ScopeDecision::Deny);
-    }
-
-    #[test]
-    fn realm_action_and_capture_have_ask_decisions() {
-        let s = Scope {
-            ask_ops: Some(vec![OpClass::TransactRealm, OpClass::CaptureRealm]),
-            ..Scope::default()
-        };
-        let transact = RealmAction::Transact {
-            expected_revision: None,
-            mutations: vec![RealmMutation::SetState {
-                realm: RealmId(2),
-                state: aegis_core::realm::RealmState::Paused,
-            }],
-        };
-        assert!(!s.permits_realm_action(&transact));
-        assert_eq!(
-            s.decide_realm_action(&transact),
-            ScopeDecision::Ask(OpClass::TransactRealm)
-        );
-        assert_eq!(
-            s.decide_realm_capture(RealmId(2)),
-            ScopeDecision::Ask(OpClass::CaptureRealm)
-        );
-        let create = RealmAction::Create {
-            label: "agent".into(),
-            capabilities: SeatCapabilities::POINTER_KEYBOARD,
-            output: None,
-        };
-        assert_eq!(
-            s.decide_realm_action(&create),
-            ScopeDecision::Deny,
-            "CreateRealm is in neither ops nor ask_ops"
-        );
-    }
-
-    #[test]
-    fn scoped_windows_enforce_allowlist() {
-        let s = Scope {
-            windows: Some(vec![WindowId(1), WindowId(2)]),
-            ..Scope::default()
-        };
-        assert!(s.permits(&Command::Focus { id: WindowId(1) }));
-        assert!(s.permits(&Command::Focus { id: WindowId(2) }));
-        assert!(!s.permits(&Command::Focus { id: WindowId(3) }));
-    }
-
-    #[test]
-    fn session_commands_bypass_scope() {
-        let s = Scope {
-            ops: Some(vec![]),
-            ..Scope::default()
-        };
-        assert!(s.permits(&Command::Quit), "Quit is session-level");
-    }
-
-    #[test]
-    fn move_to_workspace_checks_both_window_and_workspace() {
-        let s = Scope {
-            windows: Some(vec![WindowId(1)]),
-            workspaces: Some(vec![WorkspaceId(2)]),
-            ..Scope::default()
-        };
-        assert!(s.permits(&Command::MoveToWorkspace {
-            window: WindowId(1),
-            workspace: WorkspaceId(2)
-        }));
-        assert!(!s.permits(&Command::MoveToWorkspace {
-            window: WindowId(1),
-            workspace: WorkspaceId(3)
-        }));
-        assert!(!s.permits(&Command::MoveToWorkspace {
-            window: WindowId(9),
-            workspace: WorkspaceId(2)
-        }));
-    }
-
-    #[test]
-    fn screenshot_command_op_class_depends_on_region_presence() {
-        let full = Command::Screenshot {
-            path: "a.png".into(),
-            region: None,
-        };
-        let region = Command::Screenshot {
-            path: "b.png".into(),
-            region: Some(Rect::new(10, 20, 100, 80)),
-        };
-        assert_eq!(full.op_class(), OpClass::Screenshot);
-        assert_eq!(region.op_class(), OpClass::ScreenshotRegion);
-
-        let full_scope = Scope {
-            ops: Some(vec![OpClass::Screenshot]),
-            ..Scope::default()
-        };
-        let region_scope = Scope {
-            ops: Some(vec![OpClass::ScreenshotRegion]),
-            ..Scope::default()
-        };
-        assert!(full_scope.permits(&full));
-        assert!(!full_scope.permits(&region));
-        assert!(region_scope.permits(&region));
-        assert!(!region_scope.permits(&full));
-    }
-
-    #[test]
-    fn capture_output_request_round_trips_with_optional_region() {
-        let req = Request::CaptureOutput {
-            region: Some(Rect::new(10, 20, 100, 80)),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("\"region\""), "{json}");
-        let back: Request = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, req);
-
-        let default: Request = serde_json::from_str(r#"{"type":"CaptureOutput"}"#).unwrap();
-        assert_eq!(default, Request::CaptureOutput { region: None });
-    }
-
-    #[test]
-    fn realm_capture_response_round_trips_correlated_layout_metadata() {
-        let capture = RealmCapture {
-            realm: RealmId(7),
-            width: 500,
-            height: 250,
-            scale_milli: 1250,
-            region: Rect::new(100, 50, 400, 200),
-            placements: vec![RealmWindowPlacement {
-                window: WindowId(42),
-                output_rect: Rect::new(120, 70, 300, 150),
-                surface_size: aegis_core::Size { w: 900, h: 450 },
-            }],
-            png_bytes: 3,
-            revision: 19,
-        };
-        let json =
-            serde_json::to_string(&Response::CaptureRealm { capture }).expect("serialize capture");
-        let decoded: Response = serde_json::from_str(&json).expect("deserialize capture");
-        let Response::CaptureRealm { capture } = decoded else {
-            panic!("expected Realm capture response");
-        };
-        assert_eq!(capture.realm, RealmId(7));
-        assert_eq!(capture.region, Rect::new(100, 50, 400, 200));
-        assert_eq!(capture.placements[0].window, WindowId(42));
-        assert_eq!(
-            capture.placements[0].surface_size,
-            aegis_core::Size { w: 900, h: 450 }
-        );
-        assert_eq!(capture.revision, 19);
-    }
-
-    #[test]
-    fn hello_with_scope_name_round_trips() {
-        let req = Request::Hello {
-            version: PROTOCOL_VERSION,
-            caps: Capabilities::QUERY,
-            scope: Some("browser-helper".into()),
-            lease: None,
-            agent: None,
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        let back: Request = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, req);
-    }
-
-    #[test]
-    fn stream_output_start_round_trips_with_optional_max_fps() {
-        let with_fps = Request::StreamOutputStart {
-            max_fps: Some(60),
-            target: StreamTarget::Output,
-        };
-        let json = serde_json::to_string(&with_fps).unwrap();
-        assert!(json.contains(r#""type":"StreamOutputStart""#), "{json}");
-        assert!(json.contains(r#""max_fps":60"#), "{json}");
-        assert!(
-            !json.contains("target"),
-            "default target is skipped: {json}"
-        );
-        assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), with_fps);
-
-        let default: Request = serde_json::from_str(r#"{"type":"StreamOutputStart"}"#).unwrap();
-        assert_eq!(
-            default,
-            Request::StreamOutputStart {
-                max_fps: None,
-                target: StreamTarget::Output
-            }
-        );
-    }
-
-    #[test]
-    fn stream_output_start_round_trips_a_window_target() {
-        let req = Request::StreamOutputStart {
-            max_fps: None,
-            target: StreamTarget::Window {
-                window: WindowId(7),
-            },
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(
-            json.contains(r#""target":{"type":"Window","window":7}"#),
-            "{json}"
-        );
-        assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
-    }
-
-    #[test]
-    fn pick_target_round_trips_all_kinds_and_results() {
-        for kind in [PickKind::Region, PickKind::Pixel, PickKind::Window] {
-            let req = Request::PickTarget { kind };
-            let json = serde_json::to_string(&req).unwrap();
-            assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
-        }
-        for result in [
-            PickResult::Region {
-                rect: Rect::new(10, 20, 300, 200),
-            },
-            PickResult::Pixel {
-                point: aegis_core::Point { x: 4, y: 8 },
-                rgb: [255, 128, 0],
-            },
-            PickResult::Window { id: WindowId(3) },
-            PickResult::Output,
-            PickResult::Cancelled,
-        ] {
-            let resp = Response::Picked { result };
-            let json = serde_json::to_string(&resp).unwrap();
-            match serde_json::from_str::<Response>(&json).unwrap() {
-                Response::Picked { result: back } => assert_eq!(back, result),
-                other => panic!("expected Picked, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn stream_output_stop_round_trips() {
-        let req = Request::StreamOutputStop { stream_id: 9 };
-        let json = serde_json::to_string(&req).unwrap();
-        assert_eq!(json, r#"{"type":"StreamOutputStop","stream_id":9}"#);
-        assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
-    }
-
-    #[test]
-    fn set_idle_inhibit_round_trips() {
-        let req = Request::SetIdleInhibit { inhibit: true };
-        let json = serde_json::to_string(&req).unwrap();
-        assert_eq!(json, r#"{"type":"SetIdleInhibit","inhibit":true}"#);
-        assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
-
-        let resp = Response::IdleInhibitSet { inhibited: false };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert_eq!(json, r#"{"type":"IdleInhibitSet","inhibited":false}"#);
-        match serde_json::from_str::<Response>(&json).unwrap() {
-            Response::IdleInhibitSet { inhibited } => assert!(!inhibited),
-            other => panic!("expected IdleInhibitSet, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stream_output_started_response_round_trips() {
-        let resp = Response::StreamOutputStarted {
-            stream_id: 3,
-            width: 1920,
-            height: 1080,
-            format: StreamPixelFormat::Bgra8,
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains(r#""format":{"type":"Bgra8"}"#), "{json}");
-        let back: Response = serde_json::from_str(&json).unwrap();
-        match back {
-            Response::StreamOutputStarted {
-                stream_id,
-                width,
-                height,
-                format,
-            } => {
-                assert_eq!((stream_id, width, height), (3, 1920, 1080));
-                assert_eq!(format, StreamPixelFormat::Bgra8);
-            }
-            other => panic!("expected StreamOutputStarted, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stream_frame_event_round_trips_with_metadata() {
-        let event = Event::StreamFrame {
-            stream_id: 1,
-            sequence: 42,
-            width: 640,
-            height: 480,
-            stride: 2560,
-            format: StreamPixelFormat::Bgra8,
-            damage: vec![Rect::new(0, 0, 640, 480)],
-            dropped: 7,
-            byte_len: 640 * 480 * 4,
-        };
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains(r#""sequence":42"#), "{json}");
-        assert!(json.contains(r#""dropped":7"#), "{json}");
-        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event);
-    }
-
-    #[test]
-    fn stream_ended_event_round_trips() {
-        let event = Event::StreamEnded {
-            stream_id: 5,
-            reason: "scope revoked".into(),
-        };
-        let json = serde_json::to_string(&event).unwrap();
-        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event);
+        formatter.write_str(variant)
     }
 }
+
+impl Response {
+    /// Erase credentials and secrets retained by the sending side after the
+    /// framed response has been serialized. Public clients still own any
+    /// credential or secret they deliberately extract from a received
+    /// response and must store or consume it under their own secret policy.
+    pub fn zeroize_sensitive(&mut self) {
+        use zeroize::Zeroize as _;
+        match self {
+            Self::Hello {
+                agent:
+                    Some(AgentIssued {
+                        credential: Some(credential),
+                        ..
+                    }),
+                ..
+            }
+            | Self::AgentRegistered { credential, .. } => credential.zeroize(),
+            Self::SecretPrompted { result } => result.zeroize(),
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

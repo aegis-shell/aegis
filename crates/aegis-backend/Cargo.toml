@@ -10,7 +10,7 @@ build = "build.rs"
 
 [dependencies]
 aegis-core = { workspace = true }
-aegis-protocols = { workspace = true }
+aegis-wayland-protocols = { workspace = true }
 flux = { workspace = true }
 flux-sys = { workspace = true }
 ash = "0.38"

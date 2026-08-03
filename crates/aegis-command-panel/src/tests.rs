@@ -219,57 +219,57 @@ fn stagger_delays_the_content_panel_behind_the_menu() {
 }
 
 #[test]
-fn agent_workspace_row_tracks_aggregate_realm_state() {
+fn agent_workspace_row_tracks_aggregate_interaction_domain_state() {
     let i18n = Localizer::new("en-US");
-    let mut model = aegis_core::realm::RealmModel::new();
+    let mut model = aegis_core::interaction_domain::InteractionDomainModel::new();
     let indicator = agent_workspace_indicator(&model.snapshot(), &i18n);
     assert_eq!(indicator.state, AgentWorkspaceState::Idle);
     assert_eq!(indicator.label, "Agent Workspaces");
 
-    let bundle = model.create_agent_realm("Fuji", Default::default());
+    let bundle = model.create_agent_interaction_domain("Fuji", Default::default());
     let mut snapshot = model.snapshot();
     let indicator = agent_workspace_indicator(&snapshot, &i18n);
     assert_eq!(indicator.state, AgentWorkspaceState::Active);
     assert_eq!(indicator.label, "Fuji · Active");
 
     snapshot
-        .realms
+        .interaction_domains
         .iter_mut()
-        .find(|realm| realm.id == bundle.realm)
-        .expect("agent Realm")
-        .state = RealmState::Paused;
+        .find(|interaction_domain| interaction_domain.id == bundle.interaction_domain)
+        .expect("agent InteractionDomain")
+        .state = InteractionDomainState::Paused;
     let indicator = agent_workspace_indicator(&snapshot, &i18n);
     assert_eq!(indicator.state, AgentWorkspaceState::Paused);
     assert_eq!(indicator.label, "Fuji · Paused");
 
-    let research = model.create_agent_realm("Research Agent", Default::default());
+    let research = model.create_agent_interaction_domain("Research Agent", Default::default());
     let mut snapshot = model.snapshot();
     snapshot
-        .realms
+        .interaction_domains
         .iter_mut()
-        .find(|realm| realm.id == bundle.realm)
-        .expect("agent Realm")
-        .state = RealmState::Paused;
+        .find(|interaction_domain| interaction_domain.id == bundle.interaction_domain)
+        .expect("agent InteractionDomain")
+        .state = InteractionDomainState::Paused;
     let indicator = agent_workspace_indicator(&snapshot, &i18n);
     assert_eq!(indicator.state, AgentWorkspaceState::PartiallyPaused);
     assert_eq!(indicator.label, "2 workspaces · Partially paused");
 
     snapshot
-        .realms
+        .interaction_domains
         .iter_mut()
-        .find(|realm| realm.id == research.realm)
-        .expect("second agent Realm")
-        .state = RealmState::Paused;
+        .find(|interaction_domain| interaction_domain.id == research.interaction_domain)
+        .expect("second agent InteractionDomain")
+        .state = InteractionDomainState::Paused;
     let indicator = agent_workspace_indicator(&snapshot, &i18n);
     assert_eq!(indicator.state, AgentWorkspaceState::Paused);
     assert_eq!(indicator.label, "2 workspaces · Paused");
 
-    for realm in snapshot
-        .realms
+    for interaction_domain in snapshot
+        .interaction_domains
         .iter_mut()
-        .filter(|realm| realm.kind == RealmKind::Agent)
+        .filter(|interaction_domain| interaction_domain.kind == InteractionDomainKind::Agent)
     {
-        realm.state = RealmState::Revoked;
+        interaction_domain.state = InteractionDomainState::Revoked;
     }
     let indicator = agent_workspace_indicator(&snapshot, &i18n);
     assert_eq!(indicator.state, AgentWorkspaceState::Idle);

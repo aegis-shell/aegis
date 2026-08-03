@@ -40,15 +40,18 @@ backend, renderer, and shell behind clear seams so the
 
 | Role | Crate | Responsibility |
 |------|-------|----------------|
-| **Model** | `aegis-core` | Backend- and renderer-agnostic model: geometry, surface graph, outputs, Realms, seats, and interaction authority |
-| | `aegis-protocols` | Wayland extension interface tables, generated once and shared |
-| **Server / window management** | `aegis-compositor` | Hand-rolled Wayland server: globals, protocol object lifecycle, per-Realm seats and outputs, focus, authority transfer, tiling, and workspaces |
+| **Model** | `aegis-core` | Backend- and renderer-agnostic model: geometry, surface graph, outputs, Interaction Domains, seats, and interaction authority |
+| | `aegis-authority` | Transport-neutral Actor capabilities, live identity bindings, semantic observation leases, and action precondition validation |
+| | `aegis-semantic` | Bounded accessibility-tree validation, window-local identity namespacing, provider ownership, and semantic action routing |
+| | `aegis-audit` | Transport-independent bounded projection plus owner-only, hash-chained durable event persistence |
+| | `aegis-wayland-protocols` | Wayland extension interface tables, generated once and shared |
+| **Server / window management** | `aegis-compositor` | Hand-rolled Wayland server: globals, protocol object lifecycle, per-Interaction Domain seats and outputs, focus, authority transfer, tiling, and workspaces |
 | | `aegis-backend` | Presentation and input targets: nested (development) and DRM/KMS + libinput + libseat (bare TTY) |
 | | `aegis-render` | Compositing: client buffers to flux textures, scene to the output via flux |
 | **Shell / interaction** | `aegis-shell` | Compositor chrome host and `Chrome` contract on lens, plus shared components: launcher, overview, screenshot selector, toast |
 | | `aegis-design` | Product design tokens, themes, and data-only surface materials shared by chrome components |
 | | `aegis-dock` | Bottom-center dock chrome component: pinned and running apps, magnification, pin actions |
-| | `aegis-ai-workspaces` | Compositor-owned Agent Realm lifecycle and authority management |
+| | `aegis-interaction-manager` | Compositor-owned Agent Interaction Domain lifecycle and authority management |
 | | `aegis-settings` | Standalone modular System Settings application |
 | | `aegis-hud` | Display-only HUD status chips: system status, workspace dots, clock, notification count, and the StatusNotifierItem tray row |
 | | `aegis-command-panel` | Full-screen modal command panel: quick settings, tray activation, and notification dismissal |
@@ -57,11 +60,12 @@ backend, renderer, and shell behind clear seams so the
 | | `aegis-config` | Declarative configuration: versioned TOML schema, loader, live reload |
 | **Session services** | `aegis-lock` | Multi-output session-lock presentation and PAM authentication |
 | | `aegis-idle` | Ordered inactivity policy, lock-before-sleep coordination, and display-power requests |
+| | `aegis-atspi` | Supervised out-of-process AT-SPI tree and semantic-action adapter with a session-only system principal |
 | **Convenience channels** | `aegis-desktop-entries` | freedesktop.org desktop-entry enumeration and icon-theme lookup |
-| | `aegis-launcher` | Ordinary app detachment and fail-closed Realm namespace/cgroup launch |
-| | `aegis-ipc` | Native capability broker contract: versioned identity, scopes, leases, Realm authority, sealed capture transport, and introspection over a Unix socket |
+| | `aegis-launcher` | Ordinary app detachment and fail-closed Interaction Domain namespace/cgroup launch |
+| | `aegis-ipc` | Native capability broker contract: versioned identity, scopes, leases, Interaction Domain authority, sealed capture transport, and introspection over a Unix socket |
 | | `aegis-commands` | Domain-oriented parser and IPC dispatcher behind native `aegis` management commands |
-| **AI integration** | `aegis-mcp` | Stateless MCP `2026-07-28` adapter over the native broker, with one subject-bound Agent Realm per connector instance (ADR-0090) |
+| **AI integration** | `aegis-mcp` | Stateless MCP `2026-07-28` adapter over the native broker, with one subject-bound Agent Interaction Domain per connector instance (ADR-0090) |
 | | `aegis-agent` | Aegis agent runtime: providers, agent loop, tools, MCP client, sessions, skills, permissions (Persona: fuji) |
 
 | **Binary** | `aegis` | The binary: wires the parts together and runs the event loop |
@@ -82,7 +86,45 @@ through `pkg-config`; binding sources come from a locked release by default.
 See
 [ADR-0071](../adr/0071-worktree-isolated-cross-repository-development.md).
 
-### Naming note: where the "user-facing" logic lives
+## Actor Boundary
+
+Agent support is an authority projection across existing compositor domains,
+not an Agent runtime inside the shell:
+
+```text
+Wayland compositor
+└── native capability broker
+    ├── human Actor context
+    └── Agent Actor context
+        ├── identity: authenticated principal + bounded Actor session
+        ├── capability: independent operations + exact resource grants
+        ├── view/input: Interaction Domain output + independent seat + authority
+        ├── observation: filtered semantic snapshot + single-use token
+        └── storage/network: isolated sandbox + grant-consuming brokers
+```
+
+`aegis-core` owns durable semantic and Interaction Domain models;
+`aegis-authority` owns Actor sessions, capabilities, resource grants,
+observation leases, and transaction preconditions; `aegis-semantic` validates
+untrusted application accessibility trees; `aegis-ipc` carries those
+contracts; and `aegis-compositor` derives the view and routes each independent
+seat. The binary runtime assembles and revokes the live facets, while
+`aegis-audit` persists privacy-minimized decisions. `aegis-atspi` performs
+D-Bus/toolkit work outside the compositor and rechecks target state
+immediately before dispatch. It binds AT-SPI applications to Wayland windows
+by equal kernel/D-Bus process identity plus an exact title; ordinary observers
+never receive process ids. Reasoning, planning, and long-term memory remain in
+`aegis-agent` or another out-of-process runtime.
+
+Observation and action are separate capability families. A semantic Interaction Domain
+observation is bound to the Actor, authority revision, and complete target
+state. The action consumes that observation once; state change aborts the
+batch before dispatch. Framebuffer capture is an independently authorized
+fallback and never substitutes for a semantic precondition. See
+[ADR-0102](../adr/0102-actor-scoped-semantic-observation-and-transactional-actions.md)
+and [ADR-0104](../adr/0104-actor-sessions-resource-grants-and-accessibility-adapter.md).
+
+## Naming Note: Where the "User-Facing" Logic Lives
 
 The crate names are *mechanism-oriented*, which can make the product roles
 hard to read at a glance. For the most common "I want to change what the
@@ -105,7 +147,7 @@ user sees or can do" tasks:
   ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md),
   [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md),
   [ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md)). The
-  compositor-owned Agent Workspaces surface reports generic Realm authority;
+  compositor-owned Agent Workspaces surface reports generic Interaction Domain authority;
   it does not infer fuji process state
   ([ADR-0074](../adr/0074-generic-agent-workspaces-status-surface.md)).
 - **"Start or discover apps"** → `aegis-desktop-entries` (discovery) + `aegis-launcher`
@@ -136,7 +178,7 @@ Compositor-owned display/input policy uses the Aegis settings IPC.
 Volume, brightness, radios, Do Not Disturb, and current-workspace layout are
 immediate service or session controls rather than persistent settings. The
 command panel presents them, external clients use the live-system IPC, and
-both paths converge on one runtime handler. Realm lifecycle is authority
+both paths converge on one runtime handler. Interaction Domain lifecycle is authority
 management rather than configuration and retains the independent AI
 Workspaces surface. The standalone System Settings app remains the canonical
 persistent-settings UI. See
@@ -234,7 +276,7 @@ Each frame follows this sequence:
    events. Dispatch remains live when a previous DRM frame is waiting for
    vblank.
 2. The server accepts surface commits and attached `wl_shm` or dma-buf
-   buffers. Input is routed through the owning Realm seat. Events received
+   buffers. Input is routed through the owning Interaction Domain seat. Events received
    during an in-flight presentation preserve their edge information while
    coalescing into one next redraw.
 3. A queued redraw plans primary-plane ownership from the complete visible
@@ -275,7 +317,7 @@ version 3 remains the fallback when that identity is unavailable. See
 Each seat has one explicit clipboard. Client selections and
 compositor-owned payloads use the standard Wayland data-device path; an
 interactive screenshot may publish PNG and file-URI representations to the
-physical seat without affecting an agent Realm.
+physical seat without affecting an agent Interaction Domain.
 
 aegis deliberately does not advertise the X11-style Primary Selection. In this
 interaction model, publishing text merely because it was highlighted is an
@@ -284,17 +326,17 @@ absence is reported honestly through the Wayland registry rather than through
 an empty protocol object. See
 [ADR-0043](../adr/0043-explicit-clipboard-only.md).
 
-## Realm Authority
+## Interaction Domain Authority
 
-One compositor owns one surface graph. A **Realm** selects which interaction
+One compositor owns one surface graph. An **Interaction Domain** selects which interaction
 groups it controls, which groups it observes, which seat state can send
 input, and which physical or virtual output presents the result. Moving a
-live window between Realms changes authority and scene selection; it does not
+live window between Interaction Domains changes authority and scene selection; it does not
 recreate or reparent the `wl_surface`.
 
-The human desktop is Realm `1`. An agent Realm has an independent seat and
-directed virtual output. A window launched directly in an Agent Realm is
-presented to the human Realm as a read-only observer mirror by default. A
+The human desktop is Interaction Domain `1`. An agent Interaction Domain has an independent seat and
+directed virtual output. A window launched directly in an Agent Interaction Domain is
+presented to the human Interaction Domain as a read-only observer mirror by default. A
 transferred window keeps the same physical mirror unless the transfer
 explicitly removes it. Visibility does not grant control: the human seat
 remains excluded from client input and every window-control command path.
@@ -302,7 +344,7 @@ remains excluded from client input and every window-control command path.
 The physical mirror carries a compositor-owned controlled-window guard. Its
 subdued presentation, authority label, and `not-allowed` pointer communicate
 that the window is visible for supervision rather than available for use.
-The server-side Realm model remains the authority boundary; the guard is a
+The server-side Interaction Domain model remains the authority boundary; the guard is a
 trusted explanation of that state and an additional physical pointer barrier.
 Successful Agent operations use a separate ephemeral marker above the guard,
 so persistent ownership and recent activity remain distinct signals.
@@ -312,11 +354,12 @@ interaction group, so a normal single-instance application needs no app-side
 changes. Removing the human observer hides the complete group from the
 physical scene and physical window snapshot rather than leaving inert chrome.
 
-Applications started inside a Realm additionally receive a mount-scoped
+Applications started inside an Interaction Domain additionally receive a mount-scoped
 Wayland portal and namespace/cgroup sandbox. That process boundary is
 separate from transferring an already-running surface: compositor authority
 can move immediately, while Linux namespaces cannot be applied
 retroactively. See
+[ADR-0103](../adr/0103-actor-authority-and-interaction-domain-architecture.md),
 [ADR-0040](../adr/0040-realms-seats-and-transferable-interaction-authority.md),
 [ADR-0042](../adr/0042-mount-scoped-realm-portals-and-cgroup-sandboxes.md),
 [ADR-0048](../adr/0048-compositor-owned-agent-operation-feedback.md), and

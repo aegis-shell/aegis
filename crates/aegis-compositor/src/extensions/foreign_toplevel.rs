@@ -191,7 +191,7 @@ pub(crate) unsafe fn foreign_toplevel_added(rec: *mut SurfaceRec, state: *mut St
     }
 }
 
-/// Reconcile foreign-toplevel capability objects after Realm presentation
+/// Reconcile foreign-toplevel capability objects after Interaction Domain presentation
 /// authority changes. Closing and re-advertising keeps already-bound physical
 /// clients from retaining a handle to a window they may no longer observe.
 pub(crate) unsafe fn foreign_toplevel_authority_changed(rec: *mut SurfaceRec, state: *mut State) {

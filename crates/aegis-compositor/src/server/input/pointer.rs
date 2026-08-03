@@ -745,7 +745,7 @@ impl Server {
                     .is_some_and(|seat| {
                         self.state
                             .authority
-                            .realm_observes_window(seat.realm, window)
+                            .interaction_domain_observes_window(seat.interaction_domain, window)
                     });
                 if observed {
                     let mut barrier = std::ptr::null_mut();
@@ -834,7 +834,7 @@ impl Server {
                 .is_some_and(|seat| {
                     self.state
                         .authority
-                        .realm_observes_window(seat.realm, s.window.id)
+                        .interaction_domain_observes_window(seat.interaction_domain, s.window.id)
                 });
             if !controls && !observes {
                 continue;

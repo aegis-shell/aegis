@@ -1,6 +1,6 @@
 [package]
 name = "aegis-mcp"
-description = "Aegis MCP platform bridge: scoped desktop and Agent Realm tools over MCP for any agent"
+description = "Aegis MCP platform bridge: scoped desktop and Agent Interaction Domain tools over MCP for any agent"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
@@ -25,6 +25,7 @@ base64 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+zeroize.workspace = true
 clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]

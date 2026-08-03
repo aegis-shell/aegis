@@ -53,9 +53,9 @@ pub(super) fn application_catalog(
     let mut applications =
         aegis_desktop_entries::enumerate_with_theme_and_scale(icon_theme, icon_scale.max(1));
     let i18n = aegis_shell::Localizer::from_env();
-    applications.push(aegis_core::app::Entry::ai_workspaces(
-        i18n.text(aegis_shell::Message::AiWorkspaces),
-        i18n.text(aegis_shell::Message::AiWorkspacesDescription),
+    applications.push(aegis_core::app::Entry::interaction_manager(
+        i18n.text(aegis_shell::Message::InteractionManager),
+        i18n.text(aegis_shell::Message::InteractionManagerDescription),
     ));
     applications
 }
@@ -140,6 +140,16 @@ fn entry_matches_pin_name(entry: &aegis_core::app::Entry, name: &str) -> bool {
     entry.id.eq_ignore_ascii_case(name) || entry.match_keys().contains(&name.to_ascii_lowercase())
 }
 
+fn canonical_pins(pinned: &[String]) -> Vec<String> {
+    let mut canonical = Vec::with_capacity(pinned.len());
+    for id in pinned {
+        if !canonical.iter().any(|existing| existing == id) {
+            canonical.push(id.clone());
+        }
+    }
+    canonical
+}
+
 /// Apply explicit pin mutations to a configured list. Actions are idempotent:
 /// pinning an existing application or unpinning an absent one is a no-op.
 /// Application identity uses the same aliases as [`resolve_pinned`].
@@ -148,7 +158,7 @@ pub(super) fn apply_pin_actions(
     pinned: &[String],
     actions: &[aegis_shell::PinAction],
 ) -> Vec<String> {
-    let mut out = pinned.to_vec();
+    let mut out = canonical_pins(pinned);
     for action in actions {
         let id = match action {
             aegis_shell::PinAction::Pin(id) | aegis_shell::PinAction::Unpin(id) => id,
@@ -183,7 +193,7 @@ pub(super) fn materialize_pins_for_manual_edit(
             .map(|entry| entry.id)
             .collect();
     }
-    pinned.to_vec()
+    canonical_pins(pinned)
 }
 
 /// One icon decoded to GPU-ready BGRA8 pixels. Produced off the frame loop
@@ -292,7 +302,7 @@ pub(super) fn decode_icons(
             // Stable keys for the external System Settings fallback and the
             // compositor-owned AI Workspaces surface.
             keys.push("aegis-settings".into());
-            keys.push(aegis_core::app::AI_WORKSPACES_ID.into());
+            keys.push(aegis_core::app::INTERACTION_MANAGER_ID.into());
         }
         decoded.push(DecodedIcon {
             keys,
@@ -425,6 +435,18 @@ mod tests {
             false,
         );
         assert_eq!(resolved, apps);
+    }
+
+    #[test]
+    fn legacy_agent_workspaces_pin_is_not_an_interaction_manager_alias() {
+        let apps = vec![aegis_core::app::Entry::interaction_manager(
+            "Agent Workspaces",
+            "Manage isolated Agent interaction",
+        )];
+        let legacy = vec!["aegis-ai-workspaces".to_owned()];
+        assert!(
+            resolve_pinned(&apps, &std::collections::HashMap::new(), &legacy, false).is_empty()
+        );
     }
 
     #[test]

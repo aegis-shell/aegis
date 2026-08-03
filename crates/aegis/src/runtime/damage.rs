@@ -521,17 +521,17 @@ impl CompositorRuntime {
                             .is_some_and(|remaining| remaining.is_zero())
                 })
             // Server-side topology: window list/geometry, workspace, output,
-            // and Realm model changes all feed both the scene and the chrome.
+            // and Interaction Domain model changes all feed both the scene and the chrome.
             || self.last_windows_hash != Some(self.server.windows_signature())
             || self.last_ws_sig != Some(self.server.workspace_signature())
             || self.last_outputs_revision != Some(self.server.outputs_revision())
-            || self.last_realm_revision != Some(self.server.realm_revision())
+            || self.last_interaction_domain_revision != Some(self.server.interaction_domain_revision())
             // Toasts and the do-not-disturb indicator follow the notification
             // queue (arrivals, dismissals, expiry).
             || self.last_notif_revision != Some(notif_revision)
             || self.last_chrome_mode != Some(chrome_mode)
             // Shell mutations applied outside the signed paths (status poller,
-            // config reload, app rescan, IPC settings/Realm control).
+            // config reload, app rescan, IPC settings/Interaction Domain control).
             || self.chrome_dirty
             // The fanout pushes these into chrome when they drift.
             || self.system_status.do_not_disturb != do_not_disturb
@@ -556,7 +556,7 @@ impl CompositorRuntime {
             || self.last_windows_hash != Some(self.server.windows_signature())
             || self.last_ws_sig != Some(self.server.workspace_signature())
             || self.last_outputs_revision != Some(self.server.outputs_revision())
-            || self.last_realm_revision != Some(self.server.realm_revision())
+            || self.last_interaction_domain_revision != Some(self.server.interaction_domain_revision())
             // The switcher/live-preview scene is captured below chrome and is
             // therefore backdrop source content, unlike ordinary shell UI.
             || self.shell.window_switcher_active()

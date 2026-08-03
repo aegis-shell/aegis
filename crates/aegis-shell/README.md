@@ -9,17 +9,17 @@ as typed intents to the compositor loop.
 - Host pluggable `Chrome` components in a defined render order.
 - Own the shared chrome contract — `Chrome`, `ChromeEvents`, and the
   `AppCatalog` snapshot — consumed by in-crate components and by the
-  separate `aegis-dock`, `aegis-prism`, `aegis-ai-workspaces`, `aegis-hud`,
+  separate `aegis-dock`, `aegis-prism`, `aegis-interaction-manager`, `aegis-hud`,
   and `aegis-command-panel` component crates. Persistent settings live in the
   standalone `aegis-settings` crate.
 - Provide the shared modal-application layout and material primitive used by
   compositor-owned application components.
-- Draw the launcher, notification toasts, Overview, the Realm transfer shelf,
+- Draw the launcher, notification toasts, Overview, the Interaction Domain transfer shelf,
   and trusted Agent operation feedback.
-- Consume window, workspace, Realm, application, notification, and input
+- Consume window, workspace, Interaction Domain, application, notification, and input
   snapshots.
 - Report focus, minimize, close, launch, workspace, and notification intents
-  plus optimistic Realm lifecycle and authority-transfer intents.
+  plus optimistic Interaction Domain lifecycle and authority-transfer intents.
 
 ## Boundaries
 
@@ -40,13 +40,13 @@ Modal chrome suppresses covered components; the launcher opts in as modal and
 persistent chrome such as the dock explicitly remains available during that
 presentation.
 Overview supports click-to-focus and drag-to-transfer. A window dropped on a
-Realm emits one interaction-group transfer intent; the shell never mutates
+Interaction Domain emits one interaction-group transfer intent; the shell never mutates
 Wayland or authority state directly.
-Successfully applied Realm input is projected through a separate,
+Successfully applied Interaction Domain input is projected through a separate,
 non-interactive Agent crosshair and operation label over read-only human
 mirrors. Positionless or hidden-target activity uses a background pill. The
 layer never changes the physical XDG cursor, never exposes key contents, and is
-outside directed Realm capture.
+outside directed Interaction Domain capture.
 
 ## Use
 

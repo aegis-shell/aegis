@@ -15,14 +15,14 @@ use std::path::PathBuf;
 pub const SETTINGS_DESKTOP_ID: &str = "io.github.ming2k.aegis.Settings.desktop";
 pub const SETTINGS_ICON_NAME: &str = "io.github.ming2k.aegis.Settings";
 pub const SETTINGS_APP_ID: &str = "io.github.ming2k.aegis.Settings";
-pub const AI_WORKSPACES_ID: &str = "aegis-ai-workspaces";
+pub const INTERACTION_MANAGER_ID: &str = "aegis-interaction-manager";
 
 /// A compositor-owned application that is part of the desktop itself rather
 /// than an external process described by a desktop entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltInApplication {
-    /// AI Workspace lifecycle and Realm-authority management.
-    AiWorkspaces,
+    /// AI Workspace lifecycle and Interaction Domain-authority management.
+    InteractionManager,
     /// Interactive screenshot region selector.
     ScreenshotSelector,
 }
@@ -121,19 +121,22 @@ impl Entry {
     }
 
     /// Construct the compositor-owned AI Workspaces catalog entry.
-    pub fn ai_workspaces(name: impl Into<String>, summary: impl Into<String>) -> Entry {
+    pub fn interaction_manager(name: impl Into<String>, summary: impl Into<String>) -> Entry {
         Entry {
-            target: ApplicationTarget::BuiltIn(BuiltInApplication::AiWorkspaces),
-            id: AI_WORKSPACES_ID.into(),
+            target: ApplicationTarget::BuiltIn(BuiltInApplication::InteractionManager),
+            id: INTERACTION_MANAGER_ID.into(),
             name: name.into(),
             generic_name: Some(summary.into()),
-            comment: Some("Manage AI-controlled application Realms and authority".into()),
+            comment: Some(
+                "Manage AI-controlled application interaction domains and authority".into(),
+            ),
             icon: Some("preferences-system-symbolic".into()),
             categories: vec!["System".into()],
             keywords: vec![
                 "ai".into(),
                 "workspace".into(),
-                "realm".into(),
+                "interaction".into(),
+                "domain".into(),
                 "agent".into(),
             ],
             ..Entry::default()
@@ -152,12 +155,13 @@ mod tests {
     }
 
     #[test]
-    fn ai_workspaces_has_a_stable_builtin_identity() {
-        let workspaces = Entry::ai_workspaces("AI Workspaces", "Realm management");
-        assert_eq!(workspaces.id, AI_WORKSPACES_ID);
+    fn interaction_manager_has_a_stable_builtin_identity() {
+        let workspaces =
+            Entry::interaction_manager("AI Workspaces", "Interaction domain management");
+        assert_eq!(workspaces.id, INTERACTION_MANAGER_ID);
         assert_eq!(
             workspaces.target,
-            ApplicationTarget::BuiltIn(BuiltInApplication::AiWorkspaces)
+            ApplicationTarget::BuiltIn(BuiltInApplication::InteractionManager)
         );
     }
 

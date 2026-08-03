@@ -1,12 +1,14 @@
-//! Physical-desktop guard for windows controlled by an Agent Realm.
+//! Physical-desktop guard for windows controlled by an Agent Interaction Domain.
 //!
-//! Input authority remains in `aegis-core::realm` and the compositor server;
+//! Input authority remains in `aegis-core::interaction_domain` and the compositor server;
 //! this chrome component only makes that boundary legible to the human. It
-//! dims read-only mirrors, identifies the controlling Realm, consumes physical
+//! dims read-only mirrors, identifies the controlling Interaction Domain, consumes physical
 //! chrome input over their complete rectangles, and requests the standard
 //! `not-allowed` cursor.
 
-use aegis_core::realm::{Realm, RealmId, RealmSnapshot, RealmState};
+use aegis_core::interaction_domain::{
+    InteractionDomain, InteractionDomainId, InteractionDomainSnapshot, InteractionDomainState,
+};
 use aegis_core::window::{Window, WindowId};
 use aegis_core::workspace::WorkspaceSnapshot;
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
@@ -20,7 +22,7 @@ const SCANLINE_GAP: f32 = 44.0;
 
 /// Trusted visual and pointer-routing boundary over physical read-only mirrors.
 pub struct ControlledWindowGuard {
-    realms: RealmSnapshot,
+    interaction_domains: InteractionDomainSnapshot,
     has_guarded_windows: bool,
 }
 
@@ -28,22 +30,23 @@ impl ControlledWindowGuard {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            realms: aegis_core::realm::RealmModel::new().snapshot(),
+            interaction_domains: aegis_core::interaction_domain::InteractionDomainModel::new()
+                .snapshot(),
             has_guarded_windows: false,
         }
     }
 
-    fn controlling_realm(&self, window: WindowId) -> Option<&Realm> {
-        let realm = self
-            .realms
+    fn controlling_interaction_domain(&self, window: WindowId) -> Option<&InteractionDomain> {
+        let interaction_domain = self
+            .interaction_domains
             .interaction_groups
             .iter()
             .find(|group| group.windows.contains(&window))
-            .map(|group| group.control_realm)?;
-        self.realms
-            .realms
+            .map(|group| group.control_interaction_domain)?;
+        self.interaction_domains
+            .interaction_domains
             .iter()
-            .find(|candidate| candidate.id == realm)
+            .find(|candidate| candidate.id == interaction_domain)
     }
 }
 
@@ -69,11 +72,15 @@ impl Chrome for ControlledWindowGuard {
             let Some(rect) = clipped_window_rect(window, display) else {
                 continue;
             };
-            let realm = self.controlling_realm(window.id);
-            let realm_id = realm.map(|realm| realm.id).unwrap_or(RealmId(0));
-            let state = realm.map(|realm| realm.state).unwrap_or(RealmState::Active);
-            let accent = super::agent_feedback::realm_color(realm_id);
-            let border = if state == RealmState::Paused {
+            let interaction_domain = self.controlling_interaction_domain(window.id);
+            let interaction_domain_id = interaction_domain
+                .map(|interaction_domain| interaction_domain.id)
+                .unwrap_or(InteractionDomainId(0));
+            let state = interaction_domain
+                .map(|interaction_domain| interaction_domain.state)
+                .unwrap_or(InteractionDomainState::Active);
+            let accent = super::agent_feedback::interaction_domain_color(interaction_domain_id);
+            let border = if state == InteractionDomainState::Paused {
                 Color::rgba(163, 171, 188, 210)
             } else {
                 accent.with_alpha(220)
@@ -119,12 +126,14 @@ impl Chrome for ControlledWindowGuard {
             if rect.w < 96.0 || rect.h < BADGE_HEIGHT + BADGE_MARGIN * 2.0 {
                 continue;
             }
-            let status = if state == RealmState::Paused {
-                i18n.text(Message::RealmPaused)
+            let status = if state == InteractionDomainState::Paused {
+                i18n.text(Message::InteractionDomainPaused)
             } else {
                 i18n.text(Message::AgentOperating)
             };
-            let label = match realm.map(|realm| realm.label.as_str()) {
+            let label = match interaction_domain
+                .map(|interaction_domain| interaction_domain.label.as_str())
+            {
                 Some(label) if !label.is_empty() => {
                     format!(
                         "{label} · {status} · {}",
@@ -195,8 +204,8 @@ impl Chrome for ControlledWindowGuard {
         Some(CursorShape::NotAllowed)
     }
 
-    fn update_realms(&mut self, snapshot: &RealmSnapshot) {
-        self.realms = snapshot.clone();
+    fn update_interaction_domains(&mut self, snapshot: &InteractionDomainSnapshot) {
+        self.interaction_domains = snapshot.clone();
     }
 
     fn update_windows(&mut self, windows: &[Window]) {

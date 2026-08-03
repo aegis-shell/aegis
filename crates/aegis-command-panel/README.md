@@ -16,7 +16,7 @@ Sections:
 - **System** — volume/mute, brightness, Wi-Fi, Bluetooth, Do-Not-Disturb,
   and the tiled-layout toggle, emitted as `SystemAction`s, plus the
   display-only Agent Workspaces status row that aggregates the live Agent
-  Realms (moved here from the HUD, ADR-0083).
+  Interaction Domains (moved here from the HUD, ADR-0083).
 - **Tray** — the shared `aegis-tray` StatusNotifierItem snapshot with full
   interaction: left-click `Activate`, right-click host-rendered dbusmenu
   popover (or `SecondaryActivate`).

@@ -730,6 +730,7 @@ impl LauncherBackdrop {
     /// Finish a capture, rebuild the realtime effects, and persist the result
     /// in this frame slot's transparent composite image. Later uses of the
     /// same slot can sample that image without executing capture or compute.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn finish_refresh(
         &mut self,
         canvas: &flux::Canvas,
@@ -1325,12 +1326,21 @@ pub(super) fn draw_overview_scene(
         .first()
         .map(|o| o.workspaces.len() > 1)
         .unwrap_or(false);
-    let realm_shelf = server.realm_snapshot().realms.iter().any(|realm| {
-        realm.kind == aegis_core::realm::RealmKind::Agent
-            && realm.state != aegis_core::realm::RealmState::Revoked
-    });
+    let interaction_domain_shelf = server
+        .interaction_domain_snapshot()
+        .interaction_domains
+        .iter()
+        .any(|interaction_domain| {
+            interaction_domain.kind == aegis_core::interaction_domain::InteractionDomainKind::Agent
+                && interaction_domain.state
+                    != aegis_core::interaction_domain::InteractionDomainState::Revoked
+        });
     let display = aegis_core::Rect::new(0, 0, logical_size.0 as i32, logical_size.1 as i32);
-    let area = aegis_core::overview::grid_area_with_realm_shelf(display, rail, realm_shelf);
+    let area = aegis_core::overview::grid_area_with_interaction_domain_shelf(
+        display,
+        rail,
+        interaction_domain_shelf,
+    );
     let slots = aegis_core::overview::grid(area, windows.len());
     let cells: std::collections::HashMap<
         aegis_core::window::WindowId,
@@ -1765,6 +1775,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::modulo_one)]
     fn capture_bounds_align_to_downsample() {
         // A floating region: origin/size land on BACKDROP_DOWNSAMPLE
         // multiples so the capture grid stays exact. With a full-resolution

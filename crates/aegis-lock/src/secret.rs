@@ -32,6 +32,23 @@ impl Secret {
             .unwrap_or_default()
     }
 
+    /// Compare two credentials without exposing either backing buffer.
+    ///
+    /// The full length of both values is visited before returning. Production
+    /// authentication still delegates comparison to PAM; this helper exists
+    /// for deterministic development-preview credentials.
+    #[must_use]
+    pub fn content_eq(&self, other: &Secret) -> bool {
+        let compared_len = self.bytes.len().max(other.bytes.len());
+        let mut difference = self.bytes.len() ^ other.bytes.len();
+        for index in 0..compared_len {
+            let left = self.bytes.get(index).copied().unwrap_or_default();
+            let right = other.bytes.get(index).copied().unwrap_or_default();
+            difference |= usize::from(left ^ right);
+        }
+        difference == 0
+    }
+
     pub fn push_str(&mut self, text: &str) -> bool {
         if self.bytes.len().saturating_add(text.len()) > Self::MAX_BYTES {
             return false;
@@ -124,5 +141,21 @@ mod tests {
         let mut secret = Secret::default();
         assert!(secret.push_str("a密🙂"));
         assert_eq!(secret.char_count(), 3);
+    }
+
+    #[test]
+    fn content_comparison_requires_exact_bytes_and_length() {
+        let mut expected = Secret::default();
+        let mut same = Secret::default();
+        let mut prefix = Secret::default();
+        let mut other = Secret::default();
+        assert!(expected.push_str("00密🙂"));
+        assert!(same.push_str("00密🙂"));
+        assert!(prefix.push_str("00密"));
+        assert!(other.push_str("00密🙃"));
+
+        assert!(expected.content_eq(&same));
+        assert!(!expected.content_eq(&prefix));
+        assert!(!expected.content_eq(&other));
     }
 }

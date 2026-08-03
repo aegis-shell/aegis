@@ -1,0 +1,17 @@
+[package]
+name = "aegis-authority"
+description = "Transport-neutral Actor identity, observation leases, and action transaction policy for Aegis"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aegis-core = { workspace = true, features = ["serde"] }
+getrandom.workspace = true
+serde.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

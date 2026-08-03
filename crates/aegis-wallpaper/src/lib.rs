@@ -409,6 +409,29 @@ impl Wallpaper {
     /// are drawn. For animated/video sources the per-source pacing is
     /// advanced here using wall-clock time.
     pub fn draw(&mut self, device: &flux::Device, canvas: &flux::Canvas, dst_w: f32, dst_h: f32) {
+        self.draw_fitted(device, canvas, dst_w, dst_h, false);
+    }
+
+    /// Composite the wallpaper with centered cover scaling. This preserves
+    /// source aspect ratio and crops overflow instead of stretching artwork.
+    pub fn draw_cover(
+        &mut self,
+        device: &flux::Device,
+        canvas: &flux::Canvas,
+        dst_w: f32,
+        dst_h: f32,
+    ) {
+        self.draw_fitted(device, canvas, dst_w, dst_h, true);
+    }
+
+    fn draw_fitted(
+        &mut self,
+        device: &flux::Device,
+        canvas: &flux::Canvas,
+        dst_w: f32,
+        dst_h: f32,
+        cover: bool,
+    ) {
         if let Some(parallax) = self.parallax.as_mut() {
             parallax.draw(device, canvas, dst_w, dst_h);
             return;
@@ -444,9 +467,27 @@ impl Wallpaper {
         }
 
         if let Some(img) = &self.flux_image {
-            canvas.draw_image(img, 0.0, 0.0, dst_w, dst_h);
+            if cover {
+                let (x, y, width, height) =
+                    cover_geometry((self.width as f32, self.height as f32), (dst_w, dst_h));
+                canvas.draw_image(img, x, y, width, height);
+            } else {
+                canvas.draw_image(img, 0.0, 0.0, dst_w, dst_h);
+            }
         }
     }
+}
+
+fn cover_geometry(source: (f32, f32), destination: (f32, f32)) -> (f32, f32, f32, f32) {
+    let scale = (destination.0 / source.0.max(1.0)).max(destination.1 / source.1.max(1.0));
+    let width = source.0 * scale;
+    let height = source.1 * scale;
+    (
+        (destination.0 - width) * 0.5,
+        (destination.1 - height) * 0.5,
+        width,
+        height,
+    )
 }
 
 #[cfg(test)]
@@ -465,5 +506,14 @@ mod tests {
         ));
         let result = Wallpaper::from_path(&path, 1920, 1080);
         assert!(matches!(result, Err(Error::Open(failed, _)) if failed == path));
+    }
+
+    #[test]
+    fn cover_geometry_preserves_aspect_ratio_and_centers_crop() {
+        let (x, y, width, height) = cover_geometry((1600.0, 900.0), (1000.0, 1000.0));
+        assert!(x < 0.0);
+        assert!(y.abs() < 0.001);
+        assert!((width / height - 16.0 / 9.0).abs() < 0.001);
+        assert!((height - 1000.0).abs() < 0.001);
     }
 }

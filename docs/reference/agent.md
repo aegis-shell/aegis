@@ -72,7 +72,7 @@ DeepSeek, Qwen, and local endpoints that speak Chat Completions.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `default` | `"ask"` | Policy for tools without an entry: `allow`, `ask`, or `deny`. |
-| `<tool name>` | unset | Per-tool override, e.g. `bash = "ask"` or `"mcp__aegis__realm_input" = "allow"`. |
+| `<tool name>` | unset | Per-tool override, e.g. `bash = "ask"` or `"mcp__aegis__interaction_domain_input" = "allow"`. |
 
 `ask` prompts on the terminal (auto-answered by `--yes`); `deny` blocks the
 call and reports it to the model. Read-only tools — `read_file`, `glob`,

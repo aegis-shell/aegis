@@ -13,6 +13,9 @@ name = "aegis"
 path = "src/main.rs"
 
 [dependencies]
+aegis-authority.workspace = true
+aegis-semantic.workspace = true
+aegis-audit.workspace = true
 aegis-core = { workspace = true }
 aegis-compositor = { workspace = true }
 aegis-backend = { workspace = true }
@@ -22,7 +25,7 @@ aegis-shell = { workspace = true }
 # composes them into the shell.
 aegis-dock = { workspace = true }
 aegis-prism = { workspace = true }
-aegis-ai-workspaces = { workspace = true }
+aegis-interaction-manager = { workspace = true }
 aegis-hud = { workspace = true }
 # SNI tray service shared by the HUD and the command panel (ADR-0080).
 aegis-tray = { workspace = true }
@@ -51,9 +54,11 @@ usvg = { workspace = true }
 tiny-skia = { workspace = true }
 # Embeds the bundled Bibata-Modern-Ice cursor theme as the default fallback.
 include_dir = { workspace = true }
-sha2 = "0.10"
+getrandom = { workspace = true }
+sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+zeroize.workspace = true
 log.workspace = true
 tracing.workspace = true
 aegis-logging.workspace = true

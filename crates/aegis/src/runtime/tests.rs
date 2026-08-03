@@ -27,7 +27,7 @@ fn logical_capture_region_scales_to_physical_pixels() {
 }
 
 #[test]
-fn realm_capture_region_is_intersected_in_logical_space() {
+fn interaction_domain_capture_region_is_intersected_in_logical_space() {
     assert_eq!(
         clamp_logical_region(aegis_core::Rect::new(-10, 5, 30, 40), 100, 30),
         Some(aegis_core::Rect::new(0, 5, 20, 25))
@@ -114,23 +114,23 @@ fn screenshot_file_uri_list_percent_encodes_path_bytes() {
 #[test]
 fn only_user_initiated_screenshots_update_the_human_clipboard() {
     assert!(screenshot_updates_human_clipboard(
-        aegis_ipc::Origin::Chrome
+        &aegis_ipc::Origin::Chrome
     ));
     assert!(screenshot_updates_human_clipboard(
-        aegis_ipc::Origin::Keybinding
+        &aegis_ipc::Origin::Keybinding
     ));
     assert!(!screenshot_updates_human_clipboard(
-        aegis_ipc::Origin::Ipc { conn_id: 7 }
+        &aegis_ipc::Origin::Ipc { conn_id: 7 }
     ));
     assert!(!screenshot_updates_human_clipboard(
-        aegis_ipc::Origin::Internal
+        &aegis_ipc::Origin::Internal
     ));
 }
 
 #[test]
 fn desktop_preferences_have_one_deterministic_override_chain() {
     let config = aegis_config::Config::parse(
-        "schema_version = 1\n\
+        "schema_version = 2\n\
          [ui]\n\
          icon_theme = \"Papirus-Dark\"\n\
          cursor_theme = \"Bibata\"\n\
@@ -158,7 +158,7 @@ fn desktop_preferences_have_one_deterministic_override_chain() {
 #[test]
 fn desktop_preference_overrides_are_not_copied_into_persistence() {
     let config = aegis_config::Config::parse(
-        "schema_version = 1\n\
+        "schema_version = 2\n\
          [ui]\n\
          icon_theme = \"Papirus\"\n\
          cursor_theme = \"Bibata\"\n\
@@ -209,10 +209,12 @@ fn builtin_scopes_are_fail_closed_allowlists() {
     assert!(owner.permits(&aegis_ipc::Command::Focus {
         id: aegis_core::window::WindowId(9),
     }));
-    assert!(!owner.permits(&aegis_ipc::Command::LaunchInRealm {
-        realm: aegis_core::realm::RealmId(9),
-        desktop_id: "foot.desktop".into(),
-    }));
+    assert!(
+        !owner.permits(&aegis_ipc::Command::LaunchInInteractionDomain {
+            interaction_domain: aegis_core::interaction_domain::InteractionDomainId(9),
+            desktop_id: "foot.desktop".into(),
+        })
+    );
 
     let agent_admin = scopes
         .get(aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE)
@@ -220,12 +222,14 @@ fn builtin_scopes_are_fail_closed_allowlists() {
     assert_eq!(agent_admin.ops.as_deref(), Some([].as_slice()));
 
     let admin = scopes
-        .get(aegis_ipc::LOCAL_REALM_ADMIN_SCOPE)
-        .expect("built-in Realm recovery scope");
-    assert!(admin.permits(&aegis_ipc::Command::LaunchInRealm {
-        realm: aegis_core::realm::RealmId(9),
-        desktop_id: "foot.desktop".into(),
-    }));
+        .get(aegis_ipc::LOCAL_INTERACTION_DOMAIN_ADMIN_SCOPE)
+        .expect("built-in InteractionDomain recovery scope");
+    assert!(
+        admin.permits(&aegis_ipc::Command::LaunchInInteractionDomain {
+            interaction_domain: aegis_core::interaction_domain::InteractionDomainId(9),
+            desktop_id: "foot.desktop".into(),
+        })
+    );
 
     let portal = scopes
         .get(aegis_ipc::LOCAL_PORTAL_SCOPE)
@@ -236,37 +240,48 @@ fn builtin_scopes_are_fail_closed_allowlists() {
 }
 
 #[test]
-fn realm_scope_expands_atomic_groups_before_authorizing() {
-    let mut model = aegis_core::realm::RealmModel::new();
-    let agent = model.create_agent_realm(
+fn interaction_domain_scope_expands_atomic_groups_before_authorizing() {
+    let mut model = aegis_core::interaction_domain::InteractionDomainModel::new();
+    let agent = model.create_agent_interaction_domain(
         "agent",
-        aegis_core::realm::SeatCapabilities::POINTER_KEYBOARD,
+        aegis_core::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
     );
     let client = model.register_client(None);
     let first = aegis_core::window::WindowId(7);
     let sibling = aegis_core::window::WindowId(8);
     let group = model
-        .create_interaction_group(client, &[first, sibling], aegis_core::realm::HUMAN_REALM)
+        .create_interaction_group(
+            client,
+            &[first, sibling],
+            aegis_core::interaction_domain::HUMAN_INTERACTION_DOMAIN,
+        )
         .unwrap();
-    let action = aegis_ipc::RealmAction::Transact {
+    let action = aegis_ipc::InteractionDomainAction::Transact {
         expected_revision: None,
-        mutations: vec![aegis_core::realm::RealmMutation::TransferWindow {
-            window: first,
-            target: agent.realm,
-            retain_source_as_observer: true,
-        }],
+        mutations: vec![
+            aegis_core::interaction_domain::InteractionDomainMutation::TransferWindow {
+                window: first,
+                target: agent.interaction_domain,
+                retain_source_as_observer: true,
+            },
+        ],
     };
     let one_window = aegis_ipc::Scope {
         windows: Some(vec![first]),
         workspaces: None,
         outputs: None,
-        realms: Some(vec![agent.realm]),
-        ops: Some(vec![aegis_ipc::OpClass::TransactRealm]),
+        interaction_domains: Some(vec![agent.interaction_domain]),
+        ops: Some(vec![aegis_ipc::ActorCapability::TransactInteractionDomain]),
         ask_ops: None,
     };
-    assert!(one_window.permits_realm_action(&action));
+    assert!(one_window.permits_interaction_domain_action(&action));
     assert!(
-        authorize_realm_action_against_snapshot(&one_window, &action, &model.snapshot()).is_err(),
+        authorize_interaction_domain_action_against_snapshot(
+            &one_window,
+            &action,
+            &model.snapshot()
+        )
+        .is_err(),
         "an allowlisted member cannot smuggle its interaction-group sibling"
     );
 
@@ -275,39 +290,49 @@ fn realm_scope_expands_atomic_groups_before_authorizing() {
         ..one_window
     };
     assert!(
-        authorize_realm_action_against_snapshot(&complete_group, &action, &model.snapshot())
-            .is_ok()
+        authorize_interaction_domain_action_against_snapshot(
+            &complete_group,
+            &action,
+            &model.snapshot()
+        )
+        .is_ok()
     );
-    let observe = aegis_ipc::RealmAction::Transact {
+    let observe = aegis_ipc::InteractionDomainAction::Transact {
         expected_revision: None,
-        mutations: vec![aegis_core::realm::RealmMutation::SetObserver {
-            group,
-            realm: agent.realm,
-            observe: true,
-        }],
+        mutations: vec![
+            aegis_core::interaction_domain::InteractionDomainMutation::SetObserver {
+                group,
+                interaction_domain: agent.interaction_domain,
+                observe: true,
+            },
+        ],
     };
     assert!(
-        authorize_realm_action_against_snapshot(&complete_group, &observe, &model.snapshot())
-            .is_ok()
+        authorize_interaction_domain_action_against_snapshot(
+            &complete_group,
+            &observe,
+            &model.snapshot()
+        )
+        .is_ok()
     );
 }
 
 #[test]
 fn automation_operation_names_accept_canonical_and_snake_case() {
     assert_eq!(
-        aegis_ipc::OpClass::from_name("SetWindowGeometry"),
-        Some(aegis_ipc::OpClass::SetWindowGeometry)
+        aegis_ipc::ActorCapability::from_name("SetWindowGeometry"),
+        Some(aegis_ipc::ActorCapability::SetWindowGeometry)
     );
     assert_eq!(
-        aegis_ipc::OpClass::from_name("set_window_geometry"),
-        Some(aegis_ipc::OpClass::SetWindowGeometry)
+        aegis_ipc::ActorCapability::from_name("set_window_geometry"),
+        Some(aegis_ipc::ActorCapability::SetWindowGeometry)
     );
     assert_eq!(
-        aegis_ipc::OpClass::from_name("inject_input"),
-        Some(aegis_ipc::OpClass::InjectInput)
+        aegis_ipc::ActorCapability::from_name("inject_input"),
+        Some(aegis_ipc::ActorCapability::InjectInput)
     );
     assert_eq!(
-        aegis_ipc::OpClass::from_name("system_control"),
-        Some(aegis_ipc::OpClass::SystemControl)
+        aegis_ipc::ActorCapability::from_name("system_control"),
+        Some(aegis_ipc::ActorCapability::SystemControl)
     );
 }

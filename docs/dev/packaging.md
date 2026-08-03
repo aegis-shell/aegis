@@ -82,6 +82,7 @@ inside the package build root.
 |--------|-------------|---------------------|
 | `target/release/aegis` | `/usr/bin/aegis` | core |
 | `target/release/aegis-idle` | `/usr/bin/aegis-idle` | core |
+| `target/release/aegis-atspi` | `/usr/bin/aegis-atspi` | core |
 | `target/release/aegis-lock` | `/usr/bin/aegis-lock` | core |
 | `target/release/aegis-settings` | `/usr/bin/aegis-settings` | core |
 | Portal: `target/release/xdg-desktop-portal-aegis` | `/usr/lib/xdg-desktop-portal-aegis` | portal |
@@ -101,6 +102,12 @@ inside the package build root.
 | `assets/cursors/Bibata-Modern-Ice/LICENSE` | `/usr/share/licenses/aegis/Bibata-Modern-Ice/LICENSE` | core |
 | `assets/cursors/Bibata-Modern-Ice/NOTICE` | `/usr/share/licenses/aegis/Bibata-Modern-Ice/NOTICE` | core |
 
+`aegis-lock-preview` is a feature-gated contributor tool, not a distribution
+artifact. Package builds must not enable the `dev-preview` feature and must
+not install `target/release/aegis-lock-preview`. Keep the explicit
+`target/release/aegis-lock` install entry above; do not replace it with an
+`aegis-*` wildcard.
+
 The bundled Bibata-Modern-Ice cursor theme (GPL-3.0) is embedded into the
 `aegis` binary via `include_dir`. Distributing that binary requires preserving
 the theme's license disclosure, so the `LICENSE` and `NOTICE` files must be
@@ -119,6 +126,8 @@ install -Dm0755 target/release/aegis \
   "$package_root/usr/bin/aegis"
 install -Dm0755 target/release/aegis-idle \
   "$package_root/usr/bin/aegis-idle"
+install -Dm0755 target/release/aegis-atspi \
+  "$package_root/usr/bin/aegis-atspi"
 install -Dm0755 target/release/aegis-lock \
   "$package_root/usr/bin/aegis-lock"
 install -Dm0755 target/release/aegis-settings \
@@ -181,7 +190,7 @@ appropriate `libalpm` hooks. Do not invoke `systemctl --user` from a package
 install script: the transaction does not run inside every affected user's
 session.
 
-The user service delegates the cgroup controllers required by Realm
+The user service delegates the cgroup controllers required by Interaction Domain
 sandboxing. Keep its `Delegate=cpu memory pids` and session-target ordering
 unless the distribution supplies an equivalent unit.
 
@@ -196,6 +205,7 @@ desktop-file-validate \
   /usr/share/applications/io.github.ming2k.aegis.Settings.desktop
 pkg-config --modversion flux flux-scene-graph lens iris
 test -x /usr/bin/aegis-idle
+test -x /usr/bin/aegis-atspi
 test -x /usr/bin/aegis-lock
 test -r /etc/pam.d/aegis-lock
 systemctl --user daemon-reload
@@ -206,7 +216,7 @@ Confirm that System Settings appears with its icon, the Power Management page
 persists an idle policy, `Super+L` authenticates through the installed PAM
 stack, `xdg-desktop-portal-aegis` activates through D-Bus, the preferred portal
 configuration is selected for an Aegis session, and `aegis window` reaches
-the compositor. Run the Realm sandbox test through the packaged service
+the compositor. Run the Interaction Domain sandbox test through the packaged service
 topology as described in [Setup](setup.md#tests).
 
 ## Distribution recipes
@@ -308,6 +318,7 @@ package() {
 
   install -Dm0755 target/release/aegis          "$dest/bin/aegis"
   install -Dm0755 target/release/aegis-idle     "$dest/bin/aegis-idle"
+  install -Dm0755 target/release/aegis-atspi    "$dest/bin/aegis-atspi"
   install -Dm0755 target/release/aegis-lock     "$dest/bin/aegis-lock"
   install -Dm0755 target/release/aegis-settings "$dest/bin/aegis-settings"
   install -Dm0755 target/release/aegis-mcp "$dest/bin/aegis-mcp"
@@ -394,7 +405,7 @@ package() {
 - **`/usr` prefix is fixed.** The systemd unit runs `/usr/bin/aegis`; the
   D-Bus service runs `/usr/lib/xdg-desktop-portal-aegis`. Patch the
   corresponding unit or service when changing either destination.
-- **Keep `Delegate=cpu memory pids`** in `aegis.service`; Realm sandboxing
+- **Keep `Delegate=cpu memory pids`** in `aegis.service`; Interaction Domain sandboxing
   depends on it.
 - **Use distribution hooks.** The packages that own systemd, desktop, icon,
   and loader catalogs provide the standard `libalpm` hooks. Do not place

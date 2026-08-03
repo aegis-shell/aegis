@@ -627,8 +627,8 @@ mod tests {
                     enabled: true,
                 },
                 CapabilityGroup {
-                    key: "CaptureRealm".to_string(),
-                    label: "Capture its Realm's screen".to_string(),
+                    key: "CaptureInteractionDomain".to_string(),
+                    label: "Capture its Interaction Domain".to_string(),
                     gated: true,
                     enabled: true,
                 },
@@ -744,7 +744,10 @@ mod tests {
         assert_eq!(
             out.capability_pick_answered,
             Some(CapabilityPickResult {
-                approved: Some(vec!["Focus".to_string(), "CaptureRealm".to_string()]),
+                approved: Some(vec![
+                    "Focus".to_string(),
+                    "CaptureInteractionDomain".to_string()
+                ]),
             })
         );
     }

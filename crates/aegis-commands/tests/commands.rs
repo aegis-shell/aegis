@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use aegis_core::window::{Window, WindowId, WindowState};
 use aegis_core::workspace::{OutputSnapshot, WorkspaceEntry, WorkspaceId, WorkspaceSnapshot};
-use aegis_ipc::{Command, Handler, RealmAction, RealmActionResult, Server};
+use aegis_ipc::{Command, Handler, InteractionDomainAction, InteractionDomainActionResult, Server};
 use clap::Parser;
 
 static N: AtomicU64 = AtomicU64::new(0);
@@ -24,7 +24,7 @@ fn scratch() -> PathBuf {
 /// A handler returning a fixed window/workspace set and recording commands.
 struct CtlHandler {
     commands: Mutex<Vec<Command>>,
-    realm_actions: Mutex<Vec<RealmAction>>,
+    interaction_domain_actions: Mutex<Vec<InteractionDomainAction>>,
     management_log: Mutex<Vec<String>>,
 }
 
@@ -32,21 +32,21 @@ impl CtlHandler {
     fn new() -> Self {
         CtlHandler {
             commands: Mutex::new(Vec::new()),
-            realm_actions: Mutex::new(Vec::new()),
+            interaction_domain_actions: Mutex::new(Vec::new()),
             management_log: Mutex::new(Vec::new()),
         }
     }
 }
 
 impl Handler for CtlHandler {
-    fn policy_caps(&self) -> aegis_ipc::Capabilities {
+    fn policy_caps(&self) -> aegis_ipc::ConnectionCapabilities {
         // Grant everything so the control/session commands run.
-        aegis_ipc::Capabilities {
+        aegis_ipc::ConnectionCapabilities {
             query: true,
             control: true,
             input: false,
             session: true,
-            realm: true,
+            interaction_domain: true,
         }
     }
     fn windows(&self) -> Vec<Window> {
@@ -128,10 +128,15 @@ impl Handler for CtlHandler {
             ],
         }]
     }
-    fn command(&self, _conn_id: u64, cmd: Command) {
+    fn command(&self, _conn_id: u64, _subject: Option<&str>, cmd: Command) {
         self.commands.lock().unwrap().push(cmd);
     }
-    fn system_action(&self, _conn_id: u64, action: aegis_ipc::SystemAction) -> Result<(), String> {
+    fn system_action(
+        &self,
+        _conn_id: u64,
+        _subject: Option<&str>,
+        action: aegis_ipc::SystemAction,
+    ) -> Result<(), String> {
         self.commands
             .lock()
             .unwrap()
@@ -145,7 +150,7 @@ impl Handler for CtlHandler {
                 ts_mono_ms: 42,
                 origin: aegis_ipc::Origin::Chrome,
                 mutation: aegis_ipc::JournalMutation::Command {
-                    cmd: Command::Focus { id: WindowId(1) },
+                    cmd: aegis_ipc::AuditedCommand::Focus { id: WindowId(1) },
                 },
                 effect: aegis_ipc::Effect::Applied,
             }],
@@ -164,62 +169,67 @@ impl Handler for CtlHandler {
                 ..aegis_ipc::Scope::default()
             });
         }
-        (name == aegis_ipc::LOCAL_REALM_ADMIN_SCOPE).then(|| aegis_ipc::Scope {
+        (name == aegis_ipc::LOCAL_INTERACTION_DOMAIN_ADMIN_SCOPE).then(|| aegis_ipc::Scope {
             windows: None,
             workspaces: None,
             outputs: None,
-            realms: None,
+            interaction_domains: None,
             ops: Some(vec![
-                aegis_ipc::OpClass::CreateRealm,
-                aegis_ipc::OpClass::TransactRealm,
-                aegis_ipc::OpClass::RevokeRealm,
-                aegis_ipc::OpClass::CaptureRealm,
-                aegis_ipc::OpClass::LaunchInRealm,
+                aegis_ipc::ActorCapability::CreateInteractionDomain,
+                aegis_ipc::ActorCapability::TransactInteractionDomain,
+                aegis_ipc::ActorCapability::RevokeInteractionDomain,
+                aegis_ipc::ActorCapability::CaptureInteractionDomain,
+                aegis_ipc::ActorCapability::LaunchInInteractionDomain,
             ]),
             ask_ops: None,
         })
     }
 
-    fn realms(&self) -> aegis_core::realm::RealmSnapshot {
-        let mut model = aegis_core::realm::RealmModel::new();
-        model.create_agent_realm(
+    fn interaction_domains(&self) -> aegis_core::interaction_domain::InteractionDomainSnapshot {
+        let mut model = aegis_core::interaction_domain::InteractionDomainModel::new();
+        model.create_agent_interaction_domain(
             "Test Agent",
-            aegis_core::realm::SeatCapabilities::POINTER_KEYBOARD,
+            aegis_core::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
         );
         model.snapshot()
     }
 
-    fn realm_action(
+    fn interaction_domain_action(
         &self,
         _conn_id: u64,
         _subject: Option<&str>,
-        action: RealmAction,
-    ) -> Result<RealmActionResult, String> {
-        self.realm_actions.lock().unwrap().push(action.clone());
+        action: InteractionDomainAction,
+    ) -> Result<InteractionDomainActionResult, String> {
+        self.interaction_domain_actions
+            .lock()
+            .unwrap()
+            .push(action.clone());
         match action {
-            RealmAction::Create { .. } => Ok(RealmActionResult::Created {
-                bundle: aegis_core::realm::RealmBundle {
-                    principal: aegis_core::realm::PrincipalId(2),
-                    realm: aegis_core::realm::RealmId(2),
-                    seat: aegis_core::realm::SeatId(2),
+            InteractionDomainAction::Create { .. } => Ok(InteractionDomainActionResult::Created {
+                bundle: aegis_core::interaction_domain::InteractionDomainBundle {
+                    principal: aegis_core::interaction_domain::InteractionPrincipalId(2),
+                    interaction_domain: aegis_core::interaction_domain::InteractionDomainId(2),
+                    seat: aegis_core::interaction_domain::SeatId(2),
                     revision: 2,
                 },
             }),
-            RealmAction::Transact {
+            InteractionDomainAction::Transact {
                 expected_revision,
                 mutations,
-            } => Ok(RealmActionResult::TransactionCommitted {
-                receipt: aegis_core::realm::RealmTransactionReceipt {
+            } => Ok(InteractionDomainActionResult::TransactionCommitted {
+                receipt: aegis_core::interaction_domain::InteractionDomainTransactionReceipt {
                     before_revision: expected_revision.unwrap_or(2),
                     after_revision: expected_revision.unwrap_or(2) + mutations.len() as u64,
                     results: Vec::new(),
                 },
             }),
-            RealmAction::Revoke {
-                realm, fallback, ..
-            } => Ok(RealmActionResult::Revoked {
-                receipt: aegis_core::realm::RealmRevocation {
-                    realm,
+            InteractionDomainAction::Revoke {
+                interaction_domain,
+                fallback,
+                ..
+            } => Ok(InteractionDomainActionResult::Revoked {
+                receipt: aegis_core::interaction_domain::InteractionDomainRevocation {
+                    interaction_domain,
                     fallback,
                     transferred_groups: Vec::new(),
                     revision: 3,
@@ -228,23 +238,36 @@ impl Handler for CtlHandler {
         }
     }
 
-    fn capture_realm(
+    fn capture_interaction_domain(
         &self,
-        realm: aegis_core::realm::RealmId,
+        _conn_id: u64,
+        _subject: Option<&str>,
+        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
         region: Option<aegis_core::Rect>,
-    ) -> Result<aegis_ipc::CaptureRealmPayload, String> {
-        Ok(aegis_ipc::CaptureRealmPayload {
-            capture: aegis_ipc::RealmCapture {
-                realm,
+    ) -> Result<aegis_ipc::CaptureInteractionDomainPayload, String> {
+        Ok(aegis_ipc::CaptureInteractionDomainPayload {
+            capture: aegis_ipc::InteractionDomainCapture {
+                interaction_domain,
                 width: 2,
                 height: 1,
                 scale_milli: 1000,
                 region: region.unwrap_or_else(|| aegis_core::Rect::new(0, 0, 2, 1)),
-                placements: vec![aegis_core::realm::RealmWindowPlacement {
-                    window: WindowId(1),
-                    output_rect: aegis_core::Rect::new(0, 0, 2, 1),
-                    surface_size: aegis_core::Size { w: 2, h: 1 },
-                }],
+                placements: vec![
+                    aegis_core::interaction_domain::InteractionDomainWindowPlacement {
+                        window: WindowId(1),
+                        output_rect: aegis_core::Rect::new(0, 0, 2, 1),
+                        surface_size: aegis_core::Size { w: 2, h: 1 },
+                    },
+                ],
+                observation: aegis_ipc::SemanticObservation {
+                    token: aegis_ipc::ObservationToken("0".repeat(64)),
+                    ttl_ms: 15_000,
+                    snapshot: aegis_core::semantic::SemanticSnapshot {
+                        interaction_domain,
+                        authority_revision: 2,
+                        objects: Vec::new(),
+                    },
+                },
                 png_bytes: 3,
                 revision: 2,
             },
@@ -256,8 +279,8 @@ impl Handler for CtlHandler {
         vec![aegis_ipc::AgentPrincipalInfo {
             principal: "prin_1".into(),
             label: Some("Codex".into()),
-            pregranted: vec![aegis_ipc::OpClass::Focus],
-            gated: vec![aegis_ipc::OpClass::Close],
+            pregranted: vec![aegis_ipc::ActorCapability::Focus],
+            gated: vec![aegis_ipc::ActorCapability::Close],
             created_at: 1,
         }]
     }
@@ -265,7 +288,7 @@ impl Handler for CtlHandler {
     fn agent_grants(&self, principal: Option<&str>) -> Vec<aegis_ipc::AgentGrantInfo> {
         vec![aegis_ipc::AgentGrantInfo {
             principal: "prin_1".into(),
-            op: aegis_ipc::OpClass::Close,
+            op: aegis_ipc::ActorCapability::Close,
             decision: aegis_ipc::AgentGrantDecision::Allow,
             granted_at: 2,
         }]
@@ -293,8 +316,8 @@ impl Handler for CtlHandler {
     fn set_agent_ceiling(
         &self,
         principal: &str,
-        pregranted: &[aegis_ipc::OpClass],
-        gated: &[aegis_ipc::OpClass],
+        pregranted: &[aegis_ipc::ActorCapability],
+        gated: &[aegis_ipc::ActorCapability],
     ) -> Result<(), String> {
         self.management_log.lock().unwrap().push(format!(
             "ceiling:{principal}:{}+{}",
@@ -307,8 +330,8 @@ impl Handler for CtlHandler {
     fn register_agent(
         &self,
         label: Option<&str>,
-        _pregranted: &[aegis_ipc::OpClass],
-        _gated: &[aegis_ipc::OpClass],
+        _pregranted: &[aegis_ipc::ActorCapability],
+        _gated: &[aegis_ipc::ActorCapability],
     ) -> Result<(String, String), String> {
         self.management_log
             .lock()
@@ -317,7 +340,11 @@ impl Handler for CtlHandler {
         Ok(("prin_9".into(), "cred_9".into()))
     }
 
-    fn revoke_agent_grant(&self, principal: &str, op: aegis_ipc::OpClass) -> Result<(), String> {
+    fn revoke_agent_grant(
+        &self,
+        principal: &str,
+        op: aegis_ipc::ActorCapability,
+    ) -> Result<(), String> {
         self.management_log
             .lock()
             .unwrap()
@@ -457,43 +484,58 @@ fn journal_command_lists_entries() {
 }
 
 #[test]
-fn realm_domain_uses_admin_scope_and_lists_agent_realm() {
+fn interaction_domain_domain_uses_admin_scope_and_lists_agent_interaction_domain() {
     let path = scratch();
     let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
-    let out = aegis_commands::run(&path, &["realm".into(), "list".into()]).unwrap();
+    let out = aegis_commands::run(&path, &["interaction-domain".into(), "list".into()]).unwrap();
     assert!(out.contains("Test Agent"), "{out}");
     assert!(out.contains("agent-2"), "{out}");
 }
 
 #[test]
-fn realm_create_and_transfer_use_optimistic_actions() {
+fn interaction_domain_create_and_transfer_use_optimistic_actions() {
     let path = scratch();
     let handler = Arc::new(CtlHandler::new());
     let _s = Server::start(&path, Arc::clone(&handler)).unwrap();
-    let created =
-        aegis_commands::run(&path, &["realm".into(), "create".into(), "Builder".into()]).unwrap();
-    assert!(created.contains("created Realm 2"), "{created}");
+    let created = aegis_commands::run(
+        &path,
+        &[
+            "interaction-domain".into(),
+            "create".into(),
+            "Builder".into(),
+        ],
+    )
+    .unwrap();
+    assert!(
+        created.contains("created Interaction Domain 2"),
+        "{created}"
+    );
     let transferred = aegis_commands::run(
         &path,
-        &["realm".into(), "transfer".into(), "1".into(), "2".into()],
+        &[
+            "interaction-domain".into(),
+            "transfer".into(),
+            "1".into(),
+            "2".into(),
+        ],
     )
     .unwrap();
     assert!(transferred.contains("committed"), "{transferred}");
-    let actions = handler.realm_actions.lock().unwrap();
+    let actions = handler.interaction_domain_actions.lock().unwrap();
     assert!(matches!(
         &actions[0],
-        RealmAction::Create { label, .. } if label == "Builder"
+        InteractionDomainAction::Create { label, .. } if label == "Builder"
     ));
     assert!(matches!(
         &actions[1],
-        RealmAction::Transact {
+        InteractionDomainAction::Transact {
             expected_revision: Some(2),
             mutations,
         } if matches!(
             mutations.as_slice(),
-            [aegis_core::realm::RealmMutation::TransferWindow {
+            [aegis_core::interaction_domain::InteractionDomainMutation::TransferWindow {
                 window: WindowId(1),
-                target: aegis_core::realm::RealmId(2),
+                target: aegis_core::interaction_domain::InteractionDomainId(2),
                 retain_source_as_observer: true,
             }]
         )
@@ -501,15 +543,15 @@ fn realm_create_and_transfer_use_optimistic_actions() {
 }
 
 #[test]
-fn realm_capture_is_committed_atomically_to_requested_path() {
+fn interaction_domain_capture_is_committed_atomically_to_requested_path() {
     let path = scratch();
     let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let capture = dir.path().join("realm.png");
+    let capture = dir.path().join("interaction_domain.png");
     let out = aegis_commands::run(
         &path,
         &[
-            "realm".into(),
+            "interaction-domain".into(),
             "capture".into(),
             "2".into(),
             capture.to_string_lossy().into_owned(),
@@ -521,16 +563,16 @@ fn realm_capture_is_committed_atomically_to_requested_path() {
 }
 
 #[test]
-fn realm_capture_json_exposes_pixel_to_input_mapping() {
+fn interaction_domain_capture_json_exposes_pixel_to_input_mapping() {
     let path = scratch();
     let _s = Server::start(&path, Arc::new(CtlHandler::new())).unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let capture = dir.path().join("realm.png");
+    let capture = dir.path().join("interaction_domain.png");
     let out = aegis_commands::run(
         &path,
         &[
             "--json".into(),
-            "realm".into(),
+            "interaction-domain".into(),
             "capture".into(),
             "2".into(),
             "--region=0,0,2,1".into(),
@@ -802,17 +844,17 @@ fn permissions_revoke_parses_op_names_and_confirms() {
             "permissions".into(),
             "revoke".into(),
             "prin_1".into(),
-            "capture_realm".into(),
+            "capture_interaction_domain".into(),
         ],
     )
     .unwrap();
     assert!(
-        out.contains("revoked the CaptureRealm grant for prin_1"),
+        out.contains("revoked the CaptureInteractionDomain grant for prin_1"),
         "{out}"
     );
     assert_eq!(
         handler.management_log.lock().unwrap().as_slice(),
-        &["revoke:prin_1:CaptureRealm".to_string()][..]
+        &["revoke:prin_1:CaptureInteractionDomain".to_string()][..]
     );
 }
 
@@ -901,4 +943,47 @@ fn permissions_register_prints_the_issued_credential() {
     .unwrap();
     assert!(out.contains("registered prin_9"), "{out}");
     assert!(out.contains("credential: cred_9"), "{out}");
+}
+
+#[test]
+fn config_validate_is_local_and_reports_the_schema() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    std::fs::write(&path, "schema_version = 2\n").unwrap();
+    let out = aegis_commands::run(
+        std::path::Path::new(""),
+        &[
+            "config".into(),
+            "validate".into(),
+            path.display().to_string(),
+        ],
+    )
+    .unwrap();
+    assert!(out.contains("configuration valid"), "{out}");
+    assert!(out.contains("schema 2"), "{out}");
+}
+
+#[test]
+fn config_migrate_is_explicit_and_reports_the_backup() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    std::fs::write(
+        &path,
+        "schema_version = 1 # retained\n[ui]\nreduced_motion = true\n",
+    )
+    .unwrap();
+    let out = aegis_commands::run(
+        std::path::Path::new(""),
+        &[
+            "config".into(),
+            "migrate".into(),
+            path.display().to_string(),
+        ],
+    )
+    .unwrap();
+    assert!(out.contains("from schema 1 to 2"), "{out}");
+    assert!(out.contains("schema-v1.bak"), "{out}");
+    let migrated = std::fs::read_to_string(&path).unwrap();
+    assert!(migrated.contains("schema_version = 2 # retained"));
+    aegis_config::Config::parse(&migrated).unwrap();
 }

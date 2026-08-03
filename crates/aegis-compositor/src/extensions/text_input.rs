@@ -4,7 +4,7 @@ use super::*;
 
 struct TextInputRec {
     state: *mut State,
-    seat: aegis_core::realm::SeatId,
+    seat: aegis_core::interaction_domain::SeatId,
     current_surface: *mut ffi::wl_resource,
     pending: aegis_core::input::TextInputState,
     current: aegis_core::input::TextInputState,
@@ -330,7 +330,7 @@ unsafe fn queue_text_input_state(rec: *mut TextInputRec) {
 
 unsafe fn route_or_queue_text_input_state(
     state: *mut State,
-    seat: aegis_core::realm::SeatId,
+    seat: aegis_core::interaction_domain::SeatId,
     value: aegis_core::input::TextInputState,
     cursor_anchor: Option<TextInputCursorAnchor>,
 ) {
@@ -373,14 +373,14 @@ unsafe fn text_input_state_in_compositor_space(
 
 pub(crate) unsafe fn current_text_input_state(
     state: *mut State,
-    seat: aegis_core::realm::SeatId,
+    seat: aegis_core::interaction_domain::SeatId,
 ) -> Option<aegis_core::input::TextInputState> {
     unsafe { current_text_input_context(state, seat).map(|(text_state, _)| text_state) }
 }
 
 pub(crate) unsafe fn current_text_input_context(
     state: *mut State,
-    seat: aegis_core::realm::SeatId,
+    seat: aegis_core::interaction_domain::SeatId,
 ) -> Option<(
     aegis_core::input::TextInputState,
     Option<TextInputCursorAnchor>,

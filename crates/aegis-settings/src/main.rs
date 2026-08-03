@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use aegis_core::settings::{SettingsAction, SettingsSnapshot};
 use aegis_design::{Design, themes};
-use aegis_ipc::{Capabilities, Client};
+use aegis_ipc::{Client, ConnectionCapabilities};
 use aegis_settings::builtin_settings_modules;
 use aegis_settings::module::{ModuleAvailability, ModuleEvents, ModuleId, ModuleRegistry};
 use aegis_shell::{Localizer, Message};
@@ -441,11 +441,11 @@ fn execute_command(
     command: WorkerCommand,
 ) -> Result<SettingsSnapshot, Box<WorkerFailure>> {
     let requested = match &command {
-        WorkerCommand::Load => Capabilities::QUERY,
-        WorkerCommand::Apply { .. } => Capabilities {
+        WorkerCommand::Load => ConnectionCapabilities::QUERY,
+        WorkerCommand::Apply { .. } => ConnectionCapabilities {
             query: true,
             session: true,
-            ..Capabilities::default()
+            ..ConnectionCapabilities::default()
         },
     };
     let mut client = Client::connect_with_timeout(socket, requested, IPC_TIMEOUT)

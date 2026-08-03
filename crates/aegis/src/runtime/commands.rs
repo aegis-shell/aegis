@@ -115,13 +115,16 @@ pub(super) fn apply_command(
         Command::SetWindowGeometry { id, rect } => {
             server.set_window_geometry(*id, *rect);
         }
-        Command::InjectInput { .. } | Command::InjectRealmInput { .. } => {
+        Command::InjectInput { .. } => {
             // Synthetic input needs shell-occlusion validation and is handled
             // beside the physical-input router in the main loop.
             debug_assert!(false, "InjectInput reached the generic command path");
         }
-        Command::LaunchInRealm { .. } => {
-            debug_assert!(false, "LaunchInRealm reached the generic command path");
+        Command::LaunchInInteractionDomain { .. } => {
+            debug_assert!(
+                false,
+                "LaunchInInteractionDomain reached the generic command path"
+            );
         }
         Command::Screenshot { .. } => {
             // Screenshots need the GPU objects and are handled beside the
@@ -169,133 +172,154 @@ pub(super) fn apply_command(
     Ok(())
 }
 
-pub(super) fn apply_realm_action(
+pub(super) fn apply_interaction_domain_action(
     server: &mut aegis_compositor::Server,
     subject: Option<String>,
-    action: aegis_ipc::RealmAction,
-) -> Result<aegis_ipc::RealmActionResult, String> {
+    action: aegis_ipc::InteractionDomainAction,
+) -> Result<aegis_ipc::InteractionDomainActionResult, String> {
     match action {
-        aegis_ipc::RealmAction::Create {
+        aegis_ipc::InteractionDomainAction::Create {
             label,
             capabilities,
             output,
         } => {
             let bundle = server
-                .create_agent_realm_for_subject(label, capabilities, subject)
+                .create_agent_interaction_domain_for_subject(label, capabilities, subject)
                 .map_err(|error| error.to_string())?;
             if let Some(output) = output
-                && let Err(error) = server.configure_realm_output(bundle.realm, output)
+                && let Err(error) =
+                    server.configure_interaction_domain_output(bundle.interaction_domain, output)
             {
-                let _ = server.revoke_realm(bundle.realm, aegis_core::realm::HUMAN_REALM);
+                let _ = server.revoke_interaction_domain(
+                    bundle.interaction_domain,
+                    aegis_core::interaction_domain::HUMAN_INTERACTION_DOMAIN,
+                );
                 return Err(error.to_string());
             }
-            Ok(aegis_ipc::RealmActionResult::Created { bundle })
+            Ok(aegis_ipc::InteractionDomainActionResult::Created { bundle })
         }
-        aegis_ipc::RealmAction::Transact {
+        aegis_ipc::InteractionDomainAction::Transact {
             expected_revision,
             mutations,
         } => server
-            .transact_realms(expected_revision, &mutations)
-            .map(|receipt| aegis_ipc::RealmActionResult::TransactionCommitted { receipt })
+            .transact_interaction_domains(expected_revision, &mutations)
+            .map(
+                |receipt| aegis_ipc::InteractionDomainActionResult::TransactionCommitted {
+                    receipt,
+                },
+            )
             .map_err(|error| error.to_string()),
-        aegis_ipc::RealmAction::Revoke {
-            realm,
+        aegis_ipc::InteractionDomainAction::Revoke {
+            interaction_domain,
             fallback,
             expected_revision,
         } => {
-            let actual = server.realm_snapshot().revision;
+            let actual = server.interaction_domain_snapshot().revision;
             if expected_revision.is_some_and(|expected| expected != actual) {
                 return Err(format!(
-                    "Realm revision conflict: expected {}, actual {actual}",
+                    "InteractionDomain revision conflict: expected {}, actual {actual}",
                     expected_revision.unwrap()
                 ));
             }
             server
-                .revoke_realm(realm, fallback)
-                .map(|receipt| aegis_ipc::RealmActionResult::Revoked { receipt })
+                .revoke_interaction_domain(interaction_domain, fallback)
+                .map(|receipt| aegis_ipc::InteractionDomainActionResult::Revoked { receipt })
                 .map_err(|error| error.to_string())
         }
     }
 }
 
-pub(super) fn realm_intent_to_action(intent: aegis_shell::RealmIntent) -> aegis_ipc::RealmAction {
+pub(super) fn interaction_domain_intent_to_action(
+    intent: aegis_shell::InteractionDomainIntent,
+) -> aegis_ipc::InteractionDomainAction {
     match intent {
-        aegis_shell::RealmIntent::Create { label } => aegis_ipc::RealmAction::Create {
-            label,
-            capabilities: aegis_core::realm::SeatCapabilities::POINTER_KEYBOARD,
-            output: Some(aegis_core::realm::VirtualOutput::DEFAULT_AGENT),
-        },
-        aegis_shell::RealmIntent::SetState {
-            realm,
+        aegis_shell::InteractionDomainIntent::Create { label } => {
+            aegis_ipc::InteractionDomainAction::Create {
+                label,
+                capabilities: aegis_core::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
+                output: Some(aegis_core::interaction_domain::VirtualOutput::DEFAULT_AGENT),
+            }
+        }
+        aegis_shell::InteractionDomainIntent::SetState {
+            interaction_domain,
             state,
             expected_revision,
-        } => aegis_ipc::RealmAction::Transact {
+        } => aegis_ipc::InteractionDomainAction::Transact {
             expected_revision: Some(expected_revision),
-            mutations: vec![aegis_core::realm::RealmMutation::SetState { realm, state }],
+            mutations: vec![
+                aegis_core::interaction_domain::InteractionDomainMutation::SetState {
+                    interaction_domain,
+                    state,
+                },
+            ],
         },
-        aegis_shell::RealmIntent::Revoke {
-            realm,
+        aegis_shell::InteractionDomainIntent::Revoke {
+            interaction_domain,
             expected_revision,
-        } => aegis_ipc::RealmAction::Revoke {
-            realm,
-            fallback: aegis_core::realm::HUMAN_REALM,
+        } => aegis_ipc::InteractionDomainAction::Revoke {
+            interaction_domain,
+            fallback: aegis_core::interaction_domain::HUMAN_INTERACTION_DOMAIN,
             expected_revision: Some(expected_revision),
         },
-        aegis_shell::RealmIntent::TransferWindow {
+        aegis_shell::InteractionDomainIntent::TransferWindow {
             window,
             target,
             retain_source_as_observer,
             expected_revision,
-        } => aegis_ipc::RealmAction::Transact {
+        } => aegis_ipc::InteractionDomainAction::Transact {
             expected_revision: Some(expected_revision),
-            mutations: vec![aegis_core::realm::RealmMutation::TransferWindow {
-                window,
-                target,
-                retain_source_as_observer,
-            }],
+            mutations: vec![
+                aegis_core::interaction_domain::InteractionDomainMutation::TransferWindow {
+                    window,
+                    target,
+                    retain_source_as_observer,
+                },
+            ],
         },
     }
 }
 
-pub(super) fn realm_action_invalidates_capture(
-    action: &aegis_ipc::RealmAction,
-) -> std::collections::BTreeSet<aegis_core::realm::RealmId> {
+pub(super) fn interaction_domain_action_invalidates_capture(
+    action: &aegis_ipc::InteractionDomainAction,
+) -> std::collections::BTreeSet<aegis_core::interaction_domain::InteractionDomainId> {
     match action {
-        aegis_ipc::RealmAction::Create { .. } => std::collections::BTreeSet::new(),
-        aegis_ipc::RealmAction::Revoke { realm, .. } => std::collections::BTreeSet::from([*realm]),
-        aegis_ipc::RealmAction::Transact { mutations, .. } => {
-            mutations
-                .iter()
-                .filter_map(|mutation| match mutation {
-                    aegis_core::realm::RealmMutation::SetState {
-                        realm,
-                        state:
-                            aegis_core::realm::RealmState::Paused
-                            | aegis_core::realm::RealmState::Revoked,
-                    } => Some(*realm),
-                    _ => None,
-                })
-                .collect()
-        }
-    }
-}
-
-pub(super) fn realms_explicitly_stopped(
-    action: &aegis_ipc::RealmAction,
-) -> std::collections::BTreeSet<aegis_core::realm::RealmId> {
-    match action {
-        aegis_ipc::RealmAction::Revoke { realm, .. } => std::collections::BTreeSet::from([*realm]),
-        aegis_ipc::RealmAction::Transact { mutations, .. } => mutations
+        aegis_ipc::InteractionDomainAction::Create { .. } => std::collections::BTreeSet::new(),
+        aegis_ipc::InteractionDomainAction::Revoke {
+            interaction_domain, ..
+        } => std::collections::BTreeSet::from([*interaction_domain]),
+        aegis_ipc::InteractionDomainAction::Transact { mutations, .. } => mutations
             .iter()
             .filter_map(|mutation| match mutation {
-                aegis_core::realm::RealmMutation::SetState {
-                    realm,
-                    state: aegis_core::realm::RealmState::Paused,
-                } => Some(*realm),
+                aegis_core::interaction_domain::InteractionDomainMutation::SetState {
+                    interaction_domain,
+                    state:
+                        aegis_core::interaction_domain::InteractionDomainState::Paused
+                        | aegis_core::interaction_domain::InteractionDomainState::Revoked,
+                } => Some(*interaction_domain),
                 _ => None,
             })
             .collect(),
-        aegis_ipc::RealmAction::Create { .. } => std::collections::BTreeSet::new(),
+    }
+}
+
+pub(super) fn interaction_domains_explicitly_stopped(
+    action: &aegis_ipc::InteractionDomainAction,
+) -> std::collections::BTreeSet<aegis_core::interaction_domain::InteractionDomainId> {
+    match action {
+        aegis_ipc::InteractionDomainAction::Revoke {
+            interaction_domain, ..
+        } => std::collections::BTreeSet::from([*interaction_domain]),
+        aegis_ipc::InteractionDomainAction::Transact { mutations, .. } => mutations
+            .iter()
+            .filter_map(|mutation| match mutation {
+                aegis_core::interaction_domain::InteractionDomainMutation::SetState {
+                    interaction_domain,
+                    state: aegis_core::interaction_domain::InteractionDomainState::Paused,
+                } => Some(*interaction_domain),
+                _ => None,
+            })
+            .collect(),
+        aegis_ipc::InteractionDomainAction::Create { .. } => std::collections::BTreeSet::new(),
     }
 }
 
@@ -331,7 +355,9 @@ pub(super) fn journal_effect_and_broadcast(
         ipc,
         ts_mono_ms,
         origin,
-        aegis_ipc::JournalMutation::Command { cmd },
+        aegis_ipc::JournalMutation::Command {
+            cmd: aegis_ipc::AuditedCommand::from(&cmd),
+        },
         effect,
     );
 }
@@ -344,8 +370,15 @@ pub(super) fn journal_mutation_effect_and_broadcast(
     mutation: aegis_ipc::JournalMutation,
     effect: aegis_ipc::Effect,
 ) {
-    let mut j = journal.lock().unwrap();
-    let entry = j.append(ts_mono_ms, origin, mutation, effect);
+    let effect = mutation.privacy_minimize_effect(effect);
+    let mut journal = journal.lock().unwrap();
+    let entry = match journal.try_append(ts_mono_ms, origin, mutation, effect) {
+        Ok(entry) => entry,
+        Err(error) => {
+            log::error!("durable audit append failed; fail-stopping compositor: {error}");
+            std::process::abort();
+        }
+    };
     if let Some(s) = ipc.as_ref() {
         s.broadcast_journal(entry.clone());
     }

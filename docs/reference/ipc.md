@@ -1,11 +1,16 @@
 # IPC Reference
 
-The aegis IPC is protocol version 20, carried as length-framed JSON over the
+The aegis IPC is protocol version 24, carried as length-framed JSON over the
 owner-only Unix socket at `$XDG_RUNTIME_DIR/aegis.sock`. Every connection starts
 with `Hello`; commands are accepted only after capability and scope checks.
 JSON messages are limited to 16 MiB. Large immutable capture and frame
 payloads use a separate sealed-file-descriptor transfer described under
-[Capture](#capture).
+[Capture](#capture). The server admits at most 256 concurrent connections,
+requires `Hello` within 10 seconds, and applies a 30-second write timeout.
+Each connection has a bounded 64-item writer inbox. Request threads
+backpressure on that inbox; compositor event/journal producers never block.
+A subscriber that cannot keep up is disconnected instead of accumulating
+memory or silently missing an invalidation/audit event.
 
 ## Capabilities
 
@@ -15,79 +20,169 @@ payloads use a separate sealed-file-descriptor transfer described under
 | `control` | Mutate windows, workspaces, live-system state, layout, and notifications. | Server policy. |
 | `input` | Inject bounded actions into a target window. | Named scope or paired agent required. |
 | `session` | Quit, persist compositor settings, or perform other session-level operations. | Server policy. |
-| `realm` | Create, configure, capture, pause, transfer, launch into, and revoke Realms. | Named scope or paired agent with the operation in its ceiling. |
+| `interaction_domain` | Create, configure, capture, pause, transfer, launch into, and revoke Interaction Domains. | Named scope or paired agent with the operation in its ceiling. |
 
-Absent `input` and `realm` fields are `false`. An anonymous connection never
-receives `input`; Realm operations also require an explicit operation in the
+Absent `input` and `interaction_domain` fields are `false`. An anonymous connection never
+receives `input`; Interaction Domain operations also require an explicit operation in the
 connection's ceiling. `[agent] lockdown` defaults on and strips every
 privileged capability from unpaired, unnamed connections. First-party owner,
-Realm, agent-administration, and portal clients use separate built-in scopes.
+Interaction Domain, agent-administration, and portal clients use separate built-in scopes.
 These scope names are trusted-component selectors on the owner-only socket,
 not cryptographic identity against a compromised Unix account.
 
-An Agent Realm's controlling principal carries the authenticated registry
-subject that created it. Every Realm mutation, capture, launch, and directed
-input request rechecks that binding. The human Realm may be one side of an
+An Agent Interaction Domain's controlling principal carries the authenticated registry
+subject that created it. Every Interaction Domain mutation, capture, launch, and directed
+input request rechecks that binding. The human Interaction Domain may be one side of an
 authority transfer, but an agent cannot target or recover another subject's
-Realm. Existing connections refresh their live ceiling before use, so a
+Interaction Domain. Existing connections refresh their live ceiling before use, so a
 forgotten principal or narrowed ceiling fails closed immediately.
 
+For an authenticated Actor, `query` is only the transport capability. Each
+observation family also requires an explicit operation in the Actor's
+ceiling, and returned snapshots are filtered by its resource allowlists.
+Observation never follows from an action capability, and action never follows
+from an observation capability.
+
 Every privileged connection supplies `lease: { ttl_ms }` in `Hello`.
-Omitting it strips `control`, `input`, `session`, and `realm`. The allowed
+Omitting it strips `control`, `input`, `session`, and `interaction_domain`. The allowed
 duration is 1,000 through 86,400,000 milliseconds. `RenewLease { ttl_ms }`
 renews a live connection-bound lease; an expired lease cannot be renewed.
 The reference client requests 900,000 milliseconds by default.
+
+Every connection also receives a distinct `ActorSession` in `Hello`. It is
+bound to the connection and authenticated principal, has independent TTL and
+idle deadlines, and carries hard pending-action and live-observation quotas.
+Session expiry, EOF, or principal removal cascades to observation tokens,
+resource grants, and semantic-provider queues. A durable principal can
+survive; its execution session cannot.
 
 ## Queries
 
 | Request | Response | Capability |
 |---------|----------|------------|
-| `GetWindows` | `Windows` | `query` |
-| `GetWorkspaces` | `Workspaces` | `query` |
-| `GetNotifications` | `Notifications` | `query` |
-| `GetOutputs` | `Outputs` | `query` |
-| `GetJournal { since }` | `Journal` | `query` |
-| `GetRealms` | `Realms` | `query` |
-| `GetSettings` | `Settings` with a revisioned snapshot | `query` |
-| `GetSystemStatus` | `SystemStatus` with a live snapshot | `query` |
-| `Realm { action }` | `Realm` with a commit receipt | `realm` + explicit scope op |
+| `GetWindows` | `Windows` | `query`; Actor: `ObserveWindows` |
+| `GetWorkspaces` | `Workspaces` | `query`; Actor: `ObserveWorkspaces` |
+| `GetNotifications` | `Notifications` | `query`; Actor: `ObserveNotifications` |
+| `GetOutputs` | `Outputs` | `query`; Actor: `ObserveOutputs` |
+| `GetJournal { since }` | `Journal` | `query`; Actor: `ObserveJournal` |
+| `GetInteractionDomains` | `InteractionDomains` | `query`; Actor: `ObserveInteractionDomains` |
+| `GetSettings` | `Settings` with a revisioned snapshot | `query`; Actor: `ObserveSettings` |
+| `GetSystemStatus` | `SystemStatus` with a live snapshot | `query`; Actor: `ObserveSystem` |
+| `InteractionDomain { action }` | `InteractionDomain` with a commit receipt | `interaction_domain` + explicit scope op |
 | `Settings { expected_revision, action }` | `SettingsApplied` with a commit receipt | `session` |
 | `CaptureOutput` | `CaptureOutput` | `control` + explicit scope op |
-| `CaptureRealm { realm, region }` | `CaptureRealm` | `realm` + `CaptureRealm` scope op |
+| `CaptureInteractionDomain { interaction_domain, region }` | `CaptureInteractionDomain` | `interaction_domain` + `CaptureInteractionDomain` scope op |
+| `ObserveInteractionDomain { interaction_domain }` | `InteractionDomainObserved` | `query` + `ObserveInteractionDomain` scope op |
+| `ActInInteractionDomain { intent }` | `ActorActionCommitted` | `input` + `InjectInteractionDomainInput` scope op |
+| `RequestResourceGrant { resource, ttl_ms, uses }` | `ResourceGranted` | matching Actor capability; exact-resource confirmation when gated or payment |
+| `ConsumeResourceGrant { id, resource }` | `ResourceGrantConsumed` | owning live Actor session and exact resource |
+| `RevokeResourceGrant { id }` | `ResourceGrantRevoked` | owning live Actor session |
+| `GetAccessibilityWindows` | `AccessibilityWindows` | authenticated system provider + `ObserveWindows` + `PublishAccessibilityTree`; never ordinary observation |
+| `PublishAccessibilityTree { update }` | `AccessibilityTreePublished` | authenticated provider + `PublishAccessibilityTree` |
+| `NextAccessibilityAction { timeout_ms }` | `AccessibilityAction` | authenticated provider + `DispatchAccessibilityAction` |
+| `CompleteAccessibilityAction { request_id, success, message }` | `AccessibilityActionCompleted` | owning provider session and pending request |
 | `StreamOutputStart { max_fps }` | `StreamOutputStarted` | `control` + `StreamOutput` scope op |
 | `StreamOutputStop { stream_id }` | `StreamOutputStopped` | `control` + `StreamOutput` scope op |
 | `SetIdleInhibit { inhibit }` | `IdleInhibitSet { inhibited }` | `control` + `IdleInhibit` scope op |
 
 `Subscribe` enables coarse events:
 
-- `WindowsChanged`, `WorkspaceChanged`, `RealmsChanged { revision }`,
+- `WindowsChanged`, `WorkspaceChanged`, `InteractionDomainsChanged { revision }`,
   `SettingsChanged { revision }`, and `SystemStatusChanged`
   invalidate the corresponding snapshots.
 - `SpaceUseChanged { state }` reports the strongest visible output-space
   consumer. `state` is `available`, `maximized`, or `fullscreen`; fullscreen
   has precedence over maximized.
-- `RealmDamaged { realm, sequence, revision, damage }` reports that an active
-  Realm's directed scene changed. `damage` contains at most 64 rectangles in
+- `InteractionDomainDamaged { interaction_domain, sequence, revision, damage }` reports that an active
+  Interaction Domain's directed scene changed. `damage` contains at most 64 rectangles in
   virtual-output logical coordinates. Surface commits conservatively
-  invalidate the complete Realm-local window placement; mapping, removal,
+  invalidate the complete Interaction Domain-local window placement; mapping, removal,
   transfer, observer, and output-layout changes may invalidate the complete
-  output. Pixels remain pull-based through `CaptureRealm`.
+  output. Pixels remain pull-based through `CaptureInteractionDomain`.
+
+These broadcast lanes are unfiltered. Authenticated Actors are refused by
+`Subscribe` and `SubscribeJournal` and use filtered snapshot and journal
+queries instead. Trusted local components retain subscriptions. A future
+filtered push lane must apply the same principal and resource projection.
 
 `SubscribeJournal` additionally enables one ordered `Journal` event per
-mutation decision. Each `JournalEntry` contains a real per-connection
-`Origin::Ipc { conn_id }`, an `effect`, and one tagged `mutation`:
+mutation decision. Each `JournalEntry` contains an `effect` and one tagged
+`mutation`. Trusted components use `Origin::Ipc { conn_id }`; authenticated
+Actors use `Origin::Actor { conn_id, principal }`:
 
-- `Command { cmd }`; or
-- `Realm { action, before_revision, after_revision }`; or
-- `Settings { action, before_revision, after_revision }`.
+- `Command { cmd: AuditedCommand }`;
+- `InteractionDomain { action, before_revision, after_revision }`;
+- `Settings { action, before_revision, after_revision }`;
+- `ActorAction { action_id, interaction_domain, target, window, actions, actions_truncated,
+  authority_revision }`;
+- `AgentAuth { principal, action }`;
+- `ActorSession { session, principal, action }`; or
+- `ResourceGrant { session, principal, capability, resource_kind, action }`; or
+- `ResourceGrantAttempt { session, principal, action, capability?, resource_kind? }`; or
+- `CapabilityUse { session, principal, capability, action }`.
+
+An `ActorAction` never stores its observation bearer token, typed text,
+values, key codes, or pointer coordinates. `AuditedCommand` similarly removes
+notification text/external ids, screenshot paths/regions, and synthetic-input
+coordinates and codes. These projections retain only target ids, action
+shapes, UTF-8 byte counts, and low-level action counts. Resource events retain
+only the resource category, never an exact path, network origin, secret
+purpose, payee, amount, or grant bearer id. Every durable refusal reason is
+reduced to a fixed mutation category before persistence; arbitrary downstream
+error strings never enter the log. Refused issue/consume/revoke operations
+retain only the attempted operation plus capability/resource categories. `action_id` and
+`authority_revision` are present after a committed main-loop action. Actor
+journal queries exclude other principals' Actor events and apply live window
+and Interaction Domain allowlists.
+
+`CapabilityUse` covers explicit high-risk endpoints that have no richer
+command or semantic-action event: accessibility publication/dispatch,
+capture, semantic observation, stream start/stop, idle-inhibit enable/disable,
+interactive picks/prompts, and wallpaper application. It retains the precise
+operation category but not the endpoint payload. Routine snapshot polling is
+not durably logged.
+
+Actor session ids and IPC connection ids are separate namespaces. The server
+binds them explicitly and re-resolves that binding at effect boundaries;
+clients must not infer one id from the other. Long-running capture and stream
+delivery also carry a live scope binding, so principal or named-scope
+revocation, lease expiry, and window-allowlist narrowing take effect before
+pixels are delivered.
 
 Capability, lease, validation, and scope refusals are journaled even when the
-mutation never reaches the compositor main loop. Realm actions rejected by
-live state carry the unchanged revision in both revision fields.
+mutation never reaches the compositor main loop. Interaction Domain actions
+rejected by live state carry the unchanged revision in both revision fields.
+
+The live journal is backed by
+`$XDG_DATA_HOME/aegis/audit/events-v2.jsonl` (or the equivalent default data
+directory). The owner-only append store synchronizes successful writes and
+verifies monotonic sequence numbers, record bounds, and a SHA-256 hash chain
+when reopening. Hash mismatches, unsafe ownership/mode, symlinks, malformed
+JSON, sequence gaps, or an incomplete trailing record fail closed. Creation also
+synchronizes the containing directory before the store is accepted, so a
+reported durable log cannot depend on an uncommitted directory entry. This is
+a durable decision/audit log, not a promise to resurrect external Wayland
+client state after compositor restart.
+
+`XDG_DATA_HOME` or `HOME` must resolve at startup; the production runtime does
+not downgrade the audit log to memory. Security lifecycle events and
+authorization refusals are persisted before their IPC response is returned.
+An append, flush, or sync failure fail-stops the entire compositor, including
+when detected on a connection worker.
+
+Aegis never deletes or silently rotates this authority history. Production
+deployments must provision a filesystem quota and an operator-controlled
+archive/export policy for `events-v2.jsonl`; archival must preserve complete
+records and chain order. If the active store cannot accept another durable
+record, fail-stop is intentional. The unkeyed chain detects corruption and
+edits that do not recompute the chain, but it is not proof against an attacker
+who controls both the log and every trusted verification copy. Deployments
+that require hostile-owner tamper evidence must continuously export records
+or signed checkpoints to a separately administered system.
 
 ## Commands
 
-| Command | Capability | Operation class | Target |
+| Command | Connection capability | Actor capability | Target |
 |---------|------------|-----------------|--------|
 | `Focus { id }` | `control` | `Focus` | Window |
 | `Minimize { id }` | `control` | `Minimize` | Window |
@@ -96,8 +191,7 @@ live state carry the unchanged revision in both revision fields.
 | `SetWindowGeometry { id, rect }` | `control` | `SetWindowGeometry` | Window |
 | `SetAlwaysOnTop { id, on_top }` | `control` | `SetWindowGeometry` | Window |
 | `InjectInput { id, actions }` | `input` | `InjectInput` | Window |
-| `InjectRealmInput { realm, id, actions }` | `input` | `InjectRealmInput` | Realm and window |
-| `LaunchInRealm { realm, desktop_id }` | `realm` | `LaunchInRealm` | Realm |
+| `LaunchInInteractionDomain { interaction_domain, desktop_id }` | `interaction_domain` | `LaunchInInteractionDomain` | Interaction Domain |
 | `Cycle { forward }` | `control` | `Cycle` | — |
 | `SwitchWorkspace { dir }` | `control` | `SwitchWorkspace` | Focused output |
 | `SwitchWorkspaceTo { id }` | `control` | `SwitchWorkspaceTo` | Workspace |
@@ -114,8 +208,10 @@ live state carry the unchanged revision in both revision fields.
 `System { action }` is the exception: its reply is an authoritative main-loop
 receipt, and an apply refusal returns `Error`. Read the next snapshot or
 journal entry to observe other commands.
+Protocol 21 removes the unguarded `Command::InjectInteractionDomainInput` shape entirely;
+Interaction Domain input exists only as the observation-bound `ActInInteractionDomain` request.
 Window-targeted physical commands are reauthorized on the compositor thread.
-If the human Realm is only an observer, focus, minimize, close, move,
+If the human Interaction Domain is only an observer, focus, minimize, close, move,
 geometry, and workspace mutations produce `Effect::Refused` and do not reach
 the client. Its mirror also blocks physical hit-testing, so a refused click
 cannot fall through to an unrelated window underneath.
@@ -227,38 +323,38 @@ state and actions.
 See the [System Settings Reference](settings.md#modules) and
 [ADR-0072](../adr/0072-desktop-preference-authority-and-toolkit-compatibility.md).
 
-## Realm Authority
+## Interaction Domain Authority
 
-A Realm is an interaction and presentation authority domain. Realm `1` is
-the physical human desktop. Each agent Realm owns an independent `wl_seat`,
+An Interaction Domain is an interaction and presentation authority domain. Interaction Domain `1` is
+the physical human desktop. Each agent Interaction Domain owns an independent `wl_seat`,
 a directed virtual output, and private mount-scoped launch portals.
 
-`GetRealms` returns one `RealmSnapshot` with:
+`GetInteractionDomains` returns one `InteractionDomainSnapshot` with:
 
 - `revision`;
-- principals and Realms;
+- principals and Interaction Domains;
 - seats and their enabled state;
 - connected Wayland clients and observed multi-seat support; and
-- interaction groups, their controlling Realm, observing Realms, and windows.
+- interaction groups, their controlling Interaction Domain, observing Interaction Domains, and windows.
 
-`Realm { action }` is synchronous. It returns only after the compositor main
+`InteractionDomain { action }` is synchronous. It returns only after the compositor main
 loop commits or rejects the operation and records that decision in the
 mutation journal.
 
-| Action | Operation class | Result |
+| Action | Actor capability | Result |
 |--------|-----------------|--------|
-| `Create { label, capabilities, output }` | `CreateRealm` | `Created { bundle }` |
-| `Transact { expected_revision, mutations }` | `TransactRealm` | `TransactionCommitted { receipt }` |
-| `Revoke { realm, fallback, expected_revision }` | `RevokeRealm` | `Revoked { receipt }` |
+| `Create { label, capabilities, output }` | `CreateInteractionDomain` | `Created { bundle }` |
+| `Transact { expected_revision, mutations }` | `TransactInteractionDomain` | `TransactionCommitted { receipt }` |
+| `Revoke { interaction_domain, fallback, expected_revision }` | `RevokeInteractionDomain` | `Revoked { receipt }` |
 
 A transaction contains 1–64 mutations and commits all or none:
 
 | Mutation | Effect |
 |----------|--------|
 | `TransferWindow { window, target, retain_source_as_observer }` | Transfers the complete interaction group containing `window`. |
-| `SetObserver { group, realm, observe }` | Adds or removes a read-only presentation Realm. |
-| `ConfigureOutput { realm, output }` | Changes a virtual output. |
-| `SetState { realm, state }` | Pauses or resumes a Realm. Permanent revocation is a separate action. |
+| `SetObserver { group, interaction_domain, observe }` | Adds or removes a read-only presentation Interaction Domain. |
+| `ConfigureOutput { interaction_domain, output }` | Changes a virtual output. |
+| `SetState { interaction_domain, state }` | Pauses or resumes an Interaction Domain. Permanent revocation is a separate action. |
 
 Scope authorization expands `TransferWindow` and `SetObserver` to the
 complete interaction group before commit. If any affected sibling window is
@@ -274,20 +370,21 @@ Virtual output dimensions are logical pixels. `scale_milli` is scale times
 16,384, scale to 0.25–8.0, refresh to 1–1,000 Hz, and one physical RGBA frame
 to 256 MiB.
 
-`InjectRealmInput` uses target-window-local coordinates and the Realm's
+`ActInInteractionDomain` uses semantic-object-local coordinates and the Interaction Domain's
 independent seat. It never changes physical pointer or keyboard focus and
-does not execute compositor shortcuts.
+does not execute compositor shortcuts. See
+[Observation-bound Interaction Domain Actions](#observation-bound-interaction-domain-actions).
 
-`LaunchInRealm` accepts an enumerated desktop-entry id. The compositor
+`LaunchInInteractionDomain` accepts an enumerated desktop-entry id. The compositor
 launches it through a private mount-scoped Wayland listener and a fail-closed
 Linux namespace sandbox. The randomized host socket path is removed and
 pre-gate connections are dropped before application code runs. One sandbox
 may open several Wayland connections without exposing a reusable host
 pathname. Network and host filesystem access are denied unless
-`[realm_sandbox]` policy explicitly grants them.
+`[interaction_domain_sandbox]` policy explicitly grants them.
 
 Every managed launch receives mandatory cgroup memory, process-count, and CPU
-weight controls. Realm pause, session lock, and inactive VT freeze the
+weight controls. Interaction Domain pause, session lock, and inactive VT freeze the
 complete cgroup; revocation terminates and reaps it. Missing bubblewrap,
 cgroup v2, controller delegation, or portal setup refuses the launch.
 
@@ -365,6 +462,89 @@ Validation limits:
 Input commands bypass compositor global key bindings. A live-state rejection
 after queuing appears as `Effect::Refused` in the mutation journal.
 
+### Observation-bound Interaction Domain Actions
+
+`ObserveInteractionDomain { interaction_domain }` returns a `SemanticObservation` without framebuffer
+pixels. Its semantic snapshot contains the Interaction Domain authority revision and
+compositor-owned objects. Window roots are guaranteed and use durable window
+ids as semantic object ids. Application descendants use
+`{ window, nonzero_local_id }`, so provider ids can never collide across
+windows. Each object carries its source, parent, role, optional name,
+description and bounded value, application id, Interaction Domain-output
+bounds, target-local extent, state, declared actions, and content revision.
+The compositor does not infer semantic nodes from pixels.
+
+In a production direct session, the compositor supervises `aegis-atspi` as a
+separate process with a compositor-lifetime principal. Its credential crosses
+an inherited stdin pipe, not argv, environment, or disk. The adapter maps
+AT-SPI trees into complete bounded revisions; `aegis-semantic` rejects an
+invalid graph, oversized text/tree, escaping geometry, stale revision, or
+provider takeover. Nested sessions do not attach to the host AT-SPI bus,
+because that could confuse outer-desktop objects with inner windows. The
+compositor resolves the adapter only as a sibling of its own executable and
+rejects a symlink, non-regular or non-executable file, owner mismatch, or
+group/world-writable binary or parent directory. The child starts with a
+cleared environment and receives only `XDG_RUNTIME_DIR`, the session and
+AT-SPI bus addresses, locale, and `RUST_LOG`; credentials and the ambient
+`PATH` are never forwarded.
+Before mapping a tree, the adapter requires the AT-SPI D-Bus Unix process id
+to equal the kernel credential captured from the still-live Wayland client,
+then uses an exact non-empty title to select one toplevel. PID-bearing
+bindings are available only to an authenticated provider holding both
+`ObserveWindows` and `PublishAccessibilityTree`; `GetWindows` never exposes
+them. Missing or ambiguous correlation fails closed.
+`PublishAccessibilityTree` and `DispatchAccessibilityAction` are reserved for
+the compositor-provisioned ephemeral system principal: ordinary Agent
+pairing and administrator registration cannot grant them. The adapter also
+refuses unsupervised startup.
+
+Secret prompt values and Agent credentials are never journaled. IPC framing
+zeroizes raw JSON serialization/deserialization buffers, and the server
+zeroizes its typed secret or newly issued credential copy immediately after
+the response write. `SecretPromptResult` also clears its value on drop;
+callers should still call `zeroize()` immediately after downstream use so the
+lifetime is explicit and minimal.
+
+The response includes an opaque, random observation token and an informational
+15,000 ms TTL. The compositor binds the authoritative snapshot to the
+connection, authenticated principal, and Interaction Domain. The token is single-use and
+is revoked on the owning Actor's first action attempt, connection disconnect,
+expiration, session lock, inactive seat, or Interaction Domain lifecycle invalidation. An
+attempt from a different Actor neither uses nor revokes the owning Actor's
+token.
+
+`ActInInteractionDomain { intent }` names the Interaction Domain, semantic target, observation token,
+and bounded actions. Compositor-owned roots accept 1–64 prepared fallback
+actions. Accessibility targets accept exactly one semantic action so a
+provider can never partially apply a batch. On the compositor main loop it
+atomically checks:
+
+- the token's connection, principal, Interaction Domain, and expiry;
+- the Actor's live capability ceiling, runtime grant, and resource allowlists;
+- unchanged Interaction Domain authority and complete semantic target state;
+- an active Interaction Domain seat and current interaction authority;
+- that the target declares every requested semantic action; and
+- that pointer positions remain inside the target-local extent.
+
+The complete batch is prepared before delivery. Accessibility actions are
+then queued to their owning provider, which immediately re-reads live role,
+state, bounds, names, value fingerprint, and declared actions before invoking
+AT-SPI. Password contents are never requested or published, and password text
+actions are not declared because polling cannot prove an unchanged
+same-length secret. Provider rejection, disconnect, queue saturation, stale
+state, or timeout produces a refused audit event and no commit receipt. Any
+mismatch aborts. A
+successful `ActorActionCommitted` receipt contains `action_id`, `interaction_domain`,
+`target`, the compositor-resolved owning `window`, `authority_revision`,
+`actions_applied`, and `committed_mono_ms`.
+The transaction closes the observation-to-dispatch race; it does not roll
+back application business state after the application receives an event.
+
+For `CaptureInteractionDomain`, the compositor refreshes the internal observation lease
+only when the encoded capture passes its delivery-time lock and authority
+checks. GPU readback and PNG encoding therefore do not consume the advertised
+15-second client action window, and a disconnected Actor cannot refresh it.
+
 ## Capture
 
 aegis exposes pixel capture through two fail-closed operations that share one
@@ -393,24 +573,24 @@ Capture regions use compositor logical pixels. The returned PNG and
 scale has twice the logical width and height.
 
 Continuous physical-output frame streaming reuses the same scale-aware
-frame-copy path; see [Streaming](#streaming). Realm observers do not need to
-poll: `RealmDamaged` tells them when a directed scene should be recaptured.
+frame-copy path; see [Streaming](#streaming). Interaction Domain observers do not need to
+poll: `InteractionDomainDamaged` tells them when a directed scene should be recaptured.
 
-`CaptureRealm` reads only the selected Realm's directed virtual output. It
-does not contain physical-desktop chrome, the cursor, or another Realm. The
-response contains `capture` metadata with `realm`, physical `width` and
-`height`, `scale_milli`, the logical `region`, `placements`, `png_bytes`, and
-the authority `revision`, followed by the sealed PNG descriptor. Each
-placement contains a window id, its rectangle in virtual-output logical
-coordinates, and the target-local surface size. The metadata, scene, and
-revision are one atomic observation, so an agent can map captured pixels to
-`InjectRealmInput` coordinates without racing a layout change.
+`CaptureInteractionDomain` reads only the selected Interaction Domain's directed virtual output. It
+does not contain physical-desktop chrome, the cursor, or another Interaction Domain. The
+response contains `capture` metadata with `interaction_domain`, physical `width` and
+`height`, `scale_milli`, the logical `region`, `placements`, `png_bytes`, the
+authority `revision`, and a semantic `observation`, followed by the sealed PNG
+descriptor. Each placement contains a window id, its rectangle in
+virtual-output logical coordinates, and the target-local surface size. The
+observation token must be supplied to `ActInInteractionDomain`; pixels and coordinates
+alone carry no authority.
 
 A security generation invalidates in-flight pixels across session-lock,
 inactive-seat, pause, and revocation boundaries, including a lock followed by
 a quick unlock. Encoding runs in a bounded worker. The compositor main thread
-checks scope, lease, security generation, and Realm state before queuing the
-result; the sole IPC writer checks the live scope, lock/VT gate, Realm state,
+checks scope, lease, security generation, and Interaction Domain state before queuing the
+result; the sole IPC writer checks the live scope, lock/VT gate, Interaction Domain state,
 authority revision, and lease again immediately before it sends the sealed
 descriptor.
 
@@ -492,8 +672,8 @@ Named scopes survive only as hardcoded trusted-component grants (ADR-0090);
 config-declared `[[agent.scope]]` entries were removed in protocol 18.
 
 Native `aegis` commands use separate `aegis-owner-admin`,
-`aegis-realm-admin`, and `aegis-agent-admin` scopes for ordinary
-owner mutations, Realm recovery, and agent-registry administration.
+`aegis-interaction-domain-admin`, and `aegis-agent-admin` scopes for ordinary
+owner mutations, Interaction Domain recovery, and agent-registry administration.
 
 `xdg-desktop-portal-aegis` uses the built-in owner-only `aegis-portal`
 scope, which grants exactly these operations: `CaptureOutput` for Screenshot,
@@ -514,6 +694,29 @@ operation. FileChooser and its path data now stay inside the independent
 portal package; Aegis participates only through xdg-foreign-v2 window
 parenting.
 
+Protocol 21 separates authenticated Actor observation families, filters query
+resources, adds semantic `ObserveInteractionDomain` and observation-bound `ActInInteractionDomain`,
+records authenticated Actor origins, and rejects unguarded Interaction Domain input. See
+[ADR-0102](../adr/0102-actor-scoped-semantic-observation-and-transactional-actions.md).
+
+Protocol 22 adopts the `InteractionDomain`, `ActorCapability`,
+`AuthorizationDecision`, and `ConnectionCapabilities` vocabulary and moves
+capability and observation-transaction policy into `aegis-authority`. It is a
+major-version boundary; older clients are refused at `Hello`.
+
+Protocol 23 adds explicit Actor sessions, dynamic exact-resource grants, and
+the authenticated accessibility tree/action adapter. Resource handles are
+opaque 256-bit ids bound to one session, optional principal, exact normalized
+resource, capability, monotonic TTL, and use count. Filesystem and origin
+grants are authority for a compatible resource broker; they do not mutate a
+sandbox or voluntarily grant ambient process access. Secret prompting already
+consumes a one-use exact grant. Payment requests always require fresh exact
+human confirmation.
+
+Protocol 24 adds `GetAccessibilityWindows`, a provider-only process-bound
+window seam. It prevents the trusted adapter from assigning an untrusted
+AT-SPI tree to a Wayland window based only on spoofable application metadata.
+
 **Agent authorization** (protocol 19, ADR-0090) replaces configured scopes
 for agents. `Hello.agent` carries a self-declaration: a cosmetic `label`,
 the `requested` operation families, and an optional `credential` from an
@@ -522,10 +725,21 @@ compositor chrome; the user-approved set becomes the principal's ceiling,
 and `Hello.agent` in the reply carries the issued `principal` and a new
 `credential` to persist. The connection's effective scope is synthesized
 from the ceiling: ordinary approved operations are pregranted, and the
-platform dangerous set (`Close`, `InjectRealmInput`, `CreateRealm`,
-`TransactRealm`, `RevokeRealm`, `CaptureRealm`, `LaunchInRealm`) lands in
+platform dangerous set (`Close`, `InjectInteractionDomainInput`, `CreateInteractionDomain`,
+`TransactInteractionDomain`, `RevokeInteractionDomain`, `CaptureInteractionDomain`, `ObserveInteractionDomain`,
+`LaunchInInteractionDomain`) lands in
 `ask_ops`, where every use routes through an interactive runtime grant
 (Deny / Allow once / Allow session / Always allow) before dispatch.
+
+Handshake scope names, labels, credentials, and capability lists are bounded
+and validated before registry lookup or pairing; duplicate requested
+capabilities are rejected. The principal/grant stores accept only bounded,
+semantically valid owner-only regular files with one link and refuse
+symlinks, unsafe modes, oversized files, duplicate identities, malformed
+ceilings, and component-only capability injection. Credential digests are
+compared in constant time. Cleartext handshake, issued-credential, secret,
+and identity-file buffers are zeroized after use, and sensitive `Debug`
+representations are redacted.
 
 Principal and grant management requires the agent-admin scope (plus
 `control` and a live lease for mutations):

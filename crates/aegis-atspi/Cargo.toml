@@ -1,0 +1,20 @@
+[package]
+name = "aegis-atspi"
+description = "Out-of-process AT-SPI adapter for Aegis semantic observation and actions"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aegis-core = { workspace = true, features = ["serde"] }
+aegis-ipc.workspace = true
+aegis-semantic.workspace = true
+async-io.workspace = true
+atspi.workspace = true
+sha2.workspace = true
+serde_json.workspace = true
+log.workspace = true
+aegis-logging.workspace = true
+zbus.workspace = true

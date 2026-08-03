@@ -11,7 +11,7 @@ D-Bus as needed.
 | Item | Value |
 |------|-------|
 | Source repository | `https://github.com/aegis-shell/xdg-desktop-portal-aegis` |
-| Release compatibility | Published Portal `v0.0.1` supports Aegis `v0.0.9`; this unreleased protocol-20 boundary requires the next coordinated Portal release, whose manifest remains authoritative |
+| Release compatibility | Published Portal `v0.0.1` supports Aegis `v0.0.9`; this unreleased protocol-21 boundary requires the next coordinated Portal release, whose manifest remains authoritative |
 | Distribution package | `xdg-desktop-portal-aegis` |
 | Backend executable | `/usr/lib/xdg-desktop-portal-aegis` |
 | FileChooser prompter | `/usr/lib/aegis-portal-prompter` |

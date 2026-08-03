@@ -32,13 +32,14 @@ use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use aegis_core::layout::Layout;
-use aegis_core::realm::{
-    AuthorityTransfer, HUMAN_PRINCIPAL, HUMAN_REALM, HUMAN_SEAT, PresentationTarget, PrincipalId,
-    RealmBundle, RealmError, RealmId, RealmModel, RealmMutation, RealmMutationResult,
-    RealmRevocation, RealmSnapshot, RealmTransactionReceipt, SeatCapabilities, SeatId,
-    TransferOptions, VirtualOutput,
+use aegis_core::interaction_domain::{
+    AuthorityTransfer, HUMAN_INTERACTION_DOMAIN, HUMAN_PRINCIPAL, HUMAN_SEAT,
+    InteractionDomainBundle, InteractionDomainError, InteractionDomainId, InteractionDomainModel,
+    InteractionDomainMutation, InteractionDomainMutationResult, InteractionDomainRevocation,
+    InteractionDomainSnapshot, InteractionDomainTransactionReceipt, InteractionPrincipalId,
+    PresentationTarget, SeatCapabilities, SeatId, TransferOptions, VirtualOutput,
 };
+use aegis_core::layout::Layout;
 use aegis_core::{SurfaceDmabuf, SurfacePixels};
 
 /// Security-visible phase of the ext-session-lock protocol.
@@ -350,7 +351,7 @@ pub(crate) unsafe fn libc_close(fd: i32) {
 /// of shm, and its xdg role.
 pub struct SurfaceRec {
     pub resource: *mut ffi::wl_resource,
-    client_id: aegis_core::realm::ClientId,
+    client_id: aegis_core::interaction_domain::ClientId,
     pending_buffer: *mut ffi::wl_resource,
     pending_buffer_set: bool,
     pending_attach_offset: aegis_core::Point,
@@ -515,7 +516,7 @@ impl SurfaceRec {
     fn new(resource: *mut ffi::wl_resource) -> SurfaceRec {
         SurfaceRec {
             resource,
-            client_id: aegis_core::realm::ClientId::default(),
+            client_id: aegis_core::interaction_domain::ClientId::default(),
             pending_buffer: std::ptr::null_mut(),
             pending_buffer_set: false,
             pending_attach_offset: aegis_core::Point::default(),
@@ -622,9 +623,12 @@ fn intersect_rect(a: aegis_core::Rect, b: aegis_core::Rect) -> Option<aegis_core
         .then(|| aegis_core::Rect::new(x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32))
 }
 
-/// Clip, deduplicate and bound one Realm's damage metadata. The compositor
+/// Clip, deduplicate and bound one Interaction Domain's damage metadata. The compositor
 /// never exposes unchecked client coordinates through IPC.
-fn normalize_realm_damage(rects: &mut Vec<aegis_core::Rect>, output: aegis_core::Rect) {
+fn normalize_interaction_domain_damage(
+    rects: &mut Vec<aegis_core::Rect>,
+    output: aegis_core::Rect,
+) {
     *rects = rects
         .drain(..)
         .filter_map(|rect| intersect_rect(rect, output))
@@ -868,8 +872,8 @@ pub(crate) struct OutputGlobal {
     state: *mut State,
     info: aegis_core::output::OutputInfo,
     /// `None` for a physical backend output; directed virtual outputs belong
-    /// to exactly one Realm.
-    realm: Option<RealmId>,
+    /// to exactly one Interaction Domain.
+    interaction_domain: Option<InteractionDomainId>,
     global: *mut ffi::wl_global,
     active: bool,
 }
@@ -897,8 +901,8 @@ struct PendingTopBorderDoubleClick {
 /// with the physical user's state.
 pub(crate) struct SeatRuntime {
     id: SeatId,
-    realm: RealmId,
-    principal: PrincipalId,
+    interaction_domain: InteractionDomainId,
+    principal: InteractionPrincipalId,
     capabilities: SeatCapabilities,
     seat_resources: Vec<*mut ffi::wl_resource>,
     pointer_resources: Vec<*mut ffi::wl_resource>,
@@ -969,13 +973,13 @@ pub(crate) struct SeatRuntime {
 impl SeatRuntime {
     fn new(
         id: SeatId,
-        realm: RealmId,
-        principal: PrincipalId,
+        interaction_domain: InteractionDomainId,
+        principal: InteractionPrincipalId,
         capabilities: SeatCapabilities,
     ) -> Self {
         Self {
             id,
-            realm,
+            interaction_domain,
             principal,
             capabilities,
             seat_resources: Vec::new(),
@@ -1048,7 +1052,7 @@ struct ClientDestroyRecord {
     listener: ffi::wl_listener,
     state: *mut State,
     client: *mut ffi::wl_client,
-    id: aegis_core::realm::ClientId,
+    id: aegis_core::interaction_domain::ClientId,
 }
 
 /// Frozen MRU order while the physical user holds Super for window cycling.
@@ -1120,7 +1124,7 @@ impl WorkspaceSlide {
 /// boxed and never moved out.
 pub(crate) struct State {
     pub(crate) display: *mut ffi::wl_display,
-    authority: RealmModel,
+    authority: InteractionDomainModel,
     seats: std::collections::BTreeMap<SeatId, Box<SeatRuntime>>,
     /// Seat whose event/request path is currently executing. The server main
     /// loop is single-threaded; an RAII guard changes this only for the bounded
@@ -1129,36 +1133,48 @@ pub(crate) struct State {
     #[allow(clippy::vec_box)]
     seat_globals: Vec<Box<SeatGlobal>>,
     /// Registry globals that are physical-session authority and must never be
-    /// advertised to clients launched through a Realm portal.
-    realm_hidden_globals: std::collections::HashSet<usize>,
+    /// advertised to clients launched through an Interaction Domain portal.
+    interaction_domain_hidden_globals: std::collections::HashSet<usize>,
     /// Reverse lookup for every seat-owned protocol resource. Entries remain
     /// until the resource destroy callback, so stale protocol objects fail
-    /// closed after a realm is revoked.
+    /// closed after an interaction domain is revoked.
     seat_resource_owners: std::collections::HashMap<usize, SeatId>,
     /// Client-facing seat from which a routed child resource was created.
     /// Compatibility routing may change its runtime owner; native multi-seat
     /// rebinding restores the resource to this advertised origin.
     seat_resource_origins: std::collections::HashMap<usize, SeatId>,
-    clients: std::collections::HashMap<usize, aegis_core::realm::ClientId>,
-    /// Trusted launch-portal origin for clients accepted on a private Realm
+    clients: std::collections::HashMap<usize, aegis_core::interaction_domain::ClientId>,
+    /// Kernel-authenticated process id captured while a Wayland client is
+    /// live. This is exposed only through the trusted accessibility binding
+    /// seam, never through the general window snapshot.
+    client_process_ids: std::collections::HashMap<aegis_core::interaction_domain::ClientId, u32>,
+    /// Trusted launch-portal origin for clients accepted on a private Interaction Domain
     /// listener.
     /// Human/default-socket clients are omitted.
-    client_initial_realms: std::collections::HashMap<aegis_core::realm::ClientId, RealmId>,
+    client_initial_interaction_domains:
+        std::collections::HashMap<aegis_core::interaction_domain::ClientId, InteractionDomainId>,
     client_bound_seats: std::collections::HashMap<usize, std::collections::BTreeSet<SeatId>>,
-    realm_placements:
-        std::collections::BTreeMap<(RealmId, aegis_core::window::WindowId), aegis_core::Rect>,
-    /// Realm layouts are recomputed after the current Wayland dispatch batch.
+    /// Validated application accessibility trees. The compositor owns only
+    /// the bounded projection and routing metadata; D-Bus stays in the
+    /// out-of-process adapter.
+    semantic_trees: aegis_semantic::SemanticTreeRegistry,
+    interaction_domain_placements: std::collections::BTreeMap<
+        (InteractionDomainId, aegis_core::window::WindowId),
+        aegis_core::Rect,
+    >,
+    /// Interaction Domain layouts are recomputed after the current Wayland dispatch batch.
     /// Deferring keeps role creation and surface commits atomic from the
-    /// client's perspective while ensuring newly mapped Realm windows receive
+    /// client's perspective while ensuring newly mapped Interaction Domain windows receive
     /// a virtual-output placement before observers are notified.
-    pending_realm_layouts: std::collections::BTreeSet<RealmId>,
+    pending_interaction_domain_layouts: std::collections::BTreeSet<InteractionDomainId>,
     /// Windows whose committed scene content changed during this dispatch
-    /// batch. `Server::take_realm_damage` maps these durable ids into each
-    /// observing Realm's virtual-output coordinate space after layouts settle.
+    /// batch. `Server::take_interaction_domain_damage` maps these durable ids into each
+    /// observing Interaction Domain's virtual-output coordinate space after layouts settle.
     damaged_windows: std::collections::BTreeSet<aegis_core::window::WindowId>,
     /// Conservative damage queued for topology changes where an old placement
     /// may no longer be recoverable (remove, transfer, output reconfigure).
-    pending_realm_damage: std::collections::BTreeMap<RealmId, Vec<aegis_core::Rect>>,
+    pending_interaction_domain_damage:
+        std::collections::BTreeMap<InteractionDomainId, Vec<aegis_core::Rect>>,
     /// Surface pointers in stacking order (bottom to top). Entries are nulled
     /// when a surface's destroy notify fires; focusing a toplevel moves its
     /// pointer to the end and updates affected live records' slot indices.
@@ -1302,556 +1318,7 @@ pub(crate) struct State {
     next_window_id: u64,
 }
 
-impl State {
-    pub(crate) fn now_ms(&self) -> u64 {
-        self.epoch.elapsed().as_millis() as u64
-    }
-
-    pub(crate) fn persist_app_geometry(
-        &mut self,
-        app_id: &str,
-        rect: aegis_core::Rect,
-        workspace: Option<u32>,
-        layout_role: Option<aegis_core::layout::LayoutRole>,
-    ) {
-        if app_id.is_empty() {
-            return;
-        }
-        self.last_app_geometries.insert(app_id.to_owned(), rect);
-        self.window_state_store.update(
-            app_id.to_owned(),
-            aegis_core::window_state_store::SavedWindowState {
-                position: Some(rect.origin),
-                size: Some(rect.size),
-                workspace,
-                layout_role,
-                maximized: None,
-            },
-        );
-        let _ = self
-            .window_state_store
-            .save_to_path(&self.window_state_path);
-    }
-
-    pub(crate) fn workspace_number_for_window(
-        &self,
-        window: aegis_core::window::WindowId,
-    ) -> Option<u32> {
-        let workspace = self.workspaces.workspace_of(window)?;
-        let output = self.workspaces.workspace(workspace)?.output;
-        let index = self
-            .workspaces
-            .output(output)?
-            .workspaces
-            .iter()
-            .position(|candidate| *candidate == workspace)?;
-        u32::try_from(index).ok()?.checked_add(1)
-    }
-
-    fn new(display: *mut ffi::wl_display) -> State {
-        let mut workspaces = aegis_core::workspace::WorkspaceModel::new();
-        let output = workspaces.add_output("nested");
-        let authority = RealmModel::new();
-        let human_seat = Box::new(SeatRuntime::new(
-            HUMAN_SEAT,
-            HUMAN_REALM,
-            HUMAN_PRINCIPAL,
-            SeatCapabilities::ALL,
-        ));
-        let window_state_path = aegis_core::window_state_store::WindowStateStore::default_path();
-        let window_state_store =
-            aegis_core::window_state_store::WindowStateStore::load_from_path(&window_state_path);
-        let mut last_app_geometries = std::collections::HashMap::new();
-        for (app_id, entry) in &window_state_store.entries {
-            if let (Some(pos), Some(sz)) = (entry.position, entry.size) {
-                last_app_geometries.insert(
-                    app_id.clone(),
-                    aegis_core::Rect {
-                        origin: pos,
-                        size: sz,
-                    },
-                );
-            }
-        }
-        State {
-            display,
-            authority,
-            seats: std::collections::BTreeMap::from([(HUMAN_SEAT, human_seat)]),
-            active_seat: HUMAN_SEAT,
-            seat_globals: Vec::new(),
-            realm_hidden_globals: std::collections::HashSet::new(),
-            seat_resource_owners: std::collections::HashMap::new(),
-            seat_resource_origins: std::collections::HashMap::new(),
-            clients: std::collections::HashMap::new(),
-            client_initial_realms: std::collections::HashMap::new(),
-            client_bound_seats: std::collections::HashMap::new(),
-            realm_placements: std::collections::BTreeMap::new(),
-            pending_realm_layouts: std::collections::BTreeSet::new(),
-            damaged_windows: std::collections::BTreeSet::new(),
-            pending_realm_damage: std::collections::BTreeMap::new(),
-            surfaces: Vec::new(),
-            last_background_frame_callback_ms: 0,
-            window_switcher: None,
-            workspace_slide: None,
-            output_resources: Vec::new(),
-            output_globals: Vec::new(),
-            xdg_output_resources: Vec::new(),
-            xdg_output_links: std::collections::HashMap::new(),
-            dmabuf_feedback_resources: Vec::new(),
-            idle_notifications: Vec::new(),
-            idle_inhibitors: Vec::new(),
-            ipc_idle_inhibit: false,
-            known_tools: Vec::new(),
-            retired_buffer_releases: Vec::new(),
-            foreign_toplevel_lists: Vec::new(),
-            foreign_handles: std::collections::HashMap::new(),
-            xdg_foreign_exports: std::collections::HashMap::new(),
-            xdg_foreign_imports: Vec::new(),
-            activation_tokens: std::collections::HashMap::new(),
-            pending_activation: None,
-            pending_popup_focus: std::collections::BTreeMap::new(),
-            session_lock: std::ptr::null_mut(),
-            session_lock_phase: SessionLockPhase::Unlocked,
-            allow_quit_while_locked: false,
-            lock_focus_dirty: false,
-            pending_lock_focus: std::ptr::null_mut(),
-            pre_lock_keyboard_focus: std::ptr::null_mut(),
-            pending_vt_switch: None,
-            workspaces,
-            output,
-            layout_params: aegis_core::layout::LayoutParams::default(),
-            reduced_motion: false,
-            decoration_policy: aegis_core::window::DecorationPolicy::default(),
-            window_rules: Vec::new(),
-            output_geometry: aegis_core::output::OutputGeometry::default(),
-            output_infos: vec![aegis_core::output::OutputInfo {
-                connector: "nested".to_owned(),
-                geometry: aegis_core::output::OutputGeometry::default(),
-                available_modes: Vec::new(),
-            }],
-            outputs_revision: 0,
-            output_policies: std::collections::HashMap::new(),
-            last_work_area: aegis_core::Rect::default(),
-            epoch: std::time::Instant::now(),
-            last_app_geometries,
-            window_state_store,
-            window_state_path,
-            remember_window_positions: true,
-            dmabuf_formats: Vec::new(),
-            dmabuf_scanout_formats: Vec::new(),
-            dmabuf_main_device: None,
-            dmabuf_scanout_device: None,
-            next_window_id: 1,
-        }
-    }
-
-    fn seat_runtime(&self, seat: SeatId) -> Option<&SeatRuntime> {
-        self.seats.get(&seat).map(Box::as_ref)
-    }
-
-    fn seat_runtime_mut(&mut self, seat: SeatId) -> Option<&mut SeatRuntime> {
-        self.seats.get_mut(&seat).map(Box::as_mut)
-    }
-
-    fn seat_for_resource(&self, resource: *mut ffi::wl_resource) -> Option<SeatId> {
-        self.seat_resource_owners.get(&(resource as usize)).copied()
-    }
-
-    fn seat_origin_for_resource(&self, resource: *mut ffi::wl_resource) -> Option<SeatId> {
-        self.seat_resource_origins
-            .get(&(resource as usize))
-            .copied()
-    }
-
-    fn track_seat_resource(&mut self, resource: *mut ffi::wl_resource, seat: SeatId) {
-        self.seat_resource_owners.insert(resource as usize, seat);
-        self.seat_resource_origins
-            .entry(resource as usize)
-            .or_insert(seat);
-    }
-
-    fn track_routed_seat_resource(
-        &mut self,
-        resource: *mut ffi::wl_resource,
-        advertised: SeatId,
-        routed: SeatId,
-    ) {
-        self.seat_resource_owners.insert(resource as usize, routed);
-        self.seat_resource_origins
-            .insert(resource as usize, advertised);
-    }
-
-    fn untrack_seat_resource(&mut self, resource: *mut ffi::wl_resource) -> Option<SeatId> {
-        self.seat_resource_origins.remove(&(resource as usize));
-        self.seat_resource_owners.remove(&(resource as usize))
-    }
-
-    unsafe fn ensure_client(&mut self, client: *mut ffi::wl_client) -> aegis_core::realm::ClientId {
-        unsafe { self.ensure_client_with_realm(client, None) }
-    }
-
-    unsafe fn ensure_client_with_realm(
-        &mut self,
-        client: *mut ffi::wl_client,
-        realm: Option<RealmId>,
-    ) -> aegis_core::realm::ClientId {
-        unsafe {
-            if let Some(id) = self.clients.get(&(client as usize)).copied() {
-                return id;
-            }
-            let security_context = realm.map(|realm| format!("aegis.realm.{}", realm.0));
-            let id = self.authority.register_client(security_context);
-            self.clients.insert(client as usize, id);
-            if let Some(realm) = realm {
-                self.client_initial_realms.insert(id, realm);
-            }
-            let record = Box::new(ClientDestroyRecord {
-                listener: ffi::wl_listener {
-                    link: ffi::wl_list {
-                        prev: std::ptr::null_mut(),
-                        next: std::ptr::null_mut(),
-                    },
-                    notify: Some(client_destroyed),
-                },
-                state: self as *mut State,
-                client,
-                id,
-            });
-            let record = Box::into_raw(record);
-            ffi::wl_client_add_destroy_listener(client, &mut (*record).listener);
-            id
-        }
-    }
-
-    fn client_view_realm(&self, client: *mut ffi::wl_client) -> RealmId {
-        self.clients
-            .get(&(client as usize))
-            .and_then(|client| self.client_initial_realms.get(client))
-            .copied()
-            .unwrap_or(HUMAN_REALM)
-    }
-
-    fn client_observes_window(
-        &self,
-        client: *mut ffi::wl_client,
-        window: aegis_core::window::WindowId,
-    ) -> bool {
-        self.authority
-            .realm_observes_window(self.client_view_realm(client), window)
-    }
-
-    fn register_window(
-        &mut self,
-        client: aegis_core::realm::ClientId,
-        window: aegis_core::window::WindowId,
-    ) -> Result<(), RealmError> {
-        let existing = self
-            .authority
-            .interaction_groups_for_client(client)
-            .next()
-            .map(|group| group.id);
-        if let Some(group) = existing {
-            self.authority.add_window_to_group(group, window)?;
-        } else {
-            let initial_realm = self
-                .client_initial_realms
-                .get(&client)
-                .copied()
-                .unwrap_or(HUMAN_REALM);
-            let group =
-                self.authority
-                    .create_interaction_group(client, &[window], initial_realm)?;
-            // A client launched through an Agent Realm owns its independent
-            // seat from the first toplevel onward, but the physical desktop
-            // still presents a read-only mirror. This is presentation policy,
-            // not shared input authority: the human Realm is an observer and
-            // therefore can never deliver events to this interaction group.
-            if self
-                .authority
-                .realm(initial_realm)
-                .is_some_and(|realm| realm.kind == aegis_core::realm::RealmKind::Agent)
-            {
-                self.authority.set_observer(group, HUMAN_REALM, true)?;
-            }
-        }
-        self.queue_realm_layouts_for_window(window);
-        Ok(())
-    }
-
-    fn unregister_window(&mut self, window: aegis_core::window::WindowId) {
-        if self
-            .authority
-            .interaction_group_for_window(window)
-            .is_some()
-        {
-            let realms = self.realms_for_window(window);
-            for realm in realms {
-                self.queue_full_realm_damage(realm);
-                self.pending_realm_layouts.insert(realm);
-            }
-            self.damaged_windows.remove(&window);
-            let _ = self.authority.remove_window(window);
-            self.realm_placements
-                .retain(|(_, placement_window), _| *placement_window != window);
-        }
-    }
-
-    fn realms_for_window(&self, window: aegis_core::window::WindowId) -> Vec<RealmId> {
-        let Some(group) = self.authority.interaction_group_for_window(window) else {
-            return Vec::new();
-        };
-        let mut realms = Vec::with_capacity(group.observer_realms.len() + 1);
-        realms.push(group.control_realm);
-        realms.extend(group.observer_realms.iter().copied());
-        realms.sort_unstable();
-        realms.dedup();
-        realms
-    }
-
-    fn queue_realm_layouts_for_window(&mut self, window: aegis_core::window::WindowId) {
-        for realm in self.realms_for_window(window) {
-            if realm != HUMAN_REALM {
-                self.pending_realm_layouts.insert(realm);
-            }
-        }
-    }
-
-    fn queue_full_realm_damage(&mut self, realm: RealmId) {
-        let Some(record) = self.authority.realm(realm) else {
-            return;
-        };
-        let PresentationTarget::Virtual { output } = record.presentation else {
-            return;
-        };
-        self.pending_realm_damage
-            .entry(realm)
-            .or_default()
-            .push(aegis_core::Rect::new(
-                0,
-                0,
-                output.width as i32,
-                output.height as i32,
-            ));
-    }
-
-    unsafe fn note_client_used_seat(&mut self, client: *mut ffi::wl_client, seat: SeatId) {
-        unsafe {
-            let id = self.ensure_client(client);
-            let bound = self.client_bound_seats.entry(client as usize).or_default();
-            if self.client_initial_realms.contains_key(&id) {
-                bound.insert(seat);
-                return;
-            }
-            let was_multi_seat = bound.len() > 1;
-            bound.insert(seat);
-            if !was_multi_seat && bound.len() > 1 {
-                let _ = self
-                    .authority
-                    .set_client_multi_seat(id, aegis_core::realm::MultiSeatSupport::Supported);
-                self.restore_native_multiseat_resources(client);
-            }
-        }
-    }
-
-    fn client_routed_seat(&self, client: *mut ffi::wl_client, advertised: SeatId) -> SeatId {
-        let Some(client_id) = self.clients.get(&(client as usize)).copied() else {
-            return advertised;
-        };
-        if self.authority.client(client_id).is_some_and(|client| {
-            client.multi_seat == aegis_core::realm::MultiSeatSupport::Supported
-        }) {
-            return advertised;
-        }
-        let realm = self
-            .authority
-            .interaction_groups_for_client(client_id)
-            .next()
-            .map(|group| group.control_realm)
-            .or_else(|| self.client_initial_realms.get(&client_id).copied());
-        let Some(realm) = realm else {
-            return advertised;
-        };
-        self.authority
-            .snapshot()
-            .seats
-            .into_iter()
-            .find(|seat| seat.realm == realm && seat.enabled)
-            .map(|seat| seat.id)
-            .unwrap_or(advertised)
-    }
-
-    unsafe fn migrate_compatibility_resources(
-        &mut self,
-        client_id: aegis_core::realm::ClientId,
-        target: SeatId,
-    ) {
-        unsafe {
-            if self.authority.client(client_id).is_some_and(|client| {
-                client.multi_seat == aegis_core::realm::MultiSeatSupport::Supported
-            }) {
-                return;
-            }
-            let Some(client) = self
-                .clients
-                .iter()
-                .find_map(|(raw, id)| (*id == client_id).then_some(*raw as *mut ffi::wl_client))
-            else {
-                return;
-            };
-            if !self.seats.contains_key(&target) {
-                return;
-            }
-
-            // Revoke offers that originated in the source realm before moving the
-            // destination devices. Already-issued offers are capabilities and
-            // must not remain usable across an authority boundary.
-            for (seat, runtime) in &mut self.seats {
-                if *seat == target {
-                    continue;
-                }
-                for device in runtime.data_devices.iter().copied().filter(|resource| {
-                    !resource.is_null() && ffi::wl_resource_get_client(*resource) == client
-                }) {
-                    ffi::wl_resource_post_event(
-                        device,
-                        ffi::WL_DATA_DEVICE_SELECTION,
-                        std::ptr::null_mut::<ffi::wl_resource>(),
-                    );
-                }
-                for offer in runtime.data_offers.iter().copied().filter(|resource| {
-                    !resource.is_null() && ffi::wl_resource_get_client(*resource) == client
-                }) {
-                    let record = ffi::wl_resource_get_user_data(offer) as *mut DataOfferRec;
-                    if !record.is_null() {
-                        (*record).source = std::ptr::null_mut();
-                    }
-                }
-            }
-
-            macro_rules! migrate {
-                ($field:ident) => {{
-                    let mut moved = Vec::new();
-                    for (seat, runtime) in &mut self.seats {
-                        if *seat == target {
-                            continue;
-                        }
-                        runtime.$field.retain(|resource| {
-                            let belongs = !resource.is_null()
-                                && ffi::wl_resource_get_client(*resource) == client;
-                            if belongs {
-                                moved.push(*resource);
-                            }
-                            !belongs
-                        });
-                    }
-                    for resource in &moved {
-                        self.seat_resource_owners.insert(*resource as usize, target);
-                    }
-                    self.seats
-                        .get_mut(&target)
-                        .expect("validated target seat disappeared")
-                        .$field
-                        .extend(moved);
-                }};
-            }
-
-            migrate!(pointer_resources);
-            migrate!(keyboard_resources);
-            migrate!(touch_resources);
-            migrate!(data_devices);
-            migrate!(relative_pointers);
-            migrate!(pointer_constraints);
-            migrate!(pointer_gesture_swipes);
-            migrate!(pointer_gesture_pinches);
-            migrate!(pointer_gesture_holds);
-            migrate!(cursor_shape_devices);
-            migrate!(keyboard_shortcut_inhibitors);
-            migrate!(tablet_seats);
-            migrate!(tablet_devices);
-            migrate!(tablet_tools);
-            migrate!(text_inputs);
-        }
-    }
-
-    unsafe fn restore_native_multiseat_resources(&mut self, client: *mut ffi::wl_client) {
-        unsafe {
-            let live_seats = self
-                .seats
-                .keys()
-                .copied()
-                .collect::<std::collections::BTreeSet<_>>();
-            macro_rules! restore {
-                ($field:ident) => {{
-                    let mut moved = Vec::<(SeatId, *mut ffi::wl_resource)>::new();
-                    for (current, runtime) in &mut self.seats {
-                        runtime.$field.retain(|resource| {
-                            if resource.is_null()
-                                || ffi::wl_resource_get_client(*resource) != client
-                            {
-                                return true;
-                            }
-                            let origin = self
-                                .seat_resource_origins
-                                .get(&(*resource as usize))
-                                .copied()
-                                .unwrap_or(*current);
-                            if origin != *current && live_seats.contains(&origin) {
-                                moved.push((origin, *resource));
-                                false
-                            } else {
-                                true
-                            }
-                        });
-                    }
-                    for (origin, resource) in moved {
-                        self.seat_resource_owners.insert(resource as usize, origin);
-                        self.seats
-                            .get_mut(&origin)
-                            .expect("validated original seat disappeared")
-                            .$field
-                            .push(resource);
-                    }
-                }};
-            }
-
-            restore!(pointer_resources);
-            restore!(keyboard_resources);
-            restore!(touch_resources);
-            restore!(data_devices);
-            restore!(relative_pointers);
-            restore!(pointer_constraints);
-            restore!(pointer_gesture_swipes);
-            restore!(pointer_gesture_pinches);
-            restore!(pointer_gesture_holds);
-            restore!(cursor_shape_devices);
-            restore!(keyboard_shortcut_inhibitors);
-            restore!(tablet_seats);
-            restore!(tablet_devices);
-            restore!(tablet_tools);
-            restore!(text_inputs);
-        }
-    }
-
-    /// Allocate a fresh, never-reused `WindowId` (ADR-0032). Called on the
-    /// main loop when a toplevel role is acquired.
-    fn alloc_window_id(&mut self) -> aegis_core::window::WindowId {
-        let id = self.next_window_id;
-        self.next_window_id += 1;
-        aegis_core::window::WindowId(id)
-    }
-
-    /// Iterate live surface records, skipping nulled slots. The returned
-    /// iterator yields raw pointers; callers must validate liveness for any
-    /// operation that holds the pointer across re-entry into libwayland.
-    fn live_surfaces(&self) -> impl Iterator<Item = *mut SurfaceRec> + '_ {
-        self.surfaces.iter().copied().filter(|p| !p.is_null())
-    }
-
-    /// Crate-visible live-surface iterator for `extensions.rs`.
-    pub(crate) fn live_surfaces_pub(&self) -> impl Iterator<Item = *mut SurfaceRec> + '_ {
-        self.surfaces.iter().copied().filter(|p| !p.is_null())
-    }
-}
+mod state;
 
 /// Existing compositor paths are the physical human-seat path. Dereferencing
 /// `State` to that runtime keeps those paths source-compatible while the
@@ -1885,18 +1352,19 @@ unsafe extern "C" fn client_destroyed(listener: *mut ffi::wl_listener, _data: *m
                 state.clients.remove(&(record.client as usize));
             }
             state.client_bound_seats.remove(&(record.client as usize));
-            state.client_initial_realms.remove(&record.id);
+            state.client_initial_interaction_domains.remove(&record.id);
+            state.client_process_ids.remove(&record.id);
             let _ = state.authority.disconnect_client(record.id);
         }
     }
 }
 
-/// One-shot Realm launch connections are a trusted client-identity portal.
+/// One-shot Interaction Domain launch connections are a trusted client-identity portal.
 /// Such clients see only their own `wl_seat` global, so a sandboxed app cannot
 /// bind the physical user's seat even if it deliberately enumerates every
 /// registry object. Ordinary desktop clients remain unrestricted for
 /// compatibility with native multi-seat software.
-unsafe extern "C" fn realm_global_filter(
+unsafe extern "C" fn interaction_domain_global_filter(
     client: *const ffi::wl_client,
     global: *const ffi::wl_global,
     data: *mut c_void,
@@ -1906,12 +1374,16 @@ unsafe extern "C" fn realm_global_filter(
         if state.is_null() || client.is_null() || global.is_null() {
             return true;
         }
-        let realm = (*state)
+        let interaction_domain = (*state)
             .clients
             .get(&(client as usize))
-            .and_then(|client_id| (*state).client_initial_realms.get(client_id))
+            .and_then(|client_id| (*state).client_initial_interaction_domains.get(client_id))
             .copied();
-        if realm.is_some() && (*state).realm_hidden_globals.contains(&(global as usize)) {
+        if interaction_domain.is_some()
+            && (*state)
+                .interaction_domain_hidden_globals
+                .contains(&(global as usize))
+        {
             return false;
         }
         if let Some(output) = (*state)
@@ -1919,8 +1391,8 @@ unsafe extern "C" fn realm_global_filter(
             .iter()
             .find(|output| std::ptr::eq(output.global as *const ffi::wl_global, global))
         {
-            return match realm {
-                Some(realm) => output.realm == Some(realm),
+            return match interaction_domain {
+                Some(interaction_domain) => output.interaction_domain == Some(interaction_domain),
                 // Ordinary host clients need virtual outputs announced just like
                 // hot-plugged monitors: an already-running surface can transfer
                 // there and must receive correct enter/leave and scale state.
@@ -1933,11 +1405,11 @@ unsafe extern "C" fn realm_global_filter(
             .iter()
             .find(|seat| std::ptr::eq(seat.global as *const ffi::wl_global, global))
         {
-            return realm.is_none_or(|realm| {
+            return interaction_domain.is_none_or(|interaction_domain| {
                 (*state)
                     .authority
                     .seat(seat.seat)
-                    .is_some_and(|seat| seat.realm == realm)
+                    .is_some_and(|seat| seat.interaction_domain == interaction_domain)
             });
         }
         true
@@ -2209,7 +1681,7 @@ unsafe fn post_pointer_axis_wire_event(
 pub struct Server {
     state: Box<State>,
     socket: String,
-    realm_portals: Vec<RealmPortal>,
+    interaction_domain_portals: Vec<InteractionDomainPortal>,
     /// Monotonic epoch for pointer buttons, touch, relative motion, and
     /// synthetic events that do not carry a backend timestamp. Axis frames
     /// retain their DRM/libinput or nested-host timestamps end to end.
@@ -2251,15 +1723,15 @@ impl PreparedKeyboardEvent {
 /// bubblewrap can bind-mount the socket inode. The launcher must unlink that
 /// pathname and close all connections queued before the sandbox gate opens.
 /// Once activated, only the bind mount inside that sandbox can reach it.
-pub struct RealmPortal {
-    realm: RealmId,
+pub struct InteractionDomainPortal {
+    interaction_domain: InteractionDomainId,
     path: PathBuf,
     listener: UnixListener,
 }
 
-impl RealmPortal {
-    pub fn realm(&self) -> RealmId {
-        self.realm
+impl InteractionDomainPortal {
+    pub fn interaction_domain(&self) -> InteractionDomainId {
+        self.interaction_domain
     }
 
     pub fn path(&self) -> &Path {
@@ -2271,7 +1743,7 @@ impl RealmPortal {
     }
 }
 
-impl Drop for RealmPortal {
+impl Drop for InteractionDomainPortal {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
         if let Some(parent) = self.path.parent() {
@@ -2305,21 +1777,23 @@ pub enum ServerError {
     SeatGlobal,
 }
 
-/// Errors changing live realm/seat topology after server startup.
+/// Errors changing live interaction domain/seat topology after server startup.
 #[derive(Debug, thiserror::Error)]
-pub enum RealmRuntimeError {
+pub enum InteractionDomainRuntimeError {
     #[error(transparent)]
-    Model(#[from] RealmError),
+    Model(#[from] InteractionDomainError),
     #[error("failed to initialize independent XKB state: {0}")]
     Keyboard(String),
     #[error("wl_global_create failed for the agent seat")]
     SeatGlobal,
-    #[error("wl_global_create failed for the Realm virtual output")]
+    #[error("wl_global_create failed for the InteractionDomain virtual output")]
     OutputGlobal,
     #[error("seat {} is unknown, paused, or revoked", .0.0)]
     SeatUnavailable(SeatId),
-    #[error("realm {} has no logical seat", .0.0)]
-    RealmHasNoSeat(RealmId),
-    #[error("failed to create Realm launch portal: {0}")]
+    #[error("interaction_domain {} has no logical seat", .0.0)]
+    InteractionDomainHasNoSeat(InteractionDomainId),
+    #[error("InteractionDomain semantic observation exceeds the {limit}-object safety bound")]
+    SemanticObservationTooLarge { limit: usize },
+    #[error("failed to create InteractionDomain launch portal: {0}")]
     Portal(String),
 }

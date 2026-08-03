@@ -46,7 +46,7 @@ Stage the development prefix from [Setup](setup.md#build-and-run) before
 switching VTs when this test must include discovery of the Settings
 executable and its XDG metadata.
 
-For Realm launch testing, start the installed user service instead of the
+For Interaction Domain launch testing, start the installed user service instead of the
 direct command:
 
 ```bash
@@ -55,7 +55,7 @@ systemctl --user start --wait aegis.service
 
 The service used for development must point at the binary under test and
 delegate the CPU, memory, and process controllers. A directly started binary
-may test graphics, but the Realm launch warning is expected because it does
+may test graphics, but the Interaction Domain launch warning is expected because it does
 not own that delegated systemd service.
 
 ## Try the Desktop
@@ -227,7 +227,7 @@ shortcut reference.
   session.
 - Nested mode does not test atomic modesetting, libinput, libseat, physical
   hotplug, or VT suspend and resume.
-- Realm application isolation must be tested through the packaged
+- Interaction Domain application isolation must be tested through the packaged
   `aegis.service`, not a directly started binary.
 - If the screen becomes unusable, switch to the reserved VT or connect over
   SSH. Run `pgrep -a -x aegis`, verify the exact PID, then use

@@ -14,9 +14,12 @@
 //!
 //! # Status
 //!
-//! Protocol version 12 adds the staged inactivity-policy snapshot and
-//! transaction. Earlier settings and live-system revisions are recorded in
-//! [`schema::PROTOCOL_VERSION`].
+//! Protocol version 24 adds kernel-process-bound accessibility window
+//! correlation. Version 23 introduced explicit Actor sessions, exact
+//! resource handles, and the bounded accessibility adapter transport. It retains the
+//! Interaction Domain vocabulary and transport-neutral authority contracts
+//! introduced in version 22. Earlier revisions are recorded in
+//! [`schema::PROTOCOL_VERSION`] and the project changelog.
 
 pub mod client;
 pub mod codec;
@@ -24,22 +27,32 @@ pub mod journal;
 pub mod schema;
 pub mod server;
 
+pub use aegis_authority::{
+    ActorPrincipal, ActorResource, ActorSessionId, ActorSessionPolicy, ActorSessionSnapshot,
+    ActorSessionState, FilesystemAccess, ResourceGrant, ResourceGrantId,
+};
+
 mod blob;
 
-pub use client::{CapturedRealm, Client, StreamFrame, StreamMessage, StreamStarted};
+pub use client::{CapturedInteractionDomain, Client, StreamFrame, StreamMessage, StreamStarted};
 pub use journal::{
-    AgentAuthAction, DEFAULT_CAPACITY, Effect, GrantPersistence, Journal, JournalEntry,
-    JournalMutation, JournalSnapshot, Origin,
+    ActorSessionAuditAction, AgentAuthAction, AuditedCommand, AuditedSemanticAction,
+    CapabilityUseAction, DEFAULT_CAPACITY, Effect, GrantPersistence, Journal, JournalEntry,
+    JournalMutation, JournalSnapshot, Origin, ResourceGrantAttemptAction, ResourceGrantAuditAction,
+    ResourceKind, audit_semantic_actions,
 };
 pub use schema::{
-    AgentGrantDecision, AgentGrantInfo, AgentHello, AgentIssued, AgentPrincipalInfo, AppPickResult,
-    Capabilities, Command, ConfirmPickResult, Event, LOCAL_AGENT_ADMIN_SCOPE,
-    LOCAL_OWNER_ADMIN_SCOPE, LOCAL_PORTAL_SCOPE, LOCAL_REALM_ADMIN_SCOPE, LeaseGrant, LeaseRequest,
-    OpClass, PROTOCOL_VERSION, PickKind, PickResult, RealmAction, RealmActionResult, RealmCapture,
-    Request, Response, Scope, ScopeDecision, SecretPromptResult, SettingsAction, SettingsReceipt,
-    SettingsSnapshot, StreamPixelFormat, StreamTarget, SystemAction, SystemStatus,
+    AccessibilityTreeUpdate, AccessibilityWindowBinding, ActorActionIntent, ActorActionReceipt,
+    ActorCapability, AgentGrantDecision, AgentGrantInfo, AgentHello, AgentIssued,
+    AgentPrincipalInfo, AppPickResult, AuthorizationDecision, Command, CommandScopePolicy,
+    ConfirmPickResult, ConnectionCapabilities, Event, InteractionDomainAction,
+    InteractionDomainActionResult, InteractionDomainCapture, LOCAL_AGENT_ADMIN_SCOPE,
+    LOCAL_INTERACTION_DOMAIN_ADMIN_SCOPE, LOCAL_OWNER_ADMIN_SCOPE, LOCAL_PORTAL_SCOPE, LeaseGrant,
+    LeaseRequest, ObservationToken, PROTOCOL_VERSION, PickKind, PickResult, Request, Response,
+    Scope, SecretPromptResult, SemanticActionRequest, SemanticObservation, SettingsAction,
+    SettingsReceipt, SettingsSnapshot, StreamPixelFormat, StreamTarget, SystemAction, SystemStatus,
 };
 pub use server::{
-    AgentIdentity, CaptureOutputPayload, CaptureRealmPayload, Handler, PairedAgent, Server,
-    StreamFramePayload, StreamInfo,
+    AgentIdentity, CaptureInteractionDomainPayload, CaptureOutputPayload, Handler,
+    JournalBroadcaster, PairedAgent, Server, StreamFramePayload, StreamInfo,
 };

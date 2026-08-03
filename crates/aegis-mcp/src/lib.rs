@@ -10,13 +10,13 @@
 
 mod config;
 mod identity;
+mod interaction_domain;
 mod mcp;
-mod realm;
 mod tools;
 
 pub use config::{BridgeConfig, ConfigError};
 pub use mcp::{McpError, serve, serve_config};
 pub use tools::{
-    AegisPlatform, PlatformError, SmokeNotificationReport, SmokeRealmReport, SmokeReport,
-    SmokeVisualReport, ToolGrant,
+    AegisPlatform, PlatformError, SmokeInteractionDomainReport, SmokeNotificationReport,
+    SmokeReport, SmokeVisualReport, ToolGrant,
 };

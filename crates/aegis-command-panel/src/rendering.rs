@@ -222,7 +222,7 @@ pub(super) fn menu_bounds(owner: Rect, visible: &[MenuNode], display: (f32, f32)
     place_popup(owner, (MENU_WIDTH, height), display)
 }
 
-/// The Agent Workspaces status row's content: the aggregate Agent Realm
+/// The Agent Workspaces status row's content: the aggregate Agent Interaction Domain
 /// state it summarizes (ported from the HUD's dropped right chip, ADR-0083).
 pub(super) struct AgentWorkspaceIndicator {
     pub(super) label: String,
@@ -238,17 +238,20 @@ pub(super) enum AgentWorkspaceState {
 }
 
 pub(super) fn agent_workspace_indicator(
-    snapshot: &RealmSnapshot,
+    snapshot: &InteractionDomainSnapshot,
     i18n: &Localizer,
 ) -> AgentWorkspaceIndicator {
     let live = snapshot
-        .realms
+        .interaction_domains
         .iter()
-        .filter(|realm| realm.kind == RealmKind::Agent && realm.state != RealmState::Revoked)
+        .filter(|interaction_domain| {
+            interaction_domain.kind == InteractionDomainKind::Agent
+                && interaction_domain.state != InteractionDomainState::Revoked
+        })
         .collect::<Vec<_>>();
     let active_count = live
         .iter()
-        .filter(|realm| realm.state == RealmState::Active)
+        .filter(|interaction_domain| interaction_domain.state == InteractionDomainState::Active)
         .count();
     let state = match live.as_slice() {
         [] => AgentWorkspaceState::Idle,
@@ -258,11 +261,11 @@ pub(super) fn agent_workspace_indicator(
     };
     let state_label = agent_workspace_state_label(state, i18n);
     let label = match live.as_slice() {
-        [] => i18n.text(Message::AiWorkspaces).to_string(),
-        [realm] => format!("{} · {state_label}", realm.label),
-        realms => format!(
+        [] => i18n.text(Message::InteractionManager).to_string(),
+        [interaction_domain] => format!("{} · {state_label}", interaction_domain.label),
+        interaction_domains => format!(
             "{} · {state_label}",
-            i18n.agent_workspace_count(realms.len())
+            i18n.agent_workspace_count(interaction_domains.len())
         ),
     };
     AgentWorkspaceIndicator { label, state }
@@ -274,8 +277,8 @@ pub(super) fn agent_workspace_state_label(
 ) -> &'static str {
     match state {
         AgentWorkspaceState::Idle => i18n.text(Message::NoActiveAgentWorkspaces),
-        AgentWorkspaceState::Active => i18n.text(Message::RealmActive),
-        AgentWorkspaceState::Paused => i18n.text(Message::RealmPaused),
+        AgentWorkspaceState::Active => i18n.text(Message::InteractionDomainActive),
+        AgentWorkspaceState::Paused => i18n.text(Message::InteractionDomainPaused),
         AgentWorkspaceState::PartiallyPaused => i18n.text(Message::AgentWorkspacesPartiallyPaused),
     }
 }

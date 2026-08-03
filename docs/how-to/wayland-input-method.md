@@ -44,7 +44,7 @@ scope, and a native application without text-input-v3 continues to receive
 ordinary keyboard events but cannot provide caret or surrounding-text state
 to the input method.
 
-Realm applications may use text-input-v3, but Realm registries do not expose
+Interaction Domain applications may use text-input-v3, but Interaction Domain registries do not expose
 the privileged input-method or virtual-keyboard manager globals. This prevents
 a sandboxed client from claiming the host input-method role or injecting
 keyboard events.

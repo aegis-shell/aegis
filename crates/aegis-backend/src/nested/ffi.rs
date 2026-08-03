@@ -18,8 +18,8 @@ use std::os::raw::{c_char, c_int, c_void};
 
 // Canonical protocol ABI types and the xdg-shell interface tables come from the
 // shared protocols crate so client and server agree on one definition.
-pub use aegis_protocols::{wl_array, wl_interface, wl_message};
-pub use aegis_protocols::{
+pub use aegis_wayland_protocols::{wl_array, wl_interface, wl_message};
+pub use aegis_wayland_protocols::{
     wp_cursor_shape_device_v1_interface, wp_cursor_shape_manager_v1_interface,
     wp_fractional_scale_manager_v1_interface, wp_fractional_scale_v1_interface,
     wp_viewport_interface, wp_viewporter_interface, xdg_surface_interface, xdg_toplevel_interface,

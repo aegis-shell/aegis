@@ -5,8 +5,8 @@
 //!
 //! - runs ordinary desktop launches in a **new session** through
 //!   `setsid --fork`, detached from compositor lifetime and stdio;
-//! - runs Realm launches as directly tracked bubblewrap process trees that
-//!   pause, resume, and terminate with Realm authority;
+//! - runs Interaction Domain launches as directly tracked bubblewrap process trees that
+//!   pause, resume, and terminate with Interaction Domain authority;
 //! - inherits the Wayland / XDG environment a client needs to connect back to
 //!   this compositor (`WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, …);
 //! - honours the entry's `Terminal=true` by wrapping the command in a
@@ -16,7 +16,7 @@
 //! final command line is handed to `sh -c` after each token is POSIX
 //! single-quote-escaped by `aegis_desktop_entries::expand_exec`, so shell metacharacters in
 //! file names are safe. Ordinary process detachment is delegated to the
-//! external `setsid` binary. The managed Realm path uses a delegated cgroup v2
+//! external `setsid` binary. The managed Interaction Domain path uses a delegated cgroup v2
 //! subtree to control the complete sandbox process tree. See ADR-0022.
 
 use std::io::{Read, Write};
@@ -81,45 +81,38 @@ pub struct LaunchOpts {
     /// threads have started. When absent, the current `WAYLAND_DISPLAY` is
     /// inherited for compatibility with standalone callers.
     pub wayland_display: Option<String>,
-    /// Optional fail-closed Linux namespace sandbox. Realm launches should
+    /// Optional fail-closed Linux namespace sandbox. Interaction Domain launches should
     /// always set this; ordinary user launches retain the compatibility
     /// default of no process sandbox.
-    pub sandbox: Option<RealmSandbox>,
+    pub sandbox: Option<InteractionDomainSandbox>,
 }
 
 /// Process-isolation policy for an application launched into a compositor
-/// Realm. Bubblewrap is used as the small, audited namespace/mount broker;
+/// Interaction Domain. Bubblewrap is used as the small, audited namespace/mount broker;
 /// absence or setup failure rejects the launch instead of falling back to an
 /// unsandboxed process.
 #[derive(Debug)]
-pub struct RealmSandbox {
-    pub realm_id: u64,
+pub struct InteractionDomainSandbox {
+    pub interaction_domain_id: u64,
     /// Compositor-created listener whose socket inode is bind-mounted into the
     /// sandbox. The short-lived host path is unlinked before application code
     /// is released, so only this mount namespace retains reachability.
     pub wayland_listener: UnixListener,
     pub wayland_socket_path: PathBuf,
     pub app_id: String,
-    /// Network is off by default. Enabling it shares the host network
-    /// namespace but still keeps mount/PID/IPC/user namespaces isolated.
-    pub network: bool,
-    /// Explicit host paths exposed read-write at the same absolute path.
-    pub writable_paths: Vec<std::path::PathBuf>,
-    /// Explicit host paths exposed read-only at the same absolute path.
-    pub readable_paths: Vec<std::path::PathBuf>,
     /// Kernel-enforced resource budget for this launch.
-    pub limits: RealmResourceLimits,
+    pub limits: InteractionDomainResourceLimits,
 }
 
 /// Default-deny resource budget installed on the sandbox's delegated cgroup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RealmResourceLimits {
+pub struct InteractionDomainResourceLimits {
     pub memory_max_bytes: u64,
     pub pids_max: u32,
     pub cpu_weight: u16,
 }
 
-impl Default for RealmResourceLimits {
+impl Default for InteractionDomainResourceLimits {
     fn default() -> Self {
         Self {
             memory_max_bytes: 8 * 1024 * 1024 * 1024,
@@ -138,16 +131,16 @@ pub struct LaunchReport {
     pub pid: u32,
     pub sandboxed: bool,
     /// Whether the requested memory, PID, and CPU hard budget was installed.
-    /// This is always true for a successful managed Realm launch; ordinary
-    /// compatibility launches report false because they have no Realm budget.
+    /// This is always true for a successful managed Interaction Domain launch; ordinary
+    /// compatibility launches report false because they have no Interaction Domain budget.
     pub resource_limits_enforced: bool,
 }
 
-/// A Realm sandbox process tree owned by the compositor.
+/// An Interaction Domain sandbox process tree owned by the compositor.
 ///
 /// The child is bubblewrap's namespace supervisor and cgroup root process.
 /// Dropping the handle kills and reaps the complete sandbox; callers can also
-/// suspend/resume it in lockstep with Realm authority.
+/// suspend/resume it in lockstep with Interaction Domain authority.
 pub struct ManagedLaunch {
     report: LaunchReport,
     child: std::process::Child,
@@ -171,7 +164,7 @@ impl ManagedLaunch {
         self.cgroup.freeze(false)
     }
 
-    /// Fail-closed termination used by Realm revocation and compositor
+    /// Fail-closed termination used by Interaction Domain revocation and compositor
     /// shutdown. SIGKILL is deliberate: revocation is an authority boundary,
     /// not a graceful application-close request.
     pub fn terminate(&mut self) -> std::io::Result<()> {
@@ -194,7 +187,8 @@ struct ProcessCgroup {
     procs: std::fs::File,
 }
 
-static REALM_CGROUP_ROOT: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
+static INTERACTION_DOMAIN_CGROUP_ROOT: std::sync::OnceLock<Result<PathBuf, String>> =
+    std::sync::OnceLock::new();
 
 /// Prepare the compositor's delegated cgroup v2 topology before it launches
 /// ordinary applications.
@@ -202,15 +196,15 @@ static REALM_CGROUP_ROOT: std::sync::OnceLock<Result<PathBuf, String>> = std::sy
 /// systemd delegates controller authority at the service cgroup, but cgroup v2
 /// forbids enabling domain controllers while that same node contains a
 /// process. Aegis therefore moves itself into an `aegis-host-*` leaf and keeps
-/// Realm sandboxes as sibling children of the delegated service root.
-pub fn prepare_realm_host() -> Result<PathBuf, LaunchError> {
-    REALM_CGROUP_ROOT
-        .get_or_init(initialize_realm_cgroup_root)
+/// Interaction Domain sandboxes as sibling children of the delegated service root.
+pub fn prepare_interaction_domain_host() -> Result<PathBuf, LaunchError> {
+    INTERACTION_DOMAIN_CGROUP_ROOT
+        .get_or_init(initialize_interaction_domain_cgroup_root)
         .clone()
         .map_err(LaunchError::CgroupUnavailable)
 }
 
-fn initialize_realm_cgroup_root() -> Result<PathBuf, String> {
+fn initialize_interaction_domain_cgroup_root() -> Result<PathBuf, String> {
     let membership = std::fs::read_to_string("/proc/self/cgroup")
         .map_err(|error| format!("read /proc/self/cgroup: {error}"))?;
     let relative = membership
@@ -251,7 +245,7 @@ fn initialize_realm_cgroup_root() -> Result<PathBuf, String> {
         .map_err(|error| format!("read cgroup.procs: {error}"))?;
     if members.lines().any(|member| member != pid) {
         return Err(
-            "Aegis must run in its own delegated systemd service before Realm controllers can be enabled"
+            "Aegis must run in its own delegated systemd service before Interaction Domain controllers can be enabled"
                 .into(),
         );
     }
@@ -273,12 +267,15 @@ fn initialize_realm_cgroup_root() -> Result<PathBuf, String> {
 }
 
 impl ProcessCgroup {
-    fn create(realm: u64, limits: RealmResourceLimits) -> Result<Self, LaunchError> {
+    fn create(
+        interaction_domain: u64,
+        limits: InteractionDomainResourceLimits,
+    ) -> Result<Self, LaunchError> {
         static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let root = prepare_realm_host()?;
+        let root = prepare_interaction_domain_host()?;
         let nonce = NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = root.join(format!(
-            "aegis-realm-{realm}-{}-{nonce}",
+            "aegis-interaction-domain-{interaction_domain}-{}-{nonce}",
             std::process::id()
         ));
         std::fs::create_dir(&path).map_err(cgroup_error)?;
@@ -420,7 +417,7 @@ fn cgroup_error(error: std::io::Error) -> LaunchError {
     LaunchError::CgroupUnavailable(error.to_string())
 }
 
-fn validate_resource_limits(limits: RealmResourceLimits) -> Result<(), LaunchError> {
+fn validate_resource_limits(limits: InteractionDomainResourceLimits) -> Result<(), LaunchError> {
     if !(256 * 1024 * 1024..=1024_u64 * 1024 * 1024 * 1024).contains(&limits.memory_max_bytes)
         || !(16..=65_536).contains(&limits.pids_max)
         || !(1..=10_000).contains(&limits.cpu_weight)
@@ -444,11 +441,11 @@ pub enum LaunchError {
         entry: String,
         status: std::process::ExitStatus,
     },
-    #[error("Realm sandbox is unavailable: {0}")]
+    #[error("Interaction Domain sandbox is unavailable: {0}")]
     SandboxUnavailable(String),
-    #[error("Realm cgroup isolation is unavailable: {0}")]
+    #[error("Interaction Domain cgroup isolation is unavailable: {0}")]
     CgroupUnavailable(String),
-    #[error("invalid Realm sandbox policy: {0}")]
+    #[error("invalid Interaction Domain sandbox policy: {0}")]
     InvalidSandbox(String),
 }
 
@@ -461,7 +458,7 @@ pub enum LaunchError {
 pub fn launch(source: &dyn LaunchSource, opts: &LaunchOpts) -> Result<LaunchReport, LaunchError> {
     if opts.sandbox.is_some() {
         return Err(LaunchError::InvalidSandbox(
-            "Realm sandboxes require launch_managed so their portal and cgroup stay supervised"
+            "Interaction Domain sandboxes require launch_managed so their portal and cgroup stay supervised"
                 .into(),
         ));
     }
@@ -512,7 +509,7 @@ pub fn launch(source: &dyn LaunchSource, opts: &LaunchOpts) -> Result<LaunchRepo
     })
 }
 
-/// Launch one Realm application under a compositor-owned process supervisor.
+/// Launch one Interaction Domain application under a compositor-owned process supervisor.
 ///
 /// Unlike ordinary detached launches this never uses the compatibility
 /// `setsid --fork` wrapper: bubblewrap is the directly tracked child, enters a
@@ -522,7 +519,7 @@ pub fn launch_managed(
     opts: &LaunchOpts,
 ) -> Result<ManagedLaunch, LaunchError> {
     let sandbox = opts.sandbox.as_ref().ok_or_else(|| {
-        LaunchError::InvalidSandbox("managed launch requires a Realm sandbox".into())
+        LaunchError::InvalidSandbox("managed launch requires an Interaction Domain sandbox".into())
     })?;
     if opts.foreground {
         return Err(LaunchError::InvalidSandbox(
@@ -531,9 +528,9 @@ pub fn launch_managed(
     }
     let effective = effective_command(source, opts)?;
     validate_resource_limits(sandbox.limits)?;
-    validate_realm_portal(sandbox)?;
+    validate_interaction_domain_portal(sandbox)?;
     let _portal_cleanup = PortalPathCleanup(&sandbox.wayland_socket_path);
-    let cgroup = ProcessCgroup::create(sandbox.realm_id, sandbox.limits)?;
+    let cgroup = ProcessCgroup::create(sandbox.interaction_domain_id, sandbox.limits)?;
     let mut command = Command::new(BWRAP);
     append_bubblewrap_args(&mut command, &effective, sandbox, true)?;
     command
@@ -555,7 +552,7 @@ pub fn launch_managed(
     };
     launch.cgroup.verify_member(report.pid)?;
     wait_for_sandbox_portal_gate(&mut launch.child)?;
-    unlink_and_drain_realm_portal(sandbox)?;
+    unlink_and_drain_interaction_domain_portal(sandbox)?;
     release_sandbox_application(&mut launch.child)?;
     Ok(launch)
 }
@@ -591,10 +588,10 @@ fn append_effective_command(
 fn append_bubblewrap_args(
     command: &mut Command,
     effective: &str,
-    sandbox: &RealmSandbox,
+    sandbox: &InteractionDomainSandbox,
     die_with_parent: bool,
 ) -> Result<(), LaunchError> {
-    if sandbox.realm_id == 0
+    if sandbox.interaction_domain_id == 0
         || sandbox.app_id.trim().is_empty()
         || sandbox.app_id.len() > 256
         || !sandbox
@@ -603,17 +600,17 @@ fn append_bubblewrap_args(
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
     {
         return Err(LaunchError::InvalidSandbox(
-            "realm id or app id is invalid".into(),
+            "interaction_domain id or app id is invalid".into(),
         ));
     }
-    validate_realm_portal(sandbox)?;
+    validate_interaction_domain_portal(sandbox)?;
     if !Path::new(BWRAP).is_file() {
         return Err(LaunchError::SandboxUnavailable(format!(
             "{BWRAP} is not installed"
         )));
     }
     let runtime = "/run/aegis";
-    let home = format!("/tmp/aegis-home-{}", sandbox.realm_id);
+    let home = format!("/tmp/aegis-home-{}", sandbox.interaction_domain_id);
 
     command.args([
         "--unshare-all",
@@ -652,8 +649,8 @@ fn append_bubblewrap_args(
         .arg("XDG_SESSION_TYPE")
         .arg("wayland")
         .arg("--setenv")
-        .arg("AEGIS_REALM_ID")
-        .arg(sandbox.realm_id.to_string())
+        .arg("AEGIS_INTERACTION_DOMAIN_ID")
+        .arg(sandbox.interaction_domain_id.to_string())
         .arg("--setenv")
         .arg("AEGIS_SANDBOX_APP_ID")
         .arg(&sandbox.app_id)
@@ -705,12 +702,6 @@ fn append_bubblewrap_args(
             command.arg("--ro-bind").arg(path).arg(path);
         }
     }
-    if sandbox.network && Path::new("/etc/resolv.conf").exists() {
-        command
-            .arg("--ro-bind")
-            .arg("/etc/resolv.conf")
-            .arg("/etc/resolv.conf");
-    }
     // Render nodes provide GPU acceleration without exposing KMS card nodes.
     if let Ok(entries) = std::fs::read_dir("/dev/dri") {
         for entry in entries.flatten() {
@@ -720,17 +711,6 @@ fn append_bubblewrap_args(
             }
         }
     }
-    for path in &sandbox.readable_paths {
-        let canonical = validate_sandbox_grant(path, false)?;
-        command.arg("--ro-bind").arg(&canonical).arg(&canonical);
-    }
-    for path in &sandbox.writable_paths {
-        let canonical = validate_sandbox_grant(path, true)?;
-        command.arg("--bind").arg(&canonical).arg(&canonical);
-    }
-    if sandbox.network {
-        command.arg("--share-net");
-    }
     // The marker is emitted only after bubblewrap has finished its namespace
     // and mount setup. The parent then unlinks the host portal path, drops any
     // connection queued before that unlink, and releases this read gate.
@@ -739,7 +719,7 @@ fn append_bubblewrap_args(
         .arg("sh")
         .arg("-c")
         .arg("printf '\\036'; exec >/dev/null 2>&1; IFS= read -r _; exec sh -c \"$1\"")
-        .arg("aegis-realm-launch")
+        .arg("aegis-interaction-domain-launch")
         .arg(effective);
     Ok(())
 }
@@ -755,7 +735,9 @@ impl Drop for PortalPathCleanup<'_> {
     }
 }
 
-fn validate_realm_portal(sandbox: &RealmSandbox) -> Result<(), LaunchError> {
+fn validate_interaction_domain_portal(
+    sandbox: &InteractionDomainSandbox,
+) -> Result<(), LaunchError> {
     let path = &sandbox.wayland_socket_path;
     if !path.is_absolute() {
         return Err(LaunchError::InvalidSandbox(
@@ -827,7 +809,9 @@ fn wait_for_sandbox_portal_gate(child: &mut std::process::Child) -> Result<(), L
     Ok(())
 }
 
-fn unlink_and_drain_realm_portal(sandbox: &RealmSandbox) -> Result<(), LaunchError> {
+fn unlink_and_drain_interaction_domain_portal(
+    sandbox: &InteractionDomainSandbox,
+) -> Result<(), LaunchError> {
     std::fs::remove_file(&sandbox.wayland_socket_path).map_err(|error| {
         LaunchError::SandboxUnavailable(format!(
             "could not remove ambient Wayland portal path: {error}"
@@ -866,52 +850,6 @@ fn release_sandbox_application(child: &mut std::process::Child) -> Result<(), La
     drop(stdin);
     drop(child.stdout.take());
     Ok(())
-}
-
-fn validate_sandbox_grant(path: &Path, writable: bool) -> Result<PathBuf, LaunchError> {
-    if !path.is_absolute() || !path.exists() {
-        return Err(LaunchError::InvalidSandbox(format!(
-            "grant path {} must be absolute and exist",
-            path.display()
-        )));
-    }
-    let canonical = path.canonicalize().map_err(|error| {
-        LaunchError::InvalidSandbox(format!("canonicalize {}: {error}", path.display()))
-    })?;
-    if canonical == Path::new("/") {
-        return Err(LaunchError::InvalidSandbox(
-            "the host filesystem root cannot be granted".into(),
-        ));
-    }
-    for protected in ["/proc", "/dev", "/run", "/sys"] {
-        if canonical == Path::new(protected) || canonical.starts_with(Path::new(protected)) {
-            return Err(LaunchError::InvalidSandbox(format!(
-                "grant path {} overlaps protected sandbox root {protected}",
-                path.display(),
-            )));
-        }
-    }
-    for protected in ["/usr", "/etc", "/bin", "/lib", "/lib64"] {
-        if writable
-            && (canonical == Path::new(protected) || canonical.starts_with(Path::new(protected)))
-        {
-            return Err(LaunchError::InvalidSandbox(format!(
-                "writable grant path {} overlaps protected sandbox root {protected}",
-                path.display(),
-            )));
-        }
-    }
-    let metadata = std::fs::metadata(&canonical).map_err(|error| {
-        LaunchError::InvalidSandbox(format!("inspect {}: {error}", canonical.display()))
-    })?;
-    if !metadata.is_file() && !metadata.is_dir() {
-        return Err(LaunchError::InvalidSandbox(format!(
-            "{} grant path {} is neither a regular file nor a directory",
-            if writable { "writable" } else { "readable" },
-            path.display(),
-        )));
-    }
-    Ok(canonical)
 }
 
 /// Resolve the terminal emulator command string: explicit override >
@@ -1193,20 +1131,17 @@ mod tests {
     }
 
     #[test]
-    fn realm_sandbox_is_fail_closed_and_parent_bound() {
+    fn interaction_domain_sandbox_is_fail_closed_and_parent_bound() {
         if !Path::new(BWRAP).is_file() {
             return;
         }
         let (_portal_dir, portal, portal_path) = wayland_portal();
-        let sandbox = RealmSandbox {
-            realm_id: 9,
+        let sandbox = InteractionDomainSandbox {
+            interaction_domain_id: 9,
             wayland_listener: portal,
             wayland_socket_path: portal_path,
             app_id: "test.desktop".into(),
-            network: false,
-            writable_paths: Vec::new(),
-            readable_paths: Vec::new(),
-            limits: RealmResourceLimits::default(),
+            limits: InteractionDomainResourceLimits::default(),
         };
         let mut command = Command::new(BWRAP);
         append_bubblewrap_args(&mut command, "true", &sandbox, true).unwrap();
@@ -1225,22 +1160,12 @@ mod tests {
     }
 
     #[test]
-    fn writable_grants_cannot_override_protected_mounts() {
-        let error = validate_sandbox_grant(Path::new("/usr/bin"), true).unwrap_err();
-        assert!(matches!(error, LaunchError::InvalidSandbox(_)));
-        let error = validate_sandbox_grant(Path::new("/"), false).unwrap_err();
-        assert!(matches!(error, LaunchError::InvalidSandbox(_)));
-        let error = validate_sandbox_grant(Path::new("/proc/self"), false).unwrap_err();
-        assert!(matches!(error, LaunchError::InvalidSandbox(_)));
-    }
-
-    #[test]
     fn sandbox_portal_is_host_unlinked_and_accepts_multiple_connections() {
         if !Path::new(BWRAP).is_file() || !Path::new("/usr/bin/wayland-info").is_file() {
             return;
         }
-        if let Err(error) = prepare_realm_host() {
-            eprintln!("skipping real Realm portal test: {error}");
+        if let Err(error) = prepare_interaction_domain_host() {
+            eprintln!("skipping real Interaction Domain portal test: {error}");
             return;
         }
         let (_portal_dir, portal, portal_path) = wayland_portal();
@@ -1256,15 +1181,12 @@ mod tests {
         };
         let opts = LaunchOpts {
             files: vec!["wayland-info & wayland-info & wait".into()],
-            sandbox: Some(RealmSandbox {
-                realm_id: 10,
+            sandbox: Some(InteractionDomainSandbox {
+                interaction_domain_id: 10,
                 wayland_listener: portal,
                 wayland_socket_path: portal_path,
                 app_id: "test.desktop".into(),
-                network: false,
-                writable_paths: Vec::new(),
-                readable_paths: Vec::new(),
-                limits: RealmResourceLimits::default(),
+                limits: InteractionDomainResourceLimits::default(),
             }),
             ..Default::default()
         };
@@ -1308,17 +1230,15 @@ mod tests {
     }
 
     #[test]
-    fn managed_realm_process_can_be_paused_resumed_and_revoked() {
+    fn managed_interaction_domain_process_can_be_paused_resumed_and_revoked() {
         if !Path::new(BWRAP).is_file() {
             return;
         }
-        if let Err(error) = prepare_realm_host() {
-            eprintln!("skipping real Realm cgroup test: {error}");
+        if let Err(error) = prepare_interaction_domain_host() {
+            eprintln!("skipping real Interaction Domain cgroup test: {error}");
             return;
         }
         let (_portal_dir, portal, portal_path) = wayland_portal();
-        let work = tempfile_dir();
-        let marker = work.path().join("worker-progress");
         let source = Src {
             exec: Some("sh -c %f"),
             terminal: false,
@@ -1329,19 +1249,13 @@ mod tests {
             // The worker deliberately escapes the bubblewrap supervisor's
             // process group/session. Only the cgroup freezer/kill boundary can
             // still control it as one unit.
-            files: vec![format!(
-                "setsid sh -c 'while :; do printf y >> {}; sleep 0.02; done' & wait",
-                marker.display()
-            )],
-            sandbox: Some(RealmSandbox {
-                realm_id: 11,
+            files: vec!["setsid sh -c 'while :; do sleep 1; done' & wait".into()],
+            sandbox: Some(InteractionDomainSandbox {
+                interaction_domain_id: 11,
                 wayland_listener: portal,
                 wayland_socket_path: portal_path,
                 app_id: "test.desktop".into(),
-                network: false,
-                writable_paths: vec![work.path().to_path_buf()],
-                readable_paths: Vec::new(),
-                limits: RealmResourceLimits::default(),
+                limits: InteractionDomainResourceLimits::default(),
             }),
             ..Default::default()
         };
@@ -1354,19 +1268,25 @@ mod tests {
             std::fs::read_to_string(launch.cgroup.path.join("memory.max"))
                 .unwrap()
                 .trim(),
-            RealmResourceLimits::default().memory_max_bytes.to_string()
+            InteractionDomainResourceLimits::default()
+                .memory_max_bytes
+                .to_string()
         );
         assert_eq!(
             std::fs::read_to_string(launch.cgroup.path.join("pids.max"))
                 .unwrap()
                 .trim(),
-            RealmResourceLimits::default().pids_max.to_string()
+            InteractionDomainResourceLimits::default()
+                .pids_max
+                .to_string()
         );
         assert_eq!(
             std::fs::read_to_string(launch.cgroup.path.join("cpu.weight"))
                 .unwrap()
                 .trim(),
-            RealmResourceLimits::default().cpu_weight.to_string()
+            InteractionDomainResourceLimits::default()
+                .cpu_weight
+                .to_string()
         );
         assert_eq!(
             std::fs::read_to_string(launch.cgroup.path.join("memory.oom.group"))
@@ -1385,27 +1305,21 @@ mod tests {
             launch.is_running().unwrap(),
             "bubblewrap exited during sandbox setup"
         );
-        let progress_before_pause = std::fs::metadata(&marker).unwrap().len();
-        assert!(progress_before_pause > 0, "escaped worker did not advance");
         launch.pause().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(60));
-        assert_eq!(
-            std::fs::metadata(&marker).unwrap().len(),
-            progress_before_pause,
-            "escaped worker advanced while its Realm cgroup was frozen"
+        assert!(
+            std::fs::read_to_string(launch.cgroup.path.join("cgroup.events"))
+                .unwrap()
+                .lines()
+                .any(|line| line == "frozen 1"),
+            "complete Interaction Domain cgroup was not frozen"
         );
         launch.resume().unwrap();
-        let mut resumed = false;
-        for _ in 0..100 {
-            if std::fs::metadata(&marker).unwrap().len() > progress_before_pause {
-                resumed = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
         assert!(
-            resumed,
-            "escaped worker did not resume with its Realm cgroup"
+            std::fs::read_to_string(launch.cgroup.path.join("cgroup.events"))
+                .unwrap()
+                .lines()
+                .any(|line| line == "frozen 0"),
+            "complete Interaction Domain cgroup did not resume"
         );
         launch.terminate().unwrap();
         assert!(!launch.is_running().unwrap());

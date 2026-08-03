@@ -13,21 +13,21 @@
     unused_imports
 )]
 
-use std::os::raw::{c_char, c_int, c_void};
+use std::os::raw::{c_char, c_int, c_uint, c_void};
 
 // Canonical protocol ABI types and the xdg-shell interface tables come from the
 // shared protocols crate.
-pub use aegis_protocols::{wl_array, wl_interface, wl_message};
-pub use aegis_protocols::{wp_viewport_interface, wp_viewporter_interface};
-pub use aegis_protocols::{
+pub use aegis_wayland_protocols::{wl_array, wl_interface, wl_message};
+pub use aegis_wayland_protocols::{wp_viewport_interface, wp_viewporter_interface};
+pub use aegis_wayland_protocols::{
     xdg_popup_interface, xdg_positioner_interface, xdg_surface_interface, xdg_toplevel_interface,
     xdg_wm_base_interface,
 };
-pub use aegis_protocols::{
+pub use aegis_wayland_protocols::{
     zwp_linux_buffer_params_v1_interface, zwp_linux_dmabuf_feedback_v1_interface,
     zwp_linux_dmabuf_v1_interface,
 };
-pub use aegis_protocols::{
+pub use aegis_wayland_protocols::{
     zwp_tablet_manager_v2_interface, zwp_tablet_pad_group_v2_interface,
     zwp_tablet_pad_ring_v2_interface, zwp_tablet_pad_strip_v2_interface,
     zwp_tablet_pad_v2_interface, zwp_tablet_seat_v2_interface, zwp_tablet_tool_v2_interface,
@@ -35,7 +35,7 @@ pub use aegis_protocols::{
 };
 
 // ----- extension protocol interface tables -----
-pub use aegis_protocols::{
+pub use aegis_wayland_protocols::{
     ext_foreign_toplevel_handle_v1_interface, ext_foreign_toplevel_list_v1_interface,
     ext_idle_notification_v1_interface, ext_idle_notifier_v1_interface,
     ext_session_lock_manager_v1_interface, ext_session_lock_surface_v1_interface,
@@ -58,7 +58,7 @@ pub use aegis_protocols::{
     zxdg_importer_v2_interface, zxdg_output_manager_v1_interface, zxdg_output_v1_interface,
     zxdg_toplevel_decoration_v1_interface,
 };
-pub use aegis_protocols::{
+pub use aegis_wayland_protocols::{
     zwp_linux_buffer_release_v1_interface, zwp_linux_explicit_synchronization_v1_interface,
     zwp_linux_surface_synchronization_v1_interface,
 };
@@ -408,6 +408,12 @@ unsafe extern "C" {
     pub fn wl_client_create(display: *mut wl_display, fd: c_int) -> *mut wl_client;
     pub fn wl_client_destroy(client: *mut wl_client);
     pub fn wl_client_add_destroy_listener(client: *mut wl_client, listener: *mut wl_listener);
+    pub fn wl_client_get_credentials(
+        client: *const wl_client,
+        pid: *mut c_int,
+        uid: *mut c_uint,
+        gid: *mut c_uint,
+    );
 
     pub fn wl_resource_create(
         client: *mut wl_client,

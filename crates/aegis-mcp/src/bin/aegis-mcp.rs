@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "aegis-mcp",
     version,
-    about = "Scoped Aegis desktop and Agent Realm MCP bridge"
+    about = "Scoped Aegis desktop and Agent Interaction Domain MCP bridge"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -21,9 +21,9 @@ enum Command {
     Serve,
     /// Probe the granted capability ceiling and print the effective tool grant.
     Check,
-    /// Run a live, reversible notification and Agent Realm smoke test.
+    /// Run a live, reversible notification and Agent Interaction Domain smoke test.
     Smoke {
-        /// Seconds to keep the temporary Realm visible (paused, then active).
+        /// Seconds to keep the temporary Interaction Domain visible (paused, then active).
         #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u64).range(1..=30))]
         observe_seconds: u64,
         /// Visible human-controlled window to transfer temporarily and move

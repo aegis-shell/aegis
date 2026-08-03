@@ -39,7 +39,7 @@ release first when the launcher must discover System Settings and its desktop
 metadata.
 
 Use the packaged `aegis.service` instead of the direct binary when testing
-Realm application launch. The service delegates the cgroup controllers that
+Interaction Domain application launch. The service delegates the cgroup controllers that
 mandatory memory, process, CPU, freeze, and revoke boundaries require. It
 also binds to `graphical-session.target`, so session services such as
 xdg-desktop-portal start and stop with the compositor.

@@ -160,6 +160,148 @@ unsafe extern "C" fn positioner_set_constraint_adjustment(
     }
 }
 
+const POSITIONER_SLIDE_X: u32 = 1;
+const POSITIONER_SLIDE_Y: u32 = 2;
+const POSITIONER_FLIP_X: u32 = 4;
+const POSITIONER_FLIP_Y: u32 = 8;
+const POSITIONER_RESIZE_X: u32 = 16;
+const POSITIONER_RESIZE_Y: u32 = 32;
+
+fn positioner_origin(
+    anchor_rect: aegis_core::Rect,
+    popup_size: aegis_core::Size,
+    anchor: u32,
+    gravity: u32,
+    offset: aegis_core::Point,
+    flip_x: bool,
+    flip_y: bool,
+) -> aegis_core::Point {
+    let anchor_x = match anchor {
+        3 | 5 | 6 if flip_x => anchor_rect.origin.x + anchor_rect.size.w,
+        4 | 7 | 8 if flip_x => anchor_rect.origin.x,
+        3 | 5 | 6 => anchor_rect.origin.x,
+        4 | 7 | 8 => anchor_rect.origin.x + anchor_rect.size.w,
+        _ => anchor_rect.origin.x + anchor_rect.size.w / 2,
+    };
+    let anchor_y = match anchor {
+        1 | 5 | 7 if flip_y => anchor_rect.origin.y + anchor_rect.size.h,
+        2 | 6 | 8 if flip_y => anchor_rect.origin.y,
+        1 | 5 | 7 => anchor_rect.origin.y,
+        2 | 6 | 8 => anchor_rect.origin.y + anchor_rect.size.h,
+        _ => anchor_rect.origin.y + anchor_rect.size.h / 2,
+    };
+    let gravity_x = match gravity {
+        3 | 5 | 6 if flip_x => 0,
+        4 | 7 | 8 if flip_x => -popup_size.w,
+        3 | 5 | 6 => -popup_size.w,
+        4 | 7 | 8 => 0,
+        _ => -popup_size.w / 2,
+    };
+    let gravity_y = match gravity {
+        1 | 5 | 7 if flip_y => 0,
+        2 | 6 | 8 if flip_y => -popup_size.h,
+        1 | 5 | 7 => -popup_size.h,
+        2 | 6 | 8 => 0,
+        _ => -popup_size.h / 2,
+    };
+    aegis_core::Point {
+        x: anchor_x + gravity_x + offset.x,
+        y: anchor_y + gravity_y + offset.y,
+    }
+}
+
+fn axis_is_constrained(origin: i32, size: i32, min: i32, max: i32) -> bool {
+    origin < min || i64::from(origin) + i64::from(size) > i64::from(max)
+}
+
+fn slide_axis(origin: i32, size: i32, min: i32, max: i32) -> i32 {
+    origin.clamp(min, max.saturating_sub(size).max(min))
+}
+
+fn resize_axis(origin: i32, size: i32, min: i32, max: i32) -> (i32, i32) {
+    let end = i64::from(origin) + i64::from(size);
+    let resized_origin = origin.max(min);
+    let resized_end = end.min(i64::from(max));
+    (
+        resized_origin,
+        (resized_end - i64::from(resized_origin)).max(1) as i32,
+    )
+}
+
+/// Apply xdg-positioner constraint adjustments in protocol order: flip,
+/// slide, then resize. `bounds` is expressed in the parent window geometry's
+/// local coordinate space, just like the returned popup origin.
+fn constrain_positioner(
+    anchor_rect: aegis_core::Rect,
+    popup_size: aegis_core::Size,
+    anchor: u32,
+    gravity: u32,
+    offset: aegis_core::Point,
+    adjustment: u32,
+    bounds: aegis_core::Rect,
+) -> (aegis_core::Point, aegis_core::Size) {
+    let original = positioner_origin(
+        anchor_rect,
+        popup_size,
+        anchor,
+        gravity,
+        offset,
+        false,
+        false,
+    );
+    let mut origin = original;
+    let mut size = popup_size;
+    let min_x = bounds.origin.x;
+    let min_y = bounds.origin.y;
+    let max_x = bounds.origin.x.saturating_add(bounds.size.w);
+    let max_y = bounds.origin.y.saturating_add(bounds.size.h);
+
+    if adjustment & POSITIONER_FLIP_X != 0 && axis_is_constrained(origin.x, size.w, min_x, max_x) {
+        let flipped = positioner_origin(
+            anchor_rect,
+            popup_size,
+            anchor,
+            gravity,
+            offset,
+            true,
+            false,
+        );
+        if !axis_is_constrained(flipped.x, size.w, min_x, max_x) {
+            origin.x = flipped.x;
+        }
+    }
+    if adjustment & POSITIONER_FLIP_Y != 0 && axis_is_constrained(origin.y, size.h, min_y, max_y) {
+        let flipped = positioner_origin(
+            anchor_rect,
+            popup_size,
+            anchor,
+            gravity,
+            offset,
+            false,
+            true,
+        );
+        if !axis_is_constrained(flipped.y, size.h, min_y, max_y) {
+            origin.y = flipped.y;
+        }
+    }
+    if adjustment & POSITIONER_SLIDE_X != 0 && axis_is_constrained(origin.x, size.w, min_x, max_x) {
+        origin.x = slide_axis(origin.x, size.w, min_x, max_x);
+    }
+    if adjustment & POSITIONER_SLIDE_Y != 0 && axis_is_constrained(origin.y, size.h, min_y, max_y) {
+        origin.y = slide_axis(origin.y, size.h, min_y, max_y);
+    }
+    if adjustment & POSITIONER_RESIZE_X != 0 && axis_is_constrained(origin.x, size.w, min_x, max_x)
+    {
+        (origin.x, size.w) = resize_axis(origin.x, size.w, min_x, max_x);
+    }
+    if adjustment & POSITIONER_RESIZE_Y != 0 && axis_is_constrained(origin.y, size.h, min_y, max_y)
+    {
+        (origin.y, size.h) = resize_axis(origin.y, size.h, min_y, max_y);
+    }
+
+    (origin, size)
+}
+
 unsafe extern "C" fn xdg_wm_base_get_xdg_surface(
     client: *mut ffi::wl_client,
     wm_base: *mut ffi::wl_resource,
@@ -305,7 +447,7 @@ unsafe extern "C" fn xdg_surface_get_toplevel(
             // the surface alive for protocol correctness, but fail closed and
             // make the model failure visible in diagnostics.
             log::error!(
-                "[realm] failed to register window {} for client {}: {error}",
+                "[interaction_domain] failed to register window {} for client {}: {error}",
                 window_id.0,
                 (*rec).client_id.0
             );
@@ -352,13 +494,12 @@ unsafe extern "C" fn xdg_surface_get_popup(
         } else {
             ffi::wl_resource_get_user_data(parent) as *mut SurfaceRec
         };
-        let (px, py) = if parent_rec.is_null() {
-            (0, 0)
+        let parent_origin = if parent_rec.is_null() {
+            aegis_core::Point::default()
         } else {
-            // Positioner coordinates are parent-surface-local: anchor at the
-            // parent's buffer draw origin, not its window-rect origin.
-            let origin = surface_draw_origin(&*parent_rec);
-            (origin.x, origin.y)
+            // Positioner and configure coordinates are relative to the
+            // parent's window geometry, not the potentially inset buffer.
+            (*parent_rec).position
         };
         let anchor_rect = if !pos_state.is_null() {
             (*pos_state)
@@ -382,58 +523,49 @@ unsafe extern "C" fn xdg_surface_get_popup(
         } else {
             (*pos_state).offset
         };
-        let mut popup_size = if !pos_state.is_null() {
+        let popup_size = if !pos_state.is_null() {
             (*pos_state).size.unwrap_or(aegis_core::Size { w: 0, h: 0 })
         } else {
             aegis_core::Size { w: 0, h: 0 }
         };
-        let anchor_x = match anchor {
-            3 | 5 | 6 => anchor_rect.origin.x,
-            4 | 7 | 8 => anchor_rect.origin.x + anchor_rect.size.w,
-            _ => anchor_rect.origin.x + anchor_rect.size.w / 2,
-        };
-        let anchor_y = match anchor {
-            1 | 5 | 7 => anchor_rect.origin.y,
-            2 | 6 | 8 => anchor_rect.origin.y + anchor_rect.size.h,
-            _ => anchor_rect.origin.y + anchor_rect.size.h / 2,
-        };
-        let gravity_x = match gravity {
-            3 | 5 | 6 => -popup_size.w,
-            4 | 7 | 8 => 0,
-            _ => -popup_size.w / 2,
-        };
-        let gravity_y = match gravity {
-            1 | 5 | 7 => -popup_size.h,
-            2 | 6 | 8 => 0,
-            _ => -popup_size.h / 2,
-        };
-        let mut local_x = anchor_x + gravity_x + offset.x;
-        let mut local_y = anchor_y + gravity_y + offset.y;
         let adjustment = if pos_state.is_null() {
             0
         } else {
             (*pos_state).constraint_adjustment
         };
-        if !(*rec).state.is_null() {
+        let (local_origin, popup_size) = if !(*rec).state.is_null() {
             let bounds = (*(*rec).state).output_geometry.logical_rect();
-            let min_x = bounds.origin.x - px;
-            let min_y = bounds.origin.y - py;
-            let max_x = bounds.origin.x + bounds.size.w - px;
-            let max_y = bounds.origin.y + bounds.size.h - py;
-            if adjustment & (1 | 4) != 0 {
-                local_x = local_x.clamp(min_x, (max_x - popup_size.w).max(min_x));
-            } else if adjustment & 16 != 0 {
-                popup_size.w = popup_size.w.min((max_x - local_x).max(1));
-            }
-            if adjustment & (2 | 8) != 0 {
-                local_y = local_y.clamp(min_y, (max_y - popup_size.h).max(min_y));
-            } else if adjustment & 32 != 0 {
-                popup_size.h = popup_size.h.min((max_y - local_y).max(1));
-            }
-        }
+            constrain_positioner(
+                anchor_rect,
+                popup_size,
+                anchor,
+                gravity,
+                offset,
+                adjustment,
+                aegis_core::Rect::new(
+                    bounds.origin.x - parent_origin.x,
+                    bounds.origin.y - parent_origin.y,
+                    bounds.size.w,
+                    bounds.size.h,
+                ),
+            )
+        } else {
+            (
+                positioner_origin(
+                    anchor_rect,
+                    popup_size,
+                    anchor,
+                    gravity,
+                    offset,
+                    false,
+                    false,
+                ),
+                popup_size,
+            )
+        };
         let popup_pos = aegis_core::Point {
-            x: px + local_x,
-            y: py + local_y,
+            x: parent_origin.x + local_origin.x,
+            y: parent_origin.y + local_origin.y,
         };
         (*rec).position = popup_pos;
         (*rec).xdg_toplevel = std::ptr::null_mut(); // popups are not toplevels
@@ -449,8 +581,8 @@ unsafe extern "C" fn xdg_surface_get_popup(
         ffi::wl_resource_post_event(
             pop,
             ffi::XDG_POPUP_CONFIGURE,
-            local_x,
-            local_y,
+            local_origin.x,
+            local_origin.y,
             popup_size.w,
             popup_size.h,
         );
@@ -1272,5 +1404,58 @@ impl Server {
             }
         }
         std::ptr::null_mut()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cascading_menu_flips_to_left_when_right_side_is_constrained() {
+        let (origin, size) = constrain_positioner(
+            aegis_core::Rect::new(850, 100, 50, 40),
+            aegis_core::Size { w: 260, h: 160 },
+            4, // right
+            4, // right
+            aegis_core::Point::default(),
+            POSITIONER_FLIP_X,
+            aegis_core::Rect::new(0, 0, 1_000, 800),
+        );
+
+        assert_eq!(origin, aegis_core::Point { x: 590, y: 40 });
+        assert_eq!(size, aegis_core::Size { w: 260, h: 160 });
+    }
+
+    #[test]
+    fn corner_popup_can_flip_on_both_axes() {
+        let (origin, size) = constrain_positioner(
+            aegis_core::Rect::new(900, 700, 50, 40),
+            aegis_core::Size { w: 200, h: 150 },
+            8, // bottom-right
+            8, // bottom-right
+            aegis_core::Point::default(),
+            POSITIONER_FLIP_X | POSITIONER_FLIP_Y,
+            aegis_core::Rect::new(0, 0, 1_000, 800),
+        );
+
+        assert_eq!(origin, aegis_core::Point { x: 700, y: 550 });
+        assert_eq!(size, aegis_core::Size { w: 200, h: 150 });
+    }
+
+    #[test]
+    fn failed_flip_falls_through_to_slide_then_resize() {
+        let (origin, size) = constrain_positioner(
+            aegis_core::Rect::new(10, 10, 10, 10),
+            aegis_core::Size { w: 120, h: 20 },
+            4, // right
+            4, // right
+            aegis_core::Point::default(),
+            POSITIONER_FLIP_X | POSITIONER_SLIDE_X | POSITIONER_RESIZE_X,
+            aegis_core::Rect::new(0, 0, 100, 100),
+        );
+
+        assert_eq!(origin.x, 0);
+        assert_eq!(size.w, 100);
     }
 }

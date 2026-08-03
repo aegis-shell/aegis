@@ -452,12 +452,12 @@ impl Daemon {
         if power_retry_blocked(self.power_retry, target, now) {
             return;
         }
-        let requested = aegis_ipc::Capabilities {
+        let requested = aegis_ipc::ConnectionCapabilities {
             query: true,
             control: true,
             input: false,
             session: false,
-            realm: false,
+            interaction_domain: false,
         };
         let result = aegis_ipc::Client::connect_with_timeout(
             &self.ipc_socket,

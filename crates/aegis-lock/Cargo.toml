@@ -8,15 +8,29 @@ license.workspace = true
 rust-version.workspace = true
 build = "build.rs"
 
+[features]
+default = []
+dev-preview = []
+
+[[bin]]
+name = "aegis-lock"
+path = "src/main.rs"
+
+[[bin]]
+name = "aegis-lock-preview"
+path = "src/preview_main.rs"
+required-features = ["dev-preview"]
+
 [dependencies]
 aegis-avatar.workspace = true
+aegis-config.workspace = true
 aegis-design.workspace = true
+aegis-wallpaper.workspace = true
 ash.workspace = true
 aegis-logging.workspace = true
 flux.workspace = true
 flux-sys.workspace = true
 flux-scene-graph-sys.workspace = true
-image.workspace = true
 lens.workspace = true
 lens-sys.workspace = true
 libc.workspace = true

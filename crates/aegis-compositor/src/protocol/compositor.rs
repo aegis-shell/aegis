@@ -884,7 +884,7 @@ pub(crate) unsafe extern "C" fn surface_commit(
         if !(*rec).state.is_null() && !(*rec).xdg_toplevel.is_null() {
             let window = (*rec).window.id;
             if was_mapped != (*rec).mapped || old_window_size != (*rec).window.size {
-                (*(*rec).state).queue_realm_layouts_for_window(window);
+                (*(*rec).state).queue_interaction_domain_layouts_for_window(window);
             }
         }
         if !(*rec).mapped && was_mapped && !(*rec).xdg_popup.is_null() && (*rec).popup_grabbed {
@@ -916,16 +916,30 @@ pub(crate) unsafe extern "C" fn surface_commit(
             let root = surface_root_toplevel(rec);
             if !root.is_null() {
                 let state = &*(*rec).state;
-                for realm in output_realms_for_window(state, (*root).window.id) {
-                    post_surface_output_event(state, (*rec).resource, realm, ffi::WL_SURFACE_ENTER);
+                for interaction_domain in
+                    output_interaction_domains_for_window(state, (*root).window.id)
+                {
+                    post_surface_output_event(
+                        state,
+                        (*rec).resource,
+                        interaction_domain,
+                        ffi::WL_SURFACE_ENTER,
+                    );
                 }
             }
         } else if !(*rec).mapped && was_mapped && !(*rec).state.is_null() {
             let root = surface_root_toplevel(rec);
             if !root.is_null() {
                 let state = &*(*rec).state;
-                for realm in output_realms_for_window(state, (*root).window.id) {
-                    post_surface_output_event(state, (*rec).resource, realm, ffi::WL_SURFACE_LEAVE);
+                for interaction_domain in
+                    output_interaction_domains_for_window(state, (*root).window.id)
+                {
+                    post_surface_output_event(
+                        state,
+                        (*rec).resource,
+                        interaction_domain,
+                        ffi::WL_SURFACE_LEAVE,
+                    );
                 }
             }
         }

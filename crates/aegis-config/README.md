@@ -13,6 +13,8 @@ live-reload detection for aegis.
   unrelated keys.
 - Validate the complete edited document and publish it with an atomic
   same-directory replacement.
+- Explicitly migrate supported legacy schemas while preserving comments and
+  creating a durable, non-overwriting owner-only backup.
 - Detect file modification-time changes through `ReloadWatcher`.
 
 ## Boundaries
@@ -48,6 +50,10 @@ Poll `ReloadWatcher::changed` from the event loop before loading the file
 again. Submit concurrent edits through one serialized owner before calling
 `ConfigStore::apply`; the compositor's config-write worker is that owner in
 the desktop runtime.
+
+Use `aegis config validate [path]` for an offline validation and
+`aegis config migrate [path]` for an explicit migration. The normal loader
+never changes a file or guesses how to translate removed authority.
 
 ## Related Documentation
 

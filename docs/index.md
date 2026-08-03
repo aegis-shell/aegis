@@ -41,7 +41,7 @@ aegis is a Wayland compositor for Linux, written in Rust on
   [How to Install and Verify the Lock Screen](how-to/lock-screen.md).
 - Isolating agent input and applications: read
   [How to Use Agent Workspaces](how-to/ai-workspaces.md).
-- Connecting the agent CLI to scoped desktop and Realm tools: read
+- Connecting the agent CLI to scoped desktop and Interaction Domain tools: read
   [Connect aegis-agent to Aegis](how-to/agent.md).
 - Booting from a TTY and smoke-testing real hardware: read
   [How to Run aegis on Bare Metal (DRM/KMS)](how-to/bare-metal-drm.md).
