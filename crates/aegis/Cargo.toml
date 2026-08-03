@@ -4,7 +4,8 @@ description = "autonomous surface shell — a Wayland compositor"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+# The compositor binary embeds assets/cursors/Bibata-Modern-Ice.
+license = "MIT AND GPL-3.0-only"
 rust-version.workspace = true
 default-run = "aegis"
 
