@@ -279,26 +279,23 @@ path (`aegis display capture`, scoped `CaptureOutput` pixel capture per
 [ADR-0041](../adr/0041-sealed-file-descriptor-pixel-transport.md)) covers the
 single-frame half of the capture story. The independently developed and
 packaged `xdg-desktop-portal-aegis` backend now serves Settings v1,
-Screenshot v2, ScreenCast v3, idle-only Inhibit, Secret v1 with an at-rest
-vault plus a transitional
-`org.freedesktop.secrets` compatibility layer
-([ADR-0085](../adr/0085-portal-secret-absorption-and-secret-service-compat.md)),
-Lockdown, FileChooser v3, AppChooser v2, Email v2, Notification v2,
-Account v1, DynamicLauncher v1, and Wallpaper v1. Compositor-owned operations
-use scoped IPC
+Screenshot v3, ScreenCast v6, Secret v1 with an at-rest vault, Lockdown,
+FileChooser, Email, and Account. Inhibit, AppChooser, Notification,
+DynamicLauncher, and Wallpaper route to the GTK backend until their complete
+portal contracts are available. Compositor-owned operations use scoped IPC
 ([ADR-0075](../adr/0075-independent-portal-package-and-backend-contract.md),
 [ADR-0099](../adr/0099-resource-authority-and-out-of-process-file-chooser.md)).
 Screenshot region selection, color picking, and monitor/window ScreenCast
-selection use one compositor-owned interactive picker. Application and
-secret-prompt dialogs remain native compositor chrome; FileChooser runs in a
-portal-owned, one-shot GTK4 process and uses xdg-foreign-v2 only for transient
-parenting. ScreenCast republishes the scoped output-frame stream
+selection use one compositor-owned interactive picker. Account confirmation
+remains native compositor chrome; FileChooser runs in a portal-owned,
+one-shot GTK4 process and uses xdg-foreign-v2 only for transient parenting.
+ScreenCast republishes the scoped output-frame stream
 ([ADR-0052](../adr/0052-scoped-output-frame-streaming.md)) as a PipeWire
 producer. The backend does not advertise Background or persistent ScreenCast
 grants until Aegis has the required policy UI, application tracking, and
-PermissionStore integration; the routing default is now `aegis;gtk`, so
-Aegis answers first everywhere and GTK only covers the few unsupported
-interfaces (Access, Print, Location, Background). Still
+PermissionStore integration; the routing default is `aegis;gtk`, so the
+frontend selects Aegis only for advertised interfaces and otherwise uses GTK.
+Still
 planned: window open/close transitions, the workspace-switch slide,
 zero-copy ScreenCast export, and screen-reader accessibility hooks.
 

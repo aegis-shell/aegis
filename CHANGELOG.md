@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.11] - 2026-08-03
+
 ### Shell chrome
 
 - Dock live previews now keep one continuous pointer corridor from the

@@ -1081,7 +1081,8 @@ mod tests {
             vec![[1920, 0, 3840, 1080]]
         );
         // A box spanning both outputs of a side-by-side desktop clips to each.
-        let damage = Some(&[Rect::new(1900, 100, 100, 200)][..]);
+        let damage_rects = [Rect::new(1900, 100, 100, 200)];
+        let damage = Some(&damage_rects[..]);
         assert_eq!(
             damage_clip_for_output(damage, 0, 0, 1920, 1080),
             vec![[1900, 100, 1920, 300]]
@@ -1091,19 +1092,22 @@ mod tests {
             vec![[1920, 100, 2000, 300]]
         );
         // Disjoint damage leaves the output untouched.
-        let other = Some(&[Rect::new(0, 0, 100, 100)][..]);
+        let other_rects = [Rect::new(0, 0, 100, 100)];
+        let other = Some(&other_rects[..]);
         assert_eq!(
             damage_clip_for_output(other, 1920, 0, 1920, 1080),
             Vec::<[i32; 4]>::new()
         );
         // Damage fully outside the framebuffer on the negative side.
-        let negative = Some(&[Rect::new(-50, -50, 40, 40)][..]);
+        let negative_rects = [Rect::new(-50, -50, 40, 40)];
+        let negative = Some(&negative_rects[..]);
         assert_eq!(
             damage_clip_for_output(negative, 0, 0, 1920, 1080),
             Vec::<[i32; 4]>::new()
         );
         // Disjoint dirty regions are preserved as separate clips.
-        let disjoint = Some(&[Rect::new(10, 10, 5, 5), Rect::new(500, 400, 8, 8)][..]);
+        let disjoint_rects = [Rect::new(10, 10, 5, 5), Rect::new(500, 400, 8, 8)];
+        let disjoint = Some(&disjoint_rects[..]);
         assert_eq!(
             damage_clip_for_output(disjoint, 0, 0, 1920, 1080),
             vec![[10, 10, 15, 15], [500, 400, 508, 408]]

@@ -1,9 +1,9 @@
 # How to Install and Verify the Portal Backend
 
 Install `xdg-desktop-portal-aegis` when portal-aware and sandboxed
-applications must use Aegis settings, screenshots, screen sharing, native
-pickers, notifications, and secrets. The compositor works without this
-package. Installing only the backend executable is not enough:
+applications must use Aegis settings, screenshots, screen sharing, file
+selection, email handoff, account data, and secrets. The compositor works
+without this package. Installing only the backend executable is not enough:
 xdg-desktop-portal must discover its metadata, select it for an Aegis
 session, and activate it on the session bus.
 
@@ -15,8 +15,10 @@ Install these runtime components:
   [Portal Backend Reference](../reference/portal.md#identifiers-and-paths);
 - `xdg-desktop-portal` as the public frontend;
 - `xdg-desktop-portal-gtk` as the fallback for interfaces that Aegis does not
-  implement; and
-- PipeWire for screen sharing.
+  implement;
+- GTK 4.10 or newer for file selection;
+- PipeWire and WirePlumber for screen sharing; and
+- `xdg-email` for email handoff.
 
 The compatibility mapping is strict even though the components use separate
 source repositories and version sequences. The backend connects to the
@@ -32,17 +34,17 @@ Use the distribution package when one is available. The
 
 | Source | Destination |
 |--------|-------------|
-| `target/release/xdg-desktop-portal-aegis` | `/usr/lib/xdg-desktop-portal-aegis` |
-| `contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` |
+| Meson portal executable | `/usr/libexec/xdg-desktop-portal-aegis` by default |
+| Meson FileChooser executable | `/usr/libexec/aegis-portal-prompter` by default |
+| Generated D-Bus service | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` |
 | `contrib/xdg-desktop-portal/portals/aegis.portal` | `/usr/share/xdg-desktop-portal/portals/aegis.portal` |
 | `contrib/xdg-desktop-portal/aegis-portals.conf` | `/usr/share/xdg-desktop-portal/aegis-portals.conf` |
-| `contrib/dbus-1/services/org.freedesktop.secrets.service` | `/usr/share/dbus-1/services/org.freedesktop.secrets.service` |
 | `LICENSE` | `/usr/share/licenses/xdg-desktop-portal-aegis/LICENSE` |
 
-The first D-Bus service file activates the portal backend. The second is a
-transitional activation path for un-sandboxed Secret Service clients. The
-`aegis.portal` file declares the interfaces that the backend implements, and
-`aegis-portals.conf` selects `aegis;gtk` for an Aegis desktop.
+The D-Bus service activates the portal backend. The `aegis.portal` file
+declares the eight native interfaces, and `aegis-portals.conf` routes the
+remaining interfaces to GTK. The Portal does not install a partial
+`org.freedesktop.secrets` service.
 
 There is no `xdg-desktop-portal-aegis.service` to enable. D-Bus starts the
 private helper on demand.
@@ -57,29 +59,21 @@ git clone --branch "v<PORTAL_VERSION>" --depth 1 \
   https://github.com/aegis-shell/xdg-desktop-portal-aegis.git \
   ../xdg-desktop-portal-aegis
 cd ../xdg-desktop-portal-aegis
-cargo build --locked --release --workspace
-sudo install -Dm0755 target/release/xdg-desktop-portal-aegis \
-  /usr/lib/xdg-desktop-portal-aegis
-sudo install -Dm0644 LICENSE \
-  /usr/share/licenses/xdg-desktop-portal-aegis/LICENSE
+meson setup build --buildtype=release --prefix=/usr -Dpam=false
+meson compile -C build
+sudo meson install -C build
 ```
 
-Install its discovery and activation metadata:
+Meson generates the D-Bus service with the configured `libexecdir`, installs
+both private executables, and installs the portal metadata and routing file.
+Use `DESTDIR` instead of `sudo` when staging a package:
 
 ```bash
-sudo install -Dm0644 \
-  contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service \
-  /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service
-sudo install -Dm0644 contrib/dbus-1/services/org.freedesktop.secrets.service \
-  /usr/share/dbus-1/services/org.freedesktop.secrets.service
-sudo install -Dm0644 contrib/xdg-desktop-portal/portals/aegis.portal \
-  /usr/share/xdg-desktop-portal/portals/aegis.portal
-sudo install -Dm0644 contrib/xdg-desktop-portal/aegis-portals.conf \
-  /usr/share/xdg-desktop-portal/aegis-portals.conf
+DESTDIR="$PWD/stage" meson install -C build
 ```
 
-Keep `/usr/lib/xdg-desktop-portal-aegis` synchronized with both D-Bus files'
-`Exec=` value when using another installation prefix or `libexecdir`.
+The generated service keeps its `Exec=` value synchronized when a
+distribution configures another prefix or `libexecdir`.
 
 ## Stage a Per-User Development Build
 
@@ -88,34 +82,15 @@ the system package. Run these commands from the
 `xdg-desktop-portal-aegis` repository root:
 
 ```bash
-portal_data=${XDG_DATA_HOME:-"$HOME/.local/share"}
-portal_config=${XDG_CONFIG_HOME:-"$HOME/.config"}
-portal_lib="$HOME/.local/lib"
-cargo build --locked -p xdg-desktop-portal-aegis
-install -Dm0755 target/debug/xdg-desktop-portal-aegis \
-  "$portal_lib/xdg-desktop-portal-aegis"
-install -Dm0644 contrib/xdg-desktop-portal/portals/aegis.portal \
-  "$portal_data/xdg-desktop-portal/portals/aegis.portal"
-install -Dm0644 contrib/xdg-desktop-portal/aegis-portals.conf \
-  "$portal_config/xdg-desktop-portal/aegis-portals.conf"
+meson setup build-user --buildtype=debug \
+  --prefix="$HOME/.local" -Dpam=false
+meson compile -C build-user
+meson install -C build-user
 ```
 
-Install copies of the D-Bus files, then replace their system `Exec=` path
-with the absolute per-user path:
-
-```bash
-install -Dm0644 \
-  contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service \
-  "$portal_data/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service"
-install -Dm0644 contrib/dbus-1/services/org.freedesktop.secrets.service \
-  "$portal_data/dbus-1/services/org.freedesktop.secrets.service"
-sed -i "s|^Exec=.*|Exec=${portal_lib:?}/xdg-desktop-portal-aegis|" \
-  "$portal_data/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service" \
-  "$portal_data/dbus-1/services/org.freedesktop.secrets.service"
-```
-
-D-Bus does not expand `~`, `$HOME`, or shell expressions in `Exec=`. Inspect
-the installed files and confirm that both values are absolute paths.
+Meson writes an absolute `Exec=` path into the per-user D-Bus service. D-Bus
+does not expand `~`, `$HOME`, or shell expressions in `Exec=`; inspect the
+installed service and confirm the path is absolute.
 
 This staging changes the user's normal portal selection. Remove or rename the
 per-user files after testing to return to the system configuration.
@@ -244,7 +219,6 @@ journalctl --user -b -u aegis.service --no-pager
 | Settings work but capture or pickers fail | Confirm that the matching compositor is running and owns `$XDG_RUNTIME_DIR/aegis.sock`. |
 | Screen sharing opens a chooser but produces no node | Confirm that the PipeWire user session is running and inspect the portal journal. |
 | Unsupported interfaces disappear | Install `xdg-desktop-portal-gtk`; it is the configured fallback. |
-| `org.freedesktop.secrets` is owned by another service | This is allowed. Aegis keeps its portal-native Secret interface and leaves the classic compatibility name with the existing provider. |
 | A nested test reaches the outer desktop | Use a direct session or isolate the session bus; nested Aegis intentionally does not overwrite the host activation environment. |
 
 See the [Portal Backend Reference](../reference/portal.md) for interface

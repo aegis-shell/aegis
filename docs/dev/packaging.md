@@ -36,11 +36,12 @@ dimming.
 
 The compatible
 [Aegis Portal source release](https://github.com/aegis-shell/xdg-desktop-portal-aegis)
-has its own `Cargo.lock` and additionally requires PipeWire/SPA and Linux PAM
-development files. Its manifest pins `aegis-core`, `aegis-ipc`, and
+has its own `Cargo.lock` and additionally requires GTK 4.10, PipeWire/SPA,
+Meson, and Ninja. Linux PAM development files are required only for the
+optional unlock module. Its manifest pins `aegis-core`, `aegis-ipc`, and
 `aegis-logging` to the declared supported Aegis Git tag. The portal runtime
-requires `xdg-desktop-portal`; install the GTK backend as a fallback for
-interfaces Aegis does not implement.
+requires `xdg-desktop-portal`, WirePlumber, and `xdg-email`; install the GTK
+backend as a fallback for interfaces Aegis does not implement.
 
 ## Reproducible Source Preparation
 
@@ -69,8 +70,17 @@ cargo build --frozen --offline --release --workspace
 Use `cargo build --locked --release --workspace` when the package builder is
 allowed to use its pre-populated Cargo cache without a vendored source tree.
 
-Run the same command separately from the matching Aegis Portal source root.
-The two build directories and `target/` trees are independent.
+Build the matching Aegis Portal release through its production Meson
+installer. Meson owns the configured executable paths and generated D-Bus
+activation metadata:
+
+```bash
+meson setup build-package --buildtype=release --prefix=/usr -Dpam=false
+meson compile -C build-package
+```
+
+Enable `-Dpam=true` only for a package variant that includes the optional PAM
+module and declares the resulting GPL-3.0-only distribution license.
 
 ## Install Manifest
 
@@ -85,16 +95,16 @@ inside the package build root.
 | `target/release/aegis-atspi` | `/usr/bin/aegis-atspi` | core |
 | `target/release/aegis-lock` | `/usr/bin/aegis-lock` | core |
 | `target/release/aegis-settings` | `/usr/bin/aegis-settings` | core |
-| Portal: `target/release/xdg-desktop-portal-aegis` | `/usr/lib/xdg-desktop-portal-aegis` | portal |
+| Portal: Meson portal executable | `/usr/libexec/xdg-desktop-portal-aegis` by default | portal |
+| Portal: Meson FileChooser executable | `/usr/libexec/aegis-portal-prompter` by default | portal |
 | `target/release/aegis-mcp` | `/usr/bin/aegis-mcp` | agent integration |
-| `target/release/fuji` | `/usr/bin/fuji` | agent integration |
+| `target/release/aegis-agent` | `/usr/bin/aegis-agent` | agent integration |
 | `contrib/systemd/user/aegis.service` | `/usr/lib/systemd/user/aegis.service` | core |
 | `contrib/io.github.ming2k.aegis.Settings.desktop` | `/usr/share/applications/io.github.ming2k.aegis.Settings.desktop` | core |
 | `contrib/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg` | `/usr/share/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg` | core |
 | `contrib/pam/aegis-lock` | `/etc/pam.d/aegis-lock` | core |
-| Portal: `contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | portal |
-| Portal: `contrib/dbus-1/services/org.freedesktop.secrets.service` | `/usr/share/dbus-1/services/org.freedesktop.secrets.service` | portal |
-| Portal: `target/release/libpam_aegis.so` | `/lib/security/pam_aegis.so` | portal |
+| Portal: generated D-Bus service | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | portal |
+| Portal: optional Meson PAM artifact | `/usr/lib/security/pam_aegis.so` by default | portal |
 | Portal: `contrib/xdg-desktop-portal/portals/aegis.portal` | `/usr/share/xdg-desktop-portal/portals/aegis.portal` | portal |
 | Portal: `contrib/xdg-desktop-portal/aegis-portals.conf` | `/usr/share/xdg-desktop-portal/aegis-portals.conf` | portal |
 | `LICENSE` | `/usr/share/licenses/aegis/LICENSE` | core |
@@ -134,8 +144,8 @@ install -Dm0755 target/release/aegis-settings \
   "$package_root/usr/bin/aegis-settings"
 install -Dm0755 target/release/aegis-mcp \
   "$package_root/usr/bin/aegis-mcp"
-install -Dm0755 target/release/fuji \
-  "$package_root/usr/bin/fuji"
+install -Dm0755 target/release/aegis-agent \
+  "$package_root/usr/bin/aegis-agent"
 ```
 
 Stage the portal executable and all portal-owned data files from the separate
@@ -150,7 +160,7 @@ management. Omitting or misnaming this profile leaves a securely locked
 session unable to authenticate.
 
 `xdg-desktop-portal-aegis` is a separate source and runtime component. Its
-package owns the private backend executable, both D-Bus activation files,
+package owns both private executables, the generated D-Bus activation file,
 the `.portal` metadata, the backend-selection file, and the optional
 `pam_aegis.so` secret auto-unlock module. The core package must not own those
 files or require the portal frontend and PipeWire solely for this backend.
@@ -169,11 +179,11 @@ authentication stack through the distribution's normal PAM integration
 mechanism; do not replace or take ownership of another package's login
 profile.
 
-The supplied systemd user service executes `aegis` from `/usr/bin`; the D-Bus
-activation file executes the private portal backend from
-`/usr/lib/xdg-desktop-portal-aegis`. A distribution using another logical
-prefix must patch the matching service file consistently; changing only a
-binary destination creates broken activation.
+The supplied systemd user service executes `aegis` from `/usr/bin`; the
+Portal's Meson build generates its D-Bus activation file from the configured
+`libexecdir`. A distribution using another logical prefix must configure both
+packages consistently; changing only a binary destination creates broken
+activation.
 
 ## Package Integration
 
@@ -322,7 +332,7 @@ package() {
   install -Dm0755 target/release/aegis-lock     "$dest/bin/aegis-lock"
   install -Dm0755 target/release/aegis-settings "$dest/bin/aegis-settings"
   install -Dm0755 target/release/aegis-mcp "$dest/bin/aegis-mcp"
-  install -Dm0755 target/release/fuji           "$dest/bin/fuji"
+  install -Dm0755 target/release/aegis-agent    "$dest/bin/aegis-agent"
 
   install -Dm0644 contrib/systemd/user/aegis.service \
     "$pkgdir/usr/lib/systemd/user/aegis.service"
@@ -355,8 +365,8 @@ pkgdesc='xdg-desktop-portal backend for the Aegis compositor'
 arch=(x86_64)
 url='https://github.com/aegis-shell/xdg-desktop-portal-aegis'
 license=(MIT GPL-3.0-only)
-depends=("aegis=$_aegisver" pam pipewire xdg-desktop-portal)
-makedepends=(rust pkgconf clang pipewire pam)
+depends=("aegis=$_aegisver" gtk4 pam pipewire wireplumber xdg-desktop-portal xdg-email)
+makedepends=(rust meson ninja pkgconf clang pipewire pam)
 optdepends=(
   'xdg-desktop-portal-gtk: fallback for portal interfaces Aegis does not implement'
 )
@@ -365,26 +375,15 @@ sha256sums=('SKIP')   # replace with the real release-tarball checksum
 
 build() {
   cd "$pkgname-$pkgver"
-  cargo build --locked --release --workspace
+  meson setup build --buildtype=release --prefix=/usr -Dpam=true
+  meson compile -C build
 }
 
 package() {
   cd "$pkgname-$pkgver"
   local dest="$pkgdir/usr"
 
-  install -Dm0755 target/release/xdg-desktop-portal-aegis \
-    "$dest/lib/xdg-desktop-portal-aegis"
-  install -Dm0644 \
-    contrib/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service \
-    "$dest/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service"
-  install -Dm0644 contrib/dbus-1/services/org.freedesktop.secrets.service \
-    "$dest/share/dbus-1/services/org.freedesktop.secrets.service"
-  install -Dm0755 target/release/libpam_aegis.so \
-    "$dest/lib/security/pam_aegis.so"
-  install -Dm0644 contrib/xdg-desktop-portal/portals/aegis.portal \
-    "$dest/share/xdg-desktop-portal/portals/aegis.portal"
-  install -Dm0644 contrib/xdg-desktop-portal/aegis-portals.conf \
-    "$dest/share/xdg-desktop-portal/aegis-portals.conf"
+  DESTDIR="$pkgdir" meson install -C build
   install -Dm0644 LICENSE \
     "$dest/share/licenses/xdg-desktop-portal-aegis/LICENSE"
 }
@@ -403,8 +402,8 @@ package() {
   exact compatible core package declared by the Portal release because its
   scoped IPC protocol and compositor mechanisms move in lockstep.
 - **`/usr` prefix is fixed.** The systemd unit runs `/usr/bin/aegis`; the
-  D-Bus service runs `/usr/lib/xdg-desktop-portal-aegis`. Patch the
-  corresponding unit or service when changing either destination.
+  generated D-Bus service uses Meson's configured portal `libexecdir`. Keep
+  both destinations synchronized when changing the prefix.
 - **Keep `Delegate=cpu memory pids`** in `aegis.service`; Interaction Domain sandboxing
   depends on it.
 - **Use distribution hooks.** The packages that own systemd, desktop, icon,

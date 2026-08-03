@@ -865,7 +865,7 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for wid in &o.workspaces {
             for t in &m.workspace(*wid).unwrap().toplevels {
-                assert!(seen.insert(*t), "toplevel {:?} on two workspaces", t);
+                assert!(seen.insert(*t), "toplevel {t:?} on two workspaces");
             }
         }
     }

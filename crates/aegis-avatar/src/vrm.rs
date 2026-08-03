@@ -349,12 +349,12 @@ impl Model {
         if let Some(path) = std::env::var_os("AEGIS_AVATAR_DEBUG_DUMP") {
             let mut pixels = vec![0u8; (ATLAS_SIZE as usize) * (ATLAS_SIZE as usize) * 4];
             if let Err(error) = self.surface.read_pixels(&mut pixels) {
-                log::warn!("avatar: could not read debug preview {:?}: {error}", path);
+                log::warn!("avatar: could not read debug preview {path:?}: {error}");
             } else if let Some(square) = image::RgbaImage::from_raw(ATLAS_SIZE, ATLAS_SIZE, pixels)
             {
                 let masked = circle_mask_premultiplied(&square);
                 if let Err(error) = masked.save(&path) {
-                    log::warn!("avatar: could not write debug preview {:?}: {error}", path);
+                    log::warn!("avatar: could not write debug preview {path:?}: {error}");
                 }
             }
         }

@@ -259,8 +259,7 @@ impl CompositorRuntime {
                                 .ok_or_else(|| {
                                     format!(
                                         "Interaction Domain authority changed before delivery \
-                                         (captured r{}, current r{current_revision})",
-                                        captured_revision
+                                         (captured r{captured_revision}, current r{current_revision})"
                                     )
                                 })
                         })

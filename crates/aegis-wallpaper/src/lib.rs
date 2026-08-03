@@ -106,7 +106,7 @@ impl Wallpaper {
     /// destination size [`Wallpaper::draw`] is given.
     pub fn from_path(path: impl AsRef<Path>, target_w: u32, target_h: u32) -> Result<Self, Error> {
         let path = path.as_ref();
-        log::debug!("wallpaper: loading {:?}", path);
+        log::debug!("wallpaper: loading {path:?}");
 
         let metadata =
             std::fs::metadata(path).map_err(|error| Error::Open(path.to_path_buf(), error))?;
@@ -123,13 +123,7 @@ impl Wallpaper {
         if let Ok(still) = StillSource::load(path) {
             let (w, h) = still.dimensions();
             let count = still.frame_count();
-            log::info!(
-                "wallpaper: image loaded {:?} ({}x{}, {} frame(s))",
-                path,
-                w,
-                h,
-                count
-            );
+            log::info!("wallpaper: image loaded {path:?} ({w}x{h}, {count} frame(s))");
             return Ok(Wallpaper {
                 source: SourceKind::Still(still),
                 width: w,
@@ -144,12 +138,7 @@ impl Wallpaper {
         log::debug!("wallpaper: not an image, trying ffmpeg");
         let video = VideoSource::open(path, target_w, target_h)?;
         let (w, h) = video.dimensions();
-        log::info!(
-            "wallpaper: video loaded {:?} ({}x{}, via ffmpeg)",
-            path,
-            w,
-            h
-        );
+        log::info!("wallpaper: video loaded {path:?} ({w}x{h}, via ffmpeg)");
         Ok(Wallpaper {
             source: SourceKind::Video(video),
             width: w,
@@ -178,7 +167,7 @@ impl Wallpaper {
         }
         let still = StillSource::load(path)?;
         let (width, height) = still.dimensions();
-        log::info!("wallpaper: image loaded {:?} ({}x{})", path, width, height);
+        log::info!("wallpaper: image loaded {path:?} ({width}x{height})");
         Ok(Self {
             source: SourceKind::Still(still),
             width,
@@ -210,7 +199,7 @@ impl Wallpaper {
         }
         let video = VideoSource::open(path, target_w, target_h)?;
         let (width, height) = video.dimensions();
-        log::info!("wallpaper: video loaded {:?} ({}x{})", path, width, height);
+        log::info!("wallpaper: video loaded {path:?} ({width}x{height})");
         Ok(Self {
             source: SourceKind::Video(video),
             width,

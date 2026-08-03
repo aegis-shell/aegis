@@ -758,7 +758,6 @@ mod tests {
         prompt.start_capability_pick(params());
         assert!(prompt.groups.iter().any(|group| group.gated));
         assert!(prompt.groups.iter().any(|group| !group.gated));
-        assert!(!GATED_NOTE.is_empty());
     }
 
     #[test]

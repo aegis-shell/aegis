@@ -280,10 +280,7 @@ fn discover_sources(
     } else if !sources.is_empty()
         && let Some(path) = legacy_path.filter(|path| path.is_file())
     {
-        log::info!(
-            "avatar: ignoring legacy VRMA {:?}; the motions library is configured",
-            path
-        );
+        log::info!("avatar: ignoring legacy VRMA {path:?}; the motions library is configured");
     }
 
     let mut by_name: HashMap<&str, &Path> = HashMap::with_capacity(sources.len());

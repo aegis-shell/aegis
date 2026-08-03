@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.0.10"
+version = "0.0.11"
 edition = "2024"
 # Project source code is MIT. The bundled cursor theme under
 # assets/cursors/Bibata-Modern-Ice is GPL-3.0-only (third-party, derived from
@@ -19,13 +19,13 @@ repository = "https://github.com/ming2k/aegis"
 # development worktree can patch these sources through
 # .cargo/optics-local.toml without making a sibling checkout mandatory for CI
 # or downstream packagers.
-flux = { git = "https://github.com/ming2k/optics", tag = "v0.0.9" }
-flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.9" }
-flux-scene-graph = { git = "https://github.com/ming2k/optics", tag = "v0.0.9" }
-flux-scene-graph-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.9" }
-lens = { git = "https://github.com/ming2k/optics", tag = "v0.0.9" }
-lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.9" }
-iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.9" }
+flux = { git = "https://github.com/ming2k/optics", tag = "v0.0.10" }
+flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.10" }
+flux-scene-graph = { git = "https://github.com/ming2k/optics", tag = "v0.0.10" }
+flux-scene-graph-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.10" }
+lens = { git = "https://github.com/ming2k/optics", tag = "v0.0.10" }
+lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.10" }
+iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.10" }
 
 # Observability: crates emit through the `log` facade; each binary installs a
 # `tracing`-based subscriber through the shared `aegis-logging` crate, which

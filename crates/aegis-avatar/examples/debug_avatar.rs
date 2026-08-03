@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("debug motion: {:?}", avatar.current_motion());
     println!("debug sample time: {sample_time:.3}s");
     if let Some(path) = std::env::var_os("AEGIS_AVATAR_DEBUG_DUMP") {
-        println!("debug portrait written to {:?}", path);
+        println!("debug portrait written to {path:?}");
     }
     Ok(())
 }
