@@ -38,10 +38,11 @@ The compatible
 [Aegis Portal source release](https://github.com/aegis-shell/xdg-desktop-portal-aegis)
 has its own `Cargo.lock` and additionally requires GTK 4.10, PipeWire/SPA,
 Meson, and Ninja. Linux PAM development files are required only for the
-optional unlock module. Its manifest pins `aegis-model`, `aegis-ipc`, and
-`aegis-logging` to the declared supported Aegis Git tag. The portal runtime
-requires `xdg-desktop-portal`, WirePlumber, and `xdg-email`; install the GTK
-backend as a fallback for interfaces Aegis does not implement.
+optional unlock module. Its Portal-owned protocol projection has no Aegis
+source dependency; the compositor remains a runtime provider for protocol 24
+settings, capture, picking, and stream resources. The portal runtime requires
+`xdg-desktop-portal`, WirePlumber, and `xdg-email`; install the GTK backend as
+a fallback for interfaces Aegis does not implement.
 
 ## Reproducible Source Preparation
 

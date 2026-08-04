@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-08-04
+
 ### Packaging
 
 - Regenerated the canonical Cargo lockfile for the current workspace and
