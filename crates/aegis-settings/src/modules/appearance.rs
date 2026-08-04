@@ -1,4 +1,4 @@
-use aegis_core::settings::{
+use aegis_model::settings::{
     AccentColor, ColorScheme, Contrast, DesktopPreferences, SettingsAction, SettingsSnapshot,
 };
 use aegis_shell::{Localizer, Message};

@@ -1,7 +1,7 @@
 use crate::*;
 
 impl Server {
-    fn switcher_candidates(&self) -> Vec<aegis_core::window::WindowId> {
+    fn switcher_candidates(&self) -> Vec<aegis_model::window::WindowId> {
         let visible = self.visible();
         let mut candidates: Vec<_> = self
             .state
@@ -99,8 +99,8 @@ impl Server {
     pub fn window_switcher_snapshot(
         &mut self,
     ) -> Option<(
-        Vec<aegis_core::window::WindowId>,
-        Option<aegis_core::window::WindowId>,
+        Vec<aegis_model::window::WindowId>,
+        Option<aegis_model::window::WindowId>,
     )> {
         self.refresh_window_switcher();
         self.state.window_switcher.as_ref().map(|session| {
@@ -124,15 +124,15 @@ impl Server {
     /// visible set changes on the next frame; if the focused toplevel is no
     /// longer visible, keyboard focus is dropped (a `wl_keyboard.leave` is
     /// posted) so keystrokes do not route to a hidden window.
-    pub fn switch_workspace(&mut self, dir: aegis_core::workspace::Switch) {
+    pub fn switch_workspace(&mut self, dir: aegis_model::workspace::Switch) {
         let old = self.state.workspaces.current_workspace(self.state.output);
         let new = self.state.workspaces.switch(self.state.output, dir);
         if let (Some(old), Some(new)) = (old, new)
             && old != new
         {
             let direction = match dir {
-                aegis_core::workspace::Switch::Next => 1,
-                aegis_core::workspace::Switch::Prev => -1,
+                aegis_model::workspace::Switch::Next => 1,
+                aegis_model::workspace::Switch::Prev => -1,
             };
             self.begin_workspace_slide(old, new, direction);
         }
@@ -142,7 +142,7 @@ impl Server {
 
     /// Switch directly to a workspace by id on the output that owns it. Same
     /// focus-drop contract as [`switch_workspace`](Self::switch_workspace).
-    pub fn switch_workspace_to(&mut self, id: aegis_core::workspace::WorkspaceId) {
+    pub fn switch_workspace_to(&mut self, id: aegis_model::workspace::WorkspaceId) {
         let Some(target_output) = self
             .state
             .workspaces
@@ -191,8 +191,8 @@ impl Server {
     /// the window.
     pub fn move_to_workspace(
         &mut self,
-        window_id: aegis_core::window::WindowId,
-        workspace: aegis_core::workspace::WorkspaceId,
+        window_id: aegis_model::window::WindowId,
+        workspace: aegis_model::workspace::WorkspaceId,
     ) {
         if !self.human_controls_window(window_id) {
             return;
@@ -202,7 +202,7 @@ impl Server {
     }
 
     /// The workspace/output snapshot for the IPC and chrome (ADR-0025/0027).
-    pub fn workspace_snapshot(&self) -> aegis_core::workspace::WorkspaceSnapshot {
+    pub fn workspace_snapshot(&self) -> aegis_model::workspace::WorkspaceSnapshot {
         self.state.workspaces.snapshot()
     }
 
@@ -236,9 +236,9 @@ impl Server {
             self.state.workspaces.set_tiled(wid, on);
         }
         let role = if on {
-            aegis_core::layout::LayoutRole::Tiled
+            aegis_model::layout::LayoutRole::Tiled
         } else {
-            aegis_core::layout::LayoutRole::Floating
+            aegis_model::layout::LayoutRole::Floating
         };
         for id in self.state.workspaces.visible_toplevels() {
             let rec = self.find_surface_by_window_id(id);
@@ -274,7 +274,7 @@ impl Server {
 
     /// Replace the window rules (ADR-0026). Called at startup and on config
     /// reload. Rules apply to windows mapped after they are set.
-    pub fn set_window_rules(&mut self, rules: Vec<aegis_core::window_rule::WindowRule>) {
+    pub fn set_window_rules(&mut self, rules: Vec<aegis_model::window_rule::WindowRule>) {
         self.state.window_rules = rules;
     }
 
@@ -285,7 +285,7 @@ impl Server {
 
     /// Replace the tiling layout parameters (gaps, master ratio) from the
     /// config (ADR-0024/0026). Applied on the next `apply_tiling`.
-    pub fn set_layout_params(&mut self, params: aegis_core::layout::LayoutParams) {
+    pub fn set_layout_params(&mut self, params: aegis_model::layout::LayoutParams) {
         self.state.layout_params = params;
     }
 
@@ -307,7 +307,7 @@ impl Server {
     /// Existing decoration-aware toplevels receive a fresh decoration
     /// configure followed by the required xdg-surface configure, so config
     /// reload changes take effect without restarting applications.
-    pub fn set_decoration_policy(&mut self, policy: aegis_core::window::DecorationPolicy) {
+    pub fn set_decoration_policy(&mut self, policy: aegis_model::window::DecorationPolicy) {
         if self.state.decoration_policy == policy {
             return;
         }
@@ -329,8 +329,8 @@ impl Server {
 
     fn begin_workspace_slide(
         &mut self,
-        outgoing: aegis_core::workspace::WorkspaceId,
-        incoming: aegis_core::workspace::WorkspaceId,
+        outgoing: aegis_model::workspace::WorkspaceId,
+        incoming: aegis_model::workspace::WorkspaceId,
         direction: i32,
     ) {
         if self.state.reduced_motion {
@@ -414,7 +414,9 @@ impl Server {
     /// Current workspace surfaces plus the source surfaces retained by a
     /// live workspace slide. This is presentation visibility only; input and
     /// focus continue to use [`Self::visible`].
-    pub(crate) fn render_visible(&self) -> std::collections::HashSet<aegis_core::window::WindowId> {
+    pub(crate) fn render_visible(
+        &self,
+    ) -> std::collections::HashSet<aegis_model::window::WindowId> {
         let mut visible = self.visible();
         if let Some(slide) = self.workspace_slide_presentation() {
             visible.extend(slide.layers.into_iter().flat_map(|layer| layer.windows));
@@ -465,13 +467,13 @@ impl Server {
     /// rendering interpolates from the current on-screen rect — the previous
     /// transition's mid-flight rect when changes come faster than the
     /// duration, else the previous model rect (ADR-0029).
-    pub(crate) fn note_transition(&self, rec: *mut SurfaceRec, old: aegis_core::Rect) {
+    pub(crate) fn note_transition(&self, rec: *mut SurfaceRec, old: aegis_model::Rect) {
         if self.state.reduced_motion || rec.is_null() {
             return;
         }
         let now = self.now_ms();
         unsafe {
-            let target = aegis_core::Rect {
+            let target = aegis_model::Rect {
                 origin: (*rec).position,
                 size: (*rec).window.size,
             };
@@ -485,14 +487,14 @@ impl Server {
                 .and_then(|t| t.rect_at(old, now))
                 .unwrap_or(old);
             (*rec).window.transition =
-                Some(aegis_core::transition::WindowTransition::new(from, now));
+                Some(aegis_model::transition::WindowTransition::new(from, now));
         }
     }
 
     /// The rect a surface renders at this frame: `Some(interpolated)` while
     /// its transition is in flight, `None` at the model target (ADR-0029).
-    pub(crate) fn transition_render_rect(&self, s: &SurfaceRec) -> Option<aegis_core::Rect> {
-        let target = aegis_core::Rect {
+    pub(crate) fn transition_render_rect(&self, s: &SurfaceRec) -> Option<aegis_model::Rect> {
+        let target = aegis_model::Rect {
             origin: s.position,
             size: s.window.size,
         };
@@ -513,7 +515,7 @@ impl Server {
     /// Reconcile connector identities and geometries reported by the backend.
     /// Existing connector workspaces survive reordering; removed outputs are
     /// relocated by `WorkspaceModel`, and a replug restores their origin.
-    pub fn set_outputs(&mut self, mut outputs: Vec<aegis_core::output::OutputInfo>) {
+    pub fn set_outputs(&mut self, mut outputs: Vec<aegis_model::output::OutputInfo>) {
         outputs.retain(|output| !output.connector.is_empty());
         let mut seen = std::collections::HashSet::new();
         outputs.retain(|output| seen.insert(output.connector.clone()));
@@ -529,13 +531,13 @@ impl Server {
                 continue;
             };
             if let Some(scale) = policy.scale {
-                output.geometry.scale = aegis_core::output::Scale(scale as f32);
+                output.geometry.scale = aegis_model::output::Scale(scale as f32);
             }
             if let Some(position) = policy.position {
                 output.geometry.logical_origin = position;
             }
             if let Some(transform) = policy.transform
-                && transform != aegis_core::Transform::Normal
+                && transform != aegis_model::Transform::Normal
             {
                 log::warn!(
                     "[server] output '{}': transform configured but not yet applied \
@@ -606,7 +608,7 @@ impl Server {
     /// not plugged in yet still applies once it appears.
     pub fn set_output_policies(
         &mut self,
-        policies: std::collections::HashMap<String, aegis_core::output::OutputPolicy>,
+        policies: std::collections::HashMap<String, aegis_model::output::OutputPolicy>,
     ) {
         for connector in policies.keys() {
             if !self
@@ -629,7 +631,7 @@ impl Server {
     /// this on resize; the tiling work-area is the geometry's logical rect.
     /// Re-sends the wl_output geometry/mode/scale/done sequence to every bound
     /// client so they update their scale and surface buffer scale.
-    pub fn set_output_geometry(&mut self, geo: aegis_core::output::OutputGeometry) {
+    pub fn set_output_geometry(&mut self, geo: aegis_model::output::OutputGeometry) {
         self.state.output_geometry = geo;
         if let Some(primary) = self.state.output_infos.first_mut() {
             primary.geometry = geo;
@@ -660,7 +662,7 @@ impl Server {
 
     /// The focused output's logical rect (ADR-0028). The chrome-aware
     /// tiling work-area is this inset by the chrome's reserved edges.
-    pub fn output_logical_rect(&self) -> aegis_core::Rect {
+    pub fn output_logical_rect(&self) -> aegis_model::Rect {
         self.state.output_geometry.logical_rect()
     }
 
@@ -695,7 +697,7 @@ impl Server {
     }
 
     /// The live backend-reported outputs for IPC and chrome.
-    pub fn output_infos(&self) -> Vec<aegis_core::output::OutputInfo> {
+    pub fn output_infos(&self) -> Vec<aegis_model::output::OutputInfo> {
         self.state.output_infos.clone()
     }
 
@@ -708,7 +710,7 @@ impl Server {
     /// `work_area` (the chrome-aware logical rect) and reconfigures only the
     /// windows whose target rect moved, so steady state sends no configure
     /// events. No-op when tiling is off.
-    pub fn apply_tiling(&mut self, work_area: aegis_core::Rect) {
+    pub fn apply_tiling(&mut self, work_area: aegis_model::Rect) {
         self.state.last_work_area = work_area;
         let screen_rect = self.state.output_geometry.logical_rect();
 
@@ -724,13 +726,13 @@ impl Server {
                 }
                 if (*rec).window.state.fullscreen {
                     if (*rec).saved_floating_rect.is_none() {
-                        (*rec).saved_floating_rect = Some(aegis_core::Rect {
+                        (*rec).saved_floating_rect = Some(aegis_model::Rect {
                             origin: (*rec).position,
                             size: (*rec).window.size,
                         });
                     }
                     if (*rec).layout_target != Some(screen_rect) {
-                        let old = aegis_core::Rect {
+                        let old = aegis_model::Rect {
                             origin: (*rec).position,
                             size: (*rec).window.size,
                         };
@@ -747,13 +749,13 @@ impl Server {
                     }
                 } else if (*rec).window.state.maximized {
                     if (*rec).saved_floating_rect.is_none() {
-                        (*rec).saved_floating_rect = Some(aegis_core::Rect {
+                        (*rec).saved_floating_rect = Some(aegis_model::Rect {
                             origin: (*rec).position,
                             size: (*rec).window.size,
                         });
                     }
                     if (*rec).layout_target != Some(work_area) {
-                        let old = aegis_core::Rect {
+                        let old = aegis_model::Rect {
                             origin: (*rec).position,
                             size: (*rec).window.size,
                         };
@@ -779,7 +781,7 @@ impl Server {
         {
             return;
         }
-        let tiled_ids: Vec<aegis_core::window::WindowId> = self
+        let tiled_ids: Vec<aegis_model::window::WindowId> = self
             .state
             .workspaces
             .visible_toplevels()
@@ -789,13 +791,13 @@ impl Server {
                 !rec.is_null()
                     && unsafe {
                         let r = &(*rec).window;
-                        r.layout_role == aegis_core::layout::LayoutRole::Tiled
+                        r.layout_role == aegis_model::layout::LayoutRole::Tiled
                             && !r.state.maximized
                             && !r.state.fullscreen
                     }
             })
             .collect();
-        let rects = aegis_core::layout::MasterStack.layout(
+        let rects = aegis_model::layout::MasterStack.layout(
             work_area,
             tiled_ids.len(),
             &self.state.layout_params,
@@ -812,14 +814,14 @@ impl Server {
                 if (*rec).layout_target == Some(*rect) {
                     continue; // already at the target; do not reconfigure
                 }
-                let old = aegis_core::Rect {
+                let old = aegis_model::Rect {
                     origin: (*rec).position,
                     size: (*rec).window.size,
                 };
                 (*rec).position = rect.origin;
                 (*rec).window.position = rect.origin;
                 (*rec).window.size = rect.size;
-                (*rec).window.layout_role = aegis_core::layout::LayoutRole::Tiled;
+                (*rec).window.layout_role = aegis_model::layout::LayoutRole::Tiled;
                 (*rec).layout_target = Some(*rect);
                 self.note_transition(rec, old);
                 reconfigure_with_size(rec, rect.size.w, rect.size.h);
@@ -848,9 +850,9 @@ impl Server {
 /// new two-page animation. Every retained page receives the same translation,
 /// preserving the output-width spacing that makes page clips meet exactly.
 fn retarget_workspace_strip(
-    mut positions: Vec<(aegis_core::workspace::WorkspaceId, f32)>,
-    outgoing: aegis_core::workspace::WorkspaceId,
-    incoming: aegis_core::workspace::WorkspaceId,
+    mut positions: Vec<(aegis_model::workspace::WorkspaceId, f32)>,
+    outgoing: aegis_model::workspace::WorkspaceId,
+    incoming: aegis_model::workspace::WorkspaceId,
     direction: i32,
     width: f32,
 ) -> Vec<WorkspaceSlideLayer> {
@@ -901,7 +903,7 @@ fn stepped_index(current: usize, len: usize, forward: bool) -> usize {
 
 fn reconcile_switcher_session(
     session: &mut WindowSwitcherSession,
-    eligible: &std::collections::HashSet<aegis_core::window::WindowId>,
+    eligible: &std::collections::HashSet<aegis_model::window::WindowId>,
 ) {
     let selected_id = session.order.get(session.selected).copied();
     let old_index = session.selected.min(session.order.len().saturating_sub(1));
@@ -930,10 +932,10 @@ mod window_switcher_tests {
 
     #[test]
     fn workspace_slide_moves_old_and_new_desktops_in_the_same_direction() {
-        use aegis_core::workspace::WorkspaceId;
+        use aegis_model::workspace::WorkspaceId;
 
         let slide = WorkspaceSlide {
-            output: aegis_core::Rect::new(0, 0, 1000, 800),
+            output: aegis_model::Rect::new(0, 0, 1000, 800),
             layers: vec![
                 WorkspaceSlideLayer {
                     workspace: WorkspaceId(1),
@@ -962,7 +964,7 @@ mod window_switcher_tests {
 
     #[test]
     fn workspace_strip_retargets_without_breaking_page_spacing() {
-        use aegis_core::workspace::WorkspaceId;
+        use aegis_model::workspace::WorkspaceId;
 
         let layers = retarget_workspace_strip(
             vec![(WorkspaceId(1), -500.0), (WorkspaceId(2), 500.0)],
@@ -979,7 +981,7 @@ mod window_switcher_tests {
 
     #[test]
     fn reversing_workspace_slide_keeps_continuous_positions() {
-        use aegis_core::workspace::WorkspaceId;
+        use aegis_model::workspace::WorkspaceId;
 
         let layers = retarget_workspace_strip(
             vec![(WorkspaceId(1), -400.0), (WorkspaceId(2), 600.0)],
@@ -1004,7 +1006,7 @@ mod window_switcher_tests {
 
     #[test]
     fn rebuilding_mru_after_one_step_toggles_back() {
-        use aegis_core::window::WindowId;
+        use aegis_model::window::WindowId;
 
         // Bottom-to-top stacking order; C starts focused.
         let mut stack = vec![WindowId(1), WindowId(2), WindowId(3)];
@@ -1021,7 +1023,7 @@ mod window_switcher_tests {
 
     #[test]
     fn closing_the_selection_chooses_the_neighbour_in_the_last_direction() {
-        use aegis_core::window::WindowId;
+        use aegis_model::window::WindowId;
         use std::collections::HashSet;
 
         let eligible = HashSet::from([WindowId(1), WindowId(3), WindowId(4)]);
@@ -1044,7 +1046,7 @@ mod window_switcher_tests {
 
     #[test]
     fn refreshing_a_session_never_inserts_new_windows() {
-        use aegis_core::window::WindowId;
+        use aegis_model::window::WindowId;
         use std::collections::HashSet;
 
         let mut session = WindowSwitcherSession {

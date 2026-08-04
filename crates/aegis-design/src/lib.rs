@@ -11,4 +11,4 @@ pub mod materials;
 pub mod themes;
 pub mod tokens;
 
-pub use tokens::Design;
+pub use tokens::{AvatarRole, Design, GlassRole, PreviewSelectionStyle};

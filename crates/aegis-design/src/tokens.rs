@@ -13,7 +13,10 @@ pub struct Design {
     pub colors: Colors,
     pub radii: Radii,
     pub strokes: Strokes,
+    pub glass: GlassStyles,
     pub glass_focus: GlassFocus,
+    pub preview: Preview,
+    pub avatars: AvatarStyles,
     pub hud_foreground: HudForeground,
 }
 
@@ -56,11 +59,44 @@ impl Design {
                 hairline: 1.0,
                 scrollbar: 5.0,
             },
+            glass: GlassStyles {
+                chip: GlassStyle::new(0.16, 4.0, 2.0),
+                tooltip: GlassStyle::new(0.14, 10.0, 5.0),
+                floating_panel: GlassStyle::new(0.18, 16.0, 8.0),
+                prominent_panel: GlassStyle::new(0.20, 18.0, 9.0),
+                dock: GlassStyle::new(0.20, 12.0, 6.0),
+            },
             glass_focus: GlassFocus {
                 hover_tint: Color::rgba(255, 255, 255, 6),
                 selected_tint: Color::rgba(255, 255, 255, 3),
                 field_strength: 1.0,
+            },
+            preview: Preview {
                 inactive_content_brightness: 0.74,
+                focused: PreviewSelection {
+                    scale: 1.0,
+                    lift: 0.0,
+                },
+                staged: PreviewSelection {
+                    scale: 1.06,
+                    lift: 7.0,
+                },
+            },
+            avatars: AvatarStyles {
+                persona_header: AvatarStyle {
+                    ring: Color::rgba(245, 158, 30, 132),
+                    ring_width: 1.0,
+                    fallback_surface: Color::rgba(24, 23, 22, 246),
+                    fallback_foreground: Color::rgba(236, 232, 222, 238),
+                    initials_scale: 22.0 / 72.0,
+                },
+                lock_hero: AvatarStyle {
+                    ring: Color::rgba(255, 255, 255, 62),
+                    ring_width: 1.0,
+                    fallback_surface: Color::rgba(37, 49, 70, 255),
+                    fallback_foreground: Color::rgba(250, 251, 254, 255),
+                    initials_scale: 0.36,
+                },
             },
             hud_foreground: HudForeground {
                 primary: Color::rgba(248, 249, 252, 255),
@@ -178,6 +214,63 @@ pub struct Strokes {
     pub scrollbar: f32,
 }
 
+/// Semantic role of one analytic Liquid Glass body.
+///
+/// Roles describe the body's elevation and use, not a numbered material
+/// intensity. Refraction, tint, and rim lighting remain one product-wide
+/// optical identity; role-specific variation is limited to the body shadow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlassRole {
+    Chip,
+    Tooltip,
+    FloatingPanel,
+    ProminentPanel,
+    Dock,
+}
+
+/// Per-body Liquid Glass shadow policy in logical pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct GlassStyle {
+    pub shadow_alpha: f32,
+    pub shadow_blur: f32,
+    pub shadow_offset_y: f32,
+}
+
+impl GlassStyle {
+    const fn new(shadow_alpha: f32, shadow_blur: f32, shadow_offset_y: f32) -> Self {
+        Self {
+            shadow_alpha,
+            shadow_blur,
+            shadow_offset_y,
+        }
+    }
+}
+
+/// Role-indexed Liquid Glass policies for one appearance.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct GlassStyles {
+    pub chip: GlassStyle,
+    pub tooltip: GlassStyle,
+    pub floating_panel: GlassStyle,
+    pub prominent_panel: GlassStyle,
+    pub dock: GlassStyle,
+}
+
+impl GlassStyles {
+    #[must_use]
+    pub fn for_role(self, role: GlassRole) -> GlassStyle {
+        match role {
+            GlassRole::Chip => self.chip,
+            GlassRole::Tooltip => self.tooltip,
+            GlassRole::FloatingPanel => self.floating_panel,
+            GlassRole::ProminentPanel => self.prominent_panel,
+            GlassRole::Dock => self.dock,
+        }
+    }
+}
+
 /// Focus hierarchy for interactive content hosted inside one glass body.
 ///
 /// Hover is a quiet painted wash. Selection additionally drives the parent
@@ -190,7 +283,85 @@ pub struct GlassFocus {
     pub hover_tint: Color,
     pub selected_tint: Color,
     pub field_strength: f32,
+}
+
+/// Shared presentation policy for live window previews.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct Preview {
+    /// Opaque brightness of siblings while one preview is focused.
     pub inactive_content_brightness: f32,
+    /// Quiet selection used inside an anchored preview panel.
+    pub focused: PreviewSelection,
+    /// Foreground staging used by the held-modifier window switcher.
+    pub staged: PreviewSelection,
+}
+
+impl Preview {
+    #[must_use]
+    pub fn selection(self, style: PreviewSelectionStyle) -> PreviewSelection {
+        match style {
+            PreviewSelectionStyle::Focused => self.focused,
+            PreviewSelectionStyle::Staged => self.staged,
+        }
+    }
+}
+
+/// Named selection treatments for preview cards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewSelectionStyle {
+    /// Optical focus only; card geometry remains stationary.
+    Focused,
+    /// Optical focus plus a restrained scale and upward lift.
+    Staged,
+}
+
+/// Geometry adjustment associated with a preview selection treatment.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct PreviewSelection {
+    pub scale: f32,
+    pub lift: f32,
+}
+
+/// Semantic role of a persona portrait within product chrome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AvatarRole {
+    PersonaHeader,
+    LockHero,
+}
+
+/// Host-rendered frame and fallback policy for a persona portrait.
+///
+/// Portrait content, source precedence, and animation do not belong here;
+/// they remain owned by `aegis-shell::persona`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct AvatarStyle {
+    pub ring: Color,
+    pub ring_width: f32,
+    pub fallback_surface: Color,
+    pub fallback_foreground: Color,
+    /// Initials font size as a fraction of the host-provided portrait size.
+    pub initials_scale: f32,
+}
+
+/// Role-indexed persona portrait styles for one appearance.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct AvatarStyles {
+    pub persona_header: AvatarStyle,
+    pub lock_hero: AvatarStyle,
+}
+
+impl AvatarStyles {
+    #[must_use]
+    pub fn for_role(self, role: AvatarRole) -> AvatarStyle {
+        match role {
+            AvatarRole::PersonaHeader => self.persona_header,
+            AvatarRole::LockHero => self.lock_hero,
+        }
+    }
 }
 
 /// Foreground-separation policy for the display-only HUD.
@@ -249,10 +420,52 @@ mod tests {
 
     #[test]
     fn glass_focus_is_neutral_borderless_policy() {
-        let focus = Design::dark().glass_focus;
+        let design = Design::dark();
+        let focus = design.glass_focus;
         assert_eq!(focus.hover_tint, Color::rgba(255, 255, 255, 6));
         assert_eq!(focus.selected_tint, Color::rgba(255, 255, 255, 3));
         assert_eq!(focus.field_strength, 1.0);
-        assert_eq!(focus.inactive_content_brightness, 0.74);
+        assert_eq!(design.preview.inactive_content_brightness, 0.74);
+    }
+
+    #[test]
+    fn glass_roles_name_elevation_without_changing_material_identity() {
+        let glass = Design::dark().glass;
+        assert_eq!(
+            glass.for_role(GlassRole::FloatingPanel),
+            GlassStyle::new(0.18, 16.0, 8.0)
+        );
+        assert!(glass.chip.shadow_blur < glass.floating_panel.shadow_blur);
+        assert!(glass.floating_panel.shadow_blur < glass.prominent_panel.shadow_blur);
+    }
+
+    #[test]
+    fn staged_preview_adds_geometry_without_inventing_a_second_focus_policy() {
+        let preview = Design::dark().preview;
+        assert_eq!(
+            preview.selection(PreviewSelectionStyle::Focused),
+            PreviewSelection {
+                scale: 1.0,
+                lift: 0.0
+            }
+        );
+        assert_eq!(
+            preview.selection(PreviewSelectionStyle::Staged),
+            PreviewSelection {
+                scale: 1.06,
+                lift: 7.0
+            }
+        );
+    }
+
+    #[test]
+    fn avatar_roles_keep_content_out_of_the_design_contract() {
+        let avatars = Design::dark().avatars;
+        let header = avatars.for_role(AvatarRole::PersonaHeader);
+        let lock = avatars.for_role(AvatarRole::LockHero);
+        assert_eq!(header.ring, Color::rgba(245, 158, 30, 132));
+        assert_eq!(lock.ring, Color::rgba(255, 255, 255, 62));
+        assert!(header.initials_scale > 0.0);
+        assert!(lock.initials_scale > 0.0);
     }
 }

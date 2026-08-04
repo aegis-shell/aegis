@@ -188,14 +188,14 @@ pub(super) fn output_render_scale(server: &aegis_compositor::Server, host: &Host
 /// output reports its clamped (smaller) size, which the caller treats as a
 /// geometry change and ends the stream (ADR-0054).
 pub(super) fn window_physical_rect(
-    windows: &[aegis_core::window::Window],
-    window: aegis_core::window::WindowId,
+    windows: &[aegis_model::window::Window],
+    window: aegis_model::window::WindowId,
     scale: f32,
     frame_width: u32,
     frame_height: u32,
-) -> Option<aegis_core::Rect> {
+) -> Option<aegis_model::Rect> {
     let window = windows.iter().find(|candidate| candidate.id == window)?;
-    let logical = aegis_core::Rect {
+    let logical = aegis_model::Rect {
         origin: window.position,
         size: window.size,
     };
@@ -211,7 +211,7 @@ pub(super) fn window_physical_rect(
 /// `rect` is in physical pixels and already clamped to the frame.
 fn crop_stream_frame(
     frame: &StreamPixels,
-    rect: aegis_core::Rect,
+    rect: aegis_model::Rect,
 ) -> (u32, u32, std::sync::Arc<[u8]>) {
     let width = rect.size.w.max(0) as u32;
     let height = rect.size.h.max(0) as u32;
@@ -249,7 +249,7 @@ impl CompositorRuntime {
                 continue;
             };
             let damage_rects = if frame.damage.is_empty() {
-                vec![aegis_core::Rect::new(
+                vec![aegis_model::Rect::new(
                     0,
                     0,
                     frame.width as i32,
@@ -283,7 +283,7 @@ impl CompositorRuntime {
                                 height,
                                 stride: width * 4,
                                 format: aegis_ipc::StreamPixelFormat::Bgra8,
-                                damage: vec![aegis_core::Rect::new(
+                                damage: vec![aegis_model::Rect::new(
                                     0,
                                     0,
                                     width as i32,
@@ -396,7 +396,7 @@ mod tests {
     fn window_stream_remembers_target_and_start_size() {
         let mut streams = OutputStreams::new();
         let target = aegis_ipc::StreamTarget::Window {
-            window: aegis_core::window::WindowId(9),
+            window: aegis_model::window::WindowId(9),
         };
         let id = streams.start(1, None, (640, 480), target).stream_id;
         assert_eq!(streams.target_of(id), Some((target, (640, 480))));
@@ -405,28 +405,29 @@ mod tests {
 
     #[test]
     fn window_physical_rect_scales_and_clamps() {
-        let mut window = aegis_core::window::Window::new(aegis_core::window::WindowId(3));
-        window.position = aegis_core::Point { x: 10, y: 20 };
-        window.size = aegis_core::Size { w: 100, h: 50 };
+        let mut window = aegis_model::window::Window::new(aegis_model::window::WindowId(3));
+        window.position = aegis_model::Point { x: 10, y: 20 };
+        window.size = aegis_model::Size { w: 100, h: 50 };
         let windows = vec![window];
 
         // Scale 2: logical 100x50 at (10,20) becomes physical 200x100 at
         // (20,40).
-        let rect = window_physical_rect(&windows, aegis_core::window::WindowId(3), 2.0, 1920, 1080)
-            .expect("window is live");
-        assert_eq!(rect, aegis_core::Rect::new(20, 40, 200, 100));
+        let rect =
+            window_physical_rect(&windows, aegis_model::window::WindowId(3), 2.0, 1920, 1080)
+                .expect("window is live");
+        assert_eq!(rect, aegis_model::Rect::new(20, 40, 200, 100));
 
         // Partially offscreen: clamped to the frame (the caller ends the
         // stream on the size change).
-        let mut window = aegis_core::window::Window::new(aegis_core::window::WindowId(4));
-        window.position = aegis_core::Point { x: -20, y: 0 };
-        window.size = aegis_core::Size { w: 100, h: 50 };
-        let rect = window_physical_rect(&[window], aegis_core::window::WindowId(4), 1.0, 200, 200)
+        let mut window = aegis_model::window::Window::new(aegis_model::window::WindowId(4));
+        window.position = aegis_model::Point { x: -20, y: 0 };
+        window.size = aegis_model::Size { w: 100, h: 50 };
+        let rect = window_physical_rect(&[window], aegis_model::window::WindowId(4), 1.0, 200, 200)
             .expect("window is live");
-        assert_eq!(rect, aegis_core::Rect::new(0, 0, 80, 50));
+        assert_eq!(rect, aegis_model::Rect::new(0, 0, 80, 50));
 
         assert!(
-            window_physical_rect(&windows, aegis_core::window::WindowId(99), 1.0, 100, 100)
+            window_physical_rect(&windows, aegis_model::window::WindowId(99), 1.0, 100, 100)
                 .is_none()
         );
     }
@@ -441,7 +442,7 @@ mod tests {
             bgra: bgra.into(),
             damage: Vec::new(),
         };
-        let (w, h, pixels) = crop_stream_frame(&frame, aegis_core::Rect::new(1, 1, 2, 1));
+        let (w, h, pixels) = crop_stream_frame(&frame, aegis_model::Rect::new(1, 1, 2, 1));
         assert_eq!((w, h), (2, 1));
         // Row 1 starts at byte 16; two pixels from x=1: bytes 20..28.
         assert_eq!(&pixels[..], &(20u8..28).collect::<Vec<u8>>()[..]);

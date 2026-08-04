@@ -1,5 +1,5 @@
-use aegis_core::input::{TouchpadScrollMethod, TouchpadStatus};
-use aegis_core::settings::{SettingsAction, SettingsSnapshot};
+use aegis_model::input::{TouchpadScrollMethod, TouchpadStatus};
+use aegis_model::settings::{SettingsAction, SettingsSnapshot};
 use aegis_shell::{Localizer, Message};
 use lens::{Align, Frame, Icon, LayoutOpts};
 

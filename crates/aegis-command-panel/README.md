@@ -29,10 +29,10 @@ Sections:
 One centered cluster of three frosted-white surfaces, each with its own
 reveal animation:
 
-- **Header band** — the user's identity (ringed avatar, display name,
+- **Header band** — the user's persona (ringed avatar, display name,
   `@username · groups` from the local account record) beside a live machine
   monitor: a chassis glyph (laptop/desktop) and CPU/GPU/RAM/NET/DISK/BAT
-  gauges fed by `Chrome::update_resource_stats`, with btop-style sparklines
+  gauges fed by `ChromeUpdate::ResourceStats`, with btop-style sparklines
   for CPU, GPU, and RAM.
 - **Icon rail** — one circular button per section (ring + amber glyph,
   solid disc when selected) and the close button at the bottom.
@@ -44,8 +44,8 @@ reveal animation:
 The component owns presentation and interaction state only. System snapshots
 arrive through the `Chrome` trait each frame; intents leave through
 `aegis_shell::ChromeEvents` and the shared tray command channel. It has no
-D-Bus, Wayland, or process authority of its own. `aegis-identity` supplies the
-same account and ordered photo/VRM contract used by the lock screen;
-`aegis-avatar` renders only an explicitly selected VRM with the panel's camera.
-This panel owns the flat graphite fallback disc, keyline, and reveal treatment
-around that content.
+D-Bus, Wayland, or process authority of its own. The feature-gated
+`aegis_shell::persona` module supplies the same profile and ordered photo/VRM
+contract used by the lock screen, including the internal VRM rendering
+backend. This panel owns the camera composition, flat graphite fallback disc,
+keyline, motion trigger, and reveal treatment around that content.

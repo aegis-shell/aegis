@@ -1,5 +1,5 @@
-mod identity;
 mod preview;
+mod profile;
 mod render;
 
 fn main() {

@@ -1,19 +1,19 @@
 //! Physical-desktop guard for windows controlled by an Agent Interaction Domain.
 //!
-//! Input authority remains in `aegis-core::interaction_domain` and the compositor server;
+//! Input authority remains in `aegis-model::interaction_domain` and the compositor server;
 //! this chrome component only makes that boundary legible to the human. It
 //! dims read-only mirrors, identifies the controlling Interaction Domain, consumes physical
 //! chrome input over their complete rectangles, and requests the standard
 //! `not-allowed` cursor.
 
-use aegis_core::interaction_domain::{
+use aegis_model::interaction_domain::{
     InteractionDomain, InteractionDomainId, InteractionDomainSnapshot, InteractionDomainState,
 };
-use aegis_core::window::{Window, WindowId};
-use aegis_core::workspace::WorkspaceSnapshot;
+use aegis_model::window::{Window, WindowId};
+use aegis_model::workspace::WorkspaceSnapshot;
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
-use crate::{Chrome, ChromeEvents, CursorShape, Localizer, Message, ellipsize};
+use crate::{Chrome, ChromeEvents, ChromeUpdate, CursorShape, Localizer, Message, ellipsize};
 
 const WASH_ALPHA: u8 = 92;
 const BADGE_HEIGHT: f32 = 28.0;
@@ -30,7 +30,7 @@ impl ControlledWindowGuard {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            interaction_domains: aegis_core::interaction_domain::InteractionDomainModel::new()
+            interaction_domains: aegis_model::interaction_domain::InteractionDomainModel::new()
                 .snapshot(),
             has_guarded_windows: false,
         }
@@ -204,12 +204,16 @@ impl Chrome for ControlledWindowGuard {
         Some(CursorShape::NotAllowed)
     }
 
-    fn update_interaction_domains(&mut self, snapshot: &InteractionDomainSnapshot) {
-        self.interaction_domains = snapshot.clone();
-    }
-
-    fn update_windows(&mut self, windows: &[Window]) {
-        self.has_guarded_windows = windows.iter().any(is_guarded_window);
+    fn update(&mut self, update: ChromeUpdate<'_>) {
+        match update {
+            ChromeUpdate::InteractionDomains(snapshot) => {
+                self.interaction_domains = snapshot.clone();
+            }
+            ChromeUpdate::Windows(windows) => {
+                self.has_guarded_windows = windows.iter().any(is_guarded_window);
+            }
+            _ => {}
+        }
     }
 
     fn requires_composition(&self) -> bool {
@@ -249,8 +253,8 @@ mod tests {
     fn mirror() -> Window {
         let mut window = Window::new(WindowId(7));
         window.read_only = true;
-        window.position = aegis_core::Point { x: 20, y: 30 };
-        window.size = aegis_core::Size { w: 200, h: 120 };
+        window.position = aegis_model::Point { x: 20, y: 30 };
+        window.size = aegis_model::Size { w: 200, h: 120 };
         window
     }
 

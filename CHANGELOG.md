@@ -7,6 +7,40 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Shell chrome
+
+- Screenshot and portal-picker selections now dim the four cutouts outside
+  their rounded Liquid Glass body instead of exposing a square-cornered halo.
+
+### Window management
+
+- Closing or unmapping a focused transient dialog now returns keyboard focus
+  to its closest live, mapped parent, including during nested dialog teardown.
+
+### Architecture
+
+- Added opt-in `aegis` Cargo features for the independently compiled Dock,
+  Prism, Agent Workspaces, HUD, and command panel crates. Default builds keep
+  the complete chrome set; custom builds can omit components and their private
+  dependencies without leaving unavailable keybindings or gestures claimed by
+  the compositor.
+- Renamed the presentation-only `aegis-interaction-manager` crate and Rust
+  identities to `aegis-agent-workspaces`, matching the existing Agent
+  Workspaces product surface while reserving Interaction Domain terminology
+  for the compositor security boundary. Persisted Dock pins using the former
+  built-in id remain compatible, and newly created unlabeled domains use the
+  default label `Agent Workspace`.
+- Consolidated Actor authority and audit persistence under the module-first
+  `aegis-security` boundary, and folded personalized profiles plus the VRM
+  rendering backend into the feature-gated `aegis-shell::persona` domain.
+  Portrait consumers share one content contract while lightweight shell
+  consumers avoid the image, watcher, and scene-graph dependency set and
+  `aegis-design` remains data-only.
+- Renamed the shared effect-free `aegis-core` crate and Rust namespace to
+  `aegis-model`, making its state and deterministic-model ownership explicit.
+  Workspace and downstream source dependencies must adopt the new package and
+  `aegis_model` path; no compatibility alias is emitted.
+
 ## [0.0.11] - 2026-08-03
 
 ### Shell chrome
@@ -119,8 +153,7 @@ project cuts a tagged release.
   and extracted MCP platform and command-panel presentation implementations
   from their former monolithic source files.
 - Split compositor State and protocol test groups and isolated presentation
-  capture binding. CI now rejects Rust modules above 2000 lines as an
-  architectural-review tripwire rather than permitting monolith allowlists.
+  capture binding.
 - Added local `aegis config validate` and explicit `aegis config migrate`
   commands. Schema-1 migration preserves comments, durably backs up the
   source, renames safe sandbox resource budgets, and refuses to discard

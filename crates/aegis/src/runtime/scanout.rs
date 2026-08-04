@@ -57,12 +57,12 @@ impl PrimaryPlaneState {
 /// allocation to the per-frame direct candidate path merely to balance enum
 /// variant sizes.
 pub(super) struct PrimaryPlanePlan {
-    direct: Option<aegis_core::SurfaceDmabuf>,
+    direct: Option<aegis_model::SurfaceDmabuf>,
     rejection: Option<ScanoutRejection>,
 }
 
 impl PrimaryPlanePlan {
-    fn direct(candidate: aegis_core::SurfaceDmabuf) -> Self {
+    fn direct(candidate: aegis_model::SurfaceDmabuf) -> Self {
         Self {
             direct: Some(candidate),
             rejection: None,
@@ -76,7 +76,7 @@ impl PrimaryPlanePlan {
         }
     }
 
-    pub(super) fn direct_candidate(&self) -> Option<&aegis_core::SurfaceDmabuf> {
+    pub(super) fn direct_candidate(&self) -> Option<&aegis_model::SurfaceDmabuf> {
         self.direct.as_ref()
     }
 
@@ -229,15 +229,15 @@ fn evaluate_scene(facts: ScanoutSceneFacts) -> Result<(), ScanoutRejectReason> {
     Ok(())
 }
 
-fn surface_is_fully_opaque(surface: &aegis_core::SurfaceDmabuf) -> bool {
-    if aegis_core::dmabuf::is_format_opaque(surface.drm_format) {
+fn surface_is_fully_opaque(surface: &aegis_model::SurfaceDmabuf) -> bool {
+    if aegis_model::dmabuf::is_format_opaque(surface.drm_format) {
         return true;
     }
     if surface.width <= 0 || surface.height <= 0 {
         return false;
     }
     let scale = surface.geometry.buffer_scale.max(1) as f32;
-    let logical = aegis_core::Rect::new(
+    let logical = aegis_model::Rect::new(
         0,
         0,
         (surface.width as f32 / scale).round().max(1.0) as i32,
@@ -250,14 +250,14 @@ fn surface_is_fully_opaque(surface: &aegis_core::SurfaceDmabuf) -> bool {
 }
 
 fn evaluate_surface(
-    surface: &aegis_core::SurfaceDmabuf,
+    surface: &aegis_model::SurfaceDmabuf,
     physical_size: (u32, u32),
     plane_supported: bool,
 ) -> Result<(), ScanoutRejectReason> {
-    if surface.geometry.transform != aegis_core::Transform::Normal {
+    if surface.geometry.transform != aegis_model::Transform::Normal {
         return Err(ScanoutRejectReason::NonTrivialTransform);
     }
-    if surface.geometry.position != (aegis_core::Point { x: 0, y: 0 }) {
+    if surface.geometry.position != (aegis_model::Point { x: 0, y: 0 }) {
         return Err(ScanoutRejectReason::NonZeroOrigin);
     }
     if surface.geometry.viewport_src.is_some() || surface.geometry.viewport_dst.is_some() {
@@ -412,10 +412,10 @@ impl CompositorRuntime {
 mod tests {
     use super::*;
 
-    fn candidate(format: u32) -> aegis_core::SurfaceDmabuf {
-        aegis_core::SurfaceDmabuf {
+    fn candidate(format: u32) -> aegis_model::SurfaceDmabuf {
+        aegis_model::SurfaceDmabuf {
             id: 7,
-            window: Some(aegis_core::window::WindowId(9)),
+            window: Some(aegis_model::window::WindowId(9)),
             width: 3072,
             height: 1920,
             generation: 1,
@@ -427,7 +427,7 @@ mod tests {
             offset: 0,
             stride: 3072 * 4,
             acquire_fence: -1,
-            geometry: aegis_core::SurfaceGeometry {
+            geometry: aegis_model::SurfaceGeometry {
                 buffer_scale: 2,
                 ..Default::default()
             },
@@ -446,7 +446,7 @@ mod tests {
 
     #[test]
     fn maximized_xrgb_geometry_is_scanout_eligible_without_fullscreen_state() {
-        let surface = candidate(aegis_core::dmabuf::DRM_FORMAT_XRGB8888);
+        let surface = candidate(aegis_model::dmabuf::DRM_FORMAT_XRGB8888);
         // SurfaceDmabuf contains no xdg fullscreen flag: actual output
         // placement, extent, opacity, and plane support are the entire policy.
         assert_eq!(evaluate_scene(eligible_scene()), Ok(()));
@@ -455,15 +455,15 @@ mod tests {
 
     #[test]
     fn argb_full_opaque_region_is_scanout_eligible() {
-        let mut surface = candidate(aegis_core::dmabuf::DRM_FORMAT_ARGB8888);
-        surface.opaque_region = Some(vec![aegis_core::Rect::new(0, 0, 1536, 960)]);
+        let mut surface = candidate(aegis_model::dmabuf::DRM_FORMAT_ARGB8888);
+        surface.opaque_region = Some(vec![aegis_model::Rect::new(0, 0, 1536, 960)]);
         assert_eq!(evaluate_surface(&surface, (3072, 1920), true), Ok(()));
     }
 
     #[test]
     fn incomplete_argb_opaque_region_is_rejected() {
-        let mut surface = candidate(aegis_core::dmabuf::DRM_FORMAT_ARGB8888);
-        surface.opaque_region = Some(vec![aegis_core::Rect::new(0, 0, 1535, 960)]);
+        let mut surface = candidate(aegis_model::dmabuf::DRM_FORMAT_ARGB8888);
+        surface.opaque_region = Some(vec![aegis_model::Rect::new(0, 0, 1535, 960)]);
         assert_eq!(
             evaluate_surface(&surface, (3072, 1920), true),
             Err(ScanoutRejectReason::NotFullyOpaque)
@@ -472,7 +472,7 @@ mod tests {
 
     #[test]
     fn output_geometry_must_match_exactly() {
-        let mut surface = candidate(aegis_core::dmabuf::DRM_FORMAT_XRGB8888);
+        let mut surface = candidate(aegis_model::dmabuf::DRM_FORMAT_XRGB8888);
         surface.width -= 1;
         assert_eq!(
             evaluate_surface(&surface, (3072, 1920), true),

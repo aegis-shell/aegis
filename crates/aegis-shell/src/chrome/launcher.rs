@@ -1,10 +1,10 @@
 //! The application launcher chrome: a full-screen, Launchpad-inspired library
 //! of every enumerated `.desktop` entry, backed by the pure
-//! [`aegis_core::launcher::Launcher`] state machine.
+//! [`aegis_model::launcher::Launcher`] state machine.
 //!
 //! The component owns presentation state only: responsive grid geometry,
 //! paging, hover/click hit-testing, and the opening/closing spring. Search,
-//! running-app matching, selection, and launch outcomes stay in `aegis-core`.
+//! running-app matching, selection, and launch outcomes stay in `aegis-model`.
 //! The compositor host captures and multi-resolution-blurs the desktop when
 //! [`Chrome::backdrop_blur_sigma`] is non-zero, so the overlay remains legible
 //! without replacing the user's spatial context with an opaque panel.
@@ -14,13 +14,13 @@ use std::ffi::c_void;
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
 
 use crate::{
-    AppCatalog, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet, Localizer, Message,
-    Reserved, WindowAction, ellipsize,
+    BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape, IconSet,
+    Localizer, Message, Reserved, WindowAction, ellipsize,
 };
-use aegis_core::app::Entry;
-use aegis_core::input::{KeyAction, KeyChar, key_action};
-use aegis_core::launcher::{Launch, Launcher as Brain};
-use aegis_core::window::Window;
+use aegis_model::app::Entry;
+use aegis_model::input::{KeyAction, KeyChar, key_action};
+use aegis_model::launcher::{Launch, Launcher as Brain};
+use aegis_model::window::Window;
 
 use super::app_menu::AppMenu;
 
@@ -163,7 +163,7 @@ impl GridLayout {
 
 impl Launcher {
     /// Construct an empty launcher. The launchable entries and icons arrive
-    /// through [`Chrome::update_app_catalog`], seeded on registration by
+    /// through [`ChromeUpdate::AppCatalog`], seeded on registration by
     /// [`crate::Shell::add`].
     pub fn new() -> Launcher {
         Launcher {
@@ -181,6 +181,20 @@ impl Launcher {
             app_menu: AppMenu::new("aegis-launcher-context-menu", false),
             reduced_motion: false,
         }
+    }
+
+    fn toggle(&mut self, _out: &mut ChromeEvents) {
+        self.app_menu.dismiss();
+        if !self.brain.is_open() {
+            self.page = 0;
+            self.search_focused = false;
+        }
+        self.brain.toggle();
+        self.anim_active = true;
+    }
+
+    fn set_reduced_motion(&mut self, reduced: bool) {
+        self.reduced_motion = reduced;
     }
 
     /// Resolve an entry's icon texture from the borrowed map, trying the same
@@ -296,7 +310,7 @@ impl Chrome for Launcher {
         // Prefer the active window, then the topmost/recent windows. The core
         // uses the first match for ordinary left-click activation, while the
         // context menu still receives every matching toplevel.
-        let running: Vec<(String, aegis_core::window::WindowId)> = windows
+        let running: Vec<(String, aegis_model::window::WindowId)> = windows
             .iter()
             .filter(|window| window.state.activated)
             .chain(
@@ -742,15 +756,18 @@ impl Chrome for Launcher {
         })
     }
 
-    fn set_modal_reserved(&mut self, reserved: Reserved) {
-        self.modal_reserved = reserved;
-    }
-
-    fn update_app_catalog(&mut self, catalog: &AppCatalog) {
-        self.app_menu.dismiss();
-        self.brain.replace_apps(catalog.apps.clone());
-        self.icons = catalog.icons.clone();
-        self.sync_page_to_selection();
+    fn update(&mut self, update: ChromeUpdate<'_>) {
+        match update {
+            ChromeUpdate::ModalReserved(reserved) => self.modal_reserved = reserved,
+            ChromeUpdate::AppCatalog(catalog) => {
+                self.app_menu.dismiss();
+                self.brain.replace_apps(catalog.apps.clone());
+                self.icons = catalog.icons.clone();
+                self.sync_page_to_selection();
+            }
+            ChromeUpdate::ReducedMotion(reduced) => self.set_reduced_motion(reduced),
+            _ => {}
+        }
     }
 
     fn key_char(&mut self, key: &KeyChar, out: &mut ChromeEvents) {
@@ -789,29 +806,23 @@ impl Chrome for Launcher {
         }
     }
 
-    fn toggle(&mut self, _out: &mut ChromeEvents) {
-        self.app_menu.dismiss();
-        if !self.brain.is_open() {
-            self.page = 0;
-            // Keyboard input is still captured immediately, but the visual
-            // caret appears only after a click or the first typed key.
-            self.search_focused = false;
+    fn command(&mut self, command: &ChromeCommand<'_>, _out: &mut ChromeEvents) {
+        match command {
+            ChromeCommand::ToggleLauncher => {
+                self.toggle(_out);
+            }
+            ChromeCommand::CloseLauncher if self.brain.is_open() => {
+                self.app_menu.dismiss();
+                self.brain.close();
+                self.visibility = SpringState::default();
+                self.anim_active = false;
+            }
+            _ => {}
         }
-        self.brain.toggle();
-        self.anim_active = true;
     }
 
     fn launcher_active(&self) -> bool {
         self.brain.is_open()
-    }
-
-    fn close_launcher(&mut self) {
-        if self.brain.is_open() {
-            self.app_menu.dismiss();
-            self.brain.close();
-            self.visibility = SpringState::default();
-            self.anim_active = false;
-        }
     }
 
     fn anim_pending(&self) -> bool {
@@ -826,10 +837,6 @@ impl Chrome for Launcher {
 
     fn requires_composition(&self) -> bool {
         self.brain.is_open() || self.visibility.value > 0.01
-    }
-
-    fn set_reduced_motion(&mut self, reduced: bool) {
-        self.reduced_motion = reduced;
     }
 
     fn backdrop_blur_sigma(&self) -> f32 {

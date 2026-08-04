@@ -701,8 +701,9 @@ records authenticated Actor origins, and rejects unguarded Interaction Domain in
 
 Protocol 22 adopts the `InteractionDomain`, `ActorCapability`,
 `AuthorizationDecision`, and `ConnectionCapabilities` vocabulary and moves
-capability and observation-transaction policy into `aegis-authority`. It is a
-major-version boundary; older clients are refused at `Hello`.
+capability and observation-transaction policy into the authority module of
+`aegis-security`. It is a major-version boundary; older clients are refused
+at `Hello`.
 
 Protocol 23 adds explicit Actor sessions, dynamic exact-resource grants, and
 the authenticated accessibility tree/action adapter. Resource handles are

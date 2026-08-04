@@ -8,7 +8,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-aegis-core = { workspace = true }
+aegis-model = { workspace = true }
 aegis-desktop-entries = { workspace = true }
 log.workspace = true
 thiserror.workspace = true

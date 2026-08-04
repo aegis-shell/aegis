@@ -15,7 +15,7 @@ composites the surface tree into the current output frame.
 
 This crate does not speak Wayland, own the presentation target, choose window
 placement, draw shell chrome, or decode wallpaper media. Those concerns belong
-to `aegis-compositor`, `aegis-backend`, `aegis-core`, `aegis-shell`, and `aegis-wallpaper`.
+to `aegis-compositor`, `aegis-backend`, `aegis-model`, `aegis-shell`, and `aegis-wallpaper`.
 
 ## Runtime Effect
 

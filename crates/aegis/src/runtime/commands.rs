@@ -50,7 +50,14 @@ pub(super) fn draw_direct_desktop_scene(
     if overview {
         draw_overview_scene(canvas, device, renderer, server, logical_size, scale);
     } else {
-        draw_client_scene(canvas, device, renderer, server, scale);
+        draw_client_scene(
+            canvas,
+            device,
+            renderer,
+            server,
+            scale,
+            window_switcher.is_some() || !live_previews.is_empty(),
+        );
         if let Some(presentation) = window_switcher {
             draw_window_switcher_scene(
                 canvas,
@@ -70,7 +77,7 @@ pub(super) fn draw_direct_desktop_scene(
 
 pub(super) fn physical_window_target(
     cmd: &aegis_ipc::Command,
-) -> Option<aegis_core::window::WindowId> {
+) -> Option<aegis_model::window::WindowId> {
     use aegis_ipc::Command;
     match cmd {
         Command::Focus { id }
@@ -90,7 +97,7 @@ pub(super) fn physical_window_target(
 /// physical-seat authority check and journal chokepoint (ADR-0033) are shared.
 pub(super) fn apply_command(
     server: &mut aegis_compositor::Server,
-    notif_queue: &std::sync::Arc<std::sync::Mutex<aegis_core::notify::NotificationQueue>>,
+    notif_queue: &std::sync::Arc<std::sync::Mutex<aegis_model::notify::NotificationQueue>>,
     quit: &mut bool,
     cmd: &aegis_ipc::Command,
     ipc: &Option<aegis_ipc::Server>,
@@ -192,7 +199,7 @@ pub(super) fn apply_interaction_domain_action(
             {
                 let _ = server.revoke_interaction_domain(
                     bundle.interaction_domain,
-                    aegis_core::interaction_domain::HUMAN_INTERACTION_DOMAIN,
+                    aegis_model::interaction_domain::HUMAN_INTERACTION_DOMAIN,
                 );
                 return Err(error.to_string());
             }
@@ -236,8 +243,8 @@ pub(super) fn interaction_domain_intent_to_action(
         aegis_shell::InteractionDomainIntent::Create { label } => {
             aegis_ipc::InteractionDomainAction::Create {
                 label,
-                capabilities: aegis_core::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
-                output: Some(aegis_core::interaction_domain::VirtualOutput::DEFAULT_AGENT),
+                capabilities: aegis_model::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
+                output: Some(aegis_model::interaction_domain::VirtualOutput::DEFAULT_AGENT),
             }
         }
         aegis_shell::InteractionDomainIntent::SetState {
@@ -247,7 +254,7 @@ pub(super) fn interaction_domain_intent_to_action(
         } => aegis_ipc::InteractionDomainAction::Transact {
             expected_revision: Some(expected_revision),
             mutations: vec![
-                aegis_core::interaction_domain::InteractionDomainMutation::SetState {
+                aegis_model::interaction_domain::InteractionDomainMutation::SetState {
                     interaction_domain,
                     state,
                 },
@@ -258,7 +265,7 @@ pub(super) fn interaction_domain_intent_to_action(
             expected_revision,
         } => aegis_ipc::InteractionDomainAction::Revoke {
             interaction_domain,
-            fallback: aegis_core::interaction_domain::HUMAN_INTERACTION_DOMAIN,
+            fallback: aegis_model::interaction_domain::HUMAN_INTERACTION_DOMAIN,
             expected_revision: Some(expected_revision),
         },
         aegis_shell::InteractionDomainIntent::TransferWindow {
@@ -269,7 +276,7 @@ pub(super) fn interaction_domain_intent_to_action(
         } => aegis_ipc::InteractionDomainAction::Transact {
             expected_revision: Some(expected_revision),
             mutations: vec![
-                aegis_core::interaction_domain::InteractionDomainMutation::TransferWindow {
+                aegis_model::interaction_domain::InteractionDomainMutation::TransferWindow {
                     window,
                     target,
                     retain_source_as_observer,
@@ -281,7 +288,7 @@ pub(super) fn interaction_domain_intent_to_action(
 
 pub(super) fn interaction_domain_action_invalidates_capture(
     action: &aegis_ipc::InteractionDomainAction,
-) -> std::collections::BTreeSet<aegis_core::interaction_domain::InteractionDomainId> {
+) -> std::collections::BTreeSet<aegis_model::interaction_domain::InteractionDomainId> {
     match action {
         aegis_ipc::InteractionDomainAction::Create { .. } => std::collections::BTreeSet::new(),
         aegis_ipc::InteractionDomainAction::Revoke {
@@ -290,11 +297,11 @@ pub(super) fn interaction_domain_action_invalidates_capture(
         aegis_ipc::InteractionDomainAction::Transact { mutations, .. } => mutations
             .iter()
             .filter_map(|mutation| match mutation {
-                aegis_core::interaction_domain::InteractionDomainMutation::SetState {
+                aegis_model::interaction_domain::InteractionDomainMutation::SetState {
                     interaction_domain,
                     state:
-                        aegis_core::interaction_domain::InteractionDomainState::Paused
-                        | aegis_core::interaction_domain::InteractionDomainState::Revoked,
+                        aegis_model::interaction_domain::InteractionDomainState::Paused
+                        | aegis_model::interaction_domain::InteractionDomainState::Revoked,
                 } => Some(*interaction_domain),
                 _ => None,
             })
@@ -304,7 +311,7 @@ pub(super) fn interaction_domain_action_invalidates_capture(
 
 pub(super) fn interaction_domains_explicitly_stopped(
     action: &aegis_ipc::InteractionDomainAction,
-) -> std::collections::BTreeSet<aegis_core::interaction_domain::InteractionDomainId> {
+) -> std::collections::BTreeSet<aegis_model::interaction_domain::InteractionDomainId> {
     match action {
         aegis_ipc::InteractionDomainAction::Revoke {
             interaction_domain, ..
@@ -312,9 +319,9 @@ pub(super) fn interaction_domains_explicitly_stopped(
         aegis_ipc::InteractionDomainAction::Transact { mutations, .. } => mutations
             .iter()
             .filter_map(|mutation| match mutation {
-                aegis_core::interaction_domain::InteractionDomainMutation::SetState {
+                aegis_model::interaction_domain::InteractionDomainMutation::SetState {
                     interaction_domain,
-                    state: aegis_core::interaction_domain::InteractionDomainState::Paused,
+                    state: aegis_model::interaction_domain::InteractionDomainState::Paused,
                 } => Some(*interaction_domain),
                 _ => None,
             })
@@ -387,7 +394,7 @@ pub(super) fn journal_mutation_effect_and_broadcast(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_command_and_journal(
     server: &mut aegis_compositor::Server,
-    notifications: &std::sync::Arc<std::sync::Mutex<aegis_core::notify::NotificationQueue>>,
+    notifications: &std::sync::Arc<std::sync::Mutex<aegis_model::notify::NotificationQueue>>,
     quit: &mut bool,
     command: aegis_ipc::Command,
     ipc: &Option<aegis_ipc::Server>,
@@ -405,7 +412,7 @@ pub(super) fn apply_command_and_journal(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_chrome_window_command(
     server: &mut aegis_compositor::Server,
-    notifications: &std::sync::Arc<std::sync::Mutex<aegis_core::notify::NotificationQueue>>,
+    notifications: &std::sync::Arc<std::sync::Mutex<aegis_model::notify::NotificationQueue>>,
     quit: &mut bool,
     command: aegis_ipc::Command,
     ipc: &Option<aegis_ipc::Server>,

@@ -136,7 +136,7 @@ pub(super) fn write_interaction_domain_capture<H: Handler>(
                     .any(|interaction_domain| {
                         interaction_domain.id == payload.capture.interaction_domain
                             && interaction_domain.state
-                                == aegis_core::interaction_domain::InteractionDomainState::Active
+                                == aegis_model::interaction_domain::InteractionDomainState::Active
                     });
             if !authorized {
                 audit_capability_effect(

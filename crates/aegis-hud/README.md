@@ -34,7 +34,7 @@ every interaction the bar once hosted moved to the command panel
 The HUD owns presentation state only. Window, workspace, notification, and
 system snapshots arrive through the shell each frame; the decoded
 application icon textures are borrowed from the composition root's icon
-cache and pushed through `Chrome::update_app_catalog`. It emits no
+cache and pushed through `ChromeUpdate::AppCatalog`. It emits no
 `ChromeEvents` intents and never mutates Wayland state or writes
 configuration. The Agent Workspaces status the right chip once showed moved
 to the command panel's System section (ADR-0083).
@@ -54,13 +54,13 @@ configuration; the default is `true`.
 
 ## Use
 
-Register one HUD with the shell, sharing the flux device, the tray snapshot,
+Register one HUD with the shell, sharing the flux device, the tray handle,
 and the notification queue:
 
 ```rust
 shell.add(Box::new(aegis_hud::Hud::with_sources(
     &device,
-    tray_snapshot,
+    tray_handle,
     std::sync::Arc::clone(&notif_queue),
 )));
 ```

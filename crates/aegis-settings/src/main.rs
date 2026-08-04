@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
-use aegis_core::settings::{SettingsAction, SettingsSnapshot};
 use aegis_design::{Design, themes};
 use aegis_ipc::{Client, ConnectionCapabilities};
+use aegis_model::settings::{SettingsAction, SettingsSnapshot};
 use aegis_settings::builtin_settings_modules;
 use aegis_settings::module::{ModuleAvailability, ModuleEvents, ModuleId, ModuleRegistry};
 use aegis_shell::{Localizer, Message};
@@ -510,7 +510,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let requested = requested_module(std::env::args().skip(1));
     let mut app = SettingsApp::new(requested.as_deref(), socket_path());
     let config = Config::new(app.i18n.text(Message::SystemSettings))?
-        .app_id(aegis_core::app::SETTINGS_APP_ID)?
+        .app_id(aegis_model::app::SETTINGS_APP_ID)?
         .size(920, 680)
         .force_dark();
     Application::run::<_, fn(PaintHost)>(

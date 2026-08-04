@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use aegis_core::Rect;
+use aegis_model::Rect;
 
 /// Aegis compositor and session management.
 #[derive(Debug, clap::Parser)]
@@ -236,7 +236,7 @@ pub enum InteractionDomainCmd {
     /// Create an active agent Interaction Domain with a virtual output and pointer/keyboard seat.
     Create {
         /// Human-readable label for the new Interaction Domain.
-        #[arg(default_value = "AI Workspace")]
+        #[arg(default_value = "Agent Workspace")]
         label: String,
     },
     /// Atomically pause an Interaction Domain and freeze its managed cgroups.
@@ -365,11 +365,11 @@ impl From<OnOff> for bool {
     }
 }
 
-impl From<WorkspaceTarget> for aegis_core::workspace::Switch {
+impl From<WorkspaceTarget> for aegis_model::workspace::Switch {
     fn from(value: WorkspaceTarget) -> Self {
         match value {
-            WorkspaceTarget::Next => aegis_core::workspace::Switch::Next,
-            WorkspaceTarget::Previous => aegis_core::workspace::Switch::Prev,
+            WorkspaceTarget::Next => aegis_model::workspace::Switch::Next,
+            WorkspaceTarget::Previous => aegis_model::workspace::Switch::Prev,
             WorkspaceTarget::Id(_) => {
                 unreachable!("concrete workspace ids do not use adjacent switching")
             }

@@ -28,12 +28,12 @@ pub(crate) unsafe extern "C" fn xdg_noop_menu(
 
 // ----- accessors for the extensions module --------------------------------
 
-/// Construct an `aegis_core::Point` (re-exported so extensions.rs does not name
+/// Construct an `aegis_model::Point` (re-exported so extensions.rs does not name
 /// the crate).
-pub(crate) fn aegis_core_point(x: i32, y: i32) -> aegis_core::Point {
-    aegis_core::Point { x, y }
+pub(crate) fn aegis_model_point(x: i32, y: i32) -> aegis_model::Point {
+    aegis_model::Point { x, y }
 }
 
-pub(crate) fn aegis_core_size(w: i32, h: i32) -> aegis_core::Size {
-    aegis_core::Size { w, h }
+pub(crate) fn aegis_model_size(w: i32, h: i32) -> aegis_model::Size {
+    aegis_model::Size { w, h }
 }

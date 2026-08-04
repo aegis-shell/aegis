@@ -197,10 +197,34 @@ pub enum TrayCommand {
     },
 }
 
-/// Start the watcher/host on the session bus. Returns the shared snapshot
-/// and the command channel, or `None` when the tray is unavailable (no
-/// session bus, or another watcher owns the name).
-pub fn spawn() -> Option<(Arc<Mutex<TraySnapshot>>, mpsc::Sender<TrayCommand>)> {
+/// Cloneable render/command handle for the process-wide tray service.
+///
+/// Display-only consumers can read [`Self::snapshot`]; interactive consumers
+/// additionally call [`Self::send`]. Keeping the channel and snapshot behind
+/// one handle prevents component combinations from accidentally dropping the
+/// command side while another component still uses the service.
+#[derive(Clone)]
+pub struct TrayHandle {
+    snapshot: Arc<Mutex<TraySnapshot>>,
+    commands: mpsc::Sender<TrayCommand>,
+}
+
+impl TrayHandle {
+    /// Latest worker-published tray state.
+    pub fn snapshot(&self) -> &Arc<Mutex<TraySnapshot>> {
+        &self.snapshot
+    }
+
+    /// Queue one tray interaction for the D-Bus worker.
+    pub fn send(&self, command: TrayCommand) -> Result<(), mpsc::SendError<TrayCommand>> {
+        self.commands.send(command)
+    }
+}
+
+/// Start the watcher/host on the session bus. Returns a shared handle, or
+/// `None` when the tray is unavailable (no session bus, or another watcher
+/// owns the name).
+pub fn spawn() -> Option<TrayHandle> {
     watcher::spawn()
 }
 

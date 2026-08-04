@@ -14,7 +14,7 @@
 //!
 //! Larger components have graduated to their own crates on top of the same
 //! contract (ADR-0021): the dock lives in `aegis-dock`, Prism in
-//! `aegis-prism`, AI Workspaces in `aegis-interaction-manager`, the HUD in
+//! `aegis-prism`, Agent Workspaces in `aegis-agent-workspaces`, the HUD in
 //! `aegis-hud`, and the command panel in `aegis-command-panel`.
 
 mod agent_feedback;

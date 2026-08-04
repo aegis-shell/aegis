@@ -24,7 +24,7 @@ IPC transactions. Future system-owned modules use authorized service adapters.
 Live volume, brightness, radio, notification, and current-session controls
 use the separate system-control model and appear in the command panel. AI
 Workspace lifecycle is authority management and lives independently in
-`aegis-interaction-manager`.
+`aegis-agent-workspaces`.
 
 Built-in modules are registered statically because Rust has no stable dynamic
 library ABI. A future third-party module boundary must be a versioned process

@@ -5,9 +5,12 @@ chrome components on top of lens.
 
 ## Responsibilities
 
-- Define semantic colors, radii, and stroke widths.
+- Define semantic colors, radii, stroke widths, and role-based presentation
+  policies.
 - Build lens themes for shared product surfaces.
 - Build data-only material options for popovers, panels, and cards.
+- Define Liquid Glass elevation, preview selection, and identity portrait
+  frame roles without owning component state or user content.
 - Keep the default appearance consistent across independently packaged chrome
   components.
 
@@ -26,6 +29,9 @@ Construct a design snapshot and pass it to a theme or material factory:
 let design = aegis_design::Design::dark();
 let theme = aegis_design::themes::menu(frame.theme(), &design);
 let popover = aegis_design::materials::popover(&design);
+let preview_shadow = design
+    .glass
+    .for_role(aegis_design::GlassRole::FloatingPanel);
 ```
 
 ## Related Documentation

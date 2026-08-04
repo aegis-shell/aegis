@@ -26,8 +26,8 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use aegis_core::app::Entry;
 use aegis_desktop_entries::expand_exec;
+use aegis_model::app::Entry;
 
 /// Minimal view of a desktop entry the launcher needs.
 ///

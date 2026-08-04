@@ -8,7 +8,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-aegis-core = { workspace = true }
+aegis-model = { workspace = true }
 # XDG base-directory resolution ($XDG_DATA_HOME / $XDG_DATA_DIRS).
 dirs = "5"
 # INI parsing for .desktop entries and theme index.theme Inherits lines.

@@ -8,7 +8,7 @@ fn workspaces_empty() -> WorkspaceSnapshot {
 }
 
 fn workspaces_with(count: usize, current: usize) -> WorkspaceSnapshot {
-    use aegis_core::workspace::{OutputId, OutputSnapshot, WorkspaceEntry, WorkspaceId};
+    use aegis_model::workspace::{OutputId, OutputSnapshot, WorkspaceEntry, WorkspaceId};
 
     let entries = (0..count)
         .map(|index| WorkspaceEntry {
@@ -45,7 +45,7 @@ fn fullscreen_window_makes_the_hud_composition_free() {
     bar.layout.visible = [true, true];
     bar.chip_fade = [1.0, 0.5];
     bar.chip_target = [0.0, 1.0];
-    let mut fullscreen = Window::new(aegis_core::window::WindowId(7));
+    let mut fullscreen = Window::new(aegis_model::window::WindowId(7));
     fullscreen.state.fullscreen = true;
     bar.update_windows(&[fullscreen]);
 
@@ -73,7 +73,7 @@ fn maximized_window_keeps_the_hud_visible() {
     bar.layout.visible = [true, true];
     bar.chip_fade = [1.0, 0.5];
     bar.chip_target = [0.0, 1.0];
-    let mut maximized = Window::new(aegis_core::window::WindowId(7));
+    let mut maximized = Window::new(aegis_model::window::WindowId(7));
     maximized.state.maximized = true;
     bar.update_windows(&[maximized]);
 
@@ -101,10 +101,10 @@ fn minimized_immersive_windows_do_not_hide_the_hud() {
     bar.chip_fade = [1.0, 1.0];
     bar.chip_target = bar.chip_fade;
 
-    let mut minimized_fullscreen = Window::new(aegis_core::window::WindowId(8));
+    let mut minimized_fullscreen = Window::new(aegis_model::window::WindowId(8));
     minimized_fullscreen.state.fullscreen = true;
     minimized_fullscreen.minimized = true;
-    let mut minimized_maximized = Window::new(aegis_core::window::WindowId(9));
+    let mut minimized_maximized = Window::new(aegis_model::window::WindowId(9));
     minimized_maximized.state.maximized = true;
     minimized_maximized.minimized = true;
     bar.update_windows(&[minimized_fullscreen, minimized_maximized]);
@@ -126,7 +126,7 @@ fn ordinary_window_preserves_normal_hud_output() {
     bar.layout.visible = [true, false];
     bar.chip_fade = [1.0, 1.0];
     bar.chip_target = bar.chip_fade;
-    bar.update_windows(&[Window::new(aegis_core::window::WindowId(10))]);
+    bar.update_windows(&[Window::new(aegis_model::window::WindowId(10))]);
 
     assert!(!bar.fullscreen_active);
     assert!(bar.requires_composition());

@@ -96,7 +96,7 @@ fn wait_for(condition: impl Fn() -> bool) -> bool {
 #[test]
 #[ignore = "needs a session bus with a free StatusNotifierWatcher name"]
 fn watcher_registers_item_and_delivers_activate() {
-    let Some((snapshot, commands)) = aegis_tray::spawn() else {
+    let Some(tray) = aegis_tray::spawn() else {
         eprintln!("no session bus or watcher name taken; skipping");
         return;
     };
@@ -136,7 +136,7 @@ fn watcher_registers_item_and_delivers_activate() {
     // The item shows up in the snapshot, mirrored from the fake properties.
     let key = "org.example.FakeItem/StatusNotifierItem";
     assert!(wait_for(|| {
-        snapshot
+        tray.snapshot()
             .lock()
             .unwrap()
             .items
@@ -144,7 +144,7 @@ fn watcher_registers_item_and_delivers_activate() {
             .any(|item| item.key == key && item.title == "Fake Item")
     }));
     {
-        let snapshot = snapshot.lock().unwrap();
+        let snapshot = tray.snapshot().lock().unwrap();
         let item = snapshot.items.iter().find(|item| item.key == key).unwrap();
         assert_eq!(item.title, "Fake Item");
         assert!(item.is_visible());
@@ -170,13 +170,12 @@ fn watcher_registers_item_and_delivers_activate() {
     assert!(host_registered);
 
     // A left click from the shell reaches the item as Activate(x, y).
-    commands
-        .send(TrayCommand::Activate {
-            key: key.to_string(),
-            x: 10,
-            y: 20,
-        })
-        .unwrap();
+    tray.send(TrayCommand::Activate {
+        key: key.to_string(),
+        x: 10,
+        y: 20,
+    })
+    .unwrap();
     assert!(wait_for(|| calls
         .lock()
         .unwrap()
@@ -186,7 +185,8 @@ fn watcher_registers_item_and_delivers_activate() {
     // holds a connection clone, so it must go first.
     drop(watcher);
     drop(client);
-    assert!(wait_for(|| !snapshot
+    assert!(wait_for(|| !tray
+        .snapshot()
         .lock()
         .unwrap()
         .items

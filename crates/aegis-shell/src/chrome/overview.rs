@@ -1,6 +1,6 @@
 //! The overview chrome (M9): a modal window/workspace picker in the GNOME
 //! Activities mold. The compositor's main loop draws the live window
-//! thumbnails onto the grid computed by the shared `aegis_core::overview`
+//! thumbnails onto the grid computed by the shared `aegis_model::overview`
 //! geometry; this component draws the cell frames, labels, and the workspace
 //! rail, and owns interaction: hover, click-to-focus, workspace switching,
 //! and dismissal. It is a view mode over the same snapshots every other
@@ -8,15 +8,18 @@
 
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
-use crate::{Chrome, ChromeEvents, CursorShape, InteractionDomainIntent, Localizer, Message};
-use aegis_core::input::{KeyAction, KeyChar, key_action};
-use aegis_core::interaction_domain::{
+use crate::{
+    Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape, InteractionDomainIntent,
+    Localizer, Message,
+};
+use aegis_model::input::{KeyAction, KeyChar, key_action};
+use aegis_model::interaction_domain::{
     InteractionDomain, InteractionDomainId, InteractionDomainKind, InteractionDomainSnapshot,
     InteractionDomainState,
 };
-use aegis_core::overview as geom;
-use aegis_core::window::Window;
-use aegis_core::workspace::WorkspaceSnapshot;
+use aegis_model::overview as geom;
+use aegis_model::window::Window;
+use aegis_model::workspace::WorkspaceSnapshot;
 
 /// Reveal/fade speed (per second, exponential approach).
 const FADE_RATE: f32 = 14.0;
@@ -40,7 +43,7 @@ pub struct Overview {
     /// Complete authority snapshot supplied by the compositor.
     interaction_domains: InteractionDomainSnapshot,
     /// Pressed window that may become a drag after crossing the threshold.
-    drag_candidate: Option<aegis_core::window::WindowId>,
+    drag_candidate: Option<aegis_model::window::WindowId>,
     drag_origin: Option<(f32, f32)>,
     dragging: bool,
     interaction_domain_hovered: Option<InteractionDomainId>,
@@ -62,7 +65,7 @@ impl Overview {
             hovered: None,
             rail_hovered: None,
             prev_down: false,
-            interaction_domains: aegis_core::interaction_domain::InteractionDomainModel::new()
+            interaction_domains: aegis_model::interaction_domain::InteractionDomainModel::new()
                 .snapshot(),
             drag_candidate: None,
             drag_origin: None,
@@ -113,7 +116,7 @@ impl Overview {
 
     fn control_interaction_domain_for_window(
         &self,
-        window: aegis_core::window::WindowId,
+        window: aegis_model::window::WindowId,
     ) -> Option<InteractionDomainId> {
         self.interaction_domains
             .interaction_groups
@@ -142,7 +145,7 @@ impl Chrome for Overview {
     ) {
         let raw = input.as_raw();
         let display =
-            aegis_core::Rect::new(0, 0, raw.display_size.x as i32, raw.display_size.y as i32);
+            aegis_model::Rect::new(0, 0, raw.display_size.x as i32, raw.display_size.y as i32);
         let cursor = raw.cursor;
         let down = raw.mouse_down.first().copied().unwrap_or(false);
         let pressed = down && !self.prev_down;
@@ -160,7 +163,7 @@ impl Chrome for Overview {
 
         // The rail appears whenever the focused output owns more than one
         // workspace — the same condition the thumbnail pass uses.
-        let rail_tiles: Vec<(aegis_core::workspace::WorkspaceId, bool)> = workspaces
+        let rail_tiles: Vec<(aegis_model::workspace::WorkspaceId, bool)> = workspaces
             .outputs
             .first()
             .map(|o| {
@@ -527,10 +530,12 @@ impl Chrome for Overview {
         }
     }
 
-    fn toggle_overview(&mut self, _out: &mut ChromeEvents) {
-        self.open = !self.open;
-        if self.open {
-            self.anim_active = true;
+    fn command(&mut self, command: &ChromeCommand<'_>, _out: &mut ChromeEvents) {
+        if matches!(command, ChromeCommand::ToggleOverview) {
+            self.open = !self.open;
+            if self.open {
+                self.anim_active = true;
+            }
         }
     }
 
@@ -542,23 +547,25 @@ impl Chrome for Overview {
         self.anim_active
     }
 
-    fn set_reduced_motion(&mut self, reduced: bool) {
-        self.reduced_motion = reduced;
-    }
-
-    fn update_interaction_domains(&mut self, snapshot: &InteractionDomainSnapshot) {
-        self.interaction_domains = snapshot.clone();
+    fn update(&mut self, update: ChromeUpdate<'_>) {
+        match update {
+            ChromeUpdate::ReducedMotion(reduced) => self.reduced_motion = reduced,
+            ChromeUpdate::InteractionDomains(snapshot) => {
+                self.interaction_domains = snapshot.clone();
+            }
+            _ => {}
+        }
     }
 }
 
-fn contains_rect(rect: aegis_core::Rect, x: f32, y: f32) -> bool {
+fn contains_rect(rect: aegis_model::Rect, x: f32, y: f32) -> bool {
     x >= rect.origin.x as f32
         && y >= rect.origin.y as f32
         && x < (rect.origin.x + rect.size.w) as f32
         && y < (rect.origin.y + rect.size.h) as f32
 }
 
-fn to_lens(rect: aegis_core::Rect) -> Rect {
+fn to_lens(rect: aegis_model::Rect) -> Rect {
     Rect {
         x: rect.origin.x as f32,
         y: rect.origin.y as f32,

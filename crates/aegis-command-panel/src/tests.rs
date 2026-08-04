@@ -2,14 +2,14 @@ use super::*;
 
 fn escape() -> KeyChar {
     KeyChar {
-        keysym: aegis_core::input::XKB_KEY_Escape,
+        keysym: aegis_model::input::XKB_KEY_Escape,
         ch: None,
-        mods: aegis_core::input::Mods::NONE,
+        mods: aegis_model::input::Mods::NONE,
     }
 }
 
 fn fullscreen_window() -> Window {
-    let mut window = Window::new(aegis_core::window::WindowId(7));
+    let mut window = Window::new(aegis_model::window::WindowId(7));
     window.state.fullscreen = true;
     window
 }
@@ -209,13 +209,13 @@ fn format_gib_pair_renders_used_over_total_in_gib() {
 }
 
 #[test]
-fn identity_resolves_for_the_current_process_user() {
-    let identity = Identity::current().expect("passwd record for the test user");
-    assert!(!identity.username.is_empty());
-    assert!(!identity.display_name.is_empty());
-    assert!(!identity.initials.is_empty());
+fn profile_resolves_for_the_current_process_user() {
+    let profile = Profile::current().expect("passwd record for the test user");
+    assert!(!profile.username.is_empty());
+    assert!(!profile.display_name.is_empty());
+    assert!(!profile.initials.is_empty());
     // The primary group is always part of the list when group lookup works.
-    assert!(!identity.groups.is_empty());
+    assert!(!profile.groups.is_empty());
 }
 
 #[test]
@@ -229,7 +229,7 @@ fn stagger_delays_the_content_panel_behind_the_menu() {
 #[test]
 fn agent_workspace_row_tracks_aggregate_interaction_domain_state() {
     let i18n = Localizer::new("en-US");
-    let mut model = aegis_core::interaction_domain::InteractionDomainModel::new();
+    let mut model = aegis_model::interaction_domain::InteractionDomainModel::new();
     let indicator = agent_workspace_indicator(&model.snapshot(), &i18n);
     assert_eq!(indicator.state, AgentWorkspaceState::Idle);
     assert_eq!(indicator.label, "Agent Workspaces");

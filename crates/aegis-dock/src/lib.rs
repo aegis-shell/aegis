@@ -26,17 +26,17 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::hash::Hasher;
 
-use aegis_design::{Design, materials};
+use aegis_design::{Design, GlassRole, materials};
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect};
 
-use aegis_core::app::Entry;
-use aegis_core::input::{KeyAction, KeyChar, key_action};
-use aegis_core::window::{SpaceUse, Window};
-use aegis_core::workspace::WorkspaceSnapshot;
+use aegis_model::app::Entry;
+use aegis_model::input::{KeyAction, KeyChar, key_action};
+use aegis_model::window::{SpaceUse, Window};
+use aegis_model::workspace::WorkspaceSnapshot;
 use aegis_shell::{
-    AppCatalog, AppMenu, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet,
-    LiquidGlassRegion, LivePreviewPresentation, Localizer, Message, PinAction, Reserved,
-    WindowSwitcherCard, ellipsize,
+    AppCatalog, AppMenu, BackdropRegion, Chrome, ChromeEvents, ChromeUpdate, CursorShape, IconSet,
+    LiquidGlassRegion, LivePreviewPresentation, Localizer, Message, PinAction, PreviewCard,
+    Reserved, ellipsize, preview,
 };
 
 /// Visual height of the dock bar. Tiles rest inside it; magnified tiles pop
@@ -134,10 +134,10 @@ struct Tile {
     /// Whether the (a) matching window is the activated one.
     activated: bool,
     /// Surface id to focus on click (a running window), if any.
-    focus: Option<aegis_core::window::WindowId>,
+    focus: Option<aegis_model::window::WindowId>,
     /// Every running window folded into this application tile. Right-click
     /// actions operate on this complete set rather than an arbitrary match.
-    windows: Vec<aegis_core::window::WindowId>,
+    windows: Vec<aegis_model::window::WindowId>,
     /// Index into [`Dock::apps`] for pinned application metadata. Unlike
     /// `spawn`, this remains present while the application is running so the
     /// context menu can offer "New Window".
@@ -219,7 +219,7 @@ pub struct Dock {
     live_preview: Option<LivePreviewPresentation>,
     hover_surface_bounds: Option<Rect>,
     hover_owner_bounds: Option<Rect>,
-    hovered_preview: Option<aegis_core::window::WindowId>,
+    hovered_preview: Option<aegis_model::window::WindowId>,
     /// Accessibility reduced-motion (ADR-0029): magnification springs and
     /// tooltip fades resolve to their targets in one frame.
     reduced_motion: bool,
@@ -277,7 +277,7 @@ struct TileCache {
     /// Window ids in first-observed (mapping) order. The compositor's window
     /// slice follows stacking order and therefore changes when focus changes;
     /// Dock placement must not.
-    window_order: Vec<aegis_core::window::WindowId>,
+    window_order: Vec<aegis_model::window::WindowId>,
     tiles: Vec<Tile>,
 }
 
@@ -294,7 +294,7 @@ struct SpringState {
 
 impl Dock {
     /// An empty dock. The pinned apps and decoded icons arrive through
-    /// [`Chrome::update_app_catalog`], seeded on registration by
+    /// [`ChromeUpdate::AppCatalog`], seeded on registration by
     /// [`aegis_shell::Shell::add`].
     pub fn new() -> Dock {
         Dock {
@@ -712,7 +712,7 @@ impl Dock {
         apps: &[DockApp],
         icons: &IconSet,
         windows: &[Window],
-        window_order: &[aegis_core::window::WindowId],
+        window_order: &[aegis_model::window::WindowId],
         application_label: &str,
     ) -> Vec<Tile> {
         let win_appid: Vec<Option<String>> = windows

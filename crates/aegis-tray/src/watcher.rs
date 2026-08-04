@@ -26,8 +26,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use zbus::zvariant::{OwnedObjectPath, Value};
 
 use super::{
-    LayoutReply, MenuState, TrayCommand, TrayIcon, TrayItem, TrayPixmap, TraySnapshot, TrayStatus,
-    argb32_to_bgra, parse_layout_reply, select_pixmap,
+    LayoutReply, MenuState, TrayCommand, TrayHandle, TrayIcon, TrayItem, TrayPixmap, TraySnapshot,
+    TrayStatus, argb32_to_bgra, parse_layout_reply, select_pixmap,
 };
 
 const WATCHER_NAME: &str = "org.kde.StatusNotifierWatcher";
@@ -349,7 +349,7 @@ fn build_props(
 }
 
 /// Start the watcher and both worker threads. See [`super::spawn`].
-pub(super) fn spawn() -> Option<(Arc<Mutex<TraySnapshot>>, mpsc::Sender<TrayCommand>)> {
+pub(super) fn spawn() -> Option<TrayHandle> {
     let builder = match zbus::blocking::connection::Builder::session() {
         Ok(builder) => builder,
         Err(error) => {
@@ -407,7 +407,10 @@ pub(super) fn spawn() -> Option<(Arc<Mutex<TraySnapshot>>, mpsc::Sender<TrayComm
         log::warn!("tray: could not spawn worker threads; SNI tray disabled");
         return None;
     }
-    Some((snapshot, tx))
+    Some(TrayHandle {
+        snapshot,
+        commands: tx,
+    })
 }
 
 /// Consume bus signals: drop items whose name vanished, refresh items whose

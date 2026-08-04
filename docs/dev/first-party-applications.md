@@ -32,7 +32,7 @@ System Settings reaches Aegis through two runtime boundaries:
   actions.
 
 Do not add `aegis-settings` as an `aegis` Rust dependency. Shared schemas and
-models belong in library crates such as `aegis-core` and `aegis-ipc`.
+models belong in library crates such as `aegis-model` and `aegis-ipc`.
 
 ## Installation Contract
 
@@ -98,7 +98,7 @@ staged tree at any time with `find "$stage" -type f -print`.
 | Change | Minimum focused validation |
 |--------|----------------------------|
 | Settings module or UI | `cargo test --locked -p aegis-settings` |
-| Shared application identity | `cargo test --locked -p aegis-core app::tests` |
+| Shared application identity | `cargo test --locked -p aegis-model app::tests` |
 | Desktop scanning or icon lookup | `cargo test --locked -p aegis-desktop-entries` |
 | Dock and launcher integration | Stage the development prefix, start Aegis, and launch Settings from Applications |
 | Production package | Install into a clean prefix and verify the same desktop id, icon, and executable |

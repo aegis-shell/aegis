@@ -9,12 +9,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use aegis_core::window::{Window, WindowId};
 use aegis_ipc::{
     ActorCapability, Client, Command, ConnectionCapabilities, Event, Handler,
     InteractionDomainAction, InteractionDomainActionResult, PROTOCOL_VERSION, Scope, Server,
     SettingsAction, SettingsReceipt, SettingsSnapshot, SystemAction, SystemStatus,
 };
+use aegis_model::window::{Window, WindowId};
 
 /// A unique throwaway socket path under the temp dir, namespaced by pid +
 /// counter so parallel test processes do not collide.
@@ -73,7 +73,7 @@ struct TestHandler {
     grant_infos: Mutex<Vec<aegis_ipc::AgentGrantInfo>>,
     management_log: Mutex<Vec<String>>,
     register_result: Mutex<Result<(String, String), String>>,
-    resource_grants: Mutex<aegis_authority::ResourceGrantRegistry>,
+    resource_grants: Mutex<aegis_security::authority::ResourceGrantRegistry>,
 }
 
 impl TestHandler {
@@ -127,7 +127,7 @@ impl TestHandler {
             grant_infos: Mutex::new(Vec::new()),
             management_log: Mutex::new(Vec::new()),
             register_result: Mutex::new(Err("no register".into())),
-            resource_grants: Mutex::new(aegis_authority::ResourceGrantRegistry::default()),
+            resource_grants: Mutex::new(aegis_security::authority::ResourceGrantRegistry::default()),
         }
     }
     /// Grants control and session, so command tests can exercise them.
@@ -186,7 +186,7 @@ impl TestHandler {
             grant_infos: Mutex::new(Vec::new()),
             management_log: Mutex::new(Vec::new()),
             register_result: Mutex::new(Err("no register".into())),
-            resource_grants: Mutex::new(aegis_authority::ResourceGrantRegistry::default()),
+            resource_grants: Mutex::new(aegis_security::authority::ResourceGrantRegistry::default()),
         }
     }
 }
@@ -197,15 +197,15 @@ impl Handler for TestHandler {
     }
     fn issue_resource_grant(
         &self,
-        session: aegis_authority::ActorSessionId,
+        session: aegis_security::authority::ActorSessionId,
         principal: Option<&str>,
-        resource: aegis_authority::ActorResource,
+        resource: aegis_security::authority::ActorResource,
         ttl: Duration,
         uses: u32,
         _confirm_exact_resource: bool,
-    ) -> Result<aegis_authority::ResourceGrant, String> {
+    ) -> Result<aegis_security::authority::ResourceGrant, String> {
         let principal = principal
-            .map(aegis_authority::ActorPrincipal::new)
+            .map(aegis_security::authority::ActorPrincipal::new)
             .transpose()
             .map_err(str::to_owned)?;
         self.resource_grants.lock().unwrap().issue(
@@ -219,13 +219,13 @@ impl Handler for TestHandler {
     }
     fn consume_resource_grant(
         &self,
-        session: aegis_authority::ActorSessionId,
+        session: aegis_security::authority::ActorSessionId,
         principal: Option<&str>,
-        id: &aegis_authority::ResourceGrantId,
-        resource: &aegis_authority::ActorResource,
-    ) -> Result<aegis_authority::ResourceGrant, String> {
+        id: &aegis_security::authority::ResourceGrantId,
+        resource: &aegis_security::authority::ActorResource,
+    ) -> Result<aegis_security::authority::ResourceGrant, String> {
         let principal = principal
-            .map(aegis_authority::ActorPrincipal::new)
+            .map(aegis_security::authority::ActorPrincipal::new)
             .transpose()
             .map_err(str::to_owned)?;
         self.resource_grants
@@ -236,13 +236,13 @@ impl Handler for TestHandler {
     fn windows(&self) -> Vec<Window> {
         self.windows.clone()
     }
-    fn workspaces(&self) -> aegis_core::workspace::WorkspaceSnapshot {
+    fn workspaces(&self) -> aegis_model::workspace::WorkspaceSnapshot {
         // A minimal snapshot: one output, one empty workspace. Sufficient for
-        // the IPC plumbing tests; the model itself is exercised in aegis-core.
-        use aegis_core::workspace::{OutputSnapshot, WorkspaceEntry, WorkspaceId};
-        aegis_core::workspace::WorkspaceSnapshot {
+        // the IPC plumbing tests; the model itself is exercised in aegis-model.
+        use aegis_model::workspace::{OutputSnapshot, WorkspaceEntry, WorkspaceId};
+        aegis_model::workspace::WorkspaceSnapshot {
             outputs: vec![OutputSnapshot {
-                id: aegis_core::workspace::OutputId(0),
+                id: aegis_model::workspace::OutputId(0),
                 connector: "test".into(),
                 current: Some(WorkspaceId(0)),
                 workspaces: vec![WorkspaceEntry {
@@ -254,10 +254,10 @@ impl Handler for TestHandler {
             }],
         }
     }
-    fn notifications(&self) -> Vec<aegis_core::notify::Notification> {
+    fn notifications(&self) -> Vec<aegis_model::notify::Notification> {
         Vec::new()
     }
-    fn outputs(&self) -> Vec<aegis_core::output::OutputInfo> {
+    fn outputs(&self) -> Vec<aegis_model::output::OutputInfo> {
         Vec::new()
     }
     fn journal_since(&self, _since: u64) -> aegis_ipc::JournalSnapshot {
@@ -271,11 +271,11 @@ impl Handler for TestHandler {
         self.command_connections.lock().unwrap().push(conn_id);
         self.commands.lock().unwrap().push(cmd);
     }
-    fn interaction_domains(&self) -> aegis_core::interaction_domain::InteractionDomainSnapshot {
-        let mut model = aegis_core::interaction_domain::InteractionDomainModel::new();
+    fn interaction_domains(&self) -> aegis_model::interaction_domain::InteractionDomainSnapshot {
+        let mut model = aegis_model::interaction_domain::InteractionDomainModel::new();
         model.create_agent_interaction_domain(
             "test",
-            aegis_core::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
+            aegis_model::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
         );
         let mut snapshot = model.snapshot();
         snapshot.revision = 4;
@@ -343,16 +343,16 @@ impl Handler for TestHandler {
             .push(action.clone());
         match action {
             InteractionDomainAction::Create { .. } => Ok(InteractionDomainActionResult::Created {
-                bundle: aegis_core::interaction_domain::InteractionDomainBundle {
-                    principal: aegis_core::interaction_domain::InteractionPrincipalId(2),
-                    interaction_domain: aegis_core::interaction_domain::InteractionDomainId(2),
-                    seat: aegis_core::interaction_domain::SeatId(2),
+                bundle: aegis_model::interaction_domain::InteractionDomainBundle {
+                    principal: aegis_model::interaction_domain::InteractionPrincipalId(2),
+                    interaction_domain: aegis_model::interaction_domain::InteractionDomainId(2),
+                    seat: aegis_model::interaction_domain::SeatId(2),
                     revision: 2,
                 },
             }),
             InteractionDomainAction::Transact { .. } => {
                 Ok(InteractionDomainActionResult::TransactionCommitted {
-                    receipt: aegis_core::interaction_domain::InteractionDomainTransactionReceipt {
+                    receipt: aegis_model::interaction_domain::InteractionDomainTransactionReceipt {
                         before_revision: 1,
                         after_revision: 2,
                         results: Vec::new(),
@@ -364,7 +364,7 @@ impl Handler for TestHandler {
                 fallback,
                 ..
             } => Ok(InteractionDomainActionResult::Revoked {
-                receipt: aegis_core::interaction_domain::InteractionDomainRevocation {
+                receipt: aegis_model::interaction_domain::InteractionDomainRevocation {
                     interaction_domain,
                     fallback,
                     transferred_groups: Vec::new(),
@@ -375,7 +375,7 @@ impl Handler for TestHandler {
     }
     fn capture_output(
         &self,
-        _region: Option<aegis_core::Rect>,
+        _region: Option<aegis_model::Rect>,
     ) -> Result<aegis_ipc::CaptureOutputPayload, String> {
         std::thread::sleep(std::time::Duration::from_millis(
             self.capture_delay_ms.load(Ordering::Relaxed),
@@ -509,7 +509,7 @@ impl Handler for TestHandler {
         &self,
         conn_id: u64,
         _subject: Option<&str>,
-        session: aegis_authority::ActorSessionId,
+        session: aegis_security::authority::ActorSessionId,
         capability: ActorCapability,
         action: aegis_ipc::CapabilityUseAction,
         effect: aegis_ipc::Effect,
@@ -565,7 +565,7 @@ impl Handler for TestHandler {
     ) -> Result<aegis_ipc::PickResult, String> {
         self.picks.lock().unwrap().push((conn_id, kind));
         Ok(aegis_ipc::PickResult::Region {
-            rect: aegis_core::Rect::new(1, 2, 30, 40),
+            rect: aegis_model::Rect::new(1, 2, 30, 40),
         })
     }
     fn pick_app(
@@ -609,8 +609,8 @@ impl Handler for TestHandler {
         &self,
         _conn_id: u64,
         _subject: Option<&str>,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
-        region: Option<aegis_core::Rect>,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
+        region: Option<aegis_model::Rect>,
     ) -> Result<aegis_ipc::CaptureInteractionDomainPayload, String> {
         std::thread::sleep(std::time::Duration::from_millis(
             self.capture_delay_ms.load(Ordering::Relaxed),
@@ -621,18 +621,18 @@ impl Handler for TestHandler {
                 width: 2,
                 height: 1,
                 scale_milli: 1250,
-                region: region.unwrap_or_else(|| aegis_core::Rect::new(0, 0, 2, 1)),
+                region: region.unwrap_or_else(|| aegis_model::Rect::new(0, 0, 2, 1)),
                 placements: vec![
-                    aegis_core::interaction_domain::InteractionDomainWindowPlacement {
+                    aegis_model::interaction_domain::InteractionDomainWindowPlacement {
                         window: WindowId(1),
-                        output_rect: aegis_core::Rect::new(0, 0, 2, 1),
-                        surface_size: aegis_core::Size { w: 20, h: 10 },
+                        output_rect: aegis_model::Rect::new(0, 0, 2, 1),
+                        surface_size: aegis_model::Size { w: 20, h: 10 },
                     },
                 ],
                 observation: aegis_ipc::SemanticObservation {
                     token: aegis_ipc::ObservationToken("a".repeat(64)),
                     ttl_ms: 15_000,
-                    snapshot: aegis_core::semantic::SemanticSnapshot {
+                    snapshot: aegis_model::semantic::SemanticSnapshot {
                         interaction_domain,
                         authority_revision: 4,
                         objects: Vec::new(),
@@ -648,32 +648,32 @@ impl Handler for TestHandler {
         &self,
         _conn_id: u64,
         _subject: Option<&str>,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
     ) -> Result<aegis_ipc::SemanticObservation, String> {
         Ok(aegis_ipc::SemanticObservation {
             token: aegis_ipc::ObservationToken("b".repeat(64)),
             ttl_ms: 15_000,
-            snapshot: aegis_core::semantic::SemanticSnapshot {
+            snapshot: aegis_model::semantic::SemanticSnapshot {
                 interaction_domain,
                 authority_revision: 4,
-                objects: vec![aegis_core::semantic::SemanticObject {
-                    id: aegis_core::semantic::SemanticObjectId::for_window(WindowId(1)),
+                objects: vec![aegis_model::semantic::SemanticObject {
+                    id: aegis_model::semantic::SemanticObjectId::for_window(WindowId(1)),
                     parent: None,
                     window: WindowId(1),
-                    source: aegis_core::semantic::SemanticSource::Compositor,
-                    role: aegis_core::semantic::SemanticRole::Window,
+                    source: aegis_model::semantic::SemanticSource::Compositor,
+                    role: aegis_model::semantic::SemanticRole::Window,
                     name: Some("first".into()),
                     description: None,
                     value: None,
                     app_id: Some("org.example.first".into()),
-                    bounds: aegis_core::Rect::new(0, 0, 20, 10),
-                    local_size: aegis_core::Size { w: 20, h: 10 },
-                    state: aegis_core::semantic::SemanticState {
+                    bounds: aegis_model::Rect::new(0, 0, 20, 10),
+                    local_size: aegis_model::Size { w: 20, h: 10 },
+                    state: aegis_model::semantic::SemanticState {
                         visible: true,
                         enabled: true,
                         ..Default::default()
                     },
-                    actions: vec![aegis_core::semantic::SemanticAction::Pointer],
+                    actions: vec![aegis_model::semantic::SemanticAction::Pointer],
                     revision: 9,
                 }],
             },
@@ -809,8 +809,8 @@ fn test_scopes() -> HashMap<String, Scope> {
             "interaction_domain".into(),
             Scope {
                 interaction_domains: Some(vec![
-                    aegis_core::interaction_domain::HUMAN_INTERACTION_DOMAIN,
-                    aegis_core::interaction_domain::InteractionDomainId(2),
+                    aegis_model::interaction_domain::HUMAN_INTERACTION_DOMAIN,
+                    aegis_model::interaction_domain::InteractionDomainId(2),
                 ]),
                 ops: Some(vec![
                     ActorCapability::CreateInteractionDomain,

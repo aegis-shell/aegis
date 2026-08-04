@@ -15,7 +15,7 @@ impl Server {
     /// toplevels on every output. Presentation may temporarily extend this
     /// through [`Self::render_visible`] during a workspace slide; input,
     /// focus, and chrome never do (ADR-0025).
-    pub(crate) fn visible(&self) -> std::collections::HashSet<aegis_core::window::WindowId> {
+    pub(crate) fn visible(&self) -> std::collections::HashSet<aegis_model::window::WindowId> {
         self.state
             .workspaces
             .visible_toplevels()
@@ -41,7 +41,7 @@ impl Server {
     /// so culling a root can never make one of its children disappear.
     pub(crate) fn occluded_window_ids(
         &self,
-    ) -> std::collections::HashSet<aegis_core::window::WindowId> {
+    ) -> std::collections::HashSet<aegis_model::window::WindowId> {
         // Occlusion is a physical-desktop optimization. While the session lock
         // or overview is active the renderer draws a different scene, and
         // excluding windows here would starve lock-screen compositing.
@@ -66,7 +66,7 @@ impl Server {
             return std::collections::HashSet::new();
         }
         let mut occluded = std::collections::HashSet::new();
-        let mut opaque_coverage: Vec<aegis_core::Rect> = Vec::new();
+        let mut opaque_coverage: Vec<aegis_model::Rect> = Vec::new();
         let output = self.output_logical_rect();
         for pointer in stacked.iter().rev() {
             let root = unsafe { &**pointer };
@@ -86,7 +86,7 @@ impl Server {
                 .filter_map(|surface| {
                     let surface = unsafe { &**surface };
                     intersect_rect(
-                        aegis_core::Rect {
+                        aegis_model::Rect {
                             origin: surface_draw_origin(surface),
                             size: surface_logical_size(surface),
                         },
@@ -109,20 +109,20 @@ impl Server {
             }
             for surface in tree {
                 let surface = unsafe { &*surface };
-                let surface_rect = aegis_core::Rect {
+                let surface_rect = aegis_model::Rect {
                     origin: surface_draw_origin(surface),
                     size: surface_logical_size(surface),
                 };
                 let alpha_free_dmabuf = surface.content_is_dmabuf
                     && surface.dmabuf.as_ref().is_some_and(|buffer| {
-                        aegis_core::dmabuf::is_format_opaque(buffer.drm_format)
+                        aegis_model::dmabuf::is_format_opaque(buffer.drm_format)
                     });
                 if alpha_free_dmabuf && let Some(rect) = intersect_rect(surface_rect, output) {
                     opaque_coverage.push(rect);
                 }
                 let origin = surface_draw_origin(surface);
                 for local in surface.opaque_region.iter().flatten() {
-                    let translated = aegis_core::Rect::new(
+                    let translated = aegis_model::Rect::new(
                         origin.x.saturating_add(local.origin.x),
                         origin.y.saturating_add(local.origin.y),
                         local.size.w,
@@ -175,6 +175,19 @@ impl Server {
         )
     }
 
+    /// Every presentation-visible client surface id in paint order, including
+    /// windows fully covered on the physical desktop. Offscreen consumers such
+    /// as live window previews must not inherit physical-output occlusion: a
+    /// covered window still needs pixels when remapped into its own card.
+    pub fn client_preview_surface_frame_order(&self) -> Vec<usize> {
+        let visible = self.render_visible();
+        self.client_surface_frame_order_for_interaction_domain(
+            HUMAN_INTERACTION_DOMAIN,
+            Some(&visible),
+            None,
+        )
+    }
+
     /// Every mapped client surface id in paint order for a directed Interaction Domain.
     pub fn interaction_domain_client_surface_frame_order(
         &self,
@@ -191,8 +204,8 @@ impl Server {
     fn client_surface_frame_order_for_interaction_domain(
         &self,
         interaction_domain: InteractionDomainId,
-        visible: Option<&std::collections::HashSet<aegis_core::window::WindowId>>,
-        occluded: Option<&std::collections::HashSet<aegis_core::window::WindowId>>,
+        visible: Option<&std::collections::HashSet<aegis_model::window::WindowId>>,
+        occluded: Option<&std::collections::HashSet<aegis_model::window::WindowId>>,
     ) -> Vec<usize> {
         let roots = self
             .state
@@ -246,8 +259,8 @@ impl Server {
 
     fn toplevel_frames_with(
         &self,
-        visible: &std::collections::HashSet<aegis_core::window::WindowId>,
-        occluded: &std::collections::HashSet<aegis_core::window::WindowId>,
+        visible: &std::collections::HashSet<aegis_model::window::WindowId>,
+        occluded: &std::collections::HashSet<aegis_model::window::WindowId>,
     ) -> Vec<SurfacePixels<'_>> {
         self.state
             .surfaces
@@ -307,7 +320,7 @@ impl Server {
                     height: s.height,
                     generation: s.generation,
                     pixels: &s.pixels,
-                    geometry: aegis_core::SurfaceGeometry {
+                    geometry: aegis_model::SurfaceGeometry {
                         position: origin,
                         transform: s.buffer_transform,
                         buffer_scale: s.buffer_scale,
@@ -335,8 +348,8 @@ impl Server {
 
     fn toplevel_dmabuf_frames_with(
         &self,
-        visible: &std::collections::HashSet<aegis_core::window::WindowId>,
-        occluded: &std::collections::HashSet<aegis_core::window::WindowId>,
+        visible: &std::collections::HashSet<aegis_model::window::WindowId>,
+        occluded: &std::collections::HashSet<aegis_model::window::WindowId>,
     ) -> Vec<SurfaceDmabuf> {
         self.state
             .surfaces
@@ -399,7 +412,7 @@ impl Server {
                     offset: db.offset,
                     stride: db.stride,
                     acquire_fence: db.acquire_fence,
-                    geometry: aegis_core::SurfaceGeometry {
+                    geometry: aegis_model::SurfaceGeometry {
                         position: origin,
                         transform: s.buffer_transform,
                         buffer_scale: s.buffer_scale,
@@ -427,6 +440,18 @@ impl Server {
         frames
     }
 
+    /// SHM client surfaces available to offscreen previews. This deliberately
+    /// bypasses physical-output occlusion while retaining workspace visibility
+    /// and minimize filtering.
+    pub fn client_preview_surface_frames(&self) -> Vec<SurfacePixels<'_>> {
+        let visible = self.render_visible();
+        let occluded = std::collections::HashSet::new();
+        let mut frames = self.toplevel_frames_with(&visible, &occluded);
+        frames.extend(self.subsurface_frames_below_with(&visible, &occluded));
+        frames.extend(self.subsurface_frames_above_with(&visible, &occluded));
+        frames
+    }
+
     /// All mapped physical-desktop client surfaces backed by dma-buf.
     ///
     /// The returned vector is an unordered backing store. Composite it
@@ -434,6 +459,17 @@ impl Server {
     pub fn client_surface_dmabuf_frames(&self) -> Vec<SurfaceDmabuf> {
         let visible = self.render_visible();
         let occluded = self.occluded_window_ids();
+        let mut frames = self.toplevel_dmabuf_frames_with(&visible, &occluded);
+        frames.extend(self.subsurface_dmabuf_frames_below_with(&visible, &occluded));
+        frames.extend(self.subsurface_dmabuf_frames_above_with(&visible, &occluded));
+        frames
+    }
+
+    /// DMA-BUF client surfaces available to offscreen previews, including
+    /// windows culled from the physical desktop because they are fully covered.
+    pub fn client_preview_surface_dmabuf_frames(&self) -> Vec<SurfaceDmabuf> {
+        let visible = self.render_visible();
+        let occluded = std::collections::HashSet::new();
         let mut frames = self.toplevel_dmabuf_frames_with(&visible, &occluded);
         frames.extend(self.subsurface_dmabuf_frames_below_with(&visible, &occluded));
         frames.extend(self.subsurface_dmabuf_frames_above_with(&visible, &occluded));
@@ -576,7 +612,7 @@ impl Server {
         surface: &SurfaceRec,
         root: *mut SurfaceRec,
         interaction_domain: InteractionDomainId,
-    ) -> Option<aegis_core::SurfaceGeometry> {
+    ) -> Option<aegis_model::SurfaceGeometry> {
         let root = unsafe { &*root };
         let placement = self
             .state
@@ -596,8 +632,8 @@ impl Server {
         let relative_x = source_origin.x - root.position.x;
         let relative_y = source_origin.y - root.position.y;
         let logical_size = surface_logical_size(surface);
-        Some(aegis_core::SurfaceGeometry {
-            position: aegis_core::Point {
+        Some(aegis_model::SurfaceGeometry {
+            position: aegis_model::Point {
                 x: placement.origin.x + (relative_x as f32 * scale).round() as i32,
                 y: placement.origin.y + (relative_y as f32 * scale).round() as i32,
             },
@@ -605,7 +641,7 @@ impl Server {
             buffer_scale: surface.buffer_scale,
             viewport_src: surface.viewport_src,
             viewport_dst: surface.viewport_dst,
-            transition_size: Some(aegis_core::Size {
+            transition_size: Some(aegis_model::Size {
                 w: (logical_size.w as f32 * scale).round().max(1.0) as i32,
                 h: (logical_size.h as f32 * scale).round().max(1.0) as i32,
             }),
@@ -636,7 +672,7 @@ impl Server {
                 height: surface.height,
                 generation: surface.generation,
                 pixels: &surface.pixels,
-                geometry: aegis_core::SurfaceGeometry {
+                geometry: aegis_model::SurfaceGeometry {
                     position: surface.position,
                     transform: surface.buffer_transform,
                     buffer_scale: surface.buffer_scale,
@@ -668,7 +704,7 @@ impl Server {
                         height: surface.height,
                         generation: surface.generation,
                         pixels: &surface.pixels,
-                        geometry: aegis_core::SurfaceGeometry {
+                        geometry: aegis_model::SurfaceGeometry {
                             position: surface.position,
                             transform: surface.buffer_transform,
                             buffer_scale: surface.buffer_scale,
@@ -715,7 +751,7 @@ impl Server {
                     offset: buffer.offset,
                     stride: buffer.stride,
                     acquire_fence: buffer.acquire_fence,
-                    geometry: aegis_core::SurfaceGeometry {
+                    geometry: aegis_model::SurfaceGeometry {
                         position: surface.position,
                         transform: surface.buffer_transform,
                         buffer_scale: surface.buffer_scale,
@@ -757,7 +793,7 @@ impl Server {
                         offset: buffer.offset,
                         stride: buffer.stride,
                         acquire_fence: buffer.acquire_fence,
-                        geometry: aegis_core::SurfaceGeometry {
+                        geometry: aegis_model::SurfaceGeometry {
                             position: surface.position,
                             transform: surface.buffer_transform,
                             buffer_scale: surface.buffer_scale,
@@ -837,7 +873,7 @@ impl Server {
                     height: surface.height,
                     generation: surface.generation,
                     pixels: &surface.pixels,
-                    geometry: aegis_core::SurfaceGeometry {
+                    geometry: aegis_model::SurfaceGeometry {
                         position,
                         transform: surface.buffer_transform,
                         buffer_scale: surface.buffer_scale,
@@ -923,7 +959,7 @@ impl Server {
                     offset: buffer.offset,
                     stride: buffer.stride,
                     acquire_fence: buffer.acquire_fence,
-                    geometry: aegis_core::SurfaceGeometry {
+                    geometry: aegis_model::SurfaceGeometry {
                         position,
                         transform: surface.buffer_transform,
                         buffer_scale: surface.buffer_scale,
@@ -947,8 +983,8 @@ impl Server {
 
     fn subsurface_frames_below_with(
         &self,
-        visible: &std::collections::HashSet<aegis_core::window::WindowId>,
-        occluded: &std::collections::HashSet<aegis_core::window::WindowId>,
+        visible: &std::collections::HashSet<aegis_model::window::WindowId>,
+        occluded: &std::collections::HashSet<aegis_model::window::WindowId>,
     ) -> Vec<SurfacePixels<'_>> {
         self.collect_subsurfaces_shm_with(false, visible, occluded)
     }
@@ -962,8 +998,8 @@ impl Server {
 
     fn subsurface_frames_above_with(
         &self,
-        visible: &std::collections::HashSet<aegis_core::window::WindowId>,
-        occluded: &std::collections::HashSet<aegis_core::window::WindowId>,
+        visible: &std::collections::HashSet<aegis_model::window::WindowId>,
+        occluded: &std::collections::HashSet<aegis_model::window::WindowId>,
     ) -> Vec<SurfacePixels<'_>> {
         self.collect_subsurfaces_shm_with(true, visible, occluded)
     }
@@ -975,8 +1011,8 @@ impl Server {
 
     fn subsurface_dmabuf_frames_below_with(
         &self,
-        visible: &std::collections::HashSet<aegis_core::window::WindowId>,
-        occluded: &std::collections::HashSet<aegis_core::window::WindowId>,
+        visible: &std::collections::HashSet<aegis_model::window::WindowId>,
+        occluded: &std::collections::HashSet<aegis_model::window::WindowId>,
     ) -> Vec<SurfaceDmabuf> {
         self.collect_subsurfaces_dmabuf_with(false, visible, occluded)
     }
@@ -988,8 +1024,8 @@ impl Server {
 
     fn subsurface_dmabuf_frames_above_with(
         &self,
-        visible: &std::collections::HashSet<aegis_core::window::WindowId>,
-        occluded: &std::collections::HashSet<aegis_core::window::WindowId>,
+        visible: &std::collections::HashSet<aegis_model::window::WindowId>,
+        occluded: &std::collections::HashSet<aegis_model::window::WindowId>,
     ) -> Vec<SurfaceDmabuf> {
         self.collect_subsurfaces_dmabuf_with(true, visible, occluded)
     }
@@ -1079,7 +1115,7 @@ impl Server {
         surface: &'a SurfaceRec,
         root: *mut SurfaceRec,
         interaction_domain: InteractionDomainId,
-        window: aegis_core::window::WindowId,
+        window: aegis_model::window::WindowId,
         out: &mut Vec<SurfacePixels<'a>>,
         depth: u32,
     ) {
@@ -1186,7 +1222,7 @@ impl Server {
         surface: &SurfaceRec,
         root: *mut SurfaceRec,
         interaction_domain: InteractionDomainId,
-        window: aegis_core::window::WindowId,
+        window: aegis_model::window::WindowId,
         out: &mut Vec<SurfaceDmabuf>,
         depth: u32,
     ) {
@@ -1252,8 +1288,8 @@ impl Server {
     fn collect_subsurfaces_shm_with(
         &self,
         want_above: bool,
-        visible: &std::collections::HashSet<aegis_core::window::WindowId>,
-        occluded: &std::collections::HashSet<aegis_core::window::WindowId>,
+        visible: &std::collections::HashSet<aegis_model::window::WindowId>,
+        occluded: &std::collections::HashSet<aegis_model::window::WindowId>,
     ) -> Vec<SurfacePixels<'_>> {
         let mut out = Vec::new();
         for role_pointer in self.state.live_surfaces() {
@@ -1308,7 +1344,7 @@ impl Server {
         s: &'a SurfaceRec,
         out: &mut Vec<SurfacePixels<'a>>,
         delta: (i32, i32),
-        window: aegis_core::window::WindowId,
+        window: aegis_model::window::WindowId,
         depth: u32,
     ) {
         // The depth cap only breaks reference cycles defensively; children
@@ -1334,8 +1370,8 @@ impl Server {
                 height: s.height,
                 generation: s.generation,
                 pixels: &s.pixels,
-                geometry: aegis_core::SurfaceGeometry {
-                    position: aegis_core::Point {
+                geometry: aegis_model::SurfaceGeometry {
+                    position: aegis_model::Point {
                         x: origin.x + delta.0,
                         y: origin.y + delta.1,
                     },
@@ -1369,8 +1405,8 @@ impl Server {
     fn collect_subsurfaces_dmabuf_with(
         &self,
         want_above: bool,
-        visible: &std::collections::HashSet<aegis_core::window::WindowId>,
-        occluded: &std::collections::HashSet<aegis_core::window::WindowId>,
+        visible: &std::collections::HashSet<aegis_model::window::WindowId>,
+        occluded: &std::collections::HashSet<aegis_model::window::WindowId>,
     ) -> Vec<SurfaceDmabuf> {
         let mut out = Vec::new();
         for role_pointer in self.state.live_surfaces() {
@@ -1417,7 +1453,7 @@ impl Server {
         s: &SurfaceRec,
         out: &mut Vec<SurfaceDmabuf>,
         delta: (i32, i32),
-        window: aegis_core::window::WindowId,
+        window: aegis_model::window::WindowId,
         depth: u32,
     ) {
         if !s.mapped || depth >= 32 {
@@ -1451,8 +1487,8 @@ impl Server {
                 offset: db.offset,
                 stride: db.stride,
                 acquire_fence: db.acquire_fence,
-                geometry: aegis_core::SurfaceGeometry {
-                    position: aegis_core::Point {
+                geometry: aegis_model::SurfaceGeometry {
+                    position: aegis_model::Point {
                         x: origin.x + delta.0,
                         y: origin.y + delta.1,
                     },
@@ -1607,8 +1643,8 @@ impl Server {
 /// session lock, only the lock surface is output-visible.
 unsafe fn surface_receives_output_frame_callback(
     surface: *mut SurfaceRec,
-    visible: &std::collections::HashSet<aegis_core::window::WindowId>,
-    occluded: &std::collections::HashSet<aegis_core::window::WindowId>,
+    visible: &std::collections::HashSet<aegis_model::window::WindowId>,
+    occluded: &std::collections::HashSet<aegis_model::window::WindowId>,
     session_locked: bool,
     transition_now_ms: u64,
 ) -> bool {
@@ -1673,10 +1709,10 @@ unsafe fn append_surface_tree_frame_order(
 
 fn cursor_surface_position(
     pointer: (f32, f32),
-    hotspot: aegis_core::Point,
-    attach_offset: aegis_core::Point,
-) -> aegis_core::Point {
-    aegis_core::Point {
+    hotspot: aegis_model::Point,
+    attach_offset: aegis_model::Point,
+) -> aegis_model::Point {
+    aegis_model::Point {
         x: pointer.0.round() as i32 - hotspot.x + attach_offset.x,
         y: pointer.1.round() as i32 - hotspot.y + attach_offset.y,
     }
@@ -1688,7 +1724,7 @@ mod tests {
         BACKGROUND_FRAME_CALLBACK_INTERVAL_MS, background_frame_callback_due,
         cursor_surface_position, surface_receives_output_frame_callback,
     };
-    use aegis_core::{Point, transition::WindowTransition, window::WindowId};
+    use aegis_model::{Point, transition::WindowTransition, window::WindowId};
 
     #[test]
     fn cursor_surface_override_preserves_trigger_position_and_hotspot() {
@@ -1726,7 +1762,7 @@ mod tests {
         let occluded = std::collections::HashSet::new();
 
         surface.window.transition = Some(WindowTransition {
-            from: aegis_core::Rect::new(0, 0, 100, 100),
+            from: aegis_model::Rect::new(0, 0, 100, 100),
             started_ms: 10,
             duration_ms: 100,
         });

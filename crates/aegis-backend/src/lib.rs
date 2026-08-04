@@ -8,11 +8,11 @@
 //! Both implement [`Backend`], so the server, renderer, and shell are written
 //! once against the abstraction.
 
-use aegis_core::Size;
-use aegis_core::input::{
+use aegis_model::Size;
+use aegis_model::input::{
     InputEvent, PointerGestureEvent, TextInputEvent, TextInputState, TouchpadConfig, TouchpadStatus,
 };
-use aegis_core::output::{OutputGeometry, OutputInfo, OutputMode, Scale};
+use aegis_model::output::{OutputGeometry, OutputInfo, OutputMode, Scale};
 use std::time::Duration;
 
 /// A presentation + input target the compositor drives each frame.
@@ -51,8 +51,8 @@ pub trait Backend {
                     refresh_mhz: 0,
                 },
                 scale: Scale(self.scale()),
-                transform: aegis_core::Transform::Normal,
-                logical_origin: aegis_core::Point::default(),
+                transform: aegis_model::Transform::Normal,
+                logical_origin: aegis_model::Point::default(),
             },
             available_modes: Vec::new(),
         }]
@@ -64,7 +64,7 @@ pub trait Backend {
     /// without modesetting (nested) ignore the policy.
     fn set_configured_modes(
         &mut self,
-        _modes: std::collections::HashMap<String, aegis_core::output::ModeSpec>,
+        _modes: std::collections::HashMap<String, aegis_model::output::ModeSpec>,
     ) {
     }
 

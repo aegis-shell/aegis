@@ -1,19 +1,19 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use aegis_core::input::SyntheticInputAction;
-use aegis_core::interaction_domain::{
-    HUMAN_INTERACTION_DOMAIN, InteractionDomainId, InteractionDomainMutation,
-    InteractionDomainState,
-};
-use aegis_core::semantic::{SemanticActionIntent, SemanticObjectId};
-use aegis_core::window::WindowId;
-use aegis_core::workspace::{Switch, WorkspaceId};
-use aegis_core::{Point, Rect};
 use aegis_ipc::{
     ActorCapability, Client, Command, ConnectionCapabilities, Effect, InteractionDomainAction,
     InteractionDomainActionResult, JournalMutation, ObservationToken, Scope,
 };
+use aegis_model::input::SyntheticInputAction;
+use aegis_model::interaction_domain::{
+    HUMAN_INTERACTION_DOMAIN, InteractionDomainId, InteractionDomainMutation,
+    InteractionDomainState,
+};
+use aegis_model::semantic::{SemanticActionIntent, SemanticObjectId};
+use aegis_model::window::WindowId;
+use aegis_model::workspace::{Switch, WorkspaceId};
+use aegis_model::{Point, Rect};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -733,7 +733,7 @@ fn semantic_object_id(window: u64, local: u64) -> Result<SemanticObjectId, Platf
         invalid("semantic target_window_id must identify a non-zero owning window")
     })?;
     Ok(SemanticObjectId {
-        window: aegis_core::window::WindowId(window),
+        window: aegis_model::window::WindowId(window),
         local,
     })
 }

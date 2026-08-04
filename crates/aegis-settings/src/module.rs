@@ -6,7 +6,7 @@
 //! future process-isolated loader can preserve the same metadata and state
 //! model without changing the System Settings navigation contract.
 
-use aegis_core::settings::{SettingsAction, SettingsSnapshot};
+use aegis_model::settings::{SettingsAction, SettingsSnapshot};
 use aegis_shell::{Localizer, Message};
 use lens::{Frame, Icon};
 

@@ -13,7 +13,7 @@ pub(super) struct FrameState {
 
 #[derive(Debug, Clone, Copy)]
 struct KeybindingInvocation {
-    action: aegis_core::keybind::Action,
+    action: aegis_model::keybind::Action,
     cursor: (f32, f32),
     /// Modifier state at the triggering key press, not at the end of the
     /// backend batch. A batch may contain both Tab and the following Super
@@ -23,14 +23,14 @@ struct KeybindingInvocation {
 }
 
 fn keybinding_invocation(
-    action: aegis_core::keybind::Action,
+    action: aegis_model::keybind::Action,
     cursor: (f32, f32),
-    key: aegis_core::input::KeyChar,
+    key: aegis_model::input::KeyChar,
 ) -> KeybindingInvocation {
     KeybindingInvocation {
         action,
         cursor,
-        super_held: key.mods.has(aegis_core::input::Mods::SUPER),
+        super_held: key.mods.has(aegis_model::input::Mods::SUPER),
     }
 }
 
@@ -102,21 +102,21 @@ fn append_c_text(dst: &mut [std::os::raw::c_char], src: &[std::os::raw::c_char])
 }
 
 pub(super) fn agent_activities_from_applied_input(
-    interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+    interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
     interaction_domain_label: &str,
-    window: aegis_core::window::WindowId,
-    actions: &[aegis_core::input::SyntheticInputAction],
-    events: &[aegis_core::input::InputEvent],
+    window: aegis_model::window::WindowId,
+    actions: &[aegis_model::input::SyntheticInputAction],
+    events: &[aegis_model::input::InputEvent],
     sequence: &mut u64,
 ) -> Vec<aegis_shell::AgentActivity> {
-    use aegis_core::input::{InputEvent, SyntheticInputAction};
+    use aegis_model::input::{InputEvent, SyntheticInputAction};
 
     // Every prepared pointer action contributes exactly one global motion
     // event before its button/axis events. Reading those positions preserves
     // the exact coordinates the server applied rather than remapping target-
     // local coordinates a second time in the presentation layer.
     let mut pointer_positions = events.iter().filter_map(|event| match *event {
-        InputEvent::PointerMotion { x, y } => Some(aegis_core::Point {
+        InputEvent::PointerMotion { x, y } => Some(aegis_model::Point {
             x: x.round() as i32,
             y: y.round() as i32,
         }),
@@ -196,10 +196,10 @@ impl CompositorRuntime {
     /// the axis latches once either accumulator crosses `AXIS_LOCK_PX`, and
     /// the bound action then fires one step per `STEP_PX` of travel. Which
     /// action listens on which (fingers, axis) is configuration, not code —
-    /// see `aegis_core::gesture`.
-    fn claim_swipe(&mut self, event: &aegis_core::input::PointerGestureEvent) -> bool {
-        use aegis_core::gesture::{GestureAction, GestureAxis};
-        use aegis_core::input::PointerGestureEvent as G;
+    /// see `aegis_model::gesture`.
+    fn claim_swipe(&mut self, event: &aegis_model::input::PointerGestureEvent) -> bool {
+        use aegis_model::gesture::{GestureAction, GestureAxis};
+        use aegis_model::input::PointerGestureEvent as G;
         const AXIS_LOCK_PX: f32 = 30.0;
         const STEP_PX: f32 = 120.0;
         if self.server.session_locked() {
@@ -263,9 +263,9 @@ impl CompositorRuntime {
                         let ts = self.start.elapsed().as_millis() as u64;
                         for _ in 0..steps.unsigned_abs() {
                             let dir = if steps > 0 {
-                                aegis_core::workspace::Switch::Next
+                                aegis_model::workspace::Switch::Next
                             } else {
-                                aegis_core::workspace::Switch::Prev
+                                aegis_model::workspace::Switch::Prev
                             };
                             apply_command_and_journal(
                                 &mut self.server,
@@ -341,7 +341,7 @@ impl CompositorRuntime {
     }
 
     fn dispatch_keybinding(&mut self, invocation: KeybindingInvocation, session_locked: bool) {
-        use aegis_core::keybind::Action;
+        use aegis_model::keybind::Action;
 
         let KeybindingInvocation {
             action,
@@ -406,7 +406,7 @@ impl CompositorRuntime {
             }
             Action::WorkspaceNext => {
                 let cmd = aegis_ipc::Command::SwitchWorkspace {
-                    dir: aegis_core::workspace::Switch::Next,
+                    dir: aegis_model::workspace::Switch::Next,
                 };
                 apply_command_and_journal(
                     &mut self.server,
@@ -421,7 +421,7 @@ impl CompositorRuntime {
             }
             Action::WorkspacePrev => {
                 let cmd = aegis_ipc::Command::SwitchWorkspace {
-                    dir: aegis_core::workspace::Switch::Prev,
+                    dir: aegis_model::workspace::Switch::Prev,
                 };
                 apply_command_and_journal(
                     &mut self.server,
@@ -485,7 +485,7 @@ impl CompositorRuntime {
 
     fn flush_physical_input_segment(
         &mut self,
-        forwarded: &mut Vec<aegis_core::input::InputEvent>,
+        forwarded: &mut Vec<aegis_model::input::InputEvent>,
         forwarded_keys: &mut Vec<Option<aegis_compositor::PreparedKeyboardEvent>>,
         candidates: &mut Vec<KeybindingInvocation>,
         session_locked: bool,
@@ -502,7 +502,7 @@ impl CompositorRuntime {
         let fallback_super_held = self
             .server
             .depressed_modifiers()
-            .has(aegis_core::input::Mods::SUPER);
+            .has(aegis_model::input::Mods::SUPER);
         let mut candidate_at = 0;
         for action in actions {
             let invocation = candidates[candidate_at..]
@@ -609,7 +609,7 @@ impl CompositorRuntime {
         let pointer_motion_only = !events.is_empty()
             && events
                 .iter()
-                .all(|event| matches!(event, aegis_core::input::InputEvent::PointerMotion { .. }));
+                .all(|event| matches!(event, aegis_model::input::InputEvent::PointerMotion { .. }));
         if !events.is_empty() {
             had_input = true;
             non_cursor_input |= !pointer_motion_only;
@@ -633,7 +633,7 @@ impl CompositorRuntime {
         let coord_factor = self.host.scale() / effective_scale;
         if (coord_factor - 1.0).abs() > f32::EPSILON {
             for ev in &mut events {
-                use aegis_core::input::{InputEvent::*, TabletEvent};
+                use aegis_model::input::{InputEvent::*, TabletEvent};
                 match ev {
                     PointerMotion { x, y }
                     | TouchDown { x, y, .. }
@@ -661,7 +661,7 @@ impl CompositorRuntime {
         let mut prepared_key_events = vec![None; events.len()];
         if !events.is_empty() {
             for (event_index, ev) in events.iter().enumerate() {
-                use aegis_core::input::InputEvent::*;
+                use aegis_model::input::InputEvent::*;
                 match *ev {
                     PointerMotion { x, y } => {
                         event_cursor = (x, y);
@@ -702,7 +702,7 @@ impl CompositorRuntime {
                         let prepared = self.server.prepare_keyboard_event(code, state);
                         prepared_key_events[event_index] = prepared;
                         let route = self.keyboard_capture.route(code, state, keyboard_captured);
-                        let chrome_owned = route == aegis_core::input::KeyRoute::Chrome;
+                        let chrome_owned = route == aegis_model::input::KeyRoute::Chrome;
                         chrome_owned_key_events[event_index] = chrome_owned;
                         if !chrome_owned
                             && state.is_pressed()
@@ -737,8 +737,8 @@ impl CompositorRuntime {
                                     .filter(|action| {
                                         matches!(
                                             action,
-                                            aegis_core::keybind::Action::CycleFocus
-                                                | aegis_core::keybind::Action::CycleFocusBack
+                                            aegis_model::keybind::Action::CycleFocus
+                                                | aegis_model::keybind::Action::CycleFocusBack
                                         )
                                     });
                                 if let Some(action) = switcher_action.or_else(|| {
@@ -754,7 +754,7 @@ impl CompositorRuntime {
                         }
                     }
                     PointerAxis(frame) => {
-                        use aegis_core::input::PointerAxisSource;
+                        use aegis_model::input::PointerAxisSource;
                         if matches!(
                             frame.source,
                             Some(PointerAxisSource::Wheel | PointerAxisSource::WheelTilt)
@@ -787,7 +787,7 @@ impl CompositorRuntime {
             let mut forwarded_keys = Vec::new();
             let mut forwarded_candidates = Vec::new();
             for (event_index, ev) in events.iter().copied().enumerate() {
-                use aegis_core::input::InputEvent::*;
+                use aegis_model::input::InputEvent::*;
                 match ev {
                     Key { code, state } if chrome_owned_key_events[event_index] => {
                         self.flush_physical_input_segment(
@@ -809,11 +809,12 @@ impl CompositorRuntime {
                         }
                         let super_held_at_event = prepared_key_events[event_index]
                             .and_then(|prepared| prepared.key_char())
-                            .is_some_and(|key| key.mods.has(aegis_core::input::Mods::SUPER));
+                            .is_some_and(|key| key.mods.has(aegis_model::input::Mods::SUPER));
                         if !state.is_pressed()
                             && matches!(
                                 code,
-                                aegis_core::input::KEY_LEFTMETA | aegis_core::input::KEY_RIGHTMETA
+                                aegis_model::input::KEY_LEFTMETA
+                                    | aegis_model::input::KEY_RIGHTMETA
                             )
                             && !super_held_at_event
                         {
@@ -828,11 +829,12 @@ impl CompositorRuntime {
                         }
                         let super_held_at_event = prepared_key_events[event_index]
                             .and_then(|prepared| prepared.key_char())
-                            .is_some_and(|key| key.mods.has(aegis_core::input::Mods::SUPER));
+                            .is_some_and(|key| key.mods.has(aegis_model::input::Mods::SUPER));
                         let super_released = !state.is_pressed()
                             && matches!(
                                 code,
-                                aegis_core::input::KEY_LEFTMETA | aegis_core::input::KEY_RIGHTMETA
+                                aegis_model::input::KEY_LEFTMETA
+                                    | aegis_model::input::KEY_RIGHTMETA
                             )
                             && !super_held_at_event;
                         if client_action_candidates[event_index].is_some() || super_released {
@@ -975,7 +977,7 @@ impl CompositorRuntime {
             let super_held = self
                 .server
                 .depressed_modifiers()
-                .has(aegis_core::input::Mods::SUPER);
+                .has(aegis_model::input::Mods::SUPER);
             self.finish_keyboard_switcher_if_released(super_held);
             // Ctrl+Alt+Fn: the compositor performs console VT switches itself
             // through libseat (the kernel never sees the key once libinput
@@ -998,13 +1000,13 @@ impl CompositorRuntime {
                     let prepared = self.server.prepare_synthetic_input(*id, actions);
                     if let Some(events) = prepared {
                         let has_key = events.iter().any(|event| {
-                            matches!(event, aegis_core::input::InputEvent::Key { .. })
+                            matches!(event, aegis_model::input::InputEvent::Key { .. })
                         });
                         let blocked_by_chrome = (has_key && self.shell.captures_keyboard())
                             || events.iter().any(|event| {
                                 matches!(
                                     *event,
-                                    aegis_core::input::InputEvent::PointerMotion { x, y }
+                                    aegis_model::input::InputEvent::PointerMotion { x, y }
                                         if self.shell.captures_pointer_at(
                                             x,
                                             y,
@@ -1018,11 +1020,14 @@ impl CompositorRuntime {
                             }
                         } else {
                             self.server.focus_surface_by_id(*id);
-                            let no_bindings = aegis_core::keybind::Keymap::default();
+                            let no_bindings = aegis_model::keybind::Keymap::default();
                             let actions = self.server.forward_input(&events, &no_bindings);
                             debug_assert!(actions.is_empty());
                             if events.iter().any(|event| {
-                                matches!(event, aegis_core::input::InputEvent::PointerMotion { .. })
+                                matches!(
+                                    event,
+                                    aegis_model::input::InputEvent::PointerMotion { .. }
+                                )
                             }) {
                                 self.synthetic_pointer_active = true;
                                 self.chrome_pointer_captured = false;
@@ -1060,7 +1065,7 @@ impl CompositorRuntime {
             // The swapchain was rebuilt at a new size or modifier set; damage
             // from before the reconfigure does not describe the new
             // framebuffer, so the next frame renders in full.
-            self.force_full_redraw = true;
+            self.damage.force_full_redraw = true;
             if let Some(capture) = self.pending_capture.take() {
                 refuse_capture_target(
                     &self.capture_worker,
@@ -1081,7 +1086,7 @@ impl CompositorRuntime {
                 let (pw, ph) = self.host.physical_size();
                 self.surface.resize(pw, ph)?;
             }
-            self.composite_slot_damage.clear();
+            self.damage.composite_slot_damage.clear();
             if let Err(error) = self.surface.prepare_readback() {
                 log::warn!(
                     "capture: could not preallocate resized readback staging: {error}{}",
@@ -1253,10 +1258,10 @@ impl CompositorRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aegis_core::Point;
-    use aegis_core::input::{ButtonState, InputEvent, SyntheticInputAction};
-    use aegis_core::interaction_domain::InteractionDomainId;
-    use aegis_core::window::WindowId;
+    use aegis_model::Point;
+    use aegis_model::input::{ButtonState, InputEvent, SyntheticInputAction};
+    use aegis_model::interaction_domain::InteractionDomainId;
+    use aegis_model::window::WindowId;
 
     fn frame(input: aegis_shell::Input, had_input: bool) -> FrameState {
         FrameState {
@@ -1318,18 +1323,18 @@ mod tests {
     #[test]
     fn keybinding_invocation_keeps_the_trigger_edge_modifier_state() {
         let invocation = keybinding_invocation(
-            aegis_core::keybind::Action::CycleFocus,
+            aegis_model::keybind::Action::CycleFocus,
             (20.0, 30.0),
-            aegis_core::input::KeyChar {
-                keysym: aegis_core::input::XKB_KEY_Tab,
+            aegis_model::input::KeyChar {
+                keysym: aegis_model::input::XKB_KEY_Tab,
                 ch: None,
-                mods: aegis_core::input::Mods::SUPER,
+                mods: aegis_model::input::Mods::SUPER,
             },
         );
-        let end_of_batch_mods = aegis_core::input::Mods::NONE;
+        let end_of_batch_mods = aegis_model::input::Mods::NONE;
 
         assert!(invocation.super_held);
-        assert!(!end_of_batch_mods.has(aegis_core::input::Mods::SUPER));
+        assert!(!end_of_batch_mods.has(aegis_model::input::Mods::SUPER));
     }
 
     #[test]

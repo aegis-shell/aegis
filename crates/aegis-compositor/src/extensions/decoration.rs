@@ -78,15 +78,15 @@ unsafe extern "C" fn xdg_decoration_get_toplevel(
     }
 }
 
-fn protocol_mode(policy: aegis_core::window::DecorationPolicy) -> u32 {
+fn protocol_mode(policy: aegis_model::window::DecorationPolicy) -> u32 {
     match policy {
-        aegis_core::window::DecorationPolicy::Borderless => {
+        aegis_model::window::DecorationPolicy::Borderless => {
             // Borderless windows are compositor-owned. Aegis supplies move,
             // resize, close, and state controls outside a per-window frame,
             // so the client must not add its own title bar.
             ffi::ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
         }
-        aegis_core::window::DecorationPolicy::ClientSide => {
+        aegis_model::window::DecorationPolicy::ClientSide => {
             ffi::ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
         }
     }
@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn borderless_policy_uses_server_side_protocol_ownership() {
         assert_eq!(
-            protocol_mode(aegis_core::window::DecorationPolicy::Borderless),
+            protocol_mode(aegis_model::window::DecorationPolicy::Borderless),
             ffi::ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
         );
     }
@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn client_side_policy_uses_client_side_protocol_mode() {
         assert_eq!(
-            protocol_mode(aegis_core::window::DecorationPolicy::ClientSide),
+            protocol_mode(aegis_model::window::DecorationPolicy::ClientSide),
             ffi::ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
         );
     }

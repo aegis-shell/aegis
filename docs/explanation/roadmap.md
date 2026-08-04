@@ -175,7 +175,7 @@ base and an optional, policy-driven tiling layer applied on top. Window
 rules from the configuration file drive placement and layout policy.
 
 **Status.** In progress. The pure workspace/output model landed in
-`aegis-core::workspace` (`WorkspaceModel`, `Workspace`, `Output`,
+`aegis-model::workspace` (`WorkspaceModel`, `Workspace`, `Output`,
 `WorkspaceId`/`OutputId`): dynamic per-output workspaces, the trailing-empty
 invariant, empty-workspace reaping, toplevel place/remove/move, switch and
 switch-to, and output-removal relocation — fully unit-tested in isolation.
@@ -188,7 +188,7 @@ window, and removal reaps the emptied workspace. The IPC exposes
 (HUD chrome component, hosted by the `aegis-hud` crate)
 shows one numbered tile per workspace,
 highlights the current, and switches on click. The tiling policy is
-implemented end to end: a pure `aegis-core::layout` module (`LayoutRole`,
+implemented end to end: a pure `aegis-model::layout` module (`LayoutRole`,
 `LayoutParams`, the `Layout` trait, a `MasterStack` policy), a `layout_role`
 field on `Window`, and server application — `Super+T` or the IPC
 `ToggleTiling` command flips the current workspace to tiled, the master-stack
@@ -221,7 +221,7 @@ with per-output mapping, and basic color management land with the libinput
 backend.
 
 **Status.** In progress. The per-output geometry model landed in
-`aegis-core::output` (`OutputMode`, `Scale`, `OutputGeometry`) — see
+`aegis-model::output` (`OutputMode`, `Scale`, `OutputGeometry`) — see
 [ADR-0028](../adr/0028-output-and-monitor-model.md) — and is now wired end to
 end: backends report real connectors and geometry, the server advertises
 per-connector `wl_output` (v4, with name/description) and `zxdg_output_v1`,

@@ -33,7 +33,7 @@ use crate::schema::{
     LOCAL_PORTAL_SCOPE, LeaseGrant, PROTOCOL_VERSION, Request, Response, Scope,
     SemanticObservation, SettingsAction, SettingsReceipt, SettingsSnapshot, StreamPixelFormat,
 };
-pub use aegis_authority::{AgentIdentity, PairedAgent};
+pub use aegis_security::authority::{AgentIdentity, PairedAgent};
 
 /// Large output-capture payload transferred as a sealed memfd by the IPC
 /// writer. It intentionally is not part of the JSON schema.
@@ -75,7 +75,7 @@ pub struct StreamFramePayload {
     pub height: u32,
     pub stride: u32,
     pub format: StreamPixelFormat,
-    pub damage: Vec<aegis_core::Rect>,
+    pub damage: Vec<aegis_model::Rect>,
     pub dropped: u64,
     pub pixels: Arc<[u8]>,
 }
@@ -122,9 +122,9 @@ impl Drop for ConnectionPermit {
 #[derive(Debug, Clone)]
 struct LiveScopeBinding {
     connection_id: u64,
-    session: aegis_authority::ActorSessionId,
+    session: aegis_security::authority::ActorSessionId,
     name: Option<String>,
-    principal: Option<aegis_authority::ActorPrincipal>,
+    principal: Option<aegis_security::authority::ActorPrincipal>,
     fallback: Scope,
 }
 

@@ -147,7 +147,7 @@ pub(in crate::runtime) enum CaptureTarget {
     /// One user-picked pixel readback (ADR-0054). The main loop answers the
     /// waiting `PickTarget` IPC request with the colour.
     Pixel {
-        point: aegis_core::Point,
+        point: aegis_model::Point,
         reply: std::sync::mpsc::Sender<Result<aegis_ipc::PickResult, String>>,
     },
     /// One shared readback for every stream that was due this presentation
@@ -180,7 +180,7 @@ enum CaptureJob {
     },
     Pixel {
         capture: CapturedPixels,
-        point: aegis_core::Point,
+        point: aegis_model::Point,
         reply: std::sync::mpsc::Sender<Result<aegis_ipc::PickResult, String>>,
     },
     Stream {
@@ -251,7 +251,7 @@ pub(in crate::runtime) struct StreamPixels {
     pub(in crate::runtime) width: u32,
     pub(in crate::runtime) height: u32,
     pub(in crate::runtime) bgra: std::sync::Arc<[u8]>,
-    pub(in crate::runtime) damage: Vec<aegis_core::Rect>,
+    pub(in crate::runtime) damage: Vec<aegis_model::Rect>,
 }
 
 /// Single bounded post-processing lane for screenshots and IPC pixel

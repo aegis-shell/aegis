@@ -16,9 +16,9 @@ use std::sync::{Arc, Mutex};
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{Chrome, ChromeEvents, Localizer, ellipsize};
-use aegis_core::notify::{Notification, NotificationQueue};
-use aegis_core::window::Window;
-use aegis_core::workspace::WorkspaceSnapshot;
+use aegis_model::notify::{Notification, NotificationQueue};
+use aegis_model::window::Window;
+use aegis_model::workspace::WorkspaceSnapshot;
 
 const TOAST_W: f32 = 300.0;
 const TOAST_H: f32 = 64.0;

@@ -13,8 +13,8 @@
 //! See [ADR-0033](../../docs/adr/0033-mutation-journal.md).
 
 use crate::schema::{ActorCapability, Command, InteractionDomainAction, Scope, SettingsAction};
-use aegis_core::interaction_domain::InteractionDomainId;
-use aegis_core::semantic::{SemanticActionIntent, SemanticObjectId};
+use aegis_model::interaction_domain::InteractionDomainId;
+use aegis_model::semantic::{SemanticActionIntent, SemanticObjectId};
 
 /// Privacy-preserving semantic action shape retained in the durable audit.
 /// User-entered text and values never enter the event store.
@@ -49,30 +49,30 @@ pub enum AuditedSemanticAction {
 #[serde(tag = "type")]
 pub enum AuditedCommand {
     Focus {
-        id: aegis_core::window::WindowId,
+        id: aegis_model::window::WindowId,
     },
     Minimize {
-        id: aegis_core::window::WindowId,
+        id: aegis_model::window::WindowId,
     },
     SetMaximized {
-        id: aegis_core::window::WindowId,
+        id: aegis_model::window::WindowId,
         maximized: bool,
     },
     SetAlwaysOnTop {
-        id: aegis_core::window::WindowId,
+        id: aegis_model::window::WindowId,
         on_top: bool,
     },
     Close {
-        id: aegis_core::window::WindowId,
+        id: aegis_model::window::WindowId,
     },
     Move {
-        id: aegis_core::window::WindowId,
+        id: aegis_model::window::WindowId,
     },
     SetWindowGeometry {
-        id: aegis_core::window::WindowId,
+        id: aegis_model::window::WindowId,
     },
     InjectInput {
-        id: aegis_core::window::WindowId,
+        id: aegis_model::window::WindowId,
         pointer_moves: u32,
         clicks: u32,
         scrolls: u32,
@@ -86,14 +86,14 @@ pub enum AuditedCommand {
         forward: bool,
     },
     SwitchWorkspace {
-        dir: aegis_core::workspace::Switch,
+        dir: aegis_model::workspace::Switch,
     },
     SwitchWorkspaceTo {
-        id: aegis_core::workspace::WorkspaceId,
+        id: aegis_model::workspace::WorkspaceId,
     },
     MoveToWorkspace {
-        window: aegis_core::window::WindowId,
-        workspace: aegis_core::workspace::WorkspaceId,
+        window: aegis_model::window::WindowId,
+        workspace: aegis_model::workspace::WorkspaceId,
     },
     ToggleTiling,
     System {
@@ -165,12 +165,12 @@ impl From<&Command> for AuditedCommand {
                 let (mut pointer_moves, mut clicks, mut scrolls, mut key_presses) = (0, 0, 0, 0);
                 for action in actions {
                     match action {
-                        aegis_core::input::SyntheticInputAction::PointerMove { .. } => {
+                        aegis_model::input::SyntheticInputAction::PointerMove { .. } => {
                             pointer_moves += 1;
                         }
-                        aegis_core::input::SyntheticInputAction::Click { .. } => clicks += 1,
-                        aegis_core::input::SyntheticInputAction::Scroll { .. } => scrolls += 1,
-                        aegis_core::input::SyntheticInputAction::KeyPress { .. } => {
+                        aegis_model::input::SyntheticInputAction::Click { .. } => clicks += 1,
+                        aegis_model::input::SyntheticInputAction::Scroll { .. } => scrolls += 1,
+                        aegis_model::input::SyntheticInputAction::KeyPress { .. } => {
                             key_presses += 1
                         }
                     }
@@ -244,16 +244,16 @@ impl From<&SemanticActionIntent> for AuditedSemanticAction {
                 let mut key_presses = 0u32;
                 for action in actions {
                     match action {
-                        aegis_core::input::SyntheticInputAction::PointerMove { .. } => {
+                        aegis_model::input::SyntheticInputAction::PointerMove { .. } => {
                             pointer_moves = pointer_moves.saturating_add(1);
                         }
-                        aegis_core::input::SyntheticInputAction::Click { .. } => {
+                        aegis_model::input::SyntheticInputAction::Click { .. } => {
                             clicks = clicks.saturating_add(1);
                         }
-                        aegis_core::input::SyntheticInputAction::Scroll { .. } => {
+                        aegis_model::input::SyntheticInputAction::Scroll { .. } => {
                             scrolls = scrolls.saturating_add(1);
                         }
-                        aegis_core::input::SyntheticInputAction::KeyPress { .. } => {
+                        aegis_model::input::SyntheticInputAction::KeyPress { .. } => {
                             key_presses = key_presses.saturating_add(1);
                         }
                     }
@@ -356,7 +356,7 @@ pub enum JournalMutation {
         action_id: Option<u64>,
         interaction_domain: InteractionDomainId,
         target: SemanticObjectId,
-        window: Option<aegis_core::window::WindowId>,
+        window: Option<aegis_model::window::WindowId>,
         actions: Vec<AuditedSemanticAction>,
         /// True when an invalid oversized request was bounded to the first
         /// 64 actions for audit retention.
@@ -370,15 +370,15 @@ pub enum JournalMutation {
         action: AgentAuthAction,
     },
     ActorSession {
-        session: aegis_authority::ActorSessionId,
+        session: aegis_security::authority::ActorSessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        principal: Option<aegis_authority::ActorPrincipal>,
+        principal: Option<aegis_security::authority::ActorPrincipal>,
         action: ActorSessionAuditAction,
     },
     ResourceGrant {
-        session: aegis_authority::ActorSessionId,
+        session: aegis_security::authority::ActorSessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        principal: Option<aegis_authority::ActorPrincipal>,
+        principal: Option<aegis_security::authority::ActorPrincipal>,
         capability: ActorCapability,
         resource_kind: ResourceKind,
         action: ResourceGrantAuditAction,
@@ -388,9 +388,9 @@ pub enum JournalMutation {
     /// capability family was attempted without retaining paths, origins,
     /// secret purposes, or payment details.
     ResourceGrantAttempt {
-        session: aegis_authority::ActorSessionId,
+        session: aegis_security::authority::ActorSessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        principal: Option<aegis_authority::ActorPrincipal>,
+        principal: Option<aegis_security::authority::ActorPrincipal>,
         action: ResourceGrantAttemptAction,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         capability: Option<ActorCapability>,
@@ -400,9 +400,9 @@ pub enum JournalMutation {
     /// Privacy-minimized decision for an explicit capability endpoint that
     /// is not already represented by a richer command/action mutation.
     CapabilityUse {
-        session: aegis_authority::ActorSessionId,
+        session: aegis_security::authority::ActorSessionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        principal: Option<aegis_authority::ActorPrincipal>,
+        principal: Option<aegis_security::authority::ActorPrincipal>,
         capability: ActorCapability,
         action: CapabilityUseAction,
     },
@@ -488,13 +488,13 @@ pub enum ResourceKind {
     PaymentRequest,
 }
 
-impl From<&aegis_authority::ActorResource> for ResourceKind {
-    fn from(resource: &aegis_authority::ActorResource) -> Self {
+impl From<&aegis_security::authority::ActorResource> for ResourceKind {
+    fn from(resource: &aegis_security::authority::ActorResource) -> Self {
         match resource {
-            aegis_authority::ActorResource::FilesystemPath { .. } => Self::FilesystemPath,
-            aegis_authority::ActorResource::NetworkOrigin { .. } => Self::NetworkOrigin,
-            aegis_authority::ActorResource::SecretPrompt { .. } => Self::SecretPrompt,
-            aegis_authority::ActorResource::PaymentRequest { .. } => Self::PaymentRequest,
+            aegis_security::authority::ActorResource::FilesystemPath { .. } => Self::FilesystemPath,
+            aegis_security::authority::ActorResource::NetworkOrigin { .. } => Self::NetworkOrigin,
+            aegis_security::authority::ActorResource::SecretPrompt { .. } => Self::SecretPrompt,
+            aegis_security::authority::ActorResource::PaymentRequest { .. } => Self::PaymentRequest,
         }
     }
 }
@@ -537,16 +537,16 @@ pub enum GrantPersistence {
 }
 
 /// One ordered mutation event. Storage and bounded projection mechanics live
-/// in `aegis-audit`; IPC owns only this wire-visible event vocabulary.
-pub type JournalEntry = aegis_audit::AuditEntry<Origin, JournalMutation, Effect>;
+/// in `aegis-security::audit`; IPC owns only this wire-visible event vocabulary.
+pub type JournalEntry = aegis_security::audit::AuditEntry<Origin, JournalMutation, Effect>;
 
 /// A bounded live projection with explicit sequence bounds.
-pub type JournalSnapshot = aegis_audit::AuditSnapshot<JournalEntry>;
+pub type JournalSnapshot = aegis_security::audit::AuditSnapshot<JournalEntry>;
 
 /// In-memory projection of the durable event stream.
-pub type Journal = aegis_audit::AuditLog<JournalEntry>;
+pub type Journal = aegis_security::audit::AuditLog<JournalEntry>;
 
-pub use aegis_audit::DEFAULT_CAPACITY;
+pub use aegis_security::audit::DEFAULT_CAPACITY;
 
 #[cfg(test)]
 mod tests {
@@ -555,7 +555,7 @@ mod tests {
 
     fn cmd(n: u64) -> Command {
         Command::Focus {
-            id: aegis_core::window::WindowId(n),
+            id: aegis_model::window::WindowId(n),
         }
     }
 
@@ -645,8 +645,8 @@ mod tests {
         let mutation = JournalMutation::InteractionDomain {
             action: InteractionDomainAction::Create {
                 label: "research".into(),
-                capabilities: aegis_core::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
-                output: Some(aegis_core::interaction_domain::VirtualOutput::DEFAULT_AGENT),
+                capabilities: aegis_model::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
+                output: Some(aegis_model::interaction_domain::VirtualOutput::DEFAULT_AGENT),
             },
             before_revision: 7,
             after_revision: 8,
@@ -720,8 +720,8 @@ mod tests {
     #[test]
     fn resource_grant_refusal_shape_excludes_bearers_and_exact_resources() {
         let mutation = JournalMutation::ResourceGrantAttempt {
-            session: aegis_authority::ActorSessionId(7),
-            principal: Some(aegis_authority::ActorPrincipal::new("prin_actor").unwrap()),
+            session: aegis_security::authority::ActorSessionId(7),
+            principal: Some(aegis_security::authority::ActorPrincipal::new("prin_actor").unwrap()),
             action: ResourceGrantAttemptAction::Consume,
             capability: Some(ActorCapability::ReadFile),
             resource_kind: Some(ResourceKind::FilesystemPath),
@@ -752,8 +752,8 @@ mod tests {
     #[test]
     fn capability_use_round_trips_without_endpoint_payload() {
         let mutation = JournalMutation::CapabilityUse {
-            session: aegis_authority::ActorSessionId(9),
-            principal: Some(aegis_authority::ActorPrincipal::new("prin_actor").unwrap()),
+            session: aegis_security::authority::ActorSessionId(9),
+            principal: Some(aegis_security::authority::ActorPrincipal::new("prin_actor").unwrap()),
             capability: ActorCapability::PromptSecret,
             action: CapabilityUseAction::Prompt,
         };
@@ -768,11 +768,11 @@ mod tests {
     fn actor_action_round_trips_without_bearer_token() {
         let mutation = JournalMutation::ActorAction {
             action_id: Some(17),
-            interaction_domain: aegis_core::interaction_domain::InteractionDomainId(4),
-            target: aegis_core::semantic::SemanticObjectId::for_window(
-                aegis_core::window::WindowId(9),
+            interaction_domain: aegis_model::interaction_domain::InteractionDomainId(4),
+            target: aegis_model::semantic::SemanticObjectId::for_window(
+                aegis_model::window::WindowId(9),
             ),
-            window: Some(aegis_core::window::WindowId(9)),
+            window: Some(aegis_model::window::WindowId(9)),
             actions: vec![AuditedSemanticAction::SyntheticInput {
                 pointer_moves: 0,
                 clicks: 1,
@@ -808,10 +808,10 @@ mod tests {
             },
             SemanticActionIntent::SyntheticInput {
                 actions: vec![
-                    aegis_core::input::SyntheticInputAction::PointerMove {
-                        position: aegis_core::Point { x: 123, y: 456 },
+                    aegis_model::input::SyntheticInputAction::PointerMove {
+                        position: aegis_model::Point { x: 123, y: 456 },
                     },
-                    aegis_core::input::SyntheticInputAction::KeyPress { code: 777 },
+                    aegis_model::input::SyntheticInputAction::KeyPress { code: 777 },
                 ],
             },
         ];
@@ -837,18 +837,18 @@ mod tests {
             },
             Command::Screenshot {
                 path: "/private/customer/screenshot.png".into(),
-                region: Some(aegis_core::Rect::new(123_456, 234_567, 10, 20)),
+                region: Some(aegis_model::Rect::new(123_456, 234_567, 10, 20)),
             },
             Command::InjectInput {
-                id: aegis_core::window::WindowId(4),
+                id: aegis_model::window::WindowId(4),
                 actions: vec![
-                    aegis_core::input::SyntheticInputAction::PointerMove {
-                        position: aegis_core::Point {
+                    aegis_model::input::SyntheticInputAction::PointerMove {
+                        position: aegis_model::Point {
                             x: 345_678,
                             y: 456_789,
                         },
                     },
-                    aegis_core::input::SyntheticInputAction::KeyPress { code: 777 },
+                    aegis_model::input::SyntheticInputAction::KeyPress { code: 777 },
                 ],
             },
         ];

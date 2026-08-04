@@ -1,8 +1,8 @@
 //! Shared application context menu used by the launcher and dock.
 
-use aegis_core::app::Entry;
-use aegis_core::window::{Window, WindowId};
 use aegis_design::{Design, materials, themes};
+use aegis_model::app::Entry;
+use aegis_model::window::{Window, WindowId};
 use lens::{Frame, Input, LayoutOpts, Rect};
 
 use crate::{ChromeEvents, Localizer, Message, WindowAction, ellipsize, place_popup};

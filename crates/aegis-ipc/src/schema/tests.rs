@@ -108,13 +108,13 @@ fn accessibility_provider_protocol_round_trips_complete_revisions_and_actions() 
     let response = Response::AccessibilityAction {
         request: Some(SemanticActionRequest {
             request_id: 11,
-            target: aegis_core::semantic::SemanticObjectId {
+            target: aegis_model::semantic::SemanticObjectId {
                 window: update.window,
                 local: 1,
             },
             provider_node_id: 1,
             tree_revision: update.revision,
-            action: aegis_core::semantic::SemanticActionIntent::Invoke,
+            action: aegis_model::semantic::SemanticActionIntent::Invoke,
         }),
     };
     let encoded = serde_json::to_string(&response).unwrap();
@@ -329,7 +329,7 @@ fn synthetic_input_is_separately_capability_and_window_scoped() {
     let cmd = Command::InjectInput {
         id: WindowId(9),
         actions: vec![SyntheticInputAction::Click {
-            position: aegis_core::Point { x: 20, y: 30 },
+            position: aegis_model::Point { x: 20, y: 30 },
             button: 0x110,
         }],
     };
@@ -613,7 +613,7 @@ fn interaction_domain_action_and_capture_have_ask_decisions() {
         expected_revision: None,
         mutations: vec![InteractionDomainMutation::SetState {
             interaction_domain: InteractionDomainId(2),
-            state: aegis_core::interaction_domain::InteractionDomainState::Paused,
+            state: aegis_model::interaction_domain::InteractionDomainState::Paused,
         }],
     };
     assert!(!s.permits_interaction_domain_action(&transact));
@@ -801,7 +801,7 @@ fn interaction_domain_capture_response_round_trips_correlated_layout_metadata() 
         placements: vec![InteractionDomainWindowPlacement {
             window: WindowId(42),
             output_rect: Rect::new(120, 70, 300, 150),
-            surface_size: aegis_core::Size { w: 900, h: 450 },
+            surface_size: aegis_model::Size { w: 900, h: 450 },
         }],
         observation: SemanticObservation {
             token: ObservationToken("a".repeat(64)),
@@ -826,7 +826,7 @@ fn interaction_domain_capture_response_round_trips_correlated_layout_metadata() 
     assert_eq!(capture.placements[0].window, WindowId(42));
     assert_eq!(
         capture.placements[0].surface_size,
-        aegis_core::Size { w: 900, h: 450 }
+        aegis_model::Size { w: 900, h: 450 }
     );
     assert_eq!(capture.revision, 19);
 }
@@ -898,7 +898,7 @@ fn pick_target_round_trips_all_kinds_and_results() {
             rect: Rect::new(10, 20, 300, 200),
         },
         PickResult::Pixel {
-            point: aegis_core::Point { x: 4, y: 8 },
+            point: aegis_model::Point { x: 4, y: 8 },
             rgb: [255, 128, 0],
         },
         PickResult::Window { id: WindowId(3) },

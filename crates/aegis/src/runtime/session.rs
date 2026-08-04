@@ -143,7 +143,7 @@ impl OutputWakeRecovery {
 /// or powered-down outputs before the replacement starts.
 pub(super) struct IdleProcess {
     child: Option<std::process::Child>,
-    settings: aegis_core::settings::IdleSettings,
+    settings: aegis_model::settings::IdleSettings,
     nested: bool,
     available: bool,
     stopping: bool,
@@ -153,7 +153,7 @@ pub(super) struct IdleProcess {
 
 impl IdleProcess {
     pub(super) fn start(
-        settings: aegis_core::settings::IdleSettings,
+        settings: aegis_model::settings::IdleSettings,
         nested: bool,
         available: bool,
     ) -> Self {
@@ -177,7 +177,7 @@ impl IdleProcess {
         process
     }
 
-    pub(super) fn reconfigure(&mut self, settings: aegis_core::settings::IdleSettings) {
+    pub(super) fn reconfigure(&mut self, settings: aegis_model::settings::IdleSettings) {
         if self.settings == settings {
             return;
         }

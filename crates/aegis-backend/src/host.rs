@@ -9,11 +9,11 @@ use std::time::Duration;
 use crate::Backend;
 use crate::drm::{DrmBackend, DrmError};
 use crate::nested::{DEVICE_EXTENSIONS, INSTANCE_EXTENSIONS, NestedError, NestedHost};
-use aegis_core::Size;
-use aegis_core::input::{
+use aegis_model::Size;
+use aegis_model::input::{
     InputEvent, PointerGestureEvent, TextInputEvent, TextInputState, TouchpadConfig, TouchpadStatus,
 };
-use aegis_core::output::ModeSpec;
+use aegis_model::output::ModeSpec;
 
 /// Frame slots Flux runs concurrently. ADR-0038's frame pacing assumes three:
 /// on DRM the offscreen ring must hold one image per slot so a frame being
@@ -198,7 +198,7 @@ impl Host {
         &mut self,
         surface: &flux::Surface,
         frame: flux::SubmittedFrame<'_>,
-        damage: Option<&[aegis_core::Rect]>,
+        damage: Option<&[aegis_model::Rect]>,
     ) -> Result<Option<OwnedFd>, HostError> {
         match self {
             Self::Nested(_) => {
@@ -219,8 +219,8 @@ impl Host {
     /// then composites instead).
     pub fn present_scanout(
         &mut self,
-        candidate: &aegis_core::SurfaceDmabuf,
-        damage: Option<&[aegis_core::Rect]>,
+        candidate: &aegis_model::SurfaceDmabuf,
+        damage: Option<&[aegis_model::Rect]>,
     ) -> Result<Option<OwnedFd>, HostError> {
         match self {
             Self::Nested(_) => Err(HostError::Drm(DrmError::ScanoutUnsupported)),
@@ -316,7 +316,7 @@ impl Host {
     /// Format/modifier intersection accepted by every active DRM primary
     /// plane. Nested mode has no local KMS planes and therefore no scanout
     /// tranche to advertise.
-    pub fn dmabuf_scanout_formats(&self) -> Vec<aegis_core::dmabuf::DmabufFormat> {
+    pub fn dmabuf_scanout_formats(&self) -> Vec<aegis_model::dmabuf::DmabufFormat> {
         match self {
             Self::Nested(_) => Vec::new(),
             Self::Drm(host) => host.dmabuf_scanout_formats(),
@@ -394,7 +394,7 @@ impl Backend for Host {
         }
     }
 
-    fn output_infos(&self) -> Vec<aegis_core::output::OutputInfo> {
+    fn output_infos(&self) -> Vec<aegis_model::output::OutputInfo> {
         match self {
             Self::Nested(host) => host.output_infos(),
             Self::Drm(host) => host.output_infos(),

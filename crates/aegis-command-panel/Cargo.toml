@@ -9,16 +9,13 @@ rust-version.workspace = true
 build = "build.rs"
 
 [dependencies]
-# The caller-owned VRM camera and renderer.
-aegis-avatar = { workspace = true }
-# Shared account identity, static/VRM source routing, and live reload.
-aegis-identity = { workspace = true }
-aegis-core = { workspace = true }
+aegis-model = { workspace = true }
 aegis-design = { workspace = true }
-aegis-shell = { workspace = true }
+# Shared personalized profile plus the optional still/VRM portrait runtime.
+aegis-shell = { workspace = true, features = ["persona"] }
 aegis-tray = { workspace = true }
 # Direct dep purely so this crate's build script receives
-# DEP_FLUX_SCENE_GRAPH_RPATHS (the avatar's VRM path links the scene graph)
+# DEP_FLUX_SCENE_GRAPH_RPATHS (the persona VRM path links the scene graph)
 # and can re-emit the rpaths for the test harness — `rustc-link-arg` does
 # not propagate across crates.
 flux-scene-graph-sys = { workspace = true }

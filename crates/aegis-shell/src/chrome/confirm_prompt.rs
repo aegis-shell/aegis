@@ -4,17 +4,20 @@
 //! style offers the four runtime-grant persistences (ADR-0088): Deny,
 //! Allow once, This session, Always.
 //!
-//! The flow mirrors the other pickers: [`Chrome::start_confirm_pick`] opens
+//! The flow mirrors the other pickers: [`ChromeCommand::StartConfirmPick`] opens
 //! the panel, and the user's answer travels back through
 //! [`ChromeEvents::confirm_pick_answered`]. Ordinary modal chrome over the
 //! live scene: no freeze, no screen-content capture.
 
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
-use crate::{BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Reserved, ellipsize};
-use aegis_core::input::{KeyAction, KeyChar, key_action};
-use aegis_core::window::Window;
+use crate::{
+    BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape, Localizer,
+    Reserved, ellipsize,
+};
 use aegis_design::{Design, themes};
+use aegis_model::input::{KeyAction, KeyChar, key_action};
+use aegis_model::window::Window;
 
 const PANEL_W: f32 = 460.0;
 const PANEL_PAD: f32 = 16.0;
@@ -151,7 +154,7 @@ impl PromptLayout {
 }
 
 /// The confirmation chrome component. Inert until the runtime opens it
-/// with [`Chrome::start_confirm_pick`].
+/// with [`ChromeCommand::StartConfirmPick`].
 pub struct ConfirmPrompt {
     active: bool,
     title: String,
@@ -177,6 +180,14 @@ impl ConfirmPrompt {
     fn answer(&mut self, answer: ConfirmAnswer, out: &mut ChromeEvents) {
         out.confirm_pick_answered = Some(answer);
         self.active = false;
+    }
+
+    fn start_confirm_pick(&mut self, params: ConfirmPickParams) {
+        self.title = params.title;
+        self.body = params.body;
+        self.accept_label = params.accept_label.unwrap_or_else(|| "OK".to_string());
+        self.style = params.style;
+        self.active = true;
     }
 
     /// Handle one primary-button press at output-space `(x, y)`: answers on
@@ -435,8 +446,10 @@ impl Chrome for ConfirmPrompt {
         })
     }
 
-    fn set_modal_reserved(&mut self, reserved: Reserved) {
-        self.modal_reserved = reserved;
+    fn update(&mut self, update: ChromeUpdate<'_>) {
+        if let ChromeUpdate::ModalReserved(reserved) = update {
+            self.modal_reserved = reserved;
+        }
     }
 
     fn key_char(&mut self, key: &KeyChar, out: &mut ChromeEvents) {
@@ -454,17 +467,11 @@ impl Chrome for ConfirmPrompt {
         }
     }
 
-    fn start_confirm_pick(&mut self, params: ConfirmPickParams) {
-        self.title = params.title;
-        self.body = params.body;
-        self.accept_label = params.accept_label.unwrap_or_else(|| "OK".to_string());
-        self.style = params.style;
-        self.active = true;
-    }
-
-    fn cancel_confirm_pick(&mut self) {
-        if self.active {
-            self.active = false;
+    fn command(&mut self, command: &ChromeCommand<'_>, _out: &mut ChromeEvents) {
+        match command {
+            ChromeCommand::StartConfirmPick(params) => self.start_confirm_pick((**params).clone()),
+            ChromeCommand::CancelConfirmPick if self.active => self.active = false,
+            _ => {}
         }
     }
 
@@ -562,17 +569,17 @@ mod tests {
 
     fn enter() -> KeyChar {
         KeyChar {
-            keysym: aegis_core::input::XKB_KEY_Return,
+            keysym: aegis_model::input::XKB_KEY_Return,
             ch: None,
-            mods: aegis_core::input::Mods::NONE,
+            mods: aegis_model::input::Mods::NONE,
         }
     }
 
     fn escape() -> KeyChar {
         KeyChar {
-            keysym: aegis_core::input::XKB_KEY_Escape,
+            keysym: aegis_model::input::XKB_KEY_Escape,
             ch: None,
-            mods: aegis_core::input::Mods::NONE,
+            mods: aegis_model::input::Mods::NONE,
         }
     }
 

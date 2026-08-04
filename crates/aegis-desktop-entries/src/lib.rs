@@ -13,7 +13,7 @@
 //! placement rules (see `docs/dev/project-layout.md`), freedesktop/OS
 //! integration that does not need the compositor types lives in its own crate
 //! rather than in `aegis-shell`. The pure [`Entry`] model lives in
-//! [`aegis_core::app`] so the shell chrome can render it without depending on
+//! [`aegis_model::app`] so the shell chrome can render it without depending on
 //! this crate; see ADR-0022.
 //!
 //! Scope:
@@ -35,7 +35,7 @@ mod xdg;
 
 /// Re-export of the shared entry model. Built here, read by `aegis-shell` and
 /// `aegis-launch` without them taking a dependency on this crate's parser.
-pub use aegis_core::app::Entry;
+pub use aegis_model::app::Entry;
 pub use exec::{expand_exec, expand_exec_tokens};
 pub use icon::{resolve_icon, resolve_icon_scaled};
 pub use locale::current_locale;

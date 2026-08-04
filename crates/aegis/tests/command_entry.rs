@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use aegis_core::window::{Window, WindowId};
 use aegis_ipc::{Handler, Server};
+use aegis_model::window::{Window, WindowId};
 
 struct EntryHandler;
 
@@ -19,17 +19,17 @@ impl Handler for EntryHandler {
         vec![window]
     }
 
-    fn workspaces(&self) -> aegis_core::workspace::WorkspaceSnapshot {
-        aegis_core::workspace::WorkspaceSnapshot {
+    fn workspaces(&self) -> aegis_model::workspace::WorkspaceSnapshot {
+        aegis_model::workspace::WorkspaceSnapshot {
             outputs: Vec::new(),
         }
     }
 
-    fn notifications(&self) -> Vec<aegis_core::notify::Notification> {
+    fn notifications(&self) -> Vec<aegis_model::notify::Notification> {
         Vec::new()
     }
 
-    fn outputs(&self) -> Vec<aegis_core::output::OutputInfo> {
+    fn outputs(&self) -> Vec<aegis_model::output::OutputInfo> {
         Vec::new()
     }
 

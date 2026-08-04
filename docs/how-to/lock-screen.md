@@ -177,7 +177,7 @@ dim = 0.24
 `cinematic` places the clock at the upper right and the password interaction
 at the lower right without an avatar. It renders the display name in uppercase
 and reports a rejected credential through a red, briefly shaking rail rather
-than an error sentence. Use `centered` for the conventional centered identity
+than an error sentence. Use `centered` for the conventional centered persona
 column. `[ui] reduced_motion = true` keeps the red rejection state but disables
 the shake. The neutral rail has no empty password marks and therefore does not
 suggest an expected credential length. The image path is relative to the
@@ -205,7 +205,7 @@ this order is used:
 
 PNG, JPEG, WebP, GIF, BMP, ICO, TIFF, TGA, QOI, and PNM images are accepted.
 The image is cover-fit and circle-masked. An invalid or absent image falls
-back to a flat, scheme-aware identity disc with centered initials.
+back to a flat, scheme-aware persona disc with centered initials.
 
 A VRM 0.x or 1.0 model can instead be placed at:
 
@@ -229,11 +229,11 @@ For compatibility, a single
 both motion-library directories contain no clips. The motion library takes
 precedence when both layouts exist.
 
-The shared identity portrait contract gives still images precedence over a
+The shared persona portrait contract gives still images precedence over a
 VRM model. Both the lock screen and command panel use the same ordered
-configuration for initial loading and live reload. `aegis-avatar` receives
-only an explicitly selected VRM and the camera owned by that presentation;
-it does not decode still images or choose a source.
+configuration for initial loading and live reload. The internal VRM backend
+receives only an explicitly selected model and the camera owned by that
+presentation; it does not choose a source or surrounding chrome.
 
 Aegis retargets each VRMA motion onto VRM 0.x or 1.0 bones. Without any
 motion clip, the VRM remains in its rest pose. Embedded PNG/JPEG base-color
@@ -252,7 +252,7 @@ last-known-good avatar and retries; deleting all avatar sources deliberately
 switches to the flat initial fallback. A reload keeps the current named motion
 when that motion still exists in the replacement library.
 
-See the [Identity Portrait Reference](../reference/identity-portraits.md) for
+See the [Persona Reference](../reference/persona.md) for
 the exact source order, motion layout, caller-owned VRM camera parameters, and
 transactional reload contract.
 

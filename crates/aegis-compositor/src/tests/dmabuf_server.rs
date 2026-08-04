@@ -7,7 +7,7 @@ use super::*;
 /// avoid uncompressed LINEAR buffers.
 #[test]
 fn new_with_render_caps_carries_dmabuf_format_table() {
-    use aegis_core::dmabuf::{DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_XRGB8888, DmabufFormat};
+    use aegis_model::dmabuf::{DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_XRGB8888, DmabufFormat};
 
     if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
         eprintln!("skipping: XDG_RUNTIME_DIR not set");
@@ -20,7 +20,7 @@ fn new_with_render_caps_carries_dmabuf_format_table() {
             modifiers: vec![FAKE_TILE, DRM_FORMAT_MOD_LINEAR],
         },
         DmabufFormat {
-            fourcc: aegis_core::dmabuf::DRM_FORMAT_ARGB8888,
+            fourcc: aegis_model::dmabuf::DRM_FORMAT_ARGB8888,
             modifiers: vec![FAKE_TILE],
         },
     ];
@@ -41,7 +41,7 @@ fn new_with_render_caps_carries_dmabuf_format_table() {
 
 #[test]
 fn new_with_dmabuf_feedback_carries_separate_scanout_capabilities() {
-    use aegis_core::dmabuf::{DRM_FORMAT_XRGB8888, DmabufFormat};
+    use aegis_model::dmabuf::{DRM_FORMAT_XRGB8888, DmabufFormat};
 
     if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
         eprintln!("skipping: XDG_RUNTIME_DIR not set");
@@ -78,7 +78,7 @@ fn new_with_dmabuf_feedback_carries_separate_scanout_capabilities() {
 
 #[test]
 fn dmabuf_feedback_update_skips_semantically_identical_capabilities() {
-    use aegis_core::dmabuf::{DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB8888, DmabufFormat};
+    use aegis_model::dmabuf::{DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB8888, DmabufFormat};
 
     if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
         eprintln!("skipping: XDG_RUNTIME_DIR not set");
@@ -177,9 +177,9 @@ fn dmabuf_v4_feedback_roundtrips_through_wayland_info() {
         if !feedback_updated && !server.state.dmabuf_feedback_resources.is_empty() {
             feedback_updated = true;
             assert!(server.update_dmabuf_feedback(
-                vec![aegis_core::dmabuf::DmabufFormat {
-                    fourcc: aegis_core::dmabuf::DRM_FORMAT_XRGB8888,
-                    modifiers: vec![aegis_core::dmabuf::DRM_FORMAT_MOD_LINEAR],
+                vec![aegis_model::dmabuf::DmabufFormat {
+                    fourcc: aegis_model::dmabuf::DRM_FORMAT_XRGB8888,
+                    modifiers: vec![aegis_model::dmabuf::DRM_FORMAT_MOD_LINEAR],
                 }],
                 Some(main_device),
             ));
@@ -352,14 +352,14 @@ fn chrome_extensions_menu_receives_a_complete_click() {
             (*root).position.y + 64,
         )
     };
-    let keymap = aegis_core::keybind::Keymap::default();
+    let keymap = aegis_model::keybind::Keymap::default();
     let surfaces_before_menu = server
         .state
         .live_surfaces()
         .map(|surface| unsafe { (*surface).resource as usize })
         .collect::<std::collections::HashSet<_>>();
     server.forward_input(
-        &[aegis_core::input::InputEvent::PointerMotion {
+        &[aegis_model::input::InputEvent::PointerMotion {
             x: menu_x as f32,
             y: menu_y as f32,
         }],
@@ -371,17 +371,17 @@ fn chrome_extensions_menu_receives_a_complete_click() {
     );
     pump(&mut server, 100);
     server.forward_input(
-        &[aegis_core::input::InputEvent::PointerButton {
+        &[aegis_model::input::InputEvent::PointerButton {
             button: 0x110,
-            state: aegis_core::input::ButtonState::Pressed,
+            state: aegis_model::input::ButtonState::Pressed,
         }],
         &keymap,
     );
     pump(&mut server, 100);
     server.forward_input(
-        &[aegis_core::input::InputEvent::PointerButton {
+        &[aegis_model::input::InputEvent::PointerButton {
             button: 0x110,
-            state: aegis_core::input::ButtonState::Released,
+            state: aegis_model::input::ButtonState::Released,
         }],
         &keymap,
     );
@@ -413,17 +413,17 @@ fn chrome_extensions_menu_receives_a_complete_click() {
     };
     server.forward_input(
         &[
-            aegis_core::input::InputEvent::PointerMotion {
+            aegis_model::input::InputEvent::PointerMotion {
                 x: item_x as f32,
                 y: item_y as f32,
             },
-            aegis_core::input::InputEvent::PointerButton {
+            aegis_model::input::InputEvent::PointerButton {
                 button: 0x110,
-                state: aegis_core::input::ButtonState::Pressed,
+                state: aegis_model::input::ButtonState::Pressed,
             },
-            aegis_core::input::InputEvent::PointerButton {
+            aegis_model::input::InputEvent::PointerButton {
                 button: 0x110,
-                state: aegis_core::input::ButtonState::Released,
+                state: aegis_model::input::ButtonState::Released,
             },
         ],
         &keymap,
@@ -459,8 +459,8 @@ fn prepared_keyboard_edges_keep_physical_order_across_route_boundary() {
     // Super began on the client route in the previous backend batch.
     let super_down = server
         .prepare_keyboard_event(
-            aegis_core::input::KEY_LEFTMETA,
-            aegis_core::input::ButtonState::Pressed,
+            aegis_model::input::KEY_LEFTMETA,
+            aegis_model::input::ButtonState::Pressed,
         )
         .expect("keyboard");
     assert!(
@@ -468,7 +468,7 @@ fn prepared_keyboard_edges_keep_physical_order_across_route_boundary() {
             .key_char()
             .expect("ordinary modifier")
             .mods
-            .has(aegis_core::input::Mods::SUPER)
+            .has(aegis_model::input::Mods::SUPER)
     );
 
     // The next batch crosses ownership: Super's release still belongs to the
@@ -476,25 +476,25 @@ fn prepared_keyboard_edges_keep_physical_order_across_route_boundary() {
     // retain the XKB state at their physical position in that one batch.
     let super_up = server
         .prepare_keyboard_event(
-            aegis_core::input::KEY_LEFTMETA,
-            aegis_core::input::ButtonState::Released,
+            aegis_model::input::KEY_LEFTMETA,
+            aegis_model::input::ButtonState::Released,
         )
         .expect("keyboard")
         .key_char()
         .expect("ordinary modifier");
     let alt_down = server
         .prepare_keyboard_event(
-            aegis_core::input::KEY_LEFTALT,
-            aegis_core::input::ButtonState::Pressed,
+            aegis_model::input::KEY_LEFTALT,
+            aegis_model::input::ButtonState::Pressed,
         )
         .expect("keyboard")
         .key_char()
         .expect("ordinary modifier");
 
-    assert!(!super_up.mods.has(aegis_core::input::Mods::SUPER));
-    assert!(alt_down.mods.has(aegis_core::input::Mods::ALT));
-    assert!(!alt_down.mods.has(aegis_core::input::Mods::SUPER));
-    assert_eq!(server.depressed_modifiers(), aegis_core::input::Mods::ALT);
+    assert!(!super_up.mods.has(aegis_model::input::Mods::SUPER));
+    assert!(alt_down.mods.has(aegis_model::input::Mods::ALT));
+    assert!(!alt_down.mods.has(aegis_model::input::Mods::SUPER));
+    assert_eq!(server.depressed_modifiers(), aegis_model::input::Mods::ALT);
 }
 
 /// Registry absence is the intentional capability signal for Primary

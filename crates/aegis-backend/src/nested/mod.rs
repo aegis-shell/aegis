@@ -13,8 +13,8 @@ mod runtime;
 use std::ffi::{CStr, CString, c_void};
 use std::ptr;
 
-use aegis_core::Size;
-use aegis_core::input::{
+use aegis_model::Size;
+use aegis_model::input::{
     InputEvent, PointerAxis, PointerAxisFrame, PointerAxisRelativeDirection, PointerAxisSource,
     PointerGestureEvent, TextInputEvent, TextInputState,
 };
@@ -119,7 +119,7 @@ pub struct NestedHost {
     vk_surface: u64,
     /// Persisted profile for direct-display sessions. The outer compositor
     /// owns the physical device while this backend is nested.
-    touchpad_config: aegis_core::input::TouchpadConfig,
+    touchpad_config: aegis_model::input::TouchpadConfig,
     /// The compositor's Wayland server event-loop fd, registered via
     /// `Backend::set_wakeup_fd`. Polled for readability only — the main loop
     /// dispatches the server itself once the wait wakes.

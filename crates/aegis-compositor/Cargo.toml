@@ -9,16 +9,21 @@ rust-version.workspace = true
 build = "build.rs"
 
 [dependencies]
-aegis-core = { workspace = true, features = ["serde"] }
+aegis-model = { workspace = true, features = ["serde"] }
 aegis-semantic.workspace = true
 aegis-wayland-protocols = { workspace = true }
 log.workspace = true
 getrandom.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 xkbcommon = "0.9"
 
 [build-dependencies]
 pkg-config = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
 
 [package.metadata.cargo-machete]
 ignored = ["pkg-config"]

@@ -8,12 +8,12 @@ pub(super) struct AppScanRequest {
 pub(super) type AppScanResult = (
     String,
     u32,
-    Vec<aegis_core::app::Entry>,
+    Vec<aegis_model::app::Entry>,
     IconSnapshot,
     Vec<DecodedIcon>,
 );
 pub(super) type WindowEventSignature = Vec<(
-    aegis_core::window::WindowId,
+    aegis_model::window::WindowId,
     bool,
     bool,
     bool,
@@ -30,12 +30,49 @@ pub(super) struct SwipeState {
     pub(super) fingers: u8,
     pub(super) dx: f32,
     pub(super) dy: f32,
-    pub(super) axis: Option<aegis_core::gesture::GestureAxis>,
+    pub(super) axis: Option<aegis_model::gesture::GestureAxis>,
     /// Whether this swipe opened the window switcher (`WindowCycle`).
     pub(super) switcher: bool,
     /// Whether the command-panel binding already fired (`CommandPanel`);
     /// latches until SwipeEnd so a long swipe cannot oscillate the panel.
     pub(super) panel_fired: bool,
+}
+
+/// Baselines and carry-over owned by the output-damage pipeline.
+///
+/// Keeping these values together makes invalidation an explicit subsystem
+/// boundary instead of a set of unrelated flags on the composition root.
+#[derive(Default)]
+pub(super) struct DamageTracking {
+    /// Per-surface content generations at the last damage assessment; a
+    /// mismatch marks that surface's region damaged.
+    pub(super) last_surface_gens: std::collections::HashMap<usize, SurfaceDamageBaseline>,
+    /// Scratch double-buffer for [`Self::last_surface_gens`]: `client_damage`
+    /// swaps the two in place and clears the now-old one, so the per-frame
+    /// generation map is never freshly heap-allocated.
+    pub(super) surface_gens_scratch: std::collections::HashMap<usize, SurfaceDamageBaseline>,
+    pub(super) last_notif_revision: Option<u64>,
+    /// (overview, window switcher, keyboard capture, screenshot selector) at
+    /// the last assessment — modal chrome changes outside signed paths.
+    pub(super) last_chrome_mode: Option<(bool, bool, bool, bool)>,
+    pub(super) last_session_locked: bool,
+    /// (shape, hidden) as of the last presented frame.
+    pub(super) last_presented_cursor: Option<(u32, bool)>,
+    pub(super) last_presented_cursor_position: Option<(i32, i32)>,
+    /// Damage each Flux ring slot has missed since it was last presented.
+    /// Partial repaint unions the current frame's damage with this history so
+    /// a three-buffer compositor never exposes stale pixels.
+    pub(super) composite_slot_damage: Vec<FrameDamage>,
+    /// Wall-clock minute of the last presented frame; a rollover forces one
+    /// frame so the status-bar clock cannot go stale while idle.
+    pub(super) last_present_minute: Option<u64>,
+    /// Shell mutations applied outside the signed paths (status poller,
+    /// config reload, app rescan, IPC settings/Interaction Domain control) since the last
+    /// assessment.
+    pub(super) chrome_dirty: bool,
+    /// Set when the output was resized/recreated; the next frame must render
+    /// in full regardless of damage.
+    pub(super) force_full_redraw: bool,
 }
 
 /// Owns the mutable composition state used by the compositor event loop.
@@ -44,7 +81,8 @@ pub(super) struct SwipeState {
 /// the state they need. Keeping ownership here makes those phases independently
 /// testable and prevents the composition root from accumulating more locals.
 pub(super) struct CompositorRuntime {
-    pub(super) notif_queue: std::sync::Arc<std::sync::Mutex<aegis_core::notify::NotificationQueue>>,
+    pub(super) notif_queue:
+        std::sync::Arc<std::sync::Mutex<aegis_model::notify::NotificationQueue>>,
     pub(super) config_path: Option<std::path::PathBuf>,
     pub(super) config: Option<aegis_config::Config>,
     // Rust drops fields in declaration order. The canvas and its Vulkan
@@ -68,7 +106,7 @@ pub(super) struct CompositorRuntime {
     pub(super) server: aegis_compositor::Server,
     pub(super) icon_theme: String,
     pub(super) icon_scale: u32,
-    pub(super) launcher_apps: Vec<aegis_core::app::Entry>,
+    pub(super) launcher_apps: Vec<aegis_model::app::Entry>,
     pub(super) icon_cache: IconCache,
     pub(super) icon_snapshot: IconSnapshot,
     pub(super) shell: aegis_shell::Shell,
@@ -76,14 +114,14 @@ pub(super) struct CompositorRuntime {
     /// Touchpad swipe bindings: the built-in defaults layered with the
     /// configuration's `[[gesture]]` entries, consulted when a swipe begins
     /// (ADR-0080, ADR-0082).
-    pub(super) gesture_map: aegis_core::gesture::GestureMap,
+    pub(super) gesture_map: aegis_model::gesture::GestureMap,
     /// State of the in-flight compositor-owned swipe; `None` when no claimed
     /// gesture is running.
     pub(super) swipe: Option<SwipeState>,
     pub(super) renderer: aegis_render::Renderer,
     pub(super) interaction_domain_processes: InteractionDomainProcesses,
     pub(super) interaction_domain_render_targets: std::collections::BTreeMap<
-        aegis_core::interaction_domain::InteractionDomainId,
+        aegis_model::interaction_domain::InteractionDomainId,
         InteractionDomainRenderTarget,
     >,
     pub(super) pending_interaction_domain_capture: Option<PendingInteractionDomainCapture>,
@@ -101,8 +139,8 @@ pub(super) struct CompositorRuntime {
     /// Kept independently from `primary_plane_state` so a persistent video client
     /// explains why it is composited instead of failing silently every frame.
     pub(super) scanout_telemetry: ScanoutTelemetry,
-    pub(super) keyboard_capture: aegis_core::input::KeyboardCaptureState,
-    pub(super) keymap: aegis_core::keybind::Keymap,
+    pub(super) keyboard_capture: aegis_model::input::KeyboardCaptureState,
+    pub(super) keymap: aegis_model::keybind::Keymap,
     pub(super) system_status: aegis_shell::SystemStatus,
     pub(super) status_rx: std::sync::mpsc::Receiver<aegis_shell::SystemStatus>,
     /// Latest host resource-utilisation sample from the "aegis-resources"
@@ -165,43 +203,15 @@ pub(super) struct CompositorRuntime {
     pub(super) ipc: Option<aegis_ipc::Server>,
     pub(super) last_win_sig: Option<WindowEventSignature>,
     /// Last output-space state announced to IPC subscribers.
-    pub(super) last_space_use: Option<aegis_core::window::SpaceUse>,
+    pub(super) last_space_use: Option<aegis_model::window::SpaceUse>,
     /// Content hash of the last fanned-out window snapshot; the full
     /// `Server::windows()` clone only happens when this changes.
     pub(super) last_windows_hash: Option<u64>,
     pub(super) last_ws_sig: Option<u64>,
     pub(super) last_interaction_domain_revision: Option<u64>,
     pub(super) last_outputs_revision: Option<u64>,
-    // ----- output damage pipeline (see runtime/damage.rs) -----
-    /// Per-surface content generations at the last damage assessment; a
-    /// mismatch marks that surface's region damaged.
-    pub(super) last_surface_gens: std::collections::HashMap<usize, SurfaceDamageBaseline>,
-    /// Scratch double-buffer for [`Self::last_surface_gens`]: `client_damage`
-    /// swaps the two in place and clears the now-old one, so the per-frame
-    /// generation map is never freshly heap-allocated.
-    pub(super) surface_gens_scratch: std::collections::HashMap<usize, SurfaceDamageBaseline>,
-    pub(super) last_notif_revision: Option<u64>,
-    /// (overview, window switcher, keyboard capture, screenshot selector) at
-    /// the last assessment — modal chrome changes outside signed paths.
-    pub(super) last_chrome_mode: Option<(bool, bool, bool, bool)>,
-    pub(super) last_session_locked: bool,
-    /// (shape, hidden) as of the last presented frame.
-    pub(super) last_presented_cursor: Option<(u32, bool)>,
-    pub(super) last_presented_cursor_position: Option<(i32, i32)>,
-    /// Damage each Flux ring slot has missed since it was last presented.
-    /// Partial repaint unions the current frame's damage with this history so
-    /// a three-buffer compositor never exposes stale pixels.
-    pub(super) composite_slot_damage: Vec<FrameDamage>,
-    /// Wall-clock minute of the last presented frame; a rollover forces one
-    /// frame so the status-bar clock cannot go stale while idle.
-    pub(super) last_present_minute: Option<u64>,
-    /// Shell mutations applied outside the signed paths (status poller,
-    /// config reload, app rescan, IPC settings/Interaction Domain control) since the last
-    /// assessment.
-    pub(super) chrome_dirty: bool,
-    /// Set when the output was resized/recreated; the next frame must render
-    /// in full regardless of damage.
-    pub(super) force_full_redraw: bool,
+    /// Output damage baselines and buffer-age carry-over (runtime/damage.rs).
+    pub(super) damage: DamageTracking,
     /// Explicit redraw/presentation lifecycle for the host's atomic commit
     /// domain, plus input edges accumulated while a frame is in flight.
     pub(super) presentation: PresentationScheduler,
@@ -209,7 +219,7 @@ pub(super) struct CompositorRuntime {
     pub(super) settings_revision: u64,
     pub(super) previous_agent_suspended: bool,
     pub(super) automatically_paused_interaction_domains:
-        std::collections::BTreeSet<aegis_core::interaction_domain::InteractionDomainId>,
+        std::collections::BTreeSet<aegis_model::interaction_domain::InteractionDomainId>,
     pub(super) animating: bool,
     pub(super) chrome_pointer_captured: bool,
     pub(super) synthetic_pointer_active: bool,

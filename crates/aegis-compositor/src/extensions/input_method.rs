@@ -1,7 +1,7 @@
 use super::*;
 
-use aegis_core::input::{ButtonState, TextInputEvent, TextInputState};
-use aegis_core::interaction_domain::SeatId;
+use aegis_model::input::{ButtonState, TextInputEvent, TextInputState};
+use aegis_model::interaction_domain::SeatId;
 
 const MAX_SURROUNDING_TEXT_BYTES: usize = 4_000;
 
@@ -984,10 +984,10 @@ pub(crate) unsafe fn input_popup_surface_visible(surface: *const SurfaceRec) -> 
 }
 
 fn input_popup_position(
-    anchor: aegis_core::Rect,
-    popup_size: aegis_core::Size,
-    output: aegis_core::Rect,
-) -> aegis_core::Point {
+    anchor: aegis_model::Rect,
+    popup_size: aegis_model::Size,
+    output: aegis_model::Rect,
+) -> aegis_model::Point {
     let max_x = output
         .origin
         .x
@@ -1004,7 +1004,7 @@ fn input_popup_position(
     } else {
         above
     };
-    aegis_core::Point {
+    aegis_model::Point {
         x: anchor.origin.x.clamp(output.origin.x, max_x),
         y: popup_y.clamp(output.origin.y, max_y),
     }
@@ -1012,11 +1012,11 @@ fn input_popup_position(
 
 fn input_popup_anchor(
     rect: Option<(i32, i32, i32, i32)>,
-    surface_origin: aegis_core::Point,
-    surface_size: aegis_core::Size,
-) -> aegis_core::Rect {
+    surface_origin: aegis_model::Point,
+    surface_size: aegis_model::Size,
+) -> aegis_model::Rect {
     match rect {
-        Some((x, y, width, height)) => aegis_core::Rect::new(
+        Some((x, y, width, height)) => aegis_model::Rect::new(
             x.saturating_add(surface_origin.x),
             y.saturating_add(surface_origin.y),
             width.max(1),
@@ -1026,7 +1026,7 @@ fn input_popup_anchor(
         // rectangle support, bind the popup to the current text surface's
         // whole logical area. This is less precise than a caret but, crucially,
         // can never retain the previous focus's coordinates.
-        None => aegis_core::Rect::new(
+        None => aegis_model::Rect::new(
             surface_origin.x,
             surface_origin.y,
             surface_size.w.max(1),
@@ -1071,8 +1071,8 @@ unsafe fn update_input_popup_positions(state: *mut State, seat: SeatId, force_no
             (
                 input_popup_anchor(
                     Some(rect),
-                    aegis_core::Point { x: 0, y: 0 },
-                    aegis_core::Size { w: 1, h: 1 },
+                    aegis_model::Point { x: 0, y: 0 },
+                    aegis_model::Size { w: 1, h: 1 },
                 ),
                 Some(rect),
             )
@@ -1153,23 +1153,23 @@ mod tests {
 
     #[test]
     fn popup_prefers_below_the_cursor_and_clamps_horizontally() {
-        let output = aegis_core::Rect::new(100, 50, 800, 600);
-        let anchor = aegis_core::Rect::new(880, 200, 2, 20);
-        let popup = aegis_core::Size { w: 240, h: 100 };
+        let output = aegis_model::Rect::new(100, 50, 800, 600);
+        let anchor = aegis_model::Rect::new(880, 200, 2, 20);
+        let popup = aegis_model::Size { w: 240, h: 100 };
         assert_eq!(
             input_popup_position(anchor, popup, output),
-            aegis_core::Point { x: 660, y: 220 }
+            aegis_model::Point { x: 660, y: 220 }
         );
     }
 
     #[test]
     fn popup_moves_above_the_cursor_when_below_would_overflow() {
-        let output = aegis_core::Rect::new(0, 0, 800, 600);
-        let anchor = aegis_core::Rect::new(320, 575, 2, 20);
-        let popup = aegis_core::Size { w: 240, h: 100 };
+        let output = aegis_model::Rect::new(0, 0, 800, 600);
+        let anchor = aegis_model::Rect::new(320, 575, 2, 20);
+        let popup = aegis_model::Size { w: 240, h: 100 };
         assert_eq!(
             input_popup_position(anchor, popup, output),
-            aegis_core::Point { x: 320, y: 475 }
+            aegis_model::Point { x: 320, y: 475 }
         );
     }
 
@@ -1179,31 +1179,31 @@ mod tests {
         assert_eq!(
             input_popup_anchor(
                 Some(local),
-                aegis_core::Point { x: 17, y: 46 },
-                aegis_core::Size { w: 800, h: 600 }
+                aegis_model::Point { x: 17, y: 46 },
+                aegis_model::Size { w: 800, h: 600 }
             ),
-            aegis_core::Rect::new(89, 46, 9, 19)
+            aegis_model::Rect::new(89, 46, 9, 19)
         );
         assert_eq!(
             input_popup_anchor(
                 Some(local),
-                aegis_core::Point { x: 300, y: 220 },
-                aegis_core::Size { w: 800, h: 600 }
+                aegis_model::Point { x: 300, y: 220 },
+                aegis_model::Size { w: 800, h: 600 }
             ),
-            aegis_core::Rect::new(372, 220, 9, 19)
+            aegis_model::Rect::new(372, 220, 9, 19)
         );
     }
 
     #[test]
     fn popup_without_caret_rebinds_to_the_new_text_surface() {
-        let size = aegis_core::Size { w: 640, h: 480 };
+        let size = aegis_model::Size { w: 640, h: 480 };
         assert_eq!(
-            input_popup_anchor(None, aegis_core::Point { x: 20, y: 30 }, size),
-            aegis_core::Rect::new(20, 30, 640, 480)
+            input_popup_anchor(None, aegis_model::Point { x: 20, y: 30 }, size),
+            aegis_model::Rect::new(20, 30, 640, 480)
         );
         assert_eq!(
-            input_popup_anchor(None, aegis_core::Point { x: 900, y: 70 }, size),
-            aegis_core::Rect::new(900, 70, 640, 480)
+            input_popup_anchor(None, aegis_model::Point { x: 900, y: 70 }, size),
+            aegis_model::Rect::new(900, 70, 640, 480)
         );
     }
 }

@@ -21,6 +21,31 @@ corresponding `aegis-*` library so the executable remains wiring and lifecycle
 code. The executable selects the presentation backend from `AEGIS_BACKEND`:
 `auto` nests inside an existing session and drives DRM/KMS on a bare TTY.
 
+## Build-Time Chrome Selection
+
+The default `full-chrome` feature preserves the packaged desktop. Custom
+product builds can disable it and select independently compiled chrome
+components:
+
+| Feature | Component | Additional service |
+|---------|-----------|--------------------|
+| `chrome-dock` | Persistent application Dock | None |
+| `chrome-prism` | Compact application search | None |
+| `chrome-agent-workspaces` | Agent Workspaces authority UI | None |
+| `chrome-hud` | Display-only status HUD | StatusNotifierItem tray |
+| `chrome-command-panel` | Modal system command panel | StatusNotifierItem tray |
+
+For example, build only the Dock and Prism on top of the shared shell:
+
+```bash
+cargo build -p aegis --no-default-features \
+  --features chrome-dock,chrome-prism
+```
+
+Cargo features determine which component crates enter the binary. Runtime
+configuration, such as `[hud] enabled`, controls a component only when its
+crate was compiled in.
+
 ## Runtime Effect
 
 Running `aegis` composites client surfaces and shell chrome into a nested

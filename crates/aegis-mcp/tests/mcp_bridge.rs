@@ -6,12 +6,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use aegis_core::interaction_domain::{HUMAN_INTERACTION_DOMAIN, InteractionDomainModel};
-use aegis_core::window::{Window, WindowId};
 use aegis_ipc::{
     ActorCapability, ConnectionCapabilities, Effect, Handler, InteractionDomainAction,
     InteractionDomainActionResult, Journal, JournalMutation, Origin, Server,
 };
+use aegis_model::interaction_domain::{HUMAN_INTERACTION_DOMAIN, InteractionDomainModel};
+use aegis_model::window::{Window, WindowId};
 use serde_json::{Value, json};
 
 fn scratch() -> PathBuf {
@@ -23,7 +23,7 @@ fn scratch() -> PathBuf {
 struct TestHandler {
     interaction_domains: Mutex<InteractionDomainModel>,
     journal: Mutex<Journal>,
-    notifications: Mutex<Vec<aegis_core::notify::Notification>>,
+    notifications: Mutex<Vec<aegis_model::notify::Notification>>,
     observations: Mutex<HashMap<String, u64>>,
 }
 
@@ -73,25 +73,25 @@ impl Handler for TestHandler {
             .lock()
             .expect("interaction_domain lock");
         let mut window = Window::new(WindowId(7));
-        window.size = aegis_core::Size { w: 320, h: 180 };
+        window.size = aegis_model::Size { w: 320, h: 180 };
         window.read_only = interaction_domains
             .interaction_group_for_window(window.id)
             .is_some_and(|group| group.control_interaction_domain != HUMAN_INTERACTION_DOMAIN);
         vec![window]
     }
 
-    fn workspaces(&self) -> aegis_core::workspace::WorkspaceSnapshot {
-        aegis_core::workspace::WorkspaceSnapshot { outputs: vec![] }
+    fn workspaces(&self) -> aegis_model::workspace::WorkspaceSnapshot {
+        aegis_model::workspace::WorkspaceSnapshot { outputs: vec![] }
     }
 
-    fn notifications(&self) -> Vec<aegis_core::notify::Notification> {
+    fn notifications(&self) -> Vec<aegis_model::notify::Notification> {
         self.notifications
             .lock()
             .expect("notification lock")
             .clone()
     }
 
-    fn outputs(&self) -> Vec<aegis_core::output::OutputInfo> {
+    fn outputs(&self) -> Vec<aegis_model::output::OutputInfo> {
         vec![]
     }
 
@@ -109,7 +109,7 @@ impl Handler for TestHandler {
         {
             let mut notifications = self.notifications.lock().expect("notification lock");
             let id = notifications.len() as u64;
-            notifications.push(aegis_core::notify::Notification {
+            notifications.push(aegis_model::notify::Notification {
                 id,
                 summary: summary.clone(),
                 body: body.clone(),
@@ -128,7 +128,7 @@ impl Handler for TestHandler {
         );
     }
 
-    fn interaction_domains(&self) -> aegis_core::interaction_domain::InteractionDomainSnapshot {
+    fn interaction_domains(&self) -> aegis_model::interaction_domain::InteractionDomainSnapshot {
         self.interaction_domains
             .lock()
             .expect("interaction_domain lock")
@@ -162,7 +162,7 @@ impl Handler for TestHandler {
                         .map_err(|error| error.to_string())?;
                 }
                 Ok(InteractionDomainActionResult::Created {
-                    bundle: aegis_core::interaction_domain::InteractionDomainBundle {
+                    bundle: aegis_model::interaction_domain::InteractionDomainBundle {
                         revision: interaction_domains.revision(),
                         ..bundle
                     },
@@ -201,8 +201,8 @@ impl Handler for TestHandler {
         &self,
         conn_id: u64,
         _subject: Option<&str>,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
-        _region: Option<aegis_core::Rect>,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
+        _region: Option<aegis_model::Rect>,
     ) -> Result<aegis_ipc::CaptureInteractionDomainPayload, String> {
         let revision = self
             .interaction_domains
@@ -219,12 +219,12 @@ impl Handler for TestHandler {
                 width: 1,
                 height: 1,
                 scale_milli: 1000,
-                region: aegis_core::Rect::new(0, 0, 1, 1),
+                region: aegis_model::Rect::new(0, 0, 1, 1),
                 placements: vec![],
                 observation: aegis_ipc::SemanticObservation {
                     token: aegis_ipc::ObservationToken("a".repeat(64)),
                     ttl_ms: 15_000,
-                    snapshot: aegis_core::semantic::SemanticSnapshot {
+                    snapshot: aegis_model::semantic::SemanticSnapshot {
                         interaction_domain,
                         authority_revision: revision,
                         objects: Vec::new(),
@@ -243,7 +243,7 @@ impl Handler for TestHandler {
         &self,
         conn_id: u64,
         _subject: Option<&str>,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
     ) -> Result<aegis_ipc::SemanticObservation, String> {
         let revision = self
             .interaction_domains
@@ -257,27 +257,27 @@ impl Handler for TestHandler {
         Ok(aegis_ipc::SemanticObservation {
             token: aegis_ipc::ObservationToken("b".repeat(64)),
             ttl_ms: 15_000,
-            snapshot: aegis_core::semantic::SemanticSnapshot {
+            snapshot: aegis_model::semantic::SemanticSnapshot {
                 interaction_domain,
                 authority_revision: revision,
-                objects: vec![aegis_core::semantic::SemanticObject {
-                    id: aegis_core::semantic::SemanticObjectId::for_window(WindowId(7)),
+                objects: vec![aegis_model::semantic::SemanticObject {
+                    id: aegis_model::semantic::SemanticObjectId::for_window(WindowId(7)),
                     parent: None,
                     window: WindowId(7),
-                    source: aegis_core::semantic::SemanticSource::Compositor,
-                    role: aegis_core::semantic::SemanticRole::Window,
+                    source: aegis_model::semantic::SemanticSource::Compositor,
+                    role: aegis_model::semantic::SemanticRole::Window,
                     name: Some("smoke".into()),
                     description: None,
                     value: None,
                     app_id: Some("visual-smoke.test".into()),
-                    bounds: aegis_core::Rect::new(0, 0, 320, 180),
-                    local_size: aegis_core::Size { w: 320, h: 180 },
-                    state: aegis_core::semantic::SemanticState {
+                    bounds: aegis_model::Rect::new(0, 0, 320, 180),
+                    local_size: aegis_model::Size { w: 320, h: 180 },
+                    state: aegis_model::semantic::SemanticState {
                         visible: true,
                         enabled: true,
                         ..Default::default()
                     },
-                    actions: vec![aegis_core::semantic::SemanticAction::Pointer],
+                    actions: vec![aegis_model::semantic::SemanticAction::Pointer],
                     revision: 1,
                 }],
             },
@@ -435,7 +435,7 @@ fn stdio_discovers_manages_captures_and_revokes_interaction_domain() {
             .interaction_domains
             .iter()
             .any(|interaction_domain| interaction_domain.state
-                == aegis_core::interaction_domain::InteractionDomainState::Revoked)
+                == aegis_model::interaction_domain::InteractionDomainState::Revoked)
     );
 
     let config =
@@ -467,7 +467,7 @@ fn stdio_discovers_manages_captures_and_revokes_interaction_domain() {
     let input = report.visual.input_probe.expect("input probe evidence");
     assert_eq!(input.window_id, 7);
     assert_eq!(input.action, "pointer_move");
-    assert_eq!(input.local_position, aegis_core::Point { x: 160, y: 90 });
+    assert_eq!(input.local_position, aegis_model::Point { x: 160, y: 90 });
     assert!(input.applied);
     assert!(input.window_restored_to_human);
     assert_eq!(

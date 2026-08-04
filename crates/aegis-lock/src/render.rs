@@ -8,7 +8,7 @@ use std::time::Instant;
 use aegis_config::{
     ColorScheme, LockScreenBackgroundConfig, LockScreenBackgroundMode, LockScreenStyle,
 };
-use aegis_design::{Design, themes};
+use aegis_design::{AvatarRole, Design, themes};
 use aegis_lock::{LockState, PresentationMode, lock_layout_for};
 use ash::vk::{self, Handle};
 use flux::{GradientStop, Image};
@@ -16,13 +16,14 @@ use lens::{Align, Color, Input, LayoutOpts, OverlayOpts, Rect, Theme, Ui};
 use thiserror::Error;
 use wayland_client::{Connection, Proxy, protocol::wl_surface};
 
-use crate::identity::{Identity, clock_strings};
+use crate::profile::{Profile, clock_strings};
 
 const INSTANCE_EXTENSIONS: [&CStr; 2] = [c"VK_KHR_surface", c"VK_KHR_wayland_surface"];
 const DEVICE_EXTENSIONS: [&CStr; 1] = [c"VK_KHR_swapchain"];
 const REJECTION_RGB: [u8; 3] = [255, 72, 84];
 const VALIDATION_RGB: [u8; 3] = [190, 226, 255];
-const AVATAR_CAMERA: aegis_avatar::VrmCamera = aegis_avatar::VrmCamera::new(28.0, 0.25, 0.48, 0.0);
+const AVATAR_CAMERA: aegis_shell::persona::VrmCamera =
+    aegis_shell::persona::VrmCamera::new(28.0, 0.25, 0.48, 0.0);
 
 #[derive(Debug, Error)]
 pub enum RenderError {
@@ -39,17 +40,17 @@ pub enum RenderError {
 }
 
 impl RenderError {
-    /// Map an `aegis-avatar` error onto the lock's render error. Flux faults
+    /// Map a persona portrait error onto the lock's render error. Flux faults
     /// are preserved as-is; everything else becomes a descriptive `Avatar`.
-    fn from_avatar(error: aegis_identity::Error) -> Self {
+    fn from_avatar(error: aegis_shell::persona::Error) -> Self {
         match error {
-            aegis_identity::Error::Flux(error) => RenderError::Flux(error),
+            aegis_shell::persona::Error::Flux(error) => RenderError::Flux(error),
             other => RenderError::Avatar(other.to_string()),
         }
     }
 }
 
-/// Whether the identity disc shows the user's picture, a 3D model, or the
+/// Whether the profile disc shows the user's picture, a 3D model, or the
 /// flat initial fallback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AvatarStatus {
@@ -61,12 +62,12 @@ pub enum AvatarStatus {
     Fallback,
 }
 
-impl From<aegis_identity::PortraitKind> for AvatarStatus {
-    fn from(kind: aegis_identity::PortraitKind) -> Self {
+impl From<aegis_shell::persona::PortraitKind> for AvatarStatus {
+    fn from(kind: aegis_shell::persona::PortraitKind) -> Self {
         match kind {
-            aegis_identity::PortraitKind::Still => AvatarStatus::Image,
-            aegis_identity::PortraitKind::Vrm { animation } => AvatarStatus::Animated3d {
-                animated: animation == aegis_avatar::AnimationSupport::Animated,
+            aegis_shell::persona::PortraitKind::Still => AvatarStatus::Image,
+            aegis_shell::persona::PortraitKind::Vrm { animation } => AvatarStatus::Animated3d {
+                animated: animation == aegis_shell::persona::AnimationSupport::Animated,
             },
         }
     }
@@ -78,13 +79,13 @@ pub struct Graphics {
     visual: LockVisual,
     avatar: AvatarResource,
     avatar_status: AvatarStatus,
-    portrait_config: aegis_identity::PortraitConfig,
-    avatar_watcher: Option<aegis_identity::PortraitWatcher>,
+    portrait_config: aegis_shell::persona::PortraitConfig,
+    avatar_watcher: Option<aegis_shell::persona::PortraitWatcher>,
     ash: AshBridge,
 }
 
 enum AvatarResource {
-    Loaded(aegis_identity::Portrait),
+    Loaded(aegis_shell::persona::Portrait),
     Fallback,
 }
 
@@ -100,7 +101,7 @@ impl AvatarResource {
         matches!(self, Self::Loaded(avatar) if avatar.is_animated())
     }
 
-    fn advance(&mut self, delta_seconds: f32) -> Result<bool, aegis_identity::Error> {
+    fn advance(&mut self, delta_seconds: f32) -> Result<bool, aegis_shell::persona::Error> {
         match self {
             Self::Loaded(avatar) => avatar.advance(delta_seconds),
             Self::Fallback => Ok(false),
@@ -154,13 +155,13 @@ impl Graphics {
         let device = flux::Device::new(true, &INSTANCE_EXTENSIONS, &DEVICE_EXTENSIONS, 2)?;
         let resolved = resolve_lock_appearance(options);
         let background = load_background(&resolved.background, resolved.config_path.as_deref())?;
-        let portrait_config = aegis_identity::PortraitConfig::current();
+        let portrait_config = aegis_shell::persona::PortraitConfig::current();
         let (avatar, avatar_status, avatar_watcher) = if resolved.style == LockScreenStyle::Centered
         {
-            // Only the centered composition owns an identity portrait. Avoid
+            // Only the centered composition owns a persona portrait. Avoid
             // decoding, uploading, animating, or watching avatar resources for
             // the deliberately typographic cinematic composition.
-            let (avatar, status) = match aegis_identity::Portrait::load_transactional(
+            let (avatar, status) = match aegis_shell::persona::Portrait::load_transactional(
                 &device,
                 &portrait_config,
                 AVATAR_CAMERA,
@@ -181,7 +182,7 @@ impl Graphics {
                     (AvatarResource::Fallback, AvatarStatus::Fallback)
                 }
             };
-            let watcher = match aegis_identity::PortraitWatcher::new(&portrait_config) {
+            let watcher = match aegis_shell::persona::PortraitWatcher::new(&portrait_config) {
                 Ok(watcher) => Some(watcher),
                 Err(error) => {
                     log::warn!("lock: avatar hot reload disabled: {error}");
@@ -253,7 +254,7 @@ impl Graphics {
         &mut self,
         surface: &mut LockRenderSurface,
         state: &LockState,
-        identity: &Identity,
+        profile: &Profile,
         visual_progress: f32,
         now: Instant,
     ) -> Result<(), RenderError> {
@@ -266,7 +267,7 @@ impl Graphics {
                 visual: self.visual,
             },
             state,
-            identity,
+            profile,
             visual_progress,
             now,
         )
@@ -294,7 +295,7 @@ impl Graphics {
     pub fn avatar_reload_pending(&self) -> bool {
         self.avatar_watcher
             .as_ref()
-            .is_some_and(aegis_identity::PortraitWatcher::needs_poll)
+            .is_some_and(aegis_shell::persona::PortraitWatcher::needs_poll)
     }
 
     /// Build and publish an avatar replacement on the render thread. Failed
@@ -303,7 +304,7 @@ impl Graphics {
         let ready = self
             .avatar_watcher
             .as_mut()
-            .is_some_and(aegis_identity::PortraitWatcher::poll);
+            .is_some_and(aegis_shell::persona::PortraitWatcher::poll);
         if !ready {
             return false;
         }
@@ -313,7 +314,7 @@ impl Graphics {
             log::warn!("lock: could not refresh avatar watches: {error}");
         }
         let previous_motion = self.avatar.current_motion().map(str::to_owned);
-        match aegis_identity::Portrait::load_transactional(
+        match aegis_shell::persona::Portrait::load_transactional(
             &self.device,
             &self.portrait_config,
             AVATAR_CAMERA,
@@ -407,7 +408,7 @@ impl LockRenderSurface {
         &mut self,
         assets: RenderAssets<'_>,
         state: &LockState,
-        identity: &Identity,
+        profile: &Profile,
         visual_progress: f32,
         now: Instant,
     ) -> Result<(), RenderError> {
@@ -459,12 +460,12 @@ impl LockRenderSurface {
             if state.presentation() == PresentationMode::Engaged || progress > 0.02 {
                 draw_identity(
                     ui,
-                    IdentityPresentation {
+                    ProfilePresentation {
                         logical: self.logical_size,
                         visual: assets.visual,
                         avatar_status: assets.avatar_status,
                         state,
-                        identity,
+                        profile,
                         progress,
                         feedback_offset,
                     },
@@ -782,6 +783,7 @@ fn draw_materials(canvas: &flux::Canvas, presentation: MaterialPresentation<'_>)
         return;
     }
     if style == LockScreenStyle::Centered {
+        let avatar_style = Design::dark().avatars.for_role(AvatarRole::LockHero);
         let avatar_x = layout.avatar_x * scale;
         let avatar_y = (layout.avatar_y + (1.0 - p) * 18.0) * scale;
         let avatar_size = layout.avatar_size * scale;
@@ -816,14 +818,20 @@ fn draw_materials(canvas: &flux::Canvas, presentation: MaterialPresentation<'_>)
         // A hairline frames both real avatars and the flat initial fallback.
         // It must remain a stroke: filling this shape is what washed the old
         // blue fallback toward white.
+        let (ring_red, ring_green, ring_blue, ring_alpha) = avatar_style.ring.components();
         canvas.stroke_rrect(
             avatar_x,
             avatar_y,
             avatar_size,
             avatar_size,
             avatar_size * 0.5,
-            flux::rgba(255, 255, 255, (62.0 * p) as u8),
-            scale,
+            flux::rgba(
+                ring_red,
+                ring_green,
+                ring_blue,
+                (ring_alpha as f32 * p).round() as u8,
+            ),
+            avatar_style.ring_width * scale,
         );
     }
 
@@ -980,23 +988,23 @@ fn draw_clock(
     );
 }
 
-struct IdentityPresentation<'a> {
+struct ProfilePresentation<'a> {
     logical: (u32, u32),
     visual: LockVisual,
     avatar_status: AvatarStatus,
     state: &'a LockState,
-    identity: &'a Identity,
+    profile: &'a Profile,
     progress: f32,
     feedback_offset: f32,
 }
 
-fn draw_identity(ui: &mut lens::Frame, presentation: IdentityPresentation<'_>) {
-    let IdentityPresentation {
+fn draw_identity(ui: &mut lens::Frame, presentation: ProfilePresentation<'_>) {
+    let ProfilePresentation {
         logical,
         visual,
         avatar_status,
         state,
-        identity,
+        profile,
         progress,
         feedback_offset,
     } = presentation;
@@ -1005,6 +1013,7 @@ fn draw_identity(ui: &mut lens::Frame, presentation: IdentityPresentation<'_>) {
     let alpha = (255.0 * progress) as u8;
     let shifted_avatar_y = layout.avatar_y + (1.0 - progress) * 18.0;
     if style == LockScreenStyle::Centered && avatar_status == AvatarStatus::Fallback {
+        let avatar_style = Design::dark().avatars.for_role(AvatarRole::LockHero);
         ui.set_theme(lock_theme(
             &Design::dark(),
             palette.avatar_foreground,
@@ -1031,7 +1040,10 @@ fn draw_identity(ui: &mut lens::Frame, presentation: IdentityPresentation<'_>) {
                     |ui| {
                         ui.flex(1.0);
                         ui.spacer(0.0);
-                        ui.label_compact_sized(&identity.initials, layout.avatar_size * 0.36);
+                        ui.label_compact_sized(
+                            &profile.initials,
+                            layout.avatar_size * avatar_style.initials_scale,
+                        );
                         ui.flex(1.0);
                         ui.spacer(0.0);
                     },
@@ -1059,9 +1071,9 @@ fn draw_identity(ui: &mut lens::Frame, presentation: IdentityPresentation<'_>) {
         ),
     };
     let display_name = if style == LockScreenStyle::Cinematic {
-        identity.display_name.to_uppercase()
+        profile.display_name.to_uppercase()
     } else {
-        identity.display_name.clone()
+        profile.display_name.clone()
     };
     ui.layer(
         "lock-display-name",
@@ -1074,7 +1086,7 @@ fn draw_identity(ui: &mut lens::Frame, presentation: IdentityPresentation<'_>) {
         &aligned_layer(name_alignment),
         |ui| {
             if style == LockScreenStyle::Cinematic {
-                // Keep the cinematic identity quiet and precise. Lens titles
+                // Keep the cinematic profile quiet and precise. Lens titles
                 // are deliberately bold; the regular compact run gives this
                 // line the lighter stroke requested by the composition.
                 ui.label_compact_sized(&display_name, name_size);
@@ -1264,7 +1276,7 @@ fn cinematic_password_marks(password_len: usize) -> String {
 
 fn credential_label(visible: &str, revision: u64) -> String {
     // Lens hides the `##` suffix while hashing the complete label as widget
-    // identity. A monotonically changing suffix prevents deletion from
+    // profile. A monotonically changing suffix prevents deletion from
     // reviving an older retained node/record for the same shorter text.
     format!("{visible}##lock-credential-{revision}")
 }

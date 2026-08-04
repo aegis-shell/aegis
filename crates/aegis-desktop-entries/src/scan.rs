@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use aegis_core::app::{ApplicationTarget, Entry};
+use aegis_model::app::{ApplicationTarget, Entry};
 use ini::Ini;
 
 use crate::icon::resolve_icon_scaled;

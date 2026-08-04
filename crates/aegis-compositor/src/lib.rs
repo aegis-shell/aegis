@@ -32,15 +32,15 @@ use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use aegis_core::interaction_domain::{
+use aegis_model::interaction_domain::{
     AuthorityTransfer, HUMAN_INTERACTION_DOMAIN, HUMAN_PRINCIPAL, HUMAN_SEAT,
     InteractionDomainBundle, InteractionDomainError, InteractionDomainId, InteractionDomainModel,
     InteractionDomainMutation, InteractionDomainMutationResult, InteractionDomainRevocation,
     InteractionDomainSnapshot, InteractionDomainTransactionReceipt, InteractionPrincipalId,
     PresentationTarget, SeatCapabilities, SeatId, TransferOptions, VirtualOutput,
 };
-use aegis_core::layout::Layout;
-use aegis_core::{SurfaceDmabuf, SurfacePixels};
+use aegis_model::layout::Layout;
+use aegis_model::{SurfaceDmabuf, SurfacePixels};
 
 /// Security-visible phase of the ext-session-lock protocol.
 ///
@@ -320,17 +320,17 @@ struct DragState {
 /// the common "top-left" so menus and tooltips place predictably.
 #[derive(Default)]
 struct PositionerState {
-    size: Option<aegis_core::Size>,
-    anchor_rect: Option<aegis_core::Rect>,
+    size: Option<aegis_model::Size>,
+    anchor_rect: Option<aegis_model::Rect>,
     anchor: u32,
     gravity: u32,
     constraint_adjustment: u32,
-    offset: aegis_core::Point,
+    offset: aegis_model::Point,
 }
 
 #[derive(Default)]
 struct RegionRec {
-    rects: Vec<aegis_core::Rect>,
+    rects: Vec<aegis_model::Rect>,
 }
 
 // Minimal close() without pulling the libc crate.
@@ -351,11 +351,11 @@ pub(crate) unsafe fn libc_close(fd: i32) {
 /// of shm, and its xdg role.
 pub struct SurfaceRec {
     pub resource: *mut ffi::wl_resource,
-    client_id: aegis_core::interaction_domain::ClientId,
+    client_id: aegis_model::interaction_domain::ClientId,
     pending_buffer: *mut ffi::wl_resource,
     pending_buffer_set: bool,
-    pending_attach_offset: aegis_core::Point,
-    attach_offset: aegis_core::Point,
+    pending_attach_offset: aegis_model::Point,
+    attach_offset: aegis_model::Point,
     pub mapped: bool,
     pub width: i32,
     pub height: i32,
@@ -365,7 +365,7 @@ pub struct SurfaceRec {
     /// via `set_window_geometry` the buffer is drawn up-left of this point
     /// (see `surface_draw_origin`). M1 assigns a placeholder cascade on
     /// map; M3's window manager will own placement policy.
-    pub position: aegis_core::Point,
+    pub position: aegis_model::Point,
     /// Last committed contents, tightly packed BGRA8, copied out of the client
     /// shm buffer at commit so the buffer can be released immediately.
     pixels: Vec<u8>,
@@ -427,7 +427,7 @@ pub struct SurfaceRec {
     children: Vec<*mut SurfaceRec>,
     /// Offset relative to the parent's top-left, set by
     /// `wl_subsurface.set_position`. Defaults to (0, 0).
-    subsurface_offset: aegis_core::Point,
+    subsurface_offset: aegis_model::Point,
     /// Whether this subsurface renders above (true) or below (false) its
     /// parent. Defaults to above; `place_below` flips it.
     subsurface_above_parent: bool,
@@ -440,7 +440,7 @@ pub struct SurfaceRec {
     /// `set_app_id`, `set_min_size`, `set_max_size`, `set_parent`, and the
     /// maximized/fullscreen transitions. Sent back to the client in the
     /// states array of subsequent `xdg_toplevel.configure` events.
-    pub window: aegis_core::window::Window,
+    pub window: aegis_model::window::Window,
     /// Imported xdg-foreign object that most recently established
     /// `window.parent`; null for xdg_toplevel.set_parent and unparented
     /// windows. This makes relationship revocation precise.
@@ -448,20 +448,20 @@ pub struct SurfaceRec {
     /// Tiling target (ADR-0024): the layout rect the tiling policy last
     /// configured this surface to, or `None` when not under active tiling.
     /// The apply path reconfigures only when the target moves.
-    pub layout_target: Option<aegis_core::Rect>,
+    pub layout_target: Option<aegis_model::Rect>,
     /// Saved floating position and size prior to maximizing or full-screening,
     /// restored when unmaximized/unfullscreened.
-    pub saved_floating_rect: Option<aegis_core::Rect>,
+    pub saved_floating_rect: Option<aegis_model::Rect>,
     // ----- wp_viewport state -----
     /// Source rectangle in surface pixel coords, or None for "whole buffer".
     /// Set by `wp_viewport.set_source`. Coordinates arrive as 24.8
     /// fixed-point; we store them as f32.
-    pub viewport_src: Option<aegis_core::Rect>,
-    pending_viewport_src: Option<Option<aegis_core::Rect>>,
+    pub viewport_src: Option<aegis_model::Rect>,
+    pending_viewport_src: Option<Option<aegis_model::Rect>>,
     /// Destination size in logical pixels, or None for "source size".
     /// Set by `wp_viewport.set_destination`.
-    pub viewport_dst: Option<aegis_core::Size>,
-    pending_viewport_dst: Option<Option<aegis_core::Size>>,
+    pub viewport_dst: Option<aegis_model::Size>,
+    pending_viewport_dst: Option<Option<aegis_model::Size>>,
     viewport_resource: *mut ffi::wl_resource,
     // ----- wp_fractional_scale_v1 state -----
     /// The `wp_fractional_scale_v1` resource bound for this surface, if any.
@@ -471,23 +471,23 @@ pub struct SurfaceRec {
     /// size is the window rect's size; its origin is the frame inset by
     /// which the buffer sits up-left of the window rect (see
     /// `surface_draw_origin`).
-    window_geometry: Option<aegis_core::Rect>,
-    pending_window_geometry: Option<aegis_core::Rect>,
+    window_geometry: Option<aegis_model::Rect>,
+    pending_window_geometry: Option<aegis_model::Rect>,
     /// `None` means the whole surface accepts input; `Some` is the union of
     /// rectangles copied from the last committed `wl_region`.
-    input_region: Option<Vec<aegis_core::Rect>>,
-    pending_input_region: Option<Option<Vec<aegis_core::Rect>>>,
+    input_region: Option<Vec<aegis_model::Rect>>,
+    pending_input_region: Option<Option<Vec<aegis_model::Rect>>>,
     /// `None` means no opacity guarantee; `Some` is the union of rectangles
     /// copied from the last committed `wl_region`, in surface-local logical
     /// coordinates. Unlike the input-region default, a null opaque region is
     /// deliberately empty.
-    opaque_region: Option<Vec<aegis_core::Rect>>,
-    pending_opaque_region: Option<Option<Vec<aegis_core::Rect>>>,
+    opaque_region: Option<Vec<aegis_model::Rect>>,
+    pending_opaque_region: Option<Option<Vec<aegis_model::Rect>>>,
     // ----- pending buffer transform / scale -----
     /// Pending buffer transform from `wl_surface.set_buffer_transform`,
     /// applied on the next commit.
-    pending_transform: aegis_core::Transform,
-    buffer_transform: aegis_core::Transform,
+    pending_transform: aegis_model::Transform,
+    buffer_transform: aegis_model::Transform,
     /// Pending buffer scale from `wl_surface.set_buffer_scale`.
     pending_scale: i32,
     buffer_scale: i32,
@@ -496,17 +496,17 @@ pub struct SurfaceRec {
     /// commit, in surface-local logical coordinates;
     /// empty means "client did not report damage, renderer should
     /// re-upload the whole texture on a generation change".
-    pending_damage: Vec<aegis_core::Rect>,
+    pending_damage: Vec<aegis_model::Rect>,
     /// Raw buffer-coordinate rectangles accumulated by
     /// `wl_surface.damage_buffer`. Kept separate until commit because buffer
     /// scale/transform requests may be interleaved with damage requests.
-    pending_buffer_damage: Vec<aegis_core::Rect>,
+    pending_buffer_damage: Vec<aegis_model::Rect>,
     /// Damage accumulated across every commit since the last successfully
     /// presented compositor frame, surfaced via `Server::toplevel_frames`.
     /// Multiple client commits can be dispatched before one render, so
     /// replacing this at each commit would make both texture upload and KMS
     /// damage miss earlier changed pixels.
-    committed_damage: Vec<aegis_core::Rect>,
+    committed_damage: Vec<aegis_model::Rect>,
     /// Empty `committed_damage` normally means no outstanding damage. This
     /// flag distinguishes the conservative "damage is unknown/full" state.
     committed_damage_full: bool,
@@ -516,15 +516,15 @@ impl SurfaceRec {
     fn new(resource: *mut ffi::wl_resource) -> SurfaceRec {
         SurfaceRec {
             resource,
-            client_id: aegis_core::interaction_domain::ClientId::default(),
+            client_id: aegis_model::interaction_domain::ClientId::default(),
             pending_buffer: std::ptr::null_mut(),
             pending_buffer_set: false,
-            pending_attach_offset: aegis_core::Point::default(),
-            attach_offset: aegis_core::Point::default(),
+            pending_attach_offset: aegis_model::Point::default(),
+            attach_offset: aegis_model::Point::default(),
             mapped: false,
             width: 0,
             height: 0,
-            position: aegis_core::Point::default(),
+            position: aegis_model::Point::default(),
             pixels: Vec::new(),
             generation: 0,
             content_is_dmabuf: false,
@@ -555,12 +555,12 @@ impl SurfaceRec {
             index: 0,
             parent: std::ptr::null_mut(),
             children: Vec::new(),
-            subsurface_offset: aegis_core::Point::default(),
+            subsurface_offset: aegis_model::Point::default(),
             subsurface_above_parent: true,
             subsurface_sync: true,
             subsurface_cached_commit: false,
             subsurface_applying_cached: false,
-            window: aegis_core::window::Window::default(),
+            window: aegis_model::window::Window::default(),
             foreign_parent_owner: std::ptr::null_mut(),
             viewport_src: None,
             pending_viewport_src: None,
@@ -574,8 +574,8 @@ impl SurfaceRec {
             pending_input_region: None,
             opaque_region: None,
             pending_opaque_region: None,
-            pending_transform: aegis_core::Transform::Normal,
-            buffer_transform: aegis_core::Transform::Normal,
+            pending_transform: aegis_model::Transform::Normal,
+            buffer_transform: aegis_model::Transform::Normal,
             pending_scale: 1,
             buffer_scale: 1,
             pending_damage: Vec::new(),
@@ -591,7 +591,7 @@ impl SurfaceRec {
     }
 }
 
-fn surface_logical_size(surface: &SurfaceRec) -> aegis_core::Size {
+fn surface_logical_size(surface: &SurfaceRec) -> aegis_model::Size {
     if let Some(destination) = surface.viewport_dst {
         return destination;
     }
@@ -604,13 +604,13 @@ fn surface_logical_size(surface: &SurfaceRec) -> aegis_core::Size {
     } else {
         (surface.width, surface.height)
     };
-    aegis_core::Size {
+    aegis_model::Size {
         w: (width as f32 / scale).round().max(1.0) as i32,
         h: (height as f32 / scale).round().max(1.0) as i32,
     }
 }
 
-fn intersect_rect(a: aegis_core::Rect, b: aegis_core::Rect) -> Option<aegis_core::Rect> {
+fn intersect_rect(a: aegis_model::Rect, b: aegis_model::Rect) -> Option<aegis_model::Rect> {
     let ax1 = i64::from(a.origin.x) + i64::from(a.size.w.max(0));
     let ay1 = i64::from(a.origin.y) + i64::from(a.size.h.max(0));
     let bx1 = i64::from(b.origin.x) + i64::from(b.size.w.max(0));
@@ -620,14 +620,14 @@ fn intersect_rect(a: aegis_core::Rect, b: aegis_core::Rect) -> Option<aegis_core
     let x1 = ax1.min(bx1);
     let y1 = ay1.min(by1);
     (x1 > x0 && y1 > y0)
-        .then(|| aegis_core::Rect::new(x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32))
+        .then(|| aegis_model::Rect::new(x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32))
 }
 
 /// Clip, deduplicate and bound one Interaction Domain's damage metadata. The compositor
 /// never exposes unchecked client coordinates through IPC.
 fn normalize_interaction_domain_damage(
-    rects: &mut Vec<aegis_core::Rect>,
-    output: aegis_core::Rect,
+    rects: &mut Vec<aegis_model::Rect>,
+    output: aegis_model::Rect,
 ) {
     *rects = rects
         .drain(..)
@@ -652,7 +652,7 @@ fn normalize_interaction_domain_damage(
         .max()
         .unwrap_or(i64::from(y0));
     rects.clear();
-    rects.push(aegis_core::Rect::new(
+    rects.push(aegis_model::Rect::new(
         x0,
         y0,
         (x1 - i64::from(x0)) as i32,
@@ -667,23 +667,23 @@ fn normalize_interaction_domain_damage(
 /// is anchored in its parent's buffer space, so its origin resolves through
 /// the parent chain — this is what makes nested subsurfaces (a subsurface
 /// with its own subsurfaces) land at the right compositor position.
-pub(crate) fn surface_draw_origin(surface: &SurfaceRec) -> aegis_core::Point {
+pub(crate) fn surface_draw_origin(surface: &SurfaceRec) -> aegis_model::Point {
     surface_draw_origin_depth(surface, 0)
 }
 
-fn surface_draw_origin_depth(surface: &SurfaceRec, depth: u32) -> aegis_core::Point {
+fn surface_draw_origin_depth(surface: &SurfaceRec, depth: u32) -> aegis_model::Point {
     // The depth cap only breaks reference cycles defensively; the destroy
     // path orphans children, so a live parent pointer is always valid.
     if !surface.parent.is_null() && depth < 32 {
         let parent = unsafe { &*surface.parent };
         let origin = surface_draw_origin_depth(parent, depth + 1);
-        return aegis_core::Point {
+        return aegis_model::Point {
             x: origin.x + surface.subsurface_offset.x,
             y: origin.y + surface.subsurface_offset.y,
         };
     }
     match surface.window_geometry {
-        Some(geometry) => aegis_core::Point {
+        Some(geometry) => aegis_model::Point {
             x: surface.position.x - geometry.origin.x,
             y: surface.position.y - geometry.origin.y,
         },
@@ -721,7 +721,7 @@ fn surface_accepts_point(s: &SurfaceRec, x: f32, y: f32) -> bool {
     let local_y = y - draw_origin.y as f32;
     s.input_region.as_ref().is_none_or(|rects| {
         rects.iter().any(|rect| {
-            rect.contains(aegis_core::Point {
+            rect.contains(aegis_model::Point {
                 x: local_x as i32,
                 y: local_y as i32,
             })
@@ -730,8 +730,8 @@ fn surface_accepts_point(s: &SurfaceRec, x: f32, y: f32) -> bool {
 }
 
 /// `wp_cursor_shape_device_v1.shape` value for one xdg-shell resize edge set.
-fn resize_cursor_shape(edges: aegis_core::window::ResizeEdges) -> u32 {
-    use aegis_core::window::ResizeEdges;
+fn resize_cursor_shape(edges: aegis_model::window::ResizeEdges) -> u32 {
+    use aegis_model::window::ResizeEdges;
     match (
         edges.has_top(),
         edges.has_bottom(),
@@ -766,9 +766,9 @@ fn surface_has_role(surface: &SurfaceRec) -> bool {
 fn resolve_layout_role(
     workspace_tiled: bool,
     is_transient: bool,
-    rule_role: Option<aegis_core::layout::LayoutRole>,
-) -> aegis_core::layout::LayoutRole {
-    use aegis_core::layout::LayoutRole;
+    rule_role: Option<aegis_model::layout::LayoutRole>,
+) -> aegis_model::layout::LayoutRole {
+    use aegis_model::layout::LayoutRole;
     if let Some(role) = rule_role {
         return role;
     }
@@ -802,7 +802,7 @@ unsafe fn update_overlay_positions_for_seat(state: *mut State, seat: SeatId) {
         if !cursor_surface.is_null() {
             let rec = ffi::wl_resource_get_user_data(cursor_surface) as *mut SurfaceRec;
             if !rec.is_null() {
-                (*rec).position = aegis_core::Point {
+                (*rec).position = aegis_model::Point {
                     x: pointer_x.round() as i32 - cursor_hotspot.x + (*rec).attach_offset.x,
                     y: pointer_y.round() as i32 - cursor_hotspot.y + (*rec).attach_offset.y,
                 };
@@ -813,7 +813,7 @@ unsafe fn update_overlay_positions_for_seat(state: *mut State, seat: SeatId) {
         {
             let rec = ffi::wl_resource_get_user_data(drag.icon) as *mut SurfaceRec;
             if !rec.is_null() {
-                (*rec).position = aegis_core::Point {
+                (*rec).position = aegis_model::Point {
                     x: pointer_x.round() as i32 + (*rec).attach_offset.x,
                     y: pointer_y.round() as i32 + (*rec).attach_offset.y,
                 };
@@ -870,7 +870,7 @@ pub(crate) unsafe fn keyboard_focus_dependencies_changed(
 /// user-data points here even after the registry global is removed.
 pub(crate) struct OutputGlobal {
     state: *mut State,
-    info: aegis_core::output::OutputInfo,
+    info: aegis_model::output::OutputInfo,
     /// `None` for a physical backend output; directed virtual outputs belong
     /// to exactly one Interaction Domain.
     interaction_domain: Option<InteractionDomainId>,
@@ -880,21 +880,21 @@ pub(crate) struct OutputGlobal {
 
 #[derive(Clone, Copy)]
 struct TopBorderClick {
-    window_id: aegis_core::window::WindowId,
+    window_id: aegis_model::window::WindowId,
     released_at_ms: u64,
     position: (f32, f32),
 }
 
 #[derive(Clone, Copy)]
 struct PendingTopBorderDoubleClick {
-    window_id: aegis_core::window::WindowId,
+    window_id: aegis_model::window::WindowId,
     press_position: (f32, f32),
-    start_position: aegis_core::Point,
+    start_position: aegis_model::Point,
 }
 
 /// Runtime protocol and input state for one logical `wl_seat`.
 ///
-/// The authority model in `aegis-core` owns durable identities and policy.
+/// The authority model in `aegis-model` owns durable identities and policy.
 /// This structure owns the libwayland resources and ephemeral protocol state
 /// for exactly one seat. Keeping these records separate is what prevents
 /// agent input, focus, grabs, clipboard, and cursor state from contending
@@ -928,12 +928,12 @@ pub(crate) struct SeatRuntime {
     pub(crate) tablet_device_seen: bool,
     pub(crate) tablet_focus: *mut ffi::wl_resource,
     text_inputs: Vec<*mut ffi::wl_resource>,
-    pending_text_input_states: Vec<aegis_core::input::TextInputState>,
+    pending_text_input_states: Vec<aegis_model::input::TextInputState>,
     input_methods: Vec<*mut ffi::wl_resource>,
     virtual_keyboards: Vec<*mut ffi::wl_resource>,
     cursor_shape: u32,
     cursor_surface: *mut ffi::wl_resource,
-    cursor_hotspot: aegis_core::Point,
+    cursor_hotspot: aegis_model::Point,
     cursor_hidden: bool,
     last_pointer_enter_serial: u32,
     pointer_focus: *mut ffi::wl_resource,
@@ -944,7 +944,7 @@ pub(crate) struct SeatRuntime {
     raw_pointer_y: f32,
     last_button_serial: u32,
     implicit_grab_active: bool,
-    depressed_mods: aegis_core::input::Mods,
+    depressed_mods: aegis_model::input::Mods,
     /// Presses consumed by compositor shortcuts. Their matching releases are
     /// consumed too so a newly focused client never receives a release for a
     /// key press it did not receive.
@@ -958,7 +958,7 @@ pub(crate) struct SeatRuntime {
     /// never orphaned.
     client_pressed_keys: std::collections::BTreeSet<u32>,
     keyboard: Option<keyboard::Keyboard>,
-    interactive: Option<aegis_core::window::Interactive>,
+    interactive: Option<aegis_model::window::Interactive>,
     compositor_pointer_grab: bool,
     last_top_border_click: Option<TopBorderClick>,
     pending_top_border_double_click: Option<PendingTopBorderDoubleClick>,
@@ -967,7 +967,7 @@ pub(crate) struct SeatRuntime {
     /// surfaces in another workspace (or another virtual placement) from
     /// stealing agent pointer focus while coordinates are translated through
     /// the client's compositor-global surface position.
-    synthetic_target: Option<aegis_core::window::WindowId>,
+    synthetic_target: Option<aegis_model::window::WindowId>,
 }
 
 impl SeatRuntime {
@@ -1011,7 +1011,7 @@ impl SeatRuntime {
             virtual_keyboards: Vec::new(),
             cursor_shape: 0,
             cursor_surface: std::ptr::null_mut(),
-            cursor_hotspot: aegis_core::Point::default(),
+            cursor_hotspot: aegis_model::Point::default(),
             cursor_hidden: false,
             last_pointer_enter_serial: 0,
             pointer_focus: std::ptr::null_mut(),
@@ -1022,7 +1022,7 @@ impl SeatRuntime {
             raw_pointer_y: 0.0,
             last_button_serial: 0,
             implicit_grab_active: false,
-            depressed_mods: aegis_core::input::Mods::NONE,
+            depressed_mods: aegis_model::input::Mods::NONE,
             suppressed_shortcut_keys: std::collections::HashSet::new(),
             client_pressed_keys: std::collections::BTreeSet::new(),
             keyboard: None,
@@ -1052,14 +1052,14 @@ struct ClientDestroyRecord {
     listener: ffi::wl_listener,
     state: *mut State,
     client: *mut ffi::wl_client,
-    id: aegis_core::interaction_domain::ClientId,
+    id: aegis_model::interaction_domain::ClientId,
 }
 
 /// Frozen MRU order while the physical user holds Super for window cycling.
 /// Selection is compositor-local until the session is committed, so browsing
 /// never raises windows or transfers keyboard focus underneath the overlay.
 struct WindowSwitcherSession {
-    order: Vec<aegis_core::window::WindowId>,
+    order: Vec<aegis_model::window::WindowId>,
     selected: usize,
     last_forward: bool,
 }
@@ -1068,7 +1068,7 @@ const WORKSPACE_SLIDE_DURATION_MS: u64 = 220;
 
 #[derive(Debug, Clone, Copy)]
 struct WorkspaceSlideLayer {
-    workspace: aegis_core::workspace::WorkspaceId,
+    workspace: aegis_model::workspace::WorkspaceId,
     from_x: f32,
     to_x: f32,
 }
@@ -1079,7 +1079,7 @@ struct WorkspaceSlideLayer {
 /// enough for both desktops to cross the output edge.
 #[derive(Debug)]
 struct WorkspaceSlide {
-    output: aegis_core::Rect,
+    output: aegis_model::Rect,
     layers: Vec<WorkspaceSlideLayer>,
     started_ms: u64,
     duration_ms: u64,
@@ -1088,7 +1088,7 @@ struct WorkspaceSlide {
 /// One independently composited workspace page during a horizontal switch.
 #[derive(Debug, Clone)]
 pub struct WorkspaceSlideLayerPresentation {
-    pub windows: Vec<aegis_core::window::WindowId>,
+    pub windows: Vec<aegis_model::window::WindowId>,
     pub offset_x: f32,
 }
 
@@ -1096,7 +1096,7 @@ pub struct WorkspaceSlideLayerPresentation {
 /// independently so windows from separate workspaces never share one Z-order.
 #[derive(Debug, Clone)]
 pub struct WorkspaceSlidePresentation {
-    pub output: aegis_core::Rect,
+    pub output: aegis_model::Rect,
     pub layers: Vec<WorkspaceSlideLayerPresentation>,
 }
 
@@ -1105,7 +1105,11 @@ impl WorkspaceSlide {
         self.duration_ms > 0 && now_ms.saturating_sub(self.started_ms) < self.duration_ms
     }
 
-    fn offset_at(&self, workspace: aegis_core::workspace::WorkspaceId, now_ms: u64) -> Option<f32> {
+    fn offset_at(
+        &self,
+        workspace: aegis_model::workspace::WorkspaceId,
+        now_ms: u64,
+    ) -> Option<f32> {
         if !self.is_active_at(now_ms) {
             return None;
         }
@@ -1115,7 +1119,7 @@ impl WorkspaceSlide {
             .find(|layer| layer.workspace == workspace)?;
         let elapsed = now_ms.saturating_sub(self.started_ms);
         let progress =
-            aegis_core::transition::ease_out_cubic(elapsed as f32 / self.duration_ms as f32);
+            aegis_model::transition::ease_out_cubic(elapsed as f32 / self.duration_ms as f32);
         Some(layer.from_x + (layer.to_x - layer.from_x) * progress)
     }
 }
@@ -1143,24 +1147,24 @@ pub(crate) struct State {
     /// Compatibility routing may change its runtime owner; native multi-seat
     /// rebinding restores the resource to this advertised origin.
     seat_resource_origins: std::collections::HashMap<usize, SeatId>,
-    clients: std::collections::HashMap<usize, aegis_core::interaction_domain::ClientId>,
+    clients: std::collections::HashMap<usize, aegis_model::interaction_domain::ClientId>,
     /// Kernel-authenticated process id captured while a Wayland client is
     /// live. This is exposed only through the trusted accessibility binding
     /// seam, never through the general window snapshot.
-    client_process_ids: std::collections::HashMap<aegis_core::interaction_domain::ClientId, u32>,
+    client_process_ids: std::collections::HashMap<aegis_model::interaction_domain::ClientId, u32>,
     /// Trusted launch-portal origin for clients accepted on a private Interaction Domain
     /// listener.
     /// Human/default-socket clients are omitted.
     client_initial_interaction_domains:
-        std::collections::HashMap<aegis_core::interaction_domain::ClientId, InteractionDomainId>,
+        std::collections::HashMap<aegis_model::interaction_domain::ClientId, InteractionDomainId>,
     client_bound_seats: std::collections::HashMap<usize, std::collections::BTreeSet<SeatId>>,
     /// Validated application accessibility trees. The compositor owns only
     /// the bounded projection and routing metadata; D-Bus stays in the
     /// out-of-process adapter.
     semantic_trees: aegis_semantic::SemanticTreeRegistry,
     interaction_domain_placements: std::collections::BTreeMap<
-        (InteractionDomainId, aegis_core::window::WindowId),
-        aegis_core::Rect,
+        (InteractionDomainId, aegis_model::window::WindowId),
+        aegis_model::Rect,
     >,
     /// Interaction Domain layouts are recomputed after the current Wayland dispatch batch.
     /// Deferring keeps role creation and surface commits atomic from the
@@ -1170,11 +1174,11 @@ pub(crate) struct State {
     /// Windows whose committed scene content changed during this dispatch
     /// batch. `Server::take_interaction_domain_damage` maps these durable ids into each
     /// observing Interaction Domain's virtual-output coordinate space after layouts settle.
-    damaged_windows: std::collections::BTreeSet<aegis_core::window::WindowId>,
+    damaged_windows: std::collections::BTreeSet<aegis_model::window::WindowId>,
     /// Conservative damage queued for topology changes where an old placement
     /// may no longer be recoverable (remove, transfer, output reconfigure).
     pending_interaction_domain_damage:
-        std::collections::BTreeMap<InteractionDomainId, Vec<aegis_core::Rect>>,
+        std::collections::BTreeMap<InteractionDomainId, Vec<aegis_model::Rect>>,
     /// Surface pointers in stacking order (bottom to top). Entries are nulled
     /// when a surface's destroy notify fires; focusing a toplevel moves its
     /// pointer to the end and updates affected live records' slot indices.
@@ -1214,7 +1218,7 @@ pub(crate) struct State {
     pub(crate) ipc_idle_inhibit: bool,
     /// Physical tablet tools seen so far, with their announced info. A tool
     /// is announced to every seat the first time it enters proximity.
-    pub(crate) known_tools: Vec<(u64, aegis_core::input::TabletToolInfo)>,
+    pub(crate) known_tools: Vec<(u64, aegis_model::input::TabletToolInfo)>,
     retired_buffer_releases: Vec<RetiredBufferRelease>,
     /// Bound `ext_foreign_toplevel_list_v1` resources. New toplevels, title
     /// changes, and removals are pushed to each.
@@ -1228,10 +1232,12 @@ pub(crate) struct State {
     xdg_foreign_imports: Vec<*mut ffi::wl_resource>,
     activation_tokens: std::collections::HashMap<String, SeatId>,
     pending_activation: Option<(SeatId, *mut ffi::wl_resource)>,
-    /// Keyboard-focus transitions requested from xdg-popup protocol
-    /// callbacks. Callbacks cannot construct a second mutable `Server`, so
-    /// dispatch applies the newest target for each seat after they return.
-    pending_popup_focus: std::collections::BTreeMap<SeatId, *mut ffi::wl_resource>,
+    /// Keyboard-focus transitions requested from protocol callbacks. Callbacks
+    /// cannot construct a second mutable `Server`, so dispatch applies the
+    /// newest target for each seat after they return. This covers both popup
+    /// grabs and focus returning from a closed transient toplevel to its
+    /// parent.
+    pending_keyboard_focus: std::collections::BTreeMap<SeatId, *mut ffi::wl_resource>,
     /// Active ext-session-lock object and fail-closed visibility phase.
     ///
     /// The object pointer may be null in `Locked` after its client dies. A
@@ -1253,47 +1259,47 @@ pub(crate) struct State {
     pending_vt_switch: Option<i32>,
     /// Parameters for the tiling policy (gaps, master ratio). Per-workspace
     /// tiling on/off lives on each workspace in the model (ADR-0024).
-    layout_params: aegis_core::layout::LayoutParams,
+    layout_params: aegis_model::layout::LayoutParams,
     /// Accessibility reduced-motion policy (ADR-0029): when true, window
     /// transitions resolve in one frame and none are recorded.
     reduced_motion: bool,
     /// Effective decoration ownership announced to xdg-decoration clients.
     /// Borderless is compositor-owned: clients omit CSDs while window
     /// controls remain available through gestures and shell surfaces.
-    decoration_policy: aegis_core::window::DecorationPolicy,
+    decoration_policy: aegis_model::window::DecorationPolicy,
     /// Config-driven window rules (ADR-0026). Evaluated on first map; the
     /// first match prescribes a workspace move and/or a forced layout role.
-    window_rules: Vec<aegis_core::window_rule::WindowRule>,
+    window_rules: Vec<aegis_model::window_rule::WindowRule>,
     /// The focused output's geometry (ADR-0028): the tiling work-area is its
     /// logical rect. Updated by the backend on resize; defaults to identity.
-    pub(crate) output_geometry: aegis_core::output::OutputGeometry,
+    pub(crate) output_geometry: aegis_model::output::OutputGeometry,
     /// Backend-reported connector geometry in global logical coordinates.
     /// The first entry is the primary/focused output exposed through the
     /// legacy single wl_output global until per-global resources are split.
-    output_infos: Vec<aegis_core::output::OutputInfo>,
+    output_infos: Vec<aegis_model::output::OutputInfo>,
     /// Bumped on every `output_infos` mutation so the frame loop can skip
     /// re-cloning the list while it is unchanged.
     outputs_revision: u64,
     /// Per-connector output policies from `[[output]]` config entries
     /// (ADR-0028). Applied to every backend-reported output set in
     /// `set_outputs`.
-    output_policies: std::collections::HashMap<String, aegis_core::output::OutputPolicy>,
+    output_policies: std::collections::HashMap<String, aegis_model::output::OutputPolicy>,
     /// Dynamic per-output workspaces (ADR-0025). Toplevels are placed on the
     /// current workspace at first map; rendering and input see only the
     /// visible set (`visible_toplevels`).
-    workspaces: aegis_core::workspace::WorkspaceModel,
+    workspaces: aegis_model::workspace::WorkspaceModel,
     /// Focused output for new surfaces and workspace commands.
-    output: aegis_core::workspace::OutputId,
+    output: aegis_model::workspace::OutputId,
     /// Monotonic counter for durable window identifiers (ADR-0032). Starts
     /// at 1 so `WindowId(0)` remains reserved for the `Window::default()`
     /// that non-toplevel surfaces carry.
     /// Cached chrome-aware work area bounds for maximized windows.
-    pub(crate) last_work_area: aegis_core::Rect,
+    pub(crate) last_work_area: aegis_model::Rect,
     pub(crate) epoch: std::time::Instant,
     /// Last remembered floating window position and size per application ID.
-    pub(crate) last_app_geometries: std::collections::HashMap<String, aegis_core::Rect>,
+    pub(crate) last_app_geometries: std::collections::HashMap<String, aegis_model::Rect>,
     /// Persistent window state store across restarts.
-    pub(crate) window_state_store: aegis_core::window_state_store::WindowStateStore,
+    pub(crate) window_state_store: window_state::WindowStateStore,
     /// Path to persistent window state file.
     pub(crate) window_state_path: std::path::PathBuf,
     /// Global toggle for remembering window positions across restarts.
@@ -1302,11 +1308,11 @@ pub(crate) struct State {
     /// the renderer from the Vulkan device's real capabilities so clients
     /// allocate GPU-optimal (tiled/compressed) buffers instead of LINEAR.
     /// Drives the format/modifier events in `dmabuf_bind`.
-    pub(crate) dmabuf_formats: Vec<aegis_core::dmabuf::DmabufFormat>,
+    pub(crate) dmabuf_formats: Vec<aegis_model::dmabuf::DmabufFormat>,
     /// Format/modifier pairs that every active primary plane accepts for
     /// direct scanout. Feedback intersects this with the renderer table before
     /// advertising the preferred SCANOUT tranche.
-    pub(crate) dmabuf_scanout_formats: Vec<aegis_core::dmabuf::DmabufFormat>,
+    pub(crate) dmabuf_scanout_formats: Vec<aegis_model::dmabuf::DmabufFormat>,
     /// Linux `dev_t` of the renderer's preferred DRM node. When present the
     /// linux-dmabuf global is advertised at v4 and feedback objects use this
     /// as `main_device` and the renderer fallback tranche target. Without
@@ -1319,6 +1325,7 @@ pub(crate) struct State {
 }
 
 mod state;
+mod window_state;
 
 /// Existing compositor paths are the physical human-seat path. Dereferencing
 /// `State` to that runtime keeps those paths source-compatible while the
@@ -1531,9 +1538,9 @@ enum PointerAxisWireEvent {
 
 fn pointer_axis_wire_events(
     version: i32,
-    frame: aegis_core::input::PointerAxisFrame,
+    frame: aegis_model::input::PointerAxisFrame,
 ) -> Vec<PointerAxisWireEvent> {
-    use aegis_core::input::{
+    use aegis_model::input::{
         PointerAxisRelativeDirection as Direction, PointerAxisSource as Source,
     };
 
@@ -1698,7 +1705,7 @@ pub struct Server {
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedKeyboardEvent {
     evdev_code: u32,
-    state: aegis_core::input::ButtonState,
+    state: aegis_model::input::ButtonState,
     outcome: keyboard::KeyOutcome,
     consumed_by_vt_switch: bool,
 }
@@ -1708,11 +1715,11 @@ impl PreparedKeyboardEvent {
     ///
     /// VT-switch keysyms are compositor control events rather than text and
     /// therefore intentionally have no character view.
-    pub fn key_char(self) -> Option<aegis_core::input::KeyChar> {
-        (!self.consumed_by_vt_switch).then_some(aegis_core::input::KeyChar {
+    pub fn key_char(self) -> Option<aegis_model::input::KeyChar> {
+        (!self.consumed_by_vt_switch).then_some(aegis_model::input::KeyChar {
             keysym: self.outcome.keysym,
             ch: self.outcome.utf8,
-            mods: aegis_core::input::Mods(self.outcome.depressed),
+            mods: aegis_model::input::Mods(self.outcome.depressed),
         })
     }
 }

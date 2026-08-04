@@ -8,25 +8,25 @@
 
 use std::path::PathBuf;
 
-pub use aegis_authority::{
-    ActorActionIntent, ActorActionReceipt, ActorCapability, ActorResource, AuthorizationDecision,
-    ObservationToken, ResourceGrant, ResourceGrantId, SemanticObservation,
-};
-use aegis_core::Rect;
-use aegis_core::input::SyntheticInputAction;
-use aegis_core::interaction_domain::{
+use aegis_model::Rect;
+use aegis_model::input::SyntheticInputAction;
+use aegis_model::interaction_domain::{
     InteractionDomainBundle, InteractionDomainId, InteractionDomainMutation,
     InteractionDomainRevocation, InteractionDomainSnapshot, InteractionDomainTransactionReceipt,
     InteractionDomainWindowPlacement, SeatCapabilities, VirtualOutput,
 };
-use aegis_core::notify::Notification;
-use aegis_core::output::OutputInfo;
+use aegis_model::notify::Notification;
+use aegis_model::output::OutputInfo;
 #[cfg(test)]
-use aegis_core::semantic::{SemanticAction, SemanticRole, SemanticSnapshot, SemanticState};
-pub use aegis_core::settings::{SettingsAction, SettingsReceipt, SettingsSnapshot};
-pub use aegis_core::system::{SystemAction, SystemStatus};
-use aegis_core::window::{SpaceUse, Window, WindowId};
-use aegis_core::workspace::{Switch, WorkspaceId, WorkspaceSnapshot};
+use aegis_model::semantic::{SemanticAction, SemanticRole, SemanticSnapshot, SemanticState};
+pub use aegis_model::settings::{SettingsAction, SettingsReceipt, SettingsSnapshot};
+pub use aegis_model::system::{SystemAction, SystemStatus};
+use aegis_model::window::{SpaceUse, Window, WindowId};
+use aegis_model::workspace::{Switch, WorkspaceId, WorkspaceSnapshot};
+pub use aegis_security::authority::{
+    ActorActionIntent, ActorActionReceipt, ActorCapability, ActorResource, AuthorizationDecision,
+    ObservationToken, ResourceGrant, ResourceGrantId, SemanticObservation,
+};
 
 use crate::journal::{JournalEntry, JournalSnapshot};
 pub use aegis_semantic::{
@@ -179,7 +179,7 @@ pub struct LeaseGrant {
 }
 
 /// IPC command-policy adapter for the transport-neutral [`Scope`].
-/// Resource axes and capability decisions live in `aegis-authority`; only
+/// Resource axes and capability decisions live in `aegis-security::authority`; only
 /// knowledge of this protocol's concrete command vocabulary remains here.
 pub trait CommandScopePolicy {
     fn permits_interaction_domain_action(&self, action: &InteractionDomainAction) -> bool;
@@ -194,7 +194,7 @@ pub trait CommandScopePolicy {
     ) -> AuthorizationDecision;
 }
 
-pub use aegis_authority::ActorScope as Scope;
+pub use aegis_security::authority::ActorScope as Scope;
 
 impl CommandScopePolicy for Scope {
     fn permits_interaction_domain_action(&self, action: &InteractionDomainAction) -> bool {
@@ -395,7 +395,7 @@ impl InteractionDomainAction {
                     matches!(
                         mutation,
                         InteractionDomainMutation::SetState {
-                            state: aegis_core::interaction_domain::InteractionDomainState::Revoked,
+                            state: aegis_model::interaction_domain::InteractionDomainState::Revoked,
                             ..
                         }
                     )
@@ -571,9 +571,9 @@ impl Command {
                 Err("notification fields are empty, oversized, or contain NUL")
             }
             Command::Screenshot { path, .. }
-                if aegis_authority::ActorResource::FilesystemPath {
+                if aegis_security::authority::ActorResource::FilesystemPath {
                     path: PathBuf::from(path),
-                    access: aegis_authority::FilesystemAccess::Write,
+                    access: aegis_security::authority::FilesystemAccess::Write,
                 }
                 .validate()
                 .is_err() =>
@@ -797,7 +797,7 @@ pub enum PickResult {
     /// A picked point in compositor logical pixels and the straight-alpha
     /// RGB of the presented frame at that point.
     Pixel {
-        point: aegis_core::Point,
+        point: aegis_model::Point,
         rgb: [u8; 3],
     },
     /// A picked toplevel.
@@ -1280,7 +1280,7 @@ pub enum Response {
         /// Explicit bounded Actor execution context. Unlike durable pairing,
         /// this session expires and is revoked on disconnect.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        session: Option<aegis_authority::ActorSessionSnapshot>,
+        session: Option<aegis_security::authority::ActorSessionSnapshot>,
         /// The pairing outcome when the client presented `Hello.agent`
         /// (ADR-0088). Carries a new credential only when one was issued.
         #[serde(default, skip_serializing_if = "Option::is_none")]

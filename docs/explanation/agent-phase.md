@@ -27,10 +27,9 @@ The stack, from the rendering layer up:
 | Layer | Owner | What lives here |
 |-------|-------|-----------------|
 | Rendering and UI | flux, lens (out of tree) | Vulkan presentation; immediate-mode chrome drawing |
-| The model | `aegis-core` | Windows, workspaces, outputs, Interaction Domains, seats, authority, layout — the one truth |
-| Authority kernel | `aegis-authority` | Actor capabilities, live bindings, identity profiles, observation leases, and action preconditions without a transport dependency |
+| The model | `aegis-model` | Windows, workspaces, outputs, Interaction Domains, seats, semantics, and layout — the one truth |
+| Security kernel | `aegis-security` | Actor authority policy and privacy-minimized, hash-chained audit mechanisms without a transport dependency |
 | Semantic trust seam | `aegis-semantic` | Bounded application accessibility trees, provider ownership, window-namespaced node identities, and action routing |
-| Durable audit | `aegis-audit` | Privacy-minimized, hash-chained decisions plus a bounded live projection |
 | The compositor | `aegis-compositor`, `aegis-backend`, `aegis-render`, `aegis-shell` | Wayland, per-Interaction Domain input and output, the chrome host |
 | The seam | `aegis-ipc` | Versioned JSON and sealed descriptors over a Unix socket; transport admission, scopes, capture, and the journal |
 | Accessibility adapter | `aegis-atspi` (supervised separate process) | AT-SPI discovery, tree publication, live precondition recheck, and toolkit action dispatch |

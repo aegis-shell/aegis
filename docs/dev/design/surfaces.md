@@ -32,9 +32,25 @@ extend `aegis-design` with a semantic factory and document it here.
 | `glass_focus.hover_tint` | white, alpha 6 | Immediate pointer feedback inside glass |
 | `glass_focus.selected_tint` | white, alpha 3 | Near-transparent fallback beneath the optical selection field |
 | `glass_focus.field_strength` | 1.0 | Canonical selected-state optical focus strength |
-| `glass_focus.inactive_content_brightness` | 0.74 | Opaque brightness for nonfocused preview siblings |
+| `preview.inactive_content_brightness` | 0.74 | Opaque brightness for nonfocused preview siblings |
+| `preview.focused` | scale 1.0, lift 0 px | Stationary focus inside an anchored preview panel |
+| `preview.staged` | scale 1.06, lift 7 px | Restrained foreground staging in the window switcher |
 | `sao.surface` | rgb(248, 249, 252), alpha 226 | Command panel surfaces |
 | `sao.border` | SAO palette | Command panel edge |
+
+## Liquid Glass roles
+
+Liquid Glass uses semantic roles rather than numbered intensity levels.
+Every role keeps the same refraction, adaptive tint, and rim-light identity;
+only the per-body elevation shadow changes.
+
+| Role | Shadow alpha | Blur | Y offset | Use |
+|------|--------------|------|----------|-----|
+| `Chip` | 0.16 | 4 px | 2 px | Compact HUD bodies |
+| `Tooltip` | 0.14 | 10 px | 5 px | Dock labels and similar attached hints |
+| `FloatingPanel` | 0.18 | 16 px | 8 px | Preview panels, switcher, and screenshot selection |
+| `ProminentPanel` | 0.20 | 18 px | 9 px | Primary floating surfaces such as Prism |
+| `Dock` | 0.20 | 12 px | 6 px | The resting Dock; morphing scales blur and offset with its body |
 
 ## Layering rules
 
@@ -72,3 +88,17 @@ Preview visibility and preview hierarchy are independent. Opacity is reserved
 for opening and closing the complete panel; it must not de-emphasize sibling
 preview pixels, because translucent client content blends with the pale glass
 below and appears washed out. Use the shared brightness token instead.
+
+## Preview anatomy
+
+A preview group is one `FloatingPanel` Liquid Glass body. Each card is
+ordinary content inside that parent, never a nested glass body. The card's
+outer rectangle includes its live preview and label and is the authoritative
+pointer and optical-focus target. The preview rectangle alone clips the live
+client surface with `radii.control`.
+
+The `Focused` selection treatment leaves card geometry stationary. The
+`Staged` treatment adds the shared scale and upward lift for presentations
+such as the held-modifier window switcher. Both treatments retain the same
+single focus field, neutral selected wash, and sibling-brightness policy.
+Staging changes geometry, not the material hierarchy.

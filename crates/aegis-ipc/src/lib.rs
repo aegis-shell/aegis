@@ -3,10 +3,10 @@
 //! A unix-domain socket at `$XDG_RUNTIME_DIR/aegis.sock` speaks a length-
 //! framed, schema-versioned JSON protocol. It is the sole extension and
 //! automation surface: the chrome, external tools, and the later agent layer
-//! all read the same `aegis_core` model the IPC serves — there is no separate
+//! all read the same `aegis_model` model the IPC serves — there is no separate
 //! wire DTO and no in-process scripting.
 //!
-//! The crate is pure: it depends on [`aegis_core`] (with its `serde` feature
+//! The crate is pure: it depends on [`aegis_model`] (with its `serde` feature
 //! so the `Window` it sends is the same `Window` the renderer reads) and on
 //! `serde`/`serde_json`. A loopback server + client exercise the whole path
 //! in tests with no Vulkan or Wayland dependency. See
@@ -27,7 +27,7 @@ pub mod journal;
 pub mod schema;
 pub mod server;
 
-pub use aegis_authority::{
+pub use aegis_security::authority::{
     ActorPrincipal, ActorResource, ActorSessionId, ActorSessionPolicy, ActorSessionSnapshot,
     ActorSessionState, FilesystemAccess, ResourceGrant, ResourceGrantId,
 };

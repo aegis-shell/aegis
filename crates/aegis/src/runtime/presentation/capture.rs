@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) struct FrameCapture {
-    pub(super) crop: Option<aegis_core::Rect>,
+    pub(super) crop: Option<aegis_model::Rect>,
     pub(super) target: CaptureTarget,
     /// Cursor state sampled when a saved screenshot was requested. Output
     /// capture, streams, and picker readbacks deliberately leave this empty.

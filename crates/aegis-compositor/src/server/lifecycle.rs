@@ -13,7 +13,7 @@ impl Server {
     pub fn new_with_render_caps(
         dmabuf_supported: bool,
         explicit_sync_supported: bool,
-        dmabuf_formats: Vec<aegis_core::dmabuf::DmabufFormat>,
+        dmabuf_formats: Vec<aegis_model::dmabuf::DmabufFormat>,
     ) -> Result<Server, ServerError> {
         Self::new_with_render_caps_and_device(
             dmabuf_supported,
@@ -29,7 +29,7 @@ impl Server {
     pub fn new_with_render_caps_and_device(
         dmabuf_supported: bool,
         explicit_sync_supported: bool,
-        dmabuf_formats: Vec<aegis_core::dmabuf::DmabufFormat>,
+        dmabuf_formats: Vec<aegis_model::dmabuf::DmabufFormat>,
         dmabuf_main_device: Option<u64>,
     ) -> Result<Server, ServerError> {
         Self::new_with_dmabuf_feedback(
@@ -48,9 +48,9 @@ impl Server {
     pub fn new_with_dmabuf_feedback(
         dmabuf_supported: bool,
         explicit_sync_supported: bool,
-        dmabuf_formats: Vec<aegis_core::dmabuf::DmabufFormat>,
+        dmabuf_formats: Vec<aegis_model::dmabuf::DmabufFormat>,
         dmabuf_main_device: Option<u64>,
-        dmabuf_scanout_formats: Vec<aegis_core::dmabuf::DmabufFormat>,
+        dmabuf_scanout_formats: Vec<aegis_model::dmabuf::DmabufFormat>,
         dmabuf_scanout_device: Option<u64>,
     ) -> Result<Server, ServerError> {
         unsafe {

@@ -24,12 +24,12 @@ use crate::schema::{
 /// Decoded Interaction Domain observation returned by [`Client::capture_interaction_domain`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapturedInteractionDomain {
-    pub interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+    pub interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
     pub width: u32,
     pub height: u32,
     pub scale_milli: u32,
-    pub region: aegis_core::Rect,
-    pub placements: Vec<aegis_core::interaction_domain::InteractionDomainWindowPlacement>,
+    pub region: aegis_model::Rect,
+    pub placements: Vec<aegis_model::interaction_domain::InteractionDomainWindowPlacement>,
     pub observation: SemanticObservation,
     pub png: Vec<u8>,
     pub revision: u64,
@@ -55,7 +55,7 @@ pub struct StreamFrame {
     pub height: u32,
     pub stride: u32,
     pub format: StreamPixelFormat,
-    pub damage: Vec<aegis_core::Rect>,
+    pub damage: Vec<aegis_model::Rect>,
     pub dropped: u64,
     pub pixels: Vec<u8>,
 }
@@ -400,7 +400,7 @@ impl Client {
     }
 
     /// Fetch the live toplevel snapshot.
-    pub fn windows(&mut self) -> io::Result<Vec<aegis_core::window::Window>> {
+    pub fn windows(&mut self) -> io::Result<Vec<aegis_model::window::Window>> {
         write_msg(&mut self.stream, &Request::GetWindows)?;
         match read_msg::<_, Response>(&mut self.stream)? {
             Response::Windows { windows } => Ok(windows),
@@ -413,7 +413,7 @@ impl Client {
     }
 
     /// Fetch the live workspace/output snapshot.
-    pub fn workspaces(&mut self) -> io::Result<aegis_core::workspace::WorkspaceSnapshot> {
+    pub fn workspaces(&mut self) -> io::Result<aegis_model::workspace::WorkspaceSnapshot> {
         write_msg(&mut self.stream, &Request::GetWorkspaces)?;
         match read_msg::<_, Response>(&mut self.stream)? {
             Response::Workspaces { snapshot } => Ok(snapshot),
@@ -426,14 +426,14 @@ impl Client {
     }
 
     /// Switch to an adjacent workspace on the focused output.
-    pub fn switch_workspace(&mut self, dir: aegis_core::workspace::Switch) -> io::Result<()> {
+    pub fn switch_workspace(&mut self, dir: aegis_model::workspace::Switch) -> io::Result<()> {
         self.command(Command::SwitchWorkspace { dir })
     }
 
     /// Switch directly to a workspace by id.
     pub fn switch_workspace_to(
         &mut self,
-        id: aegis_core::workspace::WorkspaceId,
+        id: aegis_model::workspace::WorkspaceId,
     ) -> io::Result<()> {
         self.command(Command::SwitchWorkspaceTo { id })
     }
@@ -446,8 +446,8 @@ impl Client {
     /// Set a floating toplevel's geometry in compositor logical coordinates.
     pub fn set_window_geometry(
         &mut self,
-        id: aegis_core::window::WindowId,
-        rect: aegis_core::Rect,
+        id: aegis_model::window::WindowId,
+        rect: aegis_model::Rect,
     ) -> io::Result<()> {
         self.command(Command::SetWindowGeometry { id, rect })
     }
@@ -456,30 +456,30 @@ impl Client {
     /// must have negotiated the `input` capability under a named scope.
     pub fn inject_input(
         &mut self,
-        id: aegis_core::window::WindowId,
-        actions: Vec<aegis_core::input::SyntheticInputAction>,
+        id: aegis_model::window::WindowId,
+        actions: Vec<aegis_model::input::SyntheticInputAction>,
     ) -> io::Result<()> {
         self.command(Command::InjectInput { id, actions })
     }
 
     pub fn inject_interaction_domain_input(
         &mut self,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
-        target: aegis_core::semantic::SemanticObjectId,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
+        target: aegis_model::semantic::SemanticObjectId,
         observation: ObservationToken,
-        actions: Vec<aegis_core::input::SyntheticInputAction>,
+        actions: Vec<aegis_model::input::SyntheticInputAction>,
     ) -> io::Result<ActorActionReceipt> {
         self.act_in_interaction_domain(ActorActionIntent {
             interaction_domain,
             target,
             observation,
-            actions: vec![aegis_core::semantic::SemanticActionIntent::SyntheticInput { actions }],
+            actions: vec![aegis_model::semantic::SemanticActionIntent::SyntheticInput { actions }],
         })
     }
 
     pub fn launch_in_interaction_domain(
         &mut self,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
         desktop_id: impl Into<String>,
     ) -> io::Result<()> {
         self.command(Command::LaunchInInteractionDomain {
@@ -538,7 +538,7 @@ impl Client {
     pub fn screenshot_region(
         &mut self,
         path: impl Into<String>,
-        region: Option<aegis_core::Rect>,
+        region: Option<aegis_model::Rect>,
     ) -> io::Result<()> {
         self.command(Command::Screenshot {
             path: path.into(),
@@ -557,7 +557,7 @@ impl Client {
     /// height, png bytes)`. `region` is in compositor logical pixels.
     pub fn capture_output_region(
         &mut self,
-        region: Option<aegis_core::Rect>,
+        region: Option<aegis_model::Rect>,
     ) -> io::Result<(u32, u32, Vec<u8>)> {
         write_msg(&mut self.stream, &Request::CaptureOutput { region })?;
         match read_msg::<_, Response>(&mut self.stream)? {
@@ -579,7 +579,7 @@ impl Client {
     }
 
     /// Fetch the live notification queue.
-    pub fn notifications(&mut self) -> io::Result<Vec<aegis_core::notify::Notification>> {
+    pub fn notifications(&mut self) -> io::Result<Vec<aegis_model::notify::Notification>> {
         write_msg(&mut self.stream, &Request::GetNotifications)?;
         match read_msg::<_, Response>(&mut self.stream)? {
             Response::Notifications { notifications } => Ok(notifications),
@@ -592,7 +592,7 @@ impl Client {
     }
 
     /// Fetch the live outputs (connector + geometry).
-    pub fn outputs(&mut self) -> io::Result<Vec<aegis_core::output::OutputInfo>> {
+    pub fn outputs(&mut self) -> io::Result<Vec<aegis_model::output::OutputInfo>> {
         write_msg(&mut self.stream, &Request::GetOutputs)?;
         match read_msg::<_, Response>(&mut self.stream)? {
             Response::Outputs { outputs } => Ok(outputs),
@@ -619,7 +619,7 @@ impl Client {
 
     pub fn interaction_domains(
         &mut self,
-    ) -> io::Result<aegis_core::interaction_domain::InteractionDomainSnapshot> {
+    ) -> io::Result<aegis_model::interaction_domain::InteractionDomainSnapshot> {
         write_msg(&mut self.stream, &Request::GetInteractionDomains)?;
         match read_msg::<_, Response>(&mut self.stream)? {
             Response::InteractionDomains { snapshot } => Ok(snapshot),
@@ -704,7 +704,7 @@ impl Client {
 
     pub fn observe_interaction_domain(
         &mut self,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
     ) -> io::Result<SemanticObservation> {
         write_msg(
             &mut self.stream,
@@ -744,8 +744,8 @@ impl Client {
 
     pub fn capture_interaction_domain(
         &mut self,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
-        region: Option<aegis_core::Rect>,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
+        region: Option<aegis_model::Rect>,
     ) -> io::Result<CapturedInteractionDomain> {
         write_msg(
             &mut self.stream,

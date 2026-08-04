@@ -83,7 +83,7 @@ unsafe extern "C" fn pointer_set_cursor(
             return;
         };
         runtime.cursor_surface = surface;
-        runtime.cursor_hotspot = aegis_core::Point {
+        runtime.cursor_hotspot = aegis_model::Point {
             x: hotspot_x,
             y: hotspot_y,
         };

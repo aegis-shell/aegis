@@ -5,22 +5,22 @@ use super::*;
 pub(super) struct CaptureRequest {
     pub(super) reply: std::sync::mpsc::Sender<Result<aegis_ipc::CaptureOutputPayload, String>>,
     /// Logical-pixel region to capture, or `None` for the full output.
-    pub(super) region: Option<aegis_core::Rect>,
+    pub(super) region: Option<aegis_model::Rect>,
 }
 
 pub(super) struct InteractionDomainCaptureRequest {
     pub(super) actor: ActorBinding,
     pub(super) max_observations: usize,
-    pub(super) interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+    pub(super) interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
     pub(super) reply:
         std::sync::mpsc::Sender<Result<aegis_ipc::CaptureInteractionDomainPayload, String>>,
-    pub(super) region: Option<aegis_core::Rect>,
+    pub(super) region: Option<aegis_model::Rect>,
 }
 
 pub(super) struct InteractionDomainObserveRequest {
     pub(super) actor: ActorBinding,
     pub(super) max_observations: usize,
-    pub(super) interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+    pub(super) interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
     pub(super) reply: std::sync::mpsc::Sender<Result<aegis_ipc::SemanticObservation, String>>,
 }
 
@@ -45,7 +45,7 @@ pub(super) struct PendingSemanticActorAction {
     pub(super) origin: aegis_ipc::Origin,
     pub(super) intent: aegis_ipc::ActorActionIntent,
     pub(super) action_id: u64,
-    pub(super) window: aegis_core::window::WindowId,
+    pub(super) window: aegis_model::window::WindowId,
     pub(super) authority_revision: u64,
     pub(super) reply: std::sync::mpsc::Sender<Result<aegis_ipc::ActorActionReceipt, String>>,
 }
@@ -95,7 +95,7 @@ pub(super) struct WallpaperControlRequest {
 #[derive(Default)]
 pub(super) struct InteractionDomainProcesses {
     launches: std::collections::BTreeMap<
-        aegis_core::interaction_domain::InteractionDomainId,
+        aegis_model::interaction_domain::InteractionDomainId,
         Vec<aegis_launcher::ManagedLaunch>,
     >,
 }
@@ -103,7 +103,7 @@ pub(super) struct InteractionDomainProcesses {
 impl InteractionDomainProcesses {
     pub(super) fn insert(
         &mut self,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
         launch: aegis_launcher::ManagedLaunch,
     ) {
         self.launches
@@ -114,7 +114,7 @@ impl InteractionDomainProcesses {
 
     pub(super) fn pause(
         &mut self,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
     ) {
         if let Some(launches) = self.launches.get_mut(&interaction_domain) {
             launches.retain_mut(|launch| {
@@ -134,7 +134,7 @@ impl InteractionDomainProcesses {
 
     pub(super) fn resume(
         &mut self,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
     ) {
         if let Some(launches) = self.launches.get_mut(&interaction_domain) {
             launches.retain_mut(|launch| {
@@ -154,7 +154,7 @@ impl InteractionDomainProcesses {
 
     pub(super) fn revoke(
         &mut self,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
     ) {
         // Dropping ManagedLaunch kills the complete sandbox cgroup and reaps
         // bubblewrap before this method returns.
@@ -166,19 +166,19 @@ impl InteractionDomainProcesses {
             aegis_ipc::InteractionDomainAction::Create { .. } => {}
             aegis_ipc::InteractionDomainAction::Transact { mutations, .. } => {
                 for mutation in mutations {
-                    if let aegis_core::interaction_domain::InteractionDomainMutation::SetState {
+                    if let aegis_model::interaction_domain::InteractionDomainMutation::SetState {
                         interaction_domain,
                         state,
                     } = mutation
                     {
                         match state {
-                            aegis_core::interaction_domain::InteractionDomainState::Active => {
+                            aegis_model::interaction_domain::InteractionDomainState::Active => {
                                 self.resume(*interaction_domain)
                             }
-                            aegis_core::interaction_domain::InteractionDomainState::Paused => {
+                            aegis_model::interaction_domain::InteractionDomainState::Paused => {
                                 self.pause(*interaction_domain)
                             }
-                            aegis_core::interaction_domain::InteractionDomainState::Revoked => {
+                            aegis_model::interaction_domain::InteractionDomainState::Revoked => {
                                 self.revoke(*interaction_domain)
                             }
                         }
@@ -193,18 +193,18 @@ impl InteractionDomainProcesses {
 }
 
 pub(super) struct InteractionDomainRenderTarget {
-    pub(super) output: aegis_core::interaction_domain::VirtualOutput,
+    pub(super) output: aegis_model::interaction_domain::VirtualOutput,
     pub(super) surface: flux::Surface,
     pub(super) canvas: flux::Canvas,
 }
 
 pub(super) struct InteractionDomainCaptureContext {
-    pub(super) interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+    pub(super) interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
     pub(super) revision: u64,
     pub(super) scale_milli: u32,
-    pub(super) region: aegis_core::Rect,
-    pub(super) placements: Vec<aegis_core::interaction_domain::InteractionDomainWindowPlacement>,
-    pub(super) semantic: aegis_core::semantic::SemanticSnapshot,
+    pub(super) region: aegis_model::Rect,
+    pub(super) placements: Vec<aegis_model::interaction_domain::InteractionDomainWindowPlacement>,
+    pub(super) semantic: aegis_model::semantic::SemanticSnapshot,
     pub(super) observation: Option<aegis_ipc::SemanticObservation>,
 }
 
@@ -221,7 +221,7 @@ pub(super) struct PreparedInteractionDomainCapture {
 }
 
 pub(super) fn virtual_output_physical_size(
-    output: aegis_core::interaction_domain::VirtualOutput,
+    output: aegis_model::interaction_domain::VirtualOutput,
 ) -> Result<(u32, u32), String> {
     if !output.validate() {
         return Err("virtual output parameters are invalid".into());
@@ -238,14 +238,14 @@ pub(super) fn virtual_output_physical_size(
 
 pub(super) fn begin_interaction_domain_capture(
     targets: &mut std::collections::BTreeMap<
-        aegis_core::interaction_domain::InteractionDomainId,
+        aegis_model::interaction_domain::InteractionDomainId,
         InteractionDomainRenderTarget,
     >,
     device: &flux::Device,
     renderer: &mut aegis_render::Renderer,
     server: &aegis_compositor::Server,
-    interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
-    region: Option<aegis_core::Rect>,
+    interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
+    region: Option<aegis_model::Rect>,
     security_generation: u64,
 ) -> Result<PreparedInteractionDomainCapture, String> {
     let snapshot = server.interaction_domain_snapshot();
@@ -255,7 +255,7 @@ pub(super) fn begin_interaction_domain_capture(
         .find(|record| record.id == interaction_domain)
         .ok_or_else(|| format!("unknown interaction_domain {}", interaction_domain.0))?
         .state;
-    if interaction_domain_state != aegis_core::interaction_domain::InteractionDomainState::Active {
+    if interaction_domain_state != aegis_model::interaction_domain::InteractionDomainState::Active {
         return Err(format!(
             "interaction_domain {} is not active ({interaction_domain_state:?})",
             interaction_domain.0
@@ -275,7 +275,7 @@ pub(super) fn begin_interaction_domain_capture(
                 "Interaction Domain capture region does not intersect the virtual output".to_owned()
             })?
         }
-        None => aegis_core::Rect::new(0, 0, output.width as i32, output.height as i32),
+        None => aegis_model::Rect::new(0, 0, output.width as i32, output.height as i32),
     };
     let placements = server.interaction_domain_window_placements(interaction_domain);
     let semantic = server
@@ -369,7 +369,7 @@ pub(super) fn begin_interaction_domain_capture(
                 flux_last_error_detail()
             )
         })?;
-    let full_region = aegis_core::Rect::new(0, 0, output.width as i32, output.height as i32);
+    let full_region = aegis_model::Rect::new(0, 0, output.width as i32, output.height as i32);
     Ok(PreparedInteractionDomainCapture {
         readback: PendingReadback {
             width: physical_size.0,

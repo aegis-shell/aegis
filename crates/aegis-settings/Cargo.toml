@@ -9,7 +9,7 @@ rust-version.workspace = true
 build = "build.rs"
 
 [dependencies]
-aegis-core = { workspace = true }
+aegis-model = { workspace = true }
 aegis-logging.workspace = true
 aegis-design = { workspace = true }
 aegis-ipc = { workspace = true }

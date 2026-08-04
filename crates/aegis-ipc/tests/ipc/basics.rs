@@ -102,8 +102,8 @@ fn settings_query_and_confirmed_transaction_round_trip() {
     );
     assert_eq!(client.settings().unwrap().touchpad.config, config);
 
-    let preferences = aegis_core::settings::DesktopPreferences {
-        color_scheme: aegis_core::settings::ColorScheme::Dark,
+    let preferences = aegis_model::settings::DesktopPreferences {
+        color_scheme: aegis_model::settings::ColorScheme::Dark,
         icon_theme: "Papirus".into(),
         ..Default::default()
     };
@@ -120,7 +120,7 @@ fn settings_query_and_confirmed_transaction_round_trip() {
     );
     assert_eq!(client.settings().unwrap().preferences, preferences);
 
-    let idle = aegis_core::settings::IdleSettings {
+    let idle = aegis_model::settings::IdleSettings {
         dim_after_seconds: 120,
         lock_after_seconds: 300,
         display_off_after_seconds: 360,
@@ -244,7 +244,7 @@ fn settings_transaction_rejects_stale_revision() {
         .apply_settings(
             Some(6),
             SettingsAction::SetTouchpad {
-                config: aegis_core::input::TouchpadConfig::default(),
+                config: aegis_model::input::TouchpadConfig::default(),
             },
         )
         .unwrap_err();
@@ -262,7 +262,7 @@ fn settings_mutation_requires_session_capability_and_is_audited() {
         .apply_settings(
             None,
             SettingsAction::SetTouchpad {
-                config: aegis_core::input::TouchpadConfig::default(),
+                config: aegis_model::input::TouchpadConfig::default(),
             },
         )
         .unwrap_err();

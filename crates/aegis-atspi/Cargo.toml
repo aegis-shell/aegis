@@ -8,7 +8,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-aegis-core = { workspace = true, features = ["serde"] }
+aegis-model = { workspace = true, features = ["serde"] }
 aegis-ipc.workspace = true
 aegis-semantic.workspace = true
 async-io.workspace = true

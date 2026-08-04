@@ -184,7 +184,7 @@ impl PrincipalRegistry {
             .chain(&self.ephemeral)
             .find(|record| constant_time_eq(record.credential_sha256.as_bytes(), digest.as_bytes()))
             .and_then(|record| {
-                aegis_authority::ActorPrincipal::new(record.id.clone())
+                aegis_security::authority::ActorPrincipal::new(record.id.clone())
                     .ok()
                     .map(|principal| AgentIdentity {
                         principal,
@@ -203,7 +203,7 @@ impl PrincipalRegistry {
             .chain(&self.ephemeral)
             .find(|record| record.id == principal)
             .and_then(|record| {
-                aegis_authority::ActorPrincipal::new(record.id.clone())
+                aegis_security::authority::ActorPrincipal::new(record.id.clone())
                     .ok()
                     .map(|principal| AgentIdentity {
                         principal,
@@ -259,7 +259,8 @@ impl PrincipalRegistry {
         let (principal, credential) =
             self.register_record(label, pregranted.clone(), gated.clone())?;
         Ok(PairedAgent {
-            principal: aegis_authority::ActorPrincipal::new(principal).map_err(str::to_owned)?,
+            principal: aegis_security::authority::ActorPrincipal::new(principal)
+                .map_err(str::to_owned)?,
             credential,
             pregranted,
             gated,
@@ -773,7 +774,7 @@ fn valid_registry_file(file: &RegistryFile) -> bool {
         return false;
     }
     file.principals.iter().enumerate().all(|(index, record)| {
-        aegis_authority::ActorPrincipal::new(record.id.clone()).is_ok()
+        aegis_security::authority::ActorPrincipal::new(record.id.clone()).is_ok()
             && validate_label(record.label.as_deref()).is_ok()
             && record.credential_sha256.len() == 64
             && record
@@ -790,7 +791,7 @@ fn valid_registry_file(file: &RegistryFile) -> bool {
 fn valid_grants_file(file: &GrantsFile) -> bool {
     file.grants.len() <= MAX_GRANTS
         && file.grants.iter().enumerate().all(|(index, record)| {
-            aegis_authority::ActorPrincipal::new(record.principal.clone()).is_ok()
+            aegis_security::authority::ActorPrincipal::new(record.principal.clone()).is_ok()
                 && AGENT_REQUESTABLE.contains(&record.op)
                 && !file.grants[..index].iter().any(|previous| {
                     previous.principal == record.principal && previous.op == record.op

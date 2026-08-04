@@ -3,7 +3,7 @@
 //! user approves a subset instead of an all-or-nothing Allow/Deny
 //! (ADR-0088 agent pairing).
 //!
-//! The flow mirrors the confirmation dialog: [`Chrome::start_capability_pick`]
+//! The flow mirrors the confirmation dialog: [`ChromeCommand::StartCapabilityPick`]
 //! opens the panel, and the user's answer travels back through
 //! [`ChromeEvents::capability_pick_answered`] (`approved: Some(keys)` = the
 //! checked groups the user allowed, `approved: None` = denied). Ordinary
@@ -11,10 +11,13 @@
 
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
-use crate::{BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Reserved, ellipsize};
-use aegis_core::input::{KeyAction, KeyChar, key_action};
-use aegis_core::window::Window;
+use crate::{
+    BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape, Localizer,
+    Reserved, ellipsize,
+};
 use aegis_design::{Design, themes};
+use aegis_model::input::{KeyAction, KeyChar, key_action};
+use aegis_model::window::Window;
 
 const PANEL_W: f32 = 460.0;
 const PANEL_PAD: f32 = 16.0;
@@ -145,7 +148,7 @@ impl PromptLayout {
 }
 
 /// The capability-checklist chrome component. Inert until the runtime opens
-/// it with [`Chrome::start_capability_pick`].
+/// it with [`ChromeCommand::StartCapabilityPick`].
 pub struct CapabilityPrompt {
     active: bool,
     title: String,
@@ -178,6 +181,13 @@ impl CapabilityPrompt {
     fn answer(&mut self, approved: Option<Vec<String>>, out: &mut ChromeEvents) {
         out.capability_pick_answered = Some(CapabilityPickResult { approved });
         self.active = false;
+    }
+
+    fn start_capability_pick(&mut self, params: CapabilityPickParams) {
+        self.title = params.title;
+        self.warning = params.warning;
+        self.groups = params.groups;
+        self.active = true;
     }
 
     /// Allow the currently checked groups and close.
@@ -499,8 +509,10 @@ impl Chrome for CapabilityPrompt {
         )
     }
 
-    fn set_modal_reserved(&mut self, reserved: Reserved) {
-        self.modal_reserved = reserved;
+    fn update(&mut self, update: ChromeUpdate<'_>) {
+        if let ChromeUpdate::ModalReserved(reserved) = update {
+            self.modal_reserved = reserved;
+        }
     }
 
     fn key_char(&mut self, key: &KeyChar, out: &mut ChromeEvents) {
@@ -514,16 +526,13 @@ impl Chrome for CapabilityPrompt {
         }
     }
 
-    fn start_capability_pick(&mut self, params: CapabilityPickParams) {
-        self.title = params.title;
-        self.warning = params.warning;
-        self.groups = params.groups;
-        self.active = true;
-    }
-
-    fn cancel_capability_pick(&mut self) {
-        if self.active {
-            self.active = false;
+    fn command(&mut self, command: &ChromeCommand<'_>, _out: &mut ChromeEvents) {
+        match command {
+            ChromeCommand::StartCapabilityPick(params) => {
+                self.start_capability_pick((**params).clone());
+            }
+            ChromeCommand::CancelCapabilityPick if self.active => self.active = false,
+            _ => {}
         }
     }
 
@@ -666,9 +675,9 @@ mod tests {
         prompt.press_at(x, y, display, &mut out);
         prompt.key_char(
             &KeyChar {
-                keysym: aegis_core::input::XKB_KEY_Return,
+                keysym: aegis_model::input::XKB_KEY_Return,
                 ch: None,
-                mods: aegis_core::input::Mods::NONE,
+                mods: aegis_model::input::Mods::NONE,
             },
             &mut out,
         );
@@ -688,9 +697,9 @@ mod tests {
         let mut out = ChromeEvents::default();
         prompt.key_char(
             &KeyChar {
-                keysym: aegis_core::input::XKB_KEY_Escape,
+                keysym: aegis_model::input::XKB_KEY_Escape,
                 ch: None,
-                mods: aegis_core::input::Mods::NONE,
+                mods: aegis_model::input::Mods::NONE,
             },
             &mut out,
         );

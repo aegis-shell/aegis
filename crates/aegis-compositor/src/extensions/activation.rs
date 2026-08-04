@@ -6,7 +6,7 @@ struct ActivationTokenRec {
     state: *mut State,
     client: *mut ffi::wl_client,
     serial: Option<u32>,
-    seat: Option<aegis_core::interaction_domain::SeatId>,
+    seat: Option<aegis_model::interaction_domain::SeatId>,
     surface: *mut ffi::wl_resource,
     committed: bool,
 }

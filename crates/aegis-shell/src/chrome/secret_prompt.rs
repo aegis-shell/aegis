@@ -2,7 +2,7 @@
 //! password or PIN with a masked edit field (the secret vault's password
 //! unlock, and any future credential prompt).
 //!
-//! The flow mirrors the other pickers: [`Chrome::start_secret_prompt`] opens
+//! The flow mirrors the other pickers: [`ChromeCommand::StartSecretPrompt`] opens
 //! the panel, and the user's confirm or cancel travels back through
 //! [`ChromeEvents::secret_prompt_confirmed`] /
 //! [`ChromeEvents::secret_prompt_cancelled`]. Ordinary modal chrome over the
@@ -13,10 +13,13 @@
 
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
-use crate::{BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Reserved, ellipsize};
-use aegis_core::input::{KeyAction, KeyChar, key_action};
-use aegis_core::window::Window;
+use crate::{
+    BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape, Localizer,
+    Reserved, ellipsize,
+};
 use aegis_design::{Design, themes};
+use aegis_model::input::{KeyAction, KeyChar, key_action};
+use aegis_model::window::Window;
 use zeroize::Zeroize;
 
 const PANEL_W: f32 = 440.0;
@@ -115,7 +118,7 @@ impl PromptLayout {
 }
 
 /// The secret-prompt chrome component. Inert until the runtime opens it
-/// with [`Chrome::start_secret_prompt`].
+/// with [`ChromeCommand::StartSecretPrompt`].
 pub struct SecretPrompt {
     active: bool,
     title: String,
@@ -151,6 +154,14 @@ impl SecretPrompt {
     fn close(&mut self) {
         self.active = false;
         self.buffer.zeroize();
+    }
+
+    fn start_secret_prompt(&mut self, params: SecretPromptParams) {
+        self.title = params.title;
+        self.reason = params.reason;
+        self.buffer.zeroize();
+        self.buffer.clear();
+        self.active = true;
     }
 }
 
@@ -401,8 +412,10 @@ impl Chrome for SecretPrompt {
         })
     }
 
-    fn set_modal_reserved(&mut self, reserved: Reserved) {
-        self.modal_reserved = reserved;
+    fn update(&mut self, update: ChromeUpdate<'_>) {
+        if let ChromeUpdate::ModalReserved(reserved) = update {
+            self.modal_reserved = reserved;
+        }
     }
 
     fn key_char(&mut self, key: &KeyChar, out: &mut ChromeEvents) {
@@ -420,17 +433,13 @@ impl Chrome for SecretPrompt {
         }
     }
 
-    fn start_secret_prompt(&mut self, params: SecretPromptParams) {
-        self.title = params.title;
-        self.reason = params.reason;
-        self.buffer.zeroize();
-        self.buffer.clear();
-        self.active = true;
-    }
-
-    fn cancel_secret_prompt(&mut self) {
-        if self.active {
-            self.close();
+    fn command(&mut self, command: &ChromeCommand<'_>, _out: &mut ChromeEvents) {
+        match command {
+            ChromeCommand::StartSecretPrompt(params) => {
+                self.start_secret_prompt((**params).clone());
+            }
+            ChromeCommand::CancelSecretPrompt if self.active => self.close(),
+            _ => {}
         }
     }
 
@@ -511,7 +520,7 @@ mod tests {
         KeyChar {
             keysym: c as u32,
             ch: Some(c),
-            mods: aegis_core::input::Mods::NONE,
+            mods: aegis_model::input::Mods::NONE,
         }
     }
 
@@ -526,9 +535,9 @@ mod tests {
         assert_eq!(prompt.buffer, "s3c");
         prompt.key_char(
             &KeyChar {
-                keysym: aegis_core::input::XKB_KEY_BackSpace,
+                keysym: aegis_model::input::XKB_KEY_BackSpace,
                 ch: None,
-                mods: aegis_core::input::Mods::NONE,
+                mods: aegis_model::input::Mods::NONE,
             },
             &mut out,
         );
@@ -545,9 +554,9 @@ mod tests {
         }
         prompt.key_char(
             &KeyChar {
-                keysym: aegis_core::input::XKB_KEY_Return,
+                keysym: aegis_model::input::XKB_KEY_Return,
                 ch: None,
-                mods: aegis_core::input::Mods::NONE,
+                mods: aegis_model::input::Mods::NONE,
             },
             &mut out,
         );
@@ -564,9 +573,9 @@ mod tests {
         prompt.key_char(&char_key('x'), &mut out);
         prompt.key_char(
             &KeyChar {
-                keysym: aegis_core::input::XKB_KEY_Escape,
+                keysym: aegis_model::input::XKB_KEY_Escape,
                 ch: None,
-                mods: aegis_core::input::Mods::NONE,
+                mods: aegis_model::input::Mods::NONE,
             },
             &mut out,
         );

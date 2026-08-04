@@ -2,7 +2,7 @@
 //! candidate applications of one `PickApp` IPC request (the AppChooser
 //! portal's compositor side).
 //!
-//! [`Chrome::start_app_pick`] opens the
+//! [`ChromeCommand::StartAppPick`] opens the
 //! panel, and the user's confirm or cancel travels back through
 //! [`ChromeEvents::app_pick_confirmed`] / [`ChromeEvents::app_pick_cancelled`].
 //! Ordinary modal chrome over the live scene: no freeze, no screen-content
@@ -15,11 +15,12 @@ use std::time::{Duration, Instant};
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{
-    AppCatalog, BackdropRegion, Chrome, ChromeEvents, CursorShape, Localizer, Reserved, ellipsize,
+    AppCatalog, BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
+    Localizer, Reserved, ellipsize,
 };
-use aegis_core::input::{KeyAction, KeyChar, key_action};
-use aegis_core::window::Window;
 use aegis_design::{Design, themes};
+use aegis_model::input::{KeyAction, KeyChar, key_action};
+use aegis_model::window::Window;
 
 const PANEL_W: f32 = 440.0;
 const PANEL_PAD: f32 = 16.0;
@@ -138,7 +139,7 @@ impl PickerLayout {
 }
 
 /// The app-picker chrome component. Inert until the runtime opens it with
-/// [`Chrome::start_app_pick`].
+/// [`ChromeCommand::StartAppPick`].
 pub struct AppPicker {
     active: bool,
     rows: Vec<Row>,
@@ -190,6 +191,35 @@ impl AppPicker {
         self.last_click = None;
     }
 
+    fn start_app_pick(&mut self, params: AppPickParams) {
+        self.rows = params
+            .choices
+            .into_iter()
+            .map(|id| {
+                let name = Self::resolve(&self.catalog, &id)
+                    .map(|entry| entry.name.clone())
+                    .unwrap_or_else(|| id.strip_suffix(".desktop").unwrap_or(&id).to_string());
+                Row { id, name }
+            })
+            .collect();
+        self.selected = params
+            .last_choice
+            .as_deref()
+            .and_then(|last| self.rows.iter().position(|row| row.id == last))
+            .unwrap_or(0);
+        self.subject = params.subject;
+        self.scroll_row = 0;
+        self.wheel = 0.0;
+        self.last_click = None;
+        self.follow_selection();
+        self.active = !self.rows.is_empty();
+    }
+
+    #[cfg(test)]
+    fn update_app_catalog(&mut self, catalog: &AppCatalog) {
+        <Self as Chrome>::update(self, ChromeUpdate::AppCatalog(catalog));
+    }
+
     /// Keep the highlighted row inside the list's scroll window after
     /// keyboard motion.
     fn follow_selection(&mut self) {
@@ -202,7 +232,7 @@ impl AppPicker {
 
     /// The catalog entry for one candidate id: exact desktop-id match, then
     /// a StartupWMClass match (requesters sometimes hand over wm classes).
-    fn resolve<'c>(catalog: &'c AppCatalog, id: &str) -> Option<&'c aegis_core::app::Entry> {
+    fn resolve<'c>(catalog: &'c AppCatalog, id: &str) -> Option<&'c aegis_model::app::Entry> {
         catalog
             .apps
             .iter()
@@ -538,8 +568,12 @@ impl Chrome for AppPicker {
         )
     }
 
-    fn set_modal_reserved(&mut self, reserved: Reserved) {
-        self.modal_reserved = reserved;
+    fn update(&mut self, update: ChromeUpdate<'_>) {
+        match update {
+            ChromeUpdate::ModalReserved(reserved) => self.modal_reserved = reserved,
+            ChromeUpdate::AppCatalog(catalog) => self.catalog = catalog.clone(),
+            _ => {}
+        }
     }
 
     fn key_char(&mut self, key: &KeyChar, out: &mut ChromeEvents) {
@@ -565,44 +599,16 @@ impl Chrome for AppPicker {
         }
     }
 
-    fn start_app_pick(&mut self, params: AppPickParams) {
-        self.rows = params
-            .choices
-            .into_iter()
-            .map(|id| {
-                let name = Self::resolve(&self.catalog, &id)
-                    .map(|entry| entry.name.clone())
-                    .unwrap_or_else(|| id.strip_suffix(".desktop").unwrap_or(&id).to_string());
-                Row { id, name }
-            })
-            .collect();
-        self.selected = params
-            .last_choice
-            .as_deref()
-            .and_then(|last| self.rows.iter().position(|row| row.id == last))
-            .unwrap_or(0);
-        self.subject = params.subject;
-        self.scroll_row = 0;
-        self.wheel = 0.0;
-        self.last_click = None;
-        self.follow_selection();
-        self.active = !self.rows.is_empty();
-        // No candidates (a spec violation by the requester): stay closed;
-        // the safety net in the main loop answers the request as cancelled.
-    }
-
-    fn cancel_app_pick(&mut self) {
-        if self.active {
-            self.close();
+    fn command(&mut self, command: &ChromeCommand<'_>, _out: &mut ChromeEvents) {
+        match command {
+            ChromeCommand::StartAppPick(params) => self.start_app_pick((**params).clone()),
+            ChromeCommand::CancelAppPick if self.active => self.close(),
+            _ => {}
         }
     }
 
     fn app_pick_active(&self) -> bool {
         self.active
-    }
-
-    fn update_app_catalog(&mut self, catalog: &AppCatalog) {
-        self.catalog = catalog.clone();
     }
 
     fn backdrop_blur_sigma(&self) -> f32 {
@@ -671,16 +677,16 @@ mod tests {
     fn picker_with_catalog() -> AppPicker {
         let mut picker = AppPicker::new();
         let mut catalog = AppCatalog::default();
-        catalog.apps.push(aegis_core::app::Entry {
+        catalog.apps.push(aegis_model::app::Entry {
             id: "firefox.desktop".to_string(),
             name: "Firefox".to_string(),
-            ..aegis_core::app::Entry::default()
+            ..aegis_model::app::Entry::default()
         });
-        catalog.apps.push(aegis_core::app::Entry {
+        catalog.apps.push(aegis_model::app::Entry {
             id: "org.example.Editor.desktop".to_string(),
             name: "Example Editor".to_string(),
             startup_wm_class: Some("example-editor".to_string()),
-            ..aegis_core::app::Entry::default()
+            ..aegis_model::app::Entry::default()
         });
         picker.update_app_catalog(&catalog);
         picker
@@ -727,9 +733,9 @@ mod tests {
         let mut out = ChromeEvents::default();
         picker.key_char(
             &KeyChar {
-                keysym: aegis_core::input::XKB_KEY_Return,
+                keysym: aegis_model::input::XKB_KEY_Return,
                 ch: None,
-                mods: aegis_core::input::Mods::NONE,
+                mods: aegis_model::input::Mods::NONE,
             },
             &mut out,
         );
@@ -744,9 +750,9 @@ mod tests {
         let mut out = ChromeEvents::default();
         picker.key_char(
             &KeyChar {
-                keysym: aegis_core::input::XKB_KEY_Escape,
+                keysym: aegis_model::input::XKB_KEY_Escape,
                 ch: None,
-                mods: aegis_core::input::Mods::NONE,
+                mods: aegis_model::input::Mods::NONE,
             },
             &mut out,
         );

@@ -23,13 +23,13 @@ mod output;
 
 use output::*;
 
-use aegis_core::Size;
-use aegis_core::input::{
+use aegis_model::Size;
+use aegis_model::input::{
     ButtonState, InputEvent, PointerAxis, PointerAxisFrame, PointerAxisRelativeDirection,
     PointerAxisSource, PointerGestureEvent, TabletEvent, TabletToolInfo, TouchpadCapabilities,
     TouchpadConfig, TouchpadScrollMethod, TouchpadStatus,
 };
-use aegis_core::output::{ModeSpec, OutputKind, OutputMode, Scale, automatic_scale, physical_ppi};
+use aegis_model::output::{ModeSpec, OutputKind, OutputMode, Scale, automatic_scale, physical_ppi};
 use drm::buffer::{Buffer, DrmFourcc, DrmModifier, Handle as BufferHandle, PlanarBuffer};
 use drm::control::{
     self, AtomicCommitFlags, Device as ControlDevice, FbCmd2Flags, Mode, ModeTypeFlags,
@@ -136,7 +136,7 @@ fn commit_error_is_transient(error: &std::io::Error) -> bool {
 /// tick) survive as separate clips instead of being unioned into one spanning
 /// rect — which would defeat PSR2 / panel self-refresh.
 fn damage_clip_for_output(
-    damage: Option<&[aegis_core::Rect]>,
+    damage: Option<&[aegis_model::Rect]>,
     output_x: u32,
     output_y: u32,
     width: u32,
@@ -714,12 +714,12 @@ impl DrmBackend {
     /// This is the conservative set suitable for the linux-dmabuf feedback
     /// SCANOUT tranche: a client choosing one of these pairs can still be
     /// scanned out when the desktop spans more than one selected output.
-    pub fn dmabuf_scanout_formats(&self) -> Vec<aegis_core::dmabuf::DmabufFormat> {
+    pub fn dmabuf_scanout_formats(&self) -> Vec<aegis_model::dmabuf::DmabufFormat> {
         let mut formats = self
             .displays
             .scanout_formats
             .iter()
-            .map(|(&fourcc, modifiers)| aegis_core::dmabuf::DmabufFormat {
+            .map(|(&fourcc, modifiers)| aegis_model::dmabuf::DmabufFormat {
                 fourcc,
                 modifiers: modifiers.clone(),
             })
@@ -858,23 +858,23 @@ impl Backend for DrmBackend {
         }
     }
 
-    fn output_infos(&self) -> Vec<aegis_core::output::OutputInfo> {
+    fn output_infos(&self) -> Vec<aegis_model::output::OutputInfo> {
         self.displays
             .outputs
             .iter()
             .map(|output| {
                 let (width, height) = output.mode.size();
-                aegis_core::output::OutputInfo {
+                aegis_model::output::OutputInfo {
                     connector: output.name.clone(),
-                    geometry: aegis_core::output::OutputGeometry {
-                        mode: aegis_core::output::OutputMode {
+                    geometry: aegis_model::output::OutputGeometry {
+                        mode: aegis_model::output::OutputMode {
                             width: width as i32,
                             height: height as i32,
                             refresh_mhz: output.mode.vrefresh().saturating_mul(1_000),
                         },
                         scale: output.scale,
-                        transform: aegis_core::Transform::Normal,
-                        logical_origin: aegis_core::Point {
+                        transform: aegis_model::Transform::Normal,
+                        logical_origin: aegis_model::Point {
                             x: output.x as i32,
                             y: output.y as i32,
                         },
@@ -1074,7 +1074,7 @@ mod tests {
 
     #[test]
     fn damage_clip_intersects_output_rect() {
-        use aegis_core::Rect;
+        use aegis_model::Rect;
         // Unknown damage covers the whole output.
         assert_eq!(
             damage_clip_for_output(None, 1920, 0, 1920, 1080),

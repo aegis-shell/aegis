@@ -182,10 +182,10 @@ pub(super) fn drive_read_loop<H: Handler>(
         .as_ref()
         .map(|(grant, _)| std::time::Duration::from_millis(grant.ttl_ms))
         .unwrap_or_else(|| std::time::Duration::from_secs(15 * 60));
-    let session_policy = aegis_authority::ActorSessionPolicy {
+    let session_policy = aegis_security::authority::ActorSessionPolicy {
         ttl: session_ttl,
         idle_timeout: session_ttl.min(std::time::Duration::from_secs(5 * 60)),
-        ..aegis_authority::ActorSessionPolicy::default()
+        ..aegis_security::authority::ActorSessionPolicy::default()
     };
     let session = match handler.start_actor_session(conn_id, principal.as_deref(), session_policy) {
         Ok(session) => session,
@@ -289,7 +289,7 @@ pub(super) fn drive_read_loop<H: Handler>(
                     let confirm_exact_resource =
                         matches!(
                             resource,
-                            aegis_authority::ActorResource::PaymentRequest { .. }
+                            aegis_security::authority::ActorResource::PaymentRequest { .. }
                         ) || matches!(decision, AuthorizationDecision::Ask(_));
                     match handler.issue_resource_grant(
                         session.id,
@@ -1786,8 +1786,10 @@ pub(super) fn drive_read_loop<H: Handler>(
                         message: "session is locked or inactive".into(),
                     }
                 } else {
-                    let resource =
-                        aegis_authority::ActorResource::secret_prompt(&title, reason.as_deref());
+                    let resource = aegis_security::authority::ActorResource::secret_prompt(
+                        &title,
+                        reason.as_deref(),
+                    );
                     match handler.consume_resource_grant(
                         session.id,
                         principal.as_deref(),

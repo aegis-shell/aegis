@@ -3,9 +3,9 @@
 //! amber accent over the standard dark blurred scrim.
 //!
 //! One centered cluster of three surfaces: a header band with the user's
-//! identity (avatar, display name, groups) on the left and a live machine
+//! profile (avatar, display name, groups) on the left and a live machine
 //! monitor (chassis glyph plus CPU/GPU/RAM/NET/DISK/BAT gauges fed by
-//! `Chrome::update_resource_stats`) on the right; a narrow icon rail below
+//! `ChromeUpdate::ResourceStats`) on the right; a narrow icon rail below
 //! it holding one circular button per section and the close button; and the
 //! content panel filling the rest of the cluster. The sections themselves:
 //! quick settings (volume, brightness, radios, do-not-disturb),
@@ -24,26 +24,26 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex};
 
-use aegis_core::input::KeyChar;
-use aegis_core::interaction_domain::{
+use aegis_design::tokens::Sao;
+use aegis_design::{AvatarRole, Design, materials, themes};
+use aegis_model::input::KeyChar;
+use aegis_model::interaction_domain::{
     InteractionDomainKind, InteractionDomainSnapshot, InteractionDomainState,
 };
-use aegis_core::notify::{Notification, NotificationQueue};
-use aegis_core::window::{SpaceUse, Window};
-use aegis_core::workspace::WorkspaceSnapshot;
-use aegis_design::materials;
-use aegis_design::themes;
-use aegis_design::tokens::Sao;
-use aegis_identity::{Identity, Portrait, PortraitConfig, PortraitWatcher};
+use aegis_model::notify::{Notification, NotificationQueue};
+use aegis_model::window::{SpaceUse, Window};
+use aegis_model::workspace::WorkspaceSnapshot;
+use aegis_shell::persona::{Portrait, PortraitConfig, PortraitWatcher, Profile};
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
 
 use aegis_shell::{
-    AppCatalog, BackdropRegion, ChassisKind, Chrome, ChromeEvents, CursorShape, IconSet, Localizer,
-    Message, NetworkState, ResourceStats, SystemAction, SystemStatus, place_popup, truncate,
+    BackdropRegion, ChassisKind, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
+    IconSet, Localizer, Message, NetworkState, ResourceStats, SystemAction, SystemStatus,
+    place_popup, truncate,
 };
-use aegis_tray::{MenuNode, MenuState, TrayCommand, TrayIcon, TraySnapshot};
+use aegis_tray::{MenuNode, MenuState, TrayCommand, TrayHandle, TrayIcon};
 
 mod rendering;
 
@@ -71,7 +71,8 @@ const HISTORY_CAP: usize = 48;
 /// The command panel explicitly owns its VRM composition. Keeping the
 /// parameters here lets another host choose a different crop without changing
 /// the VRM renderer or the shared portrait source policy.
-const AVATAR_CAMERA: aegis_avatar::VrmCamera = aegis_avatar::VrmCamera::new(28.0, 0.25, 0.48, 0.0);
+const AVATAR_CAMERA: aegis_shell::persona::VrmCamera =
+    aegis_shell::persona::VrmCamera::new(28.0, 0.25, 0.48, 0.0);
 
 // dbusmenu popover geometry. Placement follows the shared shell popup policy.
 const MENU_WIDTH: f32 = 236.0;
@@ -161,8 +162,7 @@ enum Gauge {
 /// read-only half, plus the command channel for interaction.
 struct SniTray {
     device: flux::Device,
-    snapshot: Arc<Mutex<TraySnapshot>>,
-    commands: mpsc::Sender<TrayCommand>,
+    handle: TrayHandle,
     /// Uploaded SNI textures keyed by item key, tagged with the snapshot's
     /// icon generation so status-only updates do not re-upload.
     textures: HashMap<String, (u64, flux::Image)>,
@@ -217,10 +217,10 @@ pub struct CommandPanel {
     cpu_history: History,
     gpu_history: History,
     ram_history: History,
-    /// Local account behind the header band's identity zone, resolved once
+    /// Local account behind the header band's profile zone, resolved once
     /// at construction (never per frame).
-    identity: Identity,
-    /// Header-band portrait selected by the shared identity contract. Without
+    profile: Profile,
+    /// Header-band portrait selected by the shared profile contract. Without
     /// configured content, initials render over a flat host-owned disc; no
     /// fallback texture is synthesized by either resource layer.
     avatar: Option<Portrait>,
@@ -260,6 +260,26 @@ pub struct CommandPanel {
 }
 
 impl CommandPanel {
+    #[cfg(test)]
+    fn toggle_command_panel(&mut self, out: &mut ChromeEvents) {
+        <Self as Chrome>::command(self, &ChromeCommand::ToggleCommandPanel, out);
+    }
+
+    #[cfg(test)]
+    fn set_reduced_motion(&mut self, reduced: bool) {
+        <Self as Chrome>::update(self, ChromeUpdate::ReducedMotion(reduced));
+    }
+
+    #[cfg(test)]
+    fn update_windows(&mut self, windows: &[Window]) {
+        <Self as Chrome>::update(self, ChromeUpdate::Windows(windows));
+    }
+
+    #[cfg(test)]
+    fn update_resource_stats(&mut self, stats: &ResourceStats) {
+        <Self as Chrome>::update(self, ChromeUpdate::ResourceStats(stats));
+    }
+
     /// Construct the panel. The flux device is borrowed (non-owning, like
     /// [`aegis_shell::Shell::new`]) to upload SNI tray pixmaps to the GPU;
     /// the caller must keep it alive past the panel. The tray handle comes
@@ -267,24 +287,23 @@ impl CommandPanel {
     /// the HUD; `None` leaves the tray section empty.
     pub fn new(
         device: &flux::Device,
-        tray: Option<(Arc<Mutex<TraySnapshot>>, mpsc::Sender<TrayCommand>)>,
+        tray: Option<TrayHandle>,
         notifications: Arc<Mutex<NotificationQueue>>,
     ) -> CommandPanel {
-        let tray = tray.map(|(snapshot, commands)| {
+        let tray = tray.map(|handle| {
             // SAFETY: the composition root declares its flux device before
             // the shell (and thus this panel) and drops it after, and the
             // panel only touches the device on the render thread.
             let device = unsafe { flux::Device::borrow_raw(device.as_raw()) };
             SniTray {
                 device,
-                snapshot,
-                commands,
+                handle,
                 textures: HashMap::new(),
                 cached_cells: Vec::new(),
             }
         });
         // Source precedence and still/VRM routing come from the shared
-        // identity contract. The panel supplies only its VRM camera and owns
+        // profile contract. The panel supplies only its VRM camera and owns
         // the outer disc, keyline, and reveal treatment.
         let portrait_config = PortraitConfig::current();
         let avatar = match Portrait::load_transactional(device, &portrait_config, AVATAR_CAMERA) {
@@ -316,13 +335,13 @@ impl CommandPanel {
             cpu_history: History::new(HISTORY_CAP),
             gpu_history: History::new(HISTORY_CAP),
             ram_history: History::new(HISTORY_CAP),
-            identity: Identity::current().unwrap_or_else(|_| Identity::fallback()),
+            profile: Profile::current().unwrap_or_else(|_| Profile::fallback()),
             avatar,
             portrait_config,
             avatar_device: Some(avatar_device),
             avatar_watcher,
             avatar_warned: false,
-            interaction_domains: aegis_core::interaction_domain::InteractionDomainModel::new()
+            interaction_domains: aegis_model::interaction_domain::InteractionDomainModel::new()
                 .snapshot(),
             icons: IconSet::default(),
             notifications,
@@ -356,13 +375,13 @@ impl CommandPanel {
             cpu_history: History::new(HISTORY_CAP),
             gpu_history: History::new(HISTORY_CAP),
             ram_history: History::new(HISTORY_CAP),
-            identity: Identity::current().unwrap_or_else(|_| Identity::fallback()),
+            profile: Profile::current().unwrap_or_else(|_| Profile::fallback()),
             avatar: None,
             portrait_config: PortraitConfig::new(Vec::new()),
             avatar_device: None,
             avatar_watcher: None,
             avatar_warned: false,
-            interaction_domains: aegis_core::interaction_domain::InteractionDomainModel::new()
+            interaction_domains: aegis_model::interaction_domain::InteractionDomainModel::new()
                 .snapshot(),
             icons: IconSet::default(),
             notifications: Arc::new(Mutex::new(NotificationQueue::new(3_600_000))),
@@ -534,7 +553,7 @@ impl CommandPanel {
     fn send_tray_command(&self, command: TrayCommand) {
         if let Some(tray) = &self.tray {
             // The worker may be gone (bus disconnected); clicks just drop.
-            let _ = tray.commands.send(command);
+            let _ = tray.handle.send(command);
         }
     }
 
@@ -548,7 +567,7 @@ impl CommandPanel {
     /// the cached menu rather than blocking the frame.
     fn menu_snapshot(&mut self) -> Option<Arc<MenuState>> {
         let tray = self.tray.as_ref()?;
-        if let Ok(snapshot) = tray.snapshot.try_lock() {
+        if let Ok(snapshot) = tray.handle.snapshot().try_lock() {
             let stale = self
                 .menu_cache
                 .as_ref()
@@ -572,7 +591,7 @@ impl CommandPanel {
         let Some(tray) = &mut self.tray else {
             return Vec::new();
         };
-        let Ok(snapshot) = tray.snapshot.try_lock() else {
+        let Ok(snapshot) = tray.handle.snapshot().try_lock() else {
             return tray.cached_cells.clone();
         };
         tray.textures
@@ -736,7 +755,7 @@ impl Chrome for CommandPanel {
     }
 
     fn key_char(&mut self, kc: &KeyChar, _out: &mut ChromeEvents) {
-        if kc.keysym != aegis_core::input::XKB_KEY_Escape || !self.open {
+        if kc.keysym != aegis_model::input::XKB_KEY_Escape || !self.open {
             return;
         }
         // Escape peels the innermost surface first: an open tray menu, then
@@ -748,17 +767,19 @@ impl Chrome for CommandPanel {
         }
     }
 
-    fn toggle_command_panel(&mut self, _out: &mut ChromeEvents) {
-        if self.open {
-            self.close();
-        } else {
-            self.open = true;
-            if let Some(name) = self
-                .avatar
-                .as_mut()
-                .and_then(|avatar| avatar.play_random_action().map(str::to_owned))
-            {
-                log::debug!("command-panel: playing avatar action {name:?}");
+    fn command(&mut self, command: &ChromeCommand<'_>, _out: &mut ChromeEvents) {
+        if matches!(command, ChromeCommand::ToggleCommandPanel) {
+            if self.open {
+                self.close();
+            } else {
+                self.open = true;
+                if let Some(name) = self
+                    .avatar
+                    .as_mut()
+                    .and_then(|avatar| avatar.play_random_action().map(str::to_owned))
+                {
+                    log::debug!("command-panel: playing avatar action {name:?}");
+                }
             }
         }
     }
@@ -804,36 +825,39 @@ impl Chrome for CommandPanel {
         self.active().then_some(CursorShape::Pointer)
     }
 
-    fn update_app_catalog(&mut self, catalog: &AppCatalog) {
-        self.icons = catalog.icons.clone();
-    }
-
-    fn update_system_status(&mut self, status: &SystemStatus) {
-        self.status = status.clone();
-    }
-
-    fn update_resource_stats(&mut self, stats: &ResourceStats) {
-        self.stats = *stats;
-        self.cpu_history.push(stats.cpu_percent);
-        if let Some(gpu) = stats.gpu_percent {
-            self.gpu_history.push(gpu);
-        }
-        let ram_percent = if stats.mem_total_bytes > 0 {
-            stats.mem_used_bytes as f32 / stats.mem_total_bytes as f32 * 100.0
-        } else {
-            0.0
-        };
-        self.ram_history.push(ram_percent);
-    }
-
-    fn update_interaction_domains(&mut self, snapshot: &InteractionDomainSnapshot) {
-        self.interaction_domains = snapshot.clone();
-    }
-
-    fn update_windows(&mut self, windows: &[Window]) {
-        // A fullscreen window owns the whole output; get out of its way.
-        if SpaceUse::from_windows(windows) == SpaceUse::Fullscreen && self.open {
-            self.close();
+    fn update(&mut self, update: ChromeUpdate<'_>) {
+        match update {
+            ChromeUpdate::AppCatalog(catalog) => self.icons = catalog.icons.clone(),
+            ChromeUpdate::SystemStatus(status) => self.status = status.clone(),
+            ChromeUpdate::ResourceStats(stats) => {
+                self.stats = *stats;
+                self.cpu_history.push(stats.cpu_percent);
+                if let Some(gpu) = stats.gpu_percent {
+                    self.gpu_history.push(gpu);
+                }
+                let ram_percent = if stats.mem_total_bytes > 0 {
+                    stats.mem_used_bytes as f32 / stats.mem_total_bytes as f32 * 100.0
+                } else {
+                    0.0
+                };
+                self.ram_history.push(ram_percent);
+            }
+            ChromeUpdate::InteractionDomains(snapshot) => {
+                self.interaction_domains = snapshot.clone();
+            }
+            ChromeUpdate::Windows(windows) => {
+                // A fullscreen window owns the whole output; get out of its way.
+                if SpaceUse::from_windows(windows) == SpaceUse::Fullscreen && self.open {
+                    self.close();
+                }
+            }
+            ChromeUpdate::ReducedMotion(reduced) => {
+                self.reduced_motion = reduced;
+                if reduced {
+                    self.reveal = if self.open { 1.0 } else { 0.0 };
+                }
+            }
+            _ => {}
         }
     }
 
@@ -849,13 +873,6 @@ impl Chrome for CommandPanel {
 
     fn requires_composition(&self) -> bool {
         self.active()
-    }
-
-    fn set_reduced_motion(&mut self, reduced: bool) {
-        self.reduced_motion = reduced;
-        if reduced {
-            self.reveal = if self.open { 1.0 } else { 0.0 };
-        }
     }
 
     fn backdrop_blur_sigma(&self) -> f32 {

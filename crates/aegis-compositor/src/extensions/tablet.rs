@@ -234,7 +234,7 @@ pub(crate) unsafe fn announce_tool(
     state: *mut State,
     seat: *mut ffi::wl_resource,
     tool: u64,
-    info: &aegis_core::input::TabletToolInfo,
+    info: &aegis_model::input::TabletToolInfo,
 ) {
     unsafe {
         let res = tablet_tool_resource(state, seat, tool);

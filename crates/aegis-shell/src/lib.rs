@@ -7,10 +7,13 @@
 //! launcher, the overview — is a [`Chrome`] implementation registered with
 //! [`Shell::add`], and renders itself each frame from the shared snapshot
 //! and input. Larger components live in their own crates on top of the same
-//! contract (the dock in `aegis-dock`, Prism in `aegis-prism`, AI Workspaces
-//! in `aegis-interaction-manager`, the HUD in `aegis-hud`, and the command panel
+//! contract (the dock in `aegis-dock`, Prism in `aegis-prism`, Agent Workspaces
+//! in `aegis-agent-workspaces`, the HUD in `aegis-hud`, and the command panel
 //! in `aegis-command-panel`). Adding
 //! or removing a chrome surface is a component change, not a core change.
+//! [`persona`] owns the lightweight personalized-profile convention; its
+//! optional `persona` feature adds shared still/VRM portrait and motion
+//! handling without imposing that dependency set on every shell consumer.
 //!
 //! Input the compositor captures is fed here as a snapshot before being routed
 //! to clients; component-emitted intents are drained by the main loop into
@@ -24,7 +27,9 @@ use lens::{Frame, Ui};
 pub mod chrome;
 pub mod i18n;
 pub mod modal;
+pub mod persona;
 mod popup;
+pub mod preview;
 pub mod system;
 mod text;
 pub use chrome::{
@@ -36,6 +41,7 @@ pub use chrome::{
 pub use i18n::{Language, Localizer, Message};
 pub use modal::ModalApplicationSpec;
 pub use popup::{POPUP_GAP, POPUP_MARGIN, place_popup};
+pub use preview::{LivePreviewPresentation, PreviewCard, WindowSwitcherPresentation};
 pub use system::{
     BatteryStatus, ChassisKind, DisplaySettings, DisplayStatus, NetworkState, ResourceProbe,
     ResourceStats, SystemAction, SystemStatus, detect_forked_status, detect_system_status,
@@ -49,12 +55,12 @@ pub use text::{ellipsize, truncate};
 /// depending on the component crate.
 pub const HUD_HEIGHT: f32 = 32.0;
 
-use aegis_core::app::{ApplicationTarget, BuiltInApplication, Entry};
-use aegis_core::interaction_domain::{
+use aegis_model::app::{ApplicationTarget, BuiltInApplication, Entry};
+use aegis_model::interaction_domain::{
     InteractionDomainId, InteractionDomainSnapshot, InteractionDomainState,
 };
-use aegis_core::window::Window;
-use aegis_core::workspace::WorkspaceSnapshot;
+use aegis_model::window::Window;
+use aegis_model::workspace::WorkspaceSnapshot;
 
 /// One successfully applied Agent input operation, projected onto trusted
 /// compositor chrome for the physical user.
@@ -70,9 +76,9 @@ pub struct AgentActivity {
     /// Human-readable Interaction Domain label captured with the operation.
     pub interaction_domain_label: String,
     /// Toplevel that received the operation.
-    pub window: aegis_core::window::WindowId,
+    pub window: aegis_model::window::WindowId,
     /// Applied compositor-global pointer position, when applicable.
-    pub position: Option<aegis_core::Point>,
+    pub position: Option<aegis_model::Point>,
     /// Privacy-preserving operation class.
     pub kind: AgentInputKind,
 }
@@ -112,6 +118,28 @@ pub struct BackdropRegion {
     pub h: f32,
 }
 
+impl From<aegis_model::Rect> for BackdropRegion {
+    fn from(rect: aegis_model::Rect) -> Self {
+        Self {
+            x: rect.origin.x as f32,
+            y: rect.origin.y as f32,
+            w: rect.size.w as f32,
+            h: rect.size.h as f32,
+        }
+    }
+}
+
+impl From<lens::Rect> for BackdropRegion {
+    fn from(rect: lens::Rect) -> Self {
+        Self {
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: rect.h,
+        }
+    }
+}
+
 /// One analytic liquid-glass body backed by a [`BackdropRegion`] capture.
 /// Radius and opacity participate in the same SDF composite as refraction,
 /// blur and edge lighting, so rounded corners and visibility cannot diverge.
@@ -130,52 +158,41 @@ pub struct LiquidGlassRegion {
     pub focus: Option<LiquidGlassFocus>,
 }
 
+impl LiquidGlassRegion {
+    /// Construct a body from one semantic product role.
+    #[must_use]
+    pub fn from_role(
+        design: &aegis_design::Design,
+        role: aegis_design::GlassRole,
+        bounds: BackdropRegion,
+        corner_radius: f32,
+        opacity: f32,
+    ) -> Self {
+        let style = design.glass.for_role(role);
+        Self {
+            bounds,
+            corner_radius,
+            opacity: opacity.clamp(0.0, 1.0),
+            shadow_alpha: style.shadow_alpha,
+            shadow_blur: style.shadow_blur,
+            shadow_offset_y: style.shadow_offset_y,
+            focus: None,
+        }
+    }
+
+    /// Attach the parent's single optical interaction focus.
+    #[must_use]
+    pub fn with_focus(mut self, focus: Option<LiquidGlassFocus>) -> Self {
+        self.focus = focus;
+        self
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct LiquidGlassFocus {
     pub bounds: BackdropRegion,
     pub corner_radius: f32,
     pub strength: f32,
-}
-
-/// One live preview target in the compositor-owned window switcher.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct WindowSwitcherCard {
-    pub window: aegis_core::window::WindowId,
-    pub geometry: aegis_core::window_switcher::Card,
-    pub corner_radius: f32,
-}
-
-/// Shared switcher presentation prepared once per frame.
-///
-/// The executable uses these exact targets for live client previews and the
-/// shell uses them for focus, labels, hit-testing, and animation. Keeping a
-/// single snapshot prevents the chrome and client scene from drifting apart.
-#[derive(Debug, Clone, PartialEq)]
-pub struct WindowSwitcherPresentation {
-    pub mode: aegis_core::window_switcher::Mode,
-    pub panel: aegis_core::Rect,
-    pub cards: Vec<WindowSwitcherCard>,
-    /// Independently animated focus frame. In fixed mode this moves between
-    /// stationary cards; in carousel mode it remains at the output centre.
-    pub selection_indicator: Option<aegis_core::window_switcher::Card>,
-    pub selected: Option<aegis_core::window::WindowId>,
-    pub inactive_content_brightness: f32,
-    pub visibility: f32,
-}
-
-/// One compositor-rendered live-preview popover contributed by ordinary
-/// chrome, such as the group of running windows above a hovered Dock tile.
-///
-/// The compositor paints the client surfaces into each card's `preview`
-/// rectangle before the shell draws labels and hit targets. This keeps Dock
-/// previews live and uses the same geometry contract as the window switcher.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LivePreviewPresentation {
-    pub panel: aegis_core::Rect,
-    pub cards: Vec<WindowSwitcherCard>,
-    pub focused: Option<aegis_core::window::WindowId>,
-    pub inactive_content_brightness: f32,
-    pub visibility: f32,
 }
 
 /// Decoded icon texture handles shared with chrome components.
@@ -233,13 +250,13 @@ pub enum CursorShape {
 
 impl Reserved {
     /// Shrink `rect` by these margins, clamped so size never goes negative.
-    pub fn inset(self, r: aegis_core::Rect) -> aegis_core::Rect {
-        aegis_core::Rect {
-            origin: aegis_core::Point {
+    pub fn inset(self, r: aegis_model::Rect) -> aegis_model::Rect {
+        aegis_model::Rect {
+            origin: aegis_model::Point {
                 x: r.origin.x + self.left,
                 y: r.origin.y + self.top,
             },
-            size: aegis_core::Size {
+            size: aegis_model::Size {
                 w: (r.size.w - self.left - self.right).max(0),
                 h: (r.size.h - self.top - self.bottom).max(0),
             },
@@ -255,15 +272,15 @@ pub use lens::Input;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowAction {
     /// Focus and raise a window; focusing a minimized window restores it.
-    Focus(aegis_core::window::WindowId),
+    Focus(aegis_model::window::WindowId),
     /// Hide a window while keeping its client and buffers alive.
-    Minimize(aegis_core::window::WindowId),
+    Minimize(aegis_model::window::WindowId),
     /// Set or clear compositor-managed maximization.
-    SetMaximized(aegis_core::window::WindowId, bool),
+    SetMaximized(aegis_model::window::WindowId, bool),
     /// Set or clear the compositor-internal always-on-top flag.
-    SetAlwaysOnTop(aegis_core::window::WindowId, bool),
+    SetAlwaysOnTop(aegis_model::window::WindowId, bool),
     /// Ask a client to close one of its toplevels gracefully.
-    Close(aegis_core::window::WindowId),
+    Close(aegis_model::window::WindowId),
 }
 
 /// Trusted Interaction Domain-management intent emitted by compositor-owned chrome.
@@ -286,7 +303,7 @@ pub enum InteractionDomainIntent {
         expected_revision: u64,
     },
     TransferWindow {
-        window: aegis_core::window::WindowId,
+        window: aegis_model::window::WindowId,
         target: InteractionDomainId,
         retain_source_as_observer: bool,
         expected_revision: u64,
@@ -307,7 +324,7 @@ pub struct ChromeEvents {
     /// Super+L binding.
     pub lock: bool,
     /// Window id a component asked to focus/activate.
-    pub clicked: Option<aegis_core::window::WindowId>,
+    pub clicked: Option<aegis_model::window::WindowId>,
     /// Ordered window actions emitted by popup menus. A queue allows an
     /// application-level action such as "close all windows" to preserve one
     /// journal entry per affected toplevel.
@@ -324,7 +341,7 @@ pub struct ChromeEvents {
     /// A workspace the chrome asked to switch to (the workspace bar's clicked
     /// tile). Drained into `Server::switch_workspace_to` by the main loop
     /// (ADR-0025).
-    pub switch_workspace: Option<aegis_core::workspace::WorkspaceId>,
+    pub switch_workspace: Option<aegis_model::workspace::WorkspaceId>,
     /// The chrome asked to toggle the launcher this frame (the dock's
     /// Launchpad tile). Drained by the main loop, which calls [`Shell::toggle`]
     /// — the same path as the Super+A hotkey — so the launcher flips open or
@@ -336,21 +353,21 @@ pub struct ChromeEvents {
     /// Window id the overview asked to focus this frame (a thumbnail click).
     /// Drained through the focus command/journal path; picking also closes
     /// the overview.
-    pub overview_pick: Option<aegis_core::window::WindowId>,
+    pub overview_pick: Option<aegis_model::window::WindowId>,
     /// Window id clicked in the held-modifier switcher.
-    pub window_switcher_pick: Option<aegis_core::window::WindowId>,
+    pub window_switcher_pick: Option<aegis_model::window::WindowId>,
     /// The switcher was dismissed by clicking outside its cards.
     pub window_switcher_cancel: bool,
     /// Workspace id the overview's rail asked to switch to. Drained through
     /// the same command/journal path as `SwitchWorkspaceTo`.
-    pub overview_switch: Option<aegis_core::workspace::WorkspaceId>,
+    pub overview_switch: Option<aegis_model::workspace::WorkspaceId>,
     /// Region the screenshot selector asked to capture this frame, if any.
-    pub screenshot_region: Option<aegis_core::Rect>,
+    pub screenshot_region: Option<aegis_model::Rect>,
     /// Point the pixel picker was clicked at this frame (ADR-0054), in
     /// compositor logical pixels.
-    pub picked_point: Option<aegis_core::Point>,
+    pub picked_point: Option<aegis_model::Point>,
     /// Window id the window picker was clicked on this frame (ADR-0054).
-    pub picked_window: Option<aegis_core::window::WindowId>,
+    pub picked_window: Option<aegis_model::window::WindowId>,
     /// The window-picker user chose the whole output instead of a window:
     /// Enter/Space, or a click on empty desktop (ADR-0054).
     pub pick_output: bool,
@@ -400,6 +417,48 @@ impl ChromeEvents {
     }
 }
 
+/// Discrete lifecycle request broadcast by the shell host.
+///
+/// Components match only the variants they own, keeping the base [`Chrome`]
+/// trait independent of every built-in application's control surface.
+#[derive(Debug)]
+pub enum ChromeCommand<'a> {
+    ToggleLauncher,
+    CloseLauncher,
+    TogglePrism,
+    ClosePrism,
+    OpenBuiltIn(BuiltInApplication),
+    ToggleOverview,
+    ToggleCommandPanel,
+    StartWindowSwitcher,
+    FinishWindowSwitcher,
+    StartPick(PickerMode),
+    CancelPick,
+    StartAppPick(&'a AppPickParams),
+    CancelAppPick,
+    StartSecretPrompt(&'a SecretPromptParams),
+    CancelSecretPrompt,
+    StartConfirmPick(&'a ConfirmPickParams),
+    CancelConfirmPick,
+    StartCapabilityPick(&'a CapabilityPickParams),
+    CancelCapabilityPick,
+}
+
+/// Borrowed host snapshot or presentation-policy update.
+///
+/// Components that retain an update clone only the variant they consume.
+#[derive(Clone, Copy)]
+pub enum ChromeUpdate<'a> {
+    SystemStatus(&'a SystemStatus),
+    ResourceStats(&'a ResourceStats),
+    InteractionDomains(&'a InteractionDomainSnapshot),
+    AgentActivity(&'a AgentActivity),
+    AppCatalog(&'a AppCatalog),
+    Windows(&'a [Window]),
+    ReducedMotion(bool),
+    ModalReserved(Reserved),
+}
+
 /// One piece of compositor chrome.
 ///
 /// A component renders itself for one frame from the shared window and
@@ -435,51 +494,23 @@ pub trait Chrome {
     /// Handle one resolved key event while [`Chrome::captures_keyboard`] is
     /// true. Default no-op; override to consume typed input (the launcher's
     /// search box).
-    fn key_char(&mut self, _kc: &aegis_core::input::KeyChar, _out: &mut ChromeEvents) {}
+    fn key_char(&mut self, _kc: &aegis_model::input::KeyChar, _out: &mut ChromeEvents) {}
 
-    /// The global application-launcher hotkey fired. Default no-op;
-    /// components with an open/closed launcher state override this to flip it.
-    fn toggle(&mut self, _out: &mut ChromeEvents) {}
+    /// Receive a discrete host lifecycle command.
+    fn command(&mut self, _command: &ChromeCommand<'_>, _out: &mut ChromeEvents) {}
+
+    /// Receive a host-owned snapshot or presentation-policy update.
+    fn update(&mut self, _update: ChromeUpdate<'_>) {}
 
     /// Whether this component owns the application launcher state.
     fn launcher_active(&self) -> bool {
         false
     }
 
-    /// Close the application launcher without activating a result.
-    fn close_launcher(&mut self) {}
-
-    /// The global Prism hotkey fired. Only the Prism component overrides this.
-    fn toggle_prism(&mut self, _out: &mut ChromeEvents) {}
-
     /// Whether this component owns an open Prism surface.
     fn prism_active(&self) -> bool {
         false
     }
-
-    /// Close Prism without activating a result.
-    fn close_prism(&mut self) {}
-
-    /// Present one compositor-owned application. Only the component backing
-    /// the requested identity acts; ordinary chrome ignores it.
-    fn open_builtin(&mut self, _app: BuiltInApplication) {}
-
-    /// Receive a normalized host-system snapshot. Components keep their own
-    /// presentation copy so the render trait remains focused on frame data.
-    fn update_system_status(&mut self, _status: &SystemStatus) {}
-
-    /// Receive a host resource-utilisation sample. Components keep their own
-    /// presentation copy so the render trait remains focused on frame data.
-    fn update_resource_stats(&mut self, _stats: &ResourceStats) {}
-
-    /// Receive the complete Interaction Domain authority snapshot. Only trusted
-    /// compositor-owned components consume this high-level state.
-    fn update_interaction_domains(&mut self, _snapshot: &InteractionDomainSnapshot) {}
-
-    /// Receive one Agent input operation after the compositor successfully
-    /// applied it. Components must treat this as ephemeral presentation data,
-    /// not as authorization or an input source.
-    fn update_agent_activity(&mut self, _activity: &AgentActivity) {}
 
     /// Whether this component owns pointer input at the given output-space
     /// position. The main loop uses this before client routing so clicks on
@@ -542,21 +573,6 @@ pub trait Chrome {
         None
     }
 
-    /// Inform modal chrome about edge space belonging to persistent chrome.
-    /// A full-screen launcher still paints the whole output, but lays out its
-    /// usable content above a dock that remains visible during the modal.
-    fn set_modal_reserved(&mut self, _reserved: Reserved) {}
-
-    /// Toggle the component's overview mode (M9). Default no-op; the
-    /// overview component flips its open state. Fanned out by
-    /// [`Shell::toggle_overview`], mirroring [`Chrome::toggle`].
-    fn toggle_overview(&mut self, _out: &mut ChromeEvents) {}
-
-    /// Toggle the component's command panel (ADR-0080). Default no-op;
-    /// the command panel component flips its open state. Fanned out by
-    /// [`Shell::toggle_command_panel`], mirroring [`Chrome::toggle_overview`].
-    fn toggle_command_panel(&mut self, _out: &mut ChromeEvents) {}
-
     /// Whether the component's command panel is currently open.
     /// Default `false`.
     fn command_panel_active(&self) -> bool {
@@ -570,11 +586,6 @@ pub trait Chrome {
         false
     }
 
-    /// Begin the held-modifier window switcher. Static components ignore it;
-    /// the switcher component keeps its preview strip visible until
-    /// [`Chrome::finish_window_switcher`] arrives.
-    fn start_window_switcher(&mut self) {}
-
     /// Advance and cache the switcher's shared live-preview layout.
     ///
     /// Only the switcher component returns a presentation. The shell calls
@@ -583,10 +594,10 @@ pub trait Chrome {
     fn prepare_window_switcher(
         &mut self,
         _input: &Input,
-        _display: aegis_core::Rect,
+        _display: aegis_model::Rect,
         _windows: &[Window],
-        _order: &[aegis_core::window::WindowId],
-        _selected: Option<aegis_core::window::WindowId>,
+        _order: &[aegis_model::window::WindowId],
+        _selected: Option<aegis_model::window::WindowId>,
     ) -> Option<WindowSwitcherPresentation> {
         None
     }
@@ -599,9 +610,6 @@ pub trait Chrome {
         None
     }
 
-    /// Close the held-modifier window switcher when Super is released.
-    fn finish_window_switcher(&mut self) {}
-
     /// Whether the Super+Tab preview strip is currently active.
     fn window_switcher_active(&self) -> bool {
         false
@@ -613,45 +621,11 @@ pub trait Chrome {
         false
     }
 
-    /// Open an interactive picker session for a portal IPC request
-    /// (ADR-0054). Default no-op; the screenshot selector overrides this to
-    /// open in the requested mode. Results arrive through the
-    /// `picked_point`/`picked_window`/`pick_output`/`pick_cancelled` events
-    /// (and `screenshot_region` for region picks).
-    fn start_pick(&mut self, _mode: PickerMode) {}
-
-    /// Force-close an IPC picker session whose requester went away (lock,
-    /// timeout, disconnect). Must not interrupt the Print-key flow; default
-    /// no-op.
-    fn cancel_pick(&mut self) {}
-
-    /// Open the user-consent application picker for a `PickApp` IPC request
-    /// (the AppChooser portal's compositor side). Default no-op; the
-    /// app-picker component overrides this. Results arrive through the
-    /// `app_pick_confirmed`/`app_pick_cancelled` events. Ordinary modal
-    /// chrome over the live scene.
-    fn start_app_pick(&mut self, _params: AppPickParams) {}
-
-    /// Force-close the app picker whose requester went away (lock, timeout,
-    /// disconnect). Default no-op.
-    fn cancel_app_pick(&mut self) {}
-
     /// Whether the app picker is currently open. Default `false`; the
     /// app-picker component overrides this.
     fn app_pick_active(&self) -> bool {
         false
     }
-
-    /// Open the masked secret prompt for a `PromptSecret` IPC request (the
-    /// vault password unlock's compositor side). Default no-op; the
-    /// secret-prompt component overrides this. Results arrive through the
-    /// `secret_prompt_confirmed`/`secret_prompt_cancelled` events. Ordinary
-    /// modal chrome over the live scene, like the other pickers.
-    fn start_secret_prompt(&mut self, _params: SecretPromptParams) {}
-
-    /// Force-close the secret prompt whose requester went away (lock,
-    /// timeout, disconnect). Default no-op.
-    fn cancel_secret_prompt(&mut self) {}
 
     /// Whether the secret prompt is currently open. Default `false`; the
     /// secret-prompt component overrides this.
@@ -659,59 +633,17 @@ pub trait Chrome {
         false
     }
 
-    /// Open the yes/no confirmation dialog for a `PickConfirm` IPC request
-    /// (portal consent flows). Default no-op; the confirmation component
-    /// overrides this. The answer arrives through the
-    /// `confirm_pick_answered` event. Ordinary modal chrome over the live
-    /// scene, like the other pickers.
-    fn start_confirm_pick(&mut self, _params: ConfirmPickParams) {}
-
-    /// Force-close the confirmation dialog whose requester went away
-    /// (lock, timeout, disconnect). Default no-op.
-    fn cancel_confirm_pick(&mut self) {}
-
     /// Whether the confirmation dialog is currently open. Default `false`;
     /// the confirmation component overrides this.
     fn confirm_pick_active(&self) -> bool {
         false
     }
 
-    /// Open the capability-borrowing checklist for a `PairAgent` IPC
-    /// request (ADR-0088 agent pairing). Default no-op; the
-    /// capability-prompt component overrides this. The answer arrives
-    /// through the `capability_pick_answered` event. Ordinary modal chrome
-    /// over the live scene, like the other pickers.
-    fn start_capability_pick(&mut self, _params: CapabilityPickParams) {}
-
-    /// Force-close the capability checklist whose requester went away
-    /// (lock, timeout, disconnect). Default no-op.
-    fn cancel_capability_pick(&mut self) {}
-
     /// Whether the capability checklist is currently open. Default `false`;
     /// the capability-prompt component overrides this.
     fn capability_pick_active(&self) -> bool {
         false
     }
-
-    /// Accessibility reduced-motion policy (ADR-0029). When enabled, every
-    /// component transition (springs, fades, slides) resolves to its end
-    /// state in at most one frame. The shell fans this out to all components
-    /// and to lens itself; default no-op for static components.
-    fn set_reduced_motion(&mut self, _reduced: bool) {}
-
-    /// Receive the host application catalog: every launchable entry, the
-    /// resolved pinned favorites, and the decoded icon set. Components that
-    /// display applications replace their snapshots in place; others ignore
-    /// it. Fanned out by [`Shell::set_app_catalog`] and seeded by
-    /// [`Shell::add`].
-    fn update_app_catalog(&mut self, _catalog: &AppCatalog) {}
-
-    /// Receive the current visible-window snapshot outside the render pass.
-    /// Components normally read `windows` directly from [`Chrome::render`],
-    /// but presentation policy that also affects reserved edges or backdrop
-    /// capture must be available before rendering begins. Fanned out by
-    /// [`Shell::set_windows`] and seeded by [`Shell::add`].
-    fn update_windows(&mut self, _windows: &[Window]) {}
 
     /// Prepare geometry/visibility that the backdrop capture must consume in
     /// the same frame as [`Chrome::render`]. Components with cursor-driven
@@ -871,7 +803,7 @@ impl Shell {
                 i18n: Localizer::from_env(),
                 system_status: SystemStatus::default(),
                 resource_stats: ResourceStats::default(),
-                interaction_domains: aegis_core::interaction_domain::InteractionDomainModel::new()
+                interaction_domains: aegis_model::interaction_domain::InteractionDomainModel::new()
                     .snapshot(),
                 catalog: AppCatalog::default(),
                 events: ChromeEvents::default(),
@@ -885,13 +817,20 @@ impl Shell {
     /// Register a chrome component. Components render once per frame, in
     /// registration order.
     pub fn add(&mut self, mut component: Box<dyn Chrome>) {
-        component.update_system_status(&self.system_status);
-        component.update_resource_stats(&self.resource_stats);
-        component.update_interaction_domains(&self.interaction_domains);
-        component.set_reduced_motion(self.reduced_motion);
-        component.update_app_catalog(&self.catalog);
-        component.update_windows(&self.windows);
+        component.update(ChromeUpdate::SystemStatus(&self.system_status));
+        component.update(ChromeUpdate::ResourceStats(&self.resource_stats));
+        component.update(ChromeUpdate::InteractionDomains(&self.interaction_domains));
+        component.update(ChromeUpdate::ReducedMotion(self.reduced_motion));
+        component.update(ChromeUpdate::AppCatalog(&self.catalog));
+        component.update(ChromeUpdate::Windows(&self.windows));
         self.components.push(component);
+    }
+
+    fn broadcast_command(&mut self, command: ChromeCommand<'_>) {
+        let events = &mut self.events;
+        for component in &mut self.components {
+            component.command(&command, events);
+        }
     }
 
     /// Set the shell-wide reduced-motion policy (ADR-0029): every component
@@ -900,7 +839,7 @@ impl Shell {
         self.reduced_motion = reduced;
         self.ui.set_reduced_motion(reduced);
         for component in &mut self.components {
-            component.set_reduced_motion(reduced);
+            component.update(ChromeUpdate::ReducedMotion(reduced));
         }
     }
 
@@ -945,7 +884,7 @@ impl Shell {
     pub fn set_windows(&mut self, windows: Vec<Window>) {
         self.windows = windows;
         for component in self.components.iter_mut() {
-            component.update_windows(&self.windows);
+            component.update(ChromeUpdate::Windows(&self.windows));
         }
     }
 
@@ -957,7 +896,7 @@ impl Shell {
 
     /// Drain the surface id of the window a component asked to focus this
     /// frame, if any.
-    pub fn take_clicked_window(&mut self) -> Option<aegis_core::window::WindowId> {
+    pub fn take_clicked_window(&mut self) -> Option<aegis_model::window::WindowId> {
         self.events.clicked.take()
     }
 
@@ -980,9 +919,7 @@ impl Shell {
     /// Present a compositor-owned application through its registered chrome
     /// component.
     pub fn open_builtin(&mut self, app: BuiltInApplication) {
-        for component in self.components.iter_mut() {
-            component.open_builtin(app);
-        }
+        self.broadcast_command(ChromeCommand::OpenBuiltIn(app));
     }
 
     /// Replace the normalized system snapshot and notify interested shell
@@ -990,7 +927,7 @@ impl Shell {
     pub fn set_system_status(&mut self, status: SystemStatus) {
         self.system_status = status;
         for component in self.components.iter_mut() {
-            component.update_system_status(&self.system_status);
+            component.update(ChromeUpdate::SystemStatus(&self.system_status));
         }
     }
 
@@ -999,16 +936,16 @@ impl Shell {
     pub fn set_resource_stats(&mut self, stats: ResourceStats) {
         self.resource_stats = stats;
         for component in self.components.iter_mut() {
-            component.update_resource_stats(&self.resource_stats);
+            component.update(ChromeUpdate::ResourceStats(&self.resource_stats));
         }
     }
 
     /// Replace the Interaction Domain authority snapshot and notify the overview and
-    /// AI Workspaces before their next frame.
+    /// Agent Workspaces before their next frame.
     pub fn set_interaction_domains(&mut self, snapshot: InteractionDomainSnapshot) {
         self.interaction_domains = snapshot;
         for component in self.components.iter_mut() {
-            component.update_interaction_domains(&self.interaction_domains);
+            component.update(ChromeUpdate::InteractionDomains(&self.interaction_domains));
         }
     }
 
@@ -1016,7 +953,7 @@ impl Shell {
     /// trusted chrome components.
     pub fn report_agent_activity(&mut self, activity: AgentActivity) {
         for component in self.components.iter_mut() {
-            component.update_agent_activity(&activity);
+            component.update(ChromeUpdate::AgentActivity(&activity));
         }
     }
 
@@ -1038,7 +975,7 @@ impl Shell {
     /// Drain the workspace id the chrome asked to switch to this frame, if
     /// any (the workspace bar's clicked tile). The main loop forwards it to
     /// `Server::switch_workspace_to`.
-    pub fn take_switch_workspace(&mut self) -> Option<aegis_core::workspace::WorkspaceId> {
+    pub fn take_switch_workspace(&mut self) -> Option<aegis_model::workspace::WorkspaceId> {
         self.events.switch_workspace.take()
     }
 
@@ -1057,10 +994,7 @@ impl Shell {
     /// [`Shell::toggle`]: fanned out to every component; static components
     /// ignore it.
     pub fn toggle_overview(&mut self) {
-        let events = &mut self.events;
-        for component in self.components.iter_mut() {
-            component.toggle_overview(events);
-        }
+        self.broadcast_command(ChromeCommand::ToggleOverview);
     }
 
     /// Whether overview mode is currently open — the main loop swaps the
@@ -1073,10 +1007,7 @@ impl Shell {
     /// (ADR-0080). Mirrors [`Shell::toggle_overview`]: fanned out to every
     /// component; static components ignore it.
     pub fn toggle_command_panel(&mut self) {
-        let events = &mut self.events;
-        for component in self.components.iter_mut() {
-            component.toggle_command_panel(events);
-        }
+        self.broadcast_command(ChromeCommand::ToggleCommandPanel);
     }
 
     /// Whether the command panel is currently open.
@@ -1086,9 +1017,7 @@ impl Shell {
 
     /// Open the compositor-owned Super+Tab preview strip.
     pub fn start_window_switcher(&mut self) {
-        for component in self.components.iter_mut() {
-            component.start_window_switcher();
-        }
+        self.broadcast_command(ChromeCommand::StartWindowSwitcher);
     }
 
     /// Advance the switcher once and return the exact layout shared by the
@@ -1096,10 +1025,10 @@ impl Shell {
     pub fn prepare_window_switcher(
         &mut self,
         input: &Input,
-        display: aegis_core::Rect,
+        display: aegis_model::Rect,
         windows: &[Window],
-        order: &[aegis_core::window::WindowId],
-        selected: Option<aegis_core::window::WindowId>,
+        order: &[aegis_model::window::WindowId],
+        selected: Option<aegis_model::window::WindowId>,
     ) -> Option<WindowSwitcherPresentation> {
         self.components.iter_mut().find_map(|component| {
             component.prepare_window_switcher(input, display, windows, order, selected)
@@ -1133,9 +1062,7 @@ impl Shell {
 
     /// Close the preview strip after the held Super modifier is released.
     pub fn finish_window_switcher(&mut self) {
-        for component in self.components.iter_mut() {
-            component.finish_window_switcher();
-        }
+        self.broadcast_command(ChromeCommand::FinishWindowSwitcher);
     }
 
     /// Whether the Super+Tab preview strip is active.
@@ -1152,12 +1079,12 @@ impl Shell {
     }
 
     /// Window id the overview asked to focus this frame, if any.
-    pub fn take_overview_pick(&mut self) -> Option<aegis_core::window::WindowId> {
+    pub fn take_overview_pick(&mut self) -> Option<aegis_model::window::WindowId> {
         self.events.overview_pick.take()
     }
 
     /// Window clicked in the held-modifier switcher, if any.
-    pub fn take_window_switcher_pick(&mut self) -> Option<aegis_core::window::WindowId> {
+    pub fn take_window_switcher_pick(&mut self) -> Option<aegis_model::window::WindowId> {
         self.events.window_switcher_pick.take()
     }
 
@@ -1167,48 +1094,43 @@ impl Shell {
     }
 
     /// Workspace id the overview's rail asked to switch to, if any.
-    pub fn take_overview_switch(&mut self) -> Option<aegis_core::workspace::WorkspaceId> {
+    pub fn take_overview_switch(&mut self) -> Option<aegis_model::workspace::WorkspaceId> {
         self.events.overview_switch.take()
     }
 
     /// Open the screenshot region selector. No-op if no selector component is
     /// registered.
     pub fn start_screenshot(&mut self) {
-        for component in self.components.iter_mut() {
-            // Only the screenshot selector reacts; other components ignore it.
-            component.open_builtin(aegis_core::app::BuiltInApplication::ScreenshotSelector);
-        }
+        self.broadcast_command(ChromeCommand::OpenBuiltIn(
+            aegis_model::app::BuiltInApplication::ScreenshotSelector,
+        ));
     }
 
     /// Open an interactive picker session for a portal IPC request
     /// (ADR-0054). No-op if no picker component is registered.
     pub fn start_pick(&mut self, mode: PickerMode) {
-        for component in self.components.iter_mut() {
-            component.start_pick(mode);
-        }
+        self.broadcast_command(ChromeCommand::StartPick(mode));
     }
 
     /// Force-close any IPC picker session (requester gone); the Print-key
     /// flow is unaffected.
     pub fn cancel_pick(&mut self) {
-        for component in self.components.iter_mut() {
-            component.cancel_pick();
-        }
+        self.broadcast_command(ChromeCommand::CancelPick);
     }
 
     /// Region the screenshot selector asked to capture this frame, if any.
-    pub fn take_screenshot_region(&mut self) -> Option<aegis_core::Rect> {
+    pub fn take_screenshot_region(&mut self) -> Option<aegis_model::Rect> {
         self.events.screenshot_region.take()
     }
 
     /// Point the pixel picker was clicked at this frame, if any (ADR-0054).
-    pub fn take_picked_point(&mut self) -> Option<aegis_core::Point> {
+    pub fn take_picked_point(&mut self) -> Option<aegis_model::Point> {
         self.events.picked_point.take()
     }
 
     /// Window id the window picker was clicked on this frame, if any
     /// (ADR-0054).
-    pub fn take_picked_window(&mut self) -> Option<aegis_core::window::WindowId> {
+    pub fn take_picked_window(&mut self) -> Option<aegis_model::window::WindowId> {
         self.events.picked_window.take()
     }
 
@@ -1225,17 +1147,13 @@ impl Shell {
     /// Open the user-consent application picker for a `PickApp` IPC request.
     /// No-op if no app-picker component is registered.
     pub fn start_app_pick(&mut self, params: AppPickParams) {
-        for component in self.components.iter_mut() {
-            component.start_app_pick(params.clone());
-        }
+        self.broadcast_command(ChromeCommand::StartAppPick(&params));
     }
 
     /// Force-close the app picker (requester gone: lock, timeout,
     /// disconnect).
     pub fn cancel_app_pick(&mut self) {
-        for component in self.components.iter_mut() {
-            component.cancel_app_pick();
-        }
+        self.broadcast_command(ChromeCommand::CancelAppPick);
     }
 
     /// Whether the app picker is currently open.
@@ -1256,17 +1174,13 @@ impl Shell {
     /// Open the masked secret prompt for a `PromptSecret` IPC request.
     /// No-op if no secret-prompt component is registered.
     pub fn start_secret_prompt(&mut self, params: SecretPromptParams) {
-        for component in self.components.iter_mut() {
-            component.start_secret_prompt(params.clone());
-        }
+        self.broadcast_command(ChromeCommand::StartSecretPrompt(&params));
     }
 
     /// Force-close the secret prompt (requester gone: lock, timeout,
     /// disconnect).
     pub fn cancel_secret_prompt(&mut self) {
-        for component in self.components.iter_mut() {
-            component.cancel_secret_prompt();
-        }
+        self.broadcast_command(ChromeCommand::CancelSecretPrompt);
     }
 
     /// Whether the secret prompt is currently open.
@@ -1287,17 +1201,13 @@ impl Shell {
     /// Open the yes/no confirmation dialog for a `PickConfirm` IPC request.
     /// No-op if no confirmation component is registered.
     pub fn start_confirm_pick(&mut self, params: ConfirmPickParams) {
-        for component in self.components.iter_mut() {
-            component.start_confirm_pick(params.clone());
-        }
+        self.broadcast_command(ChromeCommand::StartConfirmPick(&params));
     }
 
     /// Force-close the confirmation dialog (requester gone: lock, timeout,
     /// disconnect).
     pub fn cancel_confirm_pick(&mut self) {
-        for component in self.components.iter_mut() {
-            component.cancel_confirm_pick();
-        }
+        self.broadcast_command(ChromeCommand::CancelConfirmPick);
     }
 
     /// Whether the confirmation dialog is currently open.
@@ -1314,17 +1224,13 @@ impl Shell {
     /// Open the capability-borrowing checklist for a `PairAgent` IPC
     /// request. No-op if no capability-prompt component is registered.
     pub fn start_capability_pick(&mut self, params: CapabilityPickParams) {
-        for component in self.components.iter_mut() {
-            component.start_capability_pick(params.clone());
-        }
+        self.broadcast_command(ChromeCommand::StartCapabilityPick(&params));
     }
 
     /// Force-close the capability checklist (requester gone: lock, timeout,
     /// disconnect).
     pub fn cancel_capability_pick(&mut self) {
-        for component in self.components.iter_mut() {
-            component.cancel_capability_pick();
-        }
+        self.broadcast_command(ChromeCommand::CancelCapabilityPick);
     }
 
     /// Whether the capability checklist is currently open.
@@ -1431,14 +1337,14 @@ impl Shell {
     pub fn set_app_catalog(&mut self, catalog: AppCatalog) {
         self.catalog = catalog;
         for component in self.components.iter_mut() {
-            component.update_app_catalog(&self.catalog);
+            component.update(ChromeUpdate::AppCatalog(&self.catalog));
         }
     }
 
     /// Feed one resolved key event to every registered component. Components
     /// with keyboard-owned state, such as the launcher or an application
     /// context menu, override [`Chrome::key_char`]; others no-op.
-    pub fn key_char(&mut self, kc: aegis_core::input::KeyChar) {
+    pub fn key_char(&mut self, kc: aegis_model::input::KeyChar) {
         let modal_active = self
             .components
             .iter()
@@ -1469,14 +1375,9 @@ impl Shell {
             .iter()
             .any(|component| component.launcher_active());
         if opening {
-            for component in self.components.iter_mut() {
-                component.close_prism();
-            }
+            self.broadcast_command(ChromeCommand::ClosePrism);
         }
-        let events = &mut self.events;
-        for component in self.components.iter_mut() {
-            component.toggle(events);
-        }
+        self.broadcast_command(ChromeCommand::ToggleLauncher);
     }
 
     /// Fire the global Prism hotkey. Opening Prism closes the application
@@ -1487,14 +1388,9 @@ impl Shell {
             .iter()
             .any(|component| component.prism_active());
         if opening {
-            for component in self.components.iter_mut() {
-                component.close_launcher();
-            }
+            self.broadcast_command(ChromeCommand::CloseLauncher);
         }
-        let events = &mut self.events;
-        for component in self.components.iter_mut() {
-            component.toggle_prism(events);
-        }
+        self.broadcast_command(ChromeCommand::TogglePrism);
     }
 
     /// The union of every component's [`Chrome::reserved`] edges — the space
@@ -1750,7 +1646,7 @@ impl Shell {
                     total
                 });
             for component in components.iter_mut() {
-                component.set_modal_reserved(modal_reserved);
+                component.update(ChromeUpdate::ModalReserved(modal_reserved));
             }
             self.ui.frame(input, |f| {
                 for component in components.iter_mut() {
@@ -1903,9 +1799,9 @@ mod tests {
             left: 4,
             right: 0,
         };
-        let out = r.inset(aegis_core::Rect::new(0, 0, 1000, 800));
-        assert_eq!(out.origin, aegis_core::Point { x: 4, y: 10 });
-        assert_eq!(out.size, aegis_core::Size { w: 996, h: 714 }); // 800-10-76
+        let out = r.inset(aegis_model::Rect::new(0, 0, 1000, 800));
+        assert_eq!(out.origin, aegis_model::Point { x: 4, y: 10 });
+        assert_eq!(out.size, aegis_model::Size { w: 996, h: 714 }); // 800-10-76
     }
 
     #[test]
@@ -1916,7 +1812,7 @@ mod tests {
             left: 0,
             right: 0,
         };
-        let out = r.inset(aegis_core::Rect::new(0, 0, 100, 100));
-        assert_eq!(out.size, aegis_core::Size { w: 100, h: 0 });
+        let out = r.inset(aegis_model::Rect::new(0, 0, 100, 100));
+        assert_eq!(out.size, aegis_model::Size { w: 100, h: 0 });
     }
 }

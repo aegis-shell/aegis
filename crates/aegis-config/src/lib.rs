@@ -7,7 +7,7 @@
 //! CHANGELOG. The loader never silently ignores a problem: a malformed or
 //! unsupported file is reported as structured [`Diagnostic`]s.
 //!
-//! The crate is pure: it depends on [`aegis_core`] for the shared keymap model
+//! The crate is pure: it depends on [`aegis_model`] for the shared keymap model
 //! and name resolvers, and on `serde`/`toml` for the schema. It has no flux,
 //! lens, or Wayland dependency, so it is unit-testable in isolation. See
 //! [ADR-0026](../../docs/adr/0026-configuration-system.md).
@@ -21,9 +21,9 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use aegis_core::input::{Mods, TouchpadConfig, TouchpadScrollMethod};
-use aegis_core::keybind::{Keybind, Keymap};
-pub use aegis_core::settings::{
+use aegis_model::input::{Mods, TouchpadConfig, TouchpadScrollMethod};
+use aegis_model::keybind::{Keybind, Keymap};
+pub use aegis_model::settings::{
     AccentColor, ColorScheme, Contrast, DesktopPreferences, IdleSettings,
 };
 use toml_edit::DocumentMut;
@@ -63,9 +63,9 @@ pub struct Config {
 
     /// Window rules, an array-of-tables written `[[window_rule]]`. Evaluated
     /// on first map; the first match applies (move to workspace, force a
-    /// layout role). See [`aegis_core::window_rule::WindowRule`].
+    /// layout role). See [`aegis_model::window_rule::WindowRule`].
     #[serde(default, rename = "window_rule")]
-    pub window_rules: Vec<aegis_core::window_rule::WindowRule>,
+    pub window_rules: Vec<aegis_model::window_rule::WindowRule>,
 
     /// Tiling policy parameters (ADR-0024), written as a `[layout]` table.
     #[serde(default)]
@@ -477,7 +477,7 @@ pub struct UiConfig {
     /// compositor gestures and shell surfaces without per-window title bars;
     /// `client-side` asks applications to draw their own frames.
     #[serde(default)]
-    pub window_decorations: aegis_core::window::DecorationPolicy,
+    pub window_decorations: aegis_model::window::DecorationPolicy,
 }
 
 /// The `[input]` section.
@@ -581,7 +581,7 @@ pub struct OutputConfig {
     pub position: Option<OutputPosition>,
     /// Output transform name (`normal`, `90`, `180`, `270`, `flipped`,
     /// `flipped-90`, `flipped-180`, `flipped-270`; see
-    /// [`aegis_core::Transform::from_name`]). Parsed and validated now;
+    /// [`aegis_model::Transform::from_name`]). Parsed and validated now;
     /// applied once the renderer supports output transforms.
     #[serde(default)]
     pub transform: Option<String>,
@@ -600,7 +600,7 @@ pub struct OutputPosition {
 }
 
 /// The `[layout]` section: tiling gaps and master ratio. Defaults match the
-/// built-in `aegis_core::layout::LayoutParams`.
+/// built-in `aegis_model::layout::LayoutParams`.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LayoutConfig {
@@ -641,9 +641,9 @@ impl Default for LayoutConfig {
     }
 }
 
-impl From<LayoutConfig> for aegis_core::layout::LayoutParams {
-    fn from(c: LayoutConfig) -> aegis_core::layout::LayoutParams {
-        aegis_core::layout::LayoutParams {
+impl From<LayoutConfig> for aegis_model::layout::LayoutParams {
+    fn from(c: LayoutConfig) -> aegis_model::layout::LayoutParams {
+        aegis_model::layout::LayoutParams {
             gaps: c.gaps,
             master_ratio: c.master_ratio,
         }
@@ -652,7 +652,7 @@ impl From<LayoutConfig> for aegis_core::layout::LayoutParams {
 
 /// One key binding: a modifier set, a key, and the action it triggers.
 ///
-/// Field names match the [`aegis_core::keybind`] name resolvers: `mods` is a
+/// Field names match the [`aegis_model::keybind`] name resolvers: `mods` is a
 /// list so several modifiers can combine, `key` and `action` are single
 /// names. Unknown names produce a per-entry diagnostic rather than aborting
 /// the whole file.
@@ -673,7 +673,7 @@ pub struct KeybindEntry {
 /// One touchpad swipe binding: a finger count, an axis, and the action it
 /// triggers.
 ///
-/// Field names match the [`aegis_core::gesture`] name resolvers. Unknown
+/// Field names match the [`aegis_model::gesture`] name resolvers. Unknown
 /// names produce a per-entry diagnostic rather than aborting the whole file.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -834,7 +834,7 @@ impl Config {
                 ));
             }
             if let Some(mode) = &output.mode {
-                match mode.parse::<aegis_core::output::ModeSpec>() {
+                match mode.parse::<aegis_model::output::ModeSpec>() {
                     Ok(spec) => {
                         // Sanity caps, not hardware limits: they catch typos
                         // (a stray digit) that would otherwise fall back to the
@@ -859,7 +859,7 @@ impl Config {
                 }
             }
             if let Some(transform) = &output.transform
-                && aegis_core::Transform::from_name(transform).is_none()
+                && aegis_model::Transform::from_name(transform).is_none()
             {
                 diagnostics.push(Diagnostic::new(
                     Some(format!("output.{index}.transform")),
@@ -1015,7 +1015,7 @@ impl Config {
             let mut mods = Mods::NONE;
             let mut mods_ok = true;
             for m in &entry.mods {
-                match aegis_core::keybind::mod_from_name(m) {
+                match aegis_model::keybind::mod_from_name(m) {
                     Some(bit) => mods |= bit,
                     None => {
                         errs.push(Diagnostic::new(
@@ -1026,14 +1026,14 @@ impl Config {
                     }
                 }
             }
-            let Some(keysym) = aegis_core::keybind::keysym_from_name(&entry.key) else {
+            let Some(keysym) = aegis_model::keybind::keysym_from_name(&entry.key) else {
                 errs.push(Diagnostic::new(
                     Some(field.clone()),
                     format!("unknown key '{}'", entry.key),
                 ));
                 continue;
             };
-            let Some(action) = aegis_core::keybind::action_from_name(&entry.action) else {
+            let Some(action) = aegis_model::keybind::action_from_name(&entry.action) else {
                 errs.push(Diagnostic::new(
                     Some(field.clone()),
                     format!("unknown action '{}'", entry.action),
@@ -1060,12 +1060,12 @@ impl Config {
     }
 
     /// Resolve the configured swipe bindings into
-    /// [`aegis_core::gesture::GestureBinding`]s.
+    /// [`aegis_model::gesture::GestureBinding`]s.
     /// Returns the resolved bindings plus one diagnostic per entry that
     /// could not resolve (bad finger count, unknown axis, or unknown
     /// action). Good entries are kept so a file with one typo still yields
     /// the rest.
-    pub fn resolve_gestures(&self) -> (Vec<aegis_core::gesture::GestureBinding>, Vec<Diagnostic>) {
+    pub fn resolve_gestures(&self) -> (Vec<aegis_model::gesture::GestureBinding>, Vec<Diagnostic>) {
         let mut binds = Vec::new();
         let mut errs = Vec::new();
         for (i, entry) in self.gestures.iter().enumerate() {
@@ -1080,21 +1080,21 @@ impl Config {
                 ));
                 continue;
             }
-            let Some(axis) = aegis_core::gesture::gesture_axis_from_name(&entry.axis) else {
+            let Some(axis) = aegis_model::gesture::gesture_axis_from_name(&entry.axis) else {
                 errs.push(Diagnostic::new(
                     Some(field.clone()),
                     format!("unknown axis '{}'", entry.axis),
                 ));
                 continue;
             };
-            let Some(action) = aegis_core::gesture::gesture_action_from_name(&entry.action) else {
+            let Some(action) = aegis_model::gesture::gesture_action_from_name(&entry.action) else {
                 errs.push(Diagnostic::new(
                     Some(field.clone()),
                     format!("unknown action '{}'", entry.action),
                 ));
                 continue;
             };
-            binds.push(aegis_core::gesture::GestureBinding {
+            binds.push(aegis_model::gesture::GestureBinding {
                 fingers: entry.fingers,
                 axis,
                 action,
@@ -1103,39 +1103,39 @@ impl Config {
         (binds, errs)
     }
 
-    /// Build the active [`aegis_core::gesture::GestureMap`]: built-in defaults
+    /// Build the active [`aegis_model::gesture::GestureMap`]: built-in defaults
     /// overridden by the configured entries, plus the diagnostics from
     /// resolution. Callers log the diagnostics and install the returned map.
-    pub fn gesture_map(&self) -> (aegis_core::gesture::GestureMap, Vec<Diagnostic>) {
+    pub fn gesture_map(&self) -> (aegis_model::gesture::GestureMap, Vec<Diagnostic>) {
         let (overrides, errs) = self.resolve_gestures();
         (
-            aegis_core::gesture::GestureMap::defaults().with_overrides(overrides),
+            aegis_model::gesture::GestureMap::defaults().with_overrides(overrides),
             errs,
         )
     }
 
     /// Resolve the `[[output]]` entries into per-connector
-    /// [`aegis_core::output::OutputPolicy`]s (ADR-0028). Mode and transform
+    /// [`aegis_model::output::OutputPolicy`]s (ADR-0028). Mode and transform
     /// strings were validated at parse time, so unresolvable ones degrade to
     /// `None` rather than failing here. When several entries name the same
     /// connector, the later entry wins.
     pub fn output_policies(
         &self,
-    ) -> std::collections::HashMap<String, aegis_core::output::OutputPolicy> {
+    ) -> std::collections::HashMap<String, aegis_model::output::OutputPolicy> {
         let mut policies = std::collections::HashMap::new();
         for output in &self.outputs {
             policies.insert(
                 output.connector.clone(),
-                aegis_core::output::OutputPolicy {
+                aegis_model::output::OutputPolicy {
                     scale: output.scale,
                     mode: output.mode.as_deref().and_then(|m| m.parse().ok()),
                     position: output
                         .position
-                        .map(|p| aegis_core::Point { x: p.x, y: p.y }),
+                        .map(|p| aegis_model::Point { x: p.x, y: p.y }),
                     transform: output
                         .transform
                         .as_deref()
-                        .and_then(aegis_core::Transform::from_name),
+                        .and_then(aegis_model::Transform::from_name),
                     primary: output.primary,
                 },
             );
@@ -1378,7 +1378,7 @@ pub enum ConfigEdit {
     SetTouchpad { config: TouchpadConfig },
     /// Replace the user-editable fields for one `[[output]]` entry.
     SetOutput {
-        settings: aegis_core::settings::DisplaySettings,
+        settings: aegis_model::settings::DisplaySettings,
     },
     /// Replace all compositor-owned desktop appearance and UI preference
     /// fields while preserving unrelated presentation policy.
@@ -1528,8 +1528,8 @@ fn apply_touchpad(document: &mut DocumentMut, config: &TouchpadConfig) {
     });
 }
 
-fn apply_output(document: &mut DocumentMut, settings: aegis_core::settings::DisplaySettings) {
-    let aegis_core::settings::DisplaySettings {
+fn apply_output(document: &mut DocumentMut, settings: aegis_model::settings::DisplaySettings) {
+    let aegis_model::settings::DisplaySettings {
         connector,
         mode,
         scale,
@@ -1623,7 +1623,7 @@ fn output_table_has_override(table: &toml_edit::Table) -> bool {
             .unwrap_or(false)
 }
 
-fn format_mode_spec(mode: aegis_core::output::ModeSpec) -> String {
+fn format_mode_spec(mode: aegis_model::output::ModeSpec) -> String {
     match mode.refresh_hz {
         Some(refresh) => format!("{}x{}@{refresh}", mode.width, mode.height),
         None => format!("{}x{}", mode.width, mode.height),

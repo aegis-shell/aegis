@@ -2,7 +2,7 @@ use super::*;
 
 /// Publish one normalized live-system snapshot to in-process chrome and IPC.
 pub(super) fn publish_system_status_parts(
-    status: &aegis_core::system::SystemStatus,
+    status: &aegis_model::system::SystemStatus,
     shell: &mut aegis_shell::Shell,
     live: &std::sync::Arc<LiveState>,
     ipc: &Option<aegis_ipc::Server>,
@@ -22,12 +22,12 @@ pub(super) fn publish_system_status_parts(
 pub(super) fn apply_system_action(
     server: &mut aegis_compositor::Server,
     host: &mut aegis_backend::host::Host,
-    notifications: &std::sync::Arc<std::sync::Mutex<aegis_core::notify::NotificationQueue>>,
-    status: &mut aegis_core::system::SystemStatus,
+    notifications: &std::sync::Arc<std::sync::Mutex<aegis_model::notify::NotificationQueue>>,
+    status: &mut aegis_model::system::SystemStatus,
     idle_inhibits: &mut super::idle::IdleInhibits,
-    action: aegis_core::system::SystemAction,
+    action: aegis_model::system::SystemAction,
 ) -> Result<(), String> {
-    use aegis_core::system::SystemAction;
+    use aegis_model::system::SystemAction;
 
     action.validate().map_err(str::to_owned)?;
     validate_session_boundary(server.session_lock_confirmed(), &action)?;
@@ -104,11 +104,11 @@ pub(super) fn apply_system_action(
 
 fn validate_session_boundary(
     lock_confirmed: bool,
-    action: &aegis_core::system::SystemAction,
+    action: &aegis_model::system::SystemAction,
 ) -> Result<(), String> {
     if matches!(
         action,
-        aegis_core::system::SystemAction::SetOutputPower { powered: false }
+        aegis_model::system::SystemAction::SetOutputPower { powered: false }
     ) && !lock_confirmed
     {
         Err("output power-off requires a confirmed session lock".into())
@@ -186,7 +186,7 @@ fn host_command_reaper() -> &'static HostCommandReaper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aegis_core::system::SystemAction;
+    use aegis_model::system::SystemAction;
 
     #[test]
     fn output_power_requires_confirmed_secure_presentation() {

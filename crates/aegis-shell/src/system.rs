@@ -1,14 +1,14 @@
 //! Host probes for the backend-neutral live system model.
 //!
-//! Probing remains outside `aegis-core` because it uses Linux files and host
+//! Probing remains outside `aegis-model` because it uses Linux files and host
 //! commands. Mutations remain owned by the executable.
 
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-pub use aegis_core::settings::{DisplaySettings, DisplayStatus};
-pub use aegis_core::system::{
+pub use aegis_model::settings::{DisplaySettings, DisplayStatus};
+pub use aegis_model::system::{
     BatteryStatus, ChassisKind, NetworkState, ResourceStats, SystemAction, SystemStatus,
 };
 
@@ -28,7 +28,7 @@ pub fn detect_system_status() -> SystemStatus {
         brightness: detect_brightness(),
         do_not_disturb: false,
         tiled: false,
-        touchpad: aegis_core::input::TouchpadStatus::default(),
+        touchpad: aegis_model::input::TouchpadStatus::default(),
         display: DisplayStatus::default(),
         idle_inhibited: false,
     }
@@ -63,7 +63,7 @@ pub fn detect_system_status_lightweight(
         brightness: detect_brightness(),
         do_not_disturb: false,
         tiled: false,
-        touchpad: aegis_core::input::TouchpadStatus::default(),
+        touchpad: aegis_model::input::TouchpadStatus::default(),
         display: DisplayStatus::default(),
         idle_inhibited: false,
     }
@@ -448,7 +448,7 @@ mod tests {
         assert_eq!(status.bluetooth_enabled, None);
         assert_eq!(
             status.touchpad.config,
-            aegis_core::input::TouchpadConfig::default()
+            aegis_model::input::TouchpadConfig::default()
         );
     }
 

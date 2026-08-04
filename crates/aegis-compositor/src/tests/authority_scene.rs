@@ -107,7 +107,7 @@ fn interaction_domain_window_registration_schedules_layout_and_damage_observatio
         .state
         .client_initial_interaction_domains
         .insert(client, bundle.interaction_domain);
-    let window = aegis_core::window::WindowId(4242);
+    let window = aegis_model::window::WindowId(4242);
     server
         .state
         .register_window(client, window)
@@ -182,7 +182,7 @@ fn single_seat_client_route_follows_atomic_group_authority() {
         .authority
         .create_interaction_group(
             client,
-            &[aegis_core::window::WindowId(1)],
+            &[aegis_model::window::WindowId(1)],
             HUMAN_INTERACTION_DOMAIN,
         )
         .unwrap();
@@ -213,7 +213,7 @@ fn observers_are_surface_output_members_without_receiving_control() {
     let agent = state
         .authority
         .create_agent_interaction_domain("agent", SeatCapabilities::POINTER_KEYBOARD);
-    let window = aegis_core::window::WindowId(7);
+    let window = aegis_model::window::WindowId(7);
     let client = state.authority.register_client(None);
     let group = state
         .authority
@@ -264,8 +264,8 @@ fn physical_observer_mirror_blocks_click_through_without_taking_focus() {
     let agent = state
         .authority
         .create_agent_interaction_domain("agent", SeatCapabilities::POINTER_KEYBOARD);
-    let bottom_window = aegis_core::window::WindowId(1);
-    let mirror_window = aegis_core::window::WindowId(2);
+    let bottom_window = aegis_model::window::WindowId(1);
+    let mirror_window = aegis_model::window::WindowId(2);
     let bottom_client = state.authority.register_client(None);
     let mirror_client = state.authority.register_client(None);
     state
@@ -294,16 +294,17 @@ fn physical_observer_mirror_blocks_click_through_without_taking_focus() {
     state.workspaces.place_toplevel(workspace, bottom_window);
     state.workspaces.place_toplevel(workspace, mirror_window);
 
-    let make_surface = |window: aegis_core::window::WindowId, resource: usize| -> Box<SurfaceRec> {
-        let mut surface = Box::new(SurfaceRec::new(resource as *mut ffi::wl_resource));
-        surface.mapped = true;
-        surface.xdg_toplevel = resource as *mut ffi::wl_resource;
-        surface.width = 100;
-        surface.height = 100;
-        surface.window.id = window;
-        surface.window.size = aegis_core::Size { w: 100, h: 100 };
-        surface
-    };
+    let make_surface =
+        |window: aegis_model::window::WindowId, resource: usize| -> Box<SurfaceRec> {
+            let mut surface = Box::new(SurfaceRec::new(resource as *mut ffi::wl_resource));
+            surface.mapped = true;
+            surface.xdg_toplevel = resource as *mut ffi::wl_resource;
+            surface.width = 100;
+            surface.height = 100;
+            surface.window.id = window;
+            surface.window.size = aegis_model::Size { w: 100, h: 100 };
+            surface
+        };
     let mut bottom = make_surface(bottom_window, 0x100);
     let mut mirror = make_surface(mirror_window, 0x200);
     state.surfaces = vec![bottom.as_mut(), mirror.as_mut()];
@@ -336,8 +337,8 @@ fn physical_observer_mirror_blocks_click_through_without_taking_focus() {
 #[test]
 fn switcher_preview_does_not_restack_and_stationary_rehit_tracks_the_commit() {
     let mut state = State::new(std::ptr::null_mut());
-    let selected_window = aegis_core::window::WindowId(1);
-    let old_top_window = aegis_core::window::WindowId(2);
+    let selected_window = aegis_model::window::WindowId(1);
+    let old_top_window = aegis_model::window::WindowId(2);
     let client = state.authority.register_client(None);
     state
         .authority
@@ -354,16 +355,17 @@ fn switcher_preview_does_not_restack_and_stationary_rehit_tracks_the_commit() {
     state.workspaces.place_toplevel(workspace, selected_window);
     state.workspaces.place_toplevel(workspace, old_top_window);
 
-    let make_surface = |window: aegis_core::window::WindowId, resource: usize| -> Box<SurfaceRec> {
-        let mut surface = Box::new(SurfaceRec::new(resource as *mut ffi::wl_resource));
-        surface.mapped = true;
-        surface.xdg_toplevel = surface.resource;
-        surface.width = 100;
-        surface.height = 100;
-        surface.window.id = window;
-        surface.window.size = aegis_core::Size { w: 100, h: 100 };
-        surface
-    };
+    let make_surface =
+        |window: aegis_model::window::WindowId, resource: usize| -> Box<SurfaceRec> {
+            let mut surface = Box::new(SurfaceRec::new(resource as *mut ffi::wl_resource));
+            surface.mapped = true;
+            surface.xdg_toplevel = surface.resource;
+            surface.width = 100;
+            surface.height = 100;
+            surface.window.id = window;
+            surface.window.size = aegis_model::Size { w: 100, h: 100 };
+            surface
+        };
     let mut selected = make_surface(selected_window, 0x100);
     let mut old_top = make_surface(old_top_window, 0x200);
     state.surfaces = vec![selected.as_mut(), old_top.as_mut()];
@@ -419,7 +421,7 @@ fn switcher_preview_does_not_restack_and_stationary_rehit_tracks_the_commit() {
 #[test]
 fn window_snapshot_drops_an_unmapped_toplevel() {
     let mut state = State::new(std::ptr::null_mut());
-    let window = aegis_core::window::WindowId(77);
+    let window = aegis_model::window::WindowId(77);
     let client = state.authority.register_client(None);
     state
         .authority
@@ -464,7 +466,7 @@ fn physical_window_snapshot_contains_only_controlled_or_observed_windows() {
     let agent = state
         .authority
         .create_agent_interaction_domain("agent", SeatCapabilities::POINTER_KEYBOARD);
-    let window = aegis_core::window::WindowId(78);
+    let window = aegis_model::window::WindowId(78);
     let client = state.authority.register_client(Some("agent".into()));
     let group = state
         .authority
@@ -480,7 +482,7 @@ fn physical_window_snapshot_contains_only_controlled_or_observed_windows() {
     surface.mapped = true;
     surface.xdg_toplevel = 0x400usize as *mut ffi::wl_resource;
     surface.window.id = window;
-    surface.window.size = aegis_core::Size { w: 100, h: 100 };
+    surface.window.size = aegis_model::Size { w: 100, h: 100 };
     state.surfaces = vec![surface.as_mut()];
 
     let mut server = std::mem::ManuallyDrop::new(Server {
@@ -549,8 +551,8 @@ fn raising_a_toplevel_keeps_its_surface_tree_together() {
 #[test]
 fn always_on_top_windows_stay_above_raised_normal_windows() {
     let mut state = State::new(std::ptr::null_mut());
-    let window_a = aegis_core::window::WindowId(1);
-    let window_b = aegis_core::window::WindowId(2);
+    let window_a = aegis_model::window::WindowId(1);
+    let window_b = aegis_model::window::WindowId(2);
     let client = state.authority.register_client(None);
     state
         .authority
@@ -630,8 +632,8 @@ fn always_on_top_windows_stay_above_raised_normal_windows() {
 #[test]
 fn restack_keeps_unfocused_newcomers_below_the_always_on_top_band() {
     let mut state = State::new(std::ptr::null_mut());
-    let window_a = aegis_core::window::WindowId(1);
-    let window_c = aegis_core::window::WindowId(3);
+    let window_a = aegis_model::window::WindowId(1);
+    let window_c = aegis_model::window::WindowId(3);
     let client = state.authority.register_client(None);
     state
         .authority
@@ -678,8 +680,8 @@ fn restack_keeps_unfocused_newcomers_below_the_always_on_top_band() {
 #[test]
 fn client_surface_order_keeps_each_window_tree_occluded_as_a_unit() {
     let mut state = State::new(std::ptr::null_mut());
-    let background_window = aegis_core::window::WindowId(10);
-    let foreground_window = aegis_core::window::WindowId(20);
+    let background_window = aegis_model::window::WindowId(10);
+    let foreground_window = aegis_model::window::WindowId(20);
     let client = state.authority.register_client(None);
     state
         .authority

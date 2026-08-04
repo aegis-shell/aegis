@@ -16,9 +16,9 @@ fn backdrop_refresh_is_driven_by_source_footprint() {
             extent: (1920, 80),
         },
     ];
-    let video_above_dock = FrameDamage::Area(vec![aegis_core::Rect::new(100, 100, 800, 450)]);
+    let video_above_dock = FrameDamage::Area(vec![aegis_model::Rect::new(100, 100, 800, 450)]);
     assert!(backdrop_refresh_regions(true, false, &video_above_dock, &input,).is_empty());
-    let video_under_dock = FrameDamage::Area(vec![aegis_core::Rect::new(100, 1020, 800, 60)]);
+    let video_under_dock = FrameDamage::Area(vec![aegis_model::Rect::new(100, 1020, 800, 60)]);
     assert_eq!(
         backdrop_refresh_regions(true, false, &video_under_dock, &input),
         vec![input[1]]
@@ -120,17 +120,20 @@ fn backdrop_cache_key_tracks_geometry_and_material_exactly() {
 
 #[test]
 fn focused_preview_content_keeps_one_full_brightness_target() {
-    let focused = aegis_core::window::WindowId(7);
-    let sibling = aegis_core::window::WindowId(8);
+    let focused = aegis_model::window::WindowId(7);
+    let sibling = aegis_model::window::WindowId(8);
     assert_eq!(
-        focused_content_brightness(Some(focused), focused, 0.74),
+        aegis_shell::preview::content_brightness(Some(focused), focused, 0.74),
         1.0
     );
     assert_eq!(
-        focused_content_brightness(Some(focused), sibling, 0.74),
+        aegis_shell::preview::content_brightness(Some(focused), sibling, 0.74),
         0.74
     );
-    assert_eq!(focused_content_brightness(None, sibling, 0.74), 1.0);
+    assert_eq!(
+        aegis_shell::preview::content_brightness(None, sibling, 0.74),
+        1.0
+    );
 }
 
 #[test]
@@ -404,7 +407,7 @@ fn damaged_base_and_stencil_overlay_preserve_pixels_outside_the_scissor() {
     frame.submit().unwrap().present().unwrap();
 
     let frame = surface.begin_frame().unwrap();
-    let repaint = FrameDamage::Area(vec![aegis_core::Rect::new(8, 6, 10, 9)]);
+    let repaint = FrameDamage::Area(vec![aegis_model::Rect::new(8, 6, 10, 9)]);
     begin_opaque_frame_repaint(
         &canvas,
         &frame,
@@ -443,8 +446,8 @@ fn damaged_base_and_stencil_overlay_preserve_pixels_outside_the_scissor() {
 #[test]
 fn frame_damage_render_area_uses_the_exact_union() {
     let damage = FrameDamage::Area(vec![
-        aegis_core::Rect::new(11, 7, 5, 9),
-        aegis_core::Rect::new(29, 3, 4, 8),
+        aegis_model::Rect::new(11, 7, 5, 9),
+        aegis_model::Rect::new(29, 3, 4, 8),
     ]);
     assert_eq!(
         frame_damage_render_area(&damage),

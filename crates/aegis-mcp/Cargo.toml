@@ -17,7 +17,7 @@ path = "src/bin/aegis-mcp.rs"
 
 [dependencies]
 # The public Aegis model, catalog, and IPC crates. Never an agent runtime.
-aegis-core = { workspace = true, features = ["serde"] }
+aegis-model = { workspace = true, features = ["serde"] }
 aegis-ipc = { workspace = true }
 aegis-desktop-entries = { workspace = true }
 libc = { workspace = true }

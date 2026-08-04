@@ -11,7 +11,7 @@ using freedesktop.org desktop-entry and icon-theme conventions.
   `Exec` fields.
 - Resolve icons through scale-aware theme metadata, recursive inheritance,
   the `hicolor` theme, and unthemed pixmap fallback.
-- Produce the shared `aegis_core::app::Entry` model.
+- Produce the shared `aegis_model::app::Entry` model.
 
 ## Boundaries
 

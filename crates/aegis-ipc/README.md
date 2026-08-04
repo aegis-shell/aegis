@@ -14,10 +14,10 @@ for aegis.
 - Provide synchronous client and threaded server adapters.
 - Record and stream the bounded command/Interaction Domain/settings/Actor-action mutation
   journal with authenticated principal origins and authority revisions, backed
-  by `aegis-audit` durable persistence in the production handler.
+  by `aegis-security::audit` durable persistence in the production handler.
 - Carry explicit Actor sessions, exact resource grants, and authenticated
   accessibility tree/action messages without owning their policy.
-- Carry the same serializable `aegis-core` models used inside the compositor.
+- Carry the same serializable `aegis-model` models used inside the compositor.
 
 ## Boundaries
 
@@ -82,7 +82,7 @@ action through `Client::apply_settings` with the revision they observed. The
 result is returned only after the compositor main loop applies the action.
 Live-system clients call `Client::system_status` and submit immediate controls
 through `Client::apply_system_action`; both paths use the same
-`aegis-core` model as compositor chrome.
+`aegis-model` model as compositor chrome.
 
 ## Related Documentation
 

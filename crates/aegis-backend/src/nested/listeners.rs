@@ -355,7 +355,7 @@ pub(super) unsafe extern "C" fn on_pointer_button(
         // (BTN_LEFT=0x110, BTN_RIGHT=0x111, BTN_MIDDLE=0x112). Pass through.
         st.input_events.push(InputEvent::PointerButton {
             button,
-            state: aegis_core::input::ButtonState::from_wayland(state),
+            state: aegis_model::input::ButtonState::from_wayland(state),
         });
     }
 }
@@ -677,7 +677,7 @@ pub(super) unsafe extern "C" fn on_keyboard_key(
         // so no shift needed for forwarding).
         st.input_events.push(InputEvent::Key {
             code: key,
-            state: aegis_core::input::ButtonState::from_wayland(state),
+            state: aegis_model::input::ButtonState::from_wayland(state),
         });
     }
 }

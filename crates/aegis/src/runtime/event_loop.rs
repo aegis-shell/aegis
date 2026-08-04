@@ -46,7 +46,7 @@ impl CompositorRuntime {
                 // VT resume replaces the DRM master fd, framebuffers, and
                 // output topology. It may not reuse an earlier damage or
                 // timing baseline.
-                self.force_full_redraw = true;
+                self.damage.force_full_redraw = true;
                 self.previous_render_at = now;
             }
         }

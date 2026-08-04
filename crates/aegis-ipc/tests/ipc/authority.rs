@@ -31,7 +31,7 @@ fn named_scope_is_reported_and_enforced() {
 
 #[test]
 fn synthetic_input_requires_a_named_scope_and_separate_capability() {
-    use aegis_core::input::SyntheticInputAction;
+    use aegis_model::input::SyntheticInputAction;
 
     let path = scratch();
     let handler = Arc::new(TestHandler::permissive(sample_windows()));
@@ -47,7 +47,7 @@ fn synthetic_input_requires_a_named_scope_and_separate_capability() {
     let mut unscoped = Client::connect_with(&path, requested).expect("unscoped connect");
     assert!(!unscoped.caps().input, "unscoped input must fail closed");
     let action = SyntheticInputAction::Click {
-        position: aegis_core::Point { x: 10, y: 20 },
+        position: aegis_model::Point { x: 10, y: 20 },
         button: 0x110,
     };
     let err = unscoped
@@ -122,7 +122,7 @@ fn stream_frame(stream_id: u64, sequence: u64) -> aegis_ipc::StreamFramePayload 
         height: 2,
         stride: 8,
         format: aegis_ipc::StreamPixelFormat::Bgra8,
-        damage: vec![aegis_core::Rect::new(0, 0, 2, 2)],
+        damage: vec![aegis_model::Rect::new(0, 0, 2, 2)],
         dropped: 0,
         pixels: Arc::from(&[7u8; 16][..]),
     }
@@ -221,7 +221,7 @@ fn pick_target_requires_control_and_an_explicit_scope_op() {
     assert_eq!(
         result,
         aegis_ipc::PickResult::Region {
-            rect: aegis_core::Rect::new(1, 2, 30, 40)
+            rect: aegis_model::Rect::new(1, 2, 30, 40)
         }
     );
     assert_eq!(
@@ -498,33 +498,36 @@ fn interaction_domain_lifecycle_capture_and_lease_are_scoped_and_synchronous() {
     let result = client
         .interaction_domain_action(InteractionDomainAction::Create {
             label: "test agent".into(),
-            capabilities: aegis_core::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
-            output: Some(aegis_core::interaction_domain::VirtualOutput::DEFAULT_AGENT),
+            capabilities: aegis_model::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
+            output: Some(aegis_model::interaction_domain::VirtualOutput::DEFAULT_AGENT),
         })
         .expect("create interaction_domain");
     assert!(matches!(
         result,
         InteractionDomainActionResult::Created {
-            bundle: aegis_core::interaction_domain::InteractionDomainBundle {
-                interaction_domain: aegis_core::interaction_domain::InteractionDomainId(2),
+            bundle: aegis_model::interaction_domain::InteractionDomainBundle {
+                interaction_domain: aegis_model::interaction_domain::InteractionDomainId(2),
                 ..
             },
             ..
         }
     ));
     let capture = client
-        .capture_interaction_domain(aegis_core::interaction_domain::InteractionDomainId(2), None)
+        .capture_interaction_domain(
+            aegis_model::interaction_domain::InteractionDomainId(2),
+            None,
+        )
         .expect("interaction_domain capture");
     assert_eq!((capture.width, capture.height, capture.revision), (2, 1, 4));
     assert_eq!(capture.scale_milli, 1250);
-    assert_eq!(capture.region, aegis_core::Rect::new(0, 0, 2, 1));
+    assert_eq!(capture.region, aegis_model::Rect::new(0, 0, 2, 1));
     assert_eq!(
         capture.placements,
         vec![
-            aegis_core::interaction_domain::InteractionDomainWindowPlacement {
+            aegis_model::interaction_domain::InteractionDomainWindowPlacement {
                 window: WindowId(1),
-                output_rect: aegis_core::Rect::new(0, 0, 2, 1),
-                surface_size: aegis_core::Size { w: 20, h: 10 },
+                output_rect: aegis_model::Rect::new(0, 0, 2, 1),
+                surface_size: aegis_model::Size { w: 20, h: 10 },
             }
         ]
     );
@@ -546,11 +549,11 @@ fn interaction_domain_actions_require_an_observation_and_return_commit_receipts(
     };
     let mut client =
         Client::connect_scoped(&path, requested, "interaction_domain").expect("connect");
-    let interaction_domain = aegis_core::interaction_domain::InteractionDomainId(2);
+    let interaction_domain = aegis_model::interaction_domain::InteractionDomainId(2);
     let observation = client
         .observe_interaction_domain(interaction_domain)
         .expect("semantic observation");
-    let target = aegis_core::semantic::SemanticObjectId::for_window(WindowId(1));
+    let target = aegis_model::semantic::SemanticObjectId::for_window(WindowId(1));
     assert_eq!(
         observation.snapshot.object(target).unwrap().name.as_deref(),
         Some("first")
@@ -561,9 +564,9 @@ fn interaction_domain_actions_require_an_observation_and_return_commit_receipts(
             interaction_domain,
             target,
             observation.token,
-            vec![aegis_core::input::SyntheticInputAction::Click {
+            vec![aegis_model::input::SyntheticInputAction::Click {
                 button: 0x110,
-                position: aegis_core::Point { x: 5, y: 7 },
+                position: aegis_model::Point { x: 5, y: 7 },
             }],
         )
         .expect("observation-bound action commits synchronously");
@@ -590,11 +593,11 @@ fn semantic_observation_needs_query_not_interaction_domain_action_authority() {
     assert!(!client.caps().interaction_domain);
     assert!(client.lease().is_none());
     let observation = client
-        .observe_interaction_domain(aegis_core::interaction_domain::InteractionDomainId(2))
+        .observe_interaction_domain(aegis_model::interaction_domain::InteractionDomainId(2))
         .expect("semantic observation is independently query-scoped");
     assert_eq!(
         observation.snapshot.interaction_domain,
-        aegis_core::interaction_domain::InteractionDomainId(2)
+        aegis_model::interaction_domain::InteractionDomainId(2)
     );
 }
 
@@ -663,7 +666,7 @@ fn interaction_domain_operations_fail_closed_without_named_scope() {
     let error = client
         .interaction_domain_action(InteractionDomainAction::Create {
             label: "denied".into(),
-            capabilities: aegis_core::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
+            capabilities: aegis_model::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
             output: None,
         })
         .unwrap_err();
@@ -757,7 +760,7 @@ fn scope_revocation_stops_existing_interaction_domain_and_capture_connections() 
     let action_error = client
         .interaction_domain_action(InteractionDomainAction::Create {
             label: "revoked".into(),
-            capabilities: aegis_core::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
+            capabilities: aegis_model::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
             output: None,
         })
         .expect_err("removed scope must revoke InteractionDomain mutation");
@@ -766,7 +769,10 @@ fn scope_revocation_stops_existing_interaction_domain_and_capture_connections() 
         "{action_error}"
     );
     let capture_error = client
-        .capture_interaction_domain(aegis_core::interaction_domain::InteractionDomainId(2), None)
+        .capture_interaction_domain(
+            aegis_model::interaction_domain::InteractionDomainId(2),
+            None,
+        )
         .expect_err("removed scope must revoke InteractionDomain capture");
     assert!(
         capture_error.to_string().contains("out of scope"),

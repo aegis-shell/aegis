@@ -30,7 +30,7 @@ fn nonempty_env(name: &str) -> Option<String> {
 pub(super) fn resolve_desktop_preferences(
     config: Option<&aegis_config::Config>,
     overrides: &PreferenceOverrides,
-) -> aegis_core::settings::DesktopPreferences {
+) -> aegis_model::settings::DesktopPreferences {
     let mut preferences = config
         .map(aegis_config::Config::desktop_preferences)
         .unwrap_or_default();
@@ -48,9 +48,9 @@ pub(super) fn resolve_desktop_preferences(
 
 pub(super) fn preferences_for_persistence(
     config: Option<&aegis_config::Config>,
-    mut requested: aegis_core::settings::DesktopPreferences,
+    mut requested: aegis_model::settings::DesktopPreferences,
     overrides: &PreferenceOverrides,
-) -> aegis_core::settings::DesktopPreferences {
+) -> aegis_model::settings::DesktopPreferences {
     let configured = config
         .map(aegis_config::Config::desktop_preferences)
         .unwrap_or_default();
@@ -73,7 +73,7 @@ pub(super) fn preferences_for_persistence(
 /// overrides. Toolkit or foreign-desktop settings stores are never consulted.
 pub(super) fn effective_desktop_preferences(
     config: Option<&aegis_config::Config>,
-) -> aegis_core::settings::DesktopPreferences {
+) -> aegis_model::settings::DesktopPreferences {
     resolve_desktop_preferences(config, &PreferenceOverrides::from_env())
 }
 
@@ -264,7 +264,7 @@ pub(super) fn requested_backend() -> Result<BackendKind, Box<dyn std::error::Err
 /// mode at its highest refresh rate.
 pub(super) fn configured_output_modes(
     config: Option<&aegis_config::Config>,
-) -> std::collections::HashMap<String, aegis_core::output::ModeSpec> {
+) -> std::collections::HashMap<String, aegis_model::output::ModeSpec> {
     config
         .map(|c| c.output_policies())
         .unwrap_or_default()
@@ -317,8 +317,8 @@ pub(super) fn load_config(path: Option<&std::path::Path>) -> Option<aegis_config
 pub(super) fn reload_config(
     path: &std::path::Path,
     config: &mut Option<aegis_config::Config>,
-    keymap: &mut aegis_core::keybind::Keymap,
-    gesture_map: &mut aegis_core::gesture::GestureMap,
+    keymap: &mut aegis_model::keybind::Keymap,
+    gesture_map: &mut aegis_model::gesture::GestureMap,
     server: &mut aegis_compositor::Server,
     shell: &mut aegis_shell::Shell,
     cursor_cache: &mut cursor::CursorCache,
@@ -344,12 +344,12 @@ pub(super) fn reload_config(
             server.set_output_policies(c.output_policies());
             server.set_allow_quit_while_locked(c.dev.allow_quit_while_locked);
         } else {
-            server.set_layout_params(aegis_core::layout::LayoutParams::default());
+            server.set_layout_params(aegis_model::layout::LayoutParams::default());
             server.set_tiling_default(false);
             server.set_remember_window_positions(true);
             shell.set_reduced_motion(preferences.reduced_motion);
             server.set_reduced_motion(preferences.reduced_motion);
-            server.set_decoration_policy(aegis_core::window::DecorationPolicy::default());
+            server.set_decoration_policy(aegis_model::window::DecorationPolicy::default());
             server.set_output_policies(std::collections::HashMap::new());
             server.set_allow_quit_while_locked(false);
         }
@@ -397,8 +397,8 @@ pub(super) fn apply_display_settings(
     config_path: Option<&std::path::Path>,
     config_writer: &ConfigWriter,
     config: &mut Option<aegis_config::Config>,
-    keymap: &mut aegis_core::keybind::Keymap,
-    gesture_map: &mut aegis_core::gesture::GestureMap,
+    keymap: &mut aegis_model::keybind::Keymap,
+    gesture_map: &mut aegis_model::gesture::GestureMap,
     server: &mut aegis_compositor::Server,
     shell: &mut aegis_shell::Shell,
     cursor_cache: &mut cursor::CursorCache,
@@ -452,12 +452,12 @@ pub(super) fn apply_display_settings(
 /// values back through the same reload path used by external file edits.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_desktop_preferences(
-    preferences: aegis_core::settings::DesktopPreferences,
+    preferences: aegis_model::settings::DesktopPreferences,
     config_path: Option<&std::path::Path>,
     config_writer: &ConfigWriter,
     config: &mut Option<aegis_config::Config>,
-    keymap: &mut aegis_core::keybind::Keymap,
-    gesture_map: &mut aegis_core::gesture::GestureMap,
+    keymap: &mut aegis_model::keybind::Keymap,
+    gesture_map: &mut aegis_model::gesture::GestureMap,
     server: &mut aegis_compositor::Server,
     shell: &mut aegis_shell::Shell,
     cursor_cache: &mut cursor::CursorCache,
@@ -499,42 +499,67 @@ pub(super) fn output_geometry_from_host(
     logical_w: i32,
     logical_h: i32,
     scale: f32,
-) -> aegis_core::output::OutputGeometry {
+) -> aegis_model::output::OutputGeometry {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
     } else {
         1.0
     };
-    aegis_core::output::OutputGeometry {
-        mode: aegis_core::output::OutputMode {
+    aegis_model::output::OutputGeometry {
+        mode: aegis_model::output::OutputMode {
             width: (logical_w.max(1) as f32 * scale).round() as i32,
             height: (logical_h.max(1) as f32 * scale).round() as i32,
             refresh_mhz: 0,
         },
-        scale: aegis_core::output::Scale(scale),
-        transform: aegis_core::Transform::Normal,
-        logical_origin: aegis_core::Point::default(),
+        scale: aegis_model::output::Scale(scale),
+        transform: aegis_model::Transform::Normal,
+        logical_origin: aegis_model::Point::default(),
     }
 }
 
 /// Build the active keymap from the config file's `[[keybind]]` entries,
 /// layered over the built-in defaults.
-pub(super) fn build_keymap(config: Option<&aegis_config::Config>) -> aegis_core::keybind::Keymap {
-    let mut overrides: Vec<aegis_core::keybind::Keybind> = Vec::new();
+pub(super) fn build_keymap(config: Option<&aegis_config::Config>) -> aegis_model::keybind::Keymap {
+    let mut overrides: Vec<aegis_model::keybind::Keybind> = Vec::new();
 
     if let Some(cfg) = config {
         let (cfg_binds, errs) = cfg.resolve_keybinds();
         for e in &errs {
             log::warn!("config: {e}");
         }
-        overrides.extend(cfg_binds);
+        for binding in cfg_binds {
+            if let Some(feature) = unavailable_key_action_feature(binding.action) {
+                log::warn!(
+                    "config: key binding action {:?} requires the disabled '{feature}' feature",
+                    binding.action
+                );
+            } else {
+                overrides.push(binding);
+            }
+        }
     }
 
-    if overrides.is_empty() {
-        aegis_core::keybind::Keymap::defaults()
-    } else {
+    if !overrides.is_empty() {
         log::debug!("keybinds: {} override(s) applied", overrides.len());
-        aegis_core::keybind::Keymap::defaults().with_overrides(overrides)
+    }
+    aegis_model::keybind::Keymap::defaults()
+        .with_overrides(overrides)
+        .retain_actions(|action| unavailable_key_action_feature(action).is_none())
+}
+
+const fn unavailable_key_action_feature(
+    action: aegis_model::keybind::Action,
+) -> Option<&'static str> {
+    match action {
+        aegis_model::keybind::Action::TogglePrism if !cfg!(feature = "chrome-prism") => {
+            Some("chrome-prism")
+        }
+        aegis_model::keybind::Action::ToggleCommandPanel
+            if !cfg!(feature = "chrome-command-panel") =>
+        {
+            Some("chrome-command-panel")
+        }
+        _ => None,
     }
 }
 
@@ -542,22 +567,44 @@ pub(super) fn build_keymap(config: Option<&aegis_config::Config>) -> aegis_core:
 /// entries, layered over the built-in defaults.
 pub(super) fn build_gesture_map(
     config: Option<&aegis_config::Config>,
-) -> aegis_core::gesture::GestureMap {
-    let mut overrides: Vec<aegis_core::gesture::GestureBinding> = Vec::new();
+) -> aegis_model::gesture::GestureMap {
+    let mut overrides: Vec<aegis_model::gesture::GestureBinding> = Vec::new();
 
     if let Some(cfg) = config {
         let (cfg_binds, errs) = cfg.resolve_gestures();
         for e in &errs {
             log::warn!("config: {e}");
         }
-        overrides.extend(cfg_binds);
+        for binding in cfg_binds {
+            if let Some(feature) = unavailable_gesture_action_feature(binding.action) {
+                log::warn!(
+                    "config: gesture action {:?} requires the disabled '{feature}' feature",
+                    binding.action
+                );
+            } else {
+                overrides.push(binding);
+            }
+        }
     }
 
-    if overrides.is_empty() {
-        aegis_core::gesture::GestureMap::defaults()
-    } else {
+    if !overrides.is_empty() {
         log::debug!("gestures: {} override(s) applied", overrides.len());
-        aegis_core::gesture::GestureMap::defaults().with_overrides(overrides)
+    }
+    aegis_model::gesture::GestureMap::defaults()
+        .with_overrides(overrides)
+        .retain_actions(|action| unavailable_gesture_action_feature(action).is_none())
+}
+
+const fn unavailable_gesture_action_feature(
+    action: aegis_model::gesture::GestureAction,
+) -> Option<&'static str> {
+    match action {
+        aegis_model::gesture::GestureAction::CommandPanel
+            if !cfg!(feature = "chrome-command-panel") =>
+        {
+            Some("chrome-command-panel")
+        }
+        _ => None,
     }
 }
 
@@ -655,7 +702,7 @@ pub(super) fn builtin_ipc_scopes() -> std::collections::HashMap<String, aegis_ip
 pub(super) fn authorize_interaction_domain_action_against_snapshot(
     scope: &aegis_ipc::Scope,
     action: &aegis_ipc::InteractionDomainAction,
-    snapshot: &aegis_core::interaction_domain::InteractionDomainSnapshot,
+    snapshot: &aegis_model::interaction_domain::InteractionDomainSnapshot,
 ) -> Result<(), String> {
     if !scope.permits_interaction_domain_action(action) {
         return Err("out of scope".into());
@@ -671,7 +718,7 @@ pub(super) fn authorize_interaction_domain_action_against_snapshot(
 pub(super) fn authorize_interaction_domain_action_granted_against_snapshot(
     scope: &aegis_ipc::Scope,
     action: &aegis_ipc::InteractionDomainAction,
-    snapshot: &aegis_core::interaction_domain::InteractionDomainSnapshot,
+    snapshot: &aegis_model::interaction_domain::InteractionDomainSnapshot,
 ) -> Result<(), String> {
     if !scope.permits_interaction_domain_action_resources(action) {
         return Err("out of scope".into());
@@ -686,31 +733,31 @@ pub(super) fn authorize_interaction_domain_action_granted_against_snapshot(
 fn authorize_interaction_domain_action_groups_against_snapshot(
     scope: &aegis_ipc::Scope,
     action: &aegis_ipc::InteractionDomainAction,
-    snapshot: &aegis_core::interaction_domain::InteractionDomainSnapshot,
+    snapshot: &aegis_model::interaction_domain::InteractionDomainSnapshot,
 ) -> Result<(), String> {
     let aegis_ipc::InteractionDomainAction::Transact { mutations, .. } = action else {
         return Ok(());
     };
     for mutation in mutations {
         let group = match mutation {
-            aegis_core::interaction_domain::InteractionDomainMutation::TransferWindow {
+            aegis_model::interaction_domain::InteractionDomainMutation::TransferWindow {
                 window,
                 ..
             } => snapshot
                 .interaction_groups
                 .iter()
                 .find(|group| group.windows.contains(window)),
-            aegis_core::interaction_domain::InteractionDomainMutation::SetObserver {
+            aegis_model::interaction_domain::InteractionDomainMutation::SetObserver {
                 group,
                 ..
             } => snapshot
                 .interaction_groups
                 .iter()
                 .find(|candidate| candidate.id == *group),
-            aegis_core::interaction_domain::InteractionDomainMutation::ConfigureOutput {
+            aegis_model::interaction_domain::InteractionDomainMutation::ConfigureOutput {
                 ..
             }
-            | aegis_core::interaction_domain::InteractionDomainMutation::SetState { .. } => None,
+            | aegis_model::interaction_domain::InteractionDomainMutation::SetState { .. } => None,
         };
         if group.is_some_and(|group| {
             group

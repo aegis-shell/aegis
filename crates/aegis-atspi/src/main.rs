@@ -3,10 +3,10 @@ use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use aegis_core::semantic::{SemanticAction, SemanticActionIntent, SemanticRole, SemanticState};
-use aegis_core::window::{Window, WindowId};
-use aegis_core::{Rect, Size};
 use aegis_ipc::{ActorCapability, AgentHello, Client, ConnectionCapabilities};
+use aegis_model::semantic::{SemanticAction, SemanticActionIntent, SemanticRole, SemanticState};
+use aegis_model::window::{Window, WindowId};
+use aegis_model::{Rect, Size};
 use aegis_semantic::{AccessibilityNode, AccessibilityTreeUpdate, AccessibilityWindowBinding};
 use atspi::connection::P2P as _;
 use atspi::proxy::action::ActionProxy;

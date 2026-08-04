@@ -143,10 +143,10 @@ pub(crate) unsafe fn send_xdg_output_geometry(
             .or_else(|| (!state.is_null()).then(|| (*state).output_geometry));
         let origin = geometry
             .map(|geometry| geometry.logical_origin)
-            .unwrap_or_else(|| crate::aegis_core_point(0, 0));
+            .unwrap_or_else(|| crate::aegis_model_point(0, 0));
         let size = geometry
             .map(|geometry| geometry.logical_size())
-            .unwrap_or_else(|| crate::aegis_core_size(1280, 720));
+            .unwrap_or_else(|| crate::aegis_model_size(1280, 720));
         ffi::wl_resource_post_event(
             res,
             ffi::ZXDG_OUTPUT_V1_LOGICAL_POSITION,

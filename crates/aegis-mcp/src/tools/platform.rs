@@ -244,7 +244,7 @@ impl AegisPlatform {
             },
             visual: SmokeVisualReport {
                 status_indicator: "persistent while the Agent Interaction Domain is live",
-                details_surface: "click the status indicator to open AI Workspaces",
+                details_surface: "click the status indicator to open Agent Workspaces",
                 observation_millis: observation.as_millis(),
                 input_probe,
             },
@@ -306,9 +306,11 @@ impl AegisPlatform {
         let actions = vec![SyntheticInputAction::PointerMove {
             position: local_position,
         }];
-        let semantic_actions = vec![aegis_core::semantic::SemanticActionIntent::SyntheticInput {
-            actions: actions.clone(),
-        }];
+        let semantic_actions = vec![
+            aegis_model::semantic::SemanticActionIntent::SyntheticInput {
+                actions: actions.clone(),
+            },
+        ];
         let audited_actions = aegis_ipc::audit_semantic_actions(&semantic_actions);
         client.inject_interaction_domain_input(
             interaction_domain,
@@ -625,7 +627,7 @@ impl AegisPlatform {
         &self,
         client: &mut Client,
         summary: &str,
-    ) -> Result<aegis_core::notify::Notification, PlatformError> {
+    ) -> Result<aegis_model::notify::Notification, PlatformError> {
         let deadline = Instant::now() + self.config.io_timeout;
         loop {
             if let Some(notification) = client.notifications()?.into_iter().find(|notification| {
@@ -646,7 +648,7 @@ impl AegisPlatform {
     fn set_smoke_interaction_domain_state(
         &self,
         client: &mut Client,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
         state: InteractionDomainState,
     ) -> Result<(), PlatformError> {
         let snapshot = client.interaction_domains()?;
@@ -669,7 +671,7 @@ impl AegisPlatform {
     fn verified_interaction_domain_state(
         &self,
         client: &mut Client,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
     ) -> Result<String, PlatformError> {
         let snapshot = client.interaction_domains()?;
         let state = snapshot

@@ -2,11 +2,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aegis_core::semantic::{
+use aegis_model::semantic::{
     SemanticAction, SemanticObject, SemanticObjectId, SemanticRole, SemanticSource, SemanticState,
 };
-use aegis_core::window::WindowId;
-use aegis_core::{Point, Rect, Size};
+use aegis_model::window::WindowId;
+use aegis_model::{Point, Rect, Size};
 
 const MAX_NODES_PER_WINDOW: usize = 4_096;
 const MAX_TREE_DEPTH: usize = 64;
@@ -19,7 +19,7 @@ const MAX_TEXT_BYTES_PER_TREE: usize = 1_048_576;
 /// is never part of the general window-observation API.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AccessibilityWindowBinding {
-    pub window: aegis_core::window::Window,
+    pub window: aegis_model::window::Window,
     pub process_id: u32,
 }
 
@@ -102,7 +102,7 @@ pub struct SemanticActionRequest {
     pub target: SemanticObjectId,
     pub provider_node_id: u64,
     pub tree_revision: u64,
-    pub action: aegis_core::semantic::SemanticActionIntent,
+    pub action: aegis_model::semantic::SemanticActionIntent,
 }
 
 struct ValidatedTree {

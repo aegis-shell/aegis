@@ -261,7 +261,7 @@ pub(super) fn agent_workspace_indicator(
     };
     let state_label = agent_workspace_state_label(state, i18n);
     let label = match live.as_slice() {
-        [] => i18n.text(Message::InteractionManager).to_string(),
+        [] => i18n.text(Message::AgentWorkspaces).to_string(),
         [interaction_domain] => format!("{} · {state_label}", interaction_domain.label),
         interaction_domains => format!(
             "{} · {state_label}",

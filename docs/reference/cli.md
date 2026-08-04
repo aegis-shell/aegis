@@ -111,7 +111,7 @@ Control acknowledgments mean the action was queued. Run
 |---------|--------|
 | `aegis interaction-domain` | List Interaction Domains and authority state. |
 | `aegis interaction-domain list` | List the authority revision, Interaction Domains, states, seats, and controlled-window counts. |
-| `aegis interaction-domain create [label]` | Create an active agent Interaction Domain with a 1920×1080 virtual output and pointer/keyboard seat. |
+| `aegis interaction-domain create [label]` | Create an active agent Interaction Domain with a 1920×1080 virtual output and pointer/keyboard seat. The label defaults to `Agent Workspace`. |
 | `aegis interaction-domain pause <domain-id>` | Atomically pause an Interaction Domain and freeze its managed cgroups. |
 | `aegis interaction-domain resume <domain-id>` | Resume a paused Interaction Domain and its managed cgroups. |
 | `aegis interaction-domain transfer <window> <domain-id> [--no-mirror]` | Transfer the window's complete interaction group. The source remains a read-only observer unless `--no-mirror` is set. |

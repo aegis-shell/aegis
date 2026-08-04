@@ -10,7 +10,7 @@ struct PointerConstraintRec {
     lifetime: u32,
     active: bool,
     consumed: bool,
-    region: Option<Vec<aegis_core::Rect>>,
+    region: Option<Vec<aegis_model::Rect>>,
     cursor_hint: Option<(f32, f32)>,
 }
 
@@ -176,7 +176,7 @@ unsafe fn create_pointer_constraint(
     }
 }
 
-unsafe fn copy_region(region: *mut ffi::wl_resource) -> Option<Vec<aegis_core::Rect>> {
+unsafe fn copy_region(region: *mut ffi::wl_resource) -> Option<Vec<aegis_model::Rect>> {
     unsafe {
         if region.is_null() {
             return None;
@@ -324,13 +324,13 @@ pub(crate) unsafe fn constrain_pointer_motion(state: *mut State, x: f32, y: f32)
             let local_y = y - crate::surface_draw_origin(&*surface).y as f32;
             let bounds = (*rec).region.clone().unwrap_or_else(|| {
                 let size = crate::surface_logical_size(&*surface);
-                vec![aegis_core::Rect::new(0, 0, size.w, size.h)]
+                vec![aegis_model::Rect::new(0, 0, size.w, size.h)]
             });
             if bounds.is_empty() {
                 return ((*state).pointer_x, (*state).pointer_y);
             }
             if bounds.iter().any(|rect| {
-                rect.contains(aegis_core::Point {
+                rect.contains(aegis_model::Point {
                     x: local_x.floor() as i32,
                     y: local_y.floor() as i32,
                 })

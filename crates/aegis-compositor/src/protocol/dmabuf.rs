@@ -118,7 +118,7 @@ pub(crate) unsafe extern "C" fn dmabuf_bind(
         let formats = if !state.is_null() && !(*state).dmabuf_formats.is_empty() {
             &(*state).dmabuf_formats
         } else {
-            &[] as &[aegis_core::dmabuf::DmabufFormat]
+            &[] as &[aegis_model::dmabuf::DmabufFormat]
         };
         if formats.is_empty() {
             for fmt in [
@@ -165,7 +165,7 @@ pub(crate) unsafe extern "C" fn dmabuf_bind(
 /// Flatten renderer capabilities into the native format-table order, removing
 /// duplicates while preserving preference order. The LINEAR fallback mirrors
 /// the legacy bind path used by tests and renderers without a queried table.
-fn dmabuf_format_pairs(formats: &[aegis_core::dmabuf::DmabufFormat]) -> Vec<(u32, u64)> {
+fn dmabuf_format_pairs(formats: &[aegis_model::dmabuf::DmabufFormat]) -> Vec<(u32, u64)> {
     let mut pairs = Vec::new();
     let mut seen = HashSet::new();
     if formats.is_empty() {
@@ -197,7 +197,7 @@ fn dmabuf_format_pairs(formats: &[aegis_core::dmabuf::DmabufFormat]) -> Vec<(u32
 /// falls back to composition.
 fn scanout_format_indices(
     renderer_pairs: &[(u32, u64)],
-    scanout_formats: &[aegis_core::dmabuf::DmabufFormat],
+    scanout_formats: &[aegis_model::dmabuf::DmabufFormat],
 ) -> Vec<u16> {
     // Unlike the renderer table, an empty scanout table means "no KMS
     // capability available" and must not inherit the legacy LINEAR fallback.
@@ -218,8 +218,8 @@ fn scanout_format_indices(
 }
 
 fn feedback_signature(
-    renderer_formats: &[aegis_core::dmabuf::DmabufFormat],
-    scanout_formats: &[aegis_core::dmabuf::DmabufFormat],
+    renderer_formats: &[aegis_model::dmabuf::DmabufFormat],
+    scanout_formats: &[aegis_model::dmabuf::DmabufFormat],
     scanout_device: Option<u64>,
 ) -> DmabufFeedbackSignature {
     let mut renderer_pairs = dmabuf_format_pairs(renderer_formats);
@@ -484,7 +484,7 @@ impl Server {
     /// refreshes.
     pub fn update_dmabuf_feedback(
         &mut self,
-        scanout_formats: Vec<aegis_core::dmabuf::DmabufFormat>,
+        scanout_formats: Vec<aegis_model::dmabuf::DmabufFormat>,
         scanout_device: Option<u64>,
     ) -> bool {
         let previous = feedback_signature(
@@ -707,11 +707,11 @@ mod tests {
     #[test]
     fn feedback_pairs_preserve_order_and_remove_duplicates() {
         let formats = vec![
-            aegis_core::dmabuf::DmabufFormat {
+            aegis_model::dmabuf::DmabufFormat {
                 fourcc: DRM_FORMAT_XRGB8888,
                 modifiers: vec![5, 0, 5],
             },
-            aegis_core::dmabuf::DmabufFormat {
+            aegis_model::dmabuf::DmabufFormat {
                 fourcc: DRM_FORMAT_ARGB8888,
                 modifiers: vec![0],
             },
@@ -735,11 +735,11 @@ mod tests {
             (DRM_FORMAT_ARGB8888, 0),
         ];
         let scanout_formats = vec![
-            aegis_core::dmabuf::DmabufFormat {
+            aegis_model::dmabuf::DmabufFormat {
                 fourcc: DRM_FORMAT_ARGB8888,
                 modifiers: vec![9, 77],
             },
-            aegis_core::dmabuf::DmabufFormat {
+            aegis_model::dmabuf::DmabufFormat {
                 fourcc: DRM_FORMAT_XRGB8888,
                 modifiers: vec![0],
             },
@@ -754,7 +754,7 @@ mod tests {
     #[test]
     fn empty_scanout_intersection_produces_no_preferred_tranche_indices() {
         let renderer_pairs = vec![(DRM_FORMAT_XRGB8888, 5)];
-        let scanout_formats = vec![aegis_core::dmabuf::DmabufFormat {
+        let scanout_formats = vec![aegis_model::dmabuf::DmabufFormat {
             fourcc: DRM_FORMAT_ARGB8888,
             modifiers: vec![5],
         }];
@@ -765,31 +765,31 @@ mod tests {
     #[test]
     fn feedback_signature_is_semantic_and_renderer_ordered() {
         let renderer = vec![
-            aegis_core::dmabuf::DmabufFormat {
+            aegis_model::dmabuf::DmabufFormat {
                 fourcc: DRM_FORMAT_XRGB8888,
                 modifiers: vec![5, 0],
             },
-            aegis_core::dmabuf::DmabufFormat {
+            aegis_model::dmabuf::DmabufFormat {
                 fourcc: DRM_FORMAT_ARGB8888,
                 modifiers: vec![9],
             },
         ];
         let first = vec![
-            aegis_core::dmabuf::DmabufFormat {
+            aegis_model::dmabuf::DmabufFormat {
                 fourcc: DRM_FORMAT_ARGB8888,
                 modifiers: vec![9],
             },
-            aegis_core::dmabuf::DmabufFormat {
+            aegis_model::dmabuf::DmabufFormat {
                 fourcc: DRM_FORMAT_XRGB8888,
                 modifiers: vec![0, 5],
             },
         ];
         let reordered_with_duplicates = vec![
-            aegis_core::dmabuf::DmabufFormat {
+            aegis_model::dmabuf::DmabufFormat {
                 fourcc: DRM_FORMAT_XRGB8888,
                 modifiers: vec![5, 5, 0],
             },
-            aegis_core::dmabuf::DmabufFormat {
+            aegis_model::dmabuf::DmabufFormat {
                 fourcc: DRM_FORMAT_ARGB8888,
                 modifiers: vec![9, 9],
             },
@@ -809,11 +809,11 @@ mod tests {
 
     #[test]
     fn feedback_signature_ignores_device_without_scanout_intersection() {
-        let renderer = vec![aegis_core::dmabuf::DmabufFormat {
+        let renderer = vec![aegis_model::dmabuf::DmabufFormat {
             fourcc: DRM_FORMAT_XRGB8888,
             modifiers: vec![5],
         }];
-        let unsupported = vec![aegis_core::dmabuf::DmabufFormat {
+        let unsupported = vec![aegis_model::dmabuf::DmabufFormat {
             fourcc: DRM_FORMAT_ARGB8888,
             modifiers: vec![5],
         }];

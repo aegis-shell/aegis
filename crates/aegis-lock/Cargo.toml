@@ -22,10 +22,9 @@ path = "src/preview_main.rs"
 required-features = ["dev-preview"]
 
 [dependencies]
-aegis-avatar.workspace = true
-aegis-identity.workspace = true
 aegis-config.workspace = true
 aegis-design.workspace = true
+aegis-shell = { workspace = true, features = ["persona"] }
 aegis-wallpaper.workspace = true
 ash.workspace = true
 aegis-logging.workspace = true

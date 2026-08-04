@@ -10,9 +10,10 @@ for aegis.
   extension lifecycles.
 - Own Interaction Domain authority routing, private launch listeners, virtual outputs, and
   read-only observation filtering.
-- Maintain window, focus, workspace, output, and interactive move/resize state.
+- Maintain window, focus, workspace, output, interactive move/resize state,
+  and the private persistent window-placement store.
 - Route backend-neutral input to clients and apply compositor actions.
-- Expose renderer- and shell-friendly snapshots built from `aegis-core` models.
+- Expose renderer- and shell-friendly snapshots built from `aegis-model` models.
 
 ## Boundaries
 

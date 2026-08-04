@@ -18,10 +18,10 @@ three roles; seams between surfaces are deliberate.
 ## Header Band
 
 The header band spans the full cluster width at 118 logical px and
-carries two zones separated by a vertical divider: identity on the
+carries two zones separated by a vertical divider: persona on the
 left, machine state on the right.
 
-### Identity Zone
+### Persona Zone
 
 - A 72 px avatar orb sits in an amber ring. Every avatar texture is
   circle-masked in its alpha channel — still photos, animated VRM

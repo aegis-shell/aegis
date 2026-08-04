@@ -1,6 +1,6 @@
 use super::*;
-use aegis_core::input::Mods as M;
-use aegis_core::keybind::Action;
+use aegis_model::input::Mods as M;
+use aegis_model::keybind::Action;
 
 #[test]
 fn minimal_valid_config_loads() {
@@ -307,15 +307,15 @@ fn config_store_rejects_an_invalid_edit_without_replacing_a_valid_document() {
     std::fs::write(&path, original).unwrap();
     let err = ConfigStore::new(&path)
         .apply(ConfigEdit::SetOutput {
-            settings: aegis_core::settings::DisplaySettings {
+            settings: aegis_model::settings::DisplaySettings {
                 connector: String::new(),
-                mode: aegis_core::output::ModeSpec {
+                mode: aegis_model::output::ModeSpec {
                     width: 1920,
                     height: 1080,
                     refresh_hz: Some(60),
                 },
                 scale: 5.0,
-                position: aegis_core::Point::default(),
+                position: aegis_model::Point::default(),
                 primary: true,
             },
         })
@@ -345,15 +345,15 @@ fn config_store_composes_typed_edits_without_losing_fields() {
         .unwrap();
     store
         .apply(ConfigEdit::SetOutput {
-            settings: aegis_core::settings::DisplaySettings {
+            settings: aegis_model::settings::DisplaySettings {
                 connector: "DP-1".into(),
-                mode: aegis_core::output::ModeSpec {
+                mode: aegis_model::output::ModeSpec {
                     width: 1920,
                     height: 1080,
                     refresh_hz: Some(60),
                 },
                 scale: 1.0,
-                position: aegis_core::Point::default(),
+                position: aegis_model::Point::default(),
                 primary: true,
             },
         })
@@ -565,7 +565,7 @@ fn keymap_layers_overrides_on_defaults() {
     assert_eq!(km.match_key(M::SUPER, 0x20), Some(Action::ToggleLauncher));
     // Defaults still present.
     assert_eq!(
-        km.match_key(M::SUPER, aegis_core::input::XKB_KEY_Tab),
+        km.match_key(M::SUPER, aegis_model::input::XKB_KEY_Tab),
         Some(Action::CycleFocus)
     );
     assert!(km.len() >= 6);
@@ -618,10 +618,10 @@ fn gesture_entry_resolves_to_gesture_binding() {
     assert!(errs.is_empty(), "{errs:?}");
     assert_eq!(binds.len(), 1);
     assert_eq!(binds[0].fingers, 4);
-    assert_eq!(binds[0].axis, aegis_core::gesture::GestureAxis::Horizontal);
+    assert_eq!(binds[0].axis, aegis_model::gesture::GestureAxis::Horizontal);
     assert_eq!(
         binds[0].action,
-        aegis_core::gesture::GestureAction::WorkspaceSwitch
+        aegis_model::gesture::GestureAction::WorkspaceSwitch
     );
 }
 
@@ -671,13 +671,13 @@ fn gesture_map_layers_overrides_on_defaults() {
     assert!(errs.is_empty());
     // Override present.
     assert_eq!(
-        gm.lookup(3, aegis_core::gesture::GestureAxis::Vertical),
-        Some(aegis_core::gesture::GestureAction::CommandPanel)
+        gm.lookup(3, aegis_model::gesture::GestureAxis::Vertical),
+        Some(aegis_model::gesture::GestureAction::CommandPanel)
     );
     // Defaults still present.
     assert_eq!(
-        gm.lookup(3, aegis_core::gesture::GestureAxis::Horizontal),
-        Some(aegis_core::gesture::GestureAction::WorkspaceSwitch)
+        gm.lookup(3, aegis_model::gesture::GestureAxis::Horizontal),
+        Some(aegis_model::gesture::GestureAction::WorkspaceSwitch)
     );
     assert!(gm.len() >= 4);
 }
@@ -711,7 +711,7 @@ fn layout_section_overrides_defaults() {
     assert_eq!(cfg3.layout.gaps, 4);
     assert_eq!(cfg3.layout.master_ratio, 0.5);
     // Converts to the core layout params.
-    let p = aegis_core::layout::LayoutParams::from(cfg.layout.clone());
+    let p = aegis_model::layout::LayoutParams::from(cfg.layout.clone());
     assert_eq!(p.gaps, 16);
 }
 
@@ -849,7 +849,7 @@ fn ui_window_decorations_default_to_borderless_and_accept_client_side() {
     let default = Config::parse("schema_version = 2\n").unwrap();
     assert_eq!(
         default.ui.window_decorations,
-        aegis_core::window::DecorationPolicy::Borderless
+        aegis_model::window::DecorationPolicy::Borderless
     );
 
     let client = Config::parse(
@@ -860,7 +860,7 @@ fn ui_window_decorations_default_to_borderless_and_accept_client_side() {
     .unwrap();
     assert_eq!(
         client.ui.window_decorations,
-        aegis_core::window::DecorationPolicy::ClientSide
+        aegis_model::window::DecorationPolicy::ClientSide
     );
 
     assert!(
@@ -1006,8 +1006,8 @@ fn output_policies_resolve_and_later_duplicate_wins() {
     let dp = &policies["DP-1"];
     assert_eq!(dp.scale, Some(1.5));
     assert_eq!(dp.mode, "2560x1440@144".parse().ok());
-    assert_eq!(dp.position, Some(aegis_core::Point { x: 1920, y: 0 }));
-    assert_eq!(dp.transform, Some(aegis_core::Transform::Rotate180));
+    assert_eq!(dp.position, Some(aegis_model::Point { x: 1920, y: 0 }));
+    assert_eq!(dp.transform, Some(aegis_model::Transform::Rotate180));
     assert!(dp.primary);
     // The later HDMI-A-1 entry replaces the earlier one wholesale.
     let hdmi = &policies["HDMI-A-1"];
@@ -1033,12 +1033,12 @@ fn window_rules_parse_from_toml() {
     assert_eq!(cfg.window_rules[0].workspace, Some(2));
     assert_eq!(
         cfg.window_rules[0].role,
-        Some(aegis_core::layout::LayoutRole::Tiled)
+        Some(aegis_model::layout::LayoutRole::Tiled)
     );
     assert_eq!(cfg.window_rules[1].title.as_deref(), Some("calculator"));
     assert_eq!(
         cfg.window_rules[1].role,
-        Some(aegis_core::layout::LayoutRole::Floating)
+        Some(aegis_model::layout::LayoutRole::Floating)
     );
     assert!(cfg.window_rules[1].matches(None, Some("GNOME Calculator")));
 }
@@ -1147,15 +1147,15 @@ fn config_store_persists_output_atomically_and_keeps_unrelated_fields() {
 
     ConfigStore::new(&path)
         .apply(ConfigEdit::SetOutput {
-            settings: aegis_core::settings::DisplaySettings {
+            settings: aegis_model::settings::DisplaySettings {
                 connector: "HDMI-A-1".into(),
-                mode: aegis_core::output::ModeSpec {
+                mode: aegis_model::output::ModeSpec {
                     width: 2560,
                     height: 1440,
                     refresh_hz: Some(144),
                 },
                 scale: 1.5,
-                position: aegis_core::Point { x: 120, y: -40 },
+                position: aegis_model::Point { x: 120, y: -40 },
                 primary: true,
             },
         })
@@ -1170,9 +1170,9 @@ fn config_store_persists_output_atomically_and_keeps_unrelated_fields() {
     let policy = config.output_policies()["HDMI-A-1"];
     assert_eq!(policy.scale, Some(1.5));
     assert_eq!(policy.mode.unwrap().refresh_hz, Some(144));
-    assert_eq!(policy.position, Some(aegis_core::Point { x: 120, y: -40 }));
+    assert_eq!(policy.position, Some(aegis_model::Point { x: 120, y: -40 }));
     assert!(policy.primary);
-    assert_eq!(policy.transform, Some(aegis_core::Transform::Rotate180));
+    assert_eq!(policy.transform, Some(aegis_model::Transform::Rotate180));
     assert!(
         std::fs::read_dir(&directory)
             .unwrap()

@@ -1,4 +1,4 @@
-use aegis_core::settings::{IdleSettings, SettingsAction, SettingsSnapshot};
+use aegis_model::settings::{IdleSettings, SettingsAction, SettingsSnapshot};
 use aegis_shell::{Localizer, Message};
 use lens::{Align, Frame, Icon, LayoutOpts};
 

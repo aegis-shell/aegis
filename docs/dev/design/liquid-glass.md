@@ -93,6 +93,11 @@ geometry is *not* rescaled: component-sized shadows are the caller's
 policy — the Dock scales its declared shadow by its own morph progress,
 and a HUD chip declares a tight shadow outright.
 
+Components select the shared `Chip`, `Tooltip`, `FloatingPanel`,
+`ProminentPanel`, or `Dock` role instead of assembling a shadow tuple. The
+role table lives in [Surfaces](surfaces.md). Explicit shadow adjustment is
+reserved for continuous geometry such as the Dock's collapse morph.
+
 Only the curve shapes (the lens profile and the falloff curves) are the
 material's identity and stay in the shader. Every policy knob —
 geometry, lighting, tone, per-body shadow and tint, and size scaling —

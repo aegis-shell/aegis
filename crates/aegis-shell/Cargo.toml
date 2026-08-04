@@ -8,12 +8,39 @@ license.workspace = true
 rust-version.workspace = true
 build = "build.rs"
 
+[features]
+default = []
+# Full personalized portrait runtime. The lightweight `persona::Profile`
+# contract remains available without this feature.
+persona = [
+    "dep:aegis-desktop-entries",
+    "dep:fastrand",
+    "dep:flux",
+    "dep:flux-sys",
+    "dep:flux-scene-graph",
+    "dep:flux-scene-graph-sys",
+    "dep:image",
+    "dep:notify",
+]
+
+[[example]]
+name = "debug_avatar"
+required-features = ["persona"]
+
 [dependencies]
-aegis-core = { workspace = true }
+aegis-model = { workspace = true }
 aegis-design = { workspace = true }
+aegis-desktop-entries = { workspace = true, optional = true }
+fastrand = { workspace = true, optional = true }
+flux = { workspace = true, optional = true }
+flux-sys = { workspace = true, optional = true }
+flux-scene-graph = { workspace = true, optional = true }
+flux-scene-graph-sys = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
 lens = { workspace = true }
 lens-sys = { workspace = true }
 log.workspace = true
+notify = { workspace = true, optional = true }
 serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true
@@ -22,5 +49,8 @@ libc.workspace = true
 # The secret prompt's edit buffer is zeroized on close (password hygiene).
 zeroize = { workspace = true }
 
+[dev-dependencies]
+tempfile = "3"
+
 [package.metadata.cargo-machete]
-ignored = ["lens-sys"]
+ignored = ["flux-scene-graph-sys", "flux-sys", "lens-sys"]

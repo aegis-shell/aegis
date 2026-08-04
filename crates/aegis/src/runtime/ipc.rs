@@ -4,7 +4,10 @@ type SemanticCompletion = std::sync::mpsc::Sender<Result<(), String>>;
 type SemanticEnvelopeReceiver =
     std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<SemanticDispatchEnvelope>>>;
 type SemanticPendingKey = (aegis_semantic::SemanticProviderId, u64);
-type SemanticPendingAction = (aegis_authority::ActorSessionId, SemanticCompletion);
+type SemanticPendingAction = (
+    aegis_security::authority::ActorSessionId,
+    SemanticCompletion,
+);
 
 struct SemanticDispatchEnvelope {
     request: aegis_semantic::SemanticActionRequest,
@@ -12,7 +15,7 @@ struct SemanticDispatchEnvelope {
 }
 
 struct SemanticProviderLane {
-    session: aegis_authority::ActorSessionId,
+    session: aegis_security::authority::ActorSessionId,
     sender: std::sync::mpsc::SyncSender<SemanticDispatchEnvelope>,
     receiver: SemanticEnvelopeReceiver,
 }
@@ -27,7 +30,7 @@ impl SemanticDispatchBroker {
     fn receiver(
         &mut self,
         provider: aegis_semantic::SemanticProviderId,
-        session: aegis_authority::ActorSessionId,
+        session: aegis_security::authority::ActorSessionId,
     ) -> Result<SemanticEnvelopeReceiver, String> {
         if let Some(lane) = self.providers.get(&provider) {
             if lane.session != session {
@@ -48,7 +51,7 @@ impl SemanticDispatchBroker {
         Ok(receiver)
     }
 
-    fn revoke_session(&mut self, session: aegis_authority::ActorSessionId) {
+    fn revoke_session(&mut self, session: aegis_security::authority::ActorSessionId) {
         self.providers.retain(|_, lane| lane.session != session);
         let revoked = self
             .pending
@@ -97,15 +100,15 @@ pub(super) struct LiveChannels {
 }
 
 pub(super) struct LiveState {
-    windows: std::sync::RwLock<Vec<aegis_core::window::Window>>,
+    windows: std::sync::RwLock<Vec<aegis_model::window::Window>>,
     accessibility_windows: std::sync::RwLock<Vec<aegis_semantic::AccessibilityWindowBinding>>,
-    workspaces: std::sync::RwLock<aegis_core::workspace::WorkspaceSnapshot>,
-    outputs: std::sync::RwLock<Vec<aegis_core::output::OutputInfo>>,
+    workspaces: std::sync::RwLock<aegis_model::workspace::WorkspaceSnapshot>,
+    outputs: std::sync::RwLock<Vec<aegis_model::output::OutputInfo>>,
     interaction_domains:
-        std::sync::RwLock<aegis_core::interaction_domain::InteractionDomainSnapshot>,
+        std::sync::RwLock<aegis_model::interaction_domain::InteractionDomainSnapshot>,
     settings: std::sync::RwLock<aegis_ipc::SettingsSnapshot>,
     system_status: std::sync::RwLock<aegis_ipc::SystemStatus>,
-    notifications: std::sync::Arc<std::sync::Mutex<aegis_core::notify::NotificationQueue>>,
+    notifications: std::sync::Arc<std::sync::Mutex<aegis_model::notify::NotificationQueue>>,
     journal: std::sync::Arc<std::sync::Mutex<aegis_ipc::Journal>>,
     commands: std::sync::Mutex<std::sync::mpsc::Sender<IpcCommandRequest>>,
     system_controls: std::sync::Mutex<std::sync::mpsc::Sender<SystemControlRequest>>,
@@ -141,9 +144,9 @@ pub(super) struct LiveState {
     grants: std::sync::RwLock<GrantStore>,
     /// Live execution contexts. Unlike paired principals these die on EOF,
     /// idle expiry, or explicit principal revocation.
-    actor_sessions: std::sync::Mutex<aegis_authority::ActorSessionRegistry>,
+    actor_sessions: std::sync::Mutex<aegis_security::authority::ActorSessionRegistry>,
     /// Exact, session-bound filesystem/network/secret/payment authorities.
-    resource_grants: std::sync::Mutex<aegis_authority::ResourceGrantRegistry>,
+    resource_grants: std::sync::Mutex<aegis_security::authority::ResourceGrantRegistry>,
     semantic_dispatch: std::sync::Mutex<SemanticDispatchBroker>,
     next_semantic_request: std::sync::atomic::AtomicU64,
     audit_start: std::time::Instant,
@@ -172,9 +175,9 @@ fn actor_action_scope_still_authorized(
 }
 
 fn resource_confirmation(
-    resource: &aegis_authority::ActorResource,
+    resource: &aegis_security::authority::ActorResource,
 ) -> (String, String, Option<String>) {
-    use aegis_authority::{ActorResource, FilesystemAccess};
+    use aegis_security::authority::{ActorResource, FilesystemAccess};
     match resource {
         ActorResource::FilesystemPath { path, access } => {
             let operation = match access {
@@ -222,7 +225,7 @@ impl LiveState {
     pub(super) fn new(
         channels: LiveChannels,
         capture_delivery_gate: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        notifications: std::sync::Arc<std::sync::Mutex<aegis_core::notify::NotificationQueue>>,
+        notifications: std::sync::Arc<std::sync::Mutex<aegis_model::notify::NotificationQueue>>,
         journal: std::sync::Arc<std::sync::Mutex<aegis_ipc::Journal>>,
         scopes: std::collections::HashMap<String, aegis_ipc::Scope>,
         agent_auth: PrincipalRegistry,
@@ -235,11 +238,11 @@ impl LiveState {
             windows: std::sync::RwLock::new(Vec::new()),
             accessibility_windows: std::sync::RwLock::new(Vec::new()),
             workspaces: std::sync::RwLock::new(
-                aegis_core::workspace::WorkspaceModel::new().snapshot(),
+                aegis_model::workspace::WorkspaceModel::new().snapshot(),
             ),
             outputs: std::sync::RwLock::new(Vec::new()),
             interaction_domains: std::sync::RwLock::new(
-                aegis_core::interaction_domain::InteractionDomainModel::new().snapshot(),
+                aegis_model::interaction_domain::InteractionDomainModel::new().snapshot(),
             ),
             settings: std::sync::RwLock::new(aegis_ipc::SettingsSnapshot::default()),
             system_status: std::sync::RwLock::new(aegis_ipc::SystemStatus::default()),
@@ -272,9 +275,11 @@ impl LiveState {
             scopes: std::sync::RwLock::new(scopes),
             agent_auth: std::sync::RwLock::new(agent_auth),
             grants: std::sync::RwLock::new(grants),
-            actor_sessions: std::sync::Mutex::new(aegis_authority::ActorSessionRegistry::default()),
+            actor_sessions: std::sync::Mutex::new(
+                aegis_security::authority::ActorSessionRegistry::default(),
+            ),
             resource_grants: std::sync::Mutex::new(
-                aegis_authority::ResourceGrantRegistry::default(),
+                aegis_security::authority::ResourceGrantRegistry::default(),
             ),
             semantic_dispatch: std::sync::Mutex::new(SemanticDispatchBroker::default()),
             next_semantic_request: std::sync::atomic::AtomicU64::new(0),
@@ -287,9 +292,15 @@ impl LiveState {
         &self,
         connection_id: u64,
         subject: Option<&str>,
-    ) -> Result<(ActorBinding, aegis_authority::ActorSessionSnapshot), String> {
+    ) -> Result<
+        (
+            ActorBinding,
+            aegis_security::authority::ActorSessionSnapshot,
+        ),
+        String,
+    > {
         let principal = subject
-            .map(aegis_authority::ActorPrincipal::new)
+            .map(aegis_security::authority::ActorPrincipal::new)
             .transpose()
             .map_err(str::to_owned)?;
         let snapshot = self
@@ -319,7 +330,7 @@ impl LiveState {
         scope_name: Option<&str>,
         actor: &ActorBinding,
         authorized_scope: &aegis_ipc::Scope,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
     ) -> Result<aegis_ipc::Scope, String> {
         let current = if let Some(name) = scope_name {
             self.scopes
@@ -409,7 +420,7 @@ impl LiveState {
     fn resource_grant_event(
         &self,
         origin: aegis_ipc::Origin,
-        grant: &aegis_authority::ResourceGrant,
+        grant: &aegis_security::authority::ResourceGrant,
         action: aegis_ipc::ResourceGrantAuditAction,
     ) {
         self.audit_event(
@@ -426,7 +437,7 @@ impl LiveState {
 
     fn terminate_actor_session(
         &self,
-        snapshot: aegis_authority::ActorSessionSnapshot,
+        snapshot: aegis_security::authority::ActorSessionSnapshot,
         action: aegis_ipc::ActorSessionAuditAction,
         origin: aegis_ipc::Origin,
     ) {
@@ -489,24 +500,24 @@ impl LiveState {
 
     pub(super) fn set_windows(
         &self,
-        windows: Vec<aegis_core::window::Window>,
+        windows: Vec<aegis_model::window::Window>,
         accessibility_windows: Vec<aegis_semantic::AccessibilityWindowBinding>,
     ) {
         *self.windows.write().unwrap() = windows;
         *self.accessibility_windows.write().unwrap() = accessibility_windows;
     }
 
-    pub(super) fn set_workspaces(&self, snapshot: aegis_core::workspace::WorkspaceSnapshot) {
+    pub(super) fn set_workspaces(&self, snapshot: aegis_model::workspace::WorkspaceSnapshot) {
         *self.workspaces.write().unwrap() = snapshot;
     }
 
-    pub(super) fn set_outputs(&self, outputs: Vec<aegis_core::output::OutputInfo>) {
+    pub(super) fn set_outputs(&self, outputs: Vec<aegis_model::output::OutputInfo>) {
         *self.outputs.write().unwrap() = outputs;
     }
 
     pub(super) fn set_interaction_domains(
         &self,
-        snapshot: aegis_core::interaction_domain::InteractionDomainSnapshot,
+        snapshot: aegis_model::interaction_domain::InteractionDomainSnapshot,
     ) {
         *self.interaction_domains.write().unwrap() = snapshot;
     }
@@ -522,7 +533,7 @@ impl LiveState {
     pub(super) fn dispatch_accessibility_action(
         &self,
         target: aegis_semantic::SemanticDispatchTarget,
-        action: aegis_core::semantic::SemanticActionIntent,
+        action: aegis_model::semantic::SemanticActionIntent,
     ) -> Result<std::sync::mpsc::Receiver<Result<(), String>>, String> {
         let previous = self
             .next_semantic_request
@@ -535,7 +546,7 @@ impl LiveState {
         let request_id = previous + 1;
         let request = aegis_semantic::SemanticActionRequest {
             request_id,
-            target: aegis_core::semantic::SemanticObjectId {
+            target: aegis_model::semantic::SemanticObjectId {
                 window: target.window,
                 local: target.provider_node_id,
             },
@@ -580,7 +591,7 @@ impl aegis_ipc::Handler for LiveState {
         }
     }
 
-    fn windows(&self) -> Vec<aegis_core::window::Window> {
+    fn windows(&self) -> Vec<aegis_model::window::Window> {
         self.windows.read().unwrap().clone()
     }
 
@@ -588,15 +599,15 @@ impl aegis_ipc::Handler for LiveState {
         self.accessibility_windows.read().unwrap().clone()
     }
 
-    fn workspaces(&self) -> aegis_core::workspace::WorkspaceSnapshot {
+    fn workspaces(&self) -> aegis_model::workspace::WorkspaceSnapshot {
         self.workspaces.read().unwrap().clone()
     }
 
-    fn notifications(&self) -> Vec<aegis_core::notify::Notification> {
+    fn notifications(&self) -> Vec<aegis_model::notify::Notification> {
         self.notifications.lock().unwrap().snapshot()
     }
 
-    fn outputs(&self) -> Vec<aegis_core::output::OutputInfo> {
+    fn outputs(&self) -> Vec<aegis_model::output::OutputInfo> {
         self.outputs.read().unwrap().clone()
     }
 
@@ -604,7 +615,7 @@ impl aegis_ipc::Handler for LiveState {
         self.journal.lock().unwrap().since(since)
     }
 
-    fn interaction_domains(&self) -> aegis_core::interaction_domain::InteractionDomainSnapshot {
+    fn interaction_domains(&self) -> aegis_model::interaction_domain::InteractionDomainSnapshot {
         self.interaction_domains.read().unwrap().clone()
     }
 
@@ -643,7 +654,7 @@ impl aegis_ipc::Handler for LiveState {
         &self,
         conn_id: u64,
         subject: Option<&str>,
-        session: aegis_authority::ActorSessionId,
+        session: aegis_security::authority::ActorSessionId,
         capability: aegis_ipc::ActorCapability,
         action: aegis_ipc::CapabilityUseAction,
         effect: aegis_ipc::Effect,
@@ -653,7 +664,7 @@ impl aegis_ipc::Handler for LiveState {
             aegis_ipc::JournalMutation::CapabilityUse {
                 session,
                 principal: subject
-                    .and_then(|value| aegis_authority::ActorPrincipal::new(value).ok()),
+                    .and_then(|value| aegis_security::authority::ActorPrincipal::new(value).ok()),
                 capability,
                 action,
             },
@@ -721,10 +732,10 @@ impl aegis_ipc::Handler for LiveState {
         &self,
         conn_id: u64,
         principal: Option<&str>,
-        policy: aegis_authority::ActorSessionPolicy,
-    ) -> Result<aegis_authority::ActorSessionSnapshot, String> {
+        policy: aegis_security::authority::ActorSessionPolicy,
+    ) -> Result<aegis_security::authority::ActorSessionSnapshot, String> {
         let principal = principal
-            .map(aegis_authority::ActorPrincipal::new)
+            .map(aegis_security::authority::ActorPrincipal::new)
             .transpose()
             .map_err(str::to_owned)?;
         let snapshot = self
@@ -751,7 +762,7 @@ impl aegis_ipc::Handler for LiveState {
 
     fn authorize_actor_session(
         &self,
-        session: aegis_authority::ActorSessionId,
+        session: aegis_security::authority::ActorSessionId,
     ) -> Result<(), String> {
         let result = self
             .actor_sessions
@@ -767,17 +778,17 @@ impl aegis_ipc::Handler for LiveState {
 
     fn issue_resource_grant(
         &self,
-        session: aegis_authority::ActorSessionId,
+        session: aegis_security::authority::ActorSessionId,
         principal: Option<&str>,
-        resource: aegis_authority::ActorResource,
+        resource: aegis_security::authority::ActorResource,
         ttl: std::time::Duration,
         uses: u32,
         confirm_exact_resource: bool,
-    ) -> Result<aegis_authority::ResourceGrant, String> {
+    ) -> Result<aegis_security::authority::ResourceGrant, String> {
         self.expire_due_resource_grants();
         resource.validate().map_err(str::to_owned)?;
         let principal = principal
-            .map(aegis_authority::ActorPrincipal::new)
+            .map(aegis_security::authority::ActorPrincipal::new)
             .transpose()
             .map_err(str::to_owned)?;
         let session_snapshot = self.actor_sessions.lock().unwrap().authorize(session)?;
@@ -814,15 +825,15 @@ impl aegis_ipc::Handler for LiveState {
 
     fn consume_resource_grant(
         &self,
-        session: aegis_authority::ActorSessionId,
+        session: aegis_security::authority::ActorSessionId,
         principal: Option<&str>,
-        id: &aegis_authority::ResourceGrantId,
-        resource: &aegis_authority::ActorResource,
-    ) -> Result<aegis_authority::ResourceGrant, String> {
+        id: &aegis_security::authority::ResourceGrantId,
+        resource: &aegis_security::authority::ActorResource,
+    ) -> Result<aegis_security::authority::ResourceGrant, String> {
         self.expire_due_resource_grants();
         let session_snapshot = self.actor_sessions.lock().unwrap().authorize(session)?;
         let principal = principal
-            .map(aegis_authority::ActorPrincipal::new)
+            .map(aegis_security::authority::ActorPrincipal::new)
             .transpose()
             .map_err(str::to_owned)?;
         if session_snapshot.principal.as_ref() != principal.as_ref() {
@@ -847,13 +858,13 @@ impl aegis_ipc::Handler for LiveState {
 
     fn revoke_resource_grant(
         &self,
-        session: aegis_authority::ActorSessionId,
+        session: aegis_security::authority::ActorSessionId,
         principal: Option<&str>,
-        id: &aegis_authority::ResourceGrantId,
+        id: &aegis_security::authority::ResourceGrantId,
     ) -> Result<(), String> {
         let session_snapshot = self.actor_sessions.lock().unwrap().authorize(session)?;
         let principal = principal
-            .map(aegis_authority::ActorPrincipal::new)
+            .map(aegis_security::authority::ActorPrincipal::new)
             .transpose()
             .map_err(str::to_owned)?;
         if session_snapshot.principal.as_ref() != principal.as_ref() {
@@ -898,7 +909,7 @@ impl aegis_ipc::Handler for LiveState {
 
     fn next_accessibility_action(
         &self,
-        session: aegis_authority::ActorSessionId,
+        session: aegis_security::authority::ActorSessionId,
         principal: &str,
         timeout: std::time::Duration,
     ) -> Result<Option<aegis_semantic::SemanticActionRequest>, String> {
@@ -942,7 +953,7 @@ impl aegis_ipc::Handler for LiveState {
 
     fn complete_accessibility_action(
         &self,
-        session: aegis_authority::ActorSessionId,
+        session: aegis_security::authority::ActorSessionId,
         principal: &str,
         request_id: u64,
         result: Result<(), String>,
@@ -1210,7 +1221,8 @@ impl aegis_ipc::Handler for LiveState {
     fn forget_agent_principal(&self, principal: &str) -> Result<(), String> {
         self.agent_auth.write().unwrap().forget(principal)?;
         self.grants.write().unwrap().forget_principal(principal);
-        let principal = aegis_authority::ActorPrincipal::new(principal).map_err(str::to_owned)?;
+        let principal =
+            aegis_security::authority::ActorPrincipal::new(principal).map_err(str::to_owned)?;
         let revoked = self
             .actor_sessions
             .lock()
@@ -1295,7 +1307,7 @@ impl aegis_ipc::Handler for LiveState {
 
     fn capture_output(
         &self,
-        region: Option<aegis_core::Rect>,
+        region: Option<aegis_model::Rect>,
     ) -> Result<aegis_ipc::CaptureOutputPayload, String> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         self.capture
@@ -1378,8 +1390,8 @@ impl aegis_ipc::Handler for LiveState {
         &self,
         conn_id: u64,
         subject: Option<&str>,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
-        region: Option<aegis_core::Rect>,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
+        region: Option<aegis_model::Rect>,
     ) -> Result<aegis_ipc::CaptureInteractionDomainPayload, String> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         let (actor, session) = self.actor_binding(conn_id, subject)?;
@@ -1403,7 +1415,7 @@ impl aegis_ipc::Handler for LiveState {
         &self,
         conn_id: u64,
         subject: Option<&str>,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
     ) -> Result<aegis_ipc::SemanticObservation, String> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         let (actor, session) = self.actor_binding(conn_id, subject)?;
@@ -1742,25 +1754,28 @@ mod actor_action_scope_tests {
     fn semantic_request(request_id: u64) -> aegis_semantic::SemanticActionRequest {
         aegis_semantic::SemanticActionRequest {
             request_id,
-            target: aegis_core::semantic::SemanticObjectId {
-                window: aegis_core::window::WindowId(7),
+            target: aegis_model::semantic::SemanticObjectId {
+                window: aegis_model::window::WindowId(7),
                 local: 2,
             },
             provider_node_id: 2,
             tree_revision: 3,
-            action: aegis_core::semantic::SemanticActionIntent::Invoke,
+            action: aegis_model::semantic::SemanticActionIntent::Invoke,
         }
     }
 
     #[test]
     fn semantic_broker_is_single_session_bounded_and_revocation_completes_pending() {
         let provider = aegis_semantic::SemanticProviderId::new("atspi.test").unwrap();
-        let session = aegis_authority::ActorSessionId(7);
+        let session = aegis_security::authority::ActorSessionId(7);
         let mut broker = SemanticDispatchBroker::default();
         let receiver = broker.receiver(provider.clone(), session).unwrap();
         assert!(
             broker
-                .receiver(provider.clone(), aegis_authority::ActorSessionId(8))
+                .receiver(
+                    provider.clone(),
+                    aegis_security::authority::ActorSessionId(8)
+                )
                 .is_err()
         );
 

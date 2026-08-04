@@ -1,6 +1,6 @@
-use aegis_core::Point;
-use aegis_core::output::{ModeSpec, OutputInfo, OutputMode};
-use aegis_core::settings::{DisplaySettings, DisplayStatus, SettingsAction, SettingsSnapshot};
+use aegis_model::Point;
+use aegis_model::output::{ModeSpec, OutputInfo, OutputMode};
+use aegis_model::settings::{DisplaySettings, DisplayStatus, SettingsAction, SettingsSnapshot};
 use aegis_shell::{Localizer, Message};
 use lens::{Align, Frame, Icon, LayoutOpts, TextBuf};
 
@@ -409,10 +409,10 @@ mod tests {
         };
         OutputInfo {
             connector: connector.into(),
-            geometry: aegis_core::output::OutputGeometry {
+            geometry: aegis_model::output::OutputGeometry {
                 mode,
-                scale: aegis_core::output::Scale::IDENTITY,
-                transform: aegis_core::Transform::Normal,
+                scale: aegis_model::output::Scale::IDENTITY,
+                transform: aegis_model::Transform::Normal,
                 logical_origin: Point { x, y },
             },
             available_modes: vec![mode],

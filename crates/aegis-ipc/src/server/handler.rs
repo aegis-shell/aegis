@@ -11,7 +11,7 @@ pub trait Handler: Send + Sync {
     }
     /// Snapshot of live toplevels, in z-order — the same `Window` the
     /// renderer and chrome read.
-    fn windows(&self) -> Vec<aegis_core::window::Window>;
+    fn windows(&self) -> Vec<aegis_model::window::Window>;
     /// Process-bound toplevels for the authenticated first-party semantic
     /// provider. The default exposes nothing.
     fn accessibility_windows(&self) -> Vec<aegis_semantic::AccessibilityWindowBinding> {
@@ -19,24 +19,24 @@ pub trait Handler: Send + Sync {
     }
     /// Snapshot of the workspace/output model. Same shape the chrome and the
     /// agent read.
-    fn workspaces(&self) -> aegis_core::workspace::WorkspaceSnapshot;
+    fn workspaces(&self) -> aegis_model::workspace::WorkspaceSnapshot;
     /// Snapshot of the live notification queue.
-    fn notifications(&self) -> Vec<aegis_core::notify::Notification>;
+    fn notifications(&self) -> Vec<aegis_model::notify::Notification>;
     /// Snapshot of the live outputs (connector + geometry).
-    fn outputs(&self) -> Vec<aegis_core::output::OutputInfo>;
+    fn outputs(&self) -> Vec<aegis_model::output::OutputInfo>;
     /// Snapshot of journal entries with `seq > since` (ADR-0033).
     fn journal_since(&self, since: u64) -> crate::journal::JournalSnapshot;
     /// Complete Interaction Domain authority snapshot.
-    fn interaction_domains(&self) -> aegis_core::interaction_domain::InteractionDomainSnapshot {
-        aegis_core::interaction_domain::InteractionDomainModel::new().snapshot()
+    fn interaction_domains(&self) -> aegis_model::interaction_domain::InteractionDomainSnapshot {
+        aegis_model::interaction_domain::InteractionDomainModel::new().snapshot()
     }
     /// Compositor-owned persistent settings snapshot.
     fn settings(&self) -> SettingsSnapshot {
         SettingsSnapshot::default()
     }
     /// Live host and compositor-owned session status.
-    fn system_status(&self) -> aegis_core::system::SystemStatus {
-        aegis_core::system::SystemStatus::default()
+    fn system_status(&self) -> aegis_model::system::SystemStatus {
+        aegis_model::system::SystemStatus::default()
     }
     /// Resolve a named scope from configuration (ADR-0034). Returns `None`
     /// if the name is unknown; an explicitly named connection is refused.
@@ -63,18 +63,18 @@ pub trait Handler: Send + Sync {
         &self,
         conn_id: u64,
         principal: Option<&str>,
-        policy: aegis_authority::ActorSessionPolicy,
-    ) -> Result<aegis_authority::ActorSessionSnapshot, String> {
+        policy: aegis_security::authority::ActorSessionPolicy,
+    ) -> Result<aegis_security::authority::ActorSessionSnapshot, String> {
         let principal = principal
-            .map(aegis_authority::ActorPrincipal::new)
+            .map(aegis_security::authority::ActorPrincipal::new)
             .transpose()
             .map_err(str::to_owned)?;
         let policy = policy.validate().map_err(str::to_owned)?;
-        Ok(aegis_authority::ActorSessionSnapshot {
-            id: aegis_authority::ActorSessionId(conn_id),
+        Ok(aegis_security::authority::ActorSessionSnapshot {
+            id: aegis_security::authority::ActorSessionId(conn_id),
             principal,
             connection_id: conn_id,
-            state: aegis_authority::ActorSessionState::Active,
+            state: aegis_security::authority::ActorSessionState::Active,
             ttl_ms: policy.ttl.as_millis() as u64,
             idle_timeout_ms: policy.idle_timeout.as_millis() as u64,
             max_pending_actions: policy.max_pending_actions as u32,
@@ -85,7 +85,7 @@ pub trait Handler: Send + Sync {
     /// request. Expired, suspended, or revoked sessions fail closed.
     fn authorize_actor_session(
         &self,
-        _session: aegis_authority::ActorSessionId,
+        _session: aegis_security::authority::ActorSessionId,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -95,31 +95,31 @@ pub trait Handler: Send + Sync {
     /// obtain fresh human consent describing this exact resource.
     fn issue_resource_grant(
         &self,
-        _session: aegis_authority::ActorSessionId,
+        _session: aegis_security::authority::ActorSessionId,
         _principal: Option<&str>,
-        _resource: aegis_authority::ActorResource,
+        _resource: aegis_security::authority::ActorResource,
         _ttl: std::time::Duration,
         _uses: u32,
         _confirm_exact_resource: bool,
-    ) -> Result<aegis_authority::ResourceGrant, String> {
+    ) -> Result<aegis_security::authority::ResourceGrant, String> {
         Err("dynamic resource grants are not supported by this server".into())
     }
     /// Consume one use of an exact resource authority.
     fn consume_resource_grant(
         &self,
-        _session: aegis_authority::ActorSessionId,
+        _session: aegis_security::authority::ActorSessionId,
         _principal: Option<&str>,
-        _id: &aegis_authority::ResourceGrantId,
-        _resource: &aegis_authority::ActorResource,
-    ) -> Result<aegis_authority::ResourceGrant, String> {
+        _id: &aegis_security::authority::ResourceGrantId,
+        _resource: &aegis_security::authority::ActorResource,
+    ) -> Result<aegis_security::authority::ResourceGrant, String> {
         Err("dynamic resource grants are not supported by this server".into())
     }
     /// Revoke one resource authority owned by this live Actor.
     fn revoke_resource_grant(
         &self,
-        _session: aegis_authority::ActorSessionId,
+        _session: aegis_security::authority::ActorSessionId,
         _principal: Option<&str>,
-        _id: &aegis_authority::ResourceGrantId,
+        _id: &aegis_security::authority::ResourceGrantId,
     ) -> Result<(), String> {
         Err("dynamic resource grants are not supported by this server".into())
     }
@@ -136,7 +136,7 @@ pub trait Handler: Send + Sync {
     /// `Ok(None)` is a normal timeout, not an error.
     fn next_accessibility_action(
         &self,
-        _session: aegis_authority::ActorSessionId,
+        _session: aegis_security::authority::ActorSessionId,
         _principal: &str,
         _timeout: std::time::Duration,
     ) -> Result<Option<aegis_semantic::SemanticActionRequest>, String> {
@@ -144,7 +144,7 @@ pub trait Handler: Send + Sync {
     }
     fn complete_accessibility_action(
         &self,
-        _session: aegis_authority::ActorSessionId,
+        _session: aegis_security::authority::ActorSessionId,
         _principal: &str,
         _request_id: u64,
         _result: Result<(), String>,
@@ -301,7 +301,7 @@ pub trait Handler: Send + Sync {
     fn authorize_agent_interaction_domain_capture(
         &self,
         subject: Option<&str>,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
     ) -> Result<(), String> {
         let Some(subject) = subject else {
             return Ok(());
@@ -331,7 +331,7 @@ pub trait Handler: Send + Sync {
         &self,
         _conn_id: u64,
         _subject: Option<&str>,
-        _session: aegis_authority::ActorSessionId,
+        _session: aegis_security::authority::ActorSessionId,
         _capability: ActorCapability,
         _action: crate::journal::CapabilityUseAction,
         _effect: crate::journal::Effect,
@@ -386,7 +386,7 @@ pub trait Handler: Send + Sync {
     /// `None` captures the whole output.
     fn capture_output(
         &self,
-        _region: Option<aegis_core::Rect>,
+        _region: Option<aegis_model::Rect>,
     ) -> Result<CaptureOutputPayload, String> {
         Err("capture unsupported".into())
     }
@@ -395,8 +395,8 @@ pub trait Handler: Send + Sync {
         &self,
         _conn_id: u64,
         _subject: Option<&str>,
-        _interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
-        _region: Option<aegis_core::Rect>,
+        _interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
+        _region: Option<aegis_model::Rect>,
     ) -> Result<CaptureInteractionDomainPayload, String> {
         Err("interaction_domain capture unsupported".into())
     }
@@ -405,7 +405,7 @@ pub trait Handler: Send + Sync {
         &self,
         _conn_id: u64,
         _subject: Option<&str>,
-        _interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+        _interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
     ) -> Result<SemanticObservation, String> {
         Err("InteractionDomain semantic observation unsupported".into())
     }

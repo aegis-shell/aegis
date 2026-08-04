@@ -2,22 +2,22 @@
 //!
 //! The component owns only search presentation and interaction state. It
 //! receives the shared application catalog and borrowed icon handles through
-//! [`Chrome::update_app_catalog`], then emits launch or focus intents through
+//! [`ChromeUpdate::AppCatalog`], then emits launch or focus intents through
 //! [`ChromeEvents`]. Process creation and Wayland focus remain in the
 //! compositor composition root.
 
 use std::ffi::c_void;
 use std::ops::Range;
 
-use aegis_core::app::Entry;
-use aegis_core::input::{KeyChar, key_action};
-use aegis_core::launcher::{Launch, Launcher as SearchBrain};
-use aegis_core::window::Window;
-use aegis_core::workspace::WorkspaceSnapshot;
-use aegis_design::{Design, materials};
+use aegis_design::{Design, GlassRole, materials};
+use aegis_model::app::Entry;
+use aegis_model::input::{KeyChar, key_action};
+use aegis_model::launcher::{Launch, Launcher as SearchBrain};
+use aegis_model::window::Window;
+use aegis_model::workspace::WorkspaceSnapshot;
 use aegis_shell::{
-    AppCatalog, BackdropRegion, Chrome, ChromeEvents, CursorShape, IconSet, LiquidGlassRegion,
-    Localizer, Message, ellipsize,
+    AppCatalog, BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
+    IconSet, LiquidGlassRegion, Localizer, Message, ellipsize,
 };
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
 
@@ -58,6 +58,16 @@ impl Prism {
             prev_down: false,
             reduced_motion: false,
         }
+    }
+
+    fn toggle_prism(&mut self, _out: &mut ChromeEvents) {
+        self.brain.toggle();
+        self.anim_active = true;
+    }
+
+    fn update_app_catalog(&mut self, catalog: &AppCatalog) {
+        self.brain.replace_apps(catalog.apps.clone());
+        self.icons = catalog.icons.clone();
     }
 
     fn advance_visibility(&mut self, target: f32, dt: f32) -> f32 {
@@ -478,28 +488,30 @@ impl Chrome for Prism {
         true
     }
 
-    fn toggle_prism(&mut self, _out: &mut ChromeEvents) {
-        self.brain.toggle();
-        self.anim_active = true;
+    fn command(&mut self, command: &ChromeCommand<'_>, _out: &mut ChromeEvents) {
+        match command {
+            ChromeCommand::TogglePrism => {
+                self.toggle_prism(_out);
+            }
+            ChromeCommand::ClosePrism => {
+                self.brain.close();
+                self.visibility = 0.0;
+                self.anim_active = false;
+            }
+            _ => {}
+        }
     }
 
     fn prism_active(&self) -> bool {
         self.brain.is_open()
     }
 
-    fn close_prism(&mut self) {
-        self.brain.close();
-        self.visibility = 0.0;
-        self.anim_active = false;
-    }
-
-    fn update_app_catalog(&mut self, catalog: &AppCatalog) {
-        self.brain.replace_apps(catalog.apps.clone());
-        self.icons = catalog.icons.clone();
-    }
-
-    fn set_reduced_motion(&mut self, reduced: bool) {
-        self.reduced_motion = reduced;
+    fn update(&mut self, update: ChromeUpdate<'_>) {
+        match update {
+            ChromeUpdate::AppCatalog(catalog) => self.update_app_catalog(catalog),
+            ChromeUpdate::ReducedMotion(reduced) => self.reduced_motion = reduced,
+            _ => {}
+        }
     }
 
     fn anim_pending(&self) -> bool {
@@ -551,20 +563,13 @@ impl Chrome for Prism {
             return Vec::new();
         }
         let panel = Self::panel_rect(display, self.brain.filtered().len(), self.visibility);
-        vec![LiquidGlassRegion {
-            bounds: BackdropRegion {
-                x: panel.x,
-                y: panel.y,
-                w: panel.w,
-                h: panel.h,
-            },
-            corner_radius: PANEL_RADIUS,
-            opacity: self.visibility,
-            shadow_alpha: 0.20,
-            shadow_blur: 18.0,
-            shadow_offset_y: 9.0,
-            focus: None,
-        }]
+        vec![LiquidGlassRegion::from_role(
+            &Design::dark(),
+            GlassRole::ProminentPanel,
+            BackdropRegion::from(panel),
+            PANEL_RADIUS,
+            self.visibility,
+        )]
     }
 }
 
@@ -684,26 +689,26 @@ mod tests {
     #[test]
     fn toggle_and_escape_control_prism_only() {
         let mut prism = Prism::new();
-        prism.update_app_catalog(&AppCatalog {
+        prism.update(ChromeUpdate::AppCatalog(&AppCatalog {
             apps: vec![entry("alpha.desktop", "Alpha")],
             ..AppCatalog::default()
-        });
-        prism.toggle_prism(&mut ChromeEvents::default());
+        }));
+        prism.command(&ChromeCommand::TogglePrism, &mut ChromeEvents::default());
         assert!(prism.prism_active());
         prism.key_char(
             &KeyChar {
                 keysym: b'x' as u32,
                 ch: Some('x'),
-                mods: aegis_core::input::Mods::NONE,
+                mods: aegis_model::input::Mods::NONE,
             },
             &mut ChromeEvents::default(),
         );
         assert_eq!(prism.brain.query(), "x");
         prism.key_char(
             &KeyChar {
-                keysym: aegis_core::input::XKB_KEY_Escape,
+                keysym: aegis_model::input::XKB_KEY_Escape,
                 ch: None,
-                mods: aegis_core::input::Mods::NONE,
+                mods: aegis_model::input::Mods::NONE,
             },
             &mut ChromeEvents::default(),
         );
@@ -722,9 +727,9 @@ mod tests {
         let mut events = ChromeEvents::default();
         prism.key_char(
             &KeyChar {
-                keysym: aegis_core::input::XKB_KEY_Return,
+                keysym: aegis_model::input::XKB_KEY_Return,
                 ch: None,
-                mods: aegis_core::input::Mods::NONE,
+                mods: aegis_model::input::Mods::NONE,
             },
             &mut events,
         );

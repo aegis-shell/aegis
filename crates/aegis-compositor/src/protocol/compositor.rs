@@ -101,7 +101,7 @@ static SURFACE_IMPL: ffi::wl_surface_interface_impl = ffi::wl_surface_interface_
 /// their exact disjoint damage all the way to output/effect invalidation.
 pub(crate) const MAX_COMMITTED_DAMAGE_RECTS: usize = 64;
 
-fn normalise_damage_rect(rect: aegis_core::Rect) -> Option<aegis_core::Rect> {
+fn normalise_damage_rect(rect: aegis_model::Rect) -> Option<aegis_model::Rect> {
     if rect.is_empty() {
         return None;
     }
@@ -115,7 +115,7 @@ fn normalise_damage_rect(rect: aegis_core::Rect) -> Option<aegis_core::Rect> {
     if x1 <= x0 || y1 <= y0 {
         return None;
     }
-    Some(aegis_core::Rect::new(
+    Some(aegis_model::Rect::new(
         rect.origin.x,
         rect.origin.y,
         (x1 - x0) as i32,
@@ -123,7 +123,7 @@ fn normalise_damage_rect(rect: aegis_core::Rect) -> Option<aegis_core::Rect> {
     ))
 }
 
-fn damage_bbox(rects: &[aegis_core::Rect]) -> Option<aegis_core::Rect> {
+fn damage_bbox(rects: &[aegis_model::Rect]) -> Option<aegis_model::Rect> {
     let first = *rects.first()?;
     let mut x0 = i64::from(first.origin.x);
     let mut y0 = i64::from(first.origin.y);
@@ -145,7 +145,7 @@ fn damage_bbox(rects: &[aegis_core::Rect]) -> Option<aegis_core::Rect> {
         // truncating one side of the region.
         return None;
     }
-    Some(aegis_core::Rect::new(
+    Some(aegis_model::Rect::new(
         x0.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
         y0.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
         width as i32,
@@ -156,7 +156,7 @@ fn damage_bbox(rects: &[aegis_core::Rect]) -> Option<aegis_core::Rect> {
 /// Add `rect` to an exact, disjoint damage region. Subtracting existing
 /// coverage from the new rectangle avoids both duplicate work and the false
 /// dirty pixels introduced by a bounding-box union.
-fn insert_damage_rect(region: &mut Vec<aegis_core::Rect>, rect: aegis_core::Rect) -> bool {
+fn insert_damage_rect(region: &mut Vec<aegis_model::Rect>, rect: aegis_model::Rect) -> bool {
     let Some(rect) = normalise_damage_rect(rect) else {
         return false;
     };
@@ -189,7 +189,7 @@ fn insert_damage_rect(region: &mut Vec<aegis_core::Rect>, rect: aegis_core::Rect
 /// small video update cannot invalidate unrelated backdrop/chrome pixels.
 pub(crate) fn accumulate_committed_damage(
     rec: &mut SurfaceRec,
-    pending: Vec<aegis_core::Rect>,
+    pending: Vec<aegis_model::Rect>,
     unknown_full: bool,
 ) {
     if rec.committed_damage_full {
@@ -235,7 +235,7 @@ unsafe extern "C" fn surface_attach(
         let rec = ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec;
         (*rec).pending_buffer = buffer;
         (*rec).pending_buffer_set = true;
-        (*rec).pending_attach_offset = aegis_core::Point { x, y };
+        (*rec).pending_attach_offset = aegis_model::Point { x, y };
     }
 }
 
@@ -258,7 +258,7 @@ unsafe fn retire_surface_buffer(rec: *mut SurfaceRec) {
     }
 }
 
-fn valid_policy_size(size: aegis_core::Size) -> Option<aegis_core::Size> {
+fn valid_policy_size(size: aegis_model::Size) -> Option<aegis_model::Size> {
     (size.w >= 100 && size.h >= 100).then_some(size)
 }
 
@@ -269,7 +269,7 @@ fn valid_policy_size(size: aegis_core::Size) -> Option<aegis_core::Size> {
 /// main-window size: doing it from `set_app_id` races the transient
 /// relationship, while doing it after the first buffer maps visibly resizes
 /// the window.
-pub(crate) unsafe fn initial_toplevel_size(rec: *mut SurfaceRec) -> Option<aegis_core::Size> {
+pub(crate) unsafe fn initial_toplevel_size(rec: *mut SurfaceRec) -> Option<aegis_model::Size> {
     unsafe {
         if rec.is_null() || (*rec).state.is_null() {
             return None;
@@ -313,11 +313,11 @@ pub(crate) unsafe fn initial_toplevel_size(rec: *mut SurfaceRec) -> Option<aegis
 /// Center a transient in its parent and keep it inside the output whenever
 /// the transient fits. Both rectangles use compositor-logical coordinates.
 pub(crate) fn centered_transient_position(
-    parent: aegis_core::Rect,
-    child: aegis_core::Size,
-    output: aegis_core::Rect,
-) -> aegis_core::Point {
-    let centered = aegis_core::Point {
+    parent: aegis_model::Rect,
+    child: aegis_model::Size,
+    output: aegis_model::Rect,
+) -> aegis_model::Point {
+    let centered = aegis_model::Point {
         x: parent.origin.x + (parent.size.w - child.w) / 2,
         y: parent.origin.y + (parent.size.h - child.h) / 2,
     };
@@ -333,13 +333,13 @@ pub(crate) fn centered_transient_position(
         .saturating_add(output.size.h)
         .saturating_sub(child.h)
         .max(output.origin.y);
-    aegis_core::Point {
+    aegis_model::Point {
         x: centered.x.clamp(output.origin.x, max_x),
         y: centered.y.clamp(output.origin.y, max_y),
     }
 }
 
-unsafe fn transient_parent_rect(rec: *mut SurfaceRec) -> Option<aegis_core::Rect> {
+unsafe fn transient_parent_rect(rec: *mut SurfaceRec) -> Option<aegis_model::Rect> {
     unsafe {
         let parent = (*rec).window.parent? as *mut SurfaceRec;
         if parent.is_null() || (*rec).state.is_null() {
@@ -353,7 +353,7 @@ unsafe fn transient_parent_rect(rec: *mut SurfaceRec) -> Option<aegis_core::Rect
         if !live || !(*parent).mapped || (*parent).xdg_toplevel.is_null() {
             return None;
         }
-        Some(aegis_core::Rect {
+        Some(aegis_model::Rect {
             origin: (*parent).position,
             size: (*parent).window.size,
         })
@@ -366,6 +366,73 @@ pub(crate) fn should_focus_mapped_toplevel(
     minimized: bool,
 ) -> bool {
     visible && human_controls && !minimized
+}
+
+/// Return focus to the closest live, mapped transient parent after an
+/// `xdg_toplevel` disappears. Walking past an already-unmapped intermediate
+/// dialog handles nested dialog teardown in one dispatch batch.
+pub(crate) unsafe fn transient_parent_keyboard_focus(
+    surface: *mut SurfaceRec,
+) -> *mut ffi::wl_resource {
+    unsafe {
+        if surface.is_null() || (*surface).state.is_null() {
+            return std::ptr::null_mut();
+        }
+        let state = &*(*surface).state;
+        let mut parent = (*surface)
+            .window
+            .parent
+            .map_or(std::ptr::null_mut(), |parent| parent as *mut SurfaceRec);
+        for _ in 0..32 {
+            if parent.is_null() || !state.live_surfaces().any(|candidate| candidate == parent) {
+                return std::ptr::null_mut();
+            }
+            if (*parent).mapped && !(*parent).xdg_toplevel.is_null() {
+                return (*parent).resource;
+            }
+            parent = (*parent)
+                .window
+                .parent
+                .map_or(std::ptr::null_mut(), |parent| parent as *mut SurfaceRec);
+        }
+        std::ptr::null_mut()
+    }
+}
+
+/// Defer the focus transition required when a toplevel unmaps or loses its
+/// role. Only seats currently focused on that surface are affected. A
+/// transient returns to its nearest mapped parent; an ordinary toplevel leaves
+/// the seat unfocused.
+pub(crate) unsafe fn defer_keyboard_focus_after_toplevel_unmap(surface: *mut SurfaceRec) {
+    unsafe {
+        if surface.is_null() || (*surface).state.is_null() {
+            return;
+        }
+        let target = transient_parent_keyboard_focus(surface);
+        let state = &mut *(*surface).state;
+        let resource = (*surface).resource;
+        if state
+            .pending_activation
+            .is_some_and(|(_, pending)| pending == resource)
+        {
+            state.pending_activation = None;
+        }
+        let affected_seats = state
+            .seats
+            .iter()
+            .filter_map(|(seat, runtime)| {
+                (runtime.keyboard_focus == resource
+                    || state
+                        .pending_keyboard_focus
+                        .get(seat)
+                        .is_some_and(|pending| *pending == resource))
+                .then_some(*seat)
+            })
+            .collect::<Vec<_>>();
+        for seat in affected_seats {
+            state.pending_keyboard_focus.insert(seat, target);
+        }
+    }
 }
 
 pub(crate) unsafe extern "C" fn surface_commit(
@@ -576,7 +643,7 @@ pub(crate) unsafe extern "C" fn surface_commit(
                         let incremental = (*rec).width == w
                             && (*rec).height == h
                             && (*rec).pixels.len() == needed
-                            && (*rec).buffer_transform == aegis_core::Transform::Normal
+                            && (*rec).buffer_transform == aegis_model::Transform::Normal
                             && !(*rec).committed_damage.is_empty();
                         if (*rec).pixels.len() != needed {
                             (*rec).pixels = vec![0u8; needed];
@@ -623,7 +690,7 @@ pub(crate) unsafe extern "C" fn surface_commit(
                                 }
                                 // XRGB8888 has undefined alpha; force opaque on
                                 // the refreshed rows.
-                                if aegis_core::dmabuf::is_wl_shm_format_xrgb(format) {
+                                if aegis_model::dmabuf::is_wl_shm_format_xrgb(format) {
                                     for row in 0..ch {
                                         let base = (y + row) * tight + x * 4;
                                         for px in 0..cw {
@@ -642,7 +709,7 @@ pub(crate) unsafe extern "C" fn surface_commit(
                                 );
                             }
                             // XRGB8888 has undefined alpha; force opaque.
-                            if aegis_core::dmabuf::is_wl_shm_format_xrgb(format) {
+                            if aegis_model::dmabuf::is_wl_shm_format_xrgb(format) {
                                 let mut i = 3;
                                 while i < needed {
                                     pixels[i] = 0xff;
@@ -736,7 +803,7 @@ pub(crate) unsafe extern "C" fn surface_commit(
                 let output = if !(*rec).state.is_null() {
                     (*(*rec).state).output_geometry.logical_rect()
                 } else {
-                    aegis_core::Rect::new(0, 0, 1920, 1080)
+                    aegis_model::Rect::new(0, 0, 1920, 1080)
                 };
                 let max_x = output
                     .origin
@@ -750,7 +817,7 @@ pub(crate) unsafe extern "C" fn surface_commit(
                     .saturating_add(output.size.h)
                     .saturating_sub(100)
                     .max(output.origin.y);
-                let clamped_pos = aegis_core::Point {
+                let clamped_pos = aegis_model::Point {
                     x: pos.x.clamp(output.origin.x, max_x),
                     y: pos.y.clamp(output.origin.y, max_y),
                 };
@@ -769,7 +836,7 @@ pub(crate) unsafe extern "C" fn surface_commit(
                         .count()
                 };
                 let idx = count.min(8) as i32;
-                (*rec).position = aegis_core::Point {
+                (*rec).position = aegis_model::Point {
                     x: 60 + idx * 32,
                     y: 60 + idx * 32,
                 };
@@ -801,7 +868,7 @@ pub(crate) unsafe extern "C" fn surface_commit(
                 let output = if !(*rec).state.is_null() {
                     (*(*rec).state).output_geometry.logical_rect()
                 } else {
-                    aegis_core::Rect::new(0, 0, 1920, 1080)
+                    aegis_model::Rect::new(0, 0, 1920, 1080)
                 };
                 let centered = centered_transient_position(parent, (*rec).window.size, output);
                 (*rec).position = centered;
@@ -887,13 +954,16 @@ pub(crate) unsafe extern "C" fn surface_commit(
                 (*(*rec).state).queue_interaction_domain_layouts_for_window(window);
             }
         }
+        if !(*rec).mapped && was_mapped && !(*rec).xdg_toplevel.is_null() {
+            defer_keyboard_focus_after_toplevel_unmap(rec);
+        }
         if !(*rec).mapped && was_mapped && !(*rec).xdg_popup.is_null() && (*rec).popup_grabbed {
             let focus_after_dismissal = popup_keyboard_focus_after_dismissal(rec);
             if let Some(seat) = (*rec).popup_grab_seat.take()
                 && !(*rec).state.is_null()
             {
                 (*(*rec).state)
-                    .pending_popup_focus
+                    .pending_keyboard_focus
                     .insert(seat, focus_after_dismissal);
             }
             (*rec).popup_grabbed = false;
@@ -909,7 +979,7 @@ pub(crate) unsafe extern "C" fn surface_commit(
             // to hold keyboard focus. Defer out of this libwayland callback so
             // no second mutable `Server` aliases `State`.
             (*(*rec).state)
-                .pending_popup_focus
+                .pending_keyboard_focus
                 .insert(seat, (*rec).resource);
         }
         if (*rec).mapped && !was_mapped && !(*rec).state.is_null() {
@@ -1043,14 +1113,14 @@ unsafe extern "C" fn surface_set_buffer_transform(
             return;
         }
         let transform = match value as u32 {
-            0 => aegis_core::Transform::Normal,
-            1 => aegis_core::Transform::Rotate90,
-            2 => aegis_core::Transform::Rotate180,
-            3 => aegis_core::Transform::Rotate270,
-            4 => aegis_core::Transform::FlipHorizontal,
-            5 => aegis_core::Transform::FlipRotate90,
-            6 => aegis_core::Transform::FlipRotate180,
-            7 => aegis_core::Transform::FlipRotate270,
+            0 => aegis_model::Transform::Normal,
+            1 => aegis_model::Transform::Rotate90,
+            2 => aegis_model::Transform::Rotate180,
+            3 => aegis_model::Transform::Rotate270,
+            4 => aegis_model::Transform::FlipHorizontal,
+            5 => aegis_model::Transform::FlipRotate90,
+            6 => aegis_model::Transform::FlipRotate180,
+            7 => aegis_model::Transform::FlipRotate270,
             _ => {
                 ffi::wl_resource_post_error(r, 1, c"invalid wl_output.transform value".as_ptr());
                 return;
@@ -1098,14 +1168,14 @@ unsafe extern "C" fn surface_damage(
         }
         (*rec)
             .pending_damage
-            .push(aegis_core::Rect::new(x, y, w, h));
+            .push(aegis_model::Rect::new(x, y, w, h));
     }
 }
 
 /// Map normal-orientation buffer damage to the surface-local coordinate space
 /// shared with `wl_surface.damage`. Rounding outward preserves every touched
 /// logical pixel when a HiDPI buffer rectangle is not scale-aligned.
-pub(crate) fn buffer_damage_to_surface(damage: aegis_core::Rect, scale: i32) -> aegis_core::Rect {
+pub(crate) fn buffer_damage_to_surface(damage: aegis_model::Rect, scale: i32) -> aegis_model::Rect {
     if scale <= 1 {
         return damage;
     }
@@ -1117,7 +1187,7 @@ pub(crate) fn buffer_damage_to_surface(damage: aegis_core::Rect, scale: i32) -> 
     let x1 = -(-buffer_x1).div_euclid(scale);
     let y1 = -(-buffer_y1).div_euclid(scale);
     let clamp_i32 = |value: i64| value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
-    aegis_core::Rect::new(
+    aegis_model::Rect::new(
         clamp_i32(x0),
         clamp_i32(y0),
         clamp_i32(x1.saturating_sub(x0)),
@@ -1173,7 +1243,7 @@ unsafe extern "C" fn surface_damage_buffer(
         }
         (*rec)
             .pending_buffer_damage
-            .push(aegis_core::Rect::new(x, y, w, h));
+            .push(aegis_model::Rect::new(x, y, w, h));
     }
 }
 
@@ -1182,6 +1252,9 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
         let rec = ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec;
         if rec.is_null() {
             return;
+        }
+        if !(*rec).xdg_toplevel.is_null() {
+            defer_keyboard_focus_after_toplevel_unmap(rec);
         }
         if !(*rec).viewport_resource.is_null() {
             let viewport =
@@ -1220,7 +1293,7 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
                 && let Some(app_id) = (*rec).window.app_id.as_deref()
                 && !app_id.is_empty()
             {
-                let rect = (*rec).saved_floating_rect.unwrap_or(aegis_core::Rect {
+                let rect = (*rec).saved_floating_rect.unwrap_or(aegis_model::Rect {
                     origin: (*rec).position,
                     size: (*rec).window.size,
                 });
@@ -1287,7 +1360,7 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
             // transition can dereference a destroyed wl_resource.
             revoke_session_lock_focus(state, resource);
             state
-                .pending_popup_focus
+                .pending_keyboard_focus
                 .retain(|_, pending| *pending != resource);
             state.workspaces.remove_toplevel(id);
             // Notify foreign-toplevel listeners the window is gone.
@@ -1358,15 +1431,15 @@ unsafe extern "C" fn region_add(
         if !region.is_null() && width > 0 && height > 0 {
             (*region)
                 .rects
-                .push(aegis_core::Rect::new(x, y, width, height));
+                .push(aegis_model::Rect::new(x, y, width, height));
         }
     }
 }
 
 pub(crate) fn subtract_rect(
-    source: aegis_core::Rect,
-    cut: aegis_core::Rect,
-) -> Vec<aegis_core::Rect> {
+    source: aegis_model::Rect,
+    cut: aegis_model::Rect,
+) -> Vec<aegis_model::Rect> {
     let sx1 = source.origin.x;
     let sy1 = source.origin.y;
     let sx2 = sx1.saturating_add(source.size.w);
@@ -1379,10 +1452,10 @@ pub(crate) fn subtract_rect(
         return vec![source];
     }
     let candidates = [
-        aegis_core::Rect::new(sx1, sy1, source.size.w, cy1 - sy1),
-        aegis_core::Rect::new(sx1, cy2, source.size.w, sy2 - cy2),
-        aegis_core::Rect::new(sx1, cy1, cx1 - sx1, cy2 - cy1),
-        aegis_core::Rect::new(cx2, cy1, sx2 - cx2, cy2 - cy1),
+        aegis_model::Rect::new(sx1, sy1, source.size.w, cy1 - sy1),
+        aegis_model::Rect::new(sx1, cy2, source.size.w, sy2 - cy2),
+        aegis_model::Rect::new(sx1, cy1, cx1 - sx1, cy2 - cy1),
+        aegis_model::Rect::new(cx2, cy1, sx2 - cx2, cy2 - cy1),
     ];
     candidates
         .into_iter()
@@ -1403,7 +1476,7 @@ unsafe extern "C" fn region_subtract(
         if region.is_null() || width <= 0 || height <= 0 {
             return;
         }
-        let cut = aegis_core::Rect::new(x, y, width, height);
+        let cut = aegis_model::Rect::new(x, y, width, height);
         (*region).rects = std::mem::take(&mut (*region).rects)
             .into_iter()
             .flat_map(|rect| subtract_rect(rect, cut))

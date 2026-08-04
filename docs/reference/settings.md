@@ -67,7 +67,7 @@ newest value while a previous transaction is in flight.
 | Surface | Built-in identity | Access | Scope |
 |---------|-------------------|--------|-------|
 | Command panel system controls | None; part of compositor chrome | Quick settings in the command panel; also available over IPC | Live volume, brightness, Wi-Fi, Bluetooth, Do Not Disturb, and current-workspace layout |
-| Agent Workspaces | `BuiltInApplication::InteractionManager` | Launcher (`Super+A`); the command panel's System section shows a display-only status row | Empty Interaction Domain creation, pause, resume, revocation, and authority status |
+| Agent Workspaces | `BuiltInApplication::AgentWorkspaces` | Launcher (`Super+A`); the command panel's System section shows a display-only status row | Empty Interaction Domain creation, pause, resume, revocation, and authority status |
 
 Neither the live controls nor Agent Workspaces are System Settings modules or
 write persistent configuration.

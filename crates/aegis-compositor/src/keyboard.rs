@@ -306,30 +306,30 @@ mod tests {
         let mut keys = std::collections::BTreeSet::new();
         assert!(apply_logical_key_state(
             &mut keys,
-            aegis_core::input::KEY_LEFTALT,
+            aegis_model::input::KEY_LEFTALT,
             true
         ));
         assert!(apply_logical_key_state(
             &mut keys,
-            aegis_core::input::KEY_LEFTMETA,
+            aegis_model::input::KEY_LEFTMETA,
             true
         ));
         let focus_enter_snapshot = keys.iter().copied().collect::<Vec<_>>();
         assert_eq!(
             focus_enter_snapshot,
             vec![
-                aegis_core::input::KEY_LEFTALT,
-                aegis_core::input::KEY_LEFTMETA
+                aegis_model::input::KEY_LEFTALT,
+                aegis_model::input::KEY_LEFTMETA
             ]
         );
         assert!(apply_logical_key_state(
             &mut keys,
-            aegis_core::input::KEY_LEFTMETA,
+            aegis_model::input::KEY_LEFTMETA,
             false
         ));
         assert!(apply_logical_key_state(
             &mut keys,
-            aegis_core::input::KEY_LEFTALT,
+            aegis_model::input::KEY_LEFTALT,
             false
         ));
         assert!(keys.is_empty());

@@ -13,25 +13,43 @@ default-run = "aegis"
 name = "aegis"
 path = "src/main.rs"
 
+[features]
+# Packaged builds retain the complete compositor chrome. Integrators can
+# disable the default and select only the independently compiled components
+# required by their product without changing the shared shell contract.
+default = ["full-chrome"]
+full-chrome = [
+    "chrome-dock",
+    "chrome-prism",
+    "chrome-agent-workspaces",
+    "chrome-hud",
+    "chrome-command-panel",
+]
+chrome-dock = ["dep:aegis-dock"]
+chrome-prism = ["dep:aegis-prism"]
+chrome-agent-workspaces = ["dep:aegis-agent-workspaces"]
+# The composition root owns the single tray service used by either surface.
+chrome-hud = ["dep:aegis-hud", "dep:aegis-tray"]
+chrome-command-panel = ["dep:aegis-command-panel", "dep:aegis-tray"]
+
 [dependencies]
-aegis-authority.workspace = true
+aegis-security.workspace = true
 aegis-semantic.workspace = true
-aegis-audit.workspace = true
-aegis-core = { workspace = true }
+aegis-model = { workspace = true }
 aegis-compositor = { workspace = true }
 aegis-backend = { workspace = true }
 aegis-render = { workspace = true }
 aegis-shell = { workspace = true }
 # Chrome components split out of aegis-shell (ADR-0044); only the binary
 # composes them into the shell.
-aegis-dock = { workspace = true }
-aegis-prism = { workspace = true }
-aegis-interaction-manager = { workspace = true }
-aegis-hud = { workspace = true }
+aegis-dock = { workspace = true, optional = true }
+aegis-prism = { workspace = true, optional = true }
+aegis-agent-workspaces = { workspace = true, optional = true }
+aegis-hud = { workspace = true, optional = true }
 # SNI tray service shared by the HUD and the command panel (ADR-0080).
-aegis-tray = { workspace = true }
+aegis-tray = { workspace = true, optional = true }
 # Modal command panel (ADR-0080).
-aegis-command-panel = { workspace = true }
+aegis-command-panel = { workspace = true, optional = true }
 aegis-wallpaper = { workspace = true }
 # Declarative configuration: TOML schema + live reload (ADR-0026).
 aegis-config = { workspace = true }

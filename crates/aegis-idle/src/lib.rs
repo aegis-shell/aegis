@@ -31,7 +31,7 @@ impl IdlePolicy {
             return Err("idle dim percentage must be inside 1..=100");
         }
         let maximum = Duration::from_secs(u64::from(
-            aegis_core::settings::IdleSettings::MAX_TIMEOUT_SECONDS,
+            aegis_model::settings::IdleSettings::MAX_TIMEOUT_SECONDS,
         ));
         if [
             self.dim_after,
@@ -124,7 +124,7 @@ mod tests {
     fn refuses_timeouts_outside_the_shared_product_policy() {
         let policy = IdlePolicy {
             suspend_after: Some(Duration::from_secs(
-                u64::from(aegis_core::settings::IdleSettings::MAX_TIMEOUT_SECONDS) + 1,
+                u64::from(aegis_model::settings::IdleSettings::MAX_TIMEOUT_SECONDS) + 1,
             )),
             ..IdlePolicy::default()
         };

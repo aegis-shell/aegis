@@ -717,8 +717,13 @@ impl Chrome for Dock {
         !self.fullscreen_locked()
     }
 
-    fn set_reduced_motion(&mut self, reduced: bool) {
-        self.reduced_motion = reduced;
+    fn update(&mut self, update: ChromeUpdate<'_>) {
+        match update {
+            ChromeUpdate::ReducedMotion(reduced) => self.reduced_motion = reduced,
+            ChromeUpdate::Windows(windows) => self.update_windows(windows),
+            ChromeUpdate::AppCatalog(catalog) => self.update_app_catalog(catalog),
+            _ => {}
+        }
     }
 
     fn captures_pointer(
@@ -776,8 +781,10 @@ impl Chrome for Dock {
     ) -> Option<CursorShape> {
         Some(CursorShape::Pointer)
     }
+}
 
-    fn update_windows(&mut self, windows: &[Window]) {
+impl Dock {
+    pub(crate) fn update_windows(&mut self, windows: &[Window]) {
         if self.live_preview.as_ref().is_some_and(|presentation| {
             presentation
                 .cards
@@ -828,7 +835,7 @@ impl Chrome for Dock {
         }
     }
 
-    fn update_app_catalog(&mut self, catalog: &AppCatalog) {
+    pub(crate) fn update_app_catalog(&mut self, catalog: &AppCatalog) {
         self.app_menu.dismiss();
         self.menu_tile = None;
         self.dismiss_hover_surface();
@@ -844,9 +851,6 @@ impl Chrome for Dock {
         self.icons = catalog.icons.clone();
         self.catalog_revision = self.catalog_revision.wrapping_add(1);
     }
-}
-
-impl Dock {
     /// Resolve the single animated Dock body once for both capture bounds and
     /// the analytic glass pass. The foreground material uses the same radius
     /// through `collapsing_dock_material`, eliminating the old two-rectangle
@@ -874,20 +878,17 @@ impl Dock {
         // casts the deep Dock shadow, the collapsed handle keeps a
         // proportionally tight one.
         let shadow_factor = (bounds.h / DOCK_PANEL_HEIGHT).clamp(0.35, 1.0);
-        Some(LiquidGlassRegion {
-            bounds: BackdropRegion {
-                x: bounds.x,
-                y: bounds.y,
-                w: bounds.w,
-                h: bounds.h,
-            },
-            corner_radius: collapsing_radius(surface_progress, bounds.h),
-            opacity: 1.0,
-            shadow_alpha: 0.20,
-            shadow_blur: 12.0 * shadow_factor,
-            shadow_offset_y: 6.0 * shadow_factor,
-            focus: None,
-        })
+        let design = Design::dark();
+        let mut region = LiquidGlassRegion::from_role(
+            &design,
+            GlassRole::Dock,
+            BackdropRegion::from(bounds),
+            collapsing_radius(surface_progress, bounds.h),
+            1.0,
+        );
+        region.shadow_blur *= shadow_factor;
+        region.shadow_offset_y *= shadow_factor;
+        Some(region)
     }
 
     fn hover_liquid_glass_region(&self) -> Option<LiquidGlassRegion> {
@@ -895,43 +896,29 @@ impl Dock {
         if self.tooltip_alpha <= 0.01 || bounds.w <= 0.0 || bounds.h <= 0.0 {
             return None;
         }
-        let preview = self.live_preview.is_some();
+        let is_preview = self.live_preview.is_some();
+        let design = Design::dark();
         let focus = self.live_preview.as_ref().and_then(|presentation| {
-            let focused = presentation.focused?;
-            let card = presentation
-                .cards
-                .iter()
-                .find(|card| card.window == focused)?;
-            let bounds = card.geometry.outer;
-            Some(aegis_shell::LiquidGlassFocus {
-                bounds: BackdropRegion {
-                    x: bounds.origin.x as f32,
-                    y: bounds.origin.y as f32,
-                    w: bounds.size.w as f32,
-                    h: bounds.size.h as f32,
-                },
-                corner_radius: Design::dark().radii.control,
-                strength: Design::dark().glass_focus.field_strength,
-            })
+            preview::focus_field(&presentation.cards, presentation.focused, &design)
         });
-        Some(LiquidGlassRegion {
-            bounds: BackdropRegion {
-                x: bounds.x,
-                y: bounds.y,
-                w: bounds.w,
-                h: bounds.h,
-            },
-            corner_radius: if preview {
-                Design::dark().radii.glass_panel
-            } else {
-                TOOLTIP_HEIGHT * 0.5
-            },
-            opacity: self.tooltip_alpha,
-            shadow_alpha: if preview { 0.20 } else { 0.14 },
-            shadow_blur: if preview { 16.0 } else { 10.0 },
-            shadow_offset_y: if preview { 8.0 } else { 5.0 },
-            focus,
-        })
+        Some(
+            LiquidGlassRegion::from_role(
+                &design,
+                if is_preview {
+                    GlassRole::FloatingPanel
+                } else {
+                    GlassRole::Tooltip
+                },
+                BackdropRegion::from(bounds),
+                if is_preview {
+                    design.radii.glass_panel
+                } else {
+                    TOOLTIP_HEIGHT * 0.5
+                },
+                self.tooltip_alpha,
+            )
+            .with_focus(focus),
+        )
     }
 }
 
@@ -1117,7 +1104,7 @@ fn render_tooltip(frame: &mut Frame, label: &str, rect: Rect, alpha: f32) {
 pub(super) fn live_preview_layout(
     display: (f32, f32),
     owner: Rect,
-    windows: &[aegis_core::window::WindowId],
+    windows: &[aegis_model::window::WindowId],
     visibility: f32,
 ) -> LivePreviewPresentation {
     let count = windows.len().max(1);
@@ -1177,10 +1164,10 @@ pub(super) fn live_preview_layout(
             let row_x = panel.x + (panel.w - row_w) * 0.5;
             let x = row_x + column as f32 * (card_w + PREVIEW_CARD_GAP);
             let y = panel.y + PREVIEW_PANEL_PAD + row as f32 * (card_h + PREVIEW_CARD_GAP);
-            WindowSwitcherCard {
+            PreviewCard {
                 window,
                 corner_radius: Design::dark().radii.control,
-                geometry: aegis_core::window_switcher::Card {
+                geometry: aegis_model::window_switcher::Card {
                     outer: core_rect(Rect {
                         x,
                         y,
@@ -1207,7 +1194,7 @@ pub(super) fn live_preview_layout(
         panel: core_rect(panel),
         cards,
         focused: None,
-        inactive_content_brightness: Design::dark().glass_focus.inactive_content_brightness,
+        inactive_content_brightness: Design::dark().preview.inactive_content_brightness,
         visibility: visibility.clamp(0.0, 1.0),
     }
 }
@@ -1216,14 +1203,12 @@ fn render_live_preview_chrome(
     frame: &mut Frame,
     presentation: &LivePreviewPresentation,
     windows: &[Window],
-    hovered: Option<aegis_core::window::WindowId>,
+    hovered: Option<aegis_model::window::WindowId>,
 ) {
     let opacity = |base: u8| (base as f32 * presentation.visibility.clamp(0.0, 1.0)).round() as u8;
     let panel = to_lens_rect(presentation.panel);
     let design = Design::dark();
-    let mut material = materials::glass_panel(&design);
-    material.bg = Color::rgba(255, 255, 255, opacity(12));
-    material.radius = design.radii.glass_panel;
+    let material = preview::panel_material(&design, presentation.visibility);
     frame.layer("aegis-dock-live-previews", panel, &material, |frame| {
         frame.column_ex(&sized(panel.w, panel.h), |_| {});
     });
@@ -1236,11 +1221,11 @@ fn render_live_preview_chrome(
         };
         let outer = to_lens_rect(card.geometry.outer);
         let is_hovered = hovered == Some(window.id) && !window.read_only;
-        let content_brightness = if hovered.is_some() && !is_hovered {
-            design.glass_focus.inactive_content_brightness
-        } else {
-            1.0
-        };
+        let content_brightness = preview::content_brightness(
+            presentation.focused,
+            window.id,
+            presentation.inactive_content_brightness,
+        );
         frame.set_theme(original.with_fg(Color::rgba(
             242,
             244,
@@ -1250,15 +1235,16 @@ fn render_live_preview_chrome(
         frame.layer(
             &format!("aegis-dock-live-preview-card-{index}"),
             outer,
-            &if is_hovered {
-                materials::glass_focus(&design, true, presentation.visibility)
-            } else {
-                OverlayOpts {
-                    radius: card.corner_radius,
-                    pad: 0.0,
-                    ..Default::default()
-                }
-            },
+            &preview::card_material(
+                &design,
+                if is_hovered {
+                    preview::PreviewCardState::Selected
+                } else {
+                    preview::PreviewCardState::Rest
+                },
+                presentation.visibility,
+                card.corner_radius,
+            ),
             |frame| frame.column_ex(&sized(outer.w, outer.h), |_| {}),
         );
 
@@ -1296,28 +1282,16 @@ fn render_live_preview_chrome(
     frame.set_theme(original);
 }
 
-fn contains_core_rect(rect: aegis_core::Rect, x: f32, y: f32) -> bool {
-    x >= rect.origin.x as f32
-        && y >= rect.origin.y as f32
-        && x < (rect.origin.x + rect.size.w) as f32
-        && y < (rect.origin.y + rect.size.h) as f32
-}
-
 pub(super) fn live_preview_hit(
     presentation: &LivePreviewPresentation,
     x: f32,
     y: f32,
-) -> Option<aegis_core::window::WindowId> {
-    presentation
-        .cards
-        .iter()
-        .rev()
-        .find(|card| contains_core_rect(card.geometry.outer, x, y))
-        .map(|card| card.window)
+) -> Option<aegis_model::window::WindowId> {
+    preview::hit_test(&presentation.cards, None, x, y)
 }
 
-fn core_rect(rect: Rect) -> aegis_core::Rect {
-    aegis_core::Rect::new(
+fn core_rect(rect: Rect) -> aegis_model::Rect {
+    aegis_model::Rect::new(
         rect.x.round() as i32,
         rect.y.round() as i32,
         rect.w.round().max(1.0) as i32,
@@ -1325,7 +1299,7 @@ fn core_rect(rect: Rect) -> aegis_core::Rect {
     )
 }
 
-fn to_lens_rect(rect: aegis_core::Rect) -> Rect {
+fn to_lens_rect(rect: aegis_model::Rect) -> Rect {
     Rect {
         x: rect.origin.x as f32,
         y: rect.origin.y as f32,

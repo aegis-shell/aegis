@@ -8,9 +8,9 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::os::fd::{FromRawFd, OwnedFd};
 
-use aegis_core::{SurfaceDmabuf, SurfacePixels, Transform, dmabuf as drm_fmt};
+use aegis_model::{SurfaceDmabuf, SurfacePixels, Transform, dmabuf as drm_fmt};
 
-/// Convenience aliases for the shared DRM fourccs in [`aegis_core::dmabuf`].
+/// Convenience aliases for the shared DRM fourccs in [`aegis_model::dmabuf`].
 const DRM_FORMAT_ARGB8888: u32 = drm_fmt::DRM_FORMAT_ARGB8888;
 const DRM_FORMAT_XRGB8888: u32 = drm_fmt::DRM_FORMAT_XRGB8888;
 const DRM_FORMAT_ABGR8888: u32 = drm_fmt::DRM_FORMAT_ABGR8888;
@@ -180,8 +180,8 @@ fn transformed_dims(width: i32, height: i32, transform: Transform) -> (i32, i32)
 /// `SurfaceGeometry::default` sets 1, so this is defence in depth.
 fn destination_size(
     post_transform_dims: (i32, i32),
-    viewport_src: Option<aegis_core::Rect>,
-    viewport_dst: Option<aegis_core::Size>,
+    viewport_src: Option<aegis_model::Rect>,
+    viewport_dst: Option<aegis_model::Size>,
     buffer_scale: i32,
 ) -> (f32, f32) {
     let scale = buffer_scale.max(1) as f32;
@@ -196,7 +196,7 @@ fn destination_size(
 }
 
 fn viewport_uv(
-    source: aegis_core::Rect,
+    source: aegis_model::Rect,
     post_transform_dims: (i32, i32),
     buffer_scale: i32,
 ) -> (f32, f32, f32, f32) {
@@ -243,7 +243,7 @@ struct BlitRect {
 fn split_opaque_blit(
     dst: (f32, f32, f32, f32),
     surface_logical: (f32, f32),
-    opaque_region: Option<&[aegis_core::Rect]>,
+    opaque_region: Option<&[aegis_model::Rect]>,
     can_split: bool,
 ) -> (Vec<BlitRect>, Vec<BlitRect>) {
     let (dx, dy, dw, dh) = dst;
@@ -307,14 +307,14 @@ fn split_opaque_blit(
         );
     }
 
-    let whole_logical = aegis_core::Rect::new(0, 0, logical_w, logical_h);
+    let whole_logical = aegis_model::Rect::new(0, 0, logical_w, logical_h);
 
     // Build a non-overlapping union of the opaque region in *surface logical*
     // coordinates. This is the coordinate space used by wl_surface's
     // opaque_region. Keeping both the union and the remainder in this domain
     // is essential at buffer_scale > 1: buffer pixels and surface pixels are
     // not interchangeable.
-    let mut opaque_logical: Vec<aegis_core::Rect> = Vec::with_capacity(region.len());
+    let mut opaque_logical: Vec<aegis_model::Rect> = Vec::with_capacity(region.len());
     for r in region {
         let cx0 = r.origin.x.max(0).min(logical_w);
         let cy0 = r.origin.y.max(0).min(logical_h);
@@ -326,7 +326,7 @@ fn split_opaque_blit(
         if cx1 <= cx0 || cy1 <= cy0 {
             continue;
         }
-        let clipped = aegis_core::Rect::new(cx0, cy0, cx1 - cx0, cy1 - cy0);
+        let clipped = aegis_model::Rect::new(cx0, cy0, cx1 - cx0, cy1 - cy0);
         let mut additions = vec![clipped];
         for existing in &opaque_logical {
             let mut next = Vec::new();
@@ -364,7 +364,7 @@ fn split_opaque_blit(
         remainder = next;
     }
 
-    let map_piece = |p: aegis_core::Rect| {
+    let map_piece = |p: aegis_model::Rect| {
         let u = p.origin.x as f32 / sw;
         let v = p.origin.y as f32 / sh;
         let du = p.size.w as f32 / sw;
@@ -449,7 +449,7 @@ enum OrderedSurfaceSource {
 }
 
 type WindowMap<'a> =
-    dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect + 'a;
+    dyn Fn(Option<aegis_model::window::WindowId>, aegis_model::Rect) -> aegis_model::Rect + 'a;
 
 /// Appearance applied to every image in one mapped surface subtree.
 ///
@@ -459,15 +459,15 @@ type WindowMap<'a> =
 pub struct MappedSurfaceStyle {
     pub opacity: f32,
     pub brightness: f32,
-    pub rounded_clip: aegis_core::Rect,
+    pub rounded_clip: aegis_model::Rect,
     pub corner_radius: f32,
 }
 
 #[derive(Default)]
 struct OrderedSurfaceOptions<'a> {
     map: Option<&'a WindowMap<'a>>,
-    window_shadows: Option<&'a [aegis_core::window::Window]>,
-    window_filter: Option<&'a HashSet<aegis_core::window::WindowId>>,
+    window_shadows: Option<&'a [aegis_model::window::Window]>,
+    window_filter: Option<&'a HashSet<aegis_model::window::WindowId>>,
     mapped_style: Option<MappedSurfaceStyle>,
 }
 
@@ -492,14 +492,14 @@ fn mapped_surface_modulation(style: MappedSurfaceStyle) -> (u8, u8) {
 /// page. Keeping them together prevents callers from accidentally filtering
 /// surfaces while sourcing shadows from a different scene.
 pub struct WorkspaceSurfaceLayer<'a> {
-    windows: &'a [aegis_core::window::Window],
-    window_filter: &'a HashSet<aegis_core::window::WindowId>,
+    windows: &'a [aegis_model::window::Window],
+    window_filter: &'a HashSet<aegis_model::window::WindowId>,
 }
 
 impl<'a> WorkspaceSurfaceLayer<'a> {
     pub fn new(
-        windows: &'a [aegis_core::window::Window],
-        window_filter: &'a HashSet<aegis_core::window::WindowId>,
+        windows: &'a [aegis_model::window::Window],
+        window_filter: &'a HashSet<aegis_model::window::WindowId>,
     ) -> Self {
         Self {
             windows,
@@ -535,18 +535,18 @@ fn ordered_surface_sources(
 }
 
 fn surface_passes_window_filter(
-    window: Option<aegis_core::window::WindowId>,
-    filter: Option<&HashSet<aegis_core::window::WindowId>>,
+    window: Option<aegis_model::window::WindowId>,
+    filter: Option<&HashSet<aegis_model::window::WindowId>>,
 ) -> bool {
     filter.is_none_or(|filter| window.is_some_and(|window| filter.contains(&window)))
 }
 
-fn window_casts_resize_shadow(window: &aegis_core::window::Window) -> bool {
+fn window_casts_resize_shadow(window: &aegis_model::window::Window) -> bool {
     !window.read_only
         && !window.minimized
         && !window.state.maximized
         && !window.state.fullscreen
-        && window.layout_role == aegis_core::layout::LayoutRole::Floating
+        && window.layout_role == aegis_model::layout::LayoutRole::Floating
         && window.size.w > 0
         && window.size.h > 0
 }
@@ -554,7 +554,7 @@ fn window_casts_resize_shadow(window: &aegis_core::window::Window) -> bool {
 /// Paint a subtle four-logical-pixel compositor shadow immediately below a
 /// floating window. Its visual extent is intentionally independent from the
 /// larger direct-resize hit target.
-fn draw_window_resize_shadow(canvas: &flux::Canvas, window: &aegis_core::window::Window) {
+fn draw_window_resize_shadow(canvas: &flux::Canvas, window: &aegis_model::window::Window) {
     const SHADOW_MARGIN: u32 = 4;
 
     let x = window.position.x as f32;
@@ -724,7 +724,7 @@ impl Renderer {
         device: &flux::Device,
         canvas: &flux::Canvas,
         frames: &[SurfacePixels<'_>],
-        map: &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
+        map: &dyn Fn(Option<aegis_model::window::WindowId>, aegis_model::Rect) -> aegis_model::Rect,
     ) {
         self.draw_toplevels_impl(device, canvas, frames, Some(map), None);
     }
@@ -762,7 +762,7 @@ impl Renderer {
         order: &[usize],
         shm: &[SurfacePixels<'_>],
         dmabuf: &[SurfaceDmabuf],
-        windows: &[aegis_core::window::Window],
+        windows: &[aegis_model::window::Window],
     ) {
         self.draw_surfaces_ordered_impl(
             device,
@@ -812,7 +812,7 @@ impl Renderer {
         order: &[usize],
         shm: &[SurfacePixels<'_>],
         dmabuf: &[SurfaceDmabuf],
-        map: &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
+        map: &dyn Fn(Option<aegis_model::window::WindowId>, aegis_model::Rect) -> aegis_model::Rect,
     ) {
         self.draw_surfaces_ordered_impl(
             device,
@@ -838,7 +838,7 @@ impl Renderer {
         order: &[usize],
         shm: &[SurfacePixels<'_>],
         dmabuf: &[SurfaceDmabuf],
-        map: &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
+        map: &dyn Fn(Option<aegis_model::window::WindowId>, aegis_model::Rect) -> aegis_model::Rect,
         style: MappedSurfaceStyle,
     ) {
         self.draw_surfaces_ordered_impl(
@@ -877,7 +877,7 @@ impl Renderer {
         order: &[usize],
         shm: &[SurfacePixels<'_>],
         dmabuf: &[SurfaceDmabuf],
-        map: &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
+        map: &dyn Fn(Option<aegis_model::window::WindowId>, aegis_model::Rect) -> aegis_model::Rect,
     ) {
         self.draw_surfaces_ordered_mapped(device, canvas, order, shm, dmabuf, map);
     }
@@ -944,7 +944,7 @@ impl Renderer {
         canvas: &flux::Canvas,
         frames: &[SurfacePixels<'_>],
         map: Option<
-            &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
+            &dyn Fn(Option<aegis_model::window::WindowId>, aegis_model::Rect) -> aegis_model::Rect,
         >,
         mapped_style: Option<MappedSurfaceStyle>,
     ) {
@@ -1133,7 +1133,7 @@ impl Renderer {
                     dst_h = size.h as f32;
                 }
                 if let Some(map) = map {
-                    let natural = aegis_core::Rect::new(
+                    let natural = aegis_model::Rect::new(
                         x as i32,
                         y as i32,
                         dst_w.max(1.0) as i32,
@@ -1183,7 +1183,7 @@ impl Renderer {
                         // opaque at ingest, so SRC-replace is pixel-correct here
                         // too. Opaque-region mapping is only well-defined without
                         // a buffer transform.
-                        let can_split = f.geometry.transform == aegis_core::Transform::Normal;
+                        let can_split = f.geometry.transform == aegis_model::Transform::Normal;
                         let (opaque, blended) = split_opaque_blit(
                             (x, y, dst_w, dst_h),
                             surface_logical,
@@ -1229,7 +1229,7 @@ impl Renderer {
         device: &flux::Device,
         canvas: &flux::Canvas,
         frames: &[SurfaceDmabuf],
-        map: &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
+        map: &dyn Fn(Option<aegis_model::window::WindowId>, aegis_model::Rect) -> aegis_model::Rect,
     ) {
         self.draw_dmabuf_toplevels_impl(device, canvas, frames, Some(map), None);
     }
@@ -1240,7 +1240,7 @@ impl Renderer {
         canvas: &flux::Canvas,
         frames: &[SurfaceDmabuf],
         map: Option<
-            &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
+            &dyn Fn(Option<aegis_model::window::WindowId>, aegis_model::Rect) -> aegis_model::Rect,
         >,
         mapped_style: Option<MappedSurfaceStyle>,
     ) {
@@ -1442,7 +1442,7 @@ impl Renderer {
                     dst_h = size.h as f32;
                 }
                 if let Some(map) = map {
-                    let natural = aegis_core::Rect::new(
+                    let natural = aegis_model::Rect::new(
                         x as i32,
                         y as i32,
                         dst_w.max(1.0) as i32,
@@ -1514,7 +1514,7 @@ impl Renderer {
                             // destination readback) and only the translucent remainder
                             // pays the source-over merge. Opaque-region mapping is only
                             // well-defined without a buffer transform.
-                            let can_split = f.geometry.transform == aegis_core::Transform::Normal;
+                            let can_split = f.geometry.transform == aegis_model::Transform::Normal;
                             let (opaque, blended) = split_opaque_blit(
                                 (x, y, dst_w, dst_h),
                                 surface_logical,
@@ -1569,7 +1569,7 @@ impl Renderer {
         device: &flux::Device,
         canvas: &flux::Canvas,
         frames: &[SurfacePixels<'_>],
-        map: &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
+        map: &dyn Fn(Option<aegis_model::window::WindowId>, aegis_model::Rect) -> aegis_model::Rect,
     ) {
         self.draw_toplevels_mapped(device, canvas, frames, map);
     }
@@ -1592,7 +1592,7 @@ impl Renderer {
         device: &flux::Device,
         canvas: &flux::Canvas,
         frames: &[SurfaceDmabuf],
-        map: &dyn Fn(Option<aegis_core::window::WindowId>, aegis_core::Rect) -> aegis_core::Rect,
+        map: &dyn Fn(Option<aegis_model::window::WindowId>, aegis_model::Rect) -> aegis_model::Rect,
     ) {
         self.draw_dmabuf_toplevels_mapped(device, canvas, frames, map);
     }
@@ -1779,7 +1779,7 @@ mod tests {
     /// `destination_size` covers the four viewport/scale combinations.
     #[test]
     fn destination_size_handles_viewport_and_scale() {
-        use aegis_core::{Rect, Size};
+        use aegis_model::{Rect, Size};
 
         // No viewport, scale 1: post-transform buffer dims as-is.
         let (w, h) = destination_size((100, 50), None, None, 1);
@@ -1825,7 +1825,7 @@ mod tests {
     /// half-sized opaque piece plus a second enlarged copy of the texture.
     #[test]
     fn opaque_split_uses_surface_coordinates_at_hidpi_scale() {
-        let region = [aegis_core::Rect::new(0, 0, 1536, 960)];
+        let region = [aegis_model::Rect::new(0, 0, 1536, 960)];
         let (opaque, blended) = split_opaque_blit(
             (0.0, 0.0, 1536.0, 960.0),
             (1536.0, 960.0),
@@ -1854,7 +1854,7 @@ mod tests {
     /// far-edge addition or disturbing the full blended fallback.
     #[test]
     fn opaque_split_saturates_extreme_client_rect_edges() {
-        let region = [aegis_core::Rect::new(i32::MAX - 4, i32::MAX - 4, 100, 100)];
+        let region = [aegis_model::Rect::new(i32::MAX - 4, i32::MAX - 4, 100, 100)];
         let (opaque, blended) =
             split_opaque_blit((0.0, 0.0, 128.0, 64.0), (128.0, 64.0), Some(&region), true);
 
@@ -1878,7 +1878,7 @@ mod tests {
     /// remains normalised against the original surface logical extent.
     #[test]
     fn opaque_split_scales_destination_without_rescaling_source_uv() {
-        let region = [aegis_core::Rect::new(0, 0, 1536, 120)];
+        let region = [aegis_model::Rect::new(0, 0, 1536, 120)];
         let (opaque, blended) = split_opaque_blit(
             (10.0, 20.0, 3072.0, 1920.0),
             (1536.0, 960.0),
@@ -1905,7 +1905,7 @@ mod tests {
 
     #[test]
     fn viewport_source_converts_post_scale_coordinates_to_buffer_uvs() {
-        let src = aegis_core::Rect::new(10, 5, 30, 20);
+        let src = aegis_model::Rect::new(10, 5, 30, 20);
         assert_eq!(viewport_uv(src, (200, 100), 2), (0.1, 0.1, 0.3, 0.4));
     }
 
@@ -1946,7 +1946,7 @@ mod tests {
 
     #[test]
     fn workspace_filter_is_closed_to_foreign_and_unowned_surfaces() {
-        use aegis_core::window::WindowId;
+        use aegis_model::window::WindowId;
 
         let filter = HashSet::from([WindowId(2)]);
         assert!(surface_passes_window_filter(
@@ -1966,7 +1966,7 @@ mod tests {
         let style = MappedSurfaceStyle {
             opacity: 0.5,
             brightness: 0.75,
-            rounded_clip: aegis_core::Rect::new(0, 0, 100, 80),
+            rounded_clip: aegis_model::Rect::new(0, 0, 100, 80),
             corner_radius: 12.0,
         };
         assert_eq!(mapped_surface_modulation(style), (191, 128));
@@ -1982,9 +1982,9 @@ mod tests {
 
     #[test]
     fn resize_shadow_follows_direct_resize_eligibility() {
-        let mut window = aegis_core::window::Window::new(aegis_core::window::WindowId(1));
-        window.size = aegis_core::Size { w: 640, h: 480 };
-        window.layout_role = aegis_core::layout::LayoutRole::Floating;
+        let mut window = aegis_model::window::Window::new(aegis_model::window::WindowId(1));
+        window.size = aegis_model::Size { w: 640, h: 480 };
+        window.layout_role = aegis_model::layout::LayoutRole::Floating;
         assert!(window_casts_resize_shadow(&window));
 
         window.state.maximized = true;
@@ -1993,7 +1993,7 @@ mod tests {
         window.read_only = true;
         assert!(!window_casts_resize_shadow(&window));
         window.read_only = false;
-        window.layout_role = aegis_core::layout::LayoutRole::Tiled;
+        window.layout_role = aegis_model::layout::LayoutRole::Tiled;
         assert!(!window_casts_resize_shadow(&window));
     }
 }

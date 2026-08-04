@@ -6,6 +6,7 @@ Canonical terms for Aegis authority, automation, and Agent integration.
 |---|---|---|
 | Actor | An authenticated subject that can perceive or attempt actions: a human, Agent, or trusted system component. | An input device or Agent runtime process. |
 | Principal | Durable identity used by the compositor authority model. | A display label. |
+| Persona | User-facing profile content shared by shell surfaces, including account defaults, display name, portrait, and motion behavior. | An authenticated principal or authorization source. |
 | Agent identity | A paired Agent principal and its approved capability ceiling. | One live IPC connection. |
 | Actor binding | One principal bound to one live broker connection. Observation leases use this binding. | Durable Agent identity. |
 | Actor session | One TTL/idle-bounded execution context tied to a connection and optional principal, with quotas and cascading revocation. | Durable principal or desktop login session. |
@@ -26,3 +27,6 @@ Canonical terms for Aegis authority, automation, and Agent integration.
 See [Architecture](../explanation/architecture.md#actor-boundary) and
 [ADR-0103](../adr/0103-actor-authority-and-interaction-domain-architecture.md)
 and [ADR-0104](../adr/0104-actor-sessions-resource-grants-and-accessibility-adapter.md).
+The presentation/security distinction and module placement are recorded in
+[ADR-0109](../adr/0109-module-first-security-and-presentation-identity-boundaries.md)
+and [ADR-0111](../adr/0111-persona-as-shell-domain-with-feature-gated-portrait-runtime.md).

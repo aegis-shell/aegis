@@ -8,7 +8,7 @@ live-reload detection for aegis.
 
 - Parse `$XDG_CONFIG_HOME/aegis/config.toml` and validate its schema version.
 - Reject unknown or malformed values with structured diagnostics.
-- Resolve configuration entries into shared `aegis-core` models.
+- Resolve configuration entries into shared `aegis-model` models.
 - Apply typed dock, touchpad, and output edits while preserving comments and
   unrelated keys.
 - Validate the complete edited document and publish it with an atomic

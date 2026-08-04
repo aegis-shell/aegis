@@ -116,9 +116,9 @@ impl CompositorRuntime {
         let mut damage = assessed_damage.output;
         let backdrop_source_damage = assessed_damage.backdrop_source;
         let cursor_plane_changed = self.host.supports_hardware_cursor()
-            && (self.last_presented_cursor != Some((cursor_shape, cursor_hidden))
+            && (self.damage.last_presented_cursor != Some((cursor_shape, cursor_hidden))
                 || (!cursor_hidden
-                    && self.last_presented_cursor_position != Some(cursor_position)));
+                    && self.damage.last_presented_cursor_position != Some(cursor_position)));
         let cursor_only_eligible = matches!(damage, FrameDamage::None)
             && cursor_plane_changed
             && frame_capture.is_none()
@@ -132,9 +132,9 @@ impl CompositorRuntime {
                 Ok(()) => {
                     self.server
                         .send_frame_callbacks(self.start.elapsed().as_millis() as u32);
-                    self.last_present_minute = Some(wall_clock_minute());
-                    self.last_presented_cursor = Some((cursor_shape, cursor_hidden));
-                    self.last_presented_cursor_position = Some(cursor_position);
+                    self.damage.last_present_minute = Some(wall_clock_minute());
+                    self.damage.last_presented_cursor = Some((cursor_shape, cursor_hidden));
+                    self.damage.last_presented_cursor_position = Some(cursor_position);
                     self.frame_count += 1;
                     return Ok(PresentationOutcome::Submitted);
                 }
@@ -150,7 +150,7 @@ impl CompositorRuntime {
                     | DrmError::Inactive
                     | DrmError::Reconfigured,
                 )) => {
-                    self.force_full_redraw = true;
+                    self.damage.force_full_redraw = true;
                     return Ok(PresentationOutcome::Retry);
                 }
                 Err(HostError::Drm(DrmError::ScanoutUnsupported)) => {
@@ -228,10 +228,10 @@ impl CompositorRuntime {
                     }
                     self.server
                         .send_frame_callbacks(self.start.elapsed().as_millis() as u32);
-                    self.last_present_minute = Some(wall_clock_minute());
-                    self.last_presented_cursor = Some((cursor_shape, cursor_hidden));
-                    self.last_presented_cursor_position = Some(cursor_position);
-                    self.force_full_redraw = false;
+                    self.damage.last_present_minute = Some(wall_clock_minute());
+                    self.damage.last_presented_cursor = Some((cursor_shape, cursor_hidden));
+                    self.damage.last_presented_cursor_position = Some(cursor_position);
+                    self.damage.force_full_redraw = false;
                     self.frame_count += 1;
                     return Ok(PresentationOutcome::Submitted);
                 }
@@ -263,7 +263,7 @@ impl CompositorRuntime {
                                 | DrmError::Reconfigured
                         )
                     ) {
-                        self.force_full_redraw = true;
+                        self.damage.force_full_redraw = true;
                         return Ok(PresentationOutcome::Retry);
                     }
                     if !matches!(error, HostError::Drm(DrmError::ScanoutUnsupported)) {
@@ -285,7 +285,7 @@ impl CompositorRuntime {
         // appeared, the cursor moved, chrome opened…): force a full composite so
         // the resumed render is correct rather than skipped as "unchanged".
         if was_scanout {
-            self.force_full_redraw = true;
+            self.damage.force_full_redraw = true;
             damage = FrameDamage::Full;
             self.launcher_backdrop.invalidate();
         }
@@ -297,8 +297,11 @@ impl CompositorRuntime {
                 // the other slots after present, otherwise first-use Full
                 // damage circulates around the ring forever.
                 let mut presented_damage = damage.clone();
-                let mut repaint =
-                    composite_repaint_for_slot(&mut self.composite_slot_damage, frame_slot, damage);
+                let mut repaint = composite_repaint_for_slot(
+                    &mut self.damage.composite_slot_damage,
+                    frame_slot,
+                    damage,
+                );
                 // Exact physical render area of the currently open output
                 // base pass. Full-output and offscreen-target passes leave it
                 // as `None`. If visible Lens chrome is drawn below, the base
@@ -580,6 +583,7 @@ impl CompositorRuntime {
                                     &mut self.renderer,
                                     &self.server,
                                     capture_scale,
+                                    window_switcher.is_some() || !live_previews.is_empty(),
                                 );
                                 if let Some(presentation) = window_switcher.as_ref() {
                                     draw_window_switcher_scene(
@@ -660,7 +664,7 @@ impl CompositorRuntime {
                         let effect_damage: Vec<_> = refresh_capture_regions
                             .iter()
                             .map(|region| {
-                                aegis_core::Rect::new(
+                                aegis_model::Rect::new(
                                     region.origin.0 as i32,
                                     region.origin.1 as i32,
                                     region.extent.0 as i32,
@@ -779,7 +783,7 @@ impl CompositorRuntime {
                             let effect_damage: Vec<_> = refresh_capture_regions
                                 .iter()
                                 .map(|region| {
-                                    aegis_core::Rect::new(
+                                    aegis_model::Rect::new(
                                         region.origin.0 as i32,
                                         region.origin.1 as i32,
                                         region.extent.0 as i32,
@@ -873,6 +877,7 @@ impl CompositorRuntime {
                                                 &mut self.renderer,
                                                 &self.server,
                                                 scale,
+                                                false,
                                             );
                                         }
                                     }
@@ -959,7 +964,7 @@ impl CompositorRuntime {
                             s.broadcast(aegis_ipc::Event::WindowsChanged);
                         }
                     }
-                    let space_use = aegis_core::window::SpaceUse::from_windows(&win_snapshot);
+                    let space_use = aegis_model::window::SpaceUse::from_windows(&win_snapshot);
                     if self.last_space_use != Some(space_use) {
                         self.last_space_use = Some(space_use);
                         if let Some(s) = self.ipc.as_ref() {
@@ -1208,7 +1213,7 @@ impl CompositorRuntime {
                 {
                     if pick.kind == aegis_ipc::PickKind::Pixel && self.capture_worker.reserve() {
                         frame_capture = Some(FrameCapture {
-                            crop: Some(aegis_core::Rect::new(point.x, point.y, 1, 1)),
+                            crop: Some(aegis_model::Rect::new(point.x, point.y, 1, 1)),
                             target: CaptureTarget::Pixel {
                                 point,
                                 reply: pick.reply,
@@ -1453,7 +1458,7 @@ impl CompositorRuntime {
                 if let Some(app) = self.shell.take_open_builtin() {
                     // The selector opens through the freeze session so the
                     // trigger frame (chrome included) is snapshotted first.
-                    if app == aegis_core::app::BuiltInApplication::ScreenshotSelector {
+                    if app == aegis_model::app::BuiltInApplication::ScreenshotSelector {
                         let cursor = self.capture_cursor_state();
                         self.screenshot_freeze.request_open(Some(cursor));
                     } else {
@@ -1523,9 +1528,9 @@ impl CompositorRuntime {
                         Err(error) => {
                             log::warn!("Interaction Domain action from shell refused: {error}");
                             let notification = self.notif_queue.lock().unwrap().push(
-                                "AI Workspace",
+                                "Agent Workspace",
                                 error.clone(),
-                                Some(aegis_core::app::INTERACTION_MANAGER_ID.into()),
+                                Some(aegis_model::app::AGENT_WORKSPACES_ID.into()),
                                 ts,
                             );
                             if let Some(ipc) = &self.ipc {
@@ -1642,7 +1647,7 @@ impl CompositorRuntime {
                         c.dock.pinned = pinned_list.clone();
                         c.dock.autopopulate = false;
                     }
-                    let pinned = resolve_pinned(
+                    let pinned = resolve_chrome_pins(
                         &self.launcher_apps,
                         &self.icon_cache.map,
                         &pinned_list,
@@ -1819,7 +1824,7 @@ impl CompositorRuntime {
                                 // before this frame was rendered. They must
                                 // not let the retry skip content that never
                                 // reached scanout.
-                                self.force_full_redraw = true;
+                                self.damage.force_full_redraw = true;
                                 return Ok(PresentationOutcome::Retry);
                             }
                             return Err(error.into());
@@ -1833,7 +1838,7 @@ impl CompositorRuntime {
                     );
                 }
                 record_composite_present(
-                    &mut self.composite_slot_damage,
+                    &mut self.damage.composite_slot_damage,
                     frame_slot,
                     presented_damage,
                 );
@@ -1878,10 +1883,10 @@ impl CompositorRuntime {
 
                 // The frame landed: re-anchor the present-side damage
                 // baselines (clock minute, cursor, post-resize full redraw).
-                self.last_present_minute = Some(wall_clock_minute());
-                self.last_presented_cursor = Some((cursor_shape, cursor_hidden));
-                self.last_presented_cursor_position = Some(cursor_position);
-                self.force_full_redraw = false;
+                self.damage.last_present_minute = Some(wall_clock_minute());
+                self.damage.last_presented_cursor = Some((cursor_shape, cursor_hidden));
+                self.damage.last_presented_cursor_position = Some(cursor_position);
+                self.damage.force_full_redraw = false;
 
                 self.frame_count += 1;
                 if self.frame_count == 1 {
@@ -1908,7 +1913,7 @@ impl CompositorRuntime {
                 // swapchain image): transient. Skip this iteration and let
                 // the next wakeup retry instead of rebuilding the
                 // swapchain against a busy device.
-                self.force_full_redraw = true;
+                self.damage.force_full_redraw = true;
                 return Ok(PresentationOutcome::Retry);
             }
             Err(_) => {
@@ -1949,10 +1954,10 @@ impl CompositorRuntime {
                 }
                 let (nw, nh) = self.host.physical_size();
                 self.surface.resize(nw, nh)?;
-                self.composite_slot_damage.clear();
+                self.damage.composite_slot_damage.clear();
                 // Damage tracked against the old framebuffer does not
                 // describe the rebuilt one; render the next frame in full.
-                self.force_full_redraw = true;
+                self.damage.force_full_redraw = true;
                 if let Err(error) = self.surface.prepare_readback() {
                     log::warn!(
                         "capture: could not preallocate resized readback staging: {error}{}",

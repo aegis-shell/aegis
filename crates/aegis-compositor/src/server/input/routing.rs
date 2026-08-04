@@ -10,9 +10,9 @@ impl Server {
     /// real sequence termination when translated to `wl_pointer`.
     pub fn forward_input(
         &mut self,
-        events: &[aegis_core::input::InputEvent],
-        keymap: &aegis_core::keybind::Keymap,
-    ) -> Vec<aegis_core::keybind::Action> {
+        events: &[aegis_model::input::InputEvent],
+        keymap: &aegis_model::keybind::Keymap,
+    ) -> Vec<aegis_model::keybind::Action> {
         let _guard = ActiveSeatGuard::enter(self.state.as_mut(), HUMAN_SEAT)
             .expect("bootstrap human seat must remain enabled");
         self.forward_input_active(events, Some(keymap))
@@ -28,10 +28,10 @@ impl Server {
     /// routed order.
     pub fn forward_prepared_input(
         &mut self,
-        events: &[aegis_core::input::InputEvent],
+        events: &[aegis_model::input::InputEvent],
         prepared_keys: &[Option<PreparedKeyboardEvent>],
-        keymap: &aegis_core::keybind::Keymap,
-    ) -> Vec<aegis_core::keybind::Action> {
+        keymap: &aegis_model::keybind::Keymap,
+    ) -> Vec<aegis_model::keybind::Action> {
         let _guard = ActiveSeatGuard::enter(self.state.as_mut(), HUMAN_SEAT)
             .expect("bootstrap human seat must remain enabled");
         self.forward_input_active_with_prepared(events, Some(keymap), Some(prepared_keys))
@@ -43,7 +43,7 @@ impl Server {
     pub fn forward_agent_input(
         &mut self,
         seat: SeatId,
-        events: &[aegis_core::input::InputEvent],
+        events: &[aegis_model::input::InputEvent],
     ) -> Result<(), InteractionDomainRuntimeError> {
         let _guard = ActiveSeatGuard::enter(self.state.as_mut(), seat)
             .ok_or(InteractionDomainRuntimeError::SeatUnavailable(seat))?;
@@ -58,8 +58,8 @@ impl Server {
     pub fn forward_agent_input_to(
         &mut self,
         seat: SeatId,
-        window: aegis_core::window::WindowId,
-        events: &[aegis_core::input::InputEvent],
+        window: aegis_model::window::WindowId,
+        events: &[aegis_model::input::InputEvent],
     ) -> Result<(), InteractionDomainRuntimeError> {
         if !self.state.authority.seat_controls_window(seat, window) {
             return Err(InteractionDomainError::UnknownWindow(window).into());
@@ -79,23 +79,23 @@ impl Server {
 
     pub(crate) fn forward_input_active(
         &mut self,
-        events: &[aegis_core::input::InputEvent],
-        keymap: Option<&aegis_core::keybind::Keymap>,
-    ) -> Vec<aegis_core::keybind::Action> {
+        events: &[aegis_model::input::InputEvent],
+        keymap: Option<&aegis_model::keybind::Keymap>,
+    ) -> Vec<aegis_model::keybind::Action> {
         self.forward_input_active_with_prepared(events, keymap, None)
     }
 
     fn forward_input_active_with_prepared(
         &mut self,
-        events: &[aegis_core::input::InputEvent],
-        keymap: Option<&aegis_core::keybind::Keymap>,
+        events: &[aegis_model::input::InputEvent],
+        keymap: Option<&aegis_model::keybind::Keymap>,
         prepared_keys: Option<&[Option<PreparedKeyboardEvent>]>,
-    ) -> Vec<aegis_core::keybind::Action> {
+    ) -> Vec<aegis_model::keybind::Action> {
         let mut actions = Vec::new();
         let time = self.epoch.elapsed().as_millis() as u32;
         let mut prepared_keys = prepared_keys.map(|keys| keys.iter().copied());
         for event in events {
-            use aegis_core::input::InputEvent::*;
+            use aegis_model::input::InputEvent::*;
             match *event {
                 PointerMotion { x, y } => self.pointer_motion(x, y),
                 PointerButton { button, state } => self.pointer_button(button, state),
@@ -174,14 +174,14 @@ impl Server {
     pub fn client_occupies_point(&self, x: f32, y: f32) -> bool {
         !self.hit_test_focus(x, y).is_null()
             || self
-                .resize_target_at(x, y, aegis_core::window::RESIZE_OUTER_MARGIN)
+                .resize_target_at(x, y, aegis_model::window::RESIZE_OUTER_MARGIN)
                 .is_some()
     }
 
     /// Current depressed keyboard modifiers after the most recently routed
     /// key event. The composition root uses this to keep held-modifier chrome
     /// (notably Super+Tab) open until the modifier is actually released.
-    pub fn depressed_modifiers(&self) -> aegis_core::input::Mods {
+    pub fn depressed_modifiers(&self) -> aegis_model::input::Mods {
         self.state.depressed_mods
     }
 
@@ -192,9 +192,9 @@ impl Server {
     /// event.
     pub fn prepare_synthetic_input(
         &self,
-        window_id: aegis_core::window::WindowId,
-        actions: &[aegis_core::input::SyntheticInputAction],
-    ) -> Option<Vec<aegis_core::input::InputEvent>> {
+        window_id: aegis_model::window::WindowId,
+        actions: &[aegis_model::input::SyntheticInputAction],
+    ) -> Option<Vec<aegis_model::input::InputEvent>> {
         self.prepare_synthetic_input_for_seat(HUMAN_SEAT, window_id, actions, true)
     }
 
@@ -204,20 +204,20 @@ impl Server {
     pub fn prepare_agent_synthetic_input(
         &self,
         seat: SeatId,
-        window_id: aegis_core::window::WindowId,
-        actions: &[aegis_core::input::SyntheticInputAction],
-    ) -> Option<Vec<aegis_core::input::InputEvent>> {
+        window_id: aegis_model::window::WindowId,
+        actions: &[aegis_model::input::SyntheticInputAction],
+    ) -> Option<Vec<aegis_model::input::InputEvent>> {
         self.prepare_synthetic_input_for_seat(seat, window_id, actions, false)
     }
 
     pub(crate) fn prepare_synthetic_input_for_seat(
         &self,
         seat: SeatId,
-        window_id: aegis_core::window::WindowId,
-        actions: &[aegis_core::input::SyntheticInputAction],
+        window_id: aegis_model::window::WindowId,
+        actions: &[aegis_model::input::SyntheticInputAction],
         require_physical_visibility: bool,
-    ) -> Option<Vec<aegis_core::input::InputEvent>> {
-        use aegis_core::input::{ButtonState, InputEvent, SyntheticInputAction};
+    ) -> Option<Vec<aegis_model::input::InputEvent>> {
+        use aegis_model::input::{ButtonState, InputEvent, SyntheticInputAction};
 
         let runtime = self.state.seat_runtime(seat)?;
         if self.state.session_lock_phase.is_active()
@@ -226,7 +226,7 @@ impl Server {
             || runtime.interactive.is_some()
             || runtime.drag.is_some()
             || runtime.implicit_grab_active
-            || runtime.depressed_mods != aegis_core::input::Mods::NONE
+            || runtime.depressed_mods != aegis_model::input::Mods::NONE
             || !self.state.authority.seat_controls_window(seat, window_id)
         {
             return None;
@@ -253,7 +253,7 @@ impl Server {
         if size.w <= 0 || size.h <= 0 {
             return None;
         }
-        let to_global = |local: aegis_core::Point| -> Option<(f32, f32)> {
+        let to_global = |local: aegis_model::Point| -> Option<(f32, f32)> {
             if local.x < 0 || local.y < 0 || local.x >= size.w || local.y >= size.h {
                 return None;
             }
@@ -316,9 +316,9 @@ impl Server {
                     let (x, y) = to_global(position)?;
                     events.push(InputEvent::PointerMotion { x, y });
                     events.push(InputEvent::PointerAxis(
-                        aegis_core::input::PointerAxisFrame::from_values(
+                        aegis_model::input::PointerAxisFrame::from_values(
                             self.epoch.elapsed().as_millis() as u32,
-                            Some(aegis_core::input::PointerAxisSource::Continuous),
+                            Some(aegis_model::input::PointerAxisSource::Continuous),
                             dx,
                             dy,
                         ),
@@ -342,7 +342,7 @@ impl Server {
     /// Enumerate live toplevel windows. The shell uses this for the overview
     /// and any chrome that needs a list of windows. Reads current metadata;
     /// mutation happens through xdg_toplevel requests from the owning client.
-    pub fn windows(&self) -> Vec<aegis_core::window::Window> {
+    pub fn windows(&self) -> Vec<aegis_model::window::Window> {
         let visible = self.visible();
         self.windows_in_set(&visible)
     }
@@ -384,15 +384,15 @@ impl Server {
     /// Enumerate the presentation-visible windows. During a workspace slide
     /// this includes retained source pages so their compositor-owned shadows
     /// remain stable until the page leaves the output.
-    pub fn render_windows(&self) -> Vec<aegis_core::window::Window> {
+    pub fn render_windows(&self) -> Vec<aegis_model::window::Window> {
         let visible = self.render_visible();
         self.windows_in_set(&visible)
     }
 
     fn windows_in_set(
         &self,
-        visible: &std::collections::HashSet<aegis_core::window::WindowId>,
-    ) -> Vec<aegis_core::window::Window> {
+        visible: &std::collections::HashSet<aegis_model::window::WindowId>,
+    ) -> Vec<aegis_model::window::Window> {
         self.state
             .live_surfaces()
             .map(|p| unsafe { &*p })
@@ -411,7 +411,7 @@ impl Server {
                 w.state.activated = self.seat_focuses_window(HUMAN_SEAT, w.id);
                 // Publish only in-flight transitions; settled ones are noise
                 // to chrome and IPC consumers (ADR-0029).
-                let target = aegis_core::Rect {
+                let target = aegis_model::Rect {
                     origin: w.position,
                     size: w.size,
                 };
@@ -473,7 +473,7 @@ impl Server {
             w.size.h.hash(&mut hasher);
             // Only in-flight transitions are published; settled ones read as
             // `None` in the snapshot (ADR-0029).
-            let target = aegis_core::Rect {
+            let target = aegis_model::Rect {
                 origin: w.position,
                 size: w.size,
             };
@@ -494,7 +494,7 @@ impl Server {
     /// Whether compositor-owned physical chrome may mutate this window.
     /// Presentation-only mirrors deliberately return false even though they
     /// remain visible and can be transferred through Interaction Domain management.
-    pub fn human_controls_window(&self, window: aegis_core::window::WindowId) -> bool {
+    pub fn human_controls_window(&self, window: aegis_model::window::WindowId) -> bool {
         self.state
             .authority
             .seat_controls_window(HUMAN_SEAT, window)
@@ -503,7 +503,7 @@ impl Server {
     pub(crate) fn seat_focuses_window(
         &self,
         seat: SeatId,
-        window: aegis_core::window::WindowId,
+        window: aegis_model::window::WindowId,
     ) -> bool {
         let Some(runtime) = self.state.seat_runtime(seat) else {
             return false;
@@ -521,7 +521,7 @@ impl Server {
     /// responds by destroying its `xdg_toplevel` (and usually the surface).
     /// No-op if `surface_id` does not name a live toplevel or the physical
     /// human seat has observation-only authority for it.
-    pub fn close_toplevel(&mut self, surface_id: aegis_core::window::WindowId) {
+    pub fn close_toplevel(&mut self, surface_id: aegis_model::window::WindowId) {
         if !self.human_controls_window(surface_id) {
             return;
         }
@@ -541,7 +541,7 @@ impl Server {
     /// compositor-side counterpart of the client's
     /// `xdg_toplevel.set_minimized` request and shares the same focus cleanup.
     /// Presentation-only mirrors are immutable from the physical session.
-    pub fn minimize_toplevel(&mut self, surface_id: aegis_core::window::WindowId) {
+    pub fn minimize_toplevel(&mut self, surface_id: aegis_model::window::WindowId) {
         if !self.human_controls_window(surface_id) {
             return;
         }
@@ -557,7 +557,7 @@ impl Server {
     /// saved floating rectangle when maximization is cleared.
     pub fn set_toplevel_maximized(
         &mut self,
-        surface_id: aegis_core::window::WindowId,
+        surface_id: aegis_model::window::WindowId,
         maximized: bool,
     ) -> bool {
         if !self.human_controls_window(surface_id) {
@@ -591,7 +591,7 @@ impl Server {
     /// physical human seat does not control the window.
     pub fn set_toplevel_always_on_top(
         &mut self,
-        surface_id: aegis_core::window::WindowId,
+        surface_id: aegis_model::window::WindowId,
         on_top: bool,
     ) {
         if !self.human_controls_window(surface_id) {
@@ -616,7 +616,7 @@ impl Server {
     /// and this complements it with the toplevel-state side.
     pub fn set_toplevel_activated(
         &mut self,
-        surface_id: aegis_core::window::WindowId,
+        surface_id: aegis_model::window::WindowId,
         activated: bool,
     ) {
         for p in self.state.live_surfaces() {
@@ -641,7 +641,7 @@ impl Server {
     /// control the surface. The latter check is deliberately repeated below
     /// the main-loop command gateway so future compositor callers cannot turn
     /// an observation mirror into an input target.
-    pub fn start_interactive_move(&mut self, surface_id: aegis_core::window::WindowId) {
+    pub fn start_interactive_move(&mut self, surface_id: aegis_model::window::WindowId) {
         if self.state.interactive.is_some()
             || !self
                 .state
@@ -657,8 +657,8 @@ impl Server {
         self.change_keyboard_focus(unsafe { (*rec).resource });
         unsafe {
             let layout_changed =
-                (*rec).window.layout_role != aegis_core::layout::LayoutRole::Floating;
-            (*rec).window.layout_role = aegis_core::layout::LayoutRole::Floating;
+                (*rec).window.layout_role != aegis_model::layout::LayoutRole::Floating;
+            (*rec).window.layout_role = aegis_model::layout::LayoutRole::Floating;
             (*rec).layout_target = None;
             let state_changed = (*rec).window.state.maximized || (*rec).window.state.fullscreen;
             (*rec).window.state.maximized = false;
@@ -667,7 +667,7 @@ impl Server {
                 reconfigure_with_state(rec);
             }
         }
-        self.state.interactive = Some(aegis_core::window::Interactive::Move {
+        self.state.interactive = Some(aegis_model::window::Interactive::Move {
             window_id: surface_id,
             origin: (self.state.pointer_x, self.state.pointer_y),
             start_position: unsafe { (*rec).position },
@@ -679,8 +679,8 @@ impl Server {
     /// as [`start_interactive_move`](Self::start_interactive_move).
     pub fn start_interactive_resize(
         &mut self,
-        surface_id: aegis_core::window::WindowId,
-        edges: aegis_core::window::ResizeEdges,
+        surface_id: aegis_model::window::WindowId,
+        edges: aegis_model::window::ResizeEdges,
     ) {
         if self.state.interactive.is_some()
             || !self
@@ -699,14 +699,14 @@ impl Server {
         }
         self.change_keyboard_focus(unsafe { (*rec).resource });
         unsafe {
-            (*rec).window.layout_role = aegis_core::layout::LayoutRole::Floating;
+            (*rec).window.layout_role = aegis_model::layout::LayoutRole::Floating;
             (*rec).layout_target = None;
             (*rec).window.state.maximized = false;
             (*rec).window.state.fullscreen = false;
             (*rec).window.state.resizing = true;
             reconfigure_with_state(rec);
         }
-        self.state.interactive = Some(aegis_core::window::Interactive::Resize {
+        self.state.interactive = Some(aegis_model::window::Interactive::Resize {
             window_id: surface_id,
             edges,
             origin: (self.state.pointer_x, self.state.pointer_y),
@@ -727,8 +727,8 @@ impl Server {
     /// window snapshot or journal event.
     pub fn set_window_geometry(
         &mut self,
-        window_id: aegis_core::window::WindowId,
-        rect: aegis_core::Rect,
+        window_id: aegis_model::window::WindowId,
+        rect: aegis_model::Rect,
     ) -> bool {
         if !self.human_controls_window(window_id) || rect.size.w <= 0 || rect.size.h <= 0 {
             return false;
@@ -748,20 +748,20 @@ impl Server {
         unsafe {
             let unchanged = (*rec).position == rect.origin
                 && (*rec).window.size == size
-                && (*rec).window.layout_role == aegis_core::layout::LayoutRole::Floating
+                && (*rec).window.layout_role == aegis_model::layout::LayoutRole::Floating
                 && !(*rec).window.state.maximized
                 && !(*rec).window.state.fullscreen;
             if unchanged {
                 return false;
             }
-            let old = aegis_core::Rect {
+            let old = aegis_model::Rect {
                 origin: (*rec).position,
                 size: (*rec).window.size,
             };
             (*rec).position = rect.origin;
             (*rec).window.position = rect.origin;
             (*rec).window.size = size;
-            (*rec).window.layout_role = aegis_core::layout::LayoutRole::Floating;
+            (*rec).window.layout_role = aegis_model::layout::LayoutRole::Floating;
             (*rec).layout_target = None;
             (*rec).window.state.maximized = false;
             (*rec).window.state.fullscreen = false;
@@ -775,7 +775,7 @@ impl Server {
     /// Whether an interactive grab (move or resize) is currently active.
     /// The shell uses this to change the cursor or suppress overview
     /// animations during a grab.
-    pub fn interactive(&self) -> Option<aegis_core::window::Interactive> {
+    pub fn interactive(&self) -> Option<aegis_model::window::Interactive> {
         self.state.interactive
     }
 
@@ -792,7 +792,7 @@ impl Server {
     /// surfaces. Equivalent to the click-to-focus path driven from a pointer
     /// button press, but initiated by the compositor. No-op if the id does
     /// not name a live toplevel.
-    pub fn focus_surface_by_id(&mut self, surface_id: aegis_core::window::WindowId) {
+    pub fn focus_surface_by_id(&mut self, surface_id: aegis_model::window::WindowId) {
         let rec = self.find_surface_by_window_id(surface_id);
         if rec.is_null() {
             return;
@@ -802,17 +802,17 @@ impl Server {
                 return;
             }
             if (*rec).window.minimized {
-                let saved = (*rec).saved_floating_rect.unwrap_or(aegis_core::Rect {
-                    origin: aegis_core::Point { x: 100, y: 100 },
-                    size: aegis_core::Size { w: 800, h: 600 },
+                let saved = (*rec).saved_floating_rect.unwrap_or(aegis_model::Rect {
+                    origin: aegis_model::Point { x: 100, y: 100 },
+                    size: aegis_model::Size { w: 800, h: 600 },
                 });
                 let old_screen_h = self.state.output_geometry.logical_rect().size.h;
-                let from = aegis_core::Rect {
-                    origin: aegis_core::Point {
+                let from = aegis_model::Rect {
+                    origin: aegis_model::Point {
                         x: saved.origin.x + saved.size.w / 4,
                         y: old_screen_h - 20,
                     },
-                    size: aegis_core::Size {
+                    size: aegis_model::Size {
                         w: (saved.size.w / 2).max(40),
                         h: 20,
                     },
@@ -832,7 +832,7 @@ impl Server {
     /// Surface id of the toplevel currently holding keyboard focus, if any.
     /// Returns `None` when no surface is focused or the focus is not a
     /// toplevel. Used by the keybind dispatcher to target the focused window.
-    pub fn focused_toplevel_id(&self) -> Option<aegis_core::window::WindowId> {
+    pub fn focused_toplevel_id(&self) -> Option<aegis_model::window::WindowId> {
         let f = self.state.keyboard_focus;
         if f.is_null() {
             return None;
@@ -885,15 +885,15 @@ impl Server {
     /// margin advertises the edge/corner before the user presses it.
     pub fn compositor_cursor_shape(&self) -> Option<u32> {
         match self.state.interactive {
-            Some(aegis_core::window::Interactive::Move { .. }) => Some(17), // grabbing
-            Some(aegis_core::window::Interactive::Resize { edges, .. }) => {
+            Some(aegis_model::window::Interactive::Move { .. }) => Some(17), // grabbing
+            Some(aegis_model::window::Interactive::Resize { edges, .. }) => {
                 Some(resize_cursor_shape(edges))
             }
             None => self
                 .resize_target_at(
                     self.state.pointer_x,
                     self.state.pointer_y,
-                    aegis_core::window::RESIZE_OUTER_MARGIN,
+                    aegis_model::window::RESIZE_OUTER_MARGIN,
                 )
                 .map(|(_, edges)| resize_cursor_shape(edges)),
         }
@@ -901,20 +901,20 @@ impl Server {
 
     /// Drain text-input state committed by the focused inner client. The
     /// nested backend mirrors each state to the host compositor's IME.
-    pub fn take_text_input_states(&mut self) -> Vec<aegis_core::input::TextInputState> {
+    pub fn take_text_input_states(&mut self) -> Vec<aegis_model::input::TextInputState> {
         std::mem::take(&mut self.state.pending_text_input_states)
     }
 
     /// Route one host IME event to the enabled text-input object belonging to
     /// the keyboard-focused inner client.
-    pub fn text_input_event(&mut self, event: &aegis_core::input::TextInputEvent) {
+    pub fn text_input_event(&mut self, event: &aegis_model::input::TextInputEvent) {
         unsafe { extensions::forward_text_input_event(self.state.as_mut(), event) };
     }
 
     /// Forward a host touchpad gesture to gesture objects belonging to the
     /// client that held pointer focus when the gesture began.
-    pub fn pointer_gesture_event(&mut self, event: &aegis_core::input::PointerGestureEvent) {
-        use aegis_core::input::PointerGestureEvent::*;
+    pub fn pointer_gesture_event(&mut self, event: &aegis_model::input::PointerGestureEvent) {
+        use aegis_model::input::PointerGestureEvent::*;
         unsafe {
             match *event {
                 SwipeBegin { time, fingers } => {

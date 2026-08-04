@@ -8,9 +8,9 @@ impl State {
     pub(crate) fn persist_app_geometry(
         &mut self,
         app_id: &str,
-        rect: aegis_core::Rect,
+        rect: aegis_model::Rect,
         workspace: Option<u32>,
-        layout_role: Option<aegis_core::layout::LayoutRole>,
+        layout_role: Option<aegis_model::layout::LayoutRole>,
     ) {
         if app_id.is_empty() {
             return;
@@ -18,7 +18,7 @@ impl State {
         self.last_app_geometries.insert(app_id.to_owned(), rect);
         self.window_state_store.update(
             app_id.to_owned(),
-            aegis_core::window_state_store::SavedWindowState {
+            window_state::SavedWindowState {
                 position: Some(rect.origin),
                 size: Some(rect.size),
                 workspace,
@@ -33,7 +33,7 @@ impl State {
 
     pub(crate) fn workspace_number_for_window(
         &self,
-        window: aegis_core::window::WindowId,
+        window: aegis_model::window::WindowId,
     ) -> Option<u32> {
         let workspace = self.workspaces.workspace_of(window)?;
         let output = self.workspaces.workspace(workspace)?.output;
@@ -47,7 +47,7 @@ impl State {
     }
 
     pub(super) fn new(display: *mut ffi::wl_display) -> State {
-        let mut workspaces = aegis_core::workspace::WorkspaceModel::new();
+        let mut workspaces = aegis_model::workspace::WorkspaceModel::new();
         let output = workspaces.add_output("nested");
         let authority = InteractionDomainModel::new();
         let human_seat = Box::new(SeatRuntime::new(
@@ -56,15 +56,14 @@ impl State {
             HUMAN_PRINCIPAL,
             SeatCapabilities::ALL,
         ));
-        let window_state_path = aegis_core::window_state_store::WindowStateStore::default_path();
-        let window_state_store =
-            aegis_core::window_state_store::WindowStateStore::load_from_path(&window_state_path);
+        let window_state_path = window_state::WindowStateStore::default_path();
+        let window_state_store = window_state::WindowStateStore::load_from_path(&window_state_path);
         let mut last_app_geometries = std::collections::HashMap::new();
         for (app_id, entry) in &window_state_store.entries {
             if let (Some(pos), Some(sz)) = (entry.position, entry.size) {
                 last_app_geometries.insert(
                     app_id.clone(),
-                    aegis_core::Rect {
+                    aegis_model::Rect {
                         origin: pos,
                         size: sz,
                     },
@@ -109,7 +108,7 @@ impl State {
             xdg_foreign_imports: Vec::new(),
             activation_tokens: std::collections::HashMap::new(),
             pending_activation: None,
-            pending_popup_focus: std::collections::BTreeMap::new(),
+            pending_keyboard_focus: std::collections::BTreeMap::new(),
             session_lock: std::ptr::null_mut(),
             session_lock_phase: SessionLockPhase::Unlocked,
             allow_quit_while_locked: false,
@@ -119,19 +118,19 @@ impl State {
             pending_vt_switch: None,
             workspaces,
             output,
-            layout_params: aegis_core::layout::LayoutParams::default(),
+            layout_params: aegis_model::layout::LayoutParams::default(),
             reduced_motion: false,
-            decoration_policy: aegis_core::window::DecorationPolicy::default(),
+            decoration_policy: aegis_model::window::DecorationPolicy::default(),
             window_rules: Vec::new(),
-            output_geometry: aegis_core::output::OutputGeometry::default(),
-            output_infos: vec![aegis_core::output::OutputInfo {
+            output_geometry: aegis_model::output::OutputGeometry::default(),
+            output_infos: vec![aegis_model::output::OutputInfo {
                 connector: "nested".to_owned(),
-                geometry: aegis_core::output::OutputGeometry::default(),
+                geometry: aegis_model::output::OutputGeometry::default(),
                 available_modes: Vec::new(),
             }],
             outputs_revision: 0,
             output_policies: std::collections::HashMap::new(),
-            last_work_area: aegis_core::Rect::default(),
+            last_work_area: aegis_model::Rect::default(),
             epoch: std::time::Instant::now(),
             last_app_geometries,
             window_state_store,
@@ -195,7 +194,7 @@ impl State {
     pub(super) unsafe fn ensure_client(
         &mut self,
         client: *mut ffi::wl_client,
-    ) -> aegis_core::interaction_domain::ClientId {
+    ) -> aegis_model::interaction_domain::ClientId {
         unsafe { self.ensure_client_with_interaction_domain(client, None) }
     }
 
@@ -203,7 +202,7 @@ impl State {
         &mut self,
         client: *mut ffi::wl_client,
         interaction_domain: Option<InteractionDomainId>,
-    ) -> aegis_core::interaction_domain::ClientId {
+    ) -> aegis_model::interaction_domain::ClientId {
         unsafe {
             if let Some(id) = self.clients.get(&(client as usize)).copied() {
                 return id;
@@ -258,7 +257,7 @@ impl State {
     pub(super) fn client_observes_window(
         &self,
         client: *mut ffi::wl_client,
-        window: aegis_core::window::WindowId,
+        window: aegis_model::window::WindowId,
     ) -> bool {
         self.authority
             .interaction_domain_observes_window(self.client_view_interaction_domain(client), window)
@@ -266,8 +265,8 @@ impl State {
 
     pub(super) fn register_window(
         &mut self,
-        client: aegis_core::interaction_domain::ClientId,
-        window: aegis_core::window::WindowId,
+        client: aegis_model::interaction_domain::ClientId,
+        window: aegis_model::window::WindowId,
     ) -> Result<(), InteractionDomainError> {
         let existing = self
             .authority
@@ -297,7 +296,7 @@ impl State {
                 .interaction_domain(initial_interaction_domain)
                 .is_some_and(|interaction_domain| {
                     interaction_domain.kind
-                        == aegis_core::interaction_domain::InteractionDomainKind::Agent
+                        == aegis_model::interaction_domain::InteractionDomainKind::Agent
                 })
             {
                 self.authority
@@ -308,7 +307,7 @@ impl State {
         Ok(())
     }
 
-    pub(super) fn unregister_window(&mut self, window: aegis_core::window::WindowId) {
+    pub(super) fn unregister_window(&mut self, window: aegis_model::window::WindowId) {
         self.semantic_trees.remove_window(window);
         if self
             .authority
@@ -330,7 +329,7 @@ impl State {
 
     pub(super) fn interaction_domains_for_window(
         &self,
-        window: aegis_core::window::WindowId,
+        window: aegis_model::window::WindowId,
     ) -> Vec<InteractionDomainId> {
         let Some(group) = self.authority.interaction_group_for_window(window) else {
             return Vec::new();
@@ -346,7 +345,7 @@ impl State {
 
     pub(super) fn queue_interaction_domain_layouts_for_window(
         &mut self,
-        window: aegis_core::window::WindowId,
+        window: aegis_model::window::WindowId,
     ) {
         for interaction_domain in self.interaction_domains_for_window(window) {
             if interaction_domain != HUMAN_INTERACTION_DOMAIN {
@@ -369,7 +368,7 @@ impl State {
         self.pending_interaction_domain_damage
             .entry(interaction_domain)
             .or_default()
-            .push(aegis_core::Rect::new(
+            .push(aegis_model::Rect::new(
                 0,
                 0,
                 output.width as i32,
@@ -394,7 +393,7 @@ impl State {
             if !was_multi_seat && bound.len() > 1 {
                 let _ = self.authority.set_client_multi_seat(
                     id,
-                    aegis_core::interaction_domain::MultiSeatSupport::Supported,
+                    aegis_model::interaction_domain::MultiSeatSupport::Supported,
                 );
                 self.restore_native_multiseat_resources(client);
             }
@@ -410,7 +409,7 @@ impl State {
             return advertised;
         };
         if self.authority.client(client_id).is_some_and(|client| {
-            client.multi_seat == aegis_core::interaction_domain::MultiSeatSupport::Supported
+            client.multi_seat == aegis_model::interaction_domain::MultiSeatSupport::Supported
         }) {
             return advertised;
         }
@@ -438,12 +437,12 @@ impl State {
 
     pub(super) unsafe fn migrate_compatibility_resources(
         &mut self,
-        client_id: aegis_core::interaction_domain::ClientId,
+        client_id: aegis_model::interaction_domain::ClientId,
         target: SeatId,
     ) {
         unsafe {
             if self.authority.client(client_id).is_some_and(|client| {
-                client.multi_seat == aegis_core::interaction_domain::MultiSeatSupport::Supported
+                client.multi_seat == aegis_model::interaction_domain::MultiSeatSupport::Supported
             }) {
                 return;
             }
@@ -593,10 +592,10 @@ impl State {
 
     /// Allocate a fresh, never-reused `WindowId` (ADR-0032). Called on the
     /// main loop when a toplevel role is acquired.
-    pub(super) fn alloc_window_id(&mut self) -> aegis_core::window::WindowId {
+    pub(super) fn alloc_window_id(&mut self) -> aegis_model::window::WindowId {
         let id = self.next_window_id;
         self.next_window_id += 1;
-        aegis_core::window::WindowId(id)
+        aegis_model::window::WindowId(id)
     }
 
     /// Iterate live surface records, skipping nulled slots. The returned

@@ -4,11 +4,11 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use aegis_core::interaction_domain::{
+use aegis_ipc::{Client, InteractionDomainAction, InteractionDomainActionResult};
+use aegis_model::interaction_domain::{
     HUMAN_INTERACTION_DOMAIN, InteractionDomainId, InteractionDomainKind,
     InteractionDomainSnapshot, InteractionDomainState, SeatCapabilities, VirtualOutput,
 };
-use aegis_ipc::{Client, InteractionDomainAction, InteractionDomainActionResult};
 use serde::{Deserialize, Serialize};
 
 use crate::BridgeConfig;

@@ -8,7 +8,7 @@ fn frame(stream_id: u64) -> StreamFramePayload {
         height: 2,
         stride: 8,
         format: StreamPixelFormat::Bgra8,
-        damage: vec![aegis_core::Rect::new(0, 0, 2, 2)],
+        damage: vec![aegis_model::Rect::new(0, 0, 2, 2)],
         dropped: 0,
         pixels: Arc::from(&[7u8; 16][..]),
     }
@@ -34,7 +34,7 @@ fn add_lane(server: &Server, stream_id: u64, tx: SyncSender<Outbound>) {
             tx,
             scope: LiveScopeBinding {
                 connection_id: 1,
-                session: aegis_authority::ActorSessionId(1),
+                session: aegis_security::authority::ActorSessionId(1),
                 name: None,
                 principal: None,
                 fallback: Scope::unscoped(),
@@ -124,7 +124,7 @@ fn slow_event_and_journal_subscribers_are_evicted_without_blocking() {
             ts_mono_ms: 1,
             origin: crate::journal::Origin::Internal,
             mutation: crate::journal::JournalMutation::CapabilityUse {
-                session: aegis_authority::ActorSessionId(1),
+                session: aegis_security::authority::ActorSessionId(1),
                 principal: None,
                 capability: ActorCapability::IdleInhibit,
                 action: crate::journal::CapabilityUseAction::Enable,
@@ -191,29 +191,29 @@ fn end_stream_unregisters_and_notifies_the_client() {
 
 #[test]
 fn authenticated_subject_cannot_cross_agent_interaction_domain_ownership() {
-    let mut model = aegis_core::interaction_domain::InteractionDomainModel::new();
+    let mut model = aegis_model::interaction_domain::InteractionDomainModel::new();
     let own = model.create_agent_interaction_domain_for_subject(
         "own",
-        aegis_core::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
+        aegis_model::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
         Some("prin_a".into()),
     );
     let other = model.create_agent_interaction_domain_for_subject(
         "other",
-        aegis_core::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
+        aegis_model::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
         Some("prin_b".into()),
     );
     let snapshot = model.snapshot();
 
     let own_revoke = InteractionDomainAction::Revoke {
         interaction_domain: own.interaction_domain,
-        fallback: aegis_core::interaction_domain::HUMAN_INTERACTION_DOMAIN,
+        fallback: aegis_model::interaction_domain::HUMAN_INTERACTION_DOMAIN,
         expected_revision: None,
     };
     assert!(authorize_subject_interaction_domain_action("prin_a", &own_revoke, &snapshot).is_ok());
 
     let other_revoke = InteractionDomainAction::Revoke {
         interaction_domain: other.interaction_domain,
-        fallback: aegis_core::interaction_domain::HUMAN_INTERACTION_DOMAIN,
+        fallback: aegis_model::interaction_domain::HUMAN_INTERACTION_DOMAIN,
         expected_revision: None,
     };
     assert!(

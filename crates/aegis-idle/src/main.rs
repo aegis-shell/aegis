@@ -468,7 +468,7 @@ impl Daemon {
             Duration::from_secs(3),
         )
         .and_then(|mut client| {
-            client.apply_system_action(aegis_core::system::SystemAction::SetOutputPower {
+            client.apply_system_action(aegis_model::system::SystemAction::SetOutputPower {
                 powered: target.powered(),
             })
         });

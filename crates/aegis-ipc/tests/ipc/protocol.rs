@@ -59,7 +59,7 @@ fn authenticated_capture_rechecks_the_live_principal_ceiling() {
     let path = scratch();
     let handler = Arc::new(TestHandler::permissive(sample_windows()));
     let identity = aegis_ipc::AgentIdentity {
-        principal: aegis_authority::ActorPrincipal::new("prin_capture").unwrap(),
+        principal: aegis_security::authority::ActorPrincipal::new("prin_capture").unwrap(),
         pregranted: vec![ActorCapability::CaptureOutput],
         gated: vec![],
     };
@@ -342,7 +342,7 @@ fn switch_workspace_command_is_queued() {
     )
     .expect("connect");
     client
-        .switch_workspace(aegis_core::workspace::Switch::Next)
+        .switch_workspace(aegis_model::workspace::Switch::Next)
         .expect("switch");
     let recorded = handler.commands.lock().unwrap();
     assert!(
@@ -403,7 +403,7 @@ fn notified_event_carries_the_notification() {
 
     let mut client = Client::connect(&path).expect("connect");
     client.subscribe().expect("subscribe");
-    let n = aegis_core::notify::Notification {
+    let n = aegis_model::notify::Notification {
         id: 7,
         summary: "ping".into(),
         body: "pong".into(),

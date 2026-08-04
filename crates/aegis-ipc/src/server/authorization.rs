@@ -80,7 +80,7 @@ pub(super) fn valid_agent_hello(agent: &crate::schema::AgentHello) -> bool {
 }
 
 pub(super) fn valid_principal_id(principal: &str) -> bool {
-    aegis_authority::ActorPrincipal::new(principal.to_owned()).is_ok()
+    aegis_security::authority::ActorPrincipal::new(principal.to_owned()).is_ok()
 }
 
 pub(super) fn valid_app_pick_request(
@@ -103,18 +103,18 @@ pub(super) fn valid_app_pick_request(
 }
 
 pub(super) fn valid_wallpaper_path(path: &Path) -> bool {
-    aegis_authority::ActorResource::FilesystemPath {
+    aegis_security::authority::ActorResource::FilesystemPath {
         path: path.to_path_buf(),
-        access: aegis_authority::FilesystemAccess::Read,
+        access: aegis_security::authority::FilesystemAccess::Read,
     }
     .validate()
     .is_ok()
 }
 
 pub(super) fn subject_owns_interaction_domain(
-    snapshot: &aegis_core::interaction_domain::InteractionDomainSnapshot,
+    snapshot: &aegis_model::interaction_domain::InteractionDomainSnapshot,
     subject: &str,
-    interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+    interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
 ) -> bool {
     let Some(interaction_domain) = snapshot
         .interaction_domains
@@ -132,9 +132,9 @@ pub(super) fn subject_owns_interaction_domain(
 }
 
 pub(super) fn filter_windows(
-    windows: Vec<aegis_core::window::Window>,
+    windows: Vec<aegis_model::window::Window>,
     scope: &Scope,
-) -> Vec<aegis_core::window::Window> {
+) -> Vec<aegis_model::window::Window> {
     windows
         .into_iter()
         .filter(|window| scope.permits_window(window.id))
@@ -152,9 +152,9 @@ pub(super) fn filter_accessibility_windows(
 }
 
 pub(super) fn filter_workspaces(
-    mut snapshot: aegis_core::workspace::WorkspaceSnapshot,
+    mut snapshot: aegis_model::workspace::WorkspaceSnapshot,
     scope: &Scope,
-) -> aegis_core::workspace::WorkspaceSnapshot {
+) -> aegis_model::workspace::WorkspaceSnapshot {
     snapshot
         .outputs
         .retain(|output| scope.permits_output(output.id));
@@ -178,10 +178,10 @@ pub(super) fn filter_workspaces(
 }
 
 pub(super) fn filter_interaction_domains(
-    mut snapshot: aegis_core::interaction_domain::InteractionDomainSnapshot,
+    mut snapshot: aegis_model::interaction_domain::InteractionDomainSnapshot,
     scope: &Scope,
     subject: Option<&str>,
-) -> aegis_core::interaction_domain::InteractionDomainSnapshot {
+) -> aegis_model::interaction_domain::InteractionDomainSnapshot {
     let principal_subjects = snapshot
         .principals
         .iter()
@@ -194,7 +194,7 @@ pub(super) fn filter_interaction_domains(
         let Some(subject) = subject else {
             return true;
         };
-        interaction_domain.kind == aegis_core::interaction_domain::InteractionDomainKind::Human
+        interaction_domain.kind == aegis_model::interaction_domain::InteractionDomainKind::Human
             || principal_subjects
                 .get(&interaction_domain.controller)
                 .copied()
@@ -284,9 +284,9 @@ pub(super) fn audit_resource_grant_refusal<H: Handler>(
     handler: &H,
     conn_id: u64,
     subject: Option<&str>,
-    session: aegis_authority::ActorSessionId,
+    session: aegis_security::authority::ActorSessionId,
     action: crate::journal::ResourceGrantAttemptAction,
-    resource: Option<&aegis_authority::ActorResource>,
+    resource: Option<&aegis_security::authority::ActorResource>,
 ) {
     let reason = match action {
         crate::journal::ResourceGrantAttemptAction::Issue => "resource grant issue refused",
@@ -298,9 +298,10 @@ pub(super) fn audit_resource_grant_refusal<H: Handler>(
         subject,
         JournalMutation::ResourceGrantAttempt {
             session,
-            principal: subject.and_then(|value| aegis_authority::ActorPrincipal::new(value).ok()),
+            principal: subject
+                .and_then(|value| aegis_security::authority::ActorPrincipal::new(value).ok()),
             action,
-            capability: resource.map(aegis_authority::ActorResource::required_capability),
+            capability: resource.map(aegis_security::authority::ActorResource::required_capability),
             resource_kind: resource.map(crate::journal::ResourceKind::from),
         },
         reason.to_owned(),
@@ -342,18 +343,18 @@ pub(super) fn audit_capability_effect<H: Handler>(
 }
 
 pub(super) fn subject_may_transfer_through(
-    snapshot: &aegis_core::interaction_domain::InteractionDomainSnapshot,
+    snapshot: &aegis_model::interaction_domain::InteractionDomainSnapshot,
     subject: &str,
-    interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
+    interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
 ) -> bool {
-    interaction_domain == aegis_core::interaction_domain::HUMAN_INTERACTION_DOMAIN
+    interaction_domain == aegis_model::interaction_domain::HUMAN_INTERACTION_DOMAIN
         || subject_owns_interaction_domain(snapshot, subject, interaction_domain)
 }
 
 pub(super) fn authorize_subject_interaction_domain_action(
     subject: &str,
     action: &InteractionDomainAction,
-    snapshot: &aegis_core::interaction_domain::InteractionDomainSnapshot,
+    snapshot: &aegis_model::interaction_domain::InteractionDomainSnapshot,
 ) -> Result<(), String> {
     let owns =
         |interaction_domain| subject_owns_interaction_domain(snapshot, subject, interaction_domain);
@@ -368,7 +369,7 @@ pub(super) fn authorize_subject_interaction_domain_action(
         } => owns(*interaction_domain) && transfer(*fallback),
         InteractionDomainAction::Transact { mutations, .. } => {
             mutations.iter().all(|mutation| match mutation {
-                aegis_core::interaction_domain::InteractionDomainMutation::TransferWindow {
+                aegis_model::interaction_domain::InteractionDomainMutation::TransferWindow {
                     window,
                     target,
                     ..
@@ -379,7 +380,7 @@ pub(super) fn authorize_subject_interaction_domain_action(
                     .is_some_and(|group| {
                         transfer(group.control_interaction_domain) && transfer(*target)
                     }),
-                aegis_core::interaction_domain::InteractionDomainMutation::SetObserver {
+                aegis_model::interaction_domain::InteractionDomainMutation::SetObserver {
                     group,
                     interaction_domain,
                     ..
@@ -391,11 +392,11 @@ pub(super) fn authorize_subject_interaction_domain_action(
                             .find(|candidate| candidate.id == *group)
                             .is_some_and(|group| transfer(group.control_interaction_domain))
                 }
-                aegis_core::interaction_domain::InteractionDomainMutation::ConfigureOutput {
+                aegis_model::interaction_domain::InteractionDomainMutation::ConfigureOutput {
                     interaction_domain,
                     ..
                 }
-                | aegis_core::interaction_domain::InteractionDomainMutation::SetState {
+                | aegis_model::interaction_domain::InteractionDomainMutation::SetState {
                     interaction_domain,
                     ..
                 } => owns(*interaction_domain),

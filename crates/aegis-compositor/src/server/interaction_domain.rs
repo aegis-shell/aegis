@@ -29,7 +29,7 @@ impl Server {
             .ok_or(InteractionDomainError::UnknownInteractionDomain(
                 interaction_domain,
             ))?;
-        if record.state != aegis_core::interaction_domain::InteractionDomainState::Active {
+        if record.state != aegis_model::interaction_domain::InteractionDomainState::Active {
             return Err(
                 InteractionDomainError::InteractionDomainNotActive(interaction_domain).into(),
             );
@@ -103,7 +103,7 @@ impl Server {
             .ok_or(InteractionDomainError::UnknownInteractionDomain(
                 portal.interaction_domain,
             ))?;
-        if record.state != aegis_core::interaction_domain::InteractionDomainState::Active {
+        if record.state != aegis_model::interaction_domain::InteractionDomainState::Active {
             return Err(InteractionDomainError::InteractionDomainNotActive(
                 portal.interaction_domain,
             )
@@ -198,7 +198,7 @@ impl Server {
     pub fn interaction_domain_window_placements(
         &self,
         interaction_domain: InteractionDomainId,
-    ) -> Vec<aegis_core::interaction_domain::InteractionDomainWindowPlacement> {
+    ) -> Vec<aegis_model::interaction_domain::InteractionDomainWindowPlacement> {
         let mut placements = self
             .state
             .interaction_domain_placements
@@ -224,7 +224,7 @@ impl Server {
                     }
                 };
                 (surface_size.w > 0 && surface_size.h > 0).then_some(
-                    aegis_core::interaction_domain::InteractionDomainWindowPlacement {
+                    aegis_model::interaction_domain::InteractionDomainWindowPlacement {
                         window: *window,
                         output_rect: *output_rect,
                         surface_size,
@@ -242,10 +242,10 @@ impl Server {
     pub fn interaction_domain_semantic_snapshot(
         &self,
         interaction_domain: InteractionDomainId,
-    ) -> Result<aegis_core::semantic::SemanticSnapshot, InteractionDomainRuntimeError> {
+    ) -> Result<aegis_model::semantic::SemanticSnapshot, InteractionDomainRuntimeError> {
         const MAX_SEMANTIC_OBJECTS: usize = 4_096;
         const MAX_SEMANTIC_LABEL_BYTES: usize = 1_024;
-        use aegis_core::semantic::{
+        use aegis_model::semantic::{
             SemanticAction, SemanticObject, SemanticObjectId, SemanticRole, SemanticSnapshot,
             SemanticSource, SemanticState,
         };
@@ -259,7 +259,7 @@ impl Server {
                 interaction_domain,
             ))?;
         if interaction_domain_record.state
-            != aegis_core::interaction_domain::InteractionDomainState::Active
+            != aegis_model::interaction_domain::InteractionDomainState::Active
         {
             return Err(
                 InteractionDomainError::InteractionDomainNotActive(interaction_domain).into(),
@@ -387,7 +387,7 @@ impl Server {
             return Err("accessibility tree targets an unknown or unmapped window".into());
         }
         let surface_size = unsafe {
-            aegis_core::Size {
+            aegis_model::Size {
                 w: (*rec).width,
                 h: (*rec).height,
             }
@@ -399,7 +399,7 @@ impl Server {
 
     pub fn resolve_semantic_dispatch(
         &self,
-        target: aegis_core::semantic::SemanticObjectId,
+        target: aegis_model::semantic::SemanticObjectId,
     ) -> Option<aegis_semantic::SemanticDispatchTarget> {
         self.state.semantic_trees.resolve(target)
     }
@@ -639,7 +639,7 @@ impl Server {
     /// affects resource routing, not the transfer unit.
     pub fn transfer_window_control(
         &mut self,
-        window: aegis_core::window::WindowId,
+        window: aegis_model::window::WindowId,
         target: InteractionDomainId,
         retain_source_as_observer: bool,
     ) -> Result<AuthorityTransfer, InteractionDomainRuntimeError> {
@@ -691,7 +691,7 @@ impl Server {
 
     pub(crate) fn interaction_group_output_interaction_domains(
         &self,
-        group: aegis_core::interaction_domain::InteractionGroupId,
+        group: aegis_model::interaction_domain::InteractionGroupId,
     ) -> std::collections::BTreeSet<InteractionDomainId> {
         self.state
             .authority
@@ -755,7 +755,7 @@ impl Server {
                 }
                 InteractionDomainMutation::SetState {
                     interaction_domain,
-                    state: aegis_core::interaction_domain::InteractionDomainState::Active,
+                    state: aegis_model::interaction_domain::InteractionDomainState::Active,
                 } => {
                     for seat in self.interaction_domain_seat_ids(interaction_domain)? {
                         let needs_keyboard = self.state.seat_runtime(seat).is_some_and(|runtime| {
@@ -842,7 +842,7 @@ impl Server {
                         .interaction_domain_seat_ids(*interaction_domain)
                         .expect("committed state mutation references a known interaction_domain");
                     match state {
-                        aegis_core::interaction_domain::InteractionDomainState::Active => {
+                        aegis_model::interaction_domain::InteractionDomainState::Active => {
                             for seat in &seats {
                                 if let Some(keyboard) = prepared_keyboards.remove(seat) {
                                     self.state
@@ -854,12 +854,12 @@ impl Server {
                             self.state
                                 .queue_full_interaction_domain_damage(*interaction_domain);
                         }
-                        aegis_core::interaction_domain::InteractionDomainState::Paused => {
+                        aegis_model::interaction_domain::InteractionDomainState::Paused => {
                             for seat in &seats {
                                 self.quiesce_seat(*seat);
                             }
                         }
-                        aegis_core::interaction_domain::InteractionDomainState::Revoked => {
+                        aegis_model::interaction_domain::InteractionDomainState::Revoked => {
                             unreachable!("revocation is not a transactional state")
                         }
                     }
@@ -897,7 +897,7 @@ impl Server {
 
     pub(crate) fn refresh_foreign_toplevel_visibility(
         &mut self,
-        windows: &[aegis_core::window::WindowId],
+        windows: &[aegis_model::window::WindowId],
     ) {
         for window in windows {
             let surface = self.find_surface_by_window_id(*window);
@@ -937,7 +937,7 @@ impl Server {
     pub(crate) fn clear_transferred_focus(
         &mut self,
         source_interaction_domain: InteractionDomainId,
-        windows: &[aegis_core::window::WindowId],
+        windows: &[aegis_model::window::WindowId],
     ) {
         let seats = self
             .interaction_domain_seat_ids(source_interaction_domain)
@@ -984,7 +984,7 @@ impl Server {
     pub(crate) fn resource_belongs_to_windows(
         &self,
         resource: *mut ffi::wl_resource,
-        windows: &[aegis_core::window::WindowId],
+        windows: &[aegis_model::window::WindowId],
     ) -> bool {
         if resource.is_null() {
             return false;
@@ -1032,8 +1032,8 @@ impl Server {
                 *placement_interaction_domain != interaction_domain || windows.contains(window)
             },
         );
-        let area = aegis_core::Rect::new(0, 0, output.width as i32, output.height as i32);
-        let slots = aegis_core::overview::grid(area, windows.len());
+        let area = aegis_model::Rect::new(0, 0, output.width as i32, output.height as i32);
+        let slots = aegis_model::overview::grid(area, windows.len());
         for (window, slot) in windows.into_iter().zip(slots) {
             let rec = self.find_surface_by_window_id(window);
             let size = if rec.is_null() {
@@ -1049,7 +1049,7 @@ impl Server {
             };
             self.state.interaction_domain_placements.insert(
                 (interaction_domain, window),
-                aegis_core::overview::fit(slot, size),
+                aegis_model::overview::fit(slot, size),
             );
         }
         // Placements may have shifted for every window, so a full-output
@@ -1103,7 +1103,7 @@ impl Server {
         runtime.swipe_gesture_client = std::ptr::null_mut();
         runtime.pinch_gesture_client = std::ptr::null_mut();
         runtime.hold_gesture_client = std::ptr::null_mut();
-        runtime.depressed_mods = aegis_core::input::Mods::NONE;
+        runtime.depressed_mods = aegis_model::input::Mods::NONE;
         runtime.client_pressed_keys.clear();
         runtime.keyboard = None;
         runtime.cursor_surface = std::ptr::null_mut();
@@ -1137,8 +1137,8 @@ impl Server {
         // observation mirror, minimized) lands at the Vec tail from its
         // wl_surface creation; keep it below the always-on-top band.
         self.restack_always_on_top_band();
-        let pending_popup_focus = std::mem::take(&mut self.state.pending_popup_focus);
-        for (seat, surface) in pending_popup_focus {
+        let pending_keyboard_focus = std::mem::take(&mut self.state.pending_keyboard_focus);
+        for (seat, surface) in pending_keyboard_focus {
             if let Some(_guard) = ActiveSeatGuard::enter(self.state.as_mut(), seat) {
                 self.change_keyboard_focus(surface);
             }
@@ -1170,7 +1170,7 @@ impl Server {
     /// rectangles per Interaction Domain, collapsing excess entries to one bounding box.
     pub fn take_interaction_domain_damage(
         &mut self,
-    ) -> std::collections::BTreeMap<InteractionDomainId, Vec<aegis_core::Rect>> {
+    ) -> std::collections::BTreeMap<InteractionDomainId, Vec<aegis_model::Rect>> {
         let changed_windows = std::mem::take(&mut self.state.damaged_windows);
         let mut damage = std::mem::take(&mut self.state.pending_interaction_domain_damage);
 
@@ -1194,7 +1194,7 @@ impl Server {
                 else {
                     continue;
                 };
-                if record.state != aegis_core::interaction_domain::InteractionDomainState::Active
+                if record.state != aegis_model::interaction_domain::InteractionDomainState::Active
                     || !matches!(record.presentation, PresentationTarget::Virtual { .. })
                 {
                     continue;
@@ -1213,12 +1213,12 @@ impl Server {
             let PresentationTarget::Virtual { output } = record.presentation else {
                 return false;
             };
-            if record.state != aegis_core::interaction_domain::InteractionDomainState::Active {
+            if record.state != aegis_model::interaction_domain::InteractionDomainState::Active {
                 return false;
             }
             normalize_interaction_domain_damage(
                 rects,
-                aegis_core::Rect::new(0, 0, output.width as i32, output.height as i32),
+                aegis_model::Rect::new(0, 0, output.width as i32, output.height as i32),
             );
             !rects.is_empty()
         });

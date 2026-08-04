@@ -19,20 +19,20 @@ use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use aegis_core::notify::{Notification, NotificationQueue};
-use aegis_core::window::{SpaceUse, Window};
-use aegis_core::workspace::WorkspaceSnapshot;
-use aegis_design::Design;
+use aegis_design::{Design, GlassRole};
+use aegis_model::notify::{Notification, NotificationQueue};
+use aegis_model::window::{SpaceUse, Window};
+use aegis_model::workspace::WorkspaceSnapshot;
 use lens::{
     Align, Color, ForegroundOutline, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme,
 };
 
 use aegis_shell::{
-    AppCatalog, BackdropRegion, BatteryStatus, Chrome, ChromeEvents, HUD_HEIGHT, IconSet,
+    BackdropRegion, BatteryStatus, Chrome, ChromeEvents, ChromeUpdate, HUD_HEIGHT, IconSet,
     LiquidGlassRegion, Localizer, NetworkState, SystemStatus,
 };
 
-use crate::tray::{TrayIcon, TraySnapshot};
+use crate::tray::{TrayHandle, TrayIcon};
 
 mod rendering;
 
@@ -149,7 +149,7 @@ pub struct Hud {
 /// pixmaps. Read-only — tray interaction lives in the command panel.
 struct SniTray {
     device: flux::Device,
-    snapshot: Arc<Mutex<TraySnapshot>>,
+    handle: TrayHandle,
     /// Uploaded SNI textures keyed by item key, tagged with the snapshot's
     /// icon generation so status-only updates do not re-upload.
     textures: HashMap<String, (u64, flux::Image)>,
@@ -166,6 +166,16 @@ struct SniCell {
 }
 
 impl Hud {
+    #[cfg(test)]
+    fn update_windows(&mut self, windows: &[Window]) {
+        <Self as Chrome>::update(self, ChromeUpdate::Windows(windows));
+    }
+
+    #[cfg(test)]
+    fn set_reduced_motion(&mut self, reduced: bool) {
+        <Self as Chrome>::update(self, ChromeUpdate::ReducedMotion(reduced));
+    }
+
     /// Construct a standalone HUD without notification data, raster icons,
     /// or the SNI tray (used by tests and previews).
     pub fn new() -> Hud {
@@ -173,32 +183,32 @@ impl Hud {
     }
 
     /// Construct the session HUD with the compositor's flux device, the
-    /// shared tray snapshot (spawned once by the composition root and shared
-    /// with the command panel), and the shared notification queue. The device is
-    /// borrowed (non-owning, like [`aegis_shell::Shell::new`]) to upload SNI
+    /// shared tray handle (spawned once by the composition root and shared
+    /// with the command panel), and the shared notification queue. The device
+    /// is borrowed (non-owning, like [`aegis_shell::Shell::new`]) to upload SNI
     /// tray pixmaps to the GPU; the caller must keep it alive past the HUD.
     pub fn with_sources(
         device: &flux::Device,
-        tray_snapshot: Option<Arc<Mutex<TraySnapshot>>>,
+        tray: Option<TrayHandle>,
         notifications: Arc<Mutex<NotificationQueue>>,
     ) -> Hud {
-        Hud::with_optional_sources(Some(device), tray_snapshot, Some(notifications))
+        Hud::with_optional_sources(Some(device), tray, Some(notifications))
     }
 
     fn with_optional_sources(
         device: Option<&flux::Device>,
-        tray_snapshot: Option<Arc<Mutex<TraySnapshot>>>,
+        tray: Option<TrayHandle>,
         notifications: Option<Arc<Mutex<NotificationQueue>>>,
     ) -> Hud {
-        let tray = match (device, tray_snapshot) {
-            (Some(device), Some(snapshot)) => {
+        let tray = match (device, tray) {
+            (Some(device), Some(handle)) => {
                 // SAFETY: the composition root declares its flux device
                 // before the shell (and thus this HUD) and drops it after,
                 // and the HUD only touches the device on the render thread.
                 let device = unsafe { flux::Device::borrow_raw(device.as_raw()) };
                 Some(SniTray {
                     device,
-                    snapshot,
+                    handle,
                     textures: HashMap::new(),
                     cached_cells: Vec::new(),
                 })
@@ -268,7 +278,7 @@ impl Hud {
         let Some(tray) = &mut self.tray else {
             return Vec::new();
         };
-        let Ok(snapshot) = tray.snapshot.try_lock() else {
+        let Ok(snapshot) = tray.handle.snapshot().try_lock() else {
             return tray.cached_cells.clone();
         };
         tray.textures
@@ -717,18 +727,24 @@ impl Chrome for Hud {
         f.set_theme(original_theme);
     }
 
-    fn update_app_catalog(&mut self, catalog: &AppCatalog) {
-        self.icons = catalog.icons.clone();
-    }
-
-    fn update_system_status(&mut self, status: &SystemStatus) {
-        self.status = status.clone();
-    }
-
-    fn update_windows(&mut self, windows: &[Window]) {
-        // Only fullscreen owns the whole output. Maximized windows retain the
-        // HUD, matching the shell's visible chrome policy.
-        self.fullscreen_active = SpaceUse::from_windows(windows) == SpaceUse::Fullscreen;
+    fn update(&mut self, update: ChromeUpdate<'_>) {
+        match update {
+            ChromeUpdate::AppCatalog(catalog) => self.icons = catalog.icons.clone(),
+            ChromeUpdate::SystemStatus(status) => self.status = status.clone(),
+            ChromeUpdate::Windows(windows) => {
+                // Only fullscreen owns the whole output. Maximized windows retain the
+                // HUD, matching the shell's visible chrome policy.
+                self.fullscreen_active = SpaceUse::from_windows(windows) == SpaceUse::Fullscreen;
+            }
+            ChromeUpdate::ReducedMotion(reduced) => {
+                self.reduced_motion = reduced;
+                if reduced {
+                    self.chip_fade = self.chip_target;
+                    self.workspace_position = self.workspace_target;
+                }
+            }
+            _ => {}
+        }
     }
 
     fn prepare_backdrop(
@@ -766,14 +782,6 @@ impl Chrome for Hud {
 
     fn persistent_decoration(&self) -> bool {
         true
-    }
-
-    fn set_reduced_motion(&mut self, reduced: bool) {
-        self.reduced_motion = reduced;
-        if reduced {
-            self.chip_fade = self.chip_target;
-            self.workspace_position = self.workspace_target;
-        }
     }
 
     fn backdrop_blur_sigma(&self) -> f32 {
@@ -823,20 +831,14 @@ impl Chrome for Hud {
             .zip(self.layout.visible.iter())
             .zip(self.chip_fade.iter())
             .filter(|((_, visible), fade)| **visible && **fade > 0.01)
-            .map(|((chip, _), fade)| LiquidGlassRegion {
-                bounds: BackdropRegion {
-                    x: chip.x,
-                    y: chip.y,
-                    w: chip.w,
-                    h: chip.h,
-                },
-                corner_radius: CHIP_RADIUS,
-                opacity: *fade,
-                // Chips are small controls: a tight, quiet shadow.
-                shadow_alpha: 0.16,
-                shadow_blur: 4.0,
-                shadow_offset_y: 2.0,
-                focus: None,
+            .map(|((chip, _), fade)| {
+                LiquidGlassRegion::from_role(
+                    &Design::dark(),
+                    GlassRole::Chip,
+                    BackdropRegion::from(*chip),
+                    CHIP_RADIUS,
+                    *fade,
+                )
             })
             .collect()
     }

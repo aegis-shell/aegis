@@ -9,7 +9,7 @@ rust-version.workspace = true
 build = "build.rs"
 
 [dependencies]
-aegis-core = { workspace = true }
+aegis-model = { workspace = true }
 aegis-design = { workspace = true }
 aegis-shell = { workspace = true }
 # SNI system tray service (watcher/host on the session bus), shared with the

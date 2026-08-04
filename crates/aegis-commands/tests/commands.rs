@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use aegis_core::window::{Window, WindowId, WindowState};
-use aegis_core::workspace::{OutputSnapshot, WorkspaceEntry, WorkspaceId, WorkspaceSnapshot};
 use aegis_ipc::{Command, Handler, InteractionDomainAction, InteractionDomainActionResult, Server};
+use aegis_model::window::{Window, WindowId, WindowState};
+use aegis_model::workspace::{OutputSnapshot, WorkspaceEntry, WorkspaceId, WorkspaceSnapshot};
 use clap::Parser;
 
 static N: AtomicU64 = AtomicU64::new(0);
@@ -62,7 +62,7 @@ impl Handler for CtlHandler {
     fn workspaces(&self) -> WorkspaceSnapshot {
         WorkspaceSnapshot {
             outputs: vec![OutputSnapshot {
-                id: aegis_core::workspace::OutputId(0),
+                id: aegis_model::workspace::OutputId(0),
                 connector: "nested".into(),
                 current: Some(WorkspaceId(0)),
                 workspaces: vec![WorkspaceEntry {
@@ -74,8 +74,8 @@ impl Handler for CtlHandler {
             }],
         }
     }
-    fn notifications(&self) -> Vec<aegis_core::notify::Notification> {
-        vec![aegis_core::notify::Notification {
+    fn notifications(&self) -> Vec<aegis_model::notify::Notification> {
+        vec![aegis_model::notify::Notification {
             id: 7,
             summary: "Build complete".into(),
             body: "All checks passed".into(),
@@ -88,8 +88,8 @@ impl Handler for CtlHandler {
         aegis_ipc::SystemStatus {
             volume: Some(42),
             muted: true,
-            network: aegis_core::system::NetworkState::Wifi,
-            battery: Some(aegis_core::system::BatteryStatus {
+            network: aegis_model::system::NetworkState::Wifi,
+            battery: Some(aegis_model::system::BatteryStatus {
                 percent: 81,
                 charging: true,
             }),
@@ -101,26 +101,26 @@ impl Handler for CtlHandler {
             ..aegis_ipc::SystemStatus::default()
         }
     }
-    fn outputs(&self) -> Vec<aegis_core::output::OutputInfo> {
-        vec![aegis_core::output::OutputInfo {
+    fn outputs(&self) -> Vec<aegis_model::output::OutputInfo> {
+        vec![aegis_model::output::OutputInfo {
             connector: "nested".into(),
-            geometry: aegis_core::output::OutputGeometry {
-                mode: aegis_core::output::OutputMode {
+            geometry: aegis_model::output::OutputGeometry {
+                mode: aegis_model::output::OutputMode {
                     width: 1280,
                     height: 720,
                     refresh_mhz: 60000,
                 },
-                scale: aegis_core::output::Scale::IDENTITY,
-                transform: aegis_core::Transform::Normal,
-                logical_origin: aegis_core::Point::default(),
+                scale: aegis_model::output::Scale::IDENTITY,
+                transform: aegis_model::Transform::Normal,
+                logical_origin: aegis_model::Point::default(),
             },
             available_modes: vec![
-                aegis_core::output::OutputMode {
+                aegis_model::output::OutputMode {
                     width: 1280,
                     height: 720,
                     refresh_mhz: 60000,
                 },
-                aegis_core::output::OutputMode {
+                aegis_model::output::OutputMode {
                     width: 1920,
                     height: 1080,
                     refresh_mhz: 60000,
@@ -185,11 +185,11 @@ impl Handler for CtlHandler {
         })
     }
 
-    fn interaction_domains(&self) -> aegis_core::interaction_domain::InteractionDomainSnapshot {
-        let mut model = aegis_core::interaction_domain::InteractionDomainModel::new();
+    fn interaction_domains(&self) -> aegis_model::interaction_domain::InteractionDomainSnapshot {
+        let mut model = aegis_model::interaction_domain::InteractionDomainModel::new();
         model.create_agent_interaction_domain(
             "Test Agent",
-            aegis_core::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
+            aegis_model::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
         );
         model.snapshot()
     }
@@ -206,10 +206,10 @@ impl Handler for CtlHandler {
             .push(action.clone());
         match action {
             InteractionDomainAction::Create { .. } => Ok(InteractionDomainActionResult::Created {
-                bundle: aegis_core::interaction_domain::InteractionDomainBundle {
-                    principal: aegis_core::interaction_domain::InteractionPrincipalId(2),
-                    interaction_domain: aegis_core::interaction_domain::InteractionDomainId(2),
-                    seat: aegis_core::interaction_domain::SeatId(2),
+                bundle: aegis_model::interaction_domain::InteractionDomainBundle {
+                    principal: aegis_model::interaction_domain::InteractionPrincipalId(2),
+                    interaction_domain: aegis_model::interaction_domain::InteractionDomainId(2),
+                    seat: aegis_model::interaction_domain::SeatId(2),
                     revision: 2,
                 },
             }),
@@ -217,7 +217,7 @@ impl Handler for CtlHandler {
                 expected_revision,
                 mutations,
             } => Ok(InteractionDomainActionResult::TransactionCommitted {
-                receipt: aegis_core::interaction_domain::InteractionDomainTransactionReceipt {
+                receipt: aegis_model::interaction_domain::InteractionDomainTransactionReceipt {
                     before_revision: expected_revision.unwrap_or(2),
                     after_revision: expected_revision.unwrap_or(2) + mutations.len() as u64,
                     results: Vec::new(),
@@ -228,7 +228,7 @@ impl Handler for CtlHandler {
                 fallback,
                 ..
             } => Ok(InteractionDomainActionResult::Revoked {
-                receipt: aegis_core::interaction_domain::InteractionDomainRevocation {
+                receipt: aegis_model::interaction_domain::InteractionDomainRevocation {
                     interaction_domain,
                     fallback,
                     transferred_groups: Vec::new(),
@@ -242,8 +242,8 @@ impl Handler for CtlHandler {
         &self,
         _conn_id: u64,
         _subject: Option<&str>,
-        interaction_domain: aegis_core::interaction_domain::InteractionDomainId,
-        region: Option<aegis_core::Rect>,
+        interaction_domain: aegis_model::interaction_domain::InteractionDomainId,
+        region: Option<aegis_model::Rect>,
     ) -> Result<aegis_ipc::CaptureInteractionDomainPayload, String> {
         Ok(aegis_ipc::CaptureInteractionDomainPayload {
             capture: aegis_ipc::InteractionDomainCapture {
@@ -251,18 +251,18 @@ impl Handler for CtlHandler {
                 width: 2,
                 height: 1,
                 scale_milli: 1000,
-                region: region.unwrap_or_else(|| aegis_core::Rect::new(0, 0, 2, 1)),
+                region: region.unwrap_or_else(|| aegis_model::Rect::new(0, 0, 2, 1)),
                 placements: vec![
-                    aegis_core::interaction_domain::InteractionDomainWindowPlacement {
+                    aegis_model::interaction_domain::InteractionDomainWindowPlacement {
                         window: WindowId(1),
-                        output_rect: aegis_core::Rect::new(0, 0, 2, 1),
-                        surface_size: aegis_core::Size { w: 2, h: 1 },
+                        output_rect: aegis_model::Rect::new(0, 0, 2, 1),
+                        surface_size: aegis_model::Size { w: 2, h: 1 },
                     },
                 ],
                 observation: aegis_ipc::SemanticObservation {
                     token: aegis_ipc::ObservationToken("0".repeat(64)),
                     ttl_ms: 15_000,
-                    snapshot: aegis_core::semantic::SemanticSnapshot {
+                    snapshot: aegis_model::semantic::SemanticSnapshot {
                         interaction_domain,
                         authority_revision: 2,
                         objects: Vec::new(),
@@ -533,9 +533,9 @@ fn interaction_domain_create_and_transfer_use_optimistic_actions() {
             mutations,
         } if matches!(
             mutations.as_slice(),
-            [aegis_core::interaction_domain::InteractionDomainMutation::TransferWindow {
+            [aegis_model::interaction_domain::InteractionDomainMutation::TransferWindow {
                 window: WindowId(1),
-                target: aegis_core::interaction_domain::InteractionDomainId(2),
+                target: aegis_model::interaction_domain::InteractionDomainId(2),
                 retain_source_as_observer: true,
             }]
         )
@@ -647,7 +647,7 @@ fn window_geometry_sends_logical_rectangle() {
             .unwrap()
             .contains(&Command::SetWindowGeometry {
                 id: WindowId(1),
-                rect: aegis_core::Rect::new(-20, 30, 800, 600),
+                rect: aegis_model::Rect::new(-20, 30, 800, 600),
             })
     );
 }

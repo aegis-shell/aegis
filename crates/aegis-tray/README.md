@@ -9,11 +9,11 @@ name, tracks every registered item, and mirrors them into a plain
 runs its blocking API on two `std::thread`s (signal tracking and command
 dispatch) and shares state through `Arc<Mutex<_>>` + `std::sync::mpsc`.
 
-`spawn()` returns the shared snapshot and the command channel, or `None`
-when the tray is unavailable (no session bus, or another watcher owns the
-name). Shell chrome components consume it read-only for display (the HUD)
-or send `TrayCommand`s for interaction (the command panel's tray
-section, including host-rendered dbusmenu context menus).
+`spawn()` returns a cloneable `TrayHandle`, or `None` when the tray is
+unavailable (no session bus, or another watcher owns the name). Shell chrome
+components read its snapshot for display (the HUD) or send `TrayCommand`s
+for interaction (the command panel's tray section, including host-rendered
+dbusmenu context menus).
 
 ## Boundaries
 

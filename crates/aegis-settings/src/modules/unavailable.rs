@@ -1,4 +1,4 @@
-use aegis_core::settings::SettingsSnapshot;
+use aegis_model::settings::SettingsSnapshot;
 use aegis_shell::{Localizer, Message};
 use lens::{Align, Frame, Icon, LayoutOpts};
 

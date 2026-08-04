@@ -444,7 +444,7 @@ impl BackdropCacheKey {
         window_switcher: Option<&aegis_shell::WindowSwitcherPresentation>,
         live_previews: &[aegis_shell::LivePreviewPresentation],
     ) -> Self {
-        fn push_rect(out: &mut Vec<u64>, rect: aegis_core::Rect) {
+        fn push_rect(out: &mut Vec<u64>, rect: aegis_model::Rect) {
             out.extend([
                 rect.origin.x as u64,
                 rect.origin.y as u64,
@@ -573,7 +573,7 @@ fn backdrop_refresh_regions(
         .iter()
         .copied()
         .filter(|region| {
-            let input = aegis_core::Rect::new(
+            let input = aegis_model::Rect::new(
                 region.origin.0 as i32,
                 region.origin.1 as i32,
                 region.extent.0 as i32,
@@ -1167,14 +1167,25 @@ pub(super) fn draw_client_scene(
     renderer: &mut aegis_render::Renderer,
     server: &aegis_compositor::Server,
     scale: f32,
+    retain_preview_sources: bool,
 ) {
     canvas.save();
     if scale != 1.0 {
         canvas.scale(scale, scale);
     }
-    let shm = server.client_surface_frames();
-    let dmabuf = server.client_surface_dmabuf_frames();
-    let surface_order = server.client_surface_frame_order();
+    let (shm, dmabuf, surface_order) = if retain_preview_sources {
+        (
+            server.client_preview_surface_frames(),
+            server.client_preview_surface_dmabuf_frames(),
+            server.client_preview_surface_frame_order(),
+        )
+    } else {
+        (
+            server.client_surface_frames(),
+            server.client_surface_dmabuf_frames(),
+            server.client_surface_frame_order(),
+        )
+    };
     let overlay_shm = server.overlay_frames();
     let overlay_dmabuf = server.overlay_dmabuf_frames();
     let windows = server.render_windows();
@@ -1307,7 +1318,7 @@ pub(super) fn draw_lock_scene(
 }
 
 /// Overview scene (M9): the desktop dimmed, then every visible window drawn
-/// as a live thumbnail on the shared `aegis_core::overview` grid — the exact
+/// as a live thumbnail on the shared `aegis_model::overview` grid — the exact
 /// geometry the overview chrome uses for its frames, labels, and hit-testing.
 /// Z-order is preserved bottom-to-top so overlapping thumbnails read like
 /// the desktop stack.
@@ -1344,37 +1355,41 @@ pub(super) fn draw_overview_scene(
         .interaction_domains
         .iter()
         .any(|interaction_domain| {
-            interaction_domain.kind == aegis_core::interaction_domain::InteractionDomainKind::Agent
+            interaction_domain.kind == aegis_model::interaction_domain::InteractionDomainKind::Agent
                 && interaction_domain.state
-                    != aegis_core::interaction_domain::InteractionDomainState::Revoked
+                    != aegis_model::interaction_domain::InteractionDomainState::Revoked
         });
-    let display = aegis_core::Rect::new(0, 0, logical_size.0 as i32, logical_size.1 as i32);
-    let area = aegis_core::overview::grid_area_with_interaction_domain_shelf(
+    let display = aegis_model::Rect::new(0, 0, logical_size.0 as i32, logical_size.1 as i32);
+    let area = aegis_model::overview::grid_area_with_interaction_domain_shelf(
         display,
         rail,
         interaction_domain_shelf,
     );
-    let slots = aegis_core::overview::grid(area, windows.len());
+    let slots = aegis_model::overview::grid(area, windows.len());
     let cells: std::collections::HashMap<
-        aegis_core::window::WindowId,
-        (aegis_core::Rect, aegis_core::Point, aegis_core::Size),
+        aegis_model::window::WindowId,
+        (aegis_model::Rect, aegis_model::Point, aegis_model::Size),
     > = windows
         .iter()
         .zip(slots.iter())
         .map(|(w, slot)| {
             (
                 w.id,
-                (aegis_core::overview::fit(*slot, w.size), w.position, w.size),
+                (
+                    aegis_model::overview::fit(*slot, w.size),
+                    w.position,
+                    w.size,
+                ),
             )
         })
         .collect();
-    let map = move |window: Option<aegis_core::window::WindowId>, natural: aegis_core::Rect| {
+    let map = move |window: Option<aegis_model::window::WindowId>, natural: aegis_model::Rect| {
         let Some((cell, base, win_size)) = window.and_then(|id| cells.get(&id)) else {
             return natural;
         };
         let k = cell.size.w as f32 / win_size.w.max(1) as f32;
         let remap = |v: i32, b: i32| (v - b) as f32 * k;
-        aegis_core::Rect::new(
+        aegis_model::Rect::new(
             cell.origin.x + remap(natural.origin.x, base.x).round() as i32,
             cell.origin.y + remap(natural.origin.y, base.y).round() as i32,
             (natural.size.w as f32 * k).round().max(1.0) as i32,
@@ -1386,13 +1401,9 @@ pub(super) fn draw_overview_scene(
     if scale != 1.0 {
         canvas.scale(scale, scale);
     }
-    let shm = server.client_surface_frames();
-    let dmabuf = server.client_surface_dmabuf_frames();
-    let surface_order = server.client_surface_frame_order();
-    renderer.gc(shm
-        .iter()
-        .map(|frame| frame.id)
-        .chain(dmabuf.iter().map(|frame| frame.id)));
+    let shm = server.client_preview_surface_frames();
+    let dmabuf = server.client_preview_surface_dmabuf_frames();
+    let surface_order = server.client_preview_surface_frame_order();
     renderer.draw_surfaces_ordered_mapped(device, canvas, &surface_order, &shm, &dmabuf, &map);
     canvas.restore();
 }
@@ -1434,18 +1445,14 @@ pub(super) fn draw_window_switcher_scene(
         presentation.panel.size.w as f32,
         presentation.panel.size.h as f32,
     );
-    let shm = server.client_surface_frames();
-    let dmabuf = server.client_surface_dmabuf_frames();
-    let surface_order = server.client_surface_frame_order();
-    renderer.gc(shm
-        .iter()
-        .map(|frame| frame.id)
-        .chain(dmabuf.iter().map(|frame| frame.id)));
+    let shm = server.client_preview_surface_frames();
+    let dmabuf = server.client_preview_surface_dmabuf_frames();
+    let surface_order = server.client_preview_surface_frame_order();
     for card in &presentation.cards {
         let Some(window) = windows.iter().find(|window| window.id == card.window) else {
             continue;
         };
-        let brightness = focused_content_brightness(
+        let brightness = aegis_shell::preview::content_brightness(
             presentation.selected,
             card.window,
             presentation.inactive_content_brightness,
@@ -1499,7 +1506,7 @@ pub(super) fn draw_live_preview_scenes(
             let Some(window) = windows.iter().find(|window| window.id == card.window) else {
                 continue;
             };
-            let brightness = focused_content_brightness(
+            let brightness = aegis_shell::preview::content_brightness(
                 presentation.focused,
                 card.window,
                 presentation.inactive_content_brightness,
@@ -1527,25 +1534,25 @@ fn draw_preview_card_scene(
     device: &flux::Device,
     renderer: &mut aegis_render::Renderer,
     surface_order: &[usize],
-    shm: &[aegis_core::SurfacePixels<'_>],
-    dmabuf: &[aegis_core::SurfaceDmabuf],
-    window: &aegis_core::window::Window,
-    card: &aegis_shell::WindowSwitcherCard,
+    shm: &[aegis_model::SurfacePixels<'_>],
+    dmabuf: &[aegis_model::SurfaceDmabuf],
+    window: &aegis_model::window::Window,
+    card: &aegis_shell::PreviewCard,
     opacity: f32,
     brightness: f32,
 ) {
-    let cell = aegis_core::overview::fit(card.geometry.preview, window.size);
+    let cell = aegis_model::overview::fit(card.geometry.preview, window.size);
     let base = window.position;
     let window_size = window.size;
     let target = window.id;
-    let map = move |id: Option<aegis_core::window::WindowId>, natural: aegis_core::Rect| {
+    let map = move |id: Option<aegis_model::window::WindowId>, natural: aegis_model::Rect| {
         if id != Some(target) {
-            return aegis_core::Rect::new(-100_000, -100_000, 1, 1);
+            return aegis_model::Rect::new(-100_000, -100_000, 1, 1);
         }
         let factor = (cell.size.w as f32 / window_size.w.max(1) as f32)
             .min(cell.size.h as f32 / window_size.h.max(1) as f32);
         let remap = |value: i32, origin: i32| (value - origin) as f32 * factor;
-        aegis_core::Rect::new(
+        aegis_model::Rect::new(
             cell.origin.x + remap(natural.origin.x, base.x).round() as i32,
             cell.origin.y + remap(natural.origin.y, base.y).round() as i32,
             (natural.size.w as f32 * factor).round().max(1.0) as i32,
@@ -1574,18 +1581,6 @@ fn draw_preview_card_scene(
         },
     );
     canvas.restore();
-}
-
-fn focused_content_brightness(
-    focused: Option<aegis_core::window::WindowId>,
-    candidate: aegis_core::window::WindowId,
-    inactive: f32,
-) -> f32 {
-    if focused.is_some_and(|focused| focused != candidate) {
-        inactive.clamp(0.0, 1.0)
-    } else {
-        1.0
-    }
 }
 
 /// Software cursor for direct KMS, sourced exclusively from the XDG cursor

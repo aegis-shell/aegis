@@ -78,9 +78,9 @@ impl CompositorRuntime {
                     .into_iter()
                     .filter(|interaction_domain| {
                         interaction_domain.kind
-                            == aegis_core::interaction_domain::InteractionDomainKind::Agent
+                            == aegis_model::interaction_domain::InteractionDomainKind::Agent
                             && interaction_domain.state
-                                == aegis_core::interaction_domain::InteractionDomainState::Active
+                                == aegis_model::interaction_domain::InteractionDomainState::Active
                     })
             {
                 if self
@@ -158,7 +158,7 @@ impl CompositorRuntime {
                                 // worker retains the same Arc while it performs
                                 // the independent atomic file write.
                                 if let Err(error) = self.server.set_clipboard_data_shared(
-                                    aegis_core::interaction_domain::HUMAN_SEAT,
+                                    aegis_model::interaction_domain::HUMAN_SEAT,
                                     vec![("image/png".to_owned(), png)],
                                 ) {
                                     log::warn!(
@@ -201,7 +201,7 @@ impl CompositorRuntime {
                                     }
                                 }
                                 if let Err(error) = self.server.set_clipboard_data_shared(
-                                    aegis_core::interaction_domain::HUMAN_SEAT,
+                                    aegis_model::interaction_domain::HUMAN_SEAT,
                                     payloads,
                                 ) {
                                     // Saving remains successful. Clipboard
@@ -459,12 +459,12 @@ impl CompositorRuntime {
                     &self.live,
                     &self.ipc,
                 );
-                self.chrome_dirty = true;
+                self.damage.chrome_dirty = true;
             }
         }
         while let Ok(stats) = self.resource_rx.try_recv() {
             self.shell.set_resource_stats(stats);
-            self.chrome_dirty = true;
+            self.damage.chrome_dirty = true;
         }
         let touchpad_status = self.host.touchpad_status();
         if touchpad_status != self.system_status.touchpad {
@@ -492,7 +492,7 @@ impl CompositorRuntime {
                 &mut self.cursor_cache,
             )
         {
-            self.chrome_dirty = true;
+            self.damage.chrome_dirty = true;
             let wallpaper_after_reload = self
                 .config
                 .as_ref()
@@ -510,7 +510,7 @@ impl CompositorRuntime {
                 ) {
                     Ok((wallpaper, label)) => {
                         self.wallpaper = Some(wallpaper);
-                        self.force_full_redraw = true;
+                        self.damage.force_full_redraw = true;
                         log::info!("wallpaper: reloaded ({label})");
                     }
                     Err(error) => {
@@ -573,7 +573,7 @@ impl CompositorRuntime {
                     .unwrap_or_default(),
             );
             self.publish_settings();
-            let pinned = resolve_pinned(
+            let pinned = resolve_chrome_pins(
                 &self.launcher_apps,
                 &self.icon_cache.map,
                 self.config
@@ -615,7 +615,7 @@ impl CompositorRuntime {
             let theme_changed = refreshed_theme != self.icon_theme;
             let scale_changed = refreshed_scale != self.icon_scale;
             if catalog_changed || icons_changed || theme_changed || scale_changed {
-                self.chrome_dirty = true;
+                self.damage.chrome_dirty = true;
                 log::info!(
                     "launcher: application catalog/icons changed ({} -> {}, theme {} -> {})",
                     self.launcher_apps.len(),
@@ -626,7 +626,7 @@ impl CompositorRuntime {
                 // The worker already decoded every icon off the frame loop;
                 // only the GPU texture upload happens here.
                 let refreshed_icons = build_icon_cache(&self.device, &refreshed_decoded);
-                let pinned = resolve_pinned(
+                let pinned = resolve_chrome_pins(
                     &refreshed,
                     &refreshed_icons.map,
                     self.config
@@ -744,9 +744,9 @@ impl CompositorRuntime {
                         && mutations.iter().all(|mutation| {
                             matches!(
                             mutation,
-                            aegis_core::interaction_domain::InteractionDomainMutation::SetState {
+                            aegis_model::interaction_domain::InteractionDomainMutation::SetState {
                                 state:
-                                    aegis_core::interaction_domain::InteractionDomainState::Paused,
+                                    aegis_model::interaction_domain::InteractionDomainState::Paused,
                                 ..
                             }
                         )
@@ -767,7 +767,7 @@ impl CompositorRuntime {
                 // This path updates the interaction domain snapshot and `last_interaction_domain_revision`
                 // ahead of the presentation fanout, so the signed revision
                 // compare cannot see the change; flag the chrome explicitly.
-                self.chrome_dirty = true;
+                self.damage.chrome_dirty = true;
                 for interaction_domain in interaction_domains_explicitly_stopped(&committed_action)
                 {
                     self.automatically_paused_interaction_domains
@@ -998,7 +998,7 @@ impl CompositorRuntime {
                         .unwrap_or_else(|| {
                             format!("InteractionDomain {}", request.intent.interaction_domain.0)
                         });
-                    if validated.source == aegis_core::semantic::SemanticSource::Accessibility {
+                    if validated.source == aegis_model::semantic::SemanticSource::Accessibility {
                         let target = self
                             .server
                             .resolve_semantic_dispatch(request.intent.target)
@@ -1038,7 +1038,7 @@ impl CompositorRuntime {
                             .actions
                             .iter()
                             .map(|action| match action {
-                                aegis_core::semantic::SemanticActionIntent::SyntheticInput {
+                                aegis_model::semantic::SemanticActionIntent::SyntheticInput {
                                     actions,
                                 } => Ok(actions.as_slice()),
                                 _ => Err("application semantic action dispatch is unavailable"
@@ -1135,7 +1135,7 @@ impl CompositorRuntime {
             if result.is_ok() {
                 // A committed settings action may redraw status chrome
                 // outside the signed server-state paths.
-                self.chrome_dirty = true;
+                self.damage.chrome_dirty = true;
                 if appearance_changed {
                     self.queue_app_scan();
                 }
@@ -1199,7 +1199,7 @@ impl CompositorRuntime {
                     &self.live,
                     &self.ipc,
                 );
-                self.chrome_dirty = true;
+                self.damage.chrome_dirty = true;
                 let _ = self.status_refresh_tx.send(());
             }
             let effect = match &result {
@@ -1259,7 +1259,7 @@ impl CompositorRuntime {
                             &self.live,
                             &self.ipc,
                         );
-                        self.chrome_dirty = true;
+                        self.damage.chrome_dirty = true;
                         let _ = self.status_refresh_tx.send(());
                         aegis_ipc::Effect::Applied
                     }
@@ -1404,7 +1404,7 @@ impl CompositorRuntime {
         // Full-output repaint for the swap: the damage path has no dedicated
         // wallpaper hook, so the out-of-band mutation signal stands in (the
         // same one config reloads and IPC settings use).
-        self.chrome_dirty = true;
+        self.damage.chrome_dirty = true;
         log::info!(
             "compositor: wallpaper replaced via IPC ({})",
             path.display()

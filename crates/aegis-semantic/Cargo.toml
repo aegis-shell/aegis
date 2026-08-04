@@ -8,7 +8,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-aegis-core = { workspace = true, features = ["serde"] }
+aegis-model = { workspace = true, features = ["serde"] }
 serde.workspace = true
 
 [dev-dependencies]

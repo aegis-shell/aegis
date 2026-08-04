@@ -10,8 +10,8 @@ impl Server {
     /// coordinates computed exactly like `touch_down`. Over any other
     /// surface the pen falls back to emulating the pointer — motion plus
     /// BTN_LEFT for the tip — so tablet-unaware clients still work.
-    pub(crate) fn tablet_event(&mut self, event: aegis_core::input::TabletEvent) {
-        use aegis_core::input::TabletEvent::*;
+    pub(crate) fn tablet_event(&mut self, event: aegis_model::input::TabletEvent) {
+        use aegis_model::input::TabletEvent::*;
         match event {
             Proximity {
                 tool,
@@ -89,7 +89,7 @@ impl Server {
     pub(crate) fn tablet_proximity_in(
         &mut self,
         tool: u64,
-        info: aegis_core::input::TabletToolInfo,
+        info: aegis_model::input::TabletToolInfo,
         x: f32,
         y: f32,
     ) {
@@ -202,7 +202,7 @@ impl Server {
         }
         let rec = unsafe { ffi::wl_resource_get_user_data(focus) as *mut SurfaceRec };
         let origin = if rec.is_null() {
-            aegis_core::Point::default()
+            aegis_model::Point::default()
         } else {
             unsafe { surface_draw_origin(&*rec) }
         };
@@ -264,7 +264,7 @@ impl Server {
     pub(crate) fn tablet_tip(
         &mut self,
         tool: u64,
-        state: aegis_core::input::ButtonState,
+        state: aegis_model::input::ButtonState,
         time: u32,
     ) {
         const BTN_LEFT: u32 = 0x110;
@@ -298,7 +298,7 @@ impl Server {
         &mut self,
         tool: u64,
         button: u32,
-        state: aegis_core::input::ButtonState,
+        state: aegis_model::input::ButtonState,
         time: u32,
     ) {
         if self.state.tablet_focus.is_null() {

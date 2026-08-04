@@ -572,7 +572,7 @@ impl DrmBackend {
         &mut self,
         surface: &flux::Surface,
         frame: flux::SubmittedFrame<'_>,
-        damage: Option<&[aegis_core::Rect]>,
+        damage: Option<&[aegis_model::Rect]>,
     ) -> Result<Option<OwnedFd>, DrmError> {
         if !self.active || !self.render_ready || !self.outputs_powered {
             return Err(DrmError::Inactive);
@@ -610,8 +610,8 @@ impl DrmBackend {
     /// so the runtime falls back to compositing the next frame.
     pub fn present_scanout(
         &mut self,
-        client: &aegis_core::SurfaceDmabuf,
-        damage: Option<&[aegis_core::Rect]>,
+        client: &aegis_model::SurfaceDmabuf,
+        damage: Option<&[aegis_model::Rect]>,
     ) -> Result<Option<OwnedFd>, DrmError> {
         if !self.active || !self.render_ready || !self.outputs_powered {
             return Err(DrmError::Inactive);
@@ -864,7 +864,7 @@ impl DrmBackend {
     pub(super) fn commit_scanout(
         &mut self,
         mut scanout: Scanout,
-        damage: Option<&[aegis_core::Rect]>,
+        damage: Option<&[aegis_model::Rect]>,
         frame: PrimaryPlaneFrame,
     ) -> Result<Option<OwnedFd>, DrmError> {
         if !scanout.ownership.matches_frame(frame) {

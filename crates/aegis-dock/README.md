@@ -20,7 +20,7 @@ built on the `Chrome` contract from `aegis-shell` and the shared materials from
 The dock owns presentation and interaction state only. The composition root
 (the `aegis` binary) resolves the pinned entries and owns the decoded icon
 textures; the dock receives both as borrowed snapshots pushed through
-`Chrome::update_app_catalog`. It never mutates Wayland state, spawns
+`ChromeUpdate::AppCatalog`. It never mutates Wayland state, spawns
 processes, or writes configuration.
 
 ## Runtime Effect

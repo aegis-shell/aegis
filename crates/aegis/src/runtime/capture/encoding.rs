@@ -9,7 +9,7 @@ pub(in crate::runtime) struct CapturedPixels {
     width: u32,
     height: u32,
     readback: flux::Readback,
-    crop: Option<aegis_core::Rect>,
+    crop: Option<aegis_model::Rect>,
     cursor: Option<CaptureCursor>,
     pub(super) security_generation: u64,
 }
@@ -29,7 +29,7 @@ pub(in crate::runtime) struct CaptureCursor {
 pub(in crate::runtime) struct PendingReadback {
     pub(in crate::runtime) width: u32,
     pub(in crate::runtime) height: u32,
-    pub(in crate::runtime) crop: Option<aegis_core::Rect>,
+    pub(in crate::runtime) crop: Option<aegis_model::Rect>,
     pub(in crate::runtime) cursor: Option<CaptureCursor>,
     pub(in crate::runtime) security_generation: u64,
 }
@@ -41,7 +41,7 @@ pub(in crate::runtime) struct PendingReadback {
 pub(in crate::runtime) fn request_frame_readback(
     frame: &mut flux::Frame,
     full_size: (u32, u32),
-    crop: Option<aegis_core::Rect>,
+    crop: Option<aegis_model::Rect>,
     mut cursor: Option<CaptureCursor>,
     security_generation: u64,
 ) -> Result<PendingReadback, String> {
@@ -81,7 +81,7 @@ pub(in crate::runtime) fn request_frame_readback(
     })
 }
 
-fn translate_cursor_to_region(cursor: &mut Option<CaptureCursor>, region: aegis_core::Rect) {
+fn translate_cursor_to_region(cursor: &mut Option<CaptureCursor>, region: aegis_model::Rect) {
     if let Some(cursor) = cursor.as_mut() {
         cursor.x = cursor.x.saturating_sub(region.origin.x);
         cursor.y = cursor.y.saturating_sub(region.origin.y);
@@ -177,7 +177,7 @@ pub(in crate::runtime) fn encode_rgba_capture(
     full_width: u32,
     full_height: u32,
     full_rgba: Vec<u8>,
-    crop: Option<aegis_core::Rect>,
+    crop: Option<aegis_model::Rect>,
 ) -> Result<(u32, u32, Vec<u8>), String> {
     let (width, height, mut rgba) = match crop {
         Some(crop) => (
@@ -338,7 +338,7 @@ mod tests {
             height: 1,
             bgra: std::sync::Arc::from([0, 0, 255, 255].repeat(2)),
         });
-        translate_cursor_to_region(&mut cursor, aegis_core::Rect::new(10, 20, 2, 1));
+        translate_cursor_to_region(&mut cursor, aegis_model::Rect::new(10, 20, 2, 1));
         let cursor = cursor.unwrap();
         assert_eq!((cursor.x, cursor.y), (-1, 0));
 

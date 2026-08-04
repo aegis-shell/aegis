@@ -24,7 +24,7 @@ fn dock_with(pinned: Vec<Entry>) -> Dock {
 
 fn window(id: u64, app_id: &str, activated: bool) -> Window {
     let mut w = Window {
-        id: aegis_core::window::WindowId(id),
+        id: aegis_model::window::WindowId(id),
         app_id: Some(app_id.to_string()),
         ..Default::default()
     };
@@ -167,7 +167,7 @@ fn running_window_folds_into_its_pinned_tile() {
     assert!(tiles[0].activated);
     assert_eq!(
         tiles[0].focus,
-        Some(aegis_core::window::WindowId(7)),
+        Some(aegis_model::window::WindowId(7)),
         "clicking focuses the running window"
     );
     assert!(tiles[0].spawn.is_none());
@@ -193,7 +193,7 @@ fn unpinned_running_window_is_appended() {
     let gimp = tiles.iter().find(|t| t.key == "win:3").expect("gimp tile");
     assert!(gimp.running);
     assert!(!gimp.pinned, "the window tile is transient, not kept");
-    assert_eq!(gimp.focus, Some(aegis_core::window::WindowId(3)));
+    assert_eq!(gimp.focus, Some(aegis_model::window::WindowId(3)));
 }
 
 #[test]
@@ -277,7 +277,7 @@ fn read_only_mirror_has_no_physical_focus_action() {
     let tiles = dock.tiles(&[mirror]);
     assert_eq!(tiles.len(), 1);
     assert_eq!(tiles[0].focus, None);
-    assert_eq!(tiles[0].windows, vec![aegis_core::window::WindowId(7)]);
+    assert_eq!(tiles[0].windows, vec![aegis_model::window::WindowId(7)]);
 }
 
 #[test]
@@ -287,11 +287,11 @@ fn window_invading_rest_bounds_starts_an_animated_collapse() {
     dock.last_display = Some(display);
     let mut invading = window(7, "org.example.Game", true);
     let bounds = dock.pointer_bounds(std::slice::from_ref(&invading), display);
-    invading.position = aegis_core::Point {
+    invading.position = aegis_model::Point {
         x: bounds.x.round() as i32 + 10,
         y: bounds.y.round() as i32 - 10,
     };
-    invading.size = aegis_core::Size { w: 120, h: 40 };
+    invading.size = aegis_model::Size { w: 120, h: 40 };
     dock.update_windows(std::slice::from_ref(&invading));
 
     assert!(dock.dock_obscured);
@@ -322,8 +322,8 @@ fn maximized_state_forces_an_animated_collapse_without_geometric_invasion() {
     dock.last_display = Some(display);
     let mut maximized = window(7, "org.example.Game", true);
     maximized.state.maximized = true;
-    maximized.position = aegis_core::Point { x: 100, y: 100 };
-    maximized.size = aegis_core::Size { w: 1000, h: 700 };
+    maximized.position = aegis_model::Point { x: 100, y: 100 };
+    maximized.size = aegis_model::Size { w: 1000, h: 700 };
     dock.update_windows(std::slice::from_ref(&maximized));
 
     assert_eq!(dock.space_use, SpaceUse::Maximized);
@@ -368,11 +368,11 @@ fn disabling_user_autohide_does_not_override_maximized_collapse() {
 fn minimized_window_does_not_count_as_a_dock_invasion() {
     let bounds = Dock::rest_bounds(1, 1, (1920.0, 1080.0));
     let mut minimized = window(7, "org.example.Game", false);
-    minimized.position = aegis_core::Point {
+    minimized.position = aegis_model::Point {
         x: bounds.x.round() as i32,
         y: bounds.y.round() as i32,
     };
-    minimized.size = aegis_core::Size { w: 100, h: 50 };
+    minimized.size = aegis_model::Size { w: 100, h: 50 };
     minimized.minimized = true;
     assert!(!Dock::window_overlaps_bounds(&minimized, bounds));
 }
@@ -698,7 +698,7 @@ fn running_app_preview_layout_exposes_every_window_inside_the_output() {
         w: 84.0,
         h: 84.0,
     };
-    let windows: Vec<_> = (1..=7).map(aegis_core::window::WindowId).collect();
+    let windows: Vec<_> = (1..=7).map(aegis_model::window::WindowId).collect();
     let presentation = live_preview_layout((1920.0, 1080.0), owner, &windows, 1.0);
 
     assert_eq!(presentation.cards.len(), windows.len());
@@ -740,8 +740,8 @@ fn live_preview_adds_one_panel_body_and_keeps_its_pointer_bridge() {
         (1920.0, 1080.0),
         owner,
         &[
-            aegis_core::window::WindowId(7),
-            aegis_core::window::WindowId(8),
+            aegis_model::window::WindowId(7),
+            aegis_model::window::WindowId(8),
         ],
         1.0,
     );
@@ -785,7 +785,7 @@ fn hovered_live_preview_uses_one_parent_body_with_an_optical_focus_field() {
         w: 84.0,
         h: 84.0,
     };
-    let window = aegis_core::window::WindowId(7);
+    let window = aegis_model::window::WindowId(7);
     let presentation = live_preview_layout((1920.0, 1080.0), owner, &[window], 1.0);
     let panel = presentation.panel;
     dock.tooltip_alpha = 1.0;

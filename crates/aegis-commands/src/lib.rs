@@ -17,12 +17,12 @@ pub use error::CliError;
 
 use std::path::Path;
 
-use aegis_core::interaction_domain::{
-    InteractionDomainId, InteractionDomainMutation, InteractionDomainSnapshot,
-    InteractionDomainState, SeatCapabilities, VirtualOutput,
-};
 use aegis_ipc::{
     Client, ConnectionCapabilities, Event, InteractionDomainAction, InteractionDomainActionResult,
+};
+use aegis_model::interaction_domain::{
+    InteractionDomainId, InteractionDomainMutation, InteractionDomainSnapshot,
+    InteractionDomainState, SeatCapabilities, VirtualOutput,
 };
 use clap::{CommandFactory, Parser};
 use serde::Serialize;
@@ -280,7 +280,7 @@ fn dispatch_window(
             let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client
                 .command(aegis_ipc::Command::Focus {
-                    id: aegis_core::window::WindowId(id),
+                    id: aegis_model::window::WindowId(id),
                 })
                 .map_err(io_err)?;
             Ok(receipt(format!("focused {id}"), json))
@@ -289,7 +289,7 @@ fn dispatch_window(
             let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client
                 .command(aegis_ipc::Command::Minimize {
-                    id: aegis_core::window::WindowId(id),
+                    id: aegis_model::window::WindowId(id),
                 })
                 .map_err(io_err)?;
             Ok(receipt(format!("minimized {id}"), json))
@@ -299,7 +299,7 @@ fn dispatch_window(
             let on_top = bool::from(state);
             client
                 .command(aegis_ipc::Command::SetAlwaysOnTop {
-                    id: aegis_core::window::WindowId(id),
+                    id: aegis_model::window::WindowId(id),
                     on_top,
                 })
                 .map_err(io_err)?;
@@ -309,7 +309,7 @@ fn dispatch_window(
             let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client
                 .command(aegis_ipc::Command::Close {
-                    id: aegis_core::window::WindowId(id),
+                    id: aegis_model::window::WindowId(id),
                 })
                 .map_err(io_err)?;
             Ok(receipt(format!("close requested for {id}"), json))
@@ -322,9 +322,9 @@ fn dispatch_window(
             height,
         } => {
             let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
-            let rect = aegis_core::Rect::new(x, y, width, height);
+            let rect = aegis_model::Rect::new(x, y, width, height);
             client
-                .set_window_geometry(aegis_core::window::WindowId(id), rect)
+                .set_window_geometry(aegis_model::window::WindowId(id), rect)
                 .map_err(io_err)?;
             Ok(receipt(
                 format!("set window {id} geometry to {x},{y} {width}x{height}"),
@@ -350,13 +350,13 @@ fn dispatch_workspace(
         } => {
             let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client
-                .switch_workspace_to(aegis_core::workspace::WorkspaceId(id))
+                .switch_workspace_to(aegis_model::workspace::WorkspaceId(id))
                 .map_err(io_err)?;
             Ok(receipt(format!("switched to workspace {id}"), json))
         }
         WorkspaceCmd::Switch { target } => {
             let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
-            let direction: aegis_core::workspace::Switch = target.into();
+            let direction: aegis_model::workspace::Switch = target.into();
             client.switch_workspace(direction).map_err(io_err)?;
             Ok(receipt(format!("switched {direction:?}"), json))
         }
@@ -364,8 +364,8 @@ fn dispatch_workspace(
             let mut client = owner_client(socket, control_caps()).map_err(connect_err)?;
             client
                 .command(aegis_ipc::Command::MoveToWorkspace {
-                    window: aegis_core::window::WindowId(window),
-                    workspace: aegis_core::workspace::WorkspaceId(workspace),
+                    window: aegis_model::window::WindowId(window),
+                    workspace: aegis_model::workspace::WorkspaceId(workspace),
                 })
                 .map_err(io_err)?;
             Ok(receipt(
@@ -706,7 +706,7 @@ fn dispatch_interaction_domain(
             no_mirror,
         } => {
             let interaction_domain = validate_interaction_domain_id(interaction_domain)?;
-            let window = aegis_core::window::WindowId(window);
+            let window = aegis_model::window::WindowId(window);
             let snapshot = client.interaction_domains().map_err(io_err)?;
             let result = client
                 .interaction_domain_action(InteractionDomainAction::Transact {
@@ -1057,7 +1057,7 @@ fn format_interaction_domains(snapshot: &InteractionDomainSnapshot) -> String {
     out
 }
 
-fn format_windows(wins: &[aegis_core::window::Window]) -> String {
+fn format_windows(wins: &[aegis_model::window::Window]) -> String {
     if wins.is_empty() {
         return "no windows".into();
     }
@@ -1071,7 +1071,7 @@ fn format_windows(wins: &[aegis_core::window::Window]) -> String {
     out
 }
 
-fn format_workspaces(snap: &aegis_core::workspace::WorkspaceSnapshot) -> String {
+fn format_workspaces(snap: &aegis_model::workspace::WorkspaceSnapshot) -> String {
     if snap.outputs.is_empty() {
         return "no displays".into();
     }
@@ -1091,7 +1091,7 @@ fn format_workspaces(snap: &aegis_core::workspace::WorkspaceSnapshot) -> String 
     out
 }
 
-fn format_outputs(outs: &[aegis_core::output::OutputInfo]) -> String {
+fn format_outputs(outs: &[aegis_model::output::OutputInfo]) -> String {
     if outs.is_empty() {
         return "no displays".into();
     }
@@ -1137,7 +1137,7 @@ fn format_outputs(outs: &[aegis_core::output::OutputInfo]) -> String {
     out
 }
 
-fn format_notifications(notifications: &[aegis_core::notify::Notification]) -> String {
+fn format_notifications(notifications: &[aegis_model::notify::Notification]) -> String {
     if notifications.is_empty() {
         return "no notifications".into();
     }
@@ -1159,9 +1159,9 @@ fn format_system_status(status: &aegis_ipc::SystemStatus) -> String {
         .map(|level| format!("{level}%"))
         .unwrap_or_else(|| "unavailable".into());
     let network = match status.network {
-        aegis_core::system::NetworkState::Offline => "offline",
-        aegis_core::system::NetworkState::Wifi => "wifi",
-        aegis_core::system::NetworkState::Wired => "wired",
+        aegis_model::system::NetworkState::Offline => "offline",
+        aegis_model::system::NetworkState::Wifi => "wifi",
+        aegis_model::system::NetworkState::Wired => "wired",
     };
     let battery = status
         .battery
@@ -1303,7 +1303,7 @@ pub fn format_event(ev: &Event) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aegis_core::notify::Notification;
+    use aegis_model::notify::Notification;
     use std::str::FromStr;
 
     #[test]
@@ -1311,7 +1311,7 @@ mod tests {
         assert_eq!(format_event(&Event::WindowsChanged), "windows changed");
         assert_eq!(
             format_event(&Event::SpaceUseChanged {
-                state: aegis_core::window::SpaceUse::Maximized,
+                state: aegis_model::window::SpaceUse::Maximized,
             }),
             "space use changed: Maximized"
         );
@@ -1360,7 +1360,7 @@ mod tests {
         assert!(Region::from_str("1,2,0,4").is_err());
         assert_eq!(
             Region::from_str("10,20,100,80").unwrap().0,
-            aegis_core::Rect::new(10, 20, 100, 80)
+            aegis_model::Rect::new(10, 20, 100, 80)
         );
     }
 

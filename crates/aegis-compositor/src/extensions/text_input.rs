@@ -4,10 +4,10 @@ use super::*;
 
 struct TextInputRec {
     state: *mut State,
-    seat: aegis_core::interaction_domain::SeatId,
+    seat: aegis_model::interaction_domain::SeatId,
     current_surface: *mut ffi::wl_resource,
-    pending: aegis_core::input::TextInputState,
-    current: aegis_core::input::TextInputState,
+    pending: aegis_model::input::TextInputState,
+    current: aegis_model::input::TextInputState,
     commit_serial: u32,
 }
 
@@ -44,8 +44,8 @@ fn count_text_input_commit(serial: &mut u32) {
 }
 
 fn apply_pending_text_input_state(
-    pending: &mut aegis_core::input::TextInputState,
-) -> aegis_core::input::TextInputState {
+    pending: &mut aegis_model::input::TextInputState,
+) -> aegis_model::input::TextInputState {
     let current = pending.clone();
     // change_cause is applied once and returns to input_method (zero) after
     // every commit; the remaining fields persist until enable/disable.
@@ -116,8 +116,8 @@ unsafe extern "C" fn text_input_manager_get(
             state,
             seat: seat_id,
             current_surface,
-            pending: aegis_core::input::TextInputState::default(),
-            current: aegis_core::input::TextInputState::default(),
+            pending: aegis_model::input::TextInputState::default(),
+            current: aegis_model::input::TextInputState::default(),
             commit_serial: 0,
         }));
         ffi::wl_resource_set_implementation(
@@ -158,7 +158,7 @@ unsafe extern "C" fn text_input_resource_destroy(resource: *mut ffi::wl_resource
                 route_or_queue_text_input_state(
                     state,
                     (*rec).seat,
-                    aegis_core::input::TextInputState::default(),
+                    aegis_model::input::TextInputState::default(),
                     None,
                 );
             }
@@ -179,7 +179,7 @@ unsafe extern "C" fn text_input_enable(
         if rec.is_null() || (*rec).current_surface.is_null() {
             return;
         }
-        (*rec).pending = aegis_core::input::TextInputState {
+        (*rec).pending = aegis_model::input::TextInputState {
             enabled: true,
             ..Default::default()
         };
@@ -195,7 +195,7 @@ unsafe extern "C" fn text_input_disable(
         if rec.is_null() || (*rec).current_surface.is_null() {
             return;
         }
-        (*rec).pending = aegis_core::input::TextInputState::default();
+        (*rec).pending = aegis_model::input::TextInputState::default();
     }
 }
 
@@ -330,8 +330,8 @@ unsafe fn queue_text_input_state(rec: *mut TextInputRec) {
 
 unsafe fn route_or_queue_text_input_state(
     state: *mut State,
-    seat: aegis_core::interaction_domain::SeatId,
-    value: aegis_core::input::TextInputState,
+    seat: aegis_model::interaction_domain::SeatId,
+    value: aegis_model::input::TextInputState,
     cursor_anchor: Option<TextInputCursorAnchor>,
 ) {
     unsafe {
@@ -355,7 +355,7 @@ unsafe fn text_input_cursor_anchor(rec: *mut TextInputRec) -> Option<TextInputCu
 
 unsafe fn text_input_state_in_compositor_space(
     rec: *mut TextInputRec,
-) -> aegis_core::input::TextInputState {
+) -> aegis_model::input::TextInputState {
     unsafe {
         let mut value = (*rec).current.clone();
         if let Some((x, y, width, height)) = value.cursor_rect {
@@ -373,16 +373,16 @@ unsafe fn text_input_state_in_compositor_space(
 
 pub(crate) unsafe fn current_text_input_state(
     state: *mut State,
-    seat: aegis_core::interaction_domain::SeatId,
-) -> Option<aegis_core::input::TextInputState> {
+    seat: aegis_model::interaction_domain::SeatId,
+) -> Option<aegis_model::input::TextInputState> {
     unsafe { current_text_input_context(state, seat).map(|(text_state, _)| text_state) }
 }
 
 pub(crate) unsafe fn current_text_input_context(
     state: *mut State,
-    seat: aegis_core::interaction_domain::SeatId,
+    seat: aegis_model::interaction_domain::SeatId,
 ) -> Option<(
-    aegis_core::input::TextInputState,
+    aegis_model::input::TextInputState,
     Option<TextInputCursorAnchor>,
 )> {
     unsafe {
@@ -449,7 +449,7 @@ pub(crate) unsafe fn text_input_focus_changed(
             route_or_queue_text_input_state(
                 state,
                 seat,
-                aegis_core::input::TextInputState::default(),
+                aegis_model::input::TextInputState::default(),
                 None,
             );
         }
@@ -476,7 +476,7 @@ pub(crate) unsafe fn text_input_focus_changed(
 
 pub(crate) unsafe fn forward_text_input_event(
     state: *mut State,
-    event: &aegis_core::input::TextInputEvent,
+    event: &aegis_model::input::TextInputEvent,
 ) {
     unsafe {
         if state.is_null() || (*state).keyboard_focus.is_null() {
@@ -497,7 +497,7 @@ pub(crate) unsafe fn forward_text_input_event(
         for target in targets {
             let rec = ffi::wl_resource_get_user_data(target) as *mut TextInputRec;
             match event {
-                aegis_core::input::TextInputEvent::Preedit {
+                aegis_model::input::TextInputEvent::Preedit {
                     text,
                     cursor_begin,
                     cursor_end,
@@ -511,7 +511,7 @@ pub(crate) unsafe fn forward_text_input_event(
                         *cursor_end,
                     );
                 }
-                aegis_core::input::TextInputEvent::Commit(text) => {
+                aegis_model::input::TextInputEvent::Commit(text) => {
                     let text = text.as_ref().and_then(|s| CString::new(s.as_str()).ok());
                     ffi::wl_resource_post_event(
                         target,
@@ -519,7 +519,7 @@ pub(crate) unsafe fn forward_text_input_event(
                         text.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
                     );
                 }
-                aegis_core::input::TextInputEvent::DeleteSurrounding {
+                aegis_model::input::TextInputEvent::DeleteSurrounding {
                     before_length,
                     after_length,
                 } => ffi::wl_resource_post_event(
@@ -528,7 +528,7 @@ pub(crate) unsafe fn forward_text_input_event(
                     *before_length,
                     *after_length,
                 ),
-                aegis_core::input::TextInputEvent::Done => ffi::wl_resource_post_event(
+                aegis_model::input::TextInputEvent::Done => ffi::wl_resource_post_event(
                     target,
                     ffi::ZWP_TEXT_INPUT_V3_DONE,
                     (*rec).commit_serial,
@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn committed_change_cause_is_one_shot_but_context_persists() {
-        let mut pending = aegis_core::input::TextInputState {
+        let mut pending = aegis_model::input::TextInputState {
             enabled: true,
             surrounding_text: Some("context".to_owned()),
             cursor: 7,

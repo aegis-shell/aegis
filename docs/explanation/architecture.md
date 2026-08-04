@@ -36,28 +36,25 @@ input.
 aegis is a Cargo workspace under `crates/`. The split keeps the server,
 backend, renderer, and shell behind clear seams so the
 [AI-adaptation phase](#roadmap) can grow a semantic model from
-`aegis-core`. The crates group by responsibility:
+`aegis-model`. The crates group by responsibility:
 
 | Role | Crate | Responsibility |
 |------|-------|----------------|
-| **Model** | `aegis-core` | Backend- and renderer-agnostic model: geometry, surface graph, outputs, Interaction Domains, seats, and interaction authority |
-| | `aegis-authority` | Transport-neutral Actor capabilities, live identity bindings, semantic observation leases, and action precondition validation |
+| **Model** | `aegis-model` | Backend-, protocol-, and renderer-agnostic state plus deterministic model rules |
+| | `aegis-security` | Transport-neutral Actor authority plus bounded, integrity-checked audit persistence |
 | | `aegis-semantic` | Bounded accessibility-tree validation, window-local identity namespacing, provider ownership, and semantic action routing |
-| | `aegis-audit` | Transport-independent bounded projection plus owner-only, hash-chained durable event persistence |
 | | `aegis-wayland-protocols` | Wayland extension interface tables, generated once and shared |
 | **Server / window management** | `aegis-compositor` | Hand-rolled Wayland server: globals, protocol object lifecycle, per-Interaction Domain seats and outputs, focus, authority transfer, tiling, and workspaces |
 | | `aegis-backend` | Presentation and input targets: nested (development) and DRM/KMS + libinput + libseat (bare TTY) |
 | | `aegis-render` | Compositing: client buffers to flux textures, scene to the output via flux |
-| **Shell / interaction** | `aegis-shell` | Compositor chrome host and `Chrome` contract on lens, plus shared components: launcher, overview, screenshot selector, toast |
+| **Shell / interaction** | `aegis-shell` | Compositor chrome host and `Chrome` contract on lens, shared components, and the feature-gated `persona` profile/portrait domain |
 | | `aegis-design` | Product design tokens, themes, and data-only surface materials shared by chrome components |
 | | `aegis-dock` | Bottom-center dock chrome component: pinned and running apps, magnification, pin actions |
-| | `aegis-interaction-manager` | Compositor-owned Agent Interaction Domain lifecycle and authority management |
+| | `aegis-agent-workspaces` | Compositor-owned Agent Workspaces lifecycle and authority presentation |
 | | `aegis-settings` | Standalone modular System Settings application |
 | | `aegis-hud` | Display-only HUD status chips: system status, workspace dots, clock, notification count, and the StatusNotifierItem tray row |
 | | `aegis-command-panel` | Full-screen modal command panel: quick settings, tray activation, and notification dismissal |
 | | `aegis-wallpaper` | Background layer: image, video, 3D, and multi-plane parallax wallpaper |
-| | `aegis-identity` | Shared account metadata and ordered still/VRM portrait selection |
-| | `aegis-avatar` | Explicit VRM/VRMA animation and offscreen rendering |
 | | `aegis-config` | Declarative configuration: versioned TOML schema, loader, live reload |
 | **Session services** | `aegis-lock` | Multi-output session-lock presentation and PAM authentication |
 | | `aegis-idle` | Ordered inactivity policy, lock-before-sleep coordination, and display-power requests |
@@ -104,14 +101,15 @@ Wayland compositor
         └── storage/network: isolated sandbox + grant-consuming brokers
 ```
 
-`aegis-core` owns durable semantic and Interaction Domain models;
-`aegis-authority` owns Actor sessions, capabilities, resource grants,
-observation leases, and transaction preconditions; `aegis-semantic` validates
+`aegis-model` owns durable semantic and Interaction Domain models;
+`aegis-security` owns Actor sessions, capabilities, resource grants,
+observation leases, transaction preconditions, and integrity-checked audit
+persistence; `aegis-semantic` validates
 untrusted application accessibility trees; `aegis-ipc` carries those
 contracts; and `aegis-compositor` derives the view and routes each independent
-seat. The binary runtime assembles and revokes the live facets, while
-`aegis-audit` persists privacy-minimized decisions. `aegis-atspi` performs
-D-Bus/toolkit work outside the compositor and rechecks target state
+seat. The binary runtime assembles and revokes the live facets, while the
+security audit module persists privacy-minimized decisions. `aegis-atspi`
+performs D-Bus/toolkit work outside the compositor and rechecks target state
 immediately before dispatch. It binds AT-SPI applications to Wayland windows
 by equal kernel/D-Bus process identity plus an exact title; ordinary observers
 never receive process ids. Reasoning, planning, and long-term memory remain in

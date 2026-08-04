@@ -136,7 +136,6 @@ cargo run --locked -p aegis          # build & run (see Build and run below)
 cargo test --locked --workspace
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
-scripts/check-rust-module-size.sh
 ```
 
 This is the exact boundary the full CI job exercises: it installs the tagged
@@ -228,7 +227,7 @@ RUST_LOG=warn cargo run --locked -p aegis
 cargo test --locked --workspace
 ```
 
-`aegis-core` and `aegis-compositor` unit tests run without the flux dependency;
+`aegis-model` and `aegis-compositor` unit tests run without the flux dependency;
 the rest need either the sibling Optics Meson tree in the local workflow or
 the installed libraries in the canonical workflow.
 

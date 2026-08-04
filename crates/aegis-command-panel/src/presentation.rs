@@ -11,7 +11,7 @@ impl CommandPanel {
             .map(|visible| menu_bounds(self.menu_owner, visible, display))
     }
 
-    /// The header band: identity zone (ringed avatar, display name,
+    /// The header band: profile zone (ringed avatar, display name,
     /// `@username · groups`) on the left and the machine monitor (chassis
     /// glyph plus utilization gauges) on the right, separated by a hairline
     /// divider. Slides in from the left like the old menu panel.
@@ -50,28 +50,29 @@ impl CommandPanel {
         let center_y = rect.y + rect.h * 0.5;
         let base_theme = themes::sao(&sao);
         let muted_theme = themes::sao_muted(base_theme, &sao);
+        let avatar_style = Design::dark().avatars.for_role(AvatarRole::PersonaHeader);
         let original = f.theme();
 
-        // -- identity zone: ringed avatar + name lines (~270px) ------------
+        // -- profile zone: ringed avatar + name lines (~270px) ------------
         let avatar_center = (rect.x + pad + 42.0, center_y);
         // The avatar crate supplies only the portrait texture. Its surrounding
         // chrome belongs to this host: a flat warm graphite disc replaces the
         // old blue-white gradient fallback, while a quiet amber keyline keeps
-        // the identity tied to the panel's accent language.
+        // the profile tied to the panel's accent language.
         render_disc(
             f,
             "aegis-sao-avatar-backdrop",
             avatar_center,
             72.0,
-            Color::rgba(24, 23, 22, fade_alpha(246, progress)),
+            fade_color(avatar_style.fallback_surface, progress),
         );
         render_ring(
             f,
             "aegis-sao-avatar-ring",
             avatar_center,
             80.0,
-            fade_color(sao.accent.with_alpha(132), progress),
-            1.0,
+            fade_color(avatar_style.ring, progress),
+            avatar_style.ring_width,
         );
         let avatar_rect = Rect {
             x: avatar_center.0 - 36.0,
@@ -96,12 +97,9 @@ impl CommandPanel {
                 });
             }
             None => {
-                f.set_theme(base_theme.with_fg(Color::rgba(
-                    236,
-                    232,
-                    222,
-                    fade_alpha(238, progress),
-                )));
+                f.set_theme(
+                    base_theme.with_fg(fade_color(avatar_style.fallback_foreground, progress)),
+                );
                 f.layer(
                     "aegis-sao-avatar-initials",
                     avatar_rect,
@@ -117,7 +115,10 @@ impl CommandPanel {
                             |f| {
                                 f.flex(1.0);
                                 f.spacer(0.0);
-                                f.label_compact_sized(&self.identity.initials, 22.0);
+                                f.label_compact_sized(
+                                    &self.profile.initials,
+                                    avatar_rect.w * avatar_style.initials_scale,
+                                );
                                 f.flex(1.0);
                                 f.spacer(0.0);
                             },
@@ -129,13 +130,10 @@ impl CommandPanel {
 
         let text_x = rect.x + pad + 84.0 + 14.0;
         let text_w = (rect.x + pad + 270.0 - text_x).max(40.0);
-        let display_name = truncate(
-            &self.identity.display_name,
-            (text_w / 9.0).max(4.0) as usize,
-        );
+        let display_name = truncate(&self.profile.display_name, (text_w / 9.0).max(4.0) as usize);
         f.set_theme(faded_theme(base_theme, progress));
         f.layer(
-            "aegis-sao-identity-name",
+            "aegis-sao-profile-name",
             Rect {
                 x: text_x,
                 y: center_y - 21.0,
@@ -155,15 +153,15 @@ impl CommandPanel {
                 );
             },
         );
-        let mut sub_line = format!("@{}", self.identity.username);
-        if !self.identity.groups.is_empty() {
+        let mut sub_line = format!("@{}", self.profile.username);
+        if !self.profile.groups.is_empty() {
             sub_line.push_str(" · ");
-            sub_line.push_str(&self.identity.groups.join(", "));
+            sub_line.push_str(&self.profile.groups.join(", "));
         }
         let sub_line = truncate(&sub_line, (text_w / 5.8).max(8.0) as usize);
         f.set_theme(faded_theme(muted_theme, progress));
         f.layer(
-            "aegis-sao-identity-sub",
+            "aegis-sao-profile-sub",
             Rect {
                 x: text_x,
                 y: center_y + 3.0,
@@ -1012,7 +1010,7 @@ impl CommandPanel {
                             // Agent Workspaces group: display-only aggregate of
                             // the live Agent Interaction Domains (moved here from the HUD's right
                             // chip, ADR-0083).
-                            group_header(f, i18n.text(Message::InteractionManager));
+                            group_header(f, i18n.text(Message::AgentWorkspaces));
                             f.row_ex(
                                 &LayoutOpts {
                                     height: 22.0,
@@ -1023,7 +1021,7 @@ impl CommandPanel {
                                 |f| {
                                     f.icon(Icon::Users, 15.0);
                                     f.label_compact_sized(
-                                        i18n.text(Message::InteractionManager),
+                                        i18n.text(Message::AgentWorkspaces),
                                         12.5,
                                     );
                                     f.flex(1.0);

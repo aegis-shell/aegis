@@ -55,7 +55,7 @@ fn main() -> ExitCode {
         } => with_platform(|platform| {
             let report = platform.smoke_with_input(
                 Duration::from_secs(observe_seconds),
-                input_window.map(aegis_core::window::WindowId),
+                input_window.map(aegis_model::window::WindowId),
             )?;
             println!(
                 "{}",

@@ -9,24 +9,24 @@ static OUTPUT_IMPL: ffi::wl_output_interface_impl = ffi::wl_output_interface_imp
 fn interaction_domain_output_info(
     interaction_domain: InteractionDomainId,
     output: VirtualOutput,
-) -> aegis_core::output::OutputInfo {
+) -> aegis_model::output::OutputInfo {
     let physical = |logical: u32| {
         u64::from(logical)
             .saturating_mul(u64::from(output.scale_milli))
             .div_ceil(1000)
             .min(i32::MAX as u64) as i32
     };
-    aegis_core::output::OutputInfo {
+    aegis_model::output::OutputInfo {
         connector: format!("interaction_domain-{}", interaction_domain.0),
-        geometry: aegis_core::output::OutputGeometry {
-            mode: aegis_core::output::OutputMode {
+        geometry: aegis_model::output::OutputGeometry {
+            mode: aegis_model::output::OutputMode {
                 width: physical(output.width),
                 height: physical(output.height),
                 refresh_mhz: output.refresh_mhz,
             },
-            scale: aegis_core::output::Scale(output.scale_milli as f32 / 1000.0),
-            transform: aegis_core::Transform::Normal,
-            logical_origin: aegis_core::Point::default(),
+            scale: aegis_model::output::Scale(output.scale_milli as f32 / 1000.0),
+            transform: aegis_model::Transform::Normal,
+            logical_origin: aegis_model::Point::default(),
         },
         available_modes: Vec::new(),
     }
@@ -34,7 +34,7 @@ fn interaction_domain_output_info(
 
 pub(crate) fn output_interaction_domains_for_window(
     state: &State,
-    window: aegis_core::window::WindowId,
+    window: aegis_model::window::WindowId,
 ) -> std::collections::BTreeSet<InteractionDomainId> {
     state
         .authority
@@ -93,7 +93,7 @@ pub(crate) unsafe fn post_surface_output_event(
 
 pub(crate) unsafe fn update_windows_output_membership(
     state: &State,
-    windows: &[aegis_core::window::WindowId],
+    windows: &[aegis_model::window::WindowId],
     before: &std::collections::BTreeSet<InteractionDomainId>,
     after: &std::collections::BTreeSet<InteractionDomainId>,
 ) {
@@ -168,7 +168,7 @@ pub(crate) unsafe fn update_interaction_domain_output_global(
 
 pub(crate) unsafe fn create_output_global(
     state: &mut State,
-    info: aegis_core::output::OutputInfo,
+    info: aegis_model::output::OutputInfo,
     interaction_domain: Option<InteractionDomainId>,
 ) -> bool {
     unsafe {
@@ -199,7 +199,7 @@ pub(crate) unsafe fn create_output_global(
 
 pub(crate) unsafe fn reconcile_output_globals(
     state: &mut State,
-    outputs: &[aegis_core::output::OutputInfo],
+    outputs: &[aegis_model::output::OutputInfo],
 ) {
     unsafe {
         for global in &mut state.output_globals {
@@ -232,7 +232,7 @@ pub(crate) unsafe fn reconcile_output_globals(
 
 pub(crate) unsafe fn output_info_for_resource(
     resource: *mut ffi::wl_resource,
-) -> Option<aegis_core::output::OutputInfo> {
+) -> Option<aegis_model::output::OutputInfo> {
     unsafe {
         if resource.is_null() {
             return None;
@@ -244,9 +244,9 @@ pub(crate) unsafe fn output_info_for_resource(
 
 /// Compute the (mode, integer-scale, transform) tuple from the state's
 /// output record, with a sane default before the first backend update.
-unsafe fn output_params(global: *mut OutputGlobal) -> (aegis_core::output::OutputMode, i32, i32) {
+unsafe fn output_params(global: *mut OutputGlobal) -> (aegis_model::output::OutputMode, i32, i32) {
     unsafe {
-        let mut mode = aegis_core::output::OutputMode {
+        let mut mode = aegis_model::output::OutputMode {
             width: 1280,
             height: 720,
             refresh_mhz: 60000,
@@ -281,7 +281,7 @@ pub(crate) unsafe fn send_output_geometry(res: *mut ffi::wl_resource) {
         let version = ffi::wl_resource_get_version(res);
         let make = CString::new("aegis").unwrap();
         let (origin, model_name) = if global.is_null() {
-            (aegis_core::Point::default(), "unknown")
+            (aegis_model::Point::default(), "unknown")
         } else {
             (
                 (*global).info.geometry.logical_origin,

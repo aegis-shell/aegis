@@ -18,7 +18,7 @@ source.
 
 A backend does not implement the Wayland server, render client buffers, draw
 chrome, or choose window-management policy. Those concerns remain in
-`aegis-compositor`, `aegis-render`, `aegis-shell`, and `aegis-core`.
+`aegis-compositor`, `aegis-render`, `aegis-shell`, and `aegis-model`.
 
 ## Runtime Effect
 

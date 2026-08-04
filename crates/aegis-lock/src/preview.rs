@@ -38,7 +38,7 @@ use wayland_client::{
     protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface, wl_touch},
 };
 
-use crate::identity::Identity;
+use crate::profile::Profile;
 use crate::render::{Graphics, GraphicsOptions, LockRenderSurface};
 
 const DEFAULT_SIZE: (u32, u32) = (1280, 800);
@@ -160,10 +160,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let now = Instant::now();
     let (lock_state, visual_progress, advance_deadlines) = initial_lock_state(options.state, now);
-    let identity = Identity::current()?;
+    let profile = Profile::current()?;
     log::debug!(
-        "lock preview: rendering the current identity for {:?}",
-        identity.username
+        "lock preview: rendering the current profile for {:?}",
+        profile.username
     );
     let graphics = if options.style.is_none() && options.background.is_none() {
         Graphics::new(&connection)?
@@ -188,7 +188,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         touches: Vec::new(),
         graphics,
         render: None,
-        identity,
+        profile,
         lock_state,
         simulated_result: options.result,
         expected_password: options.password,
@@ -241,7 +241,7 @@ struct PreviewApp {
     touches: Vec<wl_touch::WlTouch>,
     graphics: Graphics,
     render: Option<LockRenderSurface>,
-    identity: Identity,
+    profile: Profile,
     lock_state: LockState,
     simulated_result: SimulatedResult,
     expected_password: Option<aegis_lock::Secret>,
@@ -445,7 +445,7 @@ impl PreviewApp {
         if let Err(error) = self.graphics.render(
             render,
             &self.lock_state,
-            &self.identity,
+            &self.profile,
             self.visual_progress,
             Instant::now(),
         ) {

@@ -49,15 +49,23 @@ pub(super) fn effective_icon_scale(output_scale: Option<f32>, backend_scale: f32
 pub(super) fn application_catalog(
     icon_theme: &str,
     icon_scale: u32,
-) -> Vec<aegis_core::app::Entry> {
-    let mut applications =
+) -> Vec<aegis_model::app::Entry> {
+    let applications =
         aegis_desktop_entries::enumerate_with_theme_and_scale(icon_theme, icon_scale.max(1));
-    let i18n = aegis_shell::Localizer::from_env();
-    applications.push(aegis_core::app::Entry::interaction_manager(
-        i18n.text(aegis_shell::Message::InteractionManager),
-        i18n.text(aegis_shell::Message::InteractionManagerDescription),
-    ));
-    applications
+    #[cfg(feature = "chrome-agent-workspaces")]
+    {
+        let mut applications = applications;
+        let i18n = aegis_shell::Localizer::from_env();
+        applications.push(aegis_model::app::Entry::agent_workspaces(
+            i18n.text(aegis_shell::Message::AgentWorkspaces),
+            i18n.text(aegis_shell::Message::AgentWorkspacesDescription),
+        ));
+        applications
+    }
+    #[cfg(not(feature = "chrome-agent-workspaces"))]
+    {
+        applications
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +81,7 @@ pub(super) struct IconFileStamp {
 /// so a Flatpak `current/active` update is noticed even when the exported icon
 /// path itself remains unchanged.
 pub(super) fn snapshot_icons(
-    apps: &[aegis_core::app::Entry],
+    apps: &[aegis_model::app::Entry],
 ) -> std::collections::BTreeMap<std::path::PathBuf, Option<IconFileStamp>> {
     use std::os::unix::fs::MetadataExt;
 
@@ -104,11 +112,11 @@ pub(super) const AUTOPOPULATE_MAX: usize = 12;
 /// automatically; with `autopopulate` off, an empty list stays empty (the
 /// user's manual "no pins" choice).
 pub(super) fn resolve_pinned(
-    apps: &[aegis_core::app::Entry],
+    apps: &[aegis_model::app::Entry],
     icons: &std::collections::HashMap<String, *mut std::ffi::c_void>,
     pinned: &[String],
     autopopulate: bool,
-) -> Vec<aegis_core::app::Entry> {
+) -> Vec<aegis_model::app::Entry> {
     if pinned.is_empty() {
         if !autopopulate {
             return Vec::new();
@@ -133,11 +141,32 @@ pub(super) fn resolve_pinned(
     out
 }
 
+/// Resolve pins only when the Dock implementation is part of this binary.
+/// Other chrome still receives the full application/icon catalog, while an
+/// empty pinned projection avoids retaining Dock-only product state in a
+/// build that cannot present it.
+pub(super) fn resolve_chrome_pins(
+    apps: &[aegis_model::app::Entry],
+    icons: &std::collections::HashMap<String, *mut std::ffi::c_void>,
+    pinned: &[String],
+    autopopulate: bool,
+) -> Vec<aegis_model::app::Entry> {
+    #[cfg(feature = "chrome-dock")]
+    {
+        resolve_pinned(apps, icons, pinned, autopopulate)
+    }
+    #[cfg(not(feature = "chrome-dock"))]
+    {
+        let _ = (apps, icons, pinned, autopopulate);
+        Vec::new()
+    }
+}
+
 /// Match every configuration spelling accepted for a persistent pin. The full
 /// desktop-file id is a configuration identity, while `Entry::match_keys`
 /// covers the extensionless id and runtime aliases used by windows and icons.
-fn entry_matches_pin_name(entry: &aegis_core::app::Entry, name: &str) -> bool {
-    entry.id.eq_ignore_ascii_case(name) || entry.match_keys().contains(&name.to_ascii_lowercase())
+fn entry_matches_pin_name(entry: &aegis_model::app::Entry, name: &str) -> bool {
+    entry.matches_persistent_id(name) || entry.match_keys().contains(&name.to_ascii_lowercase())
 }
 
 fn canonical_pins(pinned: &[String]) -> Vec<String> {
@@ -154,7 +183,7 @@ fn canonical_pins(pinned: &[String]) -> Vec<String> {
 /// pinning an existing application or unpinning an absent one is a no-op.
 /// Application identity uses the same aliases as [`resolve_pinned`].
 pub(super) fn apply_pin_actions(
-    apps: &[aegis_core::app::Entry],
+    apps: &[aegis_model::app::Entry],
     pinned: &[String],
     actions: &[aegis_shell::PinAction],
 ) -> Vec<String> {
@@ -182,7 +211,7 @@ pub(super) fn apply_pin_actions(
 /// manual edit. This preserves every other visible tile when one automatic
 /// tile is removed and permanently hands control to the user.
 pub(super) fn materialize_pins_for_manual_edit(
-    apps: &[aegis_core::app::Entry],
+    apps: &[aegis_model::app::Entry],
     icons: &std::collections::HashMap<String, *mut std::ffi::c_void>,
     pinned: &[String],
     autopopulate: bool,
@@ -217,7 +246,7 @@ pub(super) struct DecodedIcon {
 /// app-scan worker thread: it performs no GPU work, only file I/O and
 /// (for SVG) `rsvg-convert` subprocesses.
 pub(super) fn decode_icons(
-    apps: &[aegis_core::app::Entry],
+    apps: &[aegis_model::app::Entry],
     icon_theme: &str,
     icon_scale: u32,
 ) -> Vec<DecodedIcon> {
@@ -300,9 +329,9 @@ pub(super) fn decode_icons(
         let mut keys = vec![format!("aegis-hud:{name}")];
         if name == "preferences-system-symbolic" {
             // Stable keys for the external System Settings fallback and the
-            // compositor-owned AI Workspaces surface.
+            // compositor-owned Agent Workspaces surface.
             keys.push("aegis-settings".into());
-            keys.push(aegis_core::app::INTERACTION_MANAGER_ID.into());
+            keys.push(aegis_model::app::AGENT_WORKSPACES_ID.into());
         }
         decoded.push(DecodedIcon {
             keys,
@@ -405,8 +434,8 @@ pub(super) fn decode_icon(
 mod tests {
     use super::*;
 
-    fn app(id: &str) -> aegis_core::app::Entry {
-        aegis_core::app::Entry {
+    fn app(id: &str) -> aegis_model::app::Entry {
+        aegis_model::app::Entry {
             id: id.to_string(),
             ..Default::default()
         }
@@ -438,14 +467,27 @@ mod tests {
     }
 
     #[test]
-    fn legacy_agent_workspaces_pin_is_not_an_interaction_manager_alias() {
-        let apps = vec![aegis_core::app::Entry::interaction_manager(
+    fn legacy_ai_workspaces_pin_is_not_an_agent_workspaces_alias() {
+        let apps = vec![aegis_model::app::Entry::agent_workspaces(
             "Agent Workspaces",
             "Manage isolated Agent interaction",
         )];
         let legacy = vec!["aegis-ai-workspaces".to_owned()];
         assert!(
             resolve_pinned(&apps, &std::collections::HashMap::new(), &legacy, false).is_empty()
+        );
+    }
+
+    #[test]
+    fn legacy_interaction_manager_pin_resolves_to_agent_workspaces() {
+        let apps = vec![aegis_model::app::Entry::agent_workspaces(
+            "Agent Workspaces",
+            "Manage isolated Agent interaction",
+        )];
+        let legacy = vec!["aegis-interaction-manager".to_owned()];
+        assert_eq!(
+            resolve_pinned(&apps, &std::collections::HashMap::new(), &legacy, false),
+            apps
         );
     }
 

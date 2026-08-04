@@ -9,7 +9,7 @@
 //! it.
 //!
 //! The same overlay also serves the portal's interactive picks (ADR-0054),
-//! opened through [`Chrome::start_pick`] with a [`PickerMode`]:
+//! opened through [`ChromeCommand::StartPick`] with a [`PickerMode`]:
 //!
 //! - `Region` is the Print-key interaction, but the confirmed rect goes to
 //!   the waiting IPC request instead of the screenshot file path.
@@ -24,19 +24,19 @@
 //! [`ChromeEvents::pick_cancelled`]; the compositor closes the loop by
 //! answering the IPC request.
 
-use aegis_design::{Design, materials};
+use aegis_design::{Design, GlassRole, materials};
 use lens::{
     Align, Color, ForegroundOutline, Frame, Input, LayoutOpts, OverlayOpts, Rect as LensRect,
 };
 
 use crate::{
-    BackdropRegion, Chrome, ChromeEvents, CursorShape, LiquidGlassRegion, Localizer, Message,
-    ellipsize,
+    BackdropRegion, Chrome, ChromeCommand, ChromeEvents, CursorShape, LiquidGlassRegion, Localizer,
+    Message, ellipsize,
 };
-use aegis_core::app::BuiltInApplication;
-use aegis_core::input::{KeyAction, KeyChar, key_action};
-use aegis_core::window::{Window, WindowId};
-use aegis_core::workspace::WorkspaceSnapshot;
+use aegis_model::app::BuiltInApplication;
+use aegis_model::input::{KeyAction, KeyChar, key_action};
+use aegis_model::window::{Window, WindowId};
+use aegis_model::workspace::WorkspaceSnapshot;
 
 /// Minimum drag distance in logical pixels before a release is treated as a
 /// real selection rather than an accidental tap.
@@ -51,6 +51,9 @@ const PIXEL_LENS_SIZE: f32 = 48.0;
 const STATUS_FONT_SIZE: f32 = 12.0;
 const STATUS_PAD: f32 = 8.0;
 const STATUS_MARGIN: f32 = 12.0;
+/// Sub-logical-pixel bands keep the inverse rounded-corner mask smooth on
+/// both 1× and HiDPI outputs without creating extra floating Lens layers.
+const SCRIM_CORNER_BAND_HEIGHT: f32 = 0.5;
 
 /// The interaction a portal picker session asks for (ADR-0054).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +72,12 @@ struct Point {
     y: f32,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CornerBand {
+    height: f32,
+    inset: f32,
+}
+
 /// The screenshot region selector / portal picker chrome component.
 pub struct ScreenshotSelector {
     active: bool,
@@ -76,7 +85,7 @@ pub struct ScreenshotSelector {
     mode: PickerMode,
     /// Whether the session was opened for an IPC pick (ADR-0054) rather than
     /// the Print key. Picker sessions emit the pick events and are the only
-    /// ones [`Chrome::cancel_pick`] may interrupt.
+    /// ones [`ChromeCommand::CancelPick`] may interrupt.
     picker: bool,
     /// Press origin in logical pixels while a drag is in progress.
     anchor: Option<Point>,
@@ -84,7 +93,7 @@ pub struct ScreenshotSelector {
     current: Point,
     /// Selection staged by a completed drag, waiting for explicit
     /// confirmation. Drawn like the live drag rect but persistent.
-    confirmed: Option<aegis_core::Rect>,
+    confirmed: Option<aegis_model::Rect>,
     /// Window under the cursor in window-pick mode (topmost first).
     hovered: Option<WindowId>,
 }
@@ -135,24 +144,24 @@ impl ScreenshotSelector {
 
     /// Compute the dragged rectangle from anchor and current cursor, clamped
     /// to non-negative size.
-    fn drag_rect(&self) -> Option<aegis_core::Rect> {
+    fn drag_rect(&self) -> Option<aegis_model::Rect> {
         let anchor = self.anchor?;
         self.drag_rect_at(anchor, self.current)
     }
 
     /// Rectangle of a drag from `anchor` to `cursor`, independent of the
     /// component's live drag state.
-    fn drag_rect_at(&self, anchor: Point, cursor: Point) -> Option<aegis_core::Rect> {
+    fn drag_rect_at(&self, anchor: Point, cursor: Point) -> Option<aegis_model::Rect> {
         let x = anchor.x.min(cursor.x).round() as i32;
         let y = anchor.y.min(cursor.y).round() as i32;
         let w = (anchor.x.max(cursor.x) - x as f32).round() as i32;
         let h = (anchor.y.max(cursor.y) - y as f32).round() as i32;
-        Some(aegis_core::Rect::new(x, y, w.max(0), h.max(0)))
+        Some(aegis_model::Rect::new(x, y, w.max(0), h.max(0)))
     }
 
     /// The rectangle currently shown: the staged selection once a drag has
     /// completed, otherwise the in-progress drag.
-    fn shown_rect(&self) -> Option<aegis_core::Rect> {
+    fn shown_rect(&self) -> Option<aegis_model::Rect> {
         self.confirmed.or_else(|| self.drag_rect())
     }
 
@@ -286,6 +295,9 @@ impl ScreenshotSelector {
                 &scrim,
                 |_| {},
             );
+        }
+        if let Some(hole) = hole {
+            render_rounded_scrim_corners(frame, hole, Self::glass_radius(hole), scrim.bg);
         }
     }
 
@@ -450,9 +462,19 @@ impl ScreenshotSelector {
             );
         }
     }
+
+    fn start_pick(&mut self, mode: PickerMode) {
+        self.open(mode, true);
+    }
+
+    fn cancel_pick(&mut self) {
+        if self.picker {
+            self.reset();
+        }
+    }
 }
 
-fn to_lens(rect: aegis_core::Rect) -> LensRect {
+fn to_lens(rect: aegis_model::Rect) -> LensRect {
     LensRect {
         x: rect.origin.x as f32,
         y: rect.origin.y as f32,
@@ -533,6 +555,96 @@ fn scrim_regions(full: LensRect, hole: Option<LensRect>) -> [LensRect; 4] {
     ]
 }
 
+/// Horizontal samples of one top rounded corner's inverse mask. Mirroring the
+/// bands across both axes fills the four areas outside the rounded glass body
+/// but inside its rectangular bounds. Sampling at each band's centre matches
+/// the raster coverage point and avoids a bright seam or dark overlap.
+fn rounded_corner_bands(radius: f32) -> Vec<CornerBand> {
+    let radius = radius.max(0.0);
+    let mut bands = Vec::new();
+    let mut y = 0.0;
+    while y < radius {
+        let height = SCRIM_CORNER_BAND_HEIGHT.min(radius - y);
+        let sample_y = y + height * 0.5;
+        let dy = radius - sample_y;
+        let inset = radius - (radius * radius - dy * dy).max(0.0).sqrt();
+        bands.push(CornerBand { height, inset });
+        y += height;
+    }
+    bands
+}
+
+fn render_rounded_scrim_corners(frame: &mut Frame, hole: LensRect, radius: f32, color: Color) {
+    let bands = rounded_corner_bands(radius);
+    if bands.is_empty() {
+        return;
+    }
+    let layer = OverlayOpts {
+        gap: 0.0,
+        pad: 0.0,
+        cross: Align::Stretch,
+        ..Default::default()
+    };
+    frame.layer(
+        "aegis-screenshot-scrim-rounded-corners",
+        hole,
+        &layer,
+        |frame| {
+            frame.column_ex(
+                &LayoutOpts {
+                    width: hole.w,
+                    height: hole.h,
+                    gap: 0.0,
+                    pad: 0.0,
+                    cross: Align::Stretch,
+                    ..Default::default()
+                },
+                |frame| {
+                    for band in &bands {
+                        render_scrim_corner_band(frame, hole.w, *band, color);
+                    }
+                    let middle = (hole.h - radius * 2.0).max(0.0);
+                    if middle > 0.0 {
+                        frame.spacer(middle);
+                    }
+                    for band in bands.iter().rev() {
+                        render_scrim_corner_band(frame, hole.w, *band, color);
+                    }
+                },
+            );
+        },
+    );
+}
+
+fn render_scrim_corner_band(frame: &mut Frame, width: f32, band: CornerBand, color: Color) {
+    frame.row_ex(
+        &LayoutOpts {
+            width,
+            height: band.height,
+            gap: 0.0,
+            pad: 0.0,
+            cross: Align::Stretch,
+            ..Default::default()
+        },
+        |frame| {
+            let inset = band.inset.min(width * 0.5).max(0.0);
+            if inset <= f32::EPSILON {
+                frame.spacer(width);
+                return;
+            }
+            let fill = LayoutOpts {
+                width: inset,
+                height: band.height,
+                bg: color,
+                ..Default::default()
+            };
+            frame.column_ex(&fill, |_| {});
+            frame.spacer((width - inset * 2.0).max(0.0));
+            frame.column_ex(&fill, |_| {});
+        },
+    );
+}
+
 impl Chrome for ScreenshotSelector {
     fn render(
         &mut self,
@@ -561,7 +673,7 @@ impl Chrome for ScreenshotSelector {
             PickerMode::Pixel => {
                 self.current = cursor;
                 if pressed {
-                    out.picked_point = Some(aegis_core::Point {
+                    out.picked_point = Some(aegis_model::Point {
                         x: cursor.x.round() as i32,
                         y: cursor.y.round() as i32,
                     });
@@ -681,15 +793,13 @@ impl Chrome for ScreenshotSelector {
     ) -> Vec<LiquidGlassRegion> {
         self.glass_rect(display, windows)
             .map(|rect| {
-                vec![LiquidGlassRegion {
-                    bounds: to_backdrop(rect),
-                    corner_radius: Self::glass_radius(rect),
-                    opacity: 1.0,
-                    shadow_alpha: 0.18,
-                    shadow_blur: 16.0,
-                    shadow_offset_y: 8.0,
-                    focus: None,
-                }]
+                vec![LiquidGlassRegion::from_role(
+                    &Design::dark(),
+                    GlassRole::FloatingPanel,
+                    BackdropRegion::from(rect),
+                    Self::glass_radius(rect),
+                    1.0,
+                )]
             })
             .unwrap_or_default()
     }
@@ -713,19 +823,12 @@ impl Chrome for ScreenshotSelector {
         self.active.then_some(CursorShape::Default)
     }
 
-    fn open_builtin(&mut self, app: BuiltInApplication) {
-        if app == BuiltInApplication::ScreenshotSelector {
-            self.start();
-        }
-    }
-
-    fn start_pick(&mut self, mode: PickerMode) {
-        self.open(mode, true);
-    }
-
-    fn cancel_pick(&mut self) {
-        if self.picker {
-            self.reset();
+    fn command(&mut self, command: &ChromeCommand<'_>, _out: &mut ChromeEvents) {
+        match command {
+            ChromeCommand::OpenBuiltIn(BuiltInApplication::ScreenshotSelector) => self.start(),
+            ChromeCommand::StartPick(mode) => self.start_pick(*mode),
+            ChromeCommand::CancelPick => self.cancel_pick(),
+            _ => {}
         }
     }
 
@@ -795,7 +898,7 @@ mod tests {
         s.update_pointer(Point { x: 20.0, y: 30.0 }, true, false);
         s.update_pointer(Point { x: 80.0, y: 90.0 }, false, false);
         s.update_pointer(Point { x: 110.0, y: 70.0 }, false, true);
-        assert_eq!(s.confirmed, Some(aegis_core::Rect::new(20, 30, 90, 40)));
+        assert_eq!(s.confirmed, Some(aegis_model::Rect::new(20, 30, 90, 40)));
         assert!(s.active(), "release must keep the selector open");
         assert!(s.anchor.is_none());
     }
@@ -810,15 +913,15 @@ mod tests {
         let mut out = ChromeEvents::default();
         s.key_char(
             &KeyChar {
-                keysym: aegis_core::input::XKB_KEY_Return,
+                keysym: aegis_model::input::XKB_KEY_Return,
                 ch: None,
-                mods: aegis_core::input::Mods::NONE,
+                mods: aegis_model::input::Mods::NONE,
             },
             &mut out,
         );
         assert_eq!(
             out.screenshot_region,
-            Some(aegis_core::Rect::new(20, 30, 90, 40))
+            Some(aegis_model::Rect::new(20, 30, 90, 40))
         );
         assert!(!s.active());
     }
@@ -833,7 +936,7 @@ mod tests {
 
         s.update_pointer(Point { x: 200.0, y: 200.0 }, true, false);
         assert!(s.confirmed.is_none());
-        assert_eq!(s.drag_rect(), Some(aegis_core::Rect::new(200, 200, 0, 0)));
+        assert_eq!(s.drag_rect(), Some(aegis_model::Rect::new(200, 200, 0, 0)));
     }
 
     #[test]
@@ -846,9 +949,9 @@ mod tests {
         let mut out = ChromeEvents::default();
         s.key_char(
             &KeyChar {
-                keysym: aegis_core::input::XKB_KEY_Escape,
+                keysym: aegis_model::input::XKB_KEY_Escape,
                 ch: None,
-                mods: aegis_core::input::Mods::NONE,
+                mods: aegis_model::input::Mods::NONE,
             },
             &mut out,
         );
@@ -962,10 +1065,28 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn rounded_scrim_corner_bands_fill_only_the_glass_corner_cutouts() {
+        let radius = GLASS_RADIUS;
+        let bands = rounded_corner_bands(radius);
+        assert!(!bands.is_empty());
+        assert!(bands.windows(2).all(|pair| pair[0].inset > pair[1].inset));
+        assert!((bands.iter().map(|band| band.height).sum::<f32>() - radius).abs() < 0.001);
+
+        // Four mirrored corners should approximate the exact area between a
+        // square-cornered rectangle and the matching rounded rectangle.
+        let sampled_area = bands
+            .iter()
+            .map(|band| band.inset * band.height * 4.0)
+            .sum::<f32>();
+        let analytic_area = (4.0 - std::f32::consts::PI) * radius * radius;
+        assert!((sampled_area - analytic_area).abs() < 1.0);
+    }
+
     fn window(id: u64, x: i32, y: i32, w: i32, h: i32) -> Window {
         let mut window = Window::new(WindowId(id));
-        window.position = aegis_core::Point { x, y };
-        window.size = aegis_core::Size { w, h };
+        window.position = aegis_model::Point { x, y };
+        window.size = aegis_model::Size { w, h };
         window
     }
 
@@ -995,9 +1116,9 @@ mod tests {
         let mut out = ChromeEvents::default();
         s.key_char(
             &KeyChar {
-                keysym: aegis_core::input::XKB_KEY_Escape,
+                keysym: aegis_model::input::XKB_KEY_Escape,
                 ch: None,
-                mods: aegis_core::input::Mods::NONE,
+                mods: aegis_model::input::Mods::NONE,
             },
             &mut out,
         );
@@ -1012,9 +1133,9 @@ mod tests {
         let mut out = ChromeEvents::default();
         s.key_char(
             &KeyChar {
-                keysym: aegis_core::input::XKB_KEY_Return,
+                keysym: aegis_model::input::XKB_KEY_Return,
                 ch: None,
-                mods: aegis_core::input::Mods::NONE,
+                mods: aegis_model::input::Mods::NONE,
             },
             &mut out,
         );
@@ -1043,9 +1164,9 @@ mod tests {
         let mut out = ChromeEvents::default();
         s.key_char(
             &KeyChar {
-                keysym: aegis_core::input::XKB_KEY_Return,
+                keysym: aegis_model::input::XKB_KEY_Return,
                 ch: None,
-                mods: aegis_core::input::Mods::NONE,
+                mods: aegis_model::input::Mods::NONE,
             },
             &mut out,
         );

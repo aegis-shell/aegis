@@ -1,12 +1,43 @@
 use super::*;
 
 #[test]
+fn compiled_chrome_controls_default_input_ownership() {
+    use aegis_model::gesture::{GestureAction, GestureAxis};
+    use aegis_model::input::Mods;
+    use aegis_model::keybind::Action;
+
+    let keymap = build_keymap(None);
+    assert_eq!(
+        keymap.match_key(Mods::SUPER, b' ' as u32),
+        cfg!(feature = "chrome-prism").then_some(Action::TogglePrism)
+    );
+    assert_eq!(
+        keymap.match_key(Mods::SUPER, b's' as u32),
+        cfg!(feature = "chrome-command-panel").then_some(Action::ToggleCommandPanel)
+    );
+
+    let gestures = build_gesture_map(None);
+    assert_eq!(
+        gestures.lookup(4, GestureAxis::Vertical),
+        cfg!(feature = "chrome-command-panel").then_some(GestureAction::CommandPanel)
+    );
+    assert_eq!(
+        gestures.claims(4),
+        cfg!(feature = "chrome-command-panel"),
+        "a build without the command panel must leave four-finger gestures to clients"
+    );
+}
+
+#[test]
 fn nested_output_geometry_preserves_logical_size_at_integer_scale() {
     let geometry = output_geometry_from_host(945, 924, 2.0);
     assert_eq!(geometry.mode.width, 1890);
     assert_eq!(geometry.mode.height, 1848);
-    assert_eq!(geometry.scale, aegis_core::output::Scale(2.0));
-    assert_eq!(geometry.logical_size(), aegis_core::Size { w: 945, h: 924 });
+    assert_eq!(geometry.scale, aegis_model::output::Scale(2.0));
+    assert_eq!(
+        geometry.logical_size(),
+        aegis_model::Size { w: 945, h: 924 }
+    );
 }
 
 #[test]
@@ -14,35 +45,38 @@ fn nested_output_geometry_preserves_logical_size_at_fractional_scale() {
     let geometry = output_geometry_from_host(945, 924, 1.5);
     assert_eq!(geometry.mode.width, 1418);
     assert_eq!(geometry.mode.height, 1386);
-    assert_eq!(geometry.scale, aegis_core::output::Scale(1.5));
-    assert_eq!(geometry.logical_size(), aegis_core::Size { w: 945, h: 924 });
+    assert_eq!(geometry.scale, aegis_model::output::Scale(1.5));
+    assert_eq!(
+        geometry.logical_size(),
+        aegis_model::Size { w: 945, h: 924 }
+    );
 }
 
 #[test]
 fn logical_capture_region_scales_to_physical_pixels() {
     assert_eq!(
-        logical_rect_to_physical(aegis_core::Rect::new(10, 20, 100, 80), 2.0, 3840, 2160),
-        aegis_core::Rect::new(20, 40, 200, 160)
+        logical_rect_to_physical(aegis_model::Rect::new(10, 20, 100, 80), 2.0, 3840, 2160),
+        aegis_model::Rect::new(20, 40, 200, 160)
     );
 }
 
 #[test]
 fn interaction_domain_capture_region_is_intersected_in_logical_space() {
     assert_eq!(
-        clamp_logical_region(aegis_core::Rect::new(-10, 5, 30, 40), 100, 30),
-        Some(aegis_core::Rect::new(0, 5, 20, 25))
+        clamp_logical_region(aegis_model::Rect::new(-10, 5, 30, 40), 100, 30),
+        Some(aegis_model::Rect::new(0, 5, 20, 25))
     );
     assert_eq!(
-        clamp_logical_region(aegis_core::Rect::new(100, 0, 20, 20), 100, 100),
+        clamp_logical_region(aegis_model::Rect::new(100, 0, 20, 20), 100, 100),
         None
     );
     assert_eq!(
-        clamp_logical_region(aegis_core::Rect::new(0, 0, 0, 20), 100, 100),
+        clamp_logical_region(aegis_model::Rect::new(0, 0, 0, 20), 100, 100),
         None
     );
     assert_eq!(
         clamp_logical_region(
-            aegis_core::Rect::new(i32::MAX - 1, i32::MAX - 1, i32::MAX, i32::MAX),
+            aegis_model::Rect::new(i32::MAX - 1, i32::MAX - 1, i32::MAX, i32::MAX),
             16_384,
             16_384,
         ),
@@ -53,12 +87,12 @@ fn interaction_domain_capture_region_is_intersected_in_logical_space() {
 #[test]
 fn logical_capture_region_scales_endpoints_and_clamps() {
     assert_eq!(
-        logical_rect_to_physical(aegis_core::Rect::new(-10, 10, 30, 20), 1.5, 30, 40),
-        aegis_core::Rect::new(0, 15, 30, 25)
+        logical_rect_to_physical(aegis_model::Rect::new(-10, 10, 30, 20), 1.5, 30, 40),
+        aegis_model::Rect::new(0, 15, 30, 25)
     );
     assert_eq!(
-        logical_rect_to_physical(aegis_core::Rect::new(10, 20, 100, 80), 0.0, 200, 200),
-        aegis_core::Rect::new(10, 20, 100, 80)
+        logical_rect_to_physical(aegis_model::Rect::new(10, 20, 100, 80), 0.0, 200, 200),
+        aegis_model::Rect::new(10, 20, 100, 80)
     );
 }
 
@@ -68,7 +102,7 @@ fn capture_encoding_crops_and_unpremultiplies_worker_payload() {
         2,
         1,
         vec![10, 20, 30, 255, 50, 25, 0, 128],
-        Some(aegis_core::Rect::new(1, 0, 1, 1)),
+        Some(aegis_model::Rect::new(1, 0, 1, 1)),
     )
     .unwrap();
     assert_eq!((width, height), (1, 1));
@@ -165,8 +199,8 @@ fn desktop_preference_overrides_are_not_copied_into_persistence() {
          cursor_size = 32\n",
     )
     .unwrap();
-    let requested = aegis_core::settings::DesktopPreferences {
-        color_scheme: aegis_core::settings::ColorScheme::Dark,
+    let requested = aegis_model::settings::DesktopPreferences {
+        color_scheme: aegis_model::settings::ColorScheme::Dark,
         icon_theme: "OverrideIcon".into(),
         cursor_theme: "OverrideCursor".into(),
         cursor_size: 64,
@@ -183,7 +217,7 @@ fn desktop_preference_overrides_are_not_copied_into_persistence() {
     );
     assert_eq!(
         persistent.color_scheme,
-        aegis_core::settings::ColorScheme::Dark
+        aegis_model::settings::ColorScheme::Dark
     );
     assert_eq!(persistent.icon_theme, "Papirus");
     assert_eq!(persistent.cursor_theme, "Bibata");
@@ -207,11 +241,11 @@ fn builtin_scopes_are_fail_closed_allowlists() {
         .get(aegis_ipc::LOCAL_OWNER_ADMIN_SCOPE)
         .expect("built-in owner scope");
     assert!(owner.permits(&aegis_ipc::Command::Focus {
-        id: aegis_core::window::WindowId(9),
+        id: aegis_model::window::WindowId(9),
     }));
     assert!(
         !owner.permits(&aegis_ipc::Command::LaunchInInteractionDomain {
-            interaction_domain: aegis_core::interaction_domain::InteractionDomainId(9),
+            interaction_domain: aegis_model::interaction_domain::InteractionDomainId(9),
             desktop_id: "foot.desktop".into(),
         })
     );
@@ -226,7 +260,7 @@ fn builtin_scopes_are_fail_closed_allowlists() {
         .expect("built-in InteractionDomain recovery scope");
     assert!(
         admin.permits(&aegis_ipc::Command::LaunchInInteractionDomain {
-            interaction_domain: aegis_core::interaction_domain::InteractionDomainId(9),
+            interaction_domain: aegis_model::interaction_domain::InteractionDomainId(9),
             desktop_id: "foot.desktop".into(),
         })
     );
@@ -241,25 +275,25 @@ fn builtin_scopes_are_fail_closed_allowlists() {
 
 #[test]
 fn interaction_domain_scope_expands_atomic_groups_before_authorizing() {
-    let mut model = aegis_core::interaction_domain::InteractionDomainModel::new();
+    let mut model = aegis_model::interaction_domain::InteractionDomainModel::new();
     let agent = model.create_agent_interaction_domain(
         "agent",
-        aegis_core::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
+        aegis_model::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
     );
     let client = model.register_client(None);
-    let first = aegis_core::window::WindowId(7);
-    let sibling = aegis_core::window::WindowId(8);
+    let first = aegis_model::window::WindowId(7);
+    let sibling = aegis_model::window::WindowId(8);
     let group = model
         .create_interaction_group(
             client,
             &[first, sibling],
-            aegis_core::interaction_domain::HUMAN_INTERACTION_DOMAIN,
+            aegis_model::interaction_domain::HUMAN_INTERACTION_DOMAIN,
         )
         .unwrap();
     let action = aegis_ipc::InteractionDomainAction::Transact {
         expected_revision: None,
         mutations: vec![
-            aegis_core::interaction_domain::InteractionDomainMutation::TransferWindow {
+            aegis_model::interaction_domain::InteractionDomainMutation::TransferWindow {
                 window: first,
                 target: agent.interaction_domain,
                 retain_source_as_observer: true,
@@ -300,7 +334,7 @@ fn interaction_domain_scope_expands_atomic_groups_before_authorizing() {
     let observe = aegis_ipc::InteractionDomainAction::Transact {
         expected_revision: None,
         mutations: vec![
-            aegis_core::interaction_domain::InteractionDomainMutation::SetObserver {
+            aegis_model::interaction_domain::InteractionDomainMutation::SetObserver {
                 group,
                 interaction_domain: agent.interaction_domain,
                 observe: true,

@@ -12,13 +12,13 @@ fn pointer_distance_squared(a: (f32, f32), b: (f32, f32)) -> f32 {
     dx * dx + dy * dy
 }
 
-fn is_top_edge_only(edges: aegis_core::window::ResizeEdges) -> bool {
+fn is_top_edge_only(edges: aegis_model::window::ResizeEdges) -> bool {
     edges.has_top() && !edges.has_bottom() && !edges.has_left() && !edges.has_right()
 }
 
 fn is_matching_top_border_double_click(
     first: TopBorderClick,
-    window_id: aegis_core::window::WindowId,
+    window_id: aegis_model::window::WindowId,
     pressed_at_ms: u64,
     position: (f32, f32),
 ) -> bool {
@@ -99,17 +99,17 @@ unsafe fn xdg_role_aware_keyboard_target(
 /// the point, it clears any resize candidate contributed by a lower window.
 /// A resizable window additionally owns its outer logical-pixel margin.
 fn stacked_resize_target<T: Copy>(
-    layers: impl IntoIterator<Item = (T, aegis_core::window::Window, bool)>,
+    layers: impl IntoIterator<Item = (T, aegis_model::window::Window, bool)>,
     x: f32,
     y: f32,
     margin: f32,
-) -> Option<(T, aegis_core::window::ResizeEdges)> {
+) -> Option<(T, aegis_model::window::ResizeEdges)> {
     let mut target = None;
     for (id, window, resizable) in layers {
         let edges = if resizable {
             window.resize_edges_at(x, y, margin)
         } else {
-            aegis_core::window::ResizeEdges::NONE
+            aegis_model::window::ResizeEdges::NONE
         };
         if window.contains_point(x, y) || !edges.is_none() {
             target = (!edges.is_none()).then_some((id, edges));
@@ -134,7 +134,7 @@ impl Server {
         let (x, y) = (self.state.pointer_x, self.state.pointer_y);
         let focus = if self.state.active_seat == HUMAN_SEAT
             && self
-                .resize_target_at(x, y, aegis_core::window::RESIZE_OUTER_MARGIN)
+                .resize_target_at(x, y, aegis_model::window::RESIZE_OUTER_MARGIN)
                 .is_some()
         {
             std::ptr::null_mut()
@@ -194,7 +194,7 @@ impl Server {
             self.state.pending_top_border_double_click = None;
             self.state.compositor_pointer_grab = false;
             self.start_interactive_move(pending.window_id);
-            if let Some(aegis_core::window::Interactive::Move {
+            if let Some(aegis_model::window::Interactive::Move {
                 origin,
                 start_position,
                 ..
@@ -221,7 +221,7 @@ impl Server {
         // through the foreground window's resize affordance.
         let focus = if self.state.active_seat == HUMAN_SEAT
             && self
-                .resize_target_at(x, y, aegis_core::window::RESIZE_OUTER_MARGIN)
+                .resize_target_at(x, y, aegis_model::window::RESIZE_OUTER_MARGIN)
                 .is_some()
         {
             std::ptr::null_mut()
@@ -235,7 +235,7 @@ impl Server {
         self.post_motion_to_focus(time);
     }
 
-    pub(crate) fn pointer_button(&mut self, button: u32, state: aegis_core::input::ButtonState) {
+    pub(crate) fn pointer_button(&mut self, button: u32, state: aegis_model::input::ButtonState) {
         if self.state.session_lock_phase.is_active() {
             if state.is_pressed() && !self.state.pointer_focus.is_null() {
                 self.change_keyboard_focus(self.state.pointer_focus);
@@ -288,7 +288,7 @@ impl Server {
         if !state.is_pressed() && self.state.interactive.is_some() {
             let consume = self.state.compositor_pointer_grab;
             let top_border_click = match self.state.interactive {
-                Some(aegis_core::window::Interactive::Resize {
+                Some(aegis_model::window::Interactive::Resize {
                     window_id,
                     edges,
                     origin,
@@ -362,7 +362,7 @@ impl Server {
             && self
                 .state
                 .depressed_mods
-                .has(aegis_core::input::Mods::SUPER)
+                .has(aegis_model::input::Mods::SUPER)
             && self.state.interactive.is_none()
             && !self.state.pointer_focus.is_null()
         {
@@ -383,7 +383,7 @@ impl Server {
                 };
                 if button != BTN_RIGHT || !resize_edges.is_none() {
                     unsafe {
-                        (*rec).window.layout_role = aegis_core::layout::LayoutRole::Floating;
+                        (*rec).window.layout_role = aegis_model::layout::LayoutRole::Floating;
                         (*rec).layout_target = None;
                         let state_changed =
                             (*rec).window.state.maximized || (*rec).window.state.fullscreen;
@@ -412,7 +412,7 @@ impl Server {
             && let Some((rec, edges)) = self.resize_target_at(
                 self.state.pointer_x,
                 self.state.pointer_y,
-                aegis_core::window::RESIZE_OUTER_MARGIN,
+                aegis_model::window::RESIZE_OUTER_MARGIN,
             )
         {
             let resource = unsafe { (*rec).resource };
@@ -442,7 +442,7 @@ impl Server {
                 (*rec).window.state.resizing = true;
                 reconfigure_with_state(rec);
             }
-            self.state.interactive = Some(aegis_core::window::Interactive::Resize {
+            self.state.interactive = Some(aegis_model::window::Interactive::Resize {
                 window_id: id,
                 edges,
                 origin: (self.state.pointer_x, self.state.pointer_y),
@@ -528,9 +528,9 @@ impl Server {
     pub(crate) fn keyboard_key(
         &mut self,
         evdev_code: u32,
-        state: aegis_core::input::ButtonState,
-        keymap: Option<&aegis_core::keybind::Keymap>,
-    ) -> Option<aegis_core::keybind::Action> {
+        state: aegis_model::input::ButtonState,
+        keymap: Option<&aegis_model::keybind::Keymap>,
+    ) -> Option<aegis_model::keybind::Action> {
         let prepared = self.prepare_keyboard_event(evdev_code, state)?;
         self.deliver_prepared_keyboard_event(prepared, keymap)
     }
@@ -544,7 +544,7 @@ impl Server {
     pub fn prepare_keyboard_event(
         &mut self,
         evdev_code: u32,
-        state: aegis_core::input::ButtonState,
+        state: aegis_model::input::ButtonState,
     ) -> Option<PreparedKeyboardEvent> {
         // Always advance xkbcommon state so modifier tracking and global
         // bindings work even with no focused client (e.g. an empty desktop).
@@ -556,7 +556,7 @@ impl Server {
         } else {
             return None;
         };
-        self.state.depressed_mods = aegis_core::input::Mods(outcome.depressed);
+        self.state.depressed_mods = aegis_model::input::Mods(outcome.depressed);
         // Console VT switch (Ctrl+Alt+Fn → XF86Switch_VT_N): libinput owns
         // evdev on a direct backend, so the kernel's built-in handling never
         // runs — the compositor performs the session switch itself through
@@ -588,8 +588,8 @@ impl Server {
     pub(crate) fn deliver_prepared_keyboard_event(
         &mut self,
         prepared: PreparedKeyboardEvent,
-        keymap: Option<&aegis_core::keybind::Keymap>,
-    ) -> Option<aegis_core::keybind::Action> {
+        keymap: Option<&aegis_model::keybind::Keymap>,
+    ) -> Option<aegis_model::keybind::Action> {
         let PreparedKeyboardEvent {
             evdev_code,
             state,
@@ -619,9 +619,9 @@ impl Server {
         {
             keymap
                 .and_then(|keymap| {
-                    keymap.match_key(aegis_core::input::Mods(outcome.depressed), outcome.keysym)
+                    keymap.match_key(aegis_model::input::Mods(outcome.depressed), outcome.keysym)
                 })
-                .filter(|action| !locked || matches!(action, aegis_core::keybind::Action::Quit))
+                .filter(|action| !locked || matches!(action, aegis_model::keybind::Action::Quit))
         } else {
             None
         };
@@ -811,7 +811,7 @@ impl Server {
         x: f32,
         y: f32,
         margin: f32,
-    ) -> Option<(*mut SurfaceRec, aegis_core::window::ResizeEdges)> {
+    ) -> Option<(*mut SurfaceRec, aegis_model::window::ResizeEdges)> {
         let visible = self.visible();
         let mut layers = Vec::new();
         for p in self.state.live_surfaces() {
@@ -848,7 +848,7 @@ impl Server {
             let resizable = controls
                 && !window.state.maximized
                 && !window.state.fullscreen
-                && window.layout_role == aegis_core::layout::LayoutRole::Floating;
+                && window.layout_role == aegis_model::layout::LayoutRole::Floating;
             layers.push((p, window, resizable));
         }
         stacked_resize_target(layers, x, y, margin)
@@ -860,15 +860,15 @@ impl Server {
         let interactive = self.state.interactive;
         if let Some(interactive_grab) = interactive {
             let window_id = match interactive_grab {
-                aegis_core::window::Interactive::Move { window_id, .. } => window_id,
-                aegis_core::window::Interactive::Resize { window_id, .. } => window_id,
+                aegis_model::window::Interactive::Move { window_id, .. } => window_id,
+                aegis_model::window::Interactive::Resize { window_id, .. } => window_id,
             };
             let rec = self.find_surface_by_window_id(window_id);
             if !rec.is_null() {
                 unsafe {
                     if matches!(
                         interactive_grab,
-                        aegis_core::window::Interactive::Resize { .. }
+                        aegis_model::window::Interactive::Resize { .. }
                     ) {
                         (*rec).window.state.resizing = false;
                         reconfigure_with_state(rec);
@@ -877,7 +877,7 @@ impl Server {
                         && let Some(app_id) = (*rec).window.app_id.as_deref()
                         && !app_id.is_empty()
                     {
-                        let rect = (*rec).saved_floating_rect.unwrap_or(aegis_core::Rect {
+                        let rect = (*rec).saved_floating_rect.unwrap_or(aegis_model::Rect {
                             origin: (*rec).position,
                             size: (*rec).window.size,
                         });
@@ -1045,7 +1045,7 @@ impl Server {
     }
 
     /// Post one backend-preserved scroll frame to the focused client.
-    pub(crate) fn pointer_axis(&mut self, frame: aegis_core::input::PointerAxisFrame) {
+    pub(crate) fn pointer_axis(&mut self, frame: aegis_model::input::PointerAxisFrame) {
         if self.state.pointer_focus.is_null() || !frame.has_data() {
             return;
         }
@@ -1072,7 +1072,7 @@ impl Server {
         let client = unsafe { ffi::wl_resource_get_client(focus) };
         let rec = unsafe { ffi::wl_resource_get_user_data(focus) as *mut SurfaceRec };
         let origin = if rec.is_null() {
-            aegis_core::Point::default()
+            aegis_model::Point::default()
         } else {
             unsafe { surface_draw_origin(&*rec) }
         };
@@ -1094,7 +1094,7 @@ impl Server {
         let client = unsafe { ffi::wl_resource_get_client(focus) };
         let rec = unsafe { ffi::wl_resource_get_user_data(focus) as *mut SurfaceRec };
         let origin = if rec.is_null() {
-            aegis_core::Point::default()
+            aegis_model::Point::default()
         } else {
             unsafe { surface_draw_origin(&*rec) }
         };
@@ -1211,10 +1211,10 @@ mod resize_tests {
         );
     }
 
-    fn window(id: u64, x: i32, y: i32, w: i32, h: i32) -> aegis_core::window::Window {
-        let mut window = aegis_core::window::Window::new(aegis_core::window::WindowId(id));
-        window.position = aegis_core::Point { x, y };
-        window.size = aegis_core::Size { w, h };
+    fn window(id: u64, x: i32, y: i32, w: i32, h: i32) -> aegis_model::window::Window {
+        let mut window = aegis_model::window::Window::new(aegis_model::window::WindowId(id));
+        window.position = aegis_model::Point { x, y };
+        window.size = aegis_model::Size { w, h };
         window
     }
 
@@ -1228,7 +1228,7 @@ mod resize_tests {
             [(1usize, lower, true), (2usize, foreground, true)],
             301.0,
             200.0,
-            aegis_core::window::RESIZE_OUTER_MARGIN,
+            aegis_model::window::RESIZE_OUTER_MARGIN,
         );
         assert_eq!(target, None);
     }
@@ -1241,9 +1241,9 @@ mod resize_tests {
             [(1usize, lower, true), (2usize, foreground, true)],
             301.0,
             200.0,
-            aegis_core::window::RESIZE_OUTER_MARGIN,
+            aegis_model::window::RESIZE_OUTER_MARGIN,
         );
-        assert_eq!(target, Some((2, aegis_core::window::ResizeEdges::RIGHT)));
+        assert_eq!(target, Some((2, aegis_model::window::ResizeEdges::RIGHT)));
     }
 
     #[test]
@@ -1254,14 +1254,14 @@ mod resize_tests {
             [(1usize, lower, true), (2usize, foreground, false)],
             301.0,
             200.0,
-            aegis_core::window::RESIZE_OUTER_MARGIN,
+            aegis_model::window::RESIZE_OUTER_MARGIN,
         );
         assert_eq!(target, None);
     }
 
     #[test]
     fn only_the_plain_top_edge_owns_the_double_click_gesture() {
-        use aegis_core::window::ResizeEdges;
+        use aegis_model::window::ResizeEdges;
 
         assert!(is_top_edge_only(ResizeEdges::TOP));
         assert!(!is_top_edge_only(ResizeEdges::LEFT));
@@ -1273,31 +1273,31 @@ mod resize_tests {
     #[test]
     fn top_border_double_click_requires_same_window_time_and_position() {
         let first = TopBorderClick {
-            window_id: aegis_core::window::WindowId(7),
+            window_id: aegis_model::window::WindowId(7),
             released_at_ms: 1_000,
             position: (120.0, 40.0),
         };
         assert!(is_matching_top_border_double_click(
             first,
-            aegis_core::window::WindowId(7),
+            aegis_model::window::WindowId(7),
             1_400,
             (123.0, 42.0),
         ));
         assert!(!is_matching_top_border_double_click(
             first,
-            aegis_core::window::WindowId(8),
+            aegis_model::window::WindowId(8),
             1_400,
             (123.0, 42.0),
         ));
         assert!(!is_matching_top_border_double_click(
             first,
-            aegis_core::window::WindowId(7),
+            aegis_model::window::WindowId(7),
             1_451,
             (123.0, 42.0),
         ));
         assert!(!is_matching_top_border_double_click(
             first,
-            aegis_core::window::WindowId(7),
+            aegis_model::window::WindowId(7),
             1_400,
             (125.0, 40.0),
         ));

@@ -1,6 +1,6 @@
 use crate::*;
-use aegis_authority::{ActorBinding, ObservationLeaseRegistry as ObservationRegistry};
 use aegis_ipc::CommandScopePolicy as _;
+use aegis_security::authority::{ActorBinding, ObservationLeaseRegistry as ObservationRegistry};
 
 mod agent_auth;
 mod app_pick;
@@ -139,9 +139,9 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // the command panel's Messages list, the HUD count, and IPC history —
     // the toast strip applies its own 3-second presentation window on top.
     // Declared early so the toast component registration below can clone it.
-    let notif_queue: std::sync::Arc<std::sync::Mutex<aegis_core::notify::NotificationQueue>> =
+    let notif_queue: std::sync::Arc<std::sync::Mutex<aegis_model::notify::NotificationQueue>> =
         std::sync::Arc::new(std::sync::Mutex::new(
-            aegis_core::notify::NotificationQueue::new(3_600_000),
+            aegis_model::notify::NotificationQueue::new(3_600_000),
         ));
 
     // Declarative configuration (ADR-0026). One TOML file at
@@ -310,15 +310,22 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // notifications, and modal trusted chrome. Directed Interaction Domain capture renders
     // client surfaces directly and therefore never includes this layer.
     shell.add(Box::new(aegis_shell::AgentFeedback::new()));
-    // The SNI tray service is spawned once and shared: the HUD reads the
-    // snapshot for its display-only tray row, and the command panel additionally
-    // holds the command channel for tray interaction (ADR-0080).
-    let tray = aegis_tray::spawn();
+    // The optional SNI tray service is spawned once when at least one compiled
+    // consumer is active. The cloneable handle keeps the snapshot and command
+    // side together across HUD-only, panel-only, and combined builds.
+    #[cfg(any(feature = "chrome-hud", feature = "chrome-command-panel"))]
+    let tray = if cfg!(feature = "chrome-command-panel")
+        || config.as_ref().map(|c| c.hud.enabled).unwrap_or(true)
+    {
+        aegis_tray::spawn()
+    } else {
+        None
+    };
+    #[cfg(feature = "chrome-hud")]
     if config.as_ref().map(|c| c.hud.enabled).unwrap_or(true) {
         shell.add(Box::new(aegis_hud::Hud::with_sources(
             &device,
-            tray.as_ref()
-                .map(|(snapshot, _)| std::sync::Arc::clone(snapshot)),
+            tray.clone(),
             std::sync::Arc::clone(&notif_queue),
         )));
     }
@@ -335,6 +342,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Prism is the compact application-search surface. It shares the
     // launcher's catalog and launch/focus event path while keeping its own
     // Spotlight-style presentation and input state in a standalone crate.
+    #[cfg(feature = "chrome-prism")]
     shell.add(Box::new(aegis_prism::Prism::new()));
     // The overview (M9): a modal window/workspace picker over the same live
     // scene; registered with the modal chrome so it covers ordinary overlays.
@@ -343,6 +351,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // display-only HUD — quick settings, tray activation with dbusmenu
     // popovers, and notification dismissal in one modal surface, toggled by
     // the Super+S binding or a four-finger touchpad swipe.
+    #[cfg(feature = "chrome-command-panel")]
     shell.add(Box::new(aegis_command_panel::CommandPanel::new(
         &device,
         tray,
@@ -350,11 +359,10 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     )));
     // Built-in applications share the launcher catalog with XDG entries but
     // render in-process through optics/lens. Immediate system controls live in
-    // the command panel (ADR-0080); Interaction Domain authority management remains its
-    // own surface.
-    shell.add(Box::new(
-        aegis_interaction_manager::InteractionManager::new(),
-    ));
+    // the command panel (ADR-0080); Agent Workspaces lifecycle controls remain
+    // their own surface.
+    #[cfg(feature = "chrome-agent-workspaces")]
+    shell.add(Box::new(aegis_agent_workspaces::AgentWorkspaces::new()));
     // Interactive screenshot region selector, triggered by the Print key.
     shell.add(Box::new(aegis_shell::ScreenshotSelector::new()));
     // User-consent application picker (the AppChooser portal's compositor
@@ -393,7 +401,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let renderer = aegis_render::Renderer::new();
     let interaction_domain_processes = InteractionDomainProcesses::default();
     let interaction_domain_render_targets: std::collections::BTreeMap<
-        aegis_core::interaction_domain::InteractionDomainId,
+        aegis_model::interaction_domain::InteractionDomainId,
         InteractionDomainRenderTarget,
     > = std::collections::BTreeMap::new();
     let pending_interaction_domain_capture: Option<PendingInteractionDomainCapture> = None;
@@ -439,7 +447,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // A compositor overlay changes the owner of new key presses, not the
     // Wayland keyboard focus. Preserve that owner until the matching release
     // so opening or closing chrome cannot split one physical key sequence.
-    let keyboard_capture = aegis_core::input::KeyboardCaptureState::default();
+    let keyboard_capture = aegis_model::input::KeyboardCaptureState::default();
 
     // Global key bindings: built-in defaults overridden by the config file's
     // `[[keybind]]` entries. `forward_input` consumes a matched key before
@@ -476,7 +484,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // + the borrowed icon cache, which outlives the shell) before registering
     // the dock: `Shell::add` seeds new components with the current catalog.
     // The dock stays last so it stacks above the other chrome.
-    let pinned = resolve_pinned(
+    let pinned = resolve_chrome_pins(
         &launcher_apps,
         &icon_cache.map,
         config
@@ -488,21 +496,25 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .map(|c| c.dock.autopopulate)
             .unwrap_or(false),
     );
+    #[cfg(feature = "chrome-dock")]
     log::info!("dock: {} app(s) pinned", pinned.len());
     shell.set_app_catalog(aegis_shell::AppCatalog {
         apps: launcher_apps.clone(),
         pinned,
         icons: aegis_shell::IconSet::from_raw(icon_cache.map.clone()),
     });
-    let autohide = config.as_ref().map(|c| c.dock.autohide).unwrap_or(false);
-    let autohide_timeout = config
-        .as_ref()
-        .map(|c| c.dock.autohide_timeout)
-        .unwrap_or(2.5);
-    let mut dock = aegis_dock::Dock::new();
-    dock.set_autohide(autohide);
-    dock.set_autohide_timeout(autohide_timeout);
-    shell.add(Box::new(dock));
+    #[cfg(feature = "chrome-dock")]
+    {
+        let autohide = config.as_ref().map(|c| c.dock.autohide).unwrap_or(false);
+        let autohide_timeout = config
+            .as_ref()
+            .map(|c| c.dock.autohide_timeout)
+            .unwrap_or(2.5);
+        let mut dock = aegis_dock::Dock::new();
+        dock.set_autohide(autohide);
+        dock.set_autohide_timeout(autohide_timeout);
+        shell.add(Box::new(dock));
+    }
     // Register the held-Super switcher last so its selection chrome stacks
     // above the Dock while the renderer supplies live window previews below.
     shell.add(Box::new(aegis_shell::WindowSwitcher::new()));
@@ -971,17 +983,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         last_ws_sig,
         last_interaction_domain_revision,
         last_outputs_revision,
-        last_surface_gens: std::collections::HashMap::new(),
-        surface_gens_scratch: std::collections::HashMap::new(),
-        last_notif_revision: None,
-        last_chrome_mode: None,
-        last_session_locked: false,
-        last_presented_cursor: None,
-        last_presented_cursor_position: None,
-        composite_slot_damage: Vec::new(),
-        last_present_minute: None,
-        chrome_dirty: false,
-        force_full_redraw: false,
+        damage: DamageTracking::default(),
         presentation: PresentationScheduler::new(),
         pending_frame: None,
         settings_revision,

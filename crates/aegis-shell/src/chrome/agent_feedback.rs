@@ -10,16 +10,17 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use aegis_core::Point;
-use aegis_core::interaction_domain::{
+use aegis_model::Point;
+use aegis_model::interaction_domain::{
     InteractionDomainId, InteractionDomainSnapshot, InteractionDomainState,
 };
-use aegis_core::window::{Window, WindowId};
-use aegis_core::workspace::WorkspaceSnapshot;
+use aegis_model::window::{Window, WindowId};
+use aegis_model::workspace::WorkspaceSnapshot;
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{
-    AgentActivity, AgentInputKind, Chrome, ChromeEvents, HUD_HEIGHT, Localizer, Message, ellipsize,
+    AgentActivity, AgentInputKind, Chrome, ChromeEvents, ChromeUpdate, HUD_HEIGHT, Localizer,
+    Message, ellipsize,
 };
 
 const HOLD_FOR: Duration = Duration::from_secs(4);
@@ -59,10 +60,15 @@ impl AgentFeedback {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            interaction_domains: aegis_core::interaction_domain::InteractionDomainModel::new()
+            interaction_domains: aegis_model::interaction_domain::InteractionDomainModel::new()
                 .snapshot(),
             activity: BTreeMap::new(),
         }
+    }
+
+    #[cfg(test)]
+    fn update_agent_activity(&mut self, activity: &AgentActivity) {
+        <Self as Chrome>::update(self, ChromeUpdate::AgentActivity(activity));
     }
 }
 
@@ -175,59 +181,64 @@ impl Chrome for AgentFeedback {
         })
     }
 
-    fn update_interaction_domains(&mut self, snapshot: &InteractionDomainSnapshot) {
-        self.interaction_domains = snapshot.clone();
-        self.activity.retain(|interaction_domain, _| {
-            snapshot.interaction_domains.iter().any(|candidate| {
-                candidate.id == *interaction_domain
-                    && candidate.state != InteractionDomainState::Revoked
-            })
-        });
-    }
-
-    fn update_agent_activity(&mut self, activity: &AgentActivity) {
-        let now = Instant::now();
-        match self.activity.get_mut(&activity.interaction_domain) {
-            Some(state) => {
-                if activity.sequence <= state.latest.sequence {
-                    return;
-                }
-                if let Some(position) = activity.position {
-                    state.previous_pointer = (state.pointer_window == Some(activity.window))
-                        .then_some(state.pointer_position)
-                        .flatten();
-                    state.pointer_window = Some(activity.window);
-                    state.pointer_position = Some(position);
-                    state.pointer_at = Some(now);
-                    if matches!(activity.kind, AgentInputKind::Click { .. }) {
-                        state.click_pulse = Some(ClickPulse { position, at: now });
+    fn update(&mut self, update: ChromeUpdate<'_>) {
+        match update {
+            ChromeUpdate::InteractionDomains(snapshot) => {
+                self.interaction_domains = snapshot.clone();
+                self.activity.retain(|interaction_domain, _| {
+                    snapshot.interaction_domains.iter().any(|candidate| {
+                        candidate.id == *interaction_domain
+                            && candidate.state != InteractionDomainState::Revoked
+                    })
+                });
+            }
+            ChromeUpdate::AgentActivity(activity) => {
+                let now = Instant::now();
+                match self.activity.get_mut(&activity.interaction_domain) {
+                    Some(state) => {
+                        if activity.sequence <= state.latest.sequence {
+                            return;
+                        }
+                        if let Some(position) = activity.position {
+                            state.previous_pointer = (state.pointer_window
+                                == Some(activity.window))
+                            .then_some(state.pointer_position)
+                            .flatten();
+                            state.pointer_window = Some(activity.window);
+                            state.pointer_position = Some(position);
+                            state.pointer_at = Some(now);
+                            if matches!(activity.kind, AgentInputKind::Click { .. }) {
+                                state.click_pulse = Some(ClickPulse { position, at: now });
+                            }
+                        } else if state.pointer_window != Some(activity.window) {
+                            state.pointer_window = None;
+                            state.pointer_position = None;
+                            state.previous_pointer = None;
+                            state.pointer_at = None;
+                        }
+                        state.latest = activity.clone();
+                        state.latest_at = now;
                     }
-                } else if state.pointer_window != Some(activity.window) {
-                    state.pointer_window = None;
-                    state.pointer_position = None;
-                    state.previous_pointer = None;
-                    state.pointer_at = None;
+                    None => {
+                        self.activity.insert(
+                            activity.interaction_domain,
+                            VisualActivity {
+                                latest: activity.clone(),
+                                latest_at: now,
+                                pointer_window: activity.position.map(|_| activity.window),
+                                pointer_position: activity.position,
+                                previous_pointer: None,
+                                pointer_at: activity.position.map(|_| now),
+                                click_pulse: activity.position.and_then(|position| {
+                                    matches!(activity.kind, AgentInputKind::Click { .. })
+                                        .then_some(ClickPulse { position, at: now })
+                                }),
+                            },
+                        );
+                    }
                 }
-                state.latest = activity.clone();
-                state.latest_at = now;
             }
-            None => {
-                self.activity.insert(
-                    activity.interaction_domain,
-                    VisualActivity {
-                        latest: activity.clone(),
-                        latest_at: now,
-                        pointer_window: activity.position.map(|_| activity.window),
-                        pointer_position: activity.position,
-                        previous_pointer: None,
-                        pointer_at: activity.position.map(|_| now),
-                        click_pulse: activity.position.and_then(|position| {
-                            matches!(activity.kind, AgentInputKind::Click { .. })
-                                .then_some(ClickPulse { position, at: now })
-                        }),
-                    },
-                );
-            }
+            _ => {}
         }
     }
 
@@ -673,7 +684,7 @@ mod tests {
     fn marker_projects_only_inside_a_read_only_human_mirror() {
         let mut window = Window::new(WindowId(42));
         window.position = Point { x: 20, y: 30 };
-        window.size = aegis_core::Size { w: 100, h: 80 };
+        window.size = aegis_model::Size { w: 100, h: 80 };
         assert!(window_contains(&window, Point { x: 25, y: 35 }));
         assert!(!window.read_only);
         window.read_only = true;

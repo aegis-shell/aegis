@@ -3,7 +3,7 @@
 Transport-neutral validation and routing for application accessibility trees.
 It accepts bounded window-local nodes from an authenticated adapter, verifies
 their graph and geometry, namespaces ids by the owning window, and produces
-the semantic objects consumed by `aegis-authority` observations.
+the semantic objects consumed by `aegis-security::authority` observations.
 
 The crate performs no D-Bus, Wayland, IPC, rendering, or Agent reasoning.
 It accepts only complete bounded revisions, rejects cycles, missing parents,

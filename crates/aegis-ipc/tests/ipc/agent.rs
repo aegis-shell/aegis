@@ -5,7 +5,7 @@ fn pairing_issues_credential_and_synthetic_scope() {
     let path = scratch();
     let handler = Arc::new(TestHandler::permissive(vec![]));
     *handler.pair_result.lock().unwrap() = Ok(aegis_ipc::PairedAgent {
-        principal: aegis_authority::ActorPrincipal::new("prin_1").unwrap(),
+        principal: aegis_security::authority::ActorPrincipal::new("prin_1").unwrap(),
         credential: "cred_1".into(),
         pregranted: vec![ActorCapability::Focus],
         gated: vec![ActorCapability::CaptureInteractionDomain],
@@ -62,7 +62,7 @@ fn authenticated_actor_observation_is_an_explicit_capability() {
     let path = scratch();
     let handler = Arc::new(TestHandler::permissive(sample_windows()));
     *handler.pair_result.lock().unwrap() = Ok(aegis_ipc::PairedAgent {
-        principal: aegis_authority::ActorPrincipal::new("prin_observer").unwrap(),
+        principal: aegis_security::authority::ActorPrincipal::new("prin_observer").unwrap(),
         credential: "cred_observer".into(),
         pregranted: vec![ActorCapability::Focus],
         gated: vec![],
@@ -75,7 +75,7 @@ fn authenticated_actor_observation_is_an_explicit_capability() {
     assert!(error.to_string().contains("GetWindows"), "{error}");
 
     *handler.pair_result.lock().unwrap() = Ok(aegis_ipc::PairedAgent {
-        principal: aegis_authority::ActorPrincipal::new("prin_observer_2").unwrap(),
+        principal: aegis_security::authority::ActorPrincipal::new("prin_observer_2").unwrap(),
         credential: "cred_observer_2".into(),
         pregranted: vec![ActorCapability::ObserveWindows],
         gated: vec![],
@@ -138,7 +138,7 @@ fn recognized_credential_binds_without_pairing() {
     let path = scratch();
     let handler = Arc::new(TestHandler::permissive(vec![]));
     *handler.lookup_result.lock().unwrap() = Some(aegis_ipc::AgentIdentity {
-        principal: aegis_authority::ActorPrincipal::new("prin_9").unwrap(),
+        principal: aegis_security::authority::ActorPrincipal::new("prin_9").unwrap(),
         pregranted: vec![ActorCapability::Notify],
         gated: vec![],
     });
@@ -199,7 +199,7 @@ fn declared_scope_pairs_but_keeps_the_configured_ceiling() {
     let path = scratch();
     let handler = Arc::new(TestHandler::permissive(vec![]));
     *handler.pair_result.lock().unwrap() = Ok(aegis_ipc::PairedAgent {
-        principal: aegis_authority::ActorPrincipal::new("prin_2").unwrap(),
+        principal: aegis_security::authority::ActorPrincipal::new("prin_2").unwrap(),
         credential: "cred_2".into(),
         pregranted: vec![ActorCapability::Close],
         gated: vec![],
@@ -257,7 +257,7 @@ fn grant_paired_handler(
     let path = scratch();
     let handler = Arc::new(TestHandler::permissive(vec![]));
     *handler.pair_result.lock().unwrap() = Ok(aegis_ipc::PairedAgent {
-        principal: aegis_authority::ActorPrincipal::new("prin_g").unwrap(),
+        principal: aegis_security::authority::ActorPrincipal::new("prin_g").unwrap(),
         credential: "cred_g".into(),
         pregranted,
         gated,
@@ -447,7 +447,7 @@ fn interaction_domain_action_proceeds_through_the_grant_path() {
     let result = client
         .interaction_domain_action(InteractionDomainAction::Create {
             label: "agent".into(),
-            capabilities: aegis_core::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
+            capabilities: aegis_model::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
             output: None,
         })
         .expect("granted interaction_domain action");

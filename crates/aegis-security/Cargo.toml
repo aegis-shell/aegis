@@ -1,0 +1,21 @@
+[package]
+name = "aegis-security"
+description = "Transport-neutral Actor authority and integrity-checked audit mechanisms for Aegis"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aegis-model = { workspace = true, features = ["serde"] }
+getrandom.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

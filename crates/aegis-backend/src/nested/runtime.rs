@@ -187,7 +187,7 @@ impl NestedHost {
                 state,
                 ash: None,
                 vk_surface: 0,
-                touchpad_config: aegis_core::input::TouchpadConfig::default(),
+                touchpad_config: aegis_model::input::TouchpadConfig::default(),
                 wakeup_fd: None,
             })
         }
@@ -333,19 +333,19 @@ impl Backend for NestedHost {
         NestedHost::size_u32(self)
     }
 
-    fn output_infos(&self) -> Vec<aegis_core::output::OutputInfo> {
+    fn output_infos(&self) -> Vec<aegis_model::output::OutputInfo> {
         let (width, height) = self.physical_size();
-        vec![aegis_core::output::OutputInfo {
+        vec![aegis_model::output::OutputInfo {
             connector: "nested".to_owned(),
-            geometry: aegis_core::output::OutputGeometry {
-                mode: aegis_core::output::OutputMode {
+            geometry: aegis_model::output::OutputGeometry {
+                mode: aegis_model::output::OutputMode {
                     width: width as i32,
                     height: height as i32,
                     refresh_mhz: 0,
                 },
-                scale: aegis_core::output::Scale(self.scale()),
-                transform: aegis_core::Transform::Normal,
-                logical_origin: aegis_core::Point::default(),
+                scale: aegis_model::output::Scale(self.scale()),
+                transform: aegis_model::Transform::Normal,
+                logical_origin: aegis_model::Point::default(),
             },
             // The outer compositor owns modesetting; there is nothing to
             // enumerate here.
@@ -355,17 +355,17 @@ impl Backend for NestedHost {
 
     fn set_touchpad_config(
         &mut self,
-        config: aegis_core::input::TouchpadConfig,
-    ) -> aegis_core::input::TouchpadStatus {
+        config: aegis_model::input::TouchpadConfig,
+    ) -> aegis_model::input::TouchpadStatus {
         self.touchpad_config = config;
         self.touchpad_status()
     }
 
-    fn touchpad_status(&self) -> aegis_core::input::TouchpadStatus {
-        aegis_core::input::TouchpadStatus {
+    fn touchpad_status(&self) -> aegis_model::input::TouchpadStatus {
+        aegis_model::input::TouchpadStatus {
             configurable: false,
             config: self.touchpad_config,
-            ..aegis_core::input::TouchpadStatus::default()
+            ..aegis_model::input::TouchpadStatus::default()
         }
     }
 
@@ -437,7 +437,7 @@ impl Backend for NestedHost {
 
     /// Drain input events buffered since the last call. Empty until the host
     /// seat advertises pointer capability and the host starts sending events.
-    fn take_input(&mut self) -> Vec<aegis_core::input::InputEvent> {
+    fn take_input(&mut self) -> Vec<aegis_model::input::InputEvent> {
         std::mem::take(&mut self.state.input_events)
     }
 

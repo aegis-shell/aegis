@@ -86,12 +86,10 @@ libc = "0.2"
 dirs = "5"
 ini = { package = "rust-ini", version = "0.20" }
 
-# Internal crates.
-aegis-core = { path = "crates/aegis-core" }
-# Hash-chained event persistence and bounded live audit projections.
-aegis-audit = { path = "crates/aegis-audit" }
-# Transport-neutral Actor identity, observation leases, and action policy.
-aegis-authority = { path = "crates/aegis-authority" }
+# Shared, effect-free Aegis state and deterministic model rules.
+aegis-model = { path = "crates/aegis-model" }
+# Transport-neutral Actor authority plus hash-chained audit persistence.
+aegis-security = { path = "crates/aegis-security" }
 # Validated application accessibility trees and semantic dispatch routing.
 aegis-semantic = { path = "crates/aegis-semantic" }
 # Out-of-process AT-SPI accessibility adapter for semantic observations.
@@ -108,7 +106,7 @@ aegis-design = { path = "crates/aegis-design" }
 # Chrome components promoted out of aegis-shell (ADR-0044).
 aegis-dock = { path = "crates/aegis-dock" }
 aegis-prism = { path = "crates/aegis-prism" }
-aegis-interaction-manager = { path = "crates/aegis-interaction-manager" }
+aegis-agent-workspaces = { path = "crates/aegis-agent-workspaces" }
 # Display-only floating HUD status chips (ADR-0080).
 aegis-hud = { path = "crates/aegis-hud" }
 # SNI system tray service shared by shell chrome (ADR-0080).
@@ -116,10 +114,6 @@ aegis-tray = { path = "crates/aegis-tray" }
 # Modal command panel (ADR-0080).
 aegis-command-panel = { path = "crates/aegis-command-panel" }
 aegis-wallpaper = { path = "crates/aegis-wallpaper" }
-# VRM avatar animation and offscreen rendering.
-aegis-avatar = { path = "crates/aegis-avatar" }
-# Shared account identity, portrait source precedence, and still/VRM routing.
-aegis-identity = { path = "crates/aegis-identity" }
 # First-party session products. The compositor retains the protocol and
 # fail-closed authority; these packages are ordinary Wayland clients.
 aegis-lock = { path = "crates/aegis-lock" }

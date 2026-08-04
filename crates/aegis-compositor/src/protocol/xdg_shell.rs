@@ -86,7 +86,7 @@ unsafe extern "C" fn positioner_set_size(
     unsafe {
         let st = ffi::wl_resource_get_user_data(resource) as *mut PositionerState;
         if !st.is_null() && w > 0 && h > 0 {
-            (*st).size = Some(aegis_core::Size { w, h });
+            (*st).size = Some(aegis_model::Size { w, h });
         }
     }
 }
@@ -102,7 +102,7 @@ unsafe extern "C" fn positioner_set_anchor_rect(
     unsafe {
         let st = ffi::wl_resource_get_user_data(resource) as *mut PositionerState;
         if !st.is_null() {
-            (*st).anchor_rect = Some(aegis_core::Rect::new(x, y, w, h));
+            (*st).anchor_rect = Some(aegis_model::Rect::new(x, y, w, h));
         }
     }
 }
@@ -116,7 +116,7 @@ unsafe extern "C" fn positioner_set_offset(
     unsafe {
         let st = ffi::wl_resource_get_user_data(resource) as *mut PositionerState;
         if !st.is_null() {
-            (*st).offset = aegis_core::Point { x, y };
+            (*st).offset = aegis_model::Point { x, y };
         }
     }
 }
@@ -168,14 +168,14 @@ const POSITIONER_RESIZE_X: u32 = 16;
 const POSITIONER_RESIZE_Y: u32 = 32;
 
 fn positioner_origin(
-    anchor_rect: aegis_core::Rect,
-    popup_size: aegis_core::Size,
+    anchor_rect: aegis_model::Rect,
+    popup_size: aegis_model::Size,
     anchor: u32,
     gravity: u32,
-    offset: aegis_core::Point,
+    offset: aegis_model::Point,
     flip_x: bool,
     flip_y: bool,
-) -> aegis_core::Point {
+) -> aegis_model::Point {
     let anchor_x = match anchor {
         3 | 5 | 6 if flip_x => anchor_rect.origin.x + anchor_rect.size.w,
         4 | 7 | 8 if flip_x => anchor_rect.origin.x,
@@ -204,7 +204,7 @@ fn positioner_origin(
         2 | 6 | 8 => 0,
         _ => -popup_size.h / 2,
     };
-    aegis_core::Point {
+    aegis_model::Point {
         x: anchor_x + gravity_x + offset.x,
         y: anchor_y + gravity_y + offset.y,
     }
@@ -232,14 +232,14 @@ fn resize_axis(origin: i32, size: i32, min: i32, max: i32) -> (i32, i32) {
 /// slide, then resize. `bounds` is expressed in the parent window geometry's
 /// local coordinate space, just like the returned popup origin.
 fn constrain_positioner(
-    anchor_rect: aegis_core::Rect,
-    popup_size: aegis_core::Size,
+    anchor_rect: aegis_model::Rect,
+    popup_size: aegis_model::Size,
     anchor: u32,
     gravity: u32,
-    offset: aegis_core::Point,
+    offset: aegis_model::Point,
     adjustment: u32,
-    bounds: aegis_core::Rect,
-) -> (aegis_core::Point, aegis_core::Size) {
+    bounds: aegis_model::Rect,
+) -> (aegis_model::Point, aegis_model::Size) {
     let original = positioner_origin(
         anchor_rect,
         popup_size,
@@ -381,7 +381,7 @@ unsafe extern "C" fn xdg_surface_set_window_geometry(
         if rec.is_null() || width <= 0 || height <= 0 {
             return;
         }
-        (*rec).pending_window_geometry = Some(aegis_core::Rect::new(x, y, width, height));
+        (*rec).pending_window_geometry = Some(aegis_model::Rect::new(x, y, width, height));
     }
 }
 
@@ -437,9 +437,9 @@ unsafe extern "C" fn xdg_surface_get_toplevel(
         let window_id = if !(*rec).state.is_null() {
             (*(*rec).state).alloc_window_id()
         } else {
-            aegis_core::window::WindowId(0)
+            aegis_model::window::WindowId(0)
         };
-        (*rec).window = aegis_core::window::Window::new(window_id);
+        (*rec).window = aegis_model::window::Window::new(window_id);
         if !(*rec).state.is_null()
             && let Err(error) = (*(*rec).state).register_window((*rec).client_id, window_id)
         {
@@ -495,7 +495,7 @@ unsafe extern "C" fn xdg_surface_get_popup(
             ffi::wl_resource_get_user_data(parent) as *mut SurfaceRec
         };
         let parent_origin = if parent_rec.is_null() {
-            aegis_core::Point::default()
+            aegis_model::Point::default()
         } else {
             // Positioner and configure coordinates are relative to the
             // parent's window geometry, not the potentially inset buffer.
@@ -504,9 +504,9 @@ unsafe extern "C" fn xdg_surface_get_popup(
         let anchor_rect = if !pos_state.is_null() {
             (*pos_state)
                 .anchor_rect
-                .unwrap_or_else(|| aegis_core::Rect::new(0, 0, 1, 1))
+                .unwrap_or_else(|| aegis_model::Rect::new(0, 0, 1, 1))
         } else {
-            aegis_core::Rect::new(0, 0, 1, 1)
+            aegis_model::Rect::new(0, 0, 1, 1)
         };
         let anchor = if pos_state.is_null() {
             0
@@ -519,14 +519,16 @@ unsafe extern "C" fn xdg_surface_get_popup(
             (*pos_state).gravity
         };
         let offset = if pos_state.is_null() {
-            aegis_core::Point::default()
+            aegis_model::Point::default()
         } else {
             (*pos_state).offset
         };
         let popup_size = if !pos_state.is_null() {
-            (*pos_state).size.unwrap_or(aegis_core::Size { w: 0, h: 0 })
+            (*pos_state)
+                .size
+                .unwrap_or(aegis_model::Size { w: 0, h: 0 })
         } else {
-            aegis_core::Size { w: 0, h: 0 }
+            aegis_model::Size { w: 0, h: 0 }
         };
         let adjustment = if pos_state.is_null() {
             0
@@ -542,7 +544,7 @@ unsafe extern "C" fn xdg_surface_get_popup(
                 gravity,
                 offset,
                 adjustment,
-                aegis_core::Rect::new(
+                aegis_model::Rect::new(
                     bounds.origin.x - parent_origin.x,
                     bounds.origin.y - parent_origin.y,
                     bounds.size.w,
@@ -563,7 +565,7 @@ unsafe extern "C" fn xdg_surface_get_popup(
                 popup_size,
             )
         };
-        let popup_pos = aegis_core::Point {
+        let popup_pos = aegis_model::Point {
             x: parent_origin.x + local_origin.x,
             y: parent_origin.y + local_origin.y,
         };
@@ -610,7 +612,7 @@ unsafe extern "C" fn popup_destroy(_client: *mut ffi::wl_client, resource: *mut 
                 && !(*rec).state.is_null()
             {
                 (*(*rec).state)
-                    .pending_popup_focus
+                    .pending_keyboard_focus
                     .insert(seat, focus_after_dismissal);
             }
         }
@@ -644,7 +646,7 @@ unsafe extern "C" fn popup_grab(
         // mapped; see `surface_commit`.
         if (*rec).mapped {
             (*state)
-                .pending_popup_focus
+                .pending_keyboard_focus
                 .insert((*state).active_seat, (*rec).resource);
         }
     }
@@ -728,6 +730,7 @@ unsafe extern "C" fn xdg_toplevel_destroy(
                 );
                 return;
             }
+            defer_keyboard_focus_after_toplevel_unmap(rec);
             if !(*rec).state.is_null() {
                 (*(*rec).state).unregister_window((*rec).window.id);
                 extensions::xdg_foreign_surface_destroyed(rec, (*rec).state);
@@ -852,9 +855,9 @@ unsafe extern "C" fn toplevel_set_max_size(
 }
 
 pub(crate) fn clamp_size_to_hints(
-    requested: aegis_core::Size,
-    hints: aegis_core::window::SizeHints,
-) -> aegis_core::Size {
+    requested: aegis_model::Size,
+    hints: aegis_model::window::SizeHints,
+) -> aegis_model::Size {
     let min_w = hints.min_w.max(1);
     let min_h = hints.min_h.max(1);
     let max_w = if hints.max_w > 0 {
@@ -867,7 +870,7 @@ pub(crate) fn clamp_size_to_hints(
     } else {
         i32::MAX
     };
-    aegis_core::Size {
+    aegis_model::Size {
         w: requested.w.clamp(min_w, max_w),
         h: requested.h.clamp(min_h, max_h),
     }
@@ -877,7 +880,7 @@ pub(crate) fn clamp_size_to_hints(
 /// size, activation/deactivation and decoration changes must preserve it.
 /// Sending 0,0 here delegates sizing back to the client; Firefox responds to
 /// the focus-time `activated` configure by reverting to its own small default.
-pub(crate) fn state_configure_dimensions(size: aegis_core::Size) -> (i32, i32) {
+pub(crate) fn state_configure_dimensions(size: aegis_model::Size) -> (i32, i32) {
     if size.w > 0 && size.h > 0 {
         (size.w, size.h)
     } else {
@@ -896,7 +899,7 @@ pub(crate) unsafe fn reconfigure_with_state(rec: *mut SurfaceRec) {
         }
         let (w, h) = if (*rec).window.state.fullscreen {
             if (*rec).saved_floating_rect.is_none() {
-                (*rec).saved_floating_rect = Some(aegis_core::Rect {
+                (*rec).saved_floating_rect = Some(aegis_model::Rect {
                     origin: (*rec).position,
                     size: (*rec).window.size,
                 });
@@ -913,7 +916,7 @@ pub(crate) unsafe fn reconfigure_with_state(rec: *mut SurfaceRec) {
             }
         } else if (*rec).window.state.maximized {
             if (*rec).saved_floating_rect.is_none() {
-                (*rec).saved_floating_rect = Some(aegis_core::Rect {
+                (*rec).saved_floating_rect = Some(aegis_model::Rect {
                     origin: (*rec).position,
                     size: (*rec).window.size,
                 });
@@ -1075,19 +1078,19 @@ pub(crate) unsafe fn minimize_toplevel_record(rec: *mut SurfaceRec) {
         }
         let state = (*rec).state;
         if !state.is_null() && !(*state).reduced_motion {
-            let old = aegis_core::Rect {
+            let old = aegis_model::Rect {
                 origin: (*rec).position,
                 size: (*rec).window.size,
             };
             let old_screen_h = (*state).output_geometry.logical_rect().size.h;
             let now = (*state).now_ms();
             (*rec).window.transition =
-                Some(aegis_core::transition::WindowTransition::new(old, now));
-            let target_origin = aegis_core::Point {
+                Some(aegis_model::transition::WindowTransition::new(old, now));
+            let target_origin = aegis_model::Point {
                 x: old.origin.x + old.size.w / 4,
                 y: old_screen_h - 20,
             };
-            let target_size = aegis_core::Size {
+            let target_size = aegis_model::Size {
                 w: (old.size.w / 2).max(40),
                 h: 20,
             };
@@ -1178,8 +1181,8 @@ unsafe extern "C" fn toplevel_move(
         if (*state_ptr).interactive.is_some() {
             return; // Already grabbing; ignore.
         }
-        let layout_changed = (*rec).window.layout_role != aegis_core::layout::LayoutRole::Floating;
-        (*rec).window.layout_role = aegis_core::layout::LayoutRole::Floating;
+        let layout_changed = (*rec).window.layout_role != aegis_model::layout::LayoutRole::Floating;
+        (*rec).window.layout_role = aegis_model::layout::LayoutRole::Floating;
         (*rec).layout_target = None;
         let state_changed = (*rec).window.state.maximized || (*rec).window.state.fullscreen;
         (*rec).window.state.maximized = false;
@@ -1187,7 +1190,7 @@ unsafe extern "C" fn toplevel_move(
         if state_changed || layout_changed {
             reconfigure_with_state(rec);
         }
-        (*state_ptr).interactive = Some(aegis_core::window::Interactive::Move {
+        (*state_ptr).interactive = Some(aegis_model::window::Interactive::Move {
             window_id: (*rec).window.id,
             origin: ((*state_ptr).pointer_x, (*state_ptr).pointer_y),
             start_position: (*rec).position,
@@ -1220,17 +1223,17 @@ unsafe extern "C" fn toplevel_resize(
         if (*state_ptr).interactive.is_some() {
             return;
         }
-        let edges = aegis_core::window::ResizeEdges(edges);
+        let edges = aegis_model::window::ResizeEdges(edges);
         if edges.is_none() {
             return;
         }
-        (*rec).window.layout_role = aegis_core::layout::LayoutRole::Floating;
+        (*rec).window.layout_role = aegis_model::layout::LayoutRole::Floating;
         (*rec).layout_target = None;
         (*rec).window.state.maximized = false;
         (*rec).window.state.fullscreen = false;
         (*rec).window.state.resizing = true;
         reconfigure_with_state(rec);
-        (*state_ptr).interactive = Some(aegis_core::window::Interactive::Resize {
+        (*state_ptr).interactive = Some(aegis_model::window::Interactive::Resize {
             window_id: (*rec).window.id,
             edges,
             origin: ((*state_ptr).pointer_x, (*state_ptr).pointer_y),
@@ -1267,7 +1270,7 @@ impl Server {
             return false;
         }
         match interactive {
-            aegis_core::window::Interactive::Move {
+            aegis_model::window::Interactive::Move {
                 start_position,
                 origin,
                 ..
@@ -1275,7 +1278,7 @@ impl Server {
                 let new_x = start_position.x as f32 + (x - origin.0);
                 let new_y = start_position.y as f32 + (y - origin.1);
                 // Round to integer logical pixels.
-                let pos = aegis_core::Point {
+                let pos = aegis_model::Point {
                     x: new_x.round() as i32,
                     y: new_y.round() as i32,
                 };
@@ -1286,7 +1289,7 @@ impl Server {
                 self.state.damaged_windows.insert(interactive.window_id());
                 true
             }
-            aegis_core::window::Interactive::Resize {
+            aegis_model::window::Interactive::Resize {
                 edges,
                 origin,
                 start_position,
@@ -1354,10 +1357,10 @@ impl Server {
                 // Apply and send a configure with the new dimensions so the
                 // client reallocates its buffer.
                 unsafe {
-                    let pos = aegis_core::Point { x: new_x, y: new_y };
+                    let pos = aegis_model::Point { x: new_x, y: new_y };
                     (*rec_ptr).position = pos;
                     (*rec_ptr).window.position = pos;
-                    (*rec_ptr).window.size = aegis_core::Size { w: new_w, h: new_h };
+                    (*rec_ptr).window.size = aegis_model::Size { w: new_w, h: new_h };
                     if !(*rec_ptr).xdg_toplevel.is_null() {
                         let mut arr = ffi::wl_array::empty();
                         let states = (*rec_ptr).window.state.to_state_array();
@@ -1396,7 +1399,7 @@ impl Server {
 
     pub(crate) fn find_surface_by_window_id(
         &self,
-        id: aegis_core::window::WindowId,
+        id: aegis_model::window::WindowId,
     ) -> *mut SurfaceRec {
         for p in self.state.live_surfaces() {
             if unsafe { (*p).window.id } == id {
@@ -1414,45 +1417,45 @@ mod tests {
     #[test]
     fn cascading_menu_flips_to_left_when_right_side_is_constrained() {
         let (origin, size) = constrain_positioner(
-            aegis_core::Rect::new(850, 100, 50, 40),
-            aegis_core::Size { w: 260, h: 160 },
+            aegis_model::Rect::new(850, 100, 50, 40),
+            aegis_model::Size { w: 260, h: 160 },
             4, // right
             4, // right
-            aegis_core::Point::default(),
+            aegis_model::Point::default(),
             POSITIONER_FLIP_X,
-            aegis_core::Rect::new(0, 0, 1_000, 800),
+            aegis_model::Rect::new(0, 0, 1_000, 800),
         );
 
-        assert_eq!(origin, aegis_core::Point { x: 590, y: 40 });
-        assert_eq!(size, aegis_core::Size { w: 260, h: 160 });
+        assert_eq!(origin, aegis_model::Point { x: 590, y: 40 });
+        assert_eq!(size, aegis_model::Size { w: 260, h: 160 });
     }
 
     #[test]
     fn corner_popup_can_flip_on_both_axes() {
         let (origin, size) = constrain_positioner(
-            aegis_core::Rect::new(900, 700, 50, 40),
-            aegis_core::Size { w: 200, h: 150 },
+            aegis_model::Rect::new(900, 700, 50, 40),
+            aegis_model::Size { w: 200, h: 150 },
             8, // bottom-right
             8, // bottom-right
-            aegis_core::Point::default(),
+            aegis_model::Point::default(),
             POSITIONER_FLIP_X | POSITIONER_FLIP_Y,
-            aegis_core::Rect::new(0, 0, 1_000, 800),
+            aegis_model::Rect::new(0, 0, 1_000, 800),
         );
 
-        assert_eq!(origin, aegis_core::Point { x: 700, y: 550 });
-        assert_eq!(size, aegis_core::Size { w: 200, h: 150 });
+        assert_eq!(origin, aegis_model::Point { x: 700, y: 550 });
+        assert_eq!(size, aegis_model::Size { w: 200, h: 150 });
     }
 
     #[test]
     fn failed_flip_falls_through_to_slide_then_resize() {
         let (origin, size) = constrain_positioner(
-            aegis_core::Rect::new(10, 10, 10, 10),
-            aegis_core::Size { w: 120, h: 20 },
+            aegis_model::Rect::new(10, 10, 10, 10),
+            aegis_model::Size { w: 120, h: 20 },
             4, // right
             4, // right
-            aegis_core::Point::default(),
+            aegis_model::Point::default(),
             POSITIONER_FLIP_X | POSITIONER_SLIDE_X | POSITIONER_RESIZE_X,
-            aegis_core::Rect::new(0, 0, 100, 100),
+            aegis_model::Rect::new(0, 0, 100, 100),
         );
 
         assert_eq!(origin.x, 0);

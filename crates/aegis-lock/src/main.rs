@@ -1,5 +1,5 @@
 mod auth;
-mod identity;
+mod profile;
 mod render;
 
 use std::collections::HashMap;
@@ -10,7 +10,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aegis_lock::{AuthResult, LockAction, LockState, PresentationMode};
-use identity::Identity;
+use profile::Profile;
 use render::{Graphics, LockRenderSurface};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
@@ -63,7 +63,7 @@ struct AppData {
     pointer_positions: HashMap<u32, (wl_surface::WlSurface, (f64, f64))>,
     touches: Vec<wl_touch::WlTouch>,
     graphics: Graphics,
-    identity: Identity,
+    profile: Profile,
     lock_state: LockState,
     auth_tx: Sender<AuthResult>,
     auth_rx: Receiver<AuthResult>,
@@ -121,7 +121,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         pointer_positions: HashMap::new(),
         touches: Vec::new(),
         graphics: Graphics::new(&connection)?,
-        identity: Identity::current()?,
+        profile: Profile::current()?,
         lock_state: LockState::new(now),
         auth_tx,
         auth_rx,
@@ -309,7 +309,7 @@ impl AppData {
         match action {
             LockAction::None => {}
             LockAction::Authenticate(secret) => auth::authenticate_async(
-                self.identity.username.clone(),
+                self.profile.username.clone(),
                 secret,
                 self.auth_tx.clone(),
             ),
@@ -423,7 +423,7 @@ impl AppData {
             if let Err(error) = self.graphics.render(
                 render,
                 &self.lock_state,
-                &self.identity,
+                &self.profile,
                 self.visual_progress,
                 now,
             ) {
