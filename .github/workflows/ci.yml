@@ -25,6 +25,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Validate canonical Cargo lockfile
+        run: cargo metadata --locked --format-version 1 > /dev/null
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Crate dependency boundaries

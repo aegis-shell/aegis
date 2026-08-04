@@ -7,6 +7,14 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Packaging
+
+- Regenerated the canonical Cargo lockfile for the current workspace and
+  added clean remote-graph validation to CI and canonical-mode manifest
+  commits. Aegis `v0.0.12` carried the pre-restructure `v0.0.11` workspace
+  graph and therefore failed reproducible `cargo build --locked` package
+  builds before compilation.
+
 ## [0.0.12] - 2026-08-04
 
 ### Shell chrome

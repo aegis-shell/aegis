@@ -50,6 +50,20 @@ from the Aegis root and once from the compatible Aegis Portal root. A
 network-enabled phase may fetch each locked graph directly or vendor it for
 an offline builder:
 
+Prepare an Aegis release commit in canonical Optics mode. The local path
+override must be absent, and the regenerated lockfile must resolve the full
+remote dependency graph without modification:
+
+```bash
+test ! -e .cargo/config.toml
+cargo generate-lockfile
+cargo metadata --locked --format-version 1 > /dev/null
+```
+
+Do not tag a release until the same metadata command succeeds from a clean
+source export. A lockfile produced with `.cargo/optics-local.toml` is local
+worktree state because it omits the remote Optics source identities.
+
 ```bash
 cargo vendor --locked vendor
 ```
