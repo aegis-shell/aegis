@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-08-04
+
 ### Shell chrome
 
 - Screenshot and portal-picker selections now dim the four cutouts outside

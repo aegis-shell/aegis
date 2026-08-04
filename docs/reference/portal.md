@@ -11,7 +11,7 @@ D-Bus as needed.
 | Item | Value |
 |------|-------|
 | Source repository | `https://github.com/aegis-shell/xdg-desktop-portal-aegis` |
-| Release compatibility | Portal `v0.0.2` supports Aegis `v0.0.11` and its IPC protocol 24; the Portal manifest and compatibility reference remain authoritative |
+| Release compatibility | Portal `v0.0.2` supports Aegis `v0.0.12` and its IPC protocol 24; the Portal manifest and compatibility reference remain authoritative |
 | Distribution package | `xdg-desktop-portal-aegis` |
 | Backend executable | `/usr/libexec/xdg-desktop-portal-aegis` by default; distributions may configure `libexecdir` |
 | FileChooser prompter | `/usr/libexec/aegis-portal-prompter` by default; distributions may configure `libexecdir` |
