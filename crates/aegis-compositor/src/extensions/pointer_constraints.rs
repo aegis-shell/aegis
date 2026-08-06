@@ -14,6 +14,14 @@ struct PointerConstraintRec {
     cursor_hint: Option<(f32, f32)>,
 }
 
+impl PointerConstraintRec {
+    /// Whether this constraint currently governs the pointer focused on
+    /// `focus`: only an active constraint on the focused surface applies.
+    fn governs(&self, focus: *mut ffi::wl_resource) -> bool {
+        self.active && self.surface == focus
+    }
+}
+
 static POINTER_CONSTRAINTS_IMPL: ffi::zwp_pointer_constraints_v1_interface_impl =
     ffi::zwp_pointer_constraints_v1_interface_impl {
         destroy: crate::res_destroy,
@@ -310,7 +318,7 @@ pub(crate) unsafe fn constrain_pointer_motion(state: *mut State, x: f32, y: f32)
                 continue;
             }
             let rec = ffi::wl_resource_get_user_data(resource) as *mut PointerConstraintRec;
-            if rec.is_null() || !(*rec).active || (*rec).surface != (*state).pointer_focus {
+            if rec.is_null() || !(*rec).governs((*state).pointer_focus) {
                 continue;
             }
             if (*rec).locked {
@@ -355,5 +363,79 @@ pub(crate) unsafe fn constrain_pointer_motion(state: *mut State, x: f32, y: f32)
             return (origin.x as f32 + cx, origin.y as f32 + cy);
         }
         (x, y)
+    }
+}
+
+/// Whether an active lock constraint currently holds the pointer. While true,
+/// the pointer's absolute position is frozen, so `wl_pointer.motion` must not
+/// be sent — only `zwp_relative_pointer_v1` relative motion reaches the
+/// client. A confine constraint never locks: confined pointers keep receiving
+/// absolute motion within their region.
+pub(crate) unsafe fn pointer_lock_active(state: *mut State) -> bool {
+    unsafe {
+        if state.is_null() || (*state).pointer_focus.is_null() {
+            return false;
+        }
+        let focus = (*state).pointer_focus;
+        for resource in (*state).pointer_constraints.clone() {
+            if resource.is_null() {
+                continue;
+            }
+            let rec = ffi::wl_resource_get_user_data(resource) as *mut PointerConstraintRec;
+            if rec.is_null() {
+                continue;
+            }
+            if (*rec).governs(focus) {
+                return (*rec).locked;
+            }
+        }
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn constraint(
+        active: bool,
+        locked: bool,
+        surface: *mut ffi::wl_resource,
+    ) -> PointerConstraintRec {
+        PointerConstraintRec {
+            state: std::ptr::null_mut(),
+            surface,
+            pointer: std::ptr::null_mut(),
+            locked,
+            lifetime: 1,
+            active,
+            consumed: false,
+            region: None,
+            cursor_hint: None,
+        }
+    }
+
+    #[test]
+    fn only_an_active_constraint_on_the_focused_surface_governs_the_pointer() {
+        let surface = 0x100usize as *mut ffi::wl_resource;
+        let other = 0x200usize as *mut ffi::wl_resource;
+        assert!(constraint(true, true, surface).governs(surface));
+        assert!(
+            !constraint(false, true, surface).governs(surface),
+            "an unfocused (inactive) lock must not hold the pointer"
+        );
+        assert!(!constraint(true, true, other).governs(surface));
+    }
+
+    #[test]
+    fn a_confine_governs_but_never_locks() {
+        let surface = 0x100usize as *mut ffi::wl_resource;
+        let confine = constraint(true, false, surface);
+        // Confined pointers keep receiving wl_pointer.motion within the
+        // region; only a lock suppresses absolute motion.
+        assert!(confine.governs(surface));
+        assert!(!confine.locked);
+        let lock = constraint(true, true, surface);
+        assert!(lock.governs(surface) && lock.locked);
     }
 }

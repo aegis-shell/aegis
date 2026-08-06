@@ -162,6 +162,11 @@ pub struct ConfirmPrompt {
     accept_label: String,
     style: ConfirmPickStyle,
     modal_reserved: Reserved,
+    /// The design snapshot the prompt paints from, from
+    /// [`ChromeUpdate::Appearance`]. Seeded on registration by
+    /// [`crate::Shell::add`] and refreshed when the desktop color scheme
+    /// changes; defaults to the dark appearance until the first update arrives.
+    design: Design,
 }
 
 impl ConfirmPrompt {
@@ -173,6 +178,7 @@ impl ConfirmPrompt {
             accept_label: "OK".to_string(),
             style: ConfirmPickStyle::YesNo,
             modal_reserved: Reserved::default(),
+            design: Design::dark(),
         }
     }
 
@@ -241,7 +247,7 @@ impl Chrome for ConfirmPrompt {
         let display = (raw.display_size.x, raw.display_size.y);
         let cursor = raw.cursor;
         let pressed = raw.mouse_pressed.first().copied().unwrap_or(false);
-        let design = Design::dark();
+        let design = self.design;
         let layout = PromptLayout::for_display(display, self.modal_reserved);
 
         frame.layer(
@@ -253,7 +259,7 @@ impl Chrome for ConfirmPrompt {
                 h: display.1,
             },
             &OverlayOpts {
-                bg: Color::rgba(8, 10, 18, 118),
+                bg: design.colors.scrim,
                 ..Default::default()
             },
             |_| {},
@@ -447,8 +453,10 @@ impl Chrome for ConfirmPrompt {
     }
 
     fn update(&mut self, update: ChromeUpdate<'_>) {
-        if let ChromeUpdate::ModalReserved(reserved) = update {
-            self.modal_reserved = reserved;
+        match update {
+            ChromeUpdate::ModalReserved(reserved) => self.modal_reserved = reserved,
+            ChromeUpdate::Appearance(design) => self.design = *design,
+            _ => {}
         }
     }
 
@@ -498,7 +506,7 @@ impl Chrome for ConfirmPrompt {
         }
         let layout = PromptLayout::for_display(display, self.modal_reserved);
         let panel = layout.panel;
-        let radius = Design::dark().radii.card;
+        let radius = self.design.radii.card;
         vec![
             BackdropRegion {
                 x: panel.x + radius,

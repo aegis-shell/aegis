@@ -44,8 +44,20 @@ impl ButtonState {
 /// server can hand them to `wl_pointer.button` and `wl_keyboard.key` directly.
 #[derive(Debug, Clone, Copy)]
 pub enum InputEvent {
-    /// Pointer moved to `(x, y)` in logical pixels.
-    PointerMotion { x: f32, y: f32 },
+    /// Pointer moved to `(x, y)` in logical pixels. `dx`/`dy` are the
+    /// accelerated deltas of the motion and `dx_unaccel`/`dy_unaccel` the raw
+    /// device deltas. Relative-pointer clients consume the deltas directly:
+    /// unlike `x`/`y` they never clamp at output edges, so a locked pointer
+    /// keeps reporting motion. Sources that only know absolute positions
+    /// difference successive positions or report zero deltas.
+    PointerMotion {
+        x: f32,
+        y: f32,
+        dx: f64,
+        dy: f64,
+        dx_unaccel: f64,
+        dy_unaccel: f64,
+    },
     /// Pointer button state changed. `button` is a Linux `BTN_*` code.
     PointerButton { button: u32, state: ButtonState },
     /// One logically atomic pointer-axis frame. Source, high-resolution wheel
@@ -71,6 +83,23 @@ pub enum InputEvent {
     /// Graphics-tablet tool event. Kept distinct from the mouse pointer so
     /// tablet-aware clients receive pressure/tilt and independent proximity.
     Tablet { event: TabletEvent },
+}
+
+impl InputEvent {
+    /// An absolute pointer move without device deltas, for sources that only
+    /// know positions: synthesized automation input and motions re-injected
+    /// after compositor chrome releases the pointer. Relative-pointer clients
+    /// receive no delta from these events.
+    pub fn pointer_move_to(x: f32, y: f32) -> InputEvent {
+        InputEvent::PointerMotion {
+            x,
+            y,
+            dx: 0.0,
+            dy: 0.0,
+            dx_unaccel: 0.0,
+            dy_unaccel: 0.0,
+        }
+    }
 }
 
 /// Physical source of a pointer-axis frame.

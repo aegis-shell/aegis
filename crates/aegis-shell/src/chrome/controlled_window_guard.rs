@@ -6,12 +6,13 @@
 //! chrome input over their complete rectangles, and requests the standard
 //! `not-allowed` cursor.
 
+use aegis_design::Design;
 use aegis_model::interaction_domain::{
     InteractionDomain, InteractionDomainId, InteractionDomainSnapshot, InteractionDomainState,
 };
 use aegis_model::window::{Window, WindowId};
 use aegis_model::workspace::WorkspaceSnapshot;
-use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
+use lens::{Align, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{Chrome, ChromeEvents, ChromeUpdate, CursorShape, Localizer, Message, ellipsize};
 
@@ -24,6 +25,11 @@ const SCANLINE_GAP: f32 = 44.0;
 pub struct ControlledWindowGuard {
     interaction_domains: InteractionDomainSnapshot,
     has_guarded_windows: bool,
+    /// The design snapshot the guard paints from, from
+    /// [`ChromeUpdate::Appearance`]. Seeded on registration by
+    /// [`crate::Shell::add`] and refreshed when the desktop color scheme
+    /// changes; defaults to the dark appearance until the first update arrives.
+    design: Design,
 }
 
 impl ControlledWindowGuard {
@@ -33,6 +39,7 @@ impl ControlledWindowGuard {
             interaction_domains: aegis_model::interaction_domain::InteractionDomainModel::new()
                 .snapshot(),
             has_guarded_windows: false,
+            design: Design::dark(),
         }
     }
 
@@ -81,7 +88,7 @@ impl Chrome for ControlledWindowGuard {
                 .unwrap_or(InteractionDomainState::Active);
             let accent = super::agent_feedback::interaction_domain_color(interaction_domain_id);
             let border = if state == InteractionDomainState::Paused {
-                Color::rgba(163, 171, 188, 210)
+                self.design.colors.menu_disabled.with_alpha(210)
             } else {
                 accent.with_alpha(220)
             };
@@ -90,7 +97,7 @@ impl Chrome for ControlledWindowGuard {
                 &format!("aegis-controlled-window-wash-{}", window.id.0),
                 rect,
                 &OverlayOpts {
-                    bg: Color::rgba(8, 12, 20, WASH_ALPHA),
+                    bg: self.design.colors.scrim.with_alpha(WASH_ALPHA),
                     border,
                     border_width: 2.0,
                     radius: if window.state.fullscreen { 0.0 } else { 7.0 },
@@ -160,7 +167,7 @@ impl Chrome for ControlledWindowGuard {
                 &format!("aegis-controlled-window-badge-{}", window.id.0),
                 badge,
                 &OverlayOpts {
-                    bg: Color::rgba(16, 20, 29, 232),
+                    bg: self.design.colors.application_surface.with_alpha(232),
                     border,
                     border_width: 1.0,
                     radius: BADGE_HEIGHT * 0.5,
@@ -212,6 +219,7 @@ impl Chrome for ControlledWindowGuard {
             ChromeUpdate::Windows(windows) => {
                 self.has_guarded_windows = windows.iter().any(is_guarded_window);
             }
+            ChromeUpdate::Appearance(design) => self.design = *design,
             _ => {}
         }
     }

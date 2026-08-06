@@ -43,6 +43,11 @@ pub struct Prism {
     anim_active: bool,
     prev_down: bool,
     reduced_motion: bool,
+    /// The design snapshot the panel paints from, from
+    /// [`ChromeUpdate::Appearance`]. Seeded on registration by
+    /// [`aegis_shell::Shell::add`] and refreshed when the desktop color scheme
+    /// changes; defaults to the dark appearance until the first update arrives.
+    design: Design,
 }
 
 impl Prism {
@@ -57,6 +62,7 @@ impl Prism {
             anim_active: false,
             prev_down: false,
             reduced_motion: false,
+            design: Design::dark(),
         }
     }
 
@@ -230,6 +236,9 @@ impl Chrome for Prism {
                 h: display.y,
             },
             &OverlayOpts {
+                // A gentle dark veil behind the panel — lighter than the
+                // `scrim` color token's modal dim, so the desktop stays
+                // readable behind the glass. Dark in both appearances.
                 bg: Color::rgba(4, 6, 14, alpha(54, progress)),
                 pad: 0.0,
                 ..Default::default()
@@ -237,9 +246,9 @@ impl Chrome for Prism {
             |_| {},
         );
 
-        let design = Design::dark();
+        let design = self.design;
         let mut panel_material = materials::glass_panel(&design);
-        panel_material.bg = Color::rgba(255, 255, 255, alpha(12, progress));
+        panel_material.bg = with_progress(design.colors.glass_surface, progress);
         panel_material.radius = PANEL_RADIUS;
         frame.layer("aegis-prism-panel", panel, &panel_material, |_| {});
 
@@ -299,7 +308,7 @@ impl Chrome for Prism {
                     h: 26.0,
                 },
                 &OverlayOpts {
-                    bg: Color::rgba(242, 245, 255, alpha(235, progress)),
+                    bg: with_progress(design.colors.application_text, progress),
                     radius: 1.0,
                     pad: 0.0,
                     ..Default::default()
@@ -316,7 +325,7 @@ impl Chrome for Prism {
                 h: 1.0,
             },
             &OverlayOpts {
-                bg: Color::rgba(255, 255, 255, alpha(38, progress)),
+                bg: with_progress(design.colors.application_border, progress),
                 pad: 0.0,
                 ..Default::default()
             },
@@ -380,9 +389,9 @@ impl Chrome for Prism {
                     row,
                     &OverlayOpts {
                         bg: if selected {
-                            Color::rgba(106, 155, 255, alpha(76, progress))
+                            with_progress(design.colors.application_active, progress)
                         } else if hovered {
-                            Color::rgba(255, 255, 255, alpha(24, progress))
+                            with_progress(design.colors.application_hover, progress)
                         } else {
                             Color::TRANSPARENT
                         },
@@ -510,6 +519,7 @@ impl Chrome for Prism {
         match update {
             ChromeUpdate::AppCatalog(catalog) => self.update_app_catalog(catalog),
             ChromeUpdate::ReducedMotion(reduced) => self.reduced_motion = reduced,
+            ChromeUpdate::Appearance(design) => self.design = *design,
             _ => {}
         }
     }
@@ -564,7 +574,7 @@ impl Chrome for Prism {
         }
         let panel = Self::panel_rect(display, self.brain.filtered().len(), self.visibility);
         vec![LiquidGlassRegion::from_role(
-            &Design::dark(),
+            &self.design,
             GlassRole::ProminentPanel,
             BackdropRegion::from(panel),
             PANEL_RADIUS,
@@ -591,6 +601,9 @@ fn render_icon(frame: &mut Frame, icon: Option<*mut c_void>, progress: f32) {
                     &LayoutOpts {
                         width: size,
                         height: size,
+                        // Neutral slate tile behind the fallback glyph: a
+                        // content color with no semantic role, identical in
+                        // both appearances.
                         bg: Color::rgba(78, 88, 120, alpha(230, progress)),
                         radius: 9.0,
                         cross: Align::Center,

@@ -8,10 +8,21 @@ use super::geometry::crop_rgba;
 pub(in crate::runtime) struct CapturedPixels {
     width: u32,
     height: u32,
-    readback: flux::Readback,
+    pixels: CapturedPixelsSource,
     crop: Option<aegis_model::Rect>,
     cursor: Option<CaptureCursor>,
     pub(super) security_generation: u64,
+}
+
+/// CPU-side source of a captured frame. The windowed presentation surface
+/// (and exportable offscreen targets) detach an on-demand [`flux::Readback`]
+/// snapshot whose staging can outlive the surface; `require_readback` surfaces
+/// such as Interaction Domain render targets keep their staging surface-owned
+/// (flux refuses `take_readback` there), so the frame is copied into an owned
+/// buffer on the main loop instead.
+pub(in crate::runtime) enum CapturedPixelsSource {
+    Readback(flux::Readback),
+    Rgba(Vec<u8>),
 }
 
 /// Cursor pixels to composite into a saved screenshot after GPU readback.
@@ -105,7 +116,30 @@ pub(in crate::runtime) fn read_captured_pixels(
     Ok(CapturedPixels {
         width: pending.width,
         height: pending.height,
-        readback,
+        pixels: CapturedPixelsSource::Readback(readback),
+        crop: pending.crop,
+        cursor: pending.cursor,
+        security_generation: pending.security_generation,
+    })
+}
+
+/// Copy a completed frame from a `require_readback` surface directly into an
+/// owned buffer. Flux keeps require-readback staging surface-owned and refuses
+/// [`flux::Surface::take_readback`] there, so the pixel copy happens on the
+/// main loop once [`flux::Surface::read_pixels_ready`] reports the frame; the
+/// capture worker only encodes the already CPU-side bytes.
+pub(in crate::runtime) fn read_captured_pixels_owned(
+    surface: &flux::Surface,
+    pending: PendingReadback,
+) -> Result<CapturedPixels, String> {
+    let mut full_rgba = vec![0u8; pending.width as usize * pending.height as usize * 4];
+    surface
+        .read_pixels(&mut full_rgba)
+        .map_err(|error| format!("detach shot readback: {error}{}", flux_last_error_detail()))?;
+    Ok(CapturedPixels {
+        width: pending.width,
+        height: pending.height,
+        pixels: CapturedPixelsSource::Rgba(full_rgba),
         crop: pending.crop,
         cursor: pending.cursor,
         security_generation: pending.security_generation,
@@ -115,15 +149,28 @@ pub(in crate::runtime) fn read_captured_pixels(
 /// Finish a capture away from the frame thread. Cropping first bounds the
 /// unpremultiply and PNG work for region captures.
 pub(super) fn encode_capture(capture: CapturedPixels) -> Result<(u32, u32, Vec<u8>), String> {
-    let mut full_rgba = vec![0u8; capture.width as usize * capture.height as usize * 4];
-    capture
-        .readback
-        .read_pixels(&mut full_rgba)
-        .map_err(|error| format!("shot pixel copy: {error}"))?;
-    if let Some(cursor) = capture.cursor {
-        composite_cursor(&mut full_rgba, capture.width, capture.height, &cursor);
+    let CapturedPixels {
+        width,
+        height,
+        pixels,
+        crop,
+        cursor,
+        security_generation: _,
+    } = capture;
+    let mut full_rgba = match pixels {
+        CapturedPixelsSource::Readback(readback) => {
+            let mut full_rgba = vec![0u8; width as usize * height as usize * 4];
+            readback
+                .read_pixels(&mut full_rgba)
+                .map_err(|error| format!("shot pixel copy: {error}"))?;
+            full_rgba
+        }
+        CapturedPixelsSource::Rgba(full_rgba) => full_rgba,
+    };
+    if let Some(cursor) = cursor {
+        composite_cursor(&mut full_rgba, width, height, &cursor);
     }
-    encode_rgba_capture(capture.width, capture.height, full_rgba, capture.crop)
+    encode_rgba_capture(width, height, full_rgba, crop)
 }
 
 /// Premultiplied source-over from an Xcursor BGRA sprite into the framebuffer
@@ -210,21 +257,34 @@ fn unpremultiply(pixels: &mut [u8]) {
 /// still carry a CPU crop. The returned RGB is straight-alpha, matching the
 /// portal's `(ddd)` colour contract after a `/255` normalization.
 pub(in crate::runtime) fn read_picked_pixel(capture: CapturedPixels) -> Result<[u8; 3], String> {
-    let mut full_rgba = vec![0u8; capture.width as usize * capture.height as usize * 4];
-    capture
-        .readback
-        .read_pixels(&mut full_rgba)
-        .map_err(|error| format!("picked-pixel copy: {error}"))?;
+    let CapturedPixels {
+        width,
+        height,
+        pixels,
+        crop,
+        cursor: _,
+        security_generation: _,
+    } = capture;
+    let mut full_rgba = match pixels {
+        CapturedPixelsSource::Readback(readback) => {
+            let mut full_rgba = vec![0u8; width as usize * height as usize * 4];
+            readback
+                .read_pixels(&mut full_rgba)
+                .map_err(|error| format!("picked-pixel copy: {error}"))?;
+            full_rgba
+        }
+        CapturedPixelsSource::Rgba(full_rgba) => full_rgba,
+    };
     // Region readback already rebases the picked rectangle to (0, 0). Keep
     // accepting a legacy CPU crop for full-frame/Interaction Domain sources during the
     // transition to region-capable targets.
-    let (x, y) = capture.crop.map_or((0, 0), |crop| {
+    let (x, y) = crop.map_or((0, 0), |crop| {
         (
-            crop.origin.x.clamp(0, capture.width as i32 - 1) as usize,
-            crop.origin.y.clamp(0, capture.height as i32 - 1) as usize,
+            crop.origin.x.clamp(0, width as i32 - 1) as usize,
+            crop.origin.y.clamp(0, height as i32 - 1) as usize,
         )
     });
-    let at = (y * capture.width as usize + x) * 4;
+    let at = (y * width as usize + x) * 4;
     unpremultiply(&mut full_rgba[at..at + 4]);
     Ok([full_rgba[at], full_rgba[at + 1], full_rgba[at + 2]])
 }
@@ -273,18 +333,31 @@ fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
 pub(in crate::runtime) fn stream_pixels(
     capture: CapturedPixels,
 ) -> Result<super::worker::StreamPixels, String> {
-    let mut rgba = vec![0u8; capture.width as usize * capture.height as usize * 4];
-    capture
-        .readback
-        .read_pixels(&mut rgba)
-        .map_err(|error| format!("stream pixel copy: {error}"))?;
+    let CapturedPixels {
+        width,
+        height,
+        pixels,
+        crop: _,
+        cursor: _,
+        security_generation: _,
+    } = capture;
+    let mut rgba = match pixels {
+        CapturedPixelsSource::Readback(readback) => {
+            let mut rgba = vec![0u8; width as usize * height as usize * 4];
+            readback
+                .read_pixels(&mut rgba)
+                .map_err(|error| format!("stream pixel copy: {error}"))?;
+            rgba
+        }
+        CapturedPixelsSource::Rgba(rgba) => rgba,
+    };
     for px in rgba.chunks_exact_mut(4) {
         px.swap(0, 2);
         px[3] = 255;
     }
     Ok(super::worker::StreamPixels {
-        width: capture.width,
-        height: capture.height,
+        width,
+        height,
         bgra: rgba.into(),
         damage: Vec::new(),
     })

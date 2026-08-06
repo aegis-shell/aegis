@@ -314,8 +314,15 @@ fn liquid_glass_geometry_maps_to_the_downsampled_capture_once() {
     };
     // Output scale 2, capture downsample 1/2, physical capture origin
     // (600, 120): capture coordinates are logical*1 - origin*0.5.
-    let groups = liquid_glass_groups(&[source], (600, 120), 2.0, 0.5);
+    let groups = liquid_glass_groups(
+        &[source],
+        (600, 120),
+        2.0,
+        0.5,
+        aegis_model::settings::ColorScheme::Dark,
+    );
     assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].tint_color, [255, 255, 255]);
     assert_eq!(groups[0].primary.x, 100.0);
     assert_eq!(groups[0].primary.y, 40.0);
     assert_eq!(groups[0].primary.width, 320.0);

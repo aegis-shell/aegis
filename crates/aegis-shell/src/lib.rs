@@ -455,6 +455,18 @@ pub enum ChromeUpdate<'a> {
     AgentActivity(&'a AgentActivity),
     AppCatalog(&'a AppCatalog),
     Windows(&'a [Window]),
+    /// Every mapped toplevel across all workspaces (the global counterpart of
+    /// [`ChromeUpdate::Windows`], which carries only the visible set). Only
+    /// components whose strip is workspace-global — the dock — consume this.
+    AllWindows(&'a [Window]),
+    /// Device-pixel (HiDPI) scale of the output the chrome renders on, so a
+    /// component can snap hairline geometry to the device pixel grid.
+    Scale(f32),
+    /// The shell-wide design snapshot for the resolved desktop color scheme.
+    /// Components that paint from design tokens retain a copy instead of
+    /// constructing one inline; seeded by [`Shell::add`] and broadcast by
+    /// [`Shell::set_color_scheme`].
+    Appearance(&'a aegis_design::Design),
     ReducedMotion(bool),
     ModalReserved(Reserved),
 }
@@ -763,6 +775,10 @@ pub enum ShellError {
 pub struct Shell {
     ui: Ui,
     windows: Vec<Window>,
+    /// Every mapped toplevel across all workspaces; pushed by the host
+    /// alongside [`Self::windows`] and fanned out as
+    /// [`ChromeUpdate::AllWindows`] for workspace-global components (the dock).
+    all_windows: Vec<Window>,
     workspaces: WorkspaceSnapshot,
     i18n: Localizer,
     system_status: SystemStatus,
@@ -776,6 +792,13 @@ pub struct Shell {
     /// Accessibility reduced-motion policy (ADR-0029), fanned out to every
     /// registered component (including ones added later) and to lens.
     reduced_motion: bool,
+    /// Most recently reported device-pixel scale, fanned out to components as
+    /// [`ChromeUpdate::Scale`].
+    scale: f32,
+    /// The resolved appearance every component paints from, seeded by
+    /// [`Shell::add`] and fanned out as [`ChromeUpdate::Appearance`]. Starts
+    /// dark; the compositor pushes the configured scheme after startup.
+    design: aegis_design::Design,
     /// While the screenshot freeze holds the screen, only the selector
     /// itself renders; every other component is part of the frozen snapshot
     /// and must not draw (or advance its animations) on top of it.
@@ -797,6 +820,7 @@ impl Shell {
             Ok(Shell {
                 ui,
                 windows: Vec::new(),
+                all_windows: Vec::new(),
                 workspaces: WorkspaceSnapshot {
                     outputs: Vec::new(),
                 },
@@ -809,6 +833,8 @@ impl Shell {
                 events: ChromeEvents::default(),
                 components: Vec::new(),
                 reduced_motion: false,
+                scale: 1.0,
+                design: aegis_design::Design::dark(),
                 screenshot_freeze: false,
             })
         }
@@ -821,8 +847,11 @@ impl Shell {
         component.update(ChromeUpdate::ResourceStats(&self.resource_stats));
         component.update(ChromeUpdate::InteractionDomains(&self.interaction_domains));
         component.update(ChromeUpdate::ReducedMotion(self.reduced_motion));
+        component.update(ChromeUpdate::Scale(self.scale));
+        component.update(ChromeUpdate::Appearance(&self.design));
         component.update(ChromeUpdate::AppCatalog(&self.catalog));
         component.update(ChromeUpdate::Windows(&self.windows));
+        component.update(ChromeUpdate::AllWindows(&self.all_windows));
         self.components.push(component);
     }
 
@@ -854,6 +883,32 @@ impl Shell {
     /// backend's output scale here each time it changes.
     pub fn set_scale(&mut self, scale: f32) {
         self.ui.set_scale(scale);
+        if self.scale != scale {
+            self.scale = scale;
+            for component in self.components.iter_mut() {
+                component.update(ChromeUpdate::Scale(scale));
+            }
+        }
+    }
+
+    /// Set the shell-wide desktop color scheme (`[appearance] color_scheme`).
+    /// `System` resolves to the dark fallback inside
+    /// [`aegis_design::Design::for_scheme`]; every component receives the
+    /// resulting design snapshot through [`ChromeUpdate::Appearance`] when it
+    /// actually changes.
+    pub fn set_color_scheme(&mut self, scheme: aegis_model::settings::ColorScheme) {
+        let design = aegis_design::Design::for_scheme(scheme);
+        if self.design != design {
+            self.design = design;
+            for component in self.components.iter_mut() {
+                component.update(ChromeUpdate::Appearance(&self.design));
+            }
+        }
+    }
+
+    /// The design snapshot components currently paint from.
+    pub fn design(&self) -> &aegis_design::Design {
+        &self.design
     }
 
     /// Select chrome translations from a POSIX locale or BCP-47 language tag.
@@ -885,6 +940,18 @@ impl Shell {
         self.windows = windows;
         for component in self.components.iter_mut() {
             component.update(ChromeUpdate::Windows(&self.windows));
+        }
+    }
+
+    /// Replace the host's workspace-global snapshot of live toplevels — every
+    /// mapped window across all workspaces, from `server.all_windows()`. Only
+    /// components with a workspace-global strip (the dock) consume it; the
+    /// overview, window switcher, and other chrome keep the visible-set
+    /// [`Self::set_windows`] snapshot.
+    pub fn set_all_windows(&mut self, windows: Vec<Window>) {
+        self.all_windows = windows;
+        for component in self.components.iter_mut() {
+            component.update(ChromeUpdate::AllWindows(&self.all_windows));
         }
     }
 

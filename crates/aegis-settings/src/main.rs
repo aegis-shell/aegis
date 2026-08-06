@@ -163,7 +163,13 @@ impl SettingsApp {
 
     fn render(&mut self, frame: &mut Frame, input: &Input) {
         self.poll_worker();
-        frame.set_theme(themes::application(&Design::dark()));
+        let design = self
+            .snapshot
+            .as_ref()
+            .map_or_else(Design::dark, |snapshot| {
+                Design::for_scheme(snapshot.preferences.color_scheme)
+            });
+        frame.set_theme(themes::application(&design));
         let raw = input.as_raw();
         let width = raw.display_size.x.max(1.0);
         let height = raw.display_size.y.max(1.0);
@@ -176,7 +182,7 @@ impl SettingsApp {
                 gap: 12.0,
                 pad: 22.0,
                 cross: Align::Stretch,
-                bg: Color::rgba(25, 28, 40, 255),
+                bg: design.colors.application_surface,
                 ..Default::default()
             },
             |frame| {
@@ -195,7 +201,7 @@ impl SettingsApp {
                             ..Default::default()
                         },
                         |frame| {
-                            self.render_sidebar(frame);
+                            self.render_sidebar(frame, &design);
                             frame.flex(1.0);
                             frame.scroll("standalone-settings-page", |frame| {
                                 frame.column_ex(
@@ -209,6 +215,7 @@ impl SettingsApp {
                                             self.selected,
                                             frame,
                                             &self.i18n,
+                                            &design,
                                             &mut module_events,
                                         );
                                     },
@@ -231,6 +238,7 @@ impl SettingsApp {
                                     self.selected,
                                     frame,
                                     &self.i18n,
+                                    &design,
                                     &mut module_events,
                                 );
                             },
@@ -332,7 +340,7 @@ impl SettingsApp {
         frame.spacer(0.0);
     }
 
-    fn render_sidebar(&mut self, frame: &mut Frame) {
+    fn render_sidebar(&mut self, frame: &mut Frame, design: &Design) {
         let modules = self.modules.metadata().collect::<Vec<_>>();
         frame.column_ex(
             &LayoutOpts {
@@ -340,7 +348,7 @@ impl SettingsApp {
                 gap: 5.0,
                 pad: 8.0,
                 cross: Align::Stretch,
-                bg: Color::rgba(255, 255, 255, 10),
+                bg: design.colors.card_surface,
                 radius: 14.0,
                 ..Default::default()
             },

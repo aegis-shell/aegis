@@ -30,6 +30,11 @@ pub struct AgentWorkspaces {
     modal_reserved: Reserved,
     snapshot: InteractionDomainSnapshot,
     pending_revoke: Option<InteractionDomainId>,
+    /// The design snapshot the surface paints from, from
+    /// [`ChromeUpdate::Appearance`]. Seeded on registration by
+    /// [`aegis_shell::Shell::add`] and refreshed when the desktop color scheme
+    /// changes; defaults to the dark appearance until the first update arrives.
+    design: Design,
 }
 
 impl AgentWorkspaces {
@@ -39,6 +44,7 @@ impl AgentWorkspaces {
             modal_reserved: Reserved::default(),
             snapshot: aegis_model::interaction_domain::InteractionDomainModel::new().snapshot(),
             pending_revoke: None,
+            design: Design::dark(),
         }
     }
 
@@ -106,7 +112,7 @@ impl AgentWorkspaces {
                 .seats
                 .iter()
                 .find(|seat| seat.interaction_domain == interaction_domain.id);
-            frame.column_ex(&workspace_card_layout(), |frame| {
+            frame.column_ex(&workspace_card_layout(&self.design), |frame| {
                 frame.row_ex(&section_heading_layout(), |frame| {
                     frame.heading(&interaction_domain.label, 3);
                     frame.flex(1.0);
@@ -234,7 +240,8 @@ impl Chrome for AgentWorkspaces {
             return;
         }
         let reserved = self.modal_reserved;
-        if SURFACE.render(frame, input, reserved, i18n, |frame| {
+        let design = self.design;
+        if SURFACE.render(frame, input, reserved, i18n, &design, |frame| {
             self.render_content(frame, i18n, out);
         }) {
             self.open = false;
@@ -295,6 +302,7 @@ impl Chrome for AgentWorkspaces {
         match update {
             ChromeUpdate::InteractionDomains(snapshot) => self.update_snapshot(snapshot),
             ChromeUpdate::ModalReserved(reserved) => self.modal_reserved = reserved,
+            ChromeUpdate::Appearance(design) => self.design = *design,
             _ => {}
         }
     }
@@ -330,13 +338,13 @@ fn section_heading_layout() -> LayoutOpts {
     }
 }
 
-fn workspace_card_layout() -> LayoutOpts {
+fn workspace_card_layout(design: &Design) -> LayoutOpts {
     LayoutOpts {
         min_height: 96.0,
         gap: 8.0,
         pad: 15.0,
         cross: Align::Stretch,
-        ..materials::card(&Design::dark())
+        ..materials::card(design)
     }
 }
 

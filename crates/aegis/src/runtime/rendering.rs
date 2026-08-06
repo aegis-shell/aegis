@@ -360,6 +360,7 @@ pub(super) fn liquid_glass_groups(
     capture_origin: (u32, u32),
     scale: f32,
     capture_ratio: f32,
+    scheme: aegis_model::settings::ColorScheme,
 ) -> Vec<flux::LiquidGlassGroup> {
     let capture_scale = scale * capture_ratio;
     regions
@@ -379,7 +380,7 @@ pub(super) fn liquid_glass_groups(
             shadow_alpha: region.shadow_alpha.clamp(0.0, 1.0),
             shadow_blur: region.shadow_blur.max(0.0) * capture_scale,
             shadow_offset_y: region.shadow_offset_y * capture_scale,
-            tint_color: [255, 255, 255],
+            tint_color: glass_tint(scheme),
             focus: region.focus.map(|focus| flux::LiquidGlassFocus {
                 shape: flux::LiquidGlassShape {
                     x: focus.bounds.x * capture_scale - capture_origin.0 as f32 * capture_ratio,
@@ -1329,6 +1330,7 @@ pub(super) fn draw_overview_scene(
     server: &aegis_compositor::Server,
     logical_size: (u32, u32),
     scale: f32,
+    scheme: aegis_model::settings::ColorScheme,
 ) {
     canvas.save();
     canvas.fill_rect(
@@ -1336,7 +1338,7 @@ pub(super) fn draw_overview_scene(
         0.0,
         logical_size.0 as f32 * scale,
         logical_size.1 as f32 * scale,
-        flux::rgba(8, 10, 20, 200),
+        overview_scrim(scheme),
     );
     canvas.restore();
 
@@ -1419,15 +1421,17 @@ pub(super) fn draw_window_switcher_scene(
     logical_size: (u32, u32),
     scale: f32,
     presentation: &aegis_shell::WindowSwitcherPresentation,
+    scheme: aegis_model::settings::ColorScheme,
 ) {
     let scrim_alpha = (145.0 * presentation.visibility.clamp(0.0, 1.0)).round() as u8;
+    let (scrim_r, scrim_g, scrim_b) = window_switcher_scrim(scheme);
     canvas.save();
     canvas.fill_rect(
         0.0,
         0.0,
         logical_size.0 as f32 * scale,
         logical_size.1 as f32 * scale,
-        flux::rgba(5, 7, 12, scrim_alpha),
+        flux::rgba(scrim_r, scrim_g, scrim_b, scrim_alpha),
     );
     canvas.restore();
 

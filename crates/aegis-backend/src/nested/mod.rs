@@ -63,6 +63,10 @@ struct State {
     pointer: *mut ffi::wl_proxy,
     keyboard: *mut ffi::wl_proxy,
     last_pointer_serial: u32,
+    /// Last absolute position the host pointer reported, used to derive
+    /// relative deltas for `InputEvent::PointerMotion`. `None` before the
+    /// first enter and after the pointer leaves the window.
+    last_pointer_position: Option<(f32, f32)>,
     configured: bool,
     width: i32,
     height: i32,

@@ -294,6 +294,26 @@ pub(super) unsafe extern "C" fn on_surface_leave(
 // backend the window is the only host surface, so the host's enter/leave
 // translate into pointer position rather than client focus changes — the
 // server side decides which client is focused.
+//
+// The host reports only absolute positions, so relative deltas are derived by
+// differencing successive positions (`wl_pointer.enter` starts a fresh
+// sequence with zero deltas). There is no unaccelerated channel on this
+// backend; both delta pairs carry the differenced value.
+fn host_pointer_motion(last: &mut Option<(f32, f32)>, x: f32, y: f32) -> InputEvent {
+    let (dx, dy) = match last.replace((x, y)) {
+        Some((px, py)) => (f64::from(x - px), f64::from(y - py)),
+        None => (0.0, 0.0),
+    };
+    InputEvent::PointerMotion {
+        x,
+        y,
+        dx,
+        dy,
+        dx_unaccel: dx,
+        dy_unaccel: dy,
+    }
+}
+
 pub(super) unsafe extern "C" fn on_pointer_enter(
     data: *mut c_void,
     _pointer: *mut ffi::wl_proxy,
@@ -305,10 +325,15 @@ pub(super) unsafe extern "C" fn on_pointer_enter(
     unsafe {
         let st = &mut *(data as *mut State);
         st.last_pointer_serial = serial;
-        st.input_events.push(InputEvent::PointerMotion {
-            x: ffi::wl_fixed_to_f32(x),
-            y: ffi::wl_fixed_to_f32(y),
-        });
+        // Enter carries a position, not a motion: start a fresh delta
+        // sequence even if a leave was lost.
+        st.last_pointer_position = None;
+        let event = host_pointer_motion(
+            &mut st.last_pointer_position,
+            ffi::wl_fixed_to_f32(x),
+            ffi::wl_fixed_to_f32(y),
+        );
+        st.input_events.push(event);
     }
 }
 
@@ -320,6 +345,7 @@ pub(super) unsafe extern "C" fn on_pointer_leave(
 ) {
     unsafe {
         let st = &mut *(data as *mut State);
+        st.last_pointer_position = None;
         st.input_events.push(InputEvent::PointerLeave);
     }
 }
@@ -333,10 +359,12 @@ pub(super) unsafe extern "C" fn on_pointer_motion(
 ) {
     unsafe {
         let st = &mut *(data as *mut State);
-        st.input_events.push(InputEvent::PointerMotion {
-            x: ffi::wl_fixed_to_f32(x),
-            y: ffi::wl_fixed_to_f32(y),
-        });
+        let event = host_pointer_motion(
+            &mut st.last_pointer_position,
+            ffi::wl_fixed_to_f32(x),
+            ffi::wl_fixed_to_f32(y),
+        );
+        st.input_events.push(event);
     }
 }
 
@@ -889,3 +917,52 @@ pub(super) static TEXT_INPUT_LISTENER: ffi::zwp_text_input_v3_listener =
         delete_surrounding_text: on_text_input_delete,
         done: on_text_input_done,
     };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn motion_parts(event: InputEvent) -> (f32, f32, f64, f64, f64, f64) {
+        let InputEvent::PointerMotion {
+            x,
+            y,
+            dx,
+            dy,
+            dx_unaccel,
+            dy_unaccel,
+        } = event
+        else {
+            panic!("expected pointer motion");
+        };
+        (x, y, dx, dy, dx_unaccel, dy_unaccel)
+    }
+
+    #[test]
+    fn first_host_position_reports_no_delta() {
+        let mut last = None;
+        let (x, y, dx, dy, dx_unaccel, dy_unaccel) =
+            motion_parts(host_pointer_motion(&mut last, 50.0, 60.0));
+        assert_eq!((x, y), (50.0, 60.0));
+        assert_eq!((dx, dy, dx_unaccel, dy_unaccel), (0.0, 0.0, 0.0, 0.0));
+        assert_eq!(last, Some((50.0, 60.0)));
+    }
+
+    #[test]
+    fn host_motion_deltas_difference_successive_positions() {
+        let mut last = None;
+        let _ = host_pointer_motion(&mut last, 50.0, 60.0);
+        let (_, _, dx, dy, dx_unaccel, dy_unaccel) =
+            motion_parts(host_pointer_motion(&mut last, 58.0, 55.0));
+        // No unaccelerated channel exists on a nested host: both delta pairs
+        // carry the differenced absolute positions.
+        assert_eq!((dx, dy), (8.0, -5.0));
+        assert_eq!((dx_unaccel, dy_unaccel), (8.0, -5.0));
+    }
+
+    #[test]
+    fn stationary_host_position_reports_zero_delta() {
+        let mut last = Some((50.0, 60.0));
+        let (_, _, dx, dy, ..) = motion_parts(host_pointer_motion(&mut last, 50.0, 60.0));
+        assert_eq!((dx, dy), (0.0, 0.0));
+    }
+}

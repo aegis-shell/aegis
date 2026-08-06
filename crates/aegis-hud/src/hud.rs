@@ -142,6 +142,11 @@ pub struct Hud {
     workspace_position: f32,
     workspace_target: f32,
     workspace_position_initialized: bool,
+    /// The design snapshot the HUD paints from, from
+    /// [`ChromeUpdate::Appearance`]. Seeded on registration by
+    /// [`aegis_shell::Shell::add`] and refreshed when the desktop color scheme
+    /// changes; defaults to the dark appearance until the first update arrives.
+    design: Design,
 }
 
 /// Render-thread half of the StatusNotifierItem tray: the shared snapshot
@@ -233,6 +238,7 @@ impl Hud {
             workspace_position: 0.0,
             workspace_target: 0.0,
             workspace_position_initialized: false,
+            design: Design::dark(),
         }
     }
 
@@ -497,6 +503,7 @@ impl Chrome for Hud {
         let fold = fold_tray(sni.len(), MAX_TRAY_ITEMS);
         let sni = &sni[..fold.visible];
         let layout = self.layout;
+        let design = self.design;
 
         let original_theme = f.theme();
 
@@ -507,7 +514,9 @@ impl Chrome for Hud {
             f.layer("aegis-hud-chip-left", chip, &chip_opts(fade), |f| {
                 f.column_ex(&sized(chip.w, chip.h), |_| {});
             });
-            f.set_theme(faded_theme(original_theme, fade).with_fg(hud_foreground_color(fade)));
+            f.set_theme(
+                faded_theme(original_theme, fade).with_fg(hud_foreground_color(&design, fade)),
+            );
             let mut x = chip.x + CHIP_PAD_X;
             let mut cell = |width: f32| {
                 let rect = Rect {
@@ -523,6 +532,7 @@ impl Chrome for Hud {
             let rect = cell(CELL_ICON);
             render_status_cell(
                 f,
+                &design,
                 "aegis-hud-network",
                 rect,
                 fade,
@@ -549,8 +559,8 @@ impl Chrome for Hud {
                                     icon as *mut lens::sys::flux_image,
                                     16.0,
                                     16.0,
-                                    hud_foreground_color(bt_fade),
-                                    hud_glyph_outline(bt_fade),
+                                    hud_foreground_color(&design, bt_fade),
+                                    hud_glyph_outline(&design, bt_fade),
                                 )
                             },
                         );
@@ -561,6 +571,7 @@ impl Chrome for Hud {
                 let rect = cell(CELL_BATTERY);
                 render_status_cell(
                     f,
+                    &design,
                     "aegis-hud-battery",
                     rect,
                     fade,
@@ -597,8 +608,8 @@ impl Chrome for Hud {
                                     texture as *mut lens::sys::flux_image,
                                     18.0,
                                     18.0,
-                                    hud_foreground_color(fade),
-                                    hud_glyph_outline(fade),
+                                    hud_foreground_color(&design, fade),
+                                    hud_glyph_outline(&design, fade),
                                 )
                             },
                             None => match fallback {
@@ -607,13 +618,15 @@ impl Chrome for Hud {
                                         icon as *mut lens::sys::flux_image,
                                         18.0,
                                         18.0,
-                                        hud_foreground_color(fade),
-                                        hud_glyph_outline(fade),
+                                        hud_foreground_color(&design, fade),
+                                        hud_glyph_outline(&design, fade),
                                     )
                                 },
-                                None => {
-                                    f.icon_outlined(Icon::FileText, 16.0, hud_glyph_outline(fade))
-                                }
+                                None => f.icon_outlined(
+                                    Icon::FileText,
+                                    16.0,
+                                    hud_glyph_outline(&design, fade),
+                                ),
                             },
                         },
                     );
@@ -625,6 +638,7 @@ impl Chrome for Hud {
                 let rect = cell(TRAY_CELL_W);
                 render_text(
                     f,
+                    &design,
                     "aegis-hud-tray-overflow",
                     rect,
                     &format!("+{}", fold.hidden.min(99)),
@@ -635,7 +649,7 @@ impl Chrome for Hud {
 
             // Clock and notification bell close out the left chip (ADR-0083).
             let rect = cell(CELL_CLOCK);
-            render_text(f, "aegis-hud-clock", rect, &self.clock, 13.5, fade);
+            render_text(f, &design, "aegis-hud-clock", rect, &self.clock, 13.5, fade);
 
             let bell_w = if notifications.is_empty() { 34.0 } else { 50.0 };
             let rect = cell(bell_w);
@@ -646,6 +660,7 @@ impl Chrome for Hud {
             };
             render_status_cell(
                 f,
+                &design,
                 "aegis-hud-bell",
                 rect,
                 fade,
@@ -674,7 +689,7 @@ impl Chrome for Hud {
                         h: diameter,
                     };
                     x += diameter + WORKSPACE_DOT_GAP;
-                    let contour_width = Design::dark().hud_foreground.glyph_contour_width;
+                    let contour_width = design.hud_foreground.glyph_contour_width;
                     let contour_diameter = diameter + contour_width * 2.0;
                     let contour = Rect {
                         x: dot.x - contour_width,
@@ -697,7 +712,7 @@ impl Chrome for Hud {
                                 &sized_fill(
                                     contour_diameter,
                                     contour_diameter,
-                                    fade_color(hud_contour_color(), fade),
+                                    fade_color(hud_contour_color(&design), fade),
                                     contour_diameter * 0.5,
                                 ),
                                 |_| {},
@@ -713,7 +728,7 @@ impl Chrome for Hud {
                                 &sized_fill(
                                     diameter,
                                     diameter,
-                                    fade_color(workspace_dot_color(intensity), fade),
+                                    fade_color(workspace_dot_color(&design, intensity), fade),
                                     diameter * 0.5,
                                 ),
                                 |_| {},
@@ -743,6 +758,7 @@ impl Chrome for Hud {
                     self.workspace_position = self.workspace_target;
                 }
             }
+            ChromeUpdate::Appearance(design) => self.design = *design,
             _ => {}
         }
     }
@@ -833,7 +849,7 @@ impl Chrome for Hud {
             .filter(|((_, visible), fade)| **visible && **fade > 0.01)
             .map(|((chip, _), fade)| {
                 LiquidGlassRegion::from_role(
-                    &Design::dark(),
+                    &self.design,
                     GlassRole::Chip,
                     BackdropRegion::from(*chip),
                     CHIP_RADIUS,

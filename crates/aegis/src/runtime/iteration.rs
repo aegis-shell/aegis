@@ -404,7 +404,11 @@ impl CompositorRuntime {
                         context: pending.context,
                         reply: pending.reply,
                     };
-                    match read_captured_pixels(&target.surface, pending.readback) {
+                    // The Interaction Domain render target is a require_readback
+                    // offscreen surface: flux keeps its staging surface-owned and
+                    // refuses take_readback there, so copy the completed frame into
+                    // an owned buffer instead of detaching it.
+                    match read_captured_pixels_owned(&target.surface, pending.readback) {
                         Ok(capture) => queue_captured_pixels(
                             &self.capture_worker,
                             capture,

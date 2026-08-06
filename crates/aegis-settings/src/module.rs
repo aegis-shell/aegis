@@ -6,6 +6,7 @@
 //! future process-isolated loader can preserve the same metadata and state
 //! model without changing the System Settings navigation contract.
 
+use aegis_design::Design;
 use aegis_model::settings::{SettingsAction, SettingsSnapshot};
 use aegis_shell::{Localizer, Message};
 use lens::{Frame, Icon};
@@ -72,7 +73,13 @@ pub struct ModuleEvents {
 pub trait SettingsModule {
     fn metadata(&self) -> ModuleMetadata;
 
-    fn render(&mut self, frame: &mut Frame, i18n: &Localizer, out: &mut ModuleEvents);
+    fn render(
+        &mut self,
+        frame: &mut Frame,
+        i18n: &Localizer,
+        design: &Design,
+        out: &mut ModuleEvents,
+    );
 
     /// Replace the module's authoritative presentation snapshot. Modules keep
     /// local editor state only while it is dirty; the implementation decides
@@ -120,6 +127,7 @@ impl ModuleRegistry {
         id: ModuleId,
         frame: &mut Frame,
         i18n: &Localizer,
+        design: &Design,
         out: &mut ModuleEvents,
     ) -> bool {
         let Some(module) = self
@@ -129,7 +137,7 @@ impl ModuleRegistry {
         else {
             return false;
         };
-        module.render(frame, i18n, out);
+        module.render(frame, i18n, design, out);
         true
     }
 

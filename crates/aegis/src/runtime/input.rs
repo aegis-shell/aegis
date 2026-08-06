@@ -116,7 +116,7 @@ pub(super) fn agent_activities_from_applied_input(
     // the exact coordinates the server applied rather than remapping target-
     // local coordinates a second time in the presentation layer.
     let mut pointer_positions = events.iter().filter_map(|event| match *event {
-        InputEvent::PointerMotion { x, y } => Some(aegis_model::Point {
+        InputEvent::PointerMotion { x, y, .. } => Some(aegis_model::Point {
             x: x.round() as i32,
             y: y.round() as i32,
         }),
@@ -635,8 +635,16 @@ impl CompositorRuntime {
             for ev in &mut events {
                 use aegis_model::input::{InputEvent::*, TabletEvent};
                 match ev {
-                    PointerMotion { x, y }
-                    | TouchDown { x, y, .. }
+                    PointerMotion { x, y, dx, dy, .. } => {
+                        *x *= coord_factor;
+                        *y *= coord_factor;
+                        // Keep the accelerated deltas in the same logical
+                        // space as the absolute position; the unaccelerated
+                        // channel stays in raw device units by definition.
+                        *dx *= f64::from(coord_factor);
+                        *dy *= f64::from(coord_factor);
+                    }
+                    TouchDown { x, y, .. }
                     | TouchMotion { x, y, .. }
                     | Tablet {
                         event: TabletEvent::Proximity { x, y, .. } | TabletEvent::Axes { x, y, .. },
@@ -663,7 +671,7 @@ impl CompositorRuntime {
             for (event_index, ev) in events.iter().enumerate() {
                 use aegis_model::input::InputEvent::*;
                 match *ev {
-                    PointerMotion { x, y } => {
+                    PointerMotion { x, y, .. } => {
                         event_cursor = (x, y);
                         input.set_cursor(x, y);
                         self.input_acc.cursor = (x, y);
@@ -849,7 +857,7 @@ impl CompositorRuntime {
                             self.finish_keyboard_switcher_if_released(false);
                         }
                     }
-                    PointerMotion { x, y } => {
+                    PointerMotion { x, y, .. } => {
                         self.synthetic_pointer_active = false;
                         route_cursor = (x, y);
                         let captured =
@@ -879,10 +887,10 @@ impl CompositorRuntime {
                             );
                         if self.synthetic_pointer_active {
                             if !captured {
-                                forwarded.push(PointerMotion {
-                                    x: route_cursor.0,
-                                    y: route_cursor.1,
-                                });
+                                forwarded.push(aegis_model::input::InputEvent::pointer_move_to(
+                                    route_cursor.0,
+                                    route_cursor.1,
+                                ));
                             }
                             self.synthetic_pointer_active = false;
                         }
@@ -905,10 +913,10 @@ impl CompositorRuntime {
                             // forwarding it because the enter-side motion was
                             // consumed while chrome owned the pointer.
                             if self.chrome_pointer_captured {
-                                forwarded.push(PointerMotion {
-                                    x: route_cursor.0,
-                                    y: route_cursor.1,
-                                });
+                                forwarded.push(aegis_model::input::InputEvent::pointer_move_to(
+                                    route_cursor.0,
+                                    route_cursor.1,
+                                ));
                             }
                             forwarded.push(ev);
                         }
@@ -923,10 +931,10 @@ impl CompositorRuntime {
                             );
                         if self.synthetic_pointer_active {
                             if !captured {
-                                forwarded.push(PointerMotion {
-                                    x: route_cursor.0,
-                                    y: route_cursor.1,
-                                });
+                                forwarded.push(aegis_model::input::InputEvent::pointer_move_to(
+                                    route_cursor.0,
+                                    route_cursor.1,
+                                ));
                             }
                             self.synthetic_pointer_active = false;
                         }
@@ -936,10 +944,10 @@ impl CompositorRuntime {
                             }
                         } else {
                             if self.chrome_pointer_captured {
-                                forwarded.push(PointerMotion {
-                                    x: route_cursor.0,
-                                    y: route_cursor.1,
-                                });
+                                forwarded.push(aegis_model::input::InputEvent::pointer_move_to(
+                                    route_cursor.0,
+                                    route_cursor.1,
+                                ));
                             }
                             forwarded.push(ev);
                         }
@@ -956,7 +964,7 @@ impl CompositorRuntime {
                         // Re-hit-test at the physical contact before routing
                         // the down event after a synthetic pointer move.
                         self.synthetic_pointer_active = false;
-                        forwarded.push(PointerMotion { x, y });
+                        forwarded.push(aegis_model::input::InputEvent::pointer_move_to(x, y));
                         forwarded.push(ev);
                     }
                     _ => forwarded.push(ev),
@@ -1006,7 +1014,7 @@ impl CompositorRuntime {
                             || events.iter().any(|event| {
                                 matches!(
                                     *event,
-                                    aegis_model::input::InputEvent::PointerMotion { x, y }
+                                    aegis_model::input::InputEvent::PointerMotion { x, y, .. }
                                         if self.shell.captures_pointer_at(
                                             x,
                                             y,
@@ -1214,6 +1222,7 @@ impl CompositorRuntime {
                 request.interaction_domain,
                 request.region,
                 self.capture_worker.security_generation(),
+                self.shell.design().scheme,
             ) {
                 Ok(prepared) => {
                     let mut context = prepared.context;
@@ -1350,8 +1359,8 @@ mod tests {
             SyntheticInputAction::KeyPress { code: 30 },
         ];
         let events = [
-            InputEvent::PointerMotion { x: 104.0, y: 205.0 },
-            InputEvent::PointerMotion { x: 108.0, y: 209.0 },
+            InputEvent::pointer_move_to(104.0, 205.0),
+            InputEvent::pointer_move_to(108.0, 209.0),
             InputEvent::PointerButton {
                 button: 0x110,
                 state: ButtonState::Pressed,

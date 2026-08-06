@@ -22,6 +22,11 @@ impl CompositorRuntime {
             had_input,
             mut pending_screenshots,
         } = state;
+        // Scene colors track the desktop appearance: the shell's design
+        // snapshot carries the resolved scheme, refreshed by every
+        // preferences reload, so re-derive the opaque clear from it.
+        let color_scheme = self.shell.design().scheme;
+        self.clear = clear_color(color_scheme);
         // Render scale and logical extent come from the server's output
         // geometry (backend + `[[output]]` overrides), not the host, so a
         // configured scale actually changes the desktop. Nested outputs
@@ -594,6 +599,7 @@ impl CompositorRuntime {
                                         logical_size,
                                         capture_scale,
                                         presentation,
+                                        color_scheme,
                                     );
                                 } else {
                                     draw_live_preview_scenes(
@@ -613,6 +619,7 @@ impl CompositorRuntime {
                             capture_origin,
                             scale,
                             capture_ratio,
+                            color_scheme,
                         );
                         let capture_pixel_scale = scale * capture_ratio;
                         let capture_covers_output = capture_origin == (0, 0)
@@ -720,6 +727,7 @@ impl CompositorRuntime {
                                 overview_active,
                                 window_switcher.as_ref(),
                                 &live_previews,
+                                color_scheme,
                             )?;
                         }
                         if refreshed {
@@ -766,6 +774,7 @@ impl CompositorRuntime {
                                 overview_active,
                                 window_switcher.as_ref(),
                                 &live_previews,
+                                color_scheme,
                             )?;
                         }
                         self.launcher_backdrop.draw_cached(
@@ -903,6 +912,7 @@ impl CompositorRuntime {
                                     overview_active,
                                     window_switcher.as_ref(),
                                     &live_previews,
+                                    color_scheme,
                                 )?;
                             }
                         } else {
@@ -926,6 +936,7 @@ impl CompositorRuntime {
                                 overview_active,
                                 window_switcher.as_ref(),
                                 &live_previews,
+                                color_scheme,
                             )?;
                         }
                     }
@@ -975,6 +986,15 @@ impl CompositorRuntime {
                     self.live
                         .set_windows(win_snapshot.clone(), accessibility_windows);
                     self.shell.set_windows(win_snapshot);
+                }
+                // The dock's strip is workspace-global: it additionally
+                // receives every mapped toplevel, gated on its own hash so the
+                // overview, switcher, IPC mirror, and SpaceUse above keep the
+                // visible-set snapshot untouched.
+                let all_windows_hash = self.server.all_windows_signature();
+                if self.last_all_windows_hash != Some(all_windows_hash) {
+                    self.last_all_windows_hash = Some(all_windows_hash);
+                    self.shell.set_all_windows(self.server.all_windows());
                 }
                 // Mirror the workspace snapshot and broadcast `WorkspaceChanged`
                 // on any model mutation (switch, place, remove, reap).

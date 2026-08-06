@@ -5,7 +5,7 @@
 //! snapshots.
 
 use aegis_design::{Design, themes};
-use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect};
+use lens::{Align, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{BackdropRegion, Localizer, Message, Reserved};
 
@@ -54,6 +54,7 @@ impl ModalApplicationSpec {
         input: &Input,
         reserved: Reserved,
         i18n: &Localizer,
+        design: &Design,
         mut content: impl FnMut(&mut Frame),
     ) -> bool {
         let raw = input.as_raw();
@@ -68,21 +69,21 @@ impl ModalApplicationSpec {
                 h: display.1,
             },
             &OverlayOpts {
-                bg: Color::rgba(8, 10, 18, 118),
+                bg: design.colors.scrim,
                 ..Default::default()
             },
             |_| {},
         );
 
         let original_theme = frame.theme();
-        frame.set_theme(themes::application(&Design::dark()));
+        frame.set_theme(themes::application(design));
         let mut close = false;
         frame.layer(
             self.panel_id,
             bounds,
             &OverlayOpts {
-                bg: Color::rgba(25, 28, 40, 238),
-                border: Color::rgba(255, 255, 255, 48),
+                bg: design.colors.application_surface.with_alpha(238),
+                border: design.colors.application_border,
                 border_width: 1.0,
                 radius: APP_RADIUS,
                 pad: 0.0,

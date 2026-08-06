@@ -1,5 +1,5 @@
 use super::rendering::{
-    entry_matches_app_id, hit_test_tiles, live_preview_hit, live_preview_layout,
+    entry_matches_app_id, hit_test_tiles, live_preview_hit, live_preview_layout, snapped_hairline,
 };
 use super::*;
 
@@ -197,6 +197,77 @@ fn unpinned_running_window_is_appended() {
 }
 
 #[test]
+fn tile_strip_uses_the_workspace_global_window_list() {
+    let mut dock = dock_with(vec![app("firefox.desktop")]);
+    let visible = window(7, "firefox", true);
+    let hidden = window(3, "gimp", false);
+
+    // The visible-set push feeds only the autohide/SpaceUse policy; the strip
+    // must not grow from it.
+    dock.update(ChromeUpdate::Windows(std::slice::from_ref(&visible)));
+    assert_eq!(
+        dock.tiles(&dock.all_windows).len(),
+        1,
+        "only the pinned app before any global snapshot"
+    );
+
+    // The workspace-global push builds the strip: the pinned tile folds its
+    // running window and a window on another workspace gets a transient tile.
+    dock.update(ChromeUpdate::AllWindows(&[visible.clone(), hidden]));
+    let tiles = dock.tiles(&dock.all_windows);
+    assert_eq!(tiles.len(), 2);
+    let firefox = tiles
+        .iter()
+        .find(|t| t.key == "app:firefox.desktop")
+        .unwrap();
+    assert!(firefox.running && firefox.activated);
+    let gimp = tiles.iter().find(|t| t.key == "win:3").unwrap();
+    assert!(gimp.running && !gimp.pinned);
+    assert_eq!(gimp.focus, Some(aegis_model::window::WindowId(3)));
+
+    // A later visible-set push without the hidden window must not drop its
+    // tile; only the global list owns strip membership.
+    dock.update(ChromeUpdate::Windows(std::slice::from_ref(&visible)));
+    assert!(
+        dock.tiles(&dock.all_windows)
+            .iter()
+            .any(|t| t.key == "win:3")
+    );
+
+    // The transient tile leaves when the window leaves the global list.
+    dock.update(ChromeUpdate::AllWindows(std::slice::from_ref(&visible)));
+    assert!(
+        !dock
+            .tiles(&dock.all_windows)
+            .iter()
+            .any(|t| t.key == "win:3")
+    );
+}
+
+#[test]
+fn scale_update_is_retained_for_hairline_snapping() {
+    let mut dock = Dock::new();
+    assert_eq!(dock.scale, 1.0);
+    dock.update(ChromeUpdate::Scale(2.0));
+    assert_eq!(dock.scale, 2.0);
+}
+
+#[test]
+fn hairline_snaps_to_the_device_pixel_grid() {
+    // Scale 2: a fractional center lands on a device-pixel boundary and the
+    // width is exactly one device pixel.
+    let (center, width) = snapped_hairline(100.3, 2.0);
+    assert_eq!((center, width), (100.5, 0.5));
+    // Scale 1: a 1 logical px line at (within half a pixel of) the same
+    // center — the pre-snap appearance.
+    let (center, width) = snapped_hairline(100.3, 1.0);
+    assert_eq!((center, width), (100.0, 1.0));
+    // An already-aligned center is untouched.
+    let (center, width) = snapped_hairline(100.0, 2.0);
+    assert_eq!((center, width), (100.0, 0.5));
+}
+
+#[test]
 fn unpinned_windows_keep_open_order_when_focus_reorders_snapshot() {
     let dock = Dock::new();
     let first = dock.tiles(&[window(1, "first", false), window(2, "second", true)]);
@@ -250,8 +321,8 @@ fn pointer_bounds_stay_at_rest_while_tiles_are_magnified() {
     );
 
     let display = (1920.0, 1080.0);
-    let bounds = dock.pointer_bounds(&[], display);
-    let visual_bounds = dock.visual_panel_bounds(&[], display);
+    let bounds = dock.pointer_bounds(display);
+    let visual_bounds = dock.visual_panel_bounds(display);
     let expected_width = 2.0 * DOCK_TILE + DOCK_TILE_GAP + 2.0 * DOCK_PAD;
     assert_eq!(bounds.w, expected_width);
     assert_eq!(
@@ -286,7 +357,7 @@ fn window_invading_rest_bounds_starts_an_animated_collapse() {
     let display = (1920.0, 1080.0);
     dock.last_display = Some(display);
     let mut invading = window(7, "org.example.Game", true);
-    let bounds = dock.pointer_bounds(std::slice::from_ref(&invading), display);
+    let bounds = dock.pointer_bounds(display);
     invading.position = aegis_model::Point {
         x: bounds.x.round() as i32 + 10,
         y: bounds.y.round() as i32 - 10,
@@ -502,7 +573,7 @@ fn capsule_is_the_only_collapsed_reveal_target() {
 fn collapsed_dock_does_not_reuse_its_old_resting_region_as_a_trigger() {
     let display = (1920.0, 1080.0);
     let dock = Dock::new();
-    let rest = dock.pointer_bounds(&[], display);
+    let rest = dock.pointer_bounds(display);
     let indicator = Dock::collapsed_indicator_bounds(display);
     let old_dock_point = (rest.x + rest.w * 0.5, rest.y + 8.0);
     let capsule_point = (
@@ -543,7 +614,7 @@ fn expanded_autohide_dock_keeps_pointer_across_bottom_gap() {
     let mut dock = Dock::new();
     dock.set_autohide(true);
     dock.autohide_reveal = 1.0;
-    let rest = dock.pointer_bounds(&[], display);
+    let rest = dock.pointer_bounds(display);
     let gap_y = rest.y + rest.h + DOCK_BOTTOM_MARGIN * 0.5;
     let indicator = Dock::collapsed_indicator_bounds(display);
     let former_indicator_edge_x = indicator.x + 1.0;
@@ -699,7 +770,7 @@ fn running_app_preview_layout_exposes_every_window_inside_the_output() {
         h: 84.0,
     };
     let windows: Vec<_> = (1..=7).map(aegis_model::window::WindowId).collect();
-    let presentation = live_preview_layout((1920.0, 1080.0), owner, &windows, 1.0);
+    let presentation = live_preview_layout(&Design::dark(), (1920.0, 1080.0), owner, &windows, 1.0);
 
     assert_eq!(presentation.cards.len(), windows.len());
     assert!(presentation.panel.origin.x >= PREVIEW_SCREEN_MARGIN as i32);
@@ -737,6 +808,7 @@ fn live_preview_adds_one_panel_body_and_keeps_its_pointer_bridge() {
         h: 84.0,
     };
     let presentation = live_preview_layout(
+        &Design::dark(),
         (1920.0, 1080.0),
         owner,
         &[
@@ -786,7 +858,8 @@ fn hovered_live_preview_uses_one_parent_body_with_an_optical_focus_field() {
         h: 84.0,
     };
     let window = aegis_model::window::WindowId(7);
-    let presentation = live_preview_layout((1920.0, 1080.0), owner, &[window], 1.0);
+    let presentation =
+        live_preview_layout(&Design::dark(), (1920.0, 1080.0), owner, &[window], 1.0);
     let panel = presentation.panel;
     dock.tooltip_alpha = 1.0;
     dock.hover_surface_bounds = Some(lens::Rect {

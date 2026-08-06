@@ -1,5 +1,6 @@
-//! Semantic visual tokens for the built-in dark appearance.
+//! Semantic visual tokens for the built-in dark and light appearances.
 
+use aegis_model::settings::ColorScheme;
 use lens::Color;
 
 /// The product design snapshot consumed by theme and material factories.
@@ -10,6 +11,9 @@ use lens::Color;
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct Design {
+    /// The resolved color scheme this snapshot implements. Always explicit —
+    /// `System` never survives [`Design::for_scheme`].
+    pub scheme: ColorScheme,
     pub colors: Colors,
     pub radii: Radii,
     pub strokes: Strokes,
@@ -25,6 +29,7 @@ impl Design {
     #[must_use]
     pub fn dark() -> Self {
         Self {
+            scheme: ColorScheme::Dark,
             colors: Colors {
                 menu_text: Color::rgba(238, 240, 248, 255),
                 menu_heading: Color::rgba(183, 188, 207, 255),
@@ -46,6 +51,7 @@ impl Design {
                 slider_fill: Color::rgba(102, 156, 255, 255),
                 slider_knob: Color::rgba(255, 255, 255, 255),
                 card_surface: Color::rgba(255, 255, 255, 14),
+                scrim: Color::rgba(8, 10, 18, 118),
             },
             radii: Radii {
                 menu_item: 7.0,
@@ -105,6 +111,100 @@ impl Design {
                 glyph_contour_width: 1.0,
             },
         }
+    }
+
+    /// The canonical light appearance: the same geometry and optical identity
+    /// as [`Design::dark`], re-toned as dark ink on white frosted glass.
+    ///
+    /// Tonal references are the SAO panel palette (a proven light island) and
+    /// the lens light theme, generalized to whole-product surfaces: white
+    /// bodies keep the glass whisper, tints become dark washes, and shadows
+    /// deepen slightly so pale panels still separate from bright content.
+    /// Radii, strokes, and preview policy are scheme-invariant and shared
+    /// with the dark appearance.
+    #[must_use]
+    pub fn light() -> Self {
+        Self {
+            scheme: ColorScheme::Light,
+            colors: Colors {
+                menu_text: Color::rgba(34, 38, 50, 255),
+                menu_heading: Color::rgba(99, 105, 123, 255),
+                menu_disabled: Color::rgba(133, 139, 156, 255),
+                menu_border: Color::rgba(28, 32, 44, 36),
+                menu_hover: Color::rgba(28, 32, 44, 12),
+                menu_active: Color::rgba(28, 32, 44, 22),
+                popover_surface: Color::rgba(250, 251, 253, 216),
+                popover_border: Color::rgba(28, 32, 44, 30),
+                glass_surface: Color::rgba(255, 255, 255, 72),
+                glass_border: Color::rgba(255, 255, 255, 0),
+                application_surface: Color::rgba(243, 245, 249, 255),
+                application_text: Color::rgba(29, 33, 44, 255),
+                application_accent: Color::rgba(43, 101, 232, 255),
+                application_border: Color::rgba(28, 32, 44, 32),
+                application_hover: Color::rgba(28, 32, 44, 12),
+                application_active: Color::rgba(43, 101, 232, 44),
+                slider_track: Color::rgba(28, 32, 44, 32),
+                slider_fill: Color::rgba(43, 101, 232, 255),
+                slider_knob: Color::rgba(255, 255, 255, 255),
+                card_surface: Color::rgba(255, 255, 255, 96),
+                scrim: Color::rgba(28, 32, 44, 104),
+            },
+            glass: GlassStyles {
+                chip: GlassStyle::new(0.18, 4.0, 2.0),
+                tooltip: GlassStyle::new(0.16, 10.0, 5.0),
+                floating_panel: GlassStyle::new(0.20, 16.0, 8.0),
+                prominent_panel: GlassStyle::new(0.22, 18.0, 9.0),
+                dock: GlassStyle::new(0.22, 12.0, 6.0),
+            },
+            glass_focus: GlassFocus {
+                hover_tint: Color::rgba(28, 32, 44, 7),
+                selected_tint: Color::rgba(28, 32, 44, 4),
+                field_strength: 1.0,
+            },
+            avatars: AvatarStyles {
+                persona_header: AvatarStyle {
+                    ring: Color::rgba(245, 158, 30, 132),
+                    ring_width: 1.0,
+                    fallback_surface: Color::rgba(246, 242, 234, 246),
+                    fallback_foreground: Color::rgba(56, 48, 36, 238),
+                    initials_scale: 22.0 / 72.0,
+                },
+                lock_hero: AvatarStyle {
+                    ring: Color::rgba(28, 32, 44, 48),
+                    ring_width: 1.0,
+                    fallback_surface: Color::rgba(216, 222, 232, 255),
+                    fallback_foreground: Color::rgba(26, 31, 43, 255),
+                    initials_scale: 0.36,
+                },
+            },
+            // The HUD core turns dark on light; the contour inverts with it
+            // so legibility survives arbitrary bright wallpaper the same way
+            // the dark appearance survives dark regions.
+            hud_foreground: HudForeground {
+                primary: Color::rgba(30, 34, 46, 255),
+                contour: Color::rgba(255, 255, 255, 72),
+                text_contour_width: 0.75,
+                glyph_contour_width: 1.0,
+            },
+            ..Self::dark()
+        }
+    }
+
+    /// The design snapshot for one desktop color-scheme preference. `System`
+    /// resolves through [`ColorScheme::or_dark`], so the returned snapshot's
+    /// [`Design::scheme`] is always explicit.
+    #[must_use]
+    pub fn for_scheme(scheme: ColorScheme) -> Self {
+        match scheme.or_dark() {
+            ColorScheme::Dark | ColorScheme::System => Self::dark(),
+            ColorScheme::Light => Self::light(),
+        }
+    }
+
+    /// Whether this snapshot implements the light appearance.
+    #[must_use]
+    pub fn is_light(&self) -> bool {
+        self.scheme == ColorScheme::Light
     }
 }
 
@@ -192,6 +292,10 @@ pub struct Colors {
     pub slider_fill: Color,
     pub slider_knob: Color,
     pub card_surface: Color,
+    /// Full-screen dimming veil behind modal chrome (prompts, pickers, the
+    /// launcher backdrop). Stays a dark ink wash in both appearances so
+    /// bright content recedes behind the modal surface.
+    pub scrim: Color,
 }
 
 /// Shared radii in logical pixels.
@@ -391,10 +495,43 @@ mod tests {
     #[test]
     fn dark_tokens_preserve_the_existing_menu_palette() {
         let design = Design::dark();
+        assert_eq!(design.scheme, ColorScheme::Dark);
+        assert!(!design.is_light());
         assert_eq!(design.colors.menu_text, Color::rgba(238, 240, 248, 255));
         assert_eq!(design.colors.menu_hover, Color::rgba(255, 255, 255, 22));
         assert_eq!(design.colors.menu_active, Color::rgba(255, 255, 255, 36));
         assert_eq!(design.radii.menu_item, 7.0);
+    }
+
+    #[test]
+    fn for_scheme_resolves_system_to_the_dark_fallback() {
+        assert_eq!(Design::for_scheme(ColorScheme::System), Design::dark());
+        assert_eq!(Design::for_scheme(ColorScheme::Dark), Design::dark());
+        assert_eq!(Design::for_scheme(ColorScheme::Light), Design::light());
+        assert_eq!(Design::light().scheme, ColorScheme::Light);
+        assert!(Design::light().is_light());
+    }
+
+    #[test]
+    fn light_palette_inverts_ink_and_surface_while_sharing_geometry() {
+        let light = Design::light();
+        let dark = Design::dark();
+        // Dark ink on white-ish surfaces.
+        let (r, g, b, a) = light.colors.application_text.components();
+        assert!(r < 80 && g < 80 && b < 90 && a == 255);
+        let (r, g, b, a) = light.colors.application_surface.components();
+        assert!(r > 220 && g > 220 && b > 220 && a == 255);
+        // Tints and tracks become dark washes instead of white ones.
+        let (r, g, b, _) = light.colors.menu_hover.components();
+        assert!(r < 64 && g < 64 && b < 64);
+        // Radii, strokes, and preview policy are scheme-invariant.
+        assert_eq!(light.radii, dark.radii);
+        assert_eq!(light.strokes, dark.strokes);
+        assert_eq!(light.preview, dark.preview);
+        // Every semantic role stays populated.
+        assert_eq!(light.colors.slider_fill, light.colors.application_accent);
+        let (_, _, _, popover_alpha) = light.colors.popover_surface.components();
+        assert!(popover_alpha > 200);
     }
 
     #[test]

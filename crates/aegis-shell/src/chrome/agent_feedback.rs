@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use aegis_design::Design;
 use aegis_model::Point;
 use aegis_model::interaction_domain::{
     InteractionDomainId, InteractionDomainSnapshot, InteractionDomainState,
@@ -36,6 +37,11 @@ const BACKGROUND_HEIGHT: f32 = 34.0;
 pub struct AgentFeedback {
     interaction_domains: InteractionDomainSnapshot,
     activity: BTreeMap<InteractionDomainId, VisualActivity>,
+    /// The design snapshot the feedback layer paints from, from
+    /// [`ChromeUpdate::Appearance`]. Seeded on registration by
+    /// [`crate::Shell::add`] and refreshed when the desktop color scheme
+    /// changes; defaults to the dark appearance until the first update arrives.
+    design: Design,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +69,7 @@ impl AgentFeedback {
             interaction_domains: aegis_model::interaction_domain::InteractionDomainModel::new()
                 .snapshot(),
             activity: BTreeMap::new(),
+            design: Design::dark(),
         }
     }
 
@@ -106,6 +113,7 @@ impl Chrome for AgentFeedback {
         let raw = input.as_raw();
         let display = (raw.display_size.x.max(1.0), raw.display_size.y.max(1.0));
         let interaction_domains = &self.interaction_domains;
+        let design = &self.design;
         let mut background = Vec::new();
         for (interaction_domain, activity) in &self.activity {
             let interaction_domain_state = interaction_domains
@@ -139,6 +147,7 @@ impl Chrome for AgentFeedback {
                     alpha,
                     now,
                     i18n,
+                    design,
                 );
             } else {
                 background.push((
@@ -162,6 +171,7 @@ impl Chrome for AgentFeedback {
                 display,
                 index,
                 i18n,
+                design,
             );
         }
     }
@@ -192,6 +202,7 @@ impl Chrome for AgentFeedback {
                     })
                 });
             }
+            ChromeUpdate::Appearance(design) => self.design = *design,
             ChromeUpdate::AgentActivity(activity) => {
                 let now = Instant::now();
                 match self.activity.get_mut(&activity.interaction_domain) {
@@ -260,6 +271,7 @@ fn render_pointer_feedback(
     alpha: u8,
     now: Instant,
     i18n: &Localizer,
+    design: &Design,
 ) {
     let accent = interaction_domain_color(interaction_domain).with_alpha(alpha);
     if let (Some(previous), Some(pointer_at)) = (activity.previous_pointer, activity.pointer_at)
@@ -309,7 +321,10 @@ fn render_pointer_feedback(
         f,
         &format!("aegis-agent-marker-{}", interaction_domain.0),
         centered_rect(position, MARKER_DIAMETER),
-        Color::rgba(12, 15, 24, scaled_alpha(alpha, 3, 4)),
+        design
+            .colors
+            .application_surface
+            .with_alpha(scaled_alpha(alpha, 3, 4)),
         accent,
         2.0,
         MARKER_DIAMETER * 0.5,
@@ -346,7 +361,10 @@ fn render_pointer_feedback(
         &format!("aegis-agent-label-{}", interaction_domain.0),
         label_rect,
         &OverlayOpts {
-            bg: Color::rgba(18, 21, 32, scaled_alpha(alpha, 9, 10)),
+            bg: design
+                .colors
+                .application_surface
+                .with_alpha(scaled_alpha(alpha, 9, 10)),
             border: accent,
             border_width: 1.0,
             radius: LABEL_HEIGHT * 0.5,
@@ -377,6 +395,7 @@ fn render_background_activity(
     display: (f32, f32),
     index: usize,
     i18n: &Localizer,
+    design: &Design,
 ) {
     let label = activity_label(&activity.latest, interaction_domain_state, i18n, false);
     let measured = f.measure_text(&label, 11.0).width;
@@ -395,7 +414,10 @@ fn render_background_activity(
         &format!("aegis-agent-background-{}", interaction_domain.0),
         rect,
         &OverlayOpts {
-            bg: Color::rgba(18, 21, 32, scaled_alpha(alpha, 9, 10)),
+            bg: design
+                .colors
+                .application_surface
+                .with_alpha(scaled_alpha(alpha, 9, 10)),
             border: accent,
             border_width: 1.0,
             radius: BACKGROUND_HEIGHT * 0.5,
@@ -492,6 +514,9 @@ fn scaled_alpha(alpha: u8, numerator: u16, denominator: u16) -> u8 {
 }
 
 pub(super) fn interaction_domain_color(interaction_domain: InteractionDomainId) -> Color {
+    // Intentional content colors: per-domain identity hues that distinguish
+    // concurrent Interaction Domains. They are content styling, independent
+    // of the desktop color scheme.
     const PALETTE: [(u8, u8, u8); 6] = [
         (92, 214, 255),
         (255, 184, 76),

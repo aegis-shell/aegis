@@ -65,7 +65,7 @@ zbus = { version = "5", default-features = false, features = [
 ] }
 
 # Typed errors without handwritten Display/From impls.
-thiserror = "1"
+thiserror = "2"
 
 # Direct-display backend: drm-rs provides atomic KMS, libseat mediates
 # privileged device access/session switching, and input is the maintained
@@ -133,10 +133,6 @@ aegis-launcher = { path = "crates/aegis-launcher" }
 # access point (ADR-0047, ADR-0087). It is an out-of-process adapter any MCP
 # client can spawn; the compositor never links it.
 aegis-mcp = { path = "crates/aegis-mcp" }
-# aegis-agent: the in-tree agent product — a self-contained agent runtime
-# (ADR-0050, ADR-0089). The `aegis-agent` binary reaches the desktop only as an MCP client of
-# `aegis-mcp` — no Praxion, no Neenee, no `aegis_*` imports. Persona/identity remains fuji (宓姬).
-aegis-agent = { path = "crates/aegis-agent" }
 
 # Declarative configuration (ADR-0026). `serde` drives the schema; `toml` is
 # the chosen file format over KDL/YAML/INI for tooling maturity and an
@@ -148,20 +144,12 @@ serde_json = "1"
 
 # Image decode for the wallpaper crate. default-features off so the
 # avif decoder (which needs dav1d on the host) does not gate the build;
-# the enabled set covers every still and animated format the wallpaper
-# advertises.
+# the enabled set covers still and animated formats used by wallpaper/chrome.
 image = { version = "0.25", default-features = false, features = [
     "png",
     "jpeg",
     "gif",
     "webp",
-    "bmp",
-    "ico",
-    "tiff",
-    "tga",
-    "qoi",
-    "pnm",
-    "rayon",
 ] }
 
 # SVG cursor rasterization (pure Rust; see ADR-0070 and cursor.rs). The
@@ -193,7 +181,8 @@ zeroize = "1.8"
 
 [profile.dev]
 opt-level = 1
-debug = 1
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
 incremental = true
 codegen-units = 256
 

@@ -17,6 +17,33 @@ fn retire_page_flip(pending_flips: &mut HashSet<crtc::Handle>, crtc: crtc::Handl
     }
 }
 
+/// Build the `InputEvent::PointerMotion` for one relative libinput motion,
+/// accumulating the absolute pointer position clamped to the output bounds.
+/// The clamped position is only the cursor's visual location: the event keeps
+/// libinput's accelerated and unaccelerated deltas verbatim so
+/// relative-pointer clients (locked game cameras) keep receiving motion after
+/// the absolute position pins at an output edge.
+fn relative_motion_event(
+    pointer: &mut (f32, f32),
+    width: u32,
+    height: u32,
+    dx: f64,
+    dy: f64,
+    dx_unaccel: f64,
+    dy_unaccel: f64,
+) -> InputEvent {
+    pointer.0 = (pointer.0 + dx as f32).clamp(0.0, width.saturating_sub(1) as f32);
+    pointer.1 = (pointer.1 + dy as f32).clamp(0.0, height.saturating_sub(1) as f32);
+    InputEvent::PointerMotion {
+        x: pointer.0,
+        y: pointer.1,
+        dx,
+        dy,
+        dx_unaccel,
+        dy_unaccel,
+    }
+}
+
 impl DrmBackend {
     /// Pump backend events until the flip requirement is satisfied, the
     /// `timeout` deadline expires, or the backend fails. The timeout is an
@@ -547,23 +574,33 @@ impl DrmBackend {
         let (width, height) = self.physical_size();
         match event {
             PointerEvent::Motion(event) => {
-                self.pointer.0 =
-                    (self.pointer.0 + event.dx() as f32).clamp(0.0, width.saturating_sub(1) as f32);
-                self.pointer.1 = (self.pointer.1 + event.dy() as f32)
-                    .clamp(0.0, height.saturating_sub(1) as f32);
-                self.input_events.push(InputEvent::PointerMotion {
-                    x: self.pointer.0,
-                    y: self.pointer.1,
-                });
+                let motion = relative_motion_event(
+                    &mut self.pointer,
+                    width,
+                    height,
+                    event.dx(),
+                    event.dy(),
+                    event.dx_unaccelerated(),
+                    event.dy_unaccelerated(),
+                );
+                self.input_events.push(motion);
             }
             PointerEvent::MotionAbsolute(event) => {
-                self.pointer = (
-                    event.absolute_x_transformed(width) as f32,
-                    event.absolute_y_transformed(height) as f32,
-                );
+                let x = event.absolute_x_transformed(width) as f32;
+                let y = event.absolute_y_transformed(height) as f32;
+                // Absolute devices report no delta channel; difference
+                // successive positions so relative-pointer clients still see
+                // motion. There is no unaccelerated source either.
+                let dx = f64::from(x - self.pointer.0);
+                let dy = f64::from(y - self.pointer.1);
+                self.pointer = (x, y);
                 self.input_events.push(InputEvent::PointerMotion {
-                    x: self.pointer.0,
-                    y: self.pointer.1,
+                    x,
+                    y,
+                    dx,
+                    dy,
+                    dx_unaccel: dx,
+                    dy_unaccel: dy,
                 });
             }
             PointerEvent::Button(event) => {
@@ -761,5 +798,38 @@ mod tests {
             FlipProgress::Unrelated
         );
         assert_eq!(pending, HashSet::from([owned]));
+    }
+
+    #[test]
+    fn relative_motion_keeps_raw_deltas_when_the_position_clamps() {
+        // The pointer sits on the bottom-right edge; further motion clamps the
+        // absolute position in place.
+        let mut pointer = (1919.0, 1079.0);
+        let event = relative_motion_event(&mut pointer, 1920, 1080, 30.0, 25.0, 12.0, 10.0);
+        let InputEvent::PointerMotion {
+            x,
+            y,
+            dx,
+            dy,
+            dx_unaccel,
+            dy_unaccel,
+        } = event
+        else {
+            panic!("expected pointer motion");
+        };
+        assert_eq!((x, y), (1919.0, 1079.0));
+        // A locked game camera lives on these deltas: they must survive the
+        // edge clamp, with the unaccelerated channel left untouched.
+        assert_eq!((dx, dy), (30.0, 25.0));
+        assert_eq!((dx_unaccel, dy_unaccel), (12.0, 10.0));
+    }
+
+    #[test]
+    fn relative_motion_accumulates_the_absolute_position() {
+        let mut pointer = (100.0, 100.0);
+        let _ = relative_motion_event(&mut pointer, 1920, 1080, 30.0, 25.0, 12.0, 10.0);
+        assert_eq!(pointer, (130.0, 125.0));
+        let _ = relative_motion_event(&mut pointer, 1920, 1080, -200.0, -200.0, -80.0, -80.0);
+        assert_eq!(pointer, (0.0, 0.0), "position clamps at the top-left edge");
     }
 }

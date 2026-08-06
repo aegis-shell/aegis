@@ -1,3 +1,4 @@
+use aegis_design::Design;
 use aegis_model::settings::{IdleSettings, SettingsAction, SettingsSnapshot};
 use aegis_shell::{Localizer, Message};
 use lens::{Align, Frame, Icon, LayoutOpts};
@@ -158,11 +159,17 @@ impl SettingsModule for PowerModule {
         }
     }
 
-    fn render(&mut self, frame: &mut Frame, i18n: &Localizer, out: &mut ModuleEvents) {
+    fn render(
+        &mut self,
+        frame: &mut Frame,
+        i18n: &Localizer,
+        design: &Design,
+        out: &mut ModuleEvents,
+    ) {
         frame.heading(i18n.text(Message::PowerManagement), 2);
         frame.label_wrapped_sized(i18n.text(Message::PowerManagementDescription), 12.0, 560.0);
 
-        frame.column_ex(&settings_card_layout(), |frame| {
+        frame.column_ex(&settings_card_layout(design), |frame| {
             frame.heading(i18n.text(Message::AutomaticIdle), 3);
             if frame
                 .setting_switch(
@@ -178,7 +185,7 @@ impl SettingsModule for PowerModule {
             }
         });
 
-        frame.column_ex(&settings_card_layout(), |frame| {
+        frame.column_ex(&settings_card_layout(design), |frame| {
             frame.heading(i18n.text(Message::DimDisplay), 3);
             let before = self.draft.dim_after_seconds != 0;
             let editable = self.stage_editable(0);
@@ -214,7 +221,7 @@ impl SettingsModule for PowerModule {
             }
         });
 
-        frame.column_ex(&settings_card_layout(), |frame| {
+        frame.column_ex(&settings_card_layout(design), |frame| {
             frame.heading(i18n.text(Message::LockAfterIdle), 3);
             let before = self.draft.lock_after_seconds != 0;
             let editable = self.stage_editable(1);
@@ -236,7 +243,7 @@ impl SettingsModule for PowerModule {
             }
         });
 
-        frame.column_ex(&settings_card_layout(), |frame| {
+        frame.column_ex(&settings_card_layout(design), |frame| {
             frame.heading(i18n.text(Message::TurnDisplayOff), 3);
             let before = self.draft.display_off_after_seconds != 0;
             let editable = self.stage_editable(2);
@@ -258,7 +265,7 @@ impl SettingsModule for PowerModule {
             }
         });
 
-        frame.column_ex(&settings_card_layout(), |frame| {
+        frame.column_ex(&settings_card_layout(design), |frame| {
             frame.heading(i18n.text(Message::SuspendAutomatically), 3);
             let before = self.draft.suspend_after_seconds != 0;
             let editable = self.stage_editable(3);

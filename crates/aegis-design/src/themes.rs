@@ -29,10 +29,18 @@ pub fn menu_disabled(menu: Theme, design: &Design) -> Theme {
 }
 
 /// The application theme used by System Settings and trusted chrome surfaces.
+///
+/// The lens base must match the design's scheme: it supplies the widget
+/// defaults the tokens below do not override (caret, selection, focus ring),
+/// which would sit on the wrong tonal side otherwise.
 #[must_use]
 pub fn application(design: &Design) -> Theme {
-    Theme::dark()
-        .with_bg(design.colors.application_surface)
+    let base = if design.is_light() {
+        Theme::light()
+    } else {
+        Theme::dark()
+    };
+    base.with_bg(design.colors.application_surface)
         .with_fg(design.colors.application_text)
         .with_accent(design.colors.application_accent)
         .with_border(design.colors.application_border)
@@ -95,6 +103,15 @@ mod tests {
         assert_eq!(theme.bg(), Color::rgba(25, 28, 40, 255));
         assert_eq!(theme.fg(), Color::rgba(244, 246, 252, 255));
         assert_eq!(theme.accent(), Color::rgba(102, 156, 255, 255));
+    }
+
+    #[test]
+    fn application_theme_follows_the_design_scheme() {
+        let design = Design::light();
+        let theme = application(&design);
+        assert_eq!(theme.bg(), design.colors.application_surface);
+        assert_eq!(theme.fg(), design.colors.application_text);
+        assert_eq!(theme.accent(), design.colors.application_accent);
     }
 
     #[test]

@@ -40,7 +40,6 @@ assert_internal_dependencies() {
 # back into these contracts.
 assert_internal_dependencies aegis-model
 assert_internal_dependencies aegis-wayland-protocols
-assert_internal_dependencies aegis-agent
 assert_internal_dependencies aegis-security aegis-model
 assert_internal_dependencies aegis-semantic aegis-model
 assert_internal_dependencies aegis-config aegis-model

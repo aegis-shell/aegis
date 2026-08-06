@@ -66,7 +66,15 @@ pub(super) struct TrayFold {
     pub(super) hidden: usize,
 }
 
-pub(super) fn render_text(f: &mut Frame, id: &str, rect: Rect, text: &str, size: f32, fade: f32) {
+pub(super) fn render_text(
+    f: &mut Frame,
+    design: &Design,
+    id: &str,
+    rect: Rect,
+    text: &str,
+    size: f32,
+    fade: f32,
+) {
     f.layer(id, rect, &centered_layer(), |f| {
         f.row_ex(
             &LayoutOpts {
@@ -75,7 +83,7 @@ pub(super) fn render_text(f: &mut Frame, id: &str, rect: Rect, text: &str, size:
                 cross: Align::Center,
                 ..Default::default()
             },
-            |f| f.label_compact_outlined_sized(text, size, hud_text_outline(fade)),
+            |f| f.label_compact_outlined_sized(text, size, hud_text_outline(design, fade)),
         );
     });
 }
@@ -85,6 +93,7 @@ pub(super) fn render_text(f: &mut Frame, id: &str, rect: Rect, text: &str, size:
 /// fade as the chip theme and compositor glass body.
 pub(super) fn render_status_cell(
     f: &mut Frame,
+    design: &Design,
     id: &str,
     rect: Rect,
     fade: f32,
@@ -108,44 +117,48 @@ pub(super) fn render_status_cell(
                             icon as *mut lens::sys::flux_image,
                             16.0,
                             16.0,
-                            hud_foreground_color(fade),
-                            hud_glyph_outline(fade),
+                            hud_foreground_color(design, fade),
+                            hud_glyph_outline(design, fade),
                         )
                     },
-                    None => f.icon_outlined(fallback, 15.0, hud_glyph_outline(fade)),
+                    None => f.icon_outlined(fallback, 15.0, hud_glyph_outline(design, fade)),
                 }
                 if !label.is_empty() {
-                    f.label_compact_outlined_sized(label, 11.0, hud_text_outline(fade));
+                    f.label_compact_outlined_sized(label, 11.0, hud_text_outline(design, fade));
                 }
             },
         );
     });
 }
 
-/// Stable light core for HUD foreground content. The dark contour carries
-/// bright-background separation, so the core can stay constant instead of
-/// flipping every symbol independently and causing visual chatter.
-pub(super) fn hud_foreground_color(fade: f32) -> Color {
-    fade_color(Design::dark().hud_foreground.primary, fade)
+/// Stable foreground core for HUD content, following the appearance's HUD
+/// policy (a light core over a dark contour in the dark appearance,
+/// inverted in the light one). The contour carries background separation,
+/// so the core can stay constant instead of flipping every symbol
+/// independently and causing visual chatter.
+pub(super) fn hud_foreground_color(design: &Design, fade: f32) -> Color {
+    fade_color(design.hud_foreground.primary, fade)
 }
 
-pub(super) fn hud_contour_color() -> Color {
-    Design::dark().hud_foreground.contour
+pub(super) fn hud_contour_color(design: &Design) -> Color {
+    design.hud_foreground.contour
 }
 
-pub(super) fn hud_text_outline(fade: f32) -> ForegroundOutline {
-    let hud = Design::dark().hud_foreground;
+pub(super) fn hud_text_outline(design: &Design, fade: f32) -> ForegroundOutline {
+    let hud = design.hud_foreground;
     ForegroundOutline::new(fade_color(hud.contour, fade), hud.text_contour_width)
 }
 
-pub(super) fn hud_glyph_outline(fade: f32) -> ForegroundOutline {
-    let hud = Design::dark().hud_foreground;
+pub(super) fn hud_glyph_outline(design: &Design, fade: f32) -> ForegroundOutline {
+    let hud = design.hud_foreground;
     ForegroundOutline::new(fade_color(hud.contour, fade), hud.glyph_contour_width)
 }
 
 /// The floating HUD chip foreground tint. The compositor's SDF glass pass now
 /// supplies the body, refraction and rim; this intentionally stays subtle so
-/// it does not turn the physical glass back into an opaque dark pill.
+/// it does not turn the physical glass back into an opaque dark pill. The
+/// whisper is scheme-invariant: the scheme-aware pieces are the glass body
+/// and the HUD foreground/contour pair, not this tint.
 pub(super) fn chip_opts(fade: f32) -> OverlayOpts {
     OverlayOpts {
         bg: fade_color(Color::rgba(24, 26, 36, 42), fade),
@@ -157,8 +170,8 @@ pub(super) fn chip_opts(fade: f32) -> OverlayOpts {
     }
 }
 
-pub(super) fn workspace_dot_color(intensity: f32) -> Color {
-    let primary = Design::dark().hud_foreground.primary;
+pub(super) fn workspace_dot_color(design: &Design, intensity: f32) -> Color {
+    let primary = design.hud_foreground.primary;
     let intensity = intensity.clamp(0.0, 1.0);
     let alpha = (78.0 + (248.0 - 78.0) * intensity).round() as u8;
     primary.with_alpha(alpha)

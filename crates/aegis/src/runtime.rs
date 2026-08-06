@@ -22,6 +22,7 @@ mod presentation;
 mod presentation_state;
 mod rendering;
 mod scanout;
+mod scheme;
 mod secret_prompt;
 mod session;
 mod settings;
@@ -48,6 +49,7 @@ use presentation::*;
 use presentation_state::*;
 use rendering::*;
 use scanout::*;
+use scheme::*;
 use secret_prompt::*;
 use state::*;
 use stream::*;
@@ -436,7 +438,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let clear = flux::rgba(30, 30, 46, 255);
+    let clear = clear_color(desktop_preferences.color_scheme);
     let frame_count: u64 = 0;
     // Nested-only deferral for retired client buffers: with no exportable
     // completion fence, the loop releases them a few presented frames late
@@ -477,6 +479,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     shell.set_reduced_motion(desktop_preferences.reduced_motion);
     server.set_reduced_motion(desktop_preferences.reduced_motion);
+    shell.set_color_scheme(desktop_preferences.color_scheme);
     // The dock: a persistent strip of pinned `.desktop` app icons (ADR-0022).
     // Resolve the pinned entries from the config's `[dock] pinned` list.
     // Automatic selection remains an explicit opt-in; an unconfigured session
@@ -844,6 +847,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // loop rebuilds the owned snapshots only when these move; chrome and IPC
     // keep the previously pushed copy otherwise.
     let last_windows_hash: Option<u64> = None;
+    let last_all_windows_hash: Option<u64> = None;
     let last_ws_sig: Option<u64> = None;
     let last_interaction_domain_revision: Option<u64> = None;
     let last_outputs_revision: Option<u64> = None;
@@ -980,6 +984,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         last_win_sig,
         last_space_use,
         last_windows_hash,
+        last_all_windows_hash,
         last_ws_sig,
         last_interaction_domain_revision,
         last_outputs_revision,

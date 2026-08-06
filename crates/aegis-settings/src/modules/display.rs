@@ -1,3 +1,4 @@
+use aegis_design::Design;
 use aegis_model::Point;
 use aegis_model::output::{ModeSpec, OutputInfo, OutputMode};
 use aegis_model::settings::{DisplaySettings, DisplayStatus, SettingsAction, SettingsSnapshot};
@@ -142,12 +143,18 @@ impl SettingsModule for DisplayModule {
         }
     }
 
-    fn render(&mut self, frame: &mut Frame, i18n: &Localizer, out: &mut ModuleEvents) {
+    fn render(
+        &mut self,
+        frame: &mut Frame,
+        i18n: &Localizer,
+        design: &Design,
+        out: &mut ModuleEvents,
+    ) {
         frame.heading(i18n.text(Message::Display), 2);
         frame.label_wrapped_sized(i18n.text(Message::DisplayDescription), 12.0, 560.0);
 
         let outputs = self.status.outputs.clone();
-        frame.column_ex(&settings_card_layout(), |frame| {
+        frame.column_ex(&settings_card_layout(design), |frame| {
             if outputs.is_empty() {
                 unavailable_row(frame, i18n.text(Message::NoDisplays), i18n);
                 return;

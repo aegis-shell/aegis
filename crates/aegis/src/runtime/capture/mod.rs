@@ -13,7 +13,7 @@ mod worker;
 pub(super) use encoding::encode_rgba_capture;
 pub(super) use encoding::{
     CaptureCursor, PendingReadback, flux_last_error_detail, read_captured_pixels,
-    request_frame_readback,
+    read_captured_pixels_owned, request_frame_readback,
 };
 pub(super) use geometry::{clamp_logical_region, logical_rect_to_physical};
 pub(super) use output::screenshot_uri_list;

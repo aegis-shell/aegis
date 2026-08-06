@@ -207,6 +207,9 @@ pub(super) struct CompositorRuntime {
     /// Content hash of the last fanned-out window snapshot; the full
     /// `Server::windows()` clone only happens when this changes.
     pub(super) last_windows_hash: Option<u64>,
+    /// Same gate for the workspace-global `Server::all_windows()` snapshot
+    /// pushed to the dock.
+    pub(super) last_all_windows_hash: Option<u64>,
     pub(super) last_ws_sig: Option<u64>,
     pub(super) last_interaction_domain_revision: Option<u64>,
     pub(super) last_outputs_revision: Option<u64>,

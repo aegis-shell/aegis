@@ -155,6 +155,11 @@ pub struct CapabilityPrompt {
     warning: Option<String>,
     groups: Vec<CapabilityGroup>,
     modal_reserved: Reserved,
+    /// The design snapshot the prompt paints from, from
+    /// [`ChromeUpdate::Appearance`]. Seeded on registration by
+    /// [`crate::Shell::add`] and refreshed when the desktop color scheme
+    /// changes; defaults to the dark appearance until the first update arrives.
+    design: Design,
 }
 
 impl CapabilityPrompt {
@@ -165,6 +170,7 @@ impl CapabilityPrompt {
             warning: None,
             groups: Vec::new(),
             modal_reserved: Reserved::default(),
+            design: Design::dark(),
         }
     }
 
@@ -251,7 +257,7 @@ impl Chrome for CapabilityPrompt {
         let display = (raw.display_size.x, raw.display_size.y);
         let cursor = raw.cursor;
         let pressed = raw.mouse_pressed.first().copied().unwrap_or(false);
-        let design = Design::dark();
+        let design = self.design;
         let layout = self.layout(display);
 
         frame.layer(
@@ -263,7 +269,7 @@ impl Chrome for CapabilityPrompt {
                 h: display.1,
             },
             &OverlayOpts {
-                bg: Color::rgba(8, 10, 18, 118),
+                bg: design.colors.scrim,
                 ..Default::default()
             },
             |_| {},
@@ -510,8 +516,10 @@ impl Chrome for CapabilityPrompt {
     }
 
     fn update(&mut self, update: ChromeUpdate<'_>) {
-        if let ChromeUpdate::ModalReserved(reserved) = update {
-            self.modal_reserved = reserved;
+        match update {
+            ChromeUpdate::ModalReserved(reserved) => self.modal_reserved = reserved,
+            ChromeUpdate::Appearance(design) => self.design = *design,
+            _ => {}
         }
     }
 
@@ -559,7 +567,7 @@ impl Chrome for CapabilityPrompt {
         }
         let layout = self.layout(display);
         let panel = layout.panel;
-        let radius = Design::dark().radii.card;
+        let radius = self.design.radii.card;
         vec![
             BackdropRegion {
                 x: panel.x + radius,

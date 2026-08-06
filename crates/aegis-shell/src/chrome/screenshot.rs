@@ -30,8 +30,8 @@ use lens::{
 };
 
 use crate::{
-    BackdropRegion, Chrome, ChromeCommand, ChromeEvents, CursorShape, LiquidGlassRegion, Localizer,
-    Message, ellipsize,
+    BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
+    LiquidGlassRegion, Localizer, Message, ellipsize,
 };
 use aegis_model::app::BuiltInApplication;
 use aegis_model::input::{KeyAction, KeyChar, key_action};
@@ -96,6 +96,11 @@ pub struct ScreenshotSelector {
     confirmed: Option<aegis_model::Rect>,
     /// Window under the cursor in window-pick mode (topmost first).
     hovered: Option<WindowId>,
+    /// The design snapshot the selector paints from, from
+    /// [`ChromeUpdate::Appearance`]. Seeded on registration by
+    /// [`crate::Shell::add`] and refreshed when the desktop color scheme
+    /// changes; defaults to the dark appearance until the first update arrives.
+    design: Design,
 }
 
 impl Default for ScreenshotSelector {
@@ -114,6 +119,7 @@ impl ScreenshotSelector {
             current: Point::default(),
             confirmed: None,
             hovered: None,
+            design: Design::dark(),
         }
     }
 
@@ -275,7 +281,7 @@ impl ScreenshotSelector {
     /// desktop and collapse it back into a classic flat selection rectangle.
     fn render_scrim(&self, frame: &mut Frame, display: (f32, f32), hole: Option<LensRect>) {
         let scrim = OverlayOpts {
-            bg: Color::rgba(0, 0, 0, 128),
+            bg: self.design.colors.scrim.with_alpha(128),
             ..Default::default()
         };
         let full = LensRect {
@@ -308,6 +314,7 @@ impl ScreenshotSelector {
         anchor: LensRect,
         display: (f32, f32),
         selected: bool,
+        design: &Design,
     ) {
         let max_text_width = (display.0 - 2.0 * (STATUS_MARGIN + STATUS_PAD)).max(1.0);
         let text = ellipsize(frame, text, STATUS_FONT_SIZE, max_text_width);
@@ -317,8 +324,7 @@ impl ScreenshotSelector {
             metrics.height + STATUS_PAD * 2.0,
         );
         let rect = status_rect(anchor, size, display);
-        let design = Design::dark();
-        let mut material = materials::glass_focus(&design, selected, 1.0);
+        let mut material = materials::glass_focus(design, selected, 1.0);
         material.radius = rect.h * 0.5;
 
         let original_theme = frame.theme();
@@ -365,8 +371,8 @@ impl ScreenshotSelector {
 
         // Minimal foreground tint only. The compositor-owned analytic pass
         // supplies the body, refraction, rim light, and shadow.
-        let design = Design::dark();
-        let mut material = materials::glass_panel(&design);
+        let design = &self.design;
+        let mut material = materials::glass_panel(design);
         material.radius = Self::glass_radius(lens_rect);
         frame.layer("aegis-screenshot-selection", lens_rect, &material, |_| {});
 
@@ -390,6 +396,7 @@ impl ScreenshotSelector {
                 lens_rect,
                 display,
                 self.confirmed.is_some(),
+                design,
             );
         }
     }
@@ -400,8 +407,8 @@ impl ScreenshotSelector {
         let Some(rect) = self.glass_rect(display, &[]) else {
             return;
         };
-        let design = Design::dark();
-        let mut material = materials::glass_panel(&design);
+        let design = &self.design;
+        let mut material = materials::glass_panel(design);
         material.radius = Self::glass_radius(rect);
         frame.layer("aegis-picker-pixel-lens", rect, &material, |_| {});
         frame.layer(
@@ -444,8 +451,7 @@ impl ScreenshotSelector {
             "aegis-picker-window",
             rect,
             &{
-                let design = Design::dark();
-                let mut material = materials::glass_panel(&design);
+                let mut material = materials::glass_panel(&self.design);
                 material.radius = Self::glass_radius(rect);
                 material
             },
@@ -459,6 +465,7 @@ impl ScreenshotSelector {
                 rect,
                 display,
                 true,
+                &self.design,
             );
         }
     }
@@ -794,7 +801,7 @@ impl Chrome for ScreenshotSelector {
         self.glass_rect(display, windows)
             .map(|rect| {
                 vec![LiquidGlassRegion::from_role(
-                    &Design::dark(),
+                    &self.design,
                     GlassRole::FloatingPanel,
                     BackdropRegion::from(rect),
                     Self::glass_radius(rect),
@@ -823,6 +830,12 @@ impl Chrome for ScreenshotSelector {
         self.active.then_some(CursorShape::Default)
     }
 
+    fn update(&mut self, update: ChromeUpdate<'_>) {
+        if let ChromeUpdate::Appearance(design) = update {
+            self.design = *design;
+        }
+    }
+
     fn command(&mut self, command: &ChromeCommand<'_>, _out: &mut ChromeEvents) {
         match command {
             ChromeCommand::OpenBuiltIn(BuiltInApplication::ScreenshotSelector) => self.start(),
@@ -831,7 +844,6 @@ impl Chrome for ScreenshotSelector {
             _ => {}
         }
     }
-
     fn key_char(&mut self, key: &KeyChar, out: &mut ChromeEvents) {
         if !self.active {
             return;

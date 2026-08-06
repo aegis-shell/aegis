@@ -9,6 +9,7 @@ rust-version.workspace = true
 build = "build.rs"
 
 [dependencies]
+aegis-model = { workspace = true }
 lens = { workspace = true }
 # Direct dep so this crate's test harness receives DEP_LENS_RPATHS and can
 # resolve the selected Lens/Flux native libraries through build.rs.

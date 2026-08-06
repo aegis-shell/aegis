@@ -28,6 +28,7 @@ impl NestedHost {
                 pointer: ptr::null_mut(),
                 keyboard: ptr::null_mut(),
                 last_pointer_serial: 0,
+                last_pointer_position: None,
                 configured: false,
                 width,
                 height,

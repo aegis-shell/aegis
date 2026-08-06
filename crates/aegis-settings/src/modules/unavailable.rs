@@ -1,3 +1,4 @@
+use aegis_design::Design;
 use aegis_model::settings::SettingsSnapshot;
 use aegis_shell::{Localizer, Message};
 use lens::{Align, Frame, Icon, LayoutOpts};
@@ -28,10 +29,16 @@ impl SettingsModule for UnavailableModule {
         self.metadata
     }
 
-    fn render(&mut self, frame: &mut Frame, i18n: &Localizer, _out: &mut ModuleEvents) {
+    fn render(
+        &mut self,
+        frame: &mut Frame,
+        i18n: &Localizer,
+        design: &Design,
+        _out: &mut ModuleEvents,
+    ) {
         frame.heading(i18n.text(self.metadata.title), 2);
         frame.label_wrapped_sized(i18n.text(self.description), 12.0, 560.0);
-        frame.column_ex(&settings_card_layout(), |frame| {
+        frame.column_ex(&settings_card_layout(design), |frame| {
             frame.row_ex(
                 &LayoutOpts {
                     gap: 10.0,

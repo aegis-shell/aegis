@@ -528,6 +528,9 @@ impl CompositorRuntime {
             // Server-side topology: window list/geometry, workspace, output,
             // and Interaction Domain model changes all feed both the scene and the chrome.
             || self.last_windows_hash != Some(self.server.windows_signature())
+            // The dock's workspace-global strip follows its own hash; a change
+            // on a hidden workspace (map/unmap/title) moves only this one.
+            || self.last_all_windows_hash != Some(self.server.all_windows_signature())
             || self.last_ws_sig != Some(self.server.workspace_signature())
             || self.last_outputs_revision != Some(self.server.outputs_revision())
             || self.last_interaction_domain_revision != Some(self.server.interaction_domain_revision())

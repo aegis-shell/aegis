@@ -42,7 +42,7 @@ jobs:
           cargo clippy --locked
           -p aegis-model -p aegis-security -p aegis-semantic
           -p aegis-config -p aegis-ipc -p aegis-desktop-entries
-          -p aegis-launcher -p aegis-commands -p aegis-agent -p aegis-mcp -p aegis-idle
+          -p aegis-launcher -p aegis-commands -p aegis-mcp -p aegis-idle
           -p aegis-atspi -p aegis-wayland-protocols -p aegis-compositor
           --all-targets -- -D warnings
       - name: Doc check (flux-free crates)
@@ -50,7 +50,7 @@ jobs:
           cargo doc --locked --no-deps
           -p aegis-model -p aegis-security -p aegis-semantic
           -p aegis-config -p aegis-ipc -p aegis-desktop-entries
-          -p aegis-launcher -p aegis-commands -p aegis-agent -p aegis-mcp -p aegis-idle
+          -p aegis-launcher -p aegis-commands -p aegis-mcp -p aegis-idle
           -p aegis-atspi -p aegis-wayland-protocols -p aegis-compositor
 
   flux-free-tests:
@@ -69,7 +69,7 @@ jobs:
           cargo test --locked
           -p aegis-model -p aegis-security -p aegis-semantic
           -p aegis-config -p aegis-ipc -p aegis-desktop-entries
-          -p aegis-launcher -p aegis-commands -p aegis-agent -p aegis-mcp -p aegis-idle
+          -p aegis-launcher -p aegis-commands -p aegis-mcp -p aegis-idle
           -p aegis-atspi -p aegis-compositor
       - name: Build aegis-wayland-protocols
         run: cargo build --locked -p aegis-wayland-protocols

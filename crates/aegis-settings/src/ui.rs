@@ -19,13 +19,13 @@ pub(crate) fn unavailable_row(frame: &mut Frame, label: &str, i18n: &Localizer) 
     );
 }
 
-pub(crate) fn settings_card_layout() -> LayoutOpts {
+pub(crate) fn settings_card_layout(design: &Design) -> LayoutOpts {
     LayoutOpts {
         min_height: 96.0,
         gap: 8.0,
         pad: 15.0,
         cross: Align::Stretch,
-        ..materials::card(&Design::dark())
+        ..materials::card(design)
     }
 }
 

@@ -11,6 +11,7 @@
 
 use std::ffi::c_void;
 
+use aegis_design::Design;
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
 
 use crate::{
@@ -78,6 +79,11 @@ pub struct Launcher {
     /// Accessibility reduced-motion (ADR-0029): the reveal spring and page
     /// slide resolve to their targets in one frame.
     reduced_motion: bool,
+    /// The design snapshot the launcher paints from, from
+    /// [`ChromeUpdate::Appearance`]. Seeded on registration by
+    /// [`crate::Shell::add`] and refreshed when the desktop color scheme
+    /// changes; defaults to the dark appearance until the first update arrives.
+    design: Design,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -180,6 +186,7 @@ impl Launcher {
             modal_reserved: Reserved::default(),
             app_menu: AppMenu::new("aegis-launcher-context-menu", false),
             reduced_motion: false,
+            design: Design::dark(),
         }
     }
 
@@ -428,7 +435,7 @@ impl Chrome for Launcher {
         frame.layer(
             "aegis-launcher-backdrop",
             full,
-            &backdrop_layer(progress),
+            &backdrop_layer(progress, &self.design),
             |_| {},
         );
 
@@ -457,7 +464,7 @@ impl Chrome for Launcher {
         frame.layer(
             "aegis-launcher-search",
             search_rect,
-            &glass_panel(progress, SEARCH_H * 0.5, self.search_focused),
+            &glass_panel(progress, SEARCH_H * 0.5, self.search_focused, &self.design),
             |frame| {
                 frame.row_ex(
                     &LayoutOpts {
@@ -493,7 +500,7 @@ impl Chrome for Launcher {
             frame.layer(
                 "aegis-launcher-search-caret",
                 caret_rect,
-                &search_caret_layer(progress),
+                &search_caret_layer(progress, &self.design),
                 |_| {},
             );
         }
@@ -530,6 +537,7 @@ impl Chrome for Launcher {
             });
         }
 
+        let colors = self.design.colors;
         for (slot, cell) in cells.iter().enumerate() {
             let mut rect = layout.cell(slot, slide_y);
             rect.x += self.page_shift;
@@ -545,9 +553,9 @@ impl Chrome for Launcher {
                 .min(layout.cell_h - 42.0)
                 .clamp(44.0, 82.0);
             let cell_bg = if cell.selected {
-                Color::rgba(255, 255, 255, alpha(42, progress))
+                colors.menu_active.with_alpha(alpha(42, progress))
             } else if hovered {
-                Color::rgba(255, 255, 255, alpha(26, progress))
+                colors.menu_hover.with_alpha(alpha(26, progress))
             } else {
                 Color::TRANSPARENT
             };
@@ -558,7 +566,7 @@ impl Chrome for Launcher {
                 &OverlayOpts {
                     bg: cell_bg,
                     border: if cell.selected {
-                        Color::rgba(255, 255, 255, alpha(54, progress))
+                        colors.menu_border.with_alpha(alpha(54, progress))
                     } else {
                         Color::TRANSPARENT
                     },
@@ -615,12 +623,10 @@ impl Chrome for Launcher {
                         &sized_fill(
                             diameter,
                             diameter,
-                            Color::rgba(
-                                255,
-                                255,
-                                255,
-                                alpha(if page == self.page { 220 } else { 84 }, progress),
-                            ),
+                            colors.menu_text.with_alpha(alpha(
+                                if page == self.page { 220 } else { 84 },
+                                progress,
+                            )),
                             diameter * 0.5,
                         ),
                         |_| {},
@@ -766,6 +772,7 @@ impl Chrome for Launcher {
                 self.sync_page_to_selection();
             }
             ChromeUpdate::ReducedMotion(reduced) => self.set_reduced_motion(reduced),
+            ChromeUpdate::Appearance(design) => self.design = *design,
             _ => {}
         }
     }
@@ -919,26 +926,25 @@ fn centered_layer() -> OverlayOpts {
     }
 }
 
-fn backdrop_layer(progress: f32) -> OverlayOpts {
+fn backdrop_layer(progress: f32, design: &Design) -> OverlayOpts {
     OverlayOpts {
         gap: 0.0,
         pad: 0.0,
-        bg: Color::rgba(8, 10, 20, alpha(126, progress)),
+        bg: design.colors.scrim.with_alpha(alpha(126, progress)),
         ..Default::default()
     }
 }
 
 /// Frosted-glass panel material shared with the dock: a light translucent
 /// tint over the compositor's backdrop blur with a bright 1px edge.
-fn glass_panel(progress: f32, radius: f32, focused: bool) -> OverlayOpts {
+fn glass_panel(progress: f32, radius: f32, focused: bool, design: &Design) -> OverlayOpts {
+    let surface = design.colors.popover_surface;
+    let border = design.colors.popover_border;
+    let (_, _, _, surface_alpha) = surface.components();
+    let (_, _, _, border_alpha) = border.components();
     OverlayOpts {
-        bg: Color::rgba(255, 255, 255, alpha(38, progress)),
-        border: Color::rgba(
-            255,
-            255,
-            255,
-            alpha(if focused { 150 } else { 72 }, progress),
-        ),
+        bg: surface.with_alpha(alpha(surface_alpha, progress)),
+        border: border.with_alpha(alpha(if focused { 150 } else { border_alpha }, progress)),
         border_width: if focused { 1.5 } else { 1.0 },
         radius,
         pad: 0.0,
@@ -947,11 +953,14 @@ fn glass_panel(progress: f32, radius: f32, focused: bool) -> OverlayOpts {
     }
 }
 
-fn search_caret_layer(progress: f32) -> OverlayOpts {
+fn search_caret_layer(progress: f32, design: &Design) -> OverlayOpts {
     OverlayOpts {
         gap: 0.0,
         pad: 0.0,
-        bg: Color::rgba(255, 255, 255, alpha(230, progress)),
+        bg: design
+            .colors
+            .application_text
+            .with_alpha(alpha(230, progress)),
         radius: SEARCH_CARET_W * 0.5,
         ..Default::default()
     }
@@ -1010,6 +1019,8 @@ fn render_app_icon(frame: &mut Frame, icon: Option<*mut c_void>, icon_size: f32,
                     &sized_fill(
                         visible_size,
                         visible_size,
+                        // Intentional content color: the neutral slate of the
+                        // generic app-icon chip, shared by both appearances.
                         Color::rgba(76, 85, 116, alpha(224, progress)),
                         visible_size * 0.24,
                     ),
@@ -1052,7 +1063,7 @@ mod tests {
 
     #[test]
     fn backdrop_layer_has_no_layout_inset() {
-        let opts = backdrop_layer(1.0);
+        let opts = backdrop_layer(1.0, &Design::dark());
         assert_eq!(opts.pad, 0.0);
         assert_eq!(opts.gap, 0.0);
         assert_ne!(opts.bg, Color::TRANSPARENT);

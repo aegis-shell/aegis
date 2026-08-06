@@ -151,6 +151,11 @@ pub struct AppPicker {
     visible_rows: usize,
     modal_reserved: Reserved,
     catalog: AppCatalog,
+    /// The design snapshot the picker paints from, from
+    /// [`ChromeUpdate::Appearance`]. Seeded on registration by
+    /// [`crate::Shell::add`] and refreshed when the desktop color scheme
+    /// changes; defaults to the dark appearance until the first update arrives.
+    design: Design,
 }
 
 impl AppPicker {
@@ -166,6 +171,7 @@ impl AppPicker {
             visible_rows: VISIBLE_ROWS,
             modal_reserved: Reserved::default(),
             catalog: AppCatalog::default(),
+            design: Design::dark(),
         }
     }
 
@@ -282,7 +288,7 @@ impl Chrome for AppPicker {
         let display = (raw.display_size.x, raw.display_size.y);
         let cursor = raw.cursor;
         let pressed = raw.mouse_pressed.first().copied().unwrap_or(false);
-        let design = Design::dark();
+        let design = self.design;
         let layout =
             PickerLayout::for_display(display, self.modal_reserved, self.subject.is_some());
         self.visible_rows = layout.visible_rows;
@@ -296,7 +302,7 @@ impl Chrome for AppPicker {
                 h: display.1,
             },
             &OverlayOpts {
-                bg: Color::rgba(8, 10, 18, 118),
+                bg: design.colors.scrim,
                 ..Default::default()
             },
             |_| {},
@@ -572,6 +578,7 @@ impl Chrome for AppPicker {
         match update {
             ChromeUpdate::ModalReserved(reserved) => self.modal_reserved = reserved,
             ChromeUpdate::AppCatalog(catalog) => self.catalog = catalog.clone(),
+            ChromeUpdate::Appearance(design) => self.design = *design,
             _ => {}
         }
     }
@@ -631,7 +638,7 @@ impl Chrome for AppPicker {
         let layout =
             PickerLayout::for_display(display, self.modal_reserved, self.subject.is_some());
         let panel = layout.panel;
-        let radius = Design::dark().radii.card;
+        let radius = self.design.radii.card;
         vec![
             BackdropRegion {
                 x: panel.x + radius,

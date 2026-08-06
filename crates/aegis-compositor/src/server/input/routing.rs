@@ -97,7 +97,14 @@ impl Server {
         for event in events {
             use aegis_model::input::InputEvent::*;
             match *event {
-                PointerMotion { x, y } => self.pointer_motion(x, y),
+                PointerMotion {
+                    x,
+                    y,
+                    dx,
+                    dy,
+                    dx_unaccel,
+                    dy_unaccel,
+                } => self.pointer_motion(x, y, dx, dy, dx_unaccel, dy_unaccel),
                 PointerButton { button, state } => self.pointer_button(button, state),
                 PointerLeave => self.pointer_leave_all(),
                 PointerAxis(frame) => self.pointer_axis(frame),
@@ -298,11 +305,11 @@ impl Server {
             match action {
                 SyntheticInputAction::PointerMove { position } => {
                     let (x, y) = to_global(position)?;
-                    events.push(InputEvent::PointerMotion { x, y });
+                    events.push(InputEvent::pointer_move_to(x, y));
                 }
                 SyntheticInputAction::Click { position, button } => {
                     let (x, y) = to_global(position)?;
-                    events.push(InputEvent::PointerMotion { x, y });
+                    events.push(InputEvent::pointer_move_to(x, y));
                     events.push(InputEvent::PointerButton {
                         button,
                         state: ButtonState::Pressed,
@@ -314,7 +321,7 @@ impl Server {
                 }
                 SyntheticInputAction::Scroll { position, dx, dy } => {
                     let (x, y) = to_global(position)?;
-                    events.push(InputEvent::PointerMotion { x, y });
+                    events.push(InputEvent::pointer_move_to(x, y));
                     events.push(InputEvent::PointerAxis(
                         aegis_model::input::PointerAxisFrame::from_values(
                             self.epoch.elapsed().as_millis() as u32,
@@ -389,9 +396,25 @@ impl Server {
         self.windows_in_set(&visible)
     }
 
+    /// Enumerate every mapped toplevel across all workspaces, not just the
+    /// visible set. The dock consumes this so its running-window strip is
+    /// global; ordering follows the same stable live-surface walk as
+    /// [`Self::windows`], and the same interaction-domain observation filter
+    /// applies.
+    pub fn all_windows(&self) -> Vec<aegis_model::window::Window> {
+        self.windows_filtered(|_| true)
+    }
+
     fn windows_in_set(
         &self,
         visible: &std::collections::HashSet<aegis_model::window::WindowId>,
+    ) -> Vec<aegis_model::window::Window> {
+        self.windows_filtered(|s| visible.contains(&s.window.id))
+    }
+
+    fn windows_filtered(
+        &self,
+        in_set: impl Fn(&SurfaceRec) -> bool,
     ) -> Vec<aegis_model::window::Window> {
         self.state
             .live_surfaces()
@@ -399,7 +422,7 @@ impl Server {
             .filter(|s| {
                 s.mapped
                     && !s.xdg_toplevel.is_null()
-                    && visible.contains(&s.window.id)
+                    && in_set(s)
                     && self
                         .state
                         .authority
@@ -431,8 +454,19 @@ impl Server {
     /// and rebuilds the owned snapshot only when it moves; a collision would
     /// only stall a refresh until the next change.
     pub fn windows_signature(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
         let visible = self.visible();
+        self.windows_signature_filtered(|s| visible.contains(&s.window.id))
+    }
+
+    /// Content hash of exactly what [`Self::all_windows`] would publish, the
+    /// global counterpart of [`Self::windows_signature`]. The frame loop gates
+    /// the dock's snapshot push on it just like the visible-set hash.
+    pub fn all_windows_signature(&self) -> u64 {
+        self.windows_signature_filtered(|_| true)
+    }
+
+    fn windows_signature_filtered(&self, in_set: impl Fn(&SurfaceRec) -> bool) -> u64 {
+        use std::hash::{Hash, Hasher};
         let now = self.now_ms();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for s in self
@@ -442,7 +476,7 @@ impl Server {
             .filter(|s| {
                 s.mapped
                     && !s.xdg_toplevel.is_null()
-                    && visible.contains(&s.window.id)
+                    && in_set(s)
                     && self
                         .state
                         .authority
@@ -792,10 +826,31 @@ impl Server {
     /// surfaces. Equivalent to the click-to-focus path driven from a pointer
     /// button press, but initiated by the compositor. No-op if the id does
     /// not name a live toplevel.
+    ///
+    /// When the target lives on a hidden workspace, its output first switches
+    /// to that workspace (the usual slide animation and hidden-focus cleanup
+    /// in [`Self::switch_workspace_to`]), so a focus request never lands on a
+    /// window the user cannot see.
     pub fn focus_surface_by_id(&mut self, surface_id: aegis_model::window::WindowId) {
         let rec = self.find_surface_by_window_id(surface_id);
         if rec.is_null() {
             return;
+        }
+        let off_workspace = self
+            .state
+            .workspaces
+            .workspace_of(surface_id)
+            .filter(|workspace| {
+                self.state
+                    .workspaces
+                    .workspace(*workspace)
+                    .and_then(|ws| self.state.workspaces.current_workspace(ws.output))
+                    != Some(*workspace)
+            });
+        if let Some(workspace) = off_workspace {
+            // The switch ends with `drop_focus_if_hidden`; the focus below is
+            // applied afterwards so it survives the cleanup.
+            self.switch_workspace_to(workspace);
         }
         unsafe {
             if (*rec).xdg_toplevel.is_null() || !(*rec).mapped {

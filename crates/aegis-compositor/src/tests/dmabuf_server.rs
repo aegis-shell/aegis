@@ -359,10 +359,10 @@ fn chrome_extensions_menu_receives_a_complete_click() {
         .map(|surface| unsafe { (*surface).resource as usize })
         .collect::<std::collections::HashSet<_>>();
     server.forward_input(
-        &[aegis_model::input::InputEvent::PointerMotion {
-            x: menu_x as f32,
-            y: menu_y as f32,
-        }],
+        &[aegis_model::input::InputEvent::pointer_move_to(
+            menu_x as f32,
+            menu_y as f32,
+        )],
         &keymap,
     );
     assert_eq!(
@@ -413,10 +413,7 @@ fn chrome_extensions_menu_receives_a_complete_click() {
     };
     server.forward_input(
         &[
-            aegis_model::input::InputEvent::PointerMotion {
-                x: item_x as f32,
-                y: item_y as f32,
-            },
+            aegis_model::input::InputEvent::pointer_move_to(item_x as f32, item_y as f32),
             aegis_model::input::InputEvent::PointerButton {
                 button: 0x110,
                 state: aegis_model::input::ButtonState::Pressed,

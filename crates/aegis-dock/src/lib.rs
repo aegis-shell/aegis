@@ -262,6 +262,20 @@ pub struct Dock {
     /// Bumped on every catalog push so the tile cache notices pinned-app and
     /// icon changes without diffing the entries.
     catalog_revision: u64,
+    /// Every mapped toplevel across all workspaces, retained from
+    /// [`ChromeUpdate::AllWindows`]. Tile building, live previews, and the
+    /// context menu read this global list; window-geometry policies (autohide
+    /// collision, fullscreen lock) keep the visible-set snapshot pushed via
+    /// [`ChromeUpdate::Windows`].
+    all_windows: Vec<Window>,
+    /// Device-pixel scale of the output, from [`ChromeUpdate::Scale`]. Used to
+    /// snap hairline geometry (the section divider) to the device pixel grid.
+    scale: f32,
+    /// The design snapshot the dock paints from, from
+    /// [`ChromeUpdate::Appearance`]. Seeded on registration by
+    /// [`aegis_shell::Shell::add`] and refreshed when the desktop color scheme
+    /// changes; defaults to the dark appearance until the first update arrives.
+    design: Design,
 }
 
 /// The cached tile strip plus the signature of the inputs it was built from.
@@ -331,6 +345,9 @@ impl Dock {
                 tiles: Vec::new(),
             }),
             catalog_revision: 0,
+            all_windows: Vec::new(),
+            scale: 1.0,
+            design: Design::dark(),
         }
     }
 
@@ -815,13 +832,13 @@ impl Dock {
     /// intentionally stable while magnification animates: the visual spring
     /// may expand beyond this rectangle, but it must not make a larger part of
     /// an application window suddenly belong to chrome.
-    fn pointer_bounds(&self, windows: &[Window], display: (f32, f32)) -> Rect {
+    fn pointer_bounds(&self, display: (f32, f32)) -> Rect {
         let tiles = Self::frame_tiles(
             &self.tile_cache,
             &self.apps,
             &self.icons,
             self.catalog_revision,
-            windows,
+            &self.all_windows,
             None,
         );
         let pinned_count = tiles.iter().filter(|t| t.pinned).count();
@@ -842,11 +859,15 @@ impl Dock {
             && bottom > bounds.y
     }
 
-    /// Test against the stable rest rectangle, never the widened animation
-    /// bounds. The same rectangle owns normal pointer input, so a magnification
-    /// wave cannot make a nearby window suddenly count as an invasion.
+    /// Whether a visible window overlaps the resting dock rectangle. Tile
+    /// geometry comes from the workspace-global strip; the overlap check uses
+    /// the visible-set snapshot because a window on a hidden workspace cannot
+    /// cover the dock. Tests against the stable rest rectangle, never the
+    /// widened animation bounds. The same rectangle owns normal pointer input,
+    /// so a magnification wave cannot make a nearby window suddenly count as
+    /// an invasion.
     fn obscured_by_windows(&self, windows: &[Window], display: (f32, f32)) -> bool {
-        let bounds = self.pointer_bounds(windows, display);
+        let bounds = self.pointer_bounds(display);
         windows
             .iter()
             .any(|window| Self::window_overlaps_bounds(window, bounds))
@@ -855,13 +876,13 @@ impl Dock {
     /// Bounds of the animated panel material. Unlike pointer ownership, the
     /// backdrop follows the spring width so the widened glass remains blurred
     /// all the way to its visible edges.
-    fn visual_panel_bounds(&self, windows: &[Window], display: (f32, f32)) -> Rect {
+    fn visual_panel_bounds(&self, display: (f32, f32)) -> Rect {
         let tiles = Self::frame_tiles(
             &self.tile_cache,
             &self.apps,
             &self.icons,
             self.catalog_revision,
-            windows,
+            &self.all_windows,
             None,
         );
         let widths = tiles.iter().map(|tile| {

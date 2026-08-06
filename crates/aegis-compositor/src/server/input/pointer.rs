@@ -158,11 +158,31 @@ impl Server {
         }
     }
 
-    pub(crate) fn pointer_motion(&mut self, x: f32, y: f32) {
-        // Relative delta from the previous motion event (for relative-pointer
-        // clients). Computed before pointer_x/y are overwritten.
-        let dx = x - self.state.raw_pointer_x;
-        let dy = y - self.state.raw_pointer_y;
+    /// Deltas for absolute-position devices (tablet proximity/axis events
+    /// emulating a pointer): the event carries no delta channel, so
+    /// difference against the last unconstrained absolute position.
+    /// `pointer_motion` then advances that baseline.
+    pub(crate) fn absolute_motion_deltas(&self, x: f32, y: f32) -> (f64, f64) {
+        (
+            f64::from(x - self.state.raw_pointer_x),
+            f64::from(y - self.state.raw_pointer_y),
+        )
+    }
+
+    pub(crate) fn pointer_motion(
+        &mut self,
+        x: f32,
+        y: f32,
+        dx: f64,
+        dy: f64,
+        dx_unaccel: f64,
+        dy_unaccel: f64,
+    ) {
+        // Track the last unconstrained absolute position; absolute-device
+        // callers (tablet emulation) difference it to derive their deltas.
+        // The deltas themselves arrive with the event — deriving them from
+        // the clamped absolute position would freeze relative-pointer clients
+        // (game cameras) at output edges and during pointer locks.
         self.state.raw_pointer_x = x;
         self.state.raw_pointer_y = y;
         let (x, y) = unsafe { extensions::constrain_pointer_motion(self.state.as_mut(), x, y) };
@@ -181,8 +201,10 @@ impl Server {
         }
         let time = self.epoch.elapsed().as_millis() as u32;
         // Push relative motion to bound zwp_relative_pointer_v1 resources of
-        // the focused client (games, etc.).
-        self.post_relative_motion(dx, dy);
+        // the focused client (games, etc.). The deltas came with the event,
+        // so they keep flowing even while `constrain_pointer_motion` pins
+        // the absolute position above.
+        self.post_relative_motion(dx, dy, dx_unaccel, dy_unaccel);
         // A second top-border click stays pending until intent is clear:
         // release maximizes, while movement beyond the jitter threshold turns
         // the same held click into a move grab from its original press point.
@@ -979,6 +1001,16 @@ impl Server {
         if self.state.pointer_focus.is_null() {
             return;
         }
+        // An active pointer lock freezes the absolute position; the protocol
+        // forbids wl_pointer.motion while it holds. Relative motion keeps
+        // flowing through post_relative_motion. Confined pointers are
+        // unaffected and keep receiving absolute motion within their region.
+        let locked = unsafe {
+            extensions::pointer_lock_active(self.state.as_ref() as *const State as *mut State)
+        };
+        if locked {
+            return;
+        }
         let focus = self.state.pointer_focus;
         let focus_client = unsafe { ffi::wl_resource_get_client(focus) };
         let rec = unsafe { ffi::wl_resource_get_user_data(focus) as *mut SurfaceRec };
@@ -1005,12 +1037,15 @@ impl Server {
     }
 
     /// Post `zwp_relative_pointer_v1.relative_motion` to every bound
-    /// relative-pointer resource owned by the focused client. `dx`/`dy` are the
-    /// unaccelerated pixel deltas since the last motion event; the protocol
-    /// also wants accelerated deltas, which we do not model, so we send both
-    /// fields equal to the unaccelerated value.
-    pub(crate) fn post_relative_motion(&self, dx: f32, dy: f32) {
-        if self.state.pointer_focus.is_null() || (dx == 0.0 && dy == 0.0) {
+    /// relative-pointer resource owned by the focused client. `dx`/`dy` are
+    /// the accelerated deltas and `dx_unaccel`/`dy_unaccel` the raw device
+    /// deltas, both as reported by the backend event — never derived from the
+    /// clamped absolute position, so motion keeps flowing while the cursor is
+    /// pinned at an output edge or frozen by a pointer lock.
+    pub(crate) fn post_relative_motion(&self, dx: f64, dy: f64, dx_unaccel: f64, dy_unaccel: f64) {
+        if self.state.pointer_focus.is_null()
+            || (dx == 0.0 && dy == 0.0 && dx_unaccel == 0.0 && dy_unaccel == 0.0)
+        {
             return;
         }
         let focus_client = unsafe { ffi::wl_resource_get_client(self.state.pointer_focus) };
@@ -1018,8 +1053,10 @@ impl Server {
         let utime = self.epoch.elapsed().as_micros() as u64;
         let utime_hi = (utime >> 32) as u32;
         let utime_lo = (utime & 0xffff_ffff) as u32;
-        let fdx = ffi::wl_fixed_from_f32(dx);
-        let fdy = ffi::wl_fixed_from_f32(dy);
+        let fdx = ffi::wl_fixed_from_f32(dx as f32);
+        let fdy = ffi::wl_fixed_from_f32(dy as f32);
+        let fdx_unaccel = ffi::wl_fixed_from_f32(dx_unaccel as f32);
+        let fdy_unaccel = ffi::wl_fixed_from_f32(dy_unaccel as f32);
         // Collect the live relative-pointer resources for this client.
         let targets: Vec<*mut ffi::wl_resource> = self
             .state
@@ -1037,8 +1074,8 @@ impl Server {
                     utime_lo,
                     fdx,
                     fdy,
-                    fdx,
-                    fdy,
+                    fdx_unaccel,
+                    fdy_unaccel,
                 );
             }
         }

@@ -35,16 +35,20 @@ impl Chrome for Dock {
         let menu_was_open = self.app_menu.is_open();
 
         // The Launchpad tile always leads the strip (macOS-style), followed by
-        // the pinned apps and any unpinned running windows. The strip comes
-        // from the cache shared with `pointer_bounds`, so it is rebuilt only
-        // when the window set, the catalog, or the localized label changes.
+        // the pinned apps and any unpinned running windows. The strip is
+        // workspace-global: it is built from the retained `all_windows`
+        // snapshot, so pinned running-state and transient tiles reflect every
+        // workspace, and clicking a tile on another workspace jumps to it.
+        // The strip comes from the cache shared with `pointer_bounds`, so it
+        // is rebuilt only when the window set, the catalog, or the localized
+        // label changes.
         let application_label = i18n.text(Message::Applications);
         let tiles = Self::frame_tiles(
             &self.tile_cache,
             &self.apps,
             &self.icons,
             self.catalog_revision,
-            windows,
+            &self.all_windows,
             Some(application_label),
         );
         let n = tiles.len();
@@ -278,7 +282,7 @@ impl Chrome for Dock {
         // analytic glass bodies: as it drains, the bar morphs into the
         // stadium handle while keeping lensing, tint and its drop shadow.
         // Edge definition comes from the glass rim, not a painted border.
-        let dock_material = collapsing_dock_material(surface_progress, panel_rect.h);
+        let dock_material = collapsing_dock_material(&self.design, surface_progress, panel_rect.h);
         // A layer with an empty body collapses to ~0 (the rect is only an
         // anchor, not a size); a fixed-size child forces it to the bar size.
         f.layer("aegis-dock", panel_rect, &dock_material, |f| {
@@ -390,11 +394,12 @@ impl Chrome for Dock {
         if section_gap > 0.0 && content_progress > AUTOHIDE_CONTENT_INTERACTION_MIN {
             let normal_divider_x = (centre(pinned_count - 1) + centre(pinned_count)) * 0.5;
             let divider_x = disp.x * 0.5 + (normal_divider_x - disp.x * 0.5) * content_progress;
+            let (divider_center, divider_w) = snapped_hairline(divider_x, self.scale);
             let divider_h = DOCK_TILE * 0.55 * content_progress;
             let divider_rect = Rect {
-                x: divider_x - 0.5,
+                x: divider_center - divider_w * 0.5,
                 y: panel_rect.y + (panel_rect.h - divider_h) * 0.5,
-                w: 1.0,
+                w: divider_w,
                 h: divider_h,
             };
             f.layer(
@@ -404,10 +409,13 @@ impl Chrome for Dock {
                 |f| {
                     f.column_ex(
                         &sized_fill(
-                            1.0,
+                            divider_w,
                             divider_h,
-                            Color::rgba(255, 255, 255, scaled_alpha(56, content_progress)),
-                            0.5,
+                            Color::rgba(255, 255, 255, scaled_alpha(80, content_progress)),
+                            // Deliberately sharp: the divider is a hairline,
+                            // and any radius at or below 0.5 falls back to the
+                            // same sharp rect path in lens anyway.
+                            0.0,
                         ),
                         |_| {},
                     );
@@ -424,7 +432,7 @@ impl Chrome for Dock {
             .as_ref()
             .and_then(|presentation| live_preview_hit(presentation, cursor.x, cursor.y));
         self.hovered_preview = preview_hit.filter(|id| {
-            windows
+            self.all_windows
                 .iter()
                 .find(|window| window.id == *id)
                 .is_some_and(|window| !window.read_only)
@@ -476,7 +484,7 @@ impl Chrome for Dock {
                     let window_app_id = tile
                         .windows
                         .first()
-                        .and_then(|id| windows.iter().find(|w| w.id == *id))
+                        .and_then(|id| self.all_windows.iter().find(|w| w.id == *id))
                         .and_then(|w| w.app_id.as_deref());
                     window_app_id.and_then(|app_id| {
                         self.all_apps
@@ -564,22 +572,33 @@ impl Chrome for Dock {
                 self.hover_surface_bounds = Some(rect);
                 self.live_preview = None;
                 self.hovered_preview = None;
-                render_tooltip(f, &tile.label, rect, self.tooltip_alpha);
+                render_tooltip(f, &self.design, &tile.label, rect, self.tooltip_alpha);
             } else {
-                let mut presentation =
-                    live_preview_layout((disp.x, disp.y), owner, &tile.windows, self.tooltip_alpha);
+                let mut presentation = live_preview_layout(
+                    &self.design,
+                    (disp.x, disp.y),
+                    owner,
+                    &tile.windows,
+                    self.tooltip_alpha,
+                );
                 self.hover_surface_bounds = Some(to_lens_rect(presentation.panel));
                 let previous_hovered_preview = self.hovered_preview;
                 self.hovered_preview =
                     live_preview_hit(&presentation, cursor.x, cursor.y).filter(|id| {
-                        windows
+                        self.all_windows
                             .iter()
                             .find(|window| window.id == *id)
                             .is_some_and(|window| !window.read_only)
                     });
                 self.anim_active |= self.hovered_preview != previous_hovered_preview;
                 presentation.focused = self.hovered_preview;
-                render_live_preview_chrome(f, &presentation, windows, self.hovered_preview);
+                render_live_preview_chrome(
+                    f,
+                    &self.design,
+                    &presentation,
+                    &self.all_windows,
+                    self.hovered_preview,
+                );
                 self.live_preview = Some(presentation);
             }
         } else {
@@ -588,7 +607,7 @@ impl Chrome for Dock {
             self.hover_owner_bounds = None;
             self.hovered_preview = None;
         }
-        self.app_menu.render(f, input, windows, i18n, out);
+        self.app_menu.render(f, input, &self.all_windows, i18n, out);
         if !self.app_menu.is_open() {
             self.menu_tile = None;
         }
@@ -653,11 +672,11 @@ impl Chrome for Dock {
     fn backdrop_regions(
         &self,
         display: (f32, f32),
-        windows: &[Window],
+        _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<BackdropRegion> {
         let mut regions = Vec::with_capacity(2);
-        if let Some(region) = self.liquid_glass_region(display, windows) {
+        if let Some(region) = self.liquid_glass_region(display) {
             regions.push(region.bounds);
         }
         if let Some(region) = self.hover_liquid_glass_region() {
@@ -669,10 +688,10 @@ impl Chrome for Dock {
     fn liquid_glass_regions(
         &self,
         display: (f32, f32),
-        windows: &[Window],
+        _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<LiquidGlassRegion> {
-        self.liquid_glass_region(display, windows)
+        self.liquid_glass_region(display)
             .into_iter()
             .chain(self.hover_liquid_glass_region())
             .collect()
@@ -721,6 +740,9 @@ impl Chrome for Dock {
         match update {
             ChromeUpdate::ReducedMotion(reduced) => self.reduced_motion = reduced,
             ChromeUpdate::Windows(windows) => self.update_windows(windows),
+            ChromeUpdate::AllWindows(windows) => self.update_all_windows(windows),
+            ChromeUpdate::Scale(scale) => self.scale = scale,
+            ChromeUpdate::Appearance(design) => self.design = *design,
             ChromeUpdate::AppCatalog(catalog) => self.update_app_catalog(catalog),
             _ => {}
         }
@@ -731,7 +753,7 @@ impl Chrome for Dock {
         x: f32,
         y: f32,
         display: (f32, f32),
-        windows: &[Window],
+        _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> bool {
         if self.fullscreen_locked() {
@@ -743,7 +765,7 @@ impl Chrome for Dock {
         if self.hover_surface_contains(x, y) {
             return true;
         }
-        let rest = self.pointer_bounds(windows, display);
+        let rest = self.pointer_bounds(display);
         let effective_autohide = self.effective_autohide();
         let collapsed_indicator = Self::collapsed_indicator_contains((x, y), display);
         if Self::pointer_keeps_revealed(
@@ -784,7 +806,11 @@ impl Chrome for Dock {
 }
 
 impl Dock {
-    pub(crate) fn update_windows(&mut self, windows: &[Window]) {
+    /// Retain the workspace-global window set the tile strip is built from.
+    /// Preview cards are validated against this list (not the visible set) so
+    /// a preview of a window on another workspace survives workspace switches
+    /// and is dismissed only when the window actually goes away.
+    pub(crate) fn update_all_windows(&mut self, windows: &[Window]) {
         if self.live_preview.as_ref().is_some_and(|presentation| {
             presentation
                 .cards
@@ -793,6 +819,10 @@ impl Dock {
         }) {
             self.dismiss_hover_surface();
         }
+        self.all_windows = windows.to_vec();
+    }
+
+    pub(crate) fn update_windows(&mut self, windows: &[Window]) {
         let space_use = SpaceUse::from_windows(windows);
         let previous_space_use = self.space_use;
         self.space_use = space_use;
@@ -855,15 +885,11 @@ impl Dock {
     /// the analytic glass pass. The foreground material uses the same radius
     /// through `collapsing_dock_material`, eliminating the old two-rectangle
     /// blur cross and its hard corner discontinuities.
-    fn liquid_glass_region(
-        &self,
-        display: (f32, f32),
-        windows: &[Window],
-    ) -> Option<LiquidGlassRegion> {
+    fn liquid_glass_region(&self, display: (f32, f32)) -> Option<LiquidGlassRegion> {
         if self.fullscreen_locked() {
             return None;
         }
-        let expanded = self.visual_panel_bounds(windows, display);
+        let expanded = self.visual_panel_bounds(display);
         let bounds = if self.effective_autohide() {
             Self::collapsed_panel_rect(display, expanded.w, self.autohide_reveal)
         } else {
@@ -878,12 +904,12 @@ impl Dock {
         // casts the deep Dock shadow, the collapsed handle keeps a
         // proportionally tight one.
         let shadow_factor = (bounds.h / DOCK_PANEL_HEIGHT).clamp(0.35, 1.0);
-        let design = Design::dark();
+        let design = self.design;
         let mut region = LiquidGlassRegion::from_role(
             &design,
             GlassRole::Dock,
             BackdropRegion::from(bounds),
-            collapsing_radius(surface_progress, bounds.h),
+            collapsing_radius(&design, surface_progress, bounds.h),
             1.0,
         );
         region.shadow_blur *= shadow_factor;
@@ -897,7 +923,7 @@ impl Dock {
             return None;
         }
         let is_preview = self.live_preview.is_some();
-        let design = Design::dark();
+        let design = self.design;
         let focus = self.live_preview.as_ref().and_then(|presentation| {
             preview::focus_field(&presentation.cards, presentation.focused, &design)
         });
@@ -920,6 +946,16 @@ impl Dock {
             .with_focus(focus),
         )
     }
+}
+
+/// Snap a hairline's logical center to the device pixel grid and give it
+/// exactly one device pixel of width. At scale ≥ 2 a fractional 1-logical-px
+/// line at low alpha rasterises to nothing; snapping keeps the section
+/// divider crisp at any scale. At scale 1 this is the same 1 logical px line
+/// at (within half a device pixel of) the same center.
+pub(super) fn snapped_hairline(center: f32, scale: f32) -> (f32, f32) {
+    let scale = scale.max(1.0);
+    ((center * scale).round() / scale, 1.0 / scale)
 }
 
 pub(super) fn hit_test_tiles(
@@ -1011,21 +1047,21 @@ fn mix_channel(collapsed: u8, expanded: u8, progress: f32) -> u8 {
         .clamp(0.0, 255.0) as u8
 }
 
-fn collapsing_radius(surface_progress: f32, height: f32) -> f32 {
+fn collapsing_radius(design: &Design, surface_progress: f32, height: f32) -> f32 {
     let radius = AUTOHIDE_HANDLE_HEIGHT * 0.5
-        + (Design::dark().radii.glass_panel - AUTOHIDE_HANDLE_HEIGHT * 0.5) * surface_progress;
+        + (design.radii.glass_panel - AUTOHIDE_HANDLE_HEIGHT * 0.5) * surface_progress;
     radius.min(height * 0.5)
 }
 
-fn collapsing_dock_material(surface_progress: f32, height: f32) -> OverlayOpts {
-    let mut material = materials::glass_panel(&Design::dark());
+fn collapsing_dock_material(design: &Design, surface_progress: f32, height: f32) -> OverlayOpts {
+    let mut material = materials::glass_panel(design);
     material.bg = Color::rgba(
         mix_channel(240, 255, surface_progress),
         mix_channel(243, 255, surface_progress),
         mix_channel(252, 255, surface_progress),
         mix_channel(64, 12, surface_progress),
     );
-    material.radius = collapsing_radius(surface_progress, height);
+    material.radius = collapsing_radius(design, surface_progress, height);
     material
 }
 
@@ -1077,13 +1113,19 @@ fn tooltip_rect(
 /// A compact app-name bubble that follows the owning Dock icon. Its physical
 /// body comes from the compositor's analytic glass pass; this foreground only
 /// supplies a minimal tint and the text.
-fn render_tooltip(frame: &mut Frame, label: &str, rect: Rect, alpha: f32) {
+fn render_tooltip(frame: &mut Frame, design: &Design, label: &str, rect: Rect, alpha: f32) {
     let label = ellipsize(frame, label, 12.5, (rect.w - 22.0).max(0.0));
     let opacity = |base: u8| (base as f32 * alpha.clamp(0.0, 1.0)).round() as u8;
     let original = frame.theme();
-    frame.set_theme(original.with_fg(Color::rgba(242, 244, 250, opacity(255))));
-    let mut material = materials::glass_panel(&Design::dark());
-    material.bg = Color::rgba(255, 255, 255, opacity(12));
+    frame.set_theme(original.with_fg(design.colors.menu_text.with_alpha(opacity(255))));
+    let mut material = materials::glass_panel(design);
+    // The painted layer stays the design's glass whisper, faded by the
+    // tooltip's own alpha; the physical body comes from the analytic pass.
+    let (_, _, _, surface_alpha) = design.colors.glass_surface.components();
+    material.bg = design
+        .colors
+        .glass_surface
+        .with_alpha(scaled_alpha(surface_alpha, alpha));
     material.radius = TOOLTIP_HEIGHT * 0.5;
     frame.layer("aegis-dock-app-name", rect, &material, |frame| {
         frame.row_ex(
@@ -1102,6 +1144,7 @@ fn render_tooltip(frame: &mut Frame, label: &str, rect: Rect, alpha: f32) {
 /// in a single row; large groups wrap into a centred grid while preserving a
 /// usable card width and staying inside the output margins.
 pub(super) fn live_preview_layout(
+    design: &Design,
     display: (f32, f32),
     owner: Rect,
     windows: &[aegis_model::window::WindowId],
@@ -1166,7 +1209,7 @@ pub(super) fn live_preview_layout(
             let y = panel.y + PREVIEW_PANEL_PAD + row as f32 * (card_h + PREVIEW_CARD_GAP);
             PreviewCard {
                 window,
-                corner_radius: Design::dark().radii.control,
+                corner_radius: design.radii.control,
                 geometry: aegis_model::window_switcher::Card {
                     outer: core_rect(Rect {
                         x,
@@ -1194,27 +1237,27 @@ pub(super) fn live_preview_layout(
         panel: core_rect(panel),
         cards,
         focused: None,
-        inactive_content_brightness: Design::dark().preview.inactive_content_brightness,
+        inactive_content_brightness: design.preview.inactive_content_brightness,
         visibility: visibility.clamp(0.0, 1.0),
     }
 }
 
 fn render_live_preview_chrome(
     frame: &mut Frame,
+    design: &Design,
     presentation: &LivePreviewPresentation,
     windows: &[Window],
     hovered: Option<aegis_model::window::WindowId>,
 ) {
     let opacity = |base: u8| (base as f32 * presentation.visibility.clamp(0.0, 1.0)).round() as u8;
     let panel = to_lens_rect(presentation.panel);
-    let design = Design::dark();
-    let material = preview::panel_material(&design, presentation.visibility);
+    let material = preview::panel_material(design, presentation.visibility);
     frame.layer("aegis-dock-live-previews", panel, &material, |frame| {
         frame.column_ex(&sized(panel.w, panel.h), |_| {});
     });
 
     let original = frame.theme();
-    frame.set_theme(original.with_fg(Color::rgba(242, 244, 250, opacity(255))));
+    frame.set_theme(original.with_fg(design.colors.menu_text.with_alpha(opacity(255))));
     for (index, card) in presentation.cards.iter().enumerate() {
         let Some(window) = windows.iter().find(|window| window.id == card.window) else {
             continue;
@@ -1226,17 +1269,19 @@ fn render_live_preview_chrome(
             window.id,
             presentation.inactive_content_brightness,
         );
-        frame.set_theme(original.with_fg(Color::rgba(
-            242,
-            244,
-            250,
-            opacity((255.0 * content_brightness).round() as u8),
-        )));
+        frame.set_theme(
+            original.with_fg(
+                design
+                    .colors
+                    .menu_text
+                    .with_alpha(opacity((255.0 * content_brightness).round() as u8)),
+            ),
+        );
         frame.layer(
             &format!("aegis-dock-live-preview-card-{index}"),
             outer,
             &preview::card_material(
-                &design,
+                design,
                 if is_hovered {
                     preview::PreviewCardState::Selected
                 } else {

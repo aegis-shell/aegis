@@ -133,6 +133,8 @@ struct LockPalette {
 struct LockVisual {
     style: LockScreenStyle,
     palette: LockPalette,
+    /// The scheme-resolved design tokens behind every lock surface theme.
+    design: Design,
     dim: f32,
     reduced_motion: bool,
 }
@@ -200,6 +202,7 @@ impl Graphics {
             visual: LockVisual {
                 style: resolved.style,
                 palette: resolved.palette,
+                design: resolved.design,
                 dim: resolved.background.dim,
                 reduced_motion: resolved.reduced_motion,
             },
@@ -240,7 +243,14 @@ impl Graphics {
                 return Err(error.into());
             }
         };
-        LockRenderSurface::new(&self.device, surface, vk_surface, logical_size, scale)
+        LockRenderSurface::new(
+            &self.device,
+            surface,
+            vk_surface,
+            logical_size,
+            scale,
+            &self.visual.design,
+        )
     }
 
     pub fn destroy_surface(&self, surface: LockRenderSurface) {
@@ -374,11 +384,12 @@ impl LockRenderSurface {
         vk_surface: vk::SurfaceKHR,
         logical_size: (u32, u32),
         scale: i32,
+        design: &Design,
     ) -> Result<Self, RenderError> {
         let canvas = flux::Canvas::new(&surface)?;
         let mut ui = unsafe { Ui::with_device(device.as_raw().cast::<lens::sys::flux_device>()) }?;
         ui.set_scale(scale as f32);
-        ui.set_theme(themes::application(&Design::dark()));
+        ui.set_theme(themes::application(design));
         Ok(Self {
             surface,
             canvas,
@@ -451,7 +462,7 @@ impl LockRenderSurface {
             1.0 / 60.0,
         );
         input.set_cursor(-10_000.0, -10_000.0);
-        let design = Design::dark();
+        let design = assets.visual.design;
         let progress = visual_progress.clamp(0.0, 1.0);
         let (clock, date) = clock_strings();
         self.ui.frame(&input, |ui| {
@@ -540,6 +551,7 @@ struct ResolvedLockAppearance {
     background: LockScreenBackgroundConfig,
     config_path: Option<PathBuf>,
     palette: LockPalette,
+    design: Design,
     reduced_motion: bool,
 }
 
@@ -589,6 +601,7 @@ fn resolve_lock_appearance(options: GraphicsOptions) -> ResolvedLockAppearance {
         background: lock.background,
         config_path,
         palette,
+        design: Design::for_scheme(preferences.color_scheme),
         reduced_motion: preferences.reduced_motion,
     }
 }
@@ -654,6 +667,9 @@ fn lock_palette(
     accent: Option<[u8; 3]>,
     background: LockScreenBackgroundMode,
 ) -> LockPalette {
+    // Resolve "no preference" through the same fallback the shell design
+    // tokens use, so the lock screen never renders an undecided scheme.
+    let scheme = scheme.or_dark();
     let light_surface =
         scheme == ColorScheme::Light && background == LockScreenBackgroundMode::Solid;
     let avatar_fill = accent.unwrap_or(if scheme == ColorScheme::Light {
@@ -783,7 +799,7 @@ fn draw_materials(canvas: &flux::Canvas, presentation: MaterialPresentation<'_>)
         return;
     }
     if style == LockScreenStyle::Centered {
-        let avatar_style = Design::dark().avatars.for_role(AvatarRole::LockHero);
+        let avatar_style = visual.design.avatars.for_role(AvatarRole::LockHero);
         let avatar_x = layout.avatar_x * scale;
         let avatar_y = (layout.avatar_y + (1.0 - p) * 18.0) * scale;
         let avatar_size = layout.avatar_size * scale;
@@ -963,7 +979,7 @@ fn draw_clock(
         &aligned_layer(alignment),
         |ui| ui.label_compact_sized(clock, layout.clock_size),
     );
-    ui.set_theme(lock_theme(&Design::dark(), palette.muted, 255));
+    ui.set_theme(lock_theme(&visual.design, palette.muted, 255));
     ui.layer(
         "lock-date",
         Rect {
@@ -1013,12 +1029,8 @@ fn draw_identity(ui: &mut lens::Frame, presentation: ProfilePresentation<'_>) {
     let alpha = (255.0 * progress) as u8;
     let shifted_avatar_y = layout.avatar_y + (1.0 - progress) * 18.0;
     if style == LockScreenStyle::Centered && avatar_status == AvatarStatus::Fallback {
-        let avatar_style = Design::dark().avatars.for_role(AvatarRole::LockHero);
-        ui.set_theme(lock_theme(
-            &Design::dark(),
-            palette.avatar_foreground,
-            alpha,
-        ));
+        let avatar_style = visual.design.avatars.for_role(AvatarRole::LockHero);
+        ui.set_theme(lock_theme(&visual.design, palette.avatar_foreground, alpha));
         ui.layer(
             "lock-avatar-label",
             Rect {
@@ -1051,7 +1063,7 @@ fn draw_identity(ui: &mut lens::Frame, presentation: ProfilePresentation<'_>) {
             },
         );
     }
-    ui.set_theme(lock_theme(&Design::dark(), palette.foreground, alpha));
+    ui.set_theme(lock_theme(&visual.design, palette.foreground, alpha));
     let (name_x, name_y, name_width, name_height, name_alignment, name_size) = match style {
         LockScreenStyle::Centered => (
             (layout.width - 520.0) * 0.5,
@@ -1099,7 +1111,7 @@ fn draw_identity(ui: &mut lens::Frame, presentation: ProfilePresentation<'_>) {
     if style == LockScreenStyle::Cinematic
         && let Some(keyboard) = keyboard_status(state)
     {
-        ui.set_theme(lock_theme(&Design::dark(), palette.muted, alpha));
+        ui.set_theme(lock_theme(&visual.design, palette.muted, alpha));
         let indicator_width = layout.field_width * 0.32;
         ui.layer(
             "lock-keyboard-status",
@@ -1147,7 +1159,7 @@ fn draw_identity(ui: &mut lens::Frame, presentation: ProfilePresentation<'_>) {
     } else {
         palette.foreground
     };
-    ui.set_theme(lock_theme(&Design::dark(), credential_color, alpha));
+    ui.set_theme(lock_theme(&visual.design, credential_color, alpha));
     ui.layer(
         "lock-password-content",
         Rect {
@@ -1205,7 +1217,7 @@ fn draw_identity(ui: &mut lens::Frame, presentation: ProfilePresentation<'_>) {
         } else {
             palette.muted
         };
-        ui.set_theme(lock_theme(&Design::dark(), color, alpha));
+        ui.set_theme(lock_theme(&visual.design, color, alpha));
         let (status_y, alignment) = match style {
             LockScreenStyle::Centered => (field_y + layout.field_height + 12.0, Align::Center),
             LockScreenStyle::Cinematic => (field_y - 48.0, Align::End),
@@ -1256,10 +1268,17 @@ fn aligned_layer(alignment: Align) -> OverlayOpts {
 fn lock_theme(design: &Design, foreground: Color, alpha: u8) -> Theme {
     let (red, green, blue, source_alpha) = foreground.components();
     let alpha = ((u16::from(source_alpha) * u16::from(alpha)) / 255) as u8;
+    // The hairline edges the field against the background: pale on the dark
+    // appearance, a dark wash once the scheme turns light.
+    let border = if design.is_light() {
+        Color::rgba(28, 32, 44, alpha / 3)
+    } else {
+        Color::rgba(255, 255, 255, alpha / 3)
+    };
     themes::application(design)
         .with_bg(Color::TRANSPARENT)
         .with_fg(Color::rgba(red, green, blue, alpha))
-        .with_border(Color::rgba(255, 255, 255, alpha / 3))
+        .with_border(border)
 }
 
 fn rejection_shake_offset(progress: f32) -> f32 {

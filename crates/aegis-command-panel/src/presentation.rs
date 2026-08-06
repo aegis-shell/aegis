@@ -50,6 +50,9 @@ impl CommandPanel {
         let center_y = rect.y + rect.h * 0.5;
         let base_theme = themes::sao(&sao);
         let muted_theme = themes::sao_muted(base_theme, &sao);
+        // The panel is a scheme-invariant light island (ADR-0080), so the
+        // persona header keeps the dark appearance's avatar style — the warm
+        // graphite disc below — regardless of the desktop color scheme.
         let avatar_style = Design::dark().avatars.for_role(AvatarRole::PersonaHeader);
         let original = f.theme();
 

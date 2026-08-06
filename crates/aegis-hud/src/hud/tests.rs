@@ -300,8 +300,8 @@ fn workspace_spheres_use_brightness_alone_to_show_current_position() {
     assert_eq!(workspace_dot_intensity(1, 0.0), 0.0);
     assert_eq!(workspace_dot_intensity(0, 0.5), 0.5);
     assert_eq!(workspace_dot_intensity(1, 0.5), 0.5);
-    let active_alpha = workspace_dot_color(1.0).components().3;
-    let inactive_alpha = workspace_dot_color(0.0).components().3;
+    let active_alpha = workspace_dot_color(&Design::dark(), 1.0).components().3;
+    let inactive_alpha = workspace_dot_color(&Design::dark(), 0.0).components().3;
     assert!(active_alpha > inactive_alpha);
 }
 
@@ -352,13 +352,14 @@ fn workspace_indicator_emits_visible_pixels_above_its_glass_body() {
 
 #[test]
 fn floating_foregrounds_share_one_contour_with_geometry_specific_widths() {
-    let text = hud_text_outline(1.0);
-    let glyph = hud_glyph_outline(1.0);
+    let design = Design::dark();
+    let text = hud_text_outline(&design, 1.0);
+    let glyph = hud_glyph_outline(&design, 1.0);
     assert_eq!(text.color, glyph.color);
     assert!(text.width < glyph.width);
-    assert_eq!(text.color, hud_contour_color());
+    assert_eq!(text.color, hud_contour_color(&design));
 
-    let faded = hud_text_outline(0.5);
+    let faded = hud_text_outline(&design, 0.5);
     assert!(faded.color.components().3 < text.color.components().3);
     assert_eq!(faded.width, text.width);
 }

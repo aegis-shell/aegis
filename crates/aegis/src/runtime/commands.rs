@@ -21,6 +21,7 @@ pub(super) fn draw_direct_desktop_scene(
     overview: bool,
     window_switcher: Option<&aegis_shell::WindowSwitcherPresentation>,
     live_previews: &[aegis_shell::LivePreviewPresentation],
+    scheme: aegis_model::settings::ColorScheme,
 ) -> Result<(), flux::Error> {
     let RenderGeometry {
         logical_size,
@@ -48,7 +49,15 @@ pub(super) fn draw_direct_desktop_scene(
         )?;
     }
     if overview {
-        draw_overview_scene(canvas, device, renderer, server, logical_size, scale);
+        draw_overview_scene(
+            canvas,
+            device,
+            renderer,
+            server,
+            logical_size,
+            scale,
+            scheme,
+        );
     } else {
         draw_client_scene(
             canvas,
@@ -67,6 +76,7 @@ pub(super) fn draw_direct_desktop_scene(
                 logical_size,
                 scale,
                 presentation,
+                scheme,
             );
         } else {
             draw_live_preview_scenes(canvas, device, renderer, server, scale, live_previews);

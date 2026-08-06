@@ -130,7 +130,8 @@ impl Server {
                 .any(|s| unsafe { ffi::wl_resource_get_client(*s) } == focus_client);
         if !has_seat {
             self.state.tablet_focus = std::ptr::null_mut();
-            self.pointer_motion(x, y);
+            let (dx, dy) = self.absolute_motion_deltas(x, y);
+            self.pointer_motion(x, y, dx, dy, dx, dy);
             return;
         }
         self.state.tablet_focus = focus;
@@ -189,7 +190,8 @@ impl Server {
     ) {
         if self.state.tablet_focus.is_null() {
             // Emulated path: the pen drives the pointer.
-            self.pointer_motion(x, y);
+            let (dx, dy) = self.absolute_motion_deltas(x, y);
+            self.pointer_motion(x, y, dx, dy, dx, dy);
             return;
         }
         self.state.pointer_x = x;

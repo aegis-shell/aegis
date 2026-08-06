@@ -37,6 +37,11 @@ pub struct WindowSwitcher {
     animated_selection: Option<aegis_model::window_switcher::Card>,
     presentation: Option<WindowSwitcherPresentation>,
     hovered: Option<WindowId>,
+    /// The design snapshot the switcher paints from, from
+    /// [`ChromeUpdate::Appearance`]. Seeded on registration by
+    /// [`crate::Shell::add`] and refreshed when the desktop color scheme
+    /// changes; defaults to the dark appearance until the first update arrives.
+    design: Design,
 }
 
 impl Default for WindowSwitcher {
@@ -60,6 +65,7 @@ impl WindowSwitcher {
             animated_selection: None,
             presentation: None,
             hovered: None,
+            design: Design::dark(),
         }
     }
 
@@ -120,6 +126,7 @@ impl WindowSwitcher {
         }
 
         let live: HashSet<_> = windows.iter().map(|window| window.id).collect();
+        let design = self.design;
         if self.open {
             // The compositor owns the frozen eligible set. Replacing from its
             // snapshot removes closed windows but deliberately ignores newly
@@ -172,7 +179,7 @@ impl WindowSwitcher {
             .enumerate()
             .map(|(index, card)| {
                 if index == selected_index {
-                    preview::selected_geometry(card, PreviewSelectionStyle::Staged, &Design::dark())
+                    preview::selected_geometry(card, PreviewSelectionStyle::Staged, &design)
                 } else {
                     card
                 }
@@ -203,7 +210,7 @@ impl WindowSwitcher {
                 cards.push(PreviewCard {
                     window: id,
                     geometry: *current,
-                    corner_radius: Design::dark().radii.control,
+                    corner_radius: design.radii.control,
                 });
             }
         }
@@ -233,7 +240,7 @@ impl WindowSwitcher {
             cards,
             selection_indicator: self.animated_selection,
             selected,
-            inactive_content_brightness: Design::dark().preview.inactive_content_brightness,
+            inactive_content_brightness: design.preview.inactive_content_brightness,
             visibility: self.visibility,
         };
         self.presentation = Some(presentation.clone());
@@ -298,7 +305,7 @@ impl Chrome for WindowSwitcher {
         let content_alpha = self.alpha(u8::MAX);
         let original_theme = frame.theme();
         frame.set_theme(original_theme.with_fg(original_theme.fg().with_alpha(content_alpha)));
-        let design = Design::dark();
+        let design = self.design;
         let panel = to_lens(presentation.panel);
         let panel_material = preview::panel_material(&design, presentation.visibility);
         frame.layer(
@@ -376,6 +383,7 @@ impl Chrome for WindowSwitcher {
                 presentation.inactive_content_brightness
             };
             let item_alpha = self.alpha((255.0 * item_opacity).round() as u8);
+            let icon_tint = design.colors.application_text.with_alpha(item_alpha);
             frame.set_theme(original_theme.with_fg(original_theme.fg().with_alpha(item_alpha)));
             let label = ellipsize(frame, title, 11.5, (label_rect.w - occupied_width).max(0.0));
             frame.layer(
@@ -403,7 +411,7 @@ impl Chrome for WindowSwitcher {
                                         icon as *mut lens::sys::flux_image,
                                         20.0,
                                         20.0,
-                                        Color::rgba(255, 255, 255, item_alpha),
+                                        icon_tint,
                                     );
                                 }
                             }
@@ -514,7 +522,7 @@ impl Chrome for WindowSwitcher {
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<LiquidGlassRegion> {
-        let design = Design::dark();
+        let design = self.design;
         self.presentation
             .as_ref()
             .filter(|presentation| presentation.visibility > 0.01)
@@ -541,6 +549,7 @@ impl Chrome for WindowSwitcher {
         match update {
             ChromeUpdate::ReducedMotion(reduced) => self.set_reduced_motion(reduced),
             ChromeUpdate::AppCatalog(catalog) => self.icons = catalog.icons.clone(),
+            ChromeUpdate::Appearance(design) => self.design = *design,
             _ => {}
         }
     }

@@ -1,3 +1,4 @@
+use aegis_design::Design;
 use aegis_model::settings::{
     AccentColor, ColorScheme, Contrast, DesktopPreferences, SettingsAction, SettingsSnapshot,
 };
@@ -105,11 +106,17 @@ impl SettingsModule for AppearanceModule {
         }
     }
 
-    fn render(&mut self, frame: &mut Frame, i18n: &Localizer, out: &mut ModuleEvents) {
+    fn render(
+        &mut self,
+        frame: &mut Frame,
+        i18n: &Localizer,
+        design: &Design,
+        out: &mut ModuleEvents,
+    ) {
         frame.heading(i18n.text(Message::Appearance), 2);
         frame.label_wrapped_sized(i18n.text(Message::AppearanceDescription), 12.0, 560.0);
 
-        frame.column_ex(&settings_card_layout(), |frame| {
+        frame.column_ex(&settings_card_layout(design), |frame| {
             frame.heading(i18n.text(Message::AppearanceColorScheme), 3);
             frame.row_ex(&section_heading_layout(), |frame| {
                 frame.label_sized(i18n.text(Message::AppearanceColorScheme), 12.0);
@@ -186,7 +193,7 @@ impl SettingsModule for AppearanceModule {
             }
         });
 
-        frame.column_ex(&settings_card_layout(), |frame| {
+        frame.column_ex(&settings_card_layout(design), |frame| {
             frame.heading(i18n.text(Message::InterfaceFont), 3);
             if text_field(
                 frame,
@@ -219,7 +226,7 @@ impl SettingsModule for AppearanceModule {
             }
         });
 
-        frame.column_ex(&settings_card_layout(), |frame| {
+        frame.column_ex(&settings_card_layout(design), |frame| {
             frame.heading(i18n.text(Message::IconTheme), 3);
             if text_field(
                 frame,

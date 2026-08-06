@@ -1,3 +1,4 @@
+use aegis_design::Design;
 use aegis_model::input::{TouchpadScrollMethod, TouchpadStatus};
 use aegis_model::settings::{SettingsAction, SettingsSnapshot};
 use aegis_shell::{Localizer, Message};
@@ -44,7 +45,13 @@ impl SettingsModule for TouchpadModule {
         }
     }
 
-    fn render(&mut self, frame: &mut Frame, i18n: &Localizer, out: &mut ModuleEvents) {
+    fn render(
+        &mut self,
+        frame: &mut Frame,
+        i18n: &Localizer,
+        design: &Design,
+        out: &mut ModuleEvents,
+    ) {
         let status = self.status.clone();
         let mut config = status.config;
         let mut changed = false;
@@ -70,7 +77,7 @@ impl SettingsModule for TouchpadModule {
             },
         );
 
-        frame.column_ex(&settings_card_layout(), |frame| {
+        frame.column_ex(&settings_card_layout(design), |frame| {
             frame.heading(i18n.text(Message::PointingAndClicking), 3);
             changed |= frame
                 .setting_switch(
@@ -143,7 +150,7 @@ impl SettingsModule for TouchpadModule {
             }
         });
 
-        frame.column_ex(&settings_card_layout(), |frame| {
+        frame.column_ex(&settings_card_layout(design), |frame| {
             frame.heading(i18n.text(Message::Scrolling), 3);
             changed |= frame
                 .setting_switch(

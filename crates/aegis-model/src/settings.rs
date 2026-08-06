@@ -23,6 +23,22 @@ pub enum ColorScheme {
     Light,
 }
 
+impl ColorScheme {
+    /// Resolve `System` to the compositor's built-in fallback appearance.
+    ///
+    /// The shell ships one concrete appearance per explicit scheme; until
+    /// platform-level preference detection exists, "no preference" means the
+    /// dark appearance, so an unset `color_scheme` never reaches the render
+    /// side as an undecided value.
+    #[must_use]
+    pub fn or_dark(self) -> Self {
+        match self {
+            Self::System => Self::Dark,
+            explicit => explicit,
+        }
+    }
+}
+
 /// Desktop-wide contrast preference.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
@@ -343,6 +359,17 @@ mod tests {
             SettingsAction::SetIdle { settings: idle }
                 .validate()
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn system_color_scheme_resolves_to_the_dark_fallback() {
+        assert_eq!(ColorScheme::System.or_dark(), ColorScheme::Dark);
+        assert_eq!(ColorScheme::Dark.or_dark(), ColorScheme::Dark);
+        assert_eq!(ColorScheme::Light.or_dark(), ColorScheme::Light);
+        assert_eq!(
+            DesktopPreferences::default().color_scheme.or_dark(),
+            ColorScheme::Dark
         );
     }
 

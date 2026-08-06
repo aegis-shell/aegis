@@ -6,6 +6,7 @@
 //! and dismissal. It is a view mode over the same snapshots every other
 //! component reads — it never mutates the window model itself.
 
+use aegis_design::Design;
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{
@@ -48,6 +49,11 @@ pub struct Overview {
     dragging: bool,
     interaction_domain_hovered: Option<InteractionDomainId>,
     reduced_motion: bool,
+    /// The design snapshot the overview paints from, from
+    /// [`ChromeUpdate::Appearance`]. Seeded on registration by
+    /// [`crate::Shell::add`] and refreshed when the desktop color scheme
+    /// changes; defaults to the dark appearance until the first update arrives.
+    design: Design,
 }
 
 impl Default for Overview {
@@ -72,6 +78,7 @@ impl Overview {
             dragging: false,
             interaction_domain_hovered: None,
             reduced_motion: false,
+            design: Design::dark(),
         }
     }
 
@@ -278,17 +285,19 @@ impl Chrome for Overview {
             return;
         }
 
-        // Workspace rail: one tile per workspace, current highlighted.
+        // Workspace rail: one tile per workspace, current highlighted. Token
+        // hues keep the fade-driven alphas below scheme-aware.
+        let colors = self.design.colors;
         if has_rail {
             for (i, tile) in tiles.iter().enumerate() {
                 let (id, current) = rail_tiles[i];
                 let hovered = self.rail_hovered == Some(i);
                 let bg = if current {
-                    Color::rgba(64, 110, 220, self.alpha(200))
+                    colors.application_accent.with_alpha(self.alpha(200))
                 } else if hovered {
-                    Color::rgba(52, 56, 72, self.alpha(210))
+                    colors.application_surface.with_alpha(self.alpha(210))
                 } else {
-                    Color::rgba(24, 26, 36, self.alpha(190))
+                    colors.application_surface.with_alpha(self.alpha(190))
                 };
                 let tid = id;
                 frame.layer(
@@ -329,11 +338,11 @@ impl Chrome for Overview {
                 let hovered = self.interaction_domain_hovered == Some(interaction_domain.id);
                 let active = interaction_domain.state == InteractionDomainState::Active;
                 let bg = if hovered {
-                    Color::rgba(62, 124, 224, self.alpha(235))
+                    colors.application_accent.with_alpha(self.alpha(235))
                 } else if active {
-                    Color::rgba(29, 38, 58, self.alpha(225))
+                    colors.application_surface.with_alpha(self.alpha(225))
                 } else {
-                    Color::rgba(36, 37, 44, self.alpha(190))
+                    colors.application_surface.with_alpha(self.alpha(190))
                 };
                 let label = interaction_domain.label.clone();
                 let status = match interaction_domain.state {
@@ -354,9 +363,9 @@ impl Chrome for Overview {
                     &OverlayOpts {
                         bg,
                         border: if hovered {
-                            Color::rgba(136, 186, 255, self.alpha(255))
+                            colors.application_accent.with_alpha(self.alpha(255))
                         } else {
-                            Color::rgba(96, 112, 146, self.alpha(150))
+                            colors.application_border.with_alpha(self.alpha(150))
                         },
                         border_width: if hovered { 2.0 } else { 1.0 },
                         radius: 12.0,
@@ -388,11 +397,13 @@ impl Chrome for Overview {
             let cell = geom::fit(*slot, window.size);
             let hovered = self.hovered == Some(i);
             let border = if window.read_only {
+                // Intentional content color: the amber read-only warning is
+                // content styling, not a scheme-token role.
                 Color::rgba(192, 157, 86, self.alpha(if hovered { 255 } else { 190 }))
             } else if hovered {
-                Color::rgba(120, 170, 255, self.alpha(255))
+                colors.application_accent.with_alpha(self.alpha(255))
             } else {
-                Color::rgba(90, 96, 120, self.alpha(160))
+                colors.application_border.with_alpha(self.alpha(160))
             };
             frame.layer(
                 &format!("aegis-overview-cell-{i}"),
@@ -455,8 +466,8 @@ impl Chrome for Overview {
                 "aegis-overview-interaction_domain-drag-ghost",
                 ghost,
                 &OverlayOpts {
-                    bg: Color::rgba(45, 88, 166, self.alpha(230)),
-                    border: Color::rgba(154, 196, 255, self.alpha(255)),
+                    bg: colors.application_accent.with_alpha(self.alpha(230)),
+                    border: colors.application_accent.with_alpha(self.alpha(255)),
                     border_width: 1.0,
                     radius: 10.0,
                     ..Default::default()
@@ -553,6 +564,7 @@ impl Chrome for Overview {
             ChromeUpdate::InteractionDomains(snapshot) => {
                 self.interaction_domains = snapshot.clone();
             }
+            ChromeUpdate::Appearance(design) => self.design = *design,
             _ => {}
         }
     }

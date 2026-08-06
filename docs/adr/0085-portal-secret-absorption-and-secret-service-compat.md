@@ -1,6 +1,6 @@
 # ADR-0085: Portal secret absorption: vault, Secret backend, and a transitional Secret Service compat layer
 
-- Status: Accepted
+- Status: Superseded by [ADR-0112](0112-native-portal-secret-with-portal-owned-prompts.md)
 - Date: 2026-07-31
 
 ## Context

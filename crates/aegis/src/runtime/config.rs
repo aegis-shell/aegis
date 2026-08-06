@@ -340,6 +340,7 @@ pub(super) fn reload_config(
             server.set_remember_window_positions(c.layout.remember_window_positions);
             shell.set_reduced_motion(preferences.reduced_motion);
             server.set_reduced_motion(preferences.reduced_motion);
+            shell.set_color_scheme(preferences.color_scheme);
             server.set_decoration_policy(c.ui.window_decorations);
             server.set_output_policies(c.output_policies());
             server.set_allow_quit_while_locked(c.dev.allow_quit_while_locked);
@@ -349,6 +350,7 @@ pub(super) fn reload_config(
             server.set_remember_window_positions(true);
             shell.set_reduced_motion(preferences.reduced_motion);
             server.set_reduced_motion(preferences.reduced_motion);
+            shell.set_color_scheme(preferences.color_scheme);
             server.set_decoration_policy(aegis_model::window::DecorationPolicy::default());
             server.set_output_policies(std::collections::HashMap::new());
             server.set_allow_quit_while_locked(false);
@@ -674,6 +676,9 @@ pub(super) fn builtin_ipc_scopes() -> std::collections::HashMap<String, aegis_ip
         // notification/wallpaper actions through explicit fail-closed ops.
         // FileChooser is intentionally absent: its prompter is a portal-owned
         // Wayland client and no filesystem path crosses compositor IPC.
+        // PromptSecret is intentionally absent too (ADR-0112): the portal
+        // owns its secret vault prompts in a supervised GTK prompter and no
+        // production client may trigger a compositor-hosted secret prompt.
         (
             aegis_ipc::LOCAL_PORTAL_SCOPE.to_string(),
             aegis_ipc::Scope {
@@ -689,7 +694,6 @@ pub(super) fn builtin_ipc_scopes() -> std::collections::HashMap<String, aegis_ip
                     aegis_ipc::ActorCapability::PickApp,
                     aegis_ipc::ActorCapability::Notify,
                     aegis_ipc::ActorCapability::DismissNotification,
-                    aegis_ipc::ActorCapability::PromptSecret,
                     aegis_ipc::ActorCapability::PickConfirm,
                     aegis_ipc::ActorCapability::SetWallpaper,
                 ]),
