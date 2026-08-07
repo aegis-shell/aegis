@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-08-07
+
 ### Shell chrome
 
 - The standalone System Settings application is removed. Persistent
