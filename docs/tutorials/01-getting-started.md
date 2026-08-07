@@ -1,7 +1,7 @@
 # Getting Started with Aegis
 
-This tutorial builds Aegis, starts a nested compositor, launches System
-Settings through the application catalog, and queries compositor state.
+This tutorial builds Aegis, starts a nested compositor, opens the command
+panel's settings tabs, and queries compositor state.
 Run every command from the Aegis repository root inside an existing Wayland
 session.
 
@@ -36,26 +36,6 @@ pkg-config --modversion flux flux-scene-graph lens iris
 Each version printed by the final command must be compatible with
 `<OPTICS_VERSION>`.
 
-## Stage System Settings
-
-Cargo builds binaries but does not install desktop metadata. Stage System
-Settings in a temporary prefix so the launcher can discover the executable,
-desktop entry, and icon without changing `~/.local`:
-
-```bash
-aegis_stage=$(mktemp -d)
-cargo build --locked -p aegis-settings
-install -Dm0755 target/debug/aegis-settings \
-  "$aegis_stage/bin/aegis-settings"
-install -Dm0644 contrib/io.github.ming2k.aegis.Settings.desktop \
-  "$aegis_stage/share/applications/io.github.ming2k.aegis.Settings.desktop"
-install -Dm0644 \
-  contrib/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg \
-  "$aegis_stage/share/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg"
-export PATH="$aegis_stage/bin:$PATH"
-export XDG_DATA_DIRS="$aegis_stage/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
-```
-
 ## Start the Nested Compositor
 
 Build the two supervised session clients, then run:
@@ -69,12 +49,13 @@ Because `WAYLAND_DISPLAY` is set, the default `AEGIS_BACKEND=auto` opens a
 nested Aegis window. The background, HUD chips, and Dock confirm that the
 session is ready.
 
-## Launch System Settings
+## Open the Settings Tabs
 
-Open Applications and select **System Settings**. Its independent window
-appears and groups under the System Settings Dock identity. This verifies
-desktop discovery, icon lookup, detached launch, Wayland identity, and IPC
-connectivity together.
+Press `Super+S` inside the nested session. The command panel opens over a
+dark blurred scrim. Select the **Display** or **Touchpad** tab in the main
+panel's tab bar: the settings page renders in place and its edits commit
+through the compositor's revisioned settings transaction. This verifies the
+panel chrome, the hosted settings modules, and the commit path together.
 
 ## Query Compositor State
 
@@ -86,11 +67,7 @@ cargo run --locked -p aegis -- window
 ```
 
 Both commands print state from the running compositor. Stop Aegis with
-`Ctrl+C`, then remove the temporary prefix:
-
-```bash
-rm -rf -- "$aegis_stage"
-```
+`Ctrl+C`.
 
 ## Next Steps
 

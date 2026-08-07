@@ -2,8 +2,8 @@
 
 `aegis-mcp` is the scoped Aegis platform bridge: the standard MCP access
 point for any agent operating the desktop. It is an MCP stdio server, not
-a model runtime: agent products such as `aegis-agent` own providers,
-credentials, sessions, and user interaction on their side of the connection.
+a model runtime: the agent product owns providers, credentials, sessions,
+and user interaction on its side of the connection.
 
 ## Commands
 
@@ -57,9 +57,9 @@ local position, journal sequence, and restoration result.
 | Surface | Behavior |
 |---------|----------|
 | Notification toast and history | Shows agent-originated notifications. Do Not Disturb suppresses only the toast. |
-| Command panel Agent Workspaces status row | In the System section. One live Interaction Domain shows its own label; multiple Interaction Domains show a count and aggregate state. It does not report whether an agent process is online. |
+| Command panel Agent Workspaces status row | In the System tab. One live Interaction Domain shows its own label; multiple Interaction Domains show a count and aggregate state. It does not report whether an agent process is online. |
 | Agent operation feedback | After Interaction Domain input is applied, shows a labeled circular Agent crosshair, movement trail, click pulse, or scroll/keyboard label over a visible read-only mirror. Hidden targets and positionless input use a background-operation pill. This never moves the user's XDG cursor and is excluded from Interaction Domain capture. |
-| Agent Workspaces | Opens from the application launcher (`Super+A`). Shows each Interaction Domain id, state, controlled-window count, pointer/keyboard/touch seat capabilities, and lifecycle controls. |
+| `aegis interaction-domain list` | Shows each Interaction Domain's authority revision, state, seat, and controlled-window count. |
 | Overview Interaction Domain shelf | Shows live Interaction Domain targets and window authority during overview and drag transfer. |
 
 Committed Interaction Domain receipts and observed state are authoritative. A transient
@@ -119,9 +119,8 @@ grant** on first use, however the ceiling was approved:
   revoked.
 
 Manage everything with `aegis permissions` (`list`, `revoke`, `forget`,
-`rename`, `set-ceiling`, `register`) or the Permissions section of the Agent
-Workspaces application. Pairings, grants, revocations, and renames are
-recorded in the mutation journal.
+`rename`, `set-ceiling`, `register`). Pairings, grants, revocations, and
+renames are recorded in the mutation journal.
 
 The bridge refreshes the credential-bound ceiling for every `tools/list`,
 and the IPC server reauthorizes the principal for every live request.
@@ -132,7 +131,7 @@ calling one opens the runtime-grant path.
 ## MCP Client Configuration
 
 An MCP client loads the connector as a write-capable server because one
-catalog contains both observation and mutation tools. An `aegis-agent`
+catalog contains both observation and mutation tools. A client
 configuration entry is:
 
 ```toml
@@ -143,8 +142,8 @@ read_only = false
 environment = { AEGIS_MCP_INSTANCE_ID = "stable-random-connector-id" }
 ```
 
-With the server key `aegis`, aegis-agent prefixes the public tool names as
-`mcp__aegis__<tool>`.
+With the server key `aegis`, an MCP client that namespaces tools exposes
+the public tool names as `mcp__aegis__<tool>`.
 
 ## Tools
 
@@ -210,11 +209,12 @@ is unavailable through the supervised accessibility adapter. A framebuffer is ne
 treated as semantic or action authority.
 
 The connector emits standard MCP `image` content and JSON metadata, which
-`aegis-agent` forwards to the model as image input. It also atomically stores the
-same directed PNG in the owner-only runtime directory and returns
+the agent product forwards to the model as image input. It also atomically
+stores the same directed PNG in the owner-only runtime directory and returns
 `image_path`. Clients whose MCP adapter renders only text can pass that path
-to the agent's built-in `read_image` tool. If neither route makes pixels
-model-visible, the agent must not guess coordinates or use visual input.
+to an image-reading tool the agent product provides. If neither route makes
+pixels model-visible, the agent must not guess coordinates or use visual
+input.
 Inline MCP images are capped at 32 MiB; larger captures set
 `image_attached = false` and remain available through `image_path`. The
 compatibility file is replaced by each capture and removed when the managed

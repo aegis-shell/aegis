@@ -7,9 +7,8 @@
 //! launcher, the overview — is a [`Chrome`] implementation registered with
 //! [`Shell::add`], and renders itself each frame from the shared snapshot
 //! and input. Larger components live in their own crates on top of the same
-//! contract (the dock in `aegis-dock`, Prism in `aegis-prism`, Agent Workspaces
-//! in `aegis-agent-workspaces`, the HUD in `aegis-hud`, and the command panel
-//! in `aegis-command-panel`). Adding
+//! contract (the dock in `aegis-dock`, Prism in `aegis-prism`, the HUD in
+//! `aegis-hud`, and the command panel in `aegis-command-panel`). Adding
 //! or removing a chrome surface is a component change, not a core change.
 //! [`persona`] owns the lightweight personalized-profile convention; its
 //! optional `persona` feature adds shared still/VRM portrait and motion
@@ -33,14 +32,15 @@ pub mod preview;
 pub mod system;
 mod text;
 pub use chrome::{
-    AgentFeedback, AppMenu, AppPickParams, AppPicker, CapabilityGroup, CapabilityPickParams,
-    CapabilityPickResult, CapabilityPrompt, ConfirmAnswer, ConfirmPickParams, ConfirmPickStyle,
-    ConfirmPrompt, ControlledWindowGuard, Launcher, Overview, PickerMode, PinAction,
-    ScreenshotSelector, SecretPrompt, SecretPromptParams, Toast, WindowSwitcher,
+    AgentFeedback, AppMenu, AppPickParams, AppPicker, BatteryAlert, BatteryAlertParams,
+    CapabilityGroup, CapabilityPickParams, CapabilityPickResult, CapabilityPrompt, ConfirmAnswer,
+    ConfirmPickParams, ConfirmPickStyle, ConfirmPrompt, ControlledWindowGuard, Launcher, Overview,
+    PickerMode, PinAction, ScreenshotSelector, SecretPrompt, SecretPromptParams, Toast,
+    WindowSwitcher,
 };
 pub use i18n::{Language, Localizer, Message};
 pub use modal::ModalApplicationSpec;
-pub use popup::{POPUP_GAP, POPUP_MARGIN, place_popup};
+pub use popup::{POPUP_GAP, POPUP_MARGIN, PopupSide, place_popup, place_popup_side};
 pub use preview::{LivePreviewPresentation, PreviewCard, WindowSwitcherPresentation};
 pub use system::{
     BatteryStatus, ChassisKind, DisplaySettings, DisplayStatus, NetworkState, ResourceProbe,
@@ -56,9 +56,7 @@ pub use text::{ellipsize, truncate};
 pub const HUD_HEIGHT: f32 = 32.0;
 
 use aegis_model::app::{ApplicationTarget, BuiltInApplication, Entry};
-use aegis_model::interaction_domain::{
-    InteractionDomainId, InteractionDomainSnapshot, InteractionDomainState,
-};
+use aegis_model::interaction_domain::{InteractionDomainId, InteractionDomainSnapshot};
 use aegis_model::window::Window;
 use aegis_model::workspace::WorkspaceSnapshot;
 
@@ -232,6 +230,11 @@ pub struct AppCatalog {
     pub pinned: Vec<Entry>,
     /// Decoded icons keyed by every id an entry might run as.
     pub icons: IconSet,
+    /// The dock's configured screen edge from `[dock] position`. Carried on
+    /// the catalog so the dock learns about live config edits through the
+    /// same push that already carries its pinned list; other components
+    /// ignore it.
+    pub position: aegis_model::dock::DockPosition,
 }
 
 /// Cursor shapes chrome can request from the nested host. Values deliberately
@@ -290,18 +293,6 @@ pub enum WindowAction {
 /// by IPC clients, preserving one validation and commit path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InteractionDomainIntent {
-    Create {
-        label: String,
-    },
-    SetState {
-        interaction_domain: InteractionDomainId,
-        state: InteractionDomainState,
-        expected_revision: u64,
-    },
-    Revoke {
-        interaction_domain: InteractionDomainId,
-        expected_revision: u64,
-    },
     TransferWindow {
         window: aegis_model::window::WindowId,
         target: InteractionDomainId,
@@ -398,10 +389,23 @@ pub struct ChromeEvents {
     pub capability_pick_answered: Option<CapabilityPickResult>,
     /// Ordered host-system mutations requested by compositor-owned UI.
     pub system_actions: Vec<SystemAction>,
+    /// Persistent-settings mutations requested by compositor-owned UI; the
+    /// `Option` is the expected snapshot revision for optimistic concurrency.
+    pub settings_actions: Vec<(Option<u64>, aegis_model::settings::SettingsAction)>,
     /// Ordered, idempotent pin mutations requested by application menus.
     /// Drained by the main loop, which updates `[dock] pinned` in the config
     /// and refreshes the dock catalog.
     pub dock_pin_actions: Vec<PinAction>,
+    /// The complete pinned order the dock committed this frame when the user
+    /// finished dragging a tile to a new slot (entry ids in dock order).
+    /// Drained by the main loop into `ConfigEdit::SetDockPinned`, like pin
+    /// actions; the dock has already applied the order optimistically, and
+    /// the resulting catalog push reconciles it.
+    pub dock_reorder: Option<Vec<String>>,
+    /// The screen edge the user dragged the dock to this frame. Drained by
+    /// the main loop into `ConfigEdit::SetDockPosition`; the dock has
+    /// already switched edges optimistically.
+    pub dock_position: Option<aegis_model::dock::DockPosition>,
     /// Ordered Interaction Domain lifecycle and authority mutations requested by trusted
     /// shell surfaces.
     pub interaction_domain_intents: Vec<InteractionDomainIntent>,
@@ -442,6 +446,8 @@ pub enum ChromeCommand<'a> {
     CancelConfirmPick,
     StartCapabilityPick(&'a CapabilityPickParams),
     CancelCapabilityPick,
+    StartBatteryAlert(&'a BatteryAlertParams),
+    CancelBatteryAlert,
 }
 
 /// Borrowed host snapshot or presentation-policy update.
@@ -467,6 +473,10 @@ pub enum ChromeUpdate<'a> {
     /// constructing one inline; seeded by [`Shell::add`] and broadcast by
     /// [`Shell::set_color_scheme`].
     Appearance(&'a aegis_design::Design),
+    /// The persistent-settings snapshot, seeded by [`Shell::add`] and
+    /// broadcast by [`Shell::set_settings`]. Only chrome hosting settings UI
+    /// consumes it.
+    Settings(&'a aegis_model::settings::SettingsSnapshot),
     ReducedMotion(bool),
     ModalReserved(Reserved),
 }
@@ -657,6 +667,12 @@ pub trait Chrome {
         false
     }
 
+    /// Whether the low-battery alert is currently open. Default `false`; the
+    /// battery-alert component overrides this.
+    fn battery_alert_active(&self) -> bool {
+        false
+    }
+
     /// Prepare geometry/visibility that the backdrop capture must consume in
     /// the same frame as [`Chrome::render`]. Components with cursor-driven
     /// glass animations use this prepass so their SDF opacity never trails
@@ -782,6 +798,10 @@ pub struct Shell {
     workspaces: WorkspaceSnapshot,
     i18n: Localizer,
     system_status: SystemStatus,
+    /// The most recently published persistent-settings snapshot, seeded into
+    /// every registered component (including ones added later) by
+    /// [`Shell::add`] and fanned out as [`ChromeUpdate::Settings`].
+    settings: Option<aegis_model::settings::SettingsSnapshot>,
     resource_stats: ResourceStats,
     interaction_domains: InteractionDomainSnapshot,
     /// The most recently pushed host application catalog, seeded into every
@@ -826,6 +846,7 @@ impl Shell {
                 },
                 i18n: Localizer::from_env(),
                 system_status: SystemStatus::default(),
+                settings: None,
                 resource_stats: ResourceStats::default(),
                 interaction_domains: aegis_model::interaction_domain::InteractionDomainModel::new()
                     .snapshot(),
@@ -852,6 +873,9 @@ impl Shell {
         component.update(ChromeUpdate::AppCatalog(&self.catalog));
         component.update(ChromeUpdate::Windows(&self.windows));
         component.update(ChromeUpdate::AllWindows(&self.all_windows));
+        if let Some(settings) = &self.settings {
+            component.update(ChromeUpdate::Settings(settings));
+        }
         self.components.push(component);
     }
 
@@ -998,6 +1022,17 @@ impl Shell {
         }
     }
 
+    /// Replace the persistent-settings snapshot and notify chrome hosting
+    /// settings UI.
+    pub fn set_settings(&mut self, snapshot: aegis_model::settings::SettingsSnapshot) {
+        self.settings = Some(snapshot);
+        if let Some(settings) = self.settings.as_ref() {
+            for component in self.components.iter_mut() {
+                component.update(ChromeUpdate::Settings(settings));
+            }
+        }
+    }
+
     /// Replace the host resource-utilisation sample and notify interested
     /// status surfaces.
     pub fn set_resource_stats(&mut self, stats: ResourceStats) {
@@ -1029,9 +1064,28 @@ impl Shell {
         std::mem::take(&mut self.events.system_actions)
     }
 
+    /// Drain persistent-settings mutations requested by compositor-owned UI.
+    pub fn take_settings_actions(
+        &mut self,
+    ) -> Vec<(Option<u64>, aegis_model::settings::SettingsAction)> {
+        std::mem::take(&mut self.events.settings_actions)
+    }
+
     /// Drain ordered pin/unpin mutations requested this frame.
     pub fn take_dock_pin_actions(&mut self) -> Vec<PinAction> {
         std::mem::take(&mut self.events.dock_pin_actions)
+    }
+
+    /// Drain the pinned order committed by a dock tile drag this frame, if
+    /// any. The main loop persists it through `ConfigEdit::SetDockPinned`.
+    pub fn take_dock_reorder(&mut self) -> Option<Vec<String>> {
+        self.events.dock_reorder.take()
+    }
+
+    /// Drain the screen edge the dock was dragged to this frame, if any. The
+    /// main loop persists it through `ConfigEdit::SetDockPosition`.
+    pub fn take_dock_position(&mut self) -> Option<aegis_model::dock::DockPosition> {
+        self.events.dock_position.take()
     }
 
     /// Drain trusted Interaction Domain-management intents in UI order.
@@ -1309,6 +1363,23 @@ impl Shell {
     /// carries the checked group keys; `None` = denied).
     pub fn take_capability_pick_answered(&mut self) -> Option<CapabilityPickResult> {
         self.events.capability_pick_answered.take()
+    }
+
+    /// Open or update the low-battery alert. Compositor-owned: dismissal
+    /// produces no answer event. No-op if no battery-alert component is
+    /// registered.
+    pub fn start_battery_alert(&mut self, params: BatteryAlertParams) {
+        self.broadcast_command(ChromeCommand::StartBatteryAlert(&params));
+    }
+
+    /// Force-close the low-battery alert.
+    pub fn cancel_battery_alert(&mut self) {
+        self.broadcast_command(ChromeCommand::CancelBatteryAlert);
+    }
+
+    /// Whether the low-battery alert is currently open.
+    pub fn battery_alert_active(&self) -> bool {
+        self.components.iter().any(|c| c.battery_alert_active())
     }
 
     /// Whether the screenshot selector is currently active.

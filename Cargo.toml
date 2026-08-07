@@ -42,10 +42,9 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
     "registry",
 ] }
 
-# aegis-mcp is the platform's MCP bridge; fuji (宓姬) is the in-tree agent
-# product. aegis exposes the bridge so any agent can discover scoped desktop
-# and Interaction Domain tools without linking the agent stack into the compositor
-# (ADR-0047, ADR-0050, ADR-0087).
+# aegis-mcp is the platform's MCP bridge. aegis exposes the bridge so any
+# agent can discover scoped desktop and Interaction Domain tools without
+# linking an agent stack into the compositor (ADR-0047, ADR-0087).
 base64 = "0.22"
 fastrand = "2"
 getrandom = "0.3"
@@ -106,7 +105,6 @@ aegis-design = { path = "crates/aegis-design" }
 # Chrome components promoted out of aegis-shell (ADR-0044).
 aegis-dock = { path = "crates/aegis-dock" }
 aegis-prism = { path = "crates/aegis-prism" }
-aegis-agent-workspaces = { path = "crates/aegis-agent-workspaces" }
 # Display-only floating HUD status chips (ADR-0080).
 aegis-hud = { path = "crates/aegis-hud" }
 # SNI system tray service shared by shell chrome (ADR-0080).
@@ -118,7 +116,7 @@ aegis-wallpaper = { path = "crates/aegis-wallpaper" }
 # fail-closed authority; these packages are ordinary Wayland clients.
 aegis-lock = { path = "crates/aegis-lock" }
 aegis-idle = { path = "crates/aegis-idle" }
-# Standalone persistent-settings application (ADR-0056).
+# Settings module library hosted by the command panel (ADR-0056).
 aegis-settings = { path = "crates/aegis-settings" }
 # Configuration: versioned TOML schema, loader, and live reload (ADR-0026).
 aegis-config = { path = "crates/aegis-config" }

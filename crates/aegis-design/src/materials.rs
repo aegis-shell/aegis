@@ -92,6 +92,23 @@ pub fn sao_panel(sao: &crate::tokens::Sao) -> OverlayOpts {
     }
 }
 
+/// The dark glass floating panel of the VR/AR HUD command panel (ADR-0080).
+///
+/// Compositor backdrop blur supplies the frost behind it; this layer is the
+/// deep blue-black tint, the low-alpha cyan edge, and the corner. Callers
+/// add geometry through struct update syntax.
+#[must_use]
+pub fn hud_panel(hud: &crate::tokens::Hud) -> OverlayOpts {
+    OverlayOpts {
+        bg: hud.surface,
+        border: hud.border,
+        border_width: 1.0,
+        radius: 16.0,
+        pad: 0.0,
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use lens::Color;
@@ -101,7 +118,9 @@ mod tests {
     #[test]
     fn popover_material_preserves_the_existing_glass_values() {
         let material = popover(&Design::dark());
-        assert_eq!(material.bg, Color::rgba(255, 255, 255, 38));
+        // The surface stays translucent for the compositor's backdrop blur,
+        // but opaque enough to read where blur is unavailable.
+        assert_eq!(material.bg, Color::rgba(255, 255, 255, 110));
         assert_eq!(material.border, Color::rgba(255, 255, 255, 72));
         assert_eq!(material.border_width, 1.0);
         assert_eq!(material.radius, 12.0);
@@ -145,6 +164,17 @@ mod tests {
         let material = sao_panel(&sao);
         assert_eq!(material.bg, sao.surface);
         assert_eq!(material.border, sao.border);
+        assert_eq!(material.border_width, 1.0);
+        assert_eq!(material.radius, 16.0);
+        assert_eq!(material.pad, 0.0);
+    }
+
+    #[test]
+    fn hud_panel_material_uses_the_dark_glass_tokens() {
+        let hud = crate::tokens::Hud::classic();
+        let material = hud_panel(&hud);
+        assert_eq!(material.bg, hud.surface);
+        assert_eq!(material.border, hud.border);
         assert_eq!(material.border_width, 1.0);
         assert_eq!(material.radius, 16.0);
         assert_eq!(material.pad, 0.0);

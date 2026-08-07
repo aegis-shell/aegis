@@ -1,11 +1,14 @@
 //! Shared application context menu used by the launcher and dock.
 
-use aegis_design::{Design, materials, themes};
+use aegis_design::{Design, GlassRole, materials, themes};
 use aegis_model::app::Entry;
 use aegis_model::window::{Window, WindowId};
 use lens::{Frame, Input, LayoutOpts, Rect};
 
-use crate::{ChromeEvents, Localizer, Message, WindowAction, ellipsize, place_popup};
+use crate::{
+    BackdropRegion, ChromeEvents, ChromeUpdate, LiquidGlassRegion, Localizer, Message, PopupSide,
+    WindowAction, ellipsize, place_popup_side,
+};
 
 const MENU_WIDTH: f32 = 236.0;
 const MENU_PAD: f32 = 7.0;
@@ -58,6 +61,16 @@ pub struct AppMenu {
     just_opened: bool,
     window_offset: usize,
     maximize_controls: bool,
+    /// The side of the owning tile the popup opens toward. Owners anchored
+    /// to a screen side edge (the dock on the left or right edge) flip this
+    /// so the menu opens into the output instead of off-screen.
+    side: PopupSide,
+    /// The design snapshot the menu paints from, from
+    /// [`ChromeUpdate::Appearance`] relayed by the owning component. Seeded on
+    /// registration by [`Shell::add`](crate::Shell::add) and refreshed when the
+    /// desktop color scheme changes; defaults to the dark appearance until the
+    /// first update arrives.
+    design: Design,
 }
 
 impl AppMenu {
@@ -74,6 +87,8 @@ impl AppMenu {
             just_opened: false,
             window_offset: 0,
             maximize_controls,
+            side: PopupSide::default(),
+            design: Design::dark(),
         }
     }
 
@@ -112,6 +127,13 @@ impl AppMenu {
         self.owner = owner;
     }
 
+    /// Open the popup toward `side` of the owner from now on (the dock sets
+    /// this from its configured screen edge). Existing popups re-anchor on
+    /// the next bounds computation.
+    pub fn set_side(&mut self, side: PopupSide) {
+        self.side = side;
+    }
+
     pub fn dismiss(&mut self) {
         self.target = None;
         self.just_opened = false;
@@ -144,12 +166,42 @@ impl AppMenu {
             + usize::from(!target.windows.is_empty());
         let separators = groups.saturating_sub(1);
         let height = menu_height(rows, separators);
-        Some(place_popup(self.owner, (MENU_WIDTH, height), display))
+        Some(place_popup_side(
+            self.owner,
+            (MENU_WIDTH, height),
+            display,
+            self.side,
+        ))
     }
 
     pub fn contains(&self, x: f32, y: f32, display: (f32, f32)) -> bool {
         self.bounds(display)
             .is_some_and(|rect| contains(rect, x, y))
+    }
+
+    /// Receive a host-owned snapshot relayed by the owning component. Only
+    /// the appearance update belongs to the menu; the owner keeps the rest.
+    pub fn update(&mut self, update: ChromeUpdate<'_>) {
+        if let ChromeUpdate::Appearance(design) = update {
+            self.design = *design;
+        }
+    }
+
+    /// The menu's analytic glass body while open. Owners chain this into
+    /// [`Chrome::backdrop_regions`](crate::Chrome::backdrop_regions) and
+    /// [`Chrome::liquid_glass_regions`](crate::Chrome::liquid_glass_regions)
+    /// so the compositor backs the popover with real backdrop blur and the
+    /// glass treatment on any background, not only where a blur happens to
+    /// sit underneath.
+    pub fn liquid_glass_region(&self, display: (f32, f32)) -> Option<LiquidGlassRegion> {
+        let bounds = self.bounds(display)?;
+        Some(LiquidGlassRegion::from_role(
+            &self.design,
+            GlassRole::FloatingPanel,
+            BackdropRegion::from(bounds),
+            self.design.radii.popover,
+            1.0,
+        ))
     }
 
     pub fn render(
@@ -326,10 +378,10 @@ impl AppMenu {
             .collect();
         let row_count = groups.iter().map(Vec::len).sum();
         let height = menu_height(row_count, groups.len().saturating_sub(1));
-        let bounds = place_popup(self.owner, (MENU_WIDTH, height), display);
+        let bounds = place_popup_side(self.owner, (MENU_WIDTH, height), display, self.side);
         let mut selected = None;
         let original_theme = frame.theme();
-        let design = Design::dark();
+        let design = self.design;
         let menu_theme = themes::menu(original_theme, &design);
         frame.set_theme(menu_theme);
         frame.layer(
@@ -438,7 +490,7 @@ fn contains(rect: Rect, x: f32, y: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{POPUP_GAP, POPUP_MARGIN};
+    use crate::{POPUP_GAP, POPUP_MARGIN, place_popup};
 
     #[test]
     fn popup_centres_above_a_bottom_tile_and_stays_on_screen() {
@@ -470,6 +522,37 @@ mod tests {
     #[test]
     fn unicode_truncation_preserves_character_boundaries() {
         assert_eq!(crate::truncate("窗口操作", 3), "窗口…");
+    }
+
+    #[test]
+    fn open_menu_declares_a_glass_region_over_its_bounds() {
+        let mut menu = AppMenu::new("test-menu", true);
+        let display = (800.0, 600.0);
+        assert!(menu.liquid_glass_region(display).is_none());
+
+        let owner = Rect {
+            x: 700.0,
+            y: 520.0,
+            w: 72.0,
+            h: 72.0,
+        };
+        menu.open("App", None, [WindowId(1)], owner, None);
+        let region = menu
+            .liquid_glass_region(display)
+            .expect("open menu declares a glass body");
+        let bounds = menu.bounds(display).expect("open menu has bounds");
+        assert_eq!(region.bounds, BackdropRegion::from(bounds));
+        assert_eq!(region.corner_radius, menu.design.radii.popover);
+        assert_eq!(region.opacity, 1.0);
+    }
+
+    #[test]
+    fn appearance_update_replaces_the_design_snapshot() {
+        let mut menu = AppMenu::new("test-menu", true);
+        assert!(!menu.design.is_light());
+        let light = Design::light();
+        menu.update(ChromeUpdate::Appearance(&light));
+        assert!(menu.design.is_light());
     }
 
     #[test]

@@ -69,6 +69,39 @@ fn idle_policy_defaults_parses_and_enforces_security_order() {
 }
 
 #[test]
+fn battery_warnings_default_parse_and_enforce_order() {
+    let defaults = Config::parse("schema_version = 2\n").unwrap();
+    assert_eq!(defaults.battery, BatterySettings::default());
+
+    let configured = Config::parse(
+        "schema_version = 2\n\
+         [battery]\n\
+         warn_at = [25, 10, 5]\n",
+    )
+    .unwrap();
+    assert_eq!(configured.battery.warn_at, vec![25, 10, 5]);
+
+    let disabled = Config::parse(
+        "schema_version = 2\n\
+         [battery]\n\
+         warn_at = []\n",
+    )
+    .unwrap();
+    assert!(disabled.battery.warn_at.is_empty());
+
+    let invalid = Config::parse(
+        "schema_version = 2\n\
+         [battery]\n\
+         warn_at = [5, 20]\n",
+    )
+    .unwrap_err();
+    assert!(invalid.iter().any(|diagnostic| {
+        diagnostic.field.as_deref() == Some("battery")
+            && diagnostic.message.contains("strictly descending")
+    }));
+}
+
+#[test]
 fn config_store_persists_idle_policy_without_losing_other_sections() {
     let path = temp_config_path("idle-policy");
     std::fs::write(
@@ -216,6 +249,71 @@ fn dock_autopopulation_remains_an_explicit_opt_in() {
     )
     .unwrap();
     assert!(cfg.dock.autopopulate);
+}
+
+#[test]
+fn dock_position_defaults_to_bottom_and_parses_kebab_case_edges() {
+    let cfg = Config::parse("schema_version = 2\n").unwrap();
+    assert_eq!(cfg.dock.position, aegis_model::dock::DockPosition::Bottom);
+
+    for (spelling, want) in [
+        ("left", aegis_model::dock::DockPosition::Left),
+        ("bottom", aegis_model::dock::DockPosition::Bottom),
+        ("right", aegis_model::dock::DockPosition::Right),
+    ] {
+        let cfg = Config::parse(&format!(
+            "schema_version = 2\n[dock]\nposition = \"{spelling}\"\n"
+        ))
+        .unwrap();
+        assert_eq!(cfg.dock.position, want, "position = {spelling:?}");
+    }
+}
+
+#[test]
+fn dock_position_rejects_the_top_edge_and_unknown_spellings() {
+    for spelling in ["top", "floating", "BOTTOM"] {
+        assert!(
+            Config::parse(&format!(
+                "schema_version = 2\n[dock]\nposition = \"{spelling}\"\n"
+            ))
+            .is_err(),
+            "position = {spelling:?} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn config_store_writes_the_dock_position_without_touching_pins() {
+    let path = temp_config_path("dock-position");
+    let original = "schema_version = 2\n\n[dock]\npinned = [\"a.desktop\"]\nautopopulate = true\n";
+    std::fs::write(&path, original).unwrap();
+    ConfigStore::new(&path)
+        .apply(ConfigEdit::SetDockPosition {
+            position: aegis_model::dock::DockPosition::Right,
+        })
+        .unwrap();
+    let cfg = load(&path).unwrap().expect("file still valid");
+    assert_eq!(cfg.dock.position, aegis_model::dock::DockPosition::Right);
+    assert_eq!(cfg.dock.pinned, vec!["a.desktop"], "pins survive a move");
+    assert!(
+        cfg.dock.autopopulate,
+        "a position edit is not a manual pin edit"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn config_store_creates_the_dock_table_for_a_position_edit() {
+    let path = temp_config_path("dock-position-create");
+    let _ = std::fs::remove_file(&path);
+    ConfigStore::new(&path)
+        .apply(ConfigEdit::SetDockPosition {
+            position: aegis_model::dock::DockPosition::Left,
+        })
+        .unwrap();
+    let cfg = load(&path).unwrap().expect("file written");
+    assert_eq!(cfg.dock.position, aegis_model::dock::DockPosition::Left);
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]

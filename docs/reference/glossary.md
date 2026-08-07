@@ -16,7 +16,7 @@ Canonical terms for Aegis authority, automation, and Agent integration.
 | Exact resource grant | A random, short-lived, use-counted handle bound to one Actor session, capability, and exact filesystem path, network origin, secret purpose, or payment bound. | Ambient sandbox or process access. |
 | Actor context | The composition of identity, capability, view, input, observation, storage, and network facets for one live Actor. | A single global context or god object. |
 | Interaction Domain | A compositor-enforced GUI interaction authority boundary: controller, lifecycle, seat, presentation target, controlled groups, observers, and revision. | Authentication realm, VM, Linux namespace, or desktop workspace. |
-| Agent Workspace | User-facing management metaphor for an Agent Interaction Domain. | The kernel security primitive or a human desktop workspace. |
+| Agent Workspace | The user-facing status metaphor for an Agent Interaction Domain, shown as a status label in the command panel. | The kernel security primitive or a human desktop workspace. |
 | Interaction group | The smallest set of related surfaces whose control authority transfers atomically. | One arbitrary rectangle or individual subsurface. |
 | Observation | Actor-scoped semantic state or separately authorized pixels. It grants no action authority. | An action or framebuffer-global visibility. |
 | Semantic provider | An authenticated out-of-process adapter that publishes complete bounded accessibility revisions and executes routed semantic actions. | An Agent runtime or trusted self-asserted application label. |

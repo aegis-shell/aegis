@@ -218,6 +218,42 @@ impl IdleSettings {
     }
 }
 
+/// Low-battery warning thresholds, as discharge percentages.
+///
+/// Each threshold raises the compositor's modal low-battery alert once per
+/// discharge cycle; an empty list disables the feature.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatterySettings {
+    /// Percentages that raise the alert, highest first.
+    pub warn_at: Vec<u8>,
+}
+
+impl Default for BatterySettings {
+    fn default() -> Self {
+        Self {
+            warn_at: vec![20, 5],
+        }
+    }
+}
+
+impl BatterySettings {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let mut previous = 100;
+        for threshold in &self.warn_at {
+            if !(1..=99).contains(threshold) {
+                return Err("battery warning percentage is outside 1..=99");
+            }
+            if *threshold >= previous {
+                return Err("battery warning percentages must be strictly descending");
+            }
+            previous = *threshold;
+        }
+        Ok(())
+    }
+}
+
 /// Live display capabilities and current effective configuration.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -380,5 +416,38 @@ mod tests {
         assert_eq!(accent.normalized(), (26.0 / 255.0, 128.0 / 255.0, 1.0));
         assert!(AccentColor::parse_hex("1A80FF").is_err());
         assert!(AccentColor::parse_hex("#xyzxyz").is_err());
+    }
+
+    #[test]
+    fn battery_warning_thresholds_default_and_validate() {
+        let defaults = BatterySettings::default();
+        assert_eq!(defaults.warn_at, vec![20, 5]);
+        assert!(defaults.validate().is_ok());
+        // An empty list disables the feature and is valid.
+        assert!(BatterySettings { warn_at: vec![] }.validate().is_ok());
+        assert!(
+            BatterySettings {
+                warn_at: vec![30, 10, 5],
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(BatterySettings { warn_at: vec![0] }.validate().is_err());
+        assert!(BatterySettings { warn_at: vec![100] }.validate().is_err());
+        // Ascending order and duplicates are both rejected.
+        assert!(
+            BatterySettings {
+                warn_at: vec![5, 20],
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            BatterySettings {
+                warn_at: vec![20, 20],
+            }
+            .validate()
+            .is_err()
+        );
     }
 }

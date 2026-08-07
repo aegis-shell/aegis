@@ -16,9 +16,9 @@ use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{
     AppCatalog, BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
-    Localizer, Reserved, ellipsize,
+    LiquidGlassFocus, LiquidGlassRegion, Localizer, Reserved, ellipsize,
 };
-use aegis_design::{Design, themes};
+use aegis_design::{Design, GlassRole, materials, themes};
 use aegis_model::input::{KeyAction, KeyChar, key_action};
 use aegis_model::window::Window;
 
@@ -311,17 +311,12 @@ impl Chrome for AppPicker {
         let original_theme = frame.theme();
         frame.set_theme(themes::application(&design));
 
+        // Minimal foreground tint only. The compositor-owned analytic pass
+        // supplies the body, refraction, rim light, and shadow.
         frame.layer(
             "aegis-app-picker-panel",
             layout.panel,
-            &OverlayOpts {
-                bg: design.colors.application_surface.with_alpha(238),
-                border: design.colors.application_border,
-                border_width: design.strokes.hairline,
-                radius: design.radii.card,
-                pad: 0.0,
-                ..Default::default()
-            },
+            &materials::glass_panel(&design),
             |_| {},
         );
 
@@ -378,47 +373,45 @@ impl Chrome for AppPicker {
             let row = &self.rows[row_index];
             let icon = self.icon(row);
             let row_name = ellipsize(frame, &row.name, 13.0, (rect.w - 48.0).max(0.0));
-            let bg = if selected {
-                design.colors.application_active
+            // Selection is the panel's single optical focus (declared in
+            // `liquid_glass_regions`); the painted layer is only the shared
+            // neutral fallback wash, never a structural accent fill.
+            let mut material = if selected {
+                materials::glass_focus(&design, true, 1.0)
             } else if hovered {
-                design.colors.application_hover
+                materials::glass_focus(&design, false, 1.0)
             } else {
-                Color::TRANSPARENT
-            };
-            let id = format!("aegis-app-picker-row-{pos}");
-            frame.layer(
-                &id,
-                rect,
-                &OverlayOpts {
-                    bg,
-                    radius: design.radii.menu_item,
-                    pad: 0.0,
+                OverlayOpts {
+                    bg: Color::TRANSPARENT,
                     ..Default::default()
-                },
-                |frame| {
-                    frame.row_ex(&stretch(rect), |frame| {
-                        frame.spacer(10.0);
-                        frame.column_ex(
-                            &LayoutOpts {
-                                width: ICON,
-                                height: ROW_H,
-                                cross: Align::Center,
-                                ..Default::default()
+                }
+            };
+            material.radius = design.radii.menu_item;
+            material.pad = 0.0;
+            let id = format!("aegis-app-picker-row-{pos}");
+            frame.layer(&id, rect, &material, |frame| {
+                frame.row_ex(&stretch(rect), |frame| {
+                    frame.spacer(10.0);
+                    frame.column_ex(
+                        &LayoutOpts {
+                            width: ICON,
+                            height: ROW_H,
+                            cross: Align::Center,
+                            ..Default::default()
+                        },
+                        |frame| match icon {
+                            Some(pointer) => unsafe {
+                                frame.image(pointer as *mut lens::sys::flux_image, ICON, ICON);
                             },
-                            |frame| match icon {
-                                Some(pointer) => unsafe {
-                                    frame.image(pointer as *mut lens::sys::flux_image, ICON, ICON);
-                                },
-                                None => {
-                                    frame.spacer(0.0);
-                                }
-                            },
-                        );
-                        frame.spacer(8.0);
-                        frame.label_compact_sized(&row_name, 13.0);
-                    });
-                },
-            );
+                            None => {
+                                frame.spacer(0.0);
+                            }
+                        },
+                    );
+                    frame.spacer(8.0);
+                    frame.label_compact_sized(&row_name, 13.0);
+                });
+            });
         }
 
         if self.rows.is_empty() {
@@ -455,8 +448,6 @@ impl Chrome for AppPicker {
                 } else {
                     design.colors.card_surface
                 },
-                border: design.colors.application_border,
-                border_width: design.strokes.hairline,
                 radius: design.radii.control,
                 pad: 0.0,
                 cross: Align::Center,
@@ -541,6 +532,12 @@ impl Chrome for AppPicker {
     }
 
     fn modal_active(&self) -> bool {
+        self.active
+    }
+
+    // A pending consent owns the complete chrome layer: the Dock, HUD, and
+    // toasts stay suppressed until the prompt is answered.
+    fn exclusive_presentation_active(&self) -> bool {
         self.active
     }
 
@@ -637,21 +634,52 @@ impl Chrome for AppPicker {
         }
         let layout =
             PickerLayout::for_display(display, self.modal_reserved, self.subject.is_some());
-        let panel = layout.panel;
-        let radius = self.design.radii.card;
+        // One region exactly matching the glass body below: the runtime drops
+        // it from the rectangular frost set, so the analytic pass alone owns
+        // the rounded panel.
+        vec![BackdropRegion::from(layout.panel)]
+    }
+
+    fn liquid_glass_regions(
+        &self,
+        display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &crate::WorkspaceSnapshot,
+    ) -> Vec<LiquidGlassRegion> {
+        if !self.active {
+            return Vec::new();
+        }
+        let design = self.design;
+        let layout =
+            PickerLayout::for_display(display, self.modal_reserved, self.subject.is_some());
+        // The highlighted row carries the panel's single optical focus. A
+        // selection scrolled out of the list window carries no field: the
+        // bounds must stay inside the parent body (ADR-0105).
+        let scroll_row = self
+            .scroll_row
+            .min(self.rows.len().saturating_sub(layout.visible_rows));
+        let focus = (self.selected < self.rows.len()
+            && self.selected >= scroll_row
+            && self.selected < scroll_row + layout.visible_rows)
+            .then(|| LiquidGlassFocus {
+                bounds: BackdropRegion::from(Rect {
+                    x: layout.list.x,
+                    y: layout.list.y + (self.selected - scroll_row) as f32 * ROW_H,
+                    w: layout.list.w,
+                    h: ROW_H,
+                }),
+                corner_radius: design.radii.menu_item,
+                strength: design.glass_focus.field_strength,
+            });
         vec![
-            BackdropRegion {
-                x: panel.x + radius,
-                y: panel.y,
-                w: (panel.w - radius * 2.0).max(0.0),
-                h: panel.h,
-            },
-            BackdropRegion {
-                x: panel.x,
-                y: panel.y + radius,
-                w: panel.w,
-                h: (panel.h - radius * 2.0).max(0.0),
-            },
+            LiquidGlassRegion::from_role(
+                &design,
+                GlassRole::ProminentPanel,
+                BackdropRegion::from(layout.panel),
+                design.radii.glass_panel,
+                1.0,
+            )
+            .with_focus(focus),
         ]
     }
 }
@@ -772,5 +800,57 @@ mod tests {
         let mut picker = picker_with_catalog();
         picker.start_app_pick(params(&[], None));
         assert!(!picker.app_pick_active());
+    }
+
+    #[test]
+    fn the_active_panel_is_one_analytic_glass_body() {
+        let mut picker = picker_with_catalog();
+        let display = (1280.0, 800.0);
+        let workspaces = crate::WorkspaceSnapshot {
+            outputs: Vec::new(),
+        };
+        assert!(
+            picker
+                .liquid_glass_regions(display, &[], &workspaces)
+                .is_empty()
+        );
+        assert!(!picker.exclusive_presentation_active());
+
+        picker.start_app_pick(params(&["firefox.desktop"], None));
+        let backdrop = picker.backdrop_regions(display, &[], &workspaces);
+        let glass = picker.liquid_glass_regions(display, &[], &workspaces);
+        assert_eq!(backdrop.len(), 1);
+        assert_eq!(glass.len(), 1);
+        assert_eq!(glass[0].bounds, backdrop[0]);
+        assert_eq!(glass[0].corner_radius, Design::dark().radii.glass_panel);
+        assert_eq!(glass[0].opacity, 1.0);
+        assert!(picker.exclusive_presentation_active());
+    }
+
+    #[test]
+    fn the_highlighted_row_carries_the_panels_optical_focus() {
+        let mut picker = picker_with_catalog();
+        picker.start_app_pick(params(
+            &["firefox.desktop", "org.example.Editor.desktop"],
+            None,
+        ));
+        let display = (1280.0, 800.0);
+        let workspaces = crate::WorkspaceSnapshot {
+            outputs: Vec::new(),
+        };
+        let layout = PickerLayout::for_display(display, Reserved::default(), false);
+        let glass = picker.liquid_glass_regions(display, &[], &workspaces);
+        let focus = glass[0].focus.expect("the highlighted row is focused");
+        assert_eq!(
+            focus.bounds,
+            BackdropRegion {
+                x: layout.list.x,
+                y: layout.list.y,
+                w: layout.list.w,
+                h: ROW_H,
+            }
+        );
+        assert_eq!(focus.corner_radius, Design::dark().radii.menu_item);
+        assert_eq!(focus.strength, Design::dark().glass_focus.field_strength);
     }
 }

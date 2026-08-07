@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use aegis_model::input::{Mods, TouchpadConfig, TouchpadScrollMethod};
 use aegis_model::keybind::{Keybind, Keymap};
 pub use aegis_model::settings::{
-    AccentColor, ColorScheme, Contrast, DesktopPreferences, IdleSettings,
+    AccentColor, BatterySettings, ColorScheme, Contrast, DesktopPreferences, IdleSettings,
 };
 use toml_edit::DocumentMut;
 
@@ -72,7 +72,7 @@ pub struct Config {
     pub layout: LayoutConfig,
 
     /// Dock configuration, written as a `[dock]` table. Controls which apps
-    /// are pinned to the bottom dock.
+    /// are pinned to the dock and which screen edge it anchors to.
     #[serde(default)]
     pub dock: DockConfig,
 
@@ -133,6 +133,10 @@ pub struct Config {
     /// as `[idle]`.
     #[serde(default)]
     pub idle: IdleSettings,
+
+    /// Low-battery warning thresholds, written as `[battery]`.
+    #[serde(default)]
+    pub battery: BatterySettings,
 
     /// Development-only escape hatches, written as a `[dev]` table.
     /// Development-only; will be removed before release. Do not rely on it.
@@ -410,7 +414,8 @@ impl Default for ScreenshotConfig {
 /// remains available as an explicit opt-in for selecting the first handful of
 /// apps that have usable icons. Once the user pins or unpins an app from the
 /// dock's context menu, `autopopulate` is written as `false` so the persisted
-/// list is the sole source of truth.
+/// list is the sole source of truth. `position` selects the screen edge the
+/// dock anchors to (left, bottom, or right); it defaults to `bottom`.
 #[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DockConfig {
@@ -422,6 +427,8 @@ pub struct DockConfig {
     pub autohide: bool,
     #[serde(default = "default_dock_autohide_timeout")]
     pub autohide_timeout: f32,
+    #[serde(default)]
+    pub position: aegis_model::dock::DockPosition,
 }
 
 fn default_dock_autohide_timeout() -> f32 {
@@ -921,6 +928,9 @@ impl Config {
         if let Err(message) = cfg.idle.validate() {
             diagnostics.push(Diagnostic::new(Some("idle".into()), message));
         }
+        if let Err(message) = cfg.battery.validate() {
+            diagnostics.push(Diagnostic::new(Some("battery".into()), message));
+        }
         if !cfg.input.touchpad.pointer_speed.is_finite()
             || !(-1.0..=1.0).contains(&cfg.input.touchpad.pointer_speed)
         {
@@ -1374,6 +1384,10 @@ pub enum ConfigEdit {
     /// Replace the complete manually managed dock pin list and disable
     /// automatic population.
     SetDockPinned { pinned: Vec<String> },
+    /// Move the dock to a different screen edge (left, bottom, or right).
+    SetDockPosition {
+        position: aegis_model::dock::DockPosition,
+    },
     /// Replace the complete `[input.touchpad]` profile.
     SetTouchpad { config: TouchpadConfig },
     /// Replace the user-editable fields for one `[[output]]` entry.
@@ -1421,6 +1435,9 @@ impl ConfigStore {
         let mut document = editable_document(&self.path)?;
         match edit {
             ConfigEdit::SetDockPinned { pinned } => apply_dock_pinned(&mut document, &pinned),
+            ConfigEdit::SetDockPosition { position } => {
+                apply_dock_position(&mut document, position)
+            }
             ConfigEdit::SetTouchpad { config } => apply_touchpad(&mut document, &config),
             ConfigEdit::SetOutput { settings } => apply_output(&mut document, settings),
             ConfigEdit::SetDesktopPreferences { preferences } => {
@@ -1502,6 +1519,13 @@ fn apply_dock_pinned(document: &mut DocumentMut, pinned: &[String]) {
     }
     document["dock"]["pinned"] = toml_edit::Item::Value(toml_edit::Value::Array(values));
     document["dock"]["autopopulate"] = toml_edit::value(false);
+}
+
+fn apply_dock_position(document: &mut DocumentMut, position: aegis_model::dock::DockPosition) {
+    if !document.get("dock").is_some_and(toml_edit::Item::is_table) {
+        document["dock"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    document["dock"]["position"] = toml_edit::value(position.name());
 }
 
 fn apply_touchpad(document: &mut DocumentMut, config: &TouchpadConfig) {

@@ -12,6 +12,6 @@ Task-oriented instructions for operating an aegis session.
 - [How to Run a Wayland Input Method](wayland-input-method.md)
 - [How to Configure the Wallpaper](configure-wallpaper.md)
 - [How to Use Agent Workspaces](ai-workspaces.md)
-- [Connect aegis-agent to Aegis](agent.md)
+- [How to Connect an MCP Agent to Aegis](agent.md)
 - [How to Run aegis on Bare Metal (DRM/KMS)](bare-metal-drm.md)
 - [How to Install and Verify the Portal Backend](portals.md)

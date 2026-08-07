@@ -617,11 +617,15 @@ fn transient_toplevel_unmap_defers_focus_to_its_live_parent() {
 
     unsafe { defer_keyboard_focus_after_toplevel_unmap(dialog.as_mut()) };
 
+    let entry = state
+        .pending_keyboard_focus
+        .get(&HUMAN_SEAT)
+        .expect("a restoration entry is deferred");
     assert_eq!(
-        state.pending_keyboard_focus.get(&HUMAN_SEAT),
-        Some(&parent.resource),
+        entry.target, parent.resource,
         "closing a focused transient must return focus to its parent"
     );
+    assert_eq!(entry.restoring_from, dialog.resource);
 }
 
 #[test]
@@ -648,8 +652,233 @@ fn transient_focus_fallback_skips_an_unmapped_intermediate_parent() {
     unsafe { defer_keyboard_focus_after_toplevel_unmap(dialog.as_mut()) };
 
     assert_eq!(
-        state.pending_keyboard_focus.get(&HUMAN_SEAT),
-        Some(&root.resource),
+        state
+            .pending_keyboard_focus
+            .get(&HUMAN_SEAT)
+            .map(|entry| entry.target),
+        Some(root.resource),
         "nested dialog teardown must fall back to the closest mapped ancestor"
     );
+}
+
+fn mapped_toplevel_fixture(
+    window: aegis_model::window::WindowId,
+    resource: usize,
+) -> Box<SurfaceRec> {
+    let mut surface = Box::new(SurfaceRec::new(resource as *mut ffi::wl_resource));
+    surface.mapped = true;
+    surface.xdg_toplevel = resource as *mut ffi::wl_resource;
+    surface.window.id = window;
+    surface
+}
+
+/// Register the windows with the human interaction domain's authority and
+/// place them on the current workspace, so the focus fallback's visibility
+/// and seat-control filters see a realistic desktop.
+fn enroll_windows_on_current_workspace(
+    state: &mut State,
+    windows: &[aegis_model::window::WindowId],
+) {
+    let client = state.authority.register_client(None);
+    for &window in windows {
+        state
+            .register_window(client, window)
+            .expect("register window");
+    }
+    let workspace = state
+        .workspaces
+        .current_workspace(state.output)
+        .expect("bootstrap workspace");
+    for &window in windows {
+        state.workspaces.place_toplevel(workspace, window);
+    }
+}
+
+#[test]
+fn unparented_toplevel_unmap_falls_back_to_the_most_recent_window() {
+    let mut state = State::new(std::ptr::null_mut());
+    let older = aegis_model::window::WindowId(1);
+    let newer = aegis_model::window::WindowId(2);
+    let dialog = aegis_model::window::WindowId(3);
+    enroll_windows_on_current_workspace(&mut state, &[older, newer, dialog]);
+
+    let mut older_surface = mapped_toplevel_fixture(older, 0x100);
+    let mut newer_surface = mapped_toplevel_fixture(newer, 0x200);
+    let mut dialog_surface = mapped_toplevel_fixture(dialog, 0x300);
+    dialog_surface.state = &mut state;
+    // A dialog whose client never called xdg_toplevel.set_parent: there is
+    // no transient parent to return to.
+    state.keyboard_focus = dialog_surface.resource;
+    // Stacking doubles as focus MRU: the focused dialog was raised to the
+    // tail, so the window below it is the one the user worked in before.
+    state.surfaces = vec![
+        older_surface.as_mut(),
+        newer_surface.as_mut(),
+        dialog_surface.as_mut(),
+    ];
+
+    unsafe { defer_keyboard_focus_after_toplevel_unmap(dialog_surface.as_mut()) };
+
+    let entry = state
+        .pending_keyboard_focus
+        .get(&HUMAN_SEAT)
+        .expect("a restoration entry is deferred");
+    assert_eq!(
+        entry.target, newer_surface.resource,
+        "closing an unparented dialog returns focus to the most recently raised window"
+    );
+    assert_eq!(entry.restoring_from, dialog_surface.resource);
+}
+
+#[test]
+fn keyboard_focus_fallback_skips_minimized_hidden_and_agent_controlled_windows() {
+    let mut state = State::new(std::ptr::null_mut());
+    let older = aegis_model::window::WindowId(1);
+    let minimized = aegis_model::window::WindowId(2);
+    let hidden = aegis_model::window::WindowId(3);
+    let agent_mirror = aegis_model::window::WindowId(4);
+    enroll_windows_on_current_workspace(&mut state, &[older, minimized]);
+    // `hidden` is deliberately not placed on the current workspace.
+
+    // A visible physical mirror owned by an agent interaction domain: the
+    // human seat sees it but may not deliver input to it.
+    let agent = state
+        .authority
+        .create_agent_interaction_domain("agent", SeatCapabilities::POINTER_KEYBOARD);
+    let agent_client = state.authority.register_client(None);
+    let agent_group = state
+        .authority
+        .create_interaction_group(agent_client, &[agent_mirror], HUMAN_INTERACTION_DOMAIN)
+        .expect("agent group");
+    state
+        .authority
+        .transfer_control(
+            agent_group,
+            agent.interaction_domain,
+            TransferOptions {
+                retain_source_as_observer: true,
+            },
+        )
+        .expect("transfer to agent interaction domain");
+    let workspace = state
+        .workspaces
+        .current_workspace(state.output)
+        .expect("bootstrap workspace");
+    state.workspaces.place_toplevel(workspace, agent_mirror);
+
+    let mut older_surface = mapped_toplevel_fixture(older, 0x100);
+    let mut minimized_surface = mapped_toplevel_fixture(minimized, 0x200);
+    minimized_surface.window.minimized = true;
+    let mut hidden_surface = mapped_toplevel_fixture(hidden, 0x300);
+    let mut mirror_surface = mapped_toplevel_fixture(agent_mirror, 0x400);
+    // Scanning from the tail, every candidate above `older` must be rejected.
+    state.surfaces = vec![
+        older_surface.as_mut(),
+        minimized_surface.as_mut(),
+        hidden_surface.as_mut(),
+        mirror_surface.as_mut(),
+    ];
+
+    assert_eq!(
+        unsafe { keyboard_focus_fallback(&state, HUMAN_SEAT, std::ptr::null_mut()) },
+        older_surface.resource,
+        "the fallback returns the topmost window that is mapped, visible, not minimized, and seat-controlled"
+    );
+}
+
+#[test]
+fn toplevel_unmap_with_focus_on_its_own_popup_still_defers_a_restoration() {
+    let mut state = State::new(std::ptr::null_mut());
+    let owner = aegis_model::window::WindowId(1);
+    let other = aegis_model::window::WindowId(2);
+    enroll_windows_on_current_workspace(&mut state, &[owner, other]);
+
+    let mut owner_surface = mapped_toplevel_fixture(owner, 0x100);
+    owner_surface.state = &mut state;
+    let mut popup = Box::new(SurfaceRec::new(0x200usize as *mut ffi::wl_resource));
+    popup.mapped = true;
+    popup.xdg_popup = 0x201usize as *mut ffi::wl_resource;
+    popup.popup_parent = owner_surface.as_mut();
+    popup.popup_grabbed = true;
+    popup.popup_grab_seat = Some(HUMAN_SEAT);
+    let mut other_surface = mapped_toplevel_fixture(other, 0x300);
+
+    // The seat's focus rests on the toplevel's grabbed popup, not on the
+    // toplevel resource itself; the unmap must still notice.
+    state.keyboard_focus = popup.resource;
+    state.surfaces = vec![
+        owner_surface.as_mut(),
+        popup.as_mut(),
+        other_surface.as_mut(),
+    ];
+
+    unsafe { defer_keyboard_focus_after_toplevel_unmap(owner_surface.as_mut()) };
+
+    let entry = state
+        .pending_keyboard_focus
+        .get(&HUMAN_SEAT)
+        .expect("focus on a window's popup makes the seat affected when that window goes away");
+    assert_eq!(entry.target, other_surface.resource);
+    assert_eq!(entry.restoring_from, owner_surface.resource);
+}
+
+#[test]
+fn deferred_restoration_is_dropped_once_focus_moves_to_a_new_toplevel() {
+    let mut state = State::new(std::ptr::null_mut());
+    let mut owner = mapped_toplevel_fixture(aegis_model::window::WindowId(1), 0x100);
+    let mut popup = Box::new(SurfaceRec::new(0x200usize as *mut ffi::wl_resource));
+    popup.mapped = true;
+    popup.xdg_popup = 0x201usize as *mut ffi::wl_resource;
+    popup.popup_parent = owner.as_mut();
+    let mut fresh = mapped_toplevel_fixture(aegis_model::window::WindowId(2), 0x300);
+    state.surfaces = vec![owner.as_mut(), popup.as_mut(), fresh.as_mut()];
+
+    let owner_res = owner.resource;
+    let popup_res = popup.resource;
+    let fresh_res = fresh.resource;
+    let stale_res = 0x999usize as *mut ffi::wl_resource;
+    unsafe {
+        // Focus still on the dismissed popup: the restoration applies.
+        assert!(deferred_focus_restoration_applies(
+            &state, popup_res, popup_res, owner_res
+        ));
+        // Focus anywhere inside the target's own tree (a parent popup in a
+        // nested menu after the child was dismissed): applies.
+        assert!(deferred_focus_restoration_applies(
+            &state, popup_res, stale_res, owner_res
+        ));
+        // No current focus (the dismissed surface is already gone): applies.
+        assert!(deferred_focus_restoration_applies(
+            &state,
+            std::ptr::null_mut(),
+            popup_res,
+            owner_res
+        ));
+        // Unconditional entries (popup grabs) never consult current focus.
+        assert!(deferred_focus_restoration_applies(
+            &state,
+            fresh_res,
+            std::ptr::null_mut(),
+            owner_res
+        ));
+        // A dialog mapped in the same dispatch batch claimed focus: the
+        // stale restoration to the menu's owner must not steal it back.
+        assert!(!deferred_focus_restoration_applies(
+            &state, fresh_res, popup_res, owner_res
+        ));
+        // A null-target restoration (nothing to fall back to) must not clear
+        // focus the seat has since moved elsewhere.
+        assert!(!deferred_focus_restoration_applies(
+            &state,
+            fresh_res,
+            popup_res,
+            std::ptr::null_mut()
+        ));
+        // Focus on a toplevel that is itself being torn down does not block
+        // the restoration.
+        fresh.mapped = false;
+        assert!(deferred_focus_restoration_applies(
+            &state, fresh_res, popup_res, owner_res
+        ));
+    }
 }

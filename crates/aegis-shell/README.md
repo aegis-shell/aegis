@@ -9,10 +9,9 @@ as typed intents to the compositor loop.
 - Host pluggable `Chrome` components in a defined render order.
 - Own the shared chrome contract — `Chrome`, `ChromeCommand`, `ChromeUpdate`,
   `ChromeEvents`, and the `AppCatalog` snapshot — consumed by in-crate
-  components and by the
-  separate `aegis-dock`, `aegis-prism`, `aegis-agent-workspaces`, `aegis-hud`,
-  and `aegis-command-panel` component crates. Persistent settings live in the
-  standalone `aegis-settings` crate.
+  components and by the separate `aegis-dock`, `aegis-prism`, `aegis-hud`,
+  and `aegis-command-panel` component crates. Persistent settings modules
+  live in the `aegis-settings` library crate, hosted by the command panel.
 - Provide the shared live-preview card model, hit-testing, optical focus,
   brightness hierarchy, and foreground materials used by Dock previews and
   the window switcher.

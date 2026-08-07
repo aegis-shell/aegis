@@ -81,6 +81,34 @@ pub fn sao_muted(sao_theme: Theme, sao: &crate::tokens::Sao) -> Theme {
     sao_theme.with_fg(sao.text_muted)
 }
 
+/// The dark widget theme inside the command panel's VR/AR HUD surfaces
+/// (ADR-0080): near-white text, cyan accent, cyan slider fill. Built on the
+/// dark base so the widget defaults the tokens do not override (caret,
+/// selection, focus ring) sit on the right tonal side.
+#[must_use]
+pub fn hud(hud: &crate::tokens::Hud) -> Theme {
+    Theme::dark()
+        .with_bg(hud.surface)
+        .with_fg(hud.text)
+        .with_accent(hud.accent)
+        .with_border(hud.border)
+        .with_hover(hud.accent_soft)
+        .with_active(hud.accent_soft)
+        .with_corner_radius(8.0)
+        .with_border_width(0.0)
+        .with_slider_track_color(hud.track)
+        .with_slider_fill_color(hud.accent)
+        .with_slider_knob_color(hud.knob)
+        .with_scrollbar_width(5.0)
+        .with_scrollbar_radius(2.5)
+}
+
+/// Derive the subdued HUD caption theme without changing other tokens.
+#[must_use]
+pub fn hud_muted(hud_theme: Theme, hud: &crate::tokens::Hud) -> Theme {
+    hud_theme.with_fg(hud.text_muted)
+}
+
 #[cfg(test)]
 mod tests {
     use lens::Color;
@@ -121,5 +149,15 @@ mod tests {
         assert_eq!(theme.fg(), tokens.text);
         assert_eq!(theme.accent(), tokens.accent);
         assert_eq!(sao_muted(theme, &tokens).fg(), tokens.text_muted);
+    }
+
+    #[test]
+    fn hud_theme_is_dark_with_cyan_accent() {
+        let tokens = crate::tokens::Hud::classic();
+        let theme = hud(&tokens);
+        assert_eq!(theme.fg(), tokens.text);
+        assert_eq!(theme.accent(), tokens.accent);
+        assert_eq!(theme.hover(), tokens.accent_soft);
+        assert_eq!(hud_muted(theme, &tokens).fg(), tokens.text_muted);
     }
 }

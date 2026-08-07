@@ -50,10 +50,9 @@ backend, renderer, and shell behind clear seams so the
 | **Shell / interaction** | `aegis-shell` | Compositor chrome host and `Chrome` contract on lens, shared components, and the feature-gated `persona` profile/portrait domain |
 | | `aegis-design` | Product design tokens, themes, and data-only surface materials shared by chrome components |
 | | `aegis-dock` | Bottom-center dock chrome component: pinned and running apps, magnification, pin actions |
-| | `aegis-agent-workspaces` | Compositor-owned Agent Workspaces lifecycle and authority presentation |
-| | `aegis-settings` | Standalone modular System Settings application |
+| | `aegis-settings` | Settings module library: module contract, registry, and built-in pages hosted by the command panel |
 | | `aegis-hud` | Display-only HUD status chips: system status, workspace dots, clock, notification count, and the StatusNotifierItem tray row |
-| | `aegis-command-panel` | Full-screen modal command panel: quick settings, tray activation, and notification dismissal |
+| | `aegis-command-panel` | Full-screen modal command panel: quick settings, hosted settings modules, tray activation, and notification dismissal |
 | | `aegis-wallpaper` | Background layer: image, video, 3D, and multi-plane parallax wallpaper |
 | | `aegis-config` | Declarative configuration: versioned TOML schema, loader, live reload |
 | **Session services** | `aegis-lock` | Multi-output session-lock presentation and PAM authentication |
@@ -64,7 +63,6 @@ backend, renderer, and shell behind clear seams so the
 | | `aegis-ipc` | Native capability broker contract: versioned identity, scopes, leases, Interaction Domain authority, sealed capture transport, and introspection over a Unix socket |
 | | `aegis-commands` | Domain-oriented parser and IPC dispatcher behind native `aegis` management commands |
 | **AI integration** | `aegis-mcp` | Stateless MCP `2026-07-28` adapter over the native broker, with one subject-bound Agent Interaction Domain per connector instance (ADR-0090) |
-| | `aegis-agent` | Aegis agent runtime: providers, agent loop, tools, MCP client, sessions, skills, permissions (Persona: fuji) |
 
 | **Binary** | `aegis` | The binary: wires the parts together and runs the event loop |
 
@@ -113,7 +111,7 @@ performs D-Bus/toolkit work outside the compositor and rechecks target state
 immediately before dispatch. It binds AT-SPI applications to Wayland windows
 by equal kernel/D-Bus process identity plus an exact title; ordinary observers
 never receive process ids. Reasoning, planning, and long-term memory remain in
-`aegis-agent` or another out-of-process runtime.
+out-of-tree agent runtimes.
 
 Observation and action are separate capability families. A semantic Interaction Domain
 observation is bound to the Actor, authority revision, and complete target
@@ -133,21 +131,20 @@ user sees or can do" tasks:
 - **"Change the chrome / interactions"** (dock, launcher, HUD, panel) → `aegis-shell`
   for the host and contract; the HUD and command panel live in the
   `aegis-hud` and `aegis-command-panel` component crates. The command panel
-  owns live-system controls, Agent Workspaces has an independent
-  compositor-owned component, and persistent settings run as the standalone
-  `aegis-settings` application
-  ([ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md),
-  [ADR-0069](../adr/0069-documentation-owned-installation-and-throwaway-development-staging.md),
+  owns live-system controls, the display-only Agent Workspaces status row,
+  and the persistent settings pages hosted from the `aegis-settings`
+  module library
+  ([ADR-0114](../adr/0114-panel-hosted-settings-and-hud-command-panel.md),
+  [ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md),
   [ADR-0045](../adr/0045-statusbar-crate-and-sni-tray.md)).
 - **"Add an external control path"** (CLI or scripts) → `aegis-ipc` +
   native `aegis` resource commands; agents consume that same IPC through the
   `aegis-mcp` bridge
   without entering the compositor process
   ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md),
-  [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md),
   [ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md)). The
-  compositor-owned Agent Workspaces surface reports generic Interaction Domain authority;
-  it does not infer fuji process state
+  command panel's Agent Workspaces status row reports generic Interaction Domain
+  authority; it does not infer any external agent's process state
   ([ADR-0074](../adr/0074-generic-agent-workspaces-status-surface.md)).
 - **"Start or discover apps"** → `aegis-desktop-entries` (discovery) + `aegis-launcher`
   (spawn). `aegis-launcher` is intentionally narrow: process detachment and
@@ -159,12 +156,13 @@ user sees or can do" tasks:
 
 ## Settings Boundary
 
-Persistent settings use the same state-in, intent-out direction as the rest
-of the compositor without placing their presentation inside its process. The
-System Settings reads a coherent settings snapshot over the scoped IPC and
-returns typed edits with the revision it observed. The compositor remains the
-authority that validates, persists, applies, journals, and publishes the next
-revision.
+Persistent settings follow the same state-in, intent-out direction as the
+rest of the compositor. The command panel hosts the settings pages
+in-process: each module reads a coherent revisioned snapshot pushed through
+the chrome update channel and returns typed edits with the revision it
+observed, and the main loop commits them through the same path that serves
+the settings IPC. The compositor remains the authority that validates,
+persists, applies, journals, and publishes the next revision.
 
 A module owns one visible settings domain and its draft editor state. It does
 not own the configuration file or the host service. This distinction keeps
@@ -172,17 +170,20 @@ the module catalog broad without pretending all settings belong to the
 compositor: account modules use system account and authorization services.
 The power module persists Aegis inactivity policy, while the supervised
 policy client coordinates the host's backlight and logind services.
-Compositor-owned display/input policy uses the Aegis settings IPC.
+Compositor-owned display/input policy uses the same commit path whether the
+edit arrives from the panel or from an external IPC client.
 
 Volume, brightness, radios, Do Not Disturb, and current-workspace layout are
 immediate service or session controls rather than persistent settings. The
-command panel presents them, external clients use the live-system IPC, and
-both paths converge on one runtime handler. Interaction Domain lifecycle is authority
-management rather than configuration and retains the independent AI
-Workspaces surface. The standalone System Settings app remains the canonical
+command panel presents them on its System tab, external clients use the
+live-system IPC, and both paths converge on one runtime handler. Interaction
+Domain lifecycle is authority management rather than configuration and is
+managed through the `aegis interaction-domain *` CLI and the
+`interaction_domain_*` MCP tools. The command panel is the canonical
 persistent-settings UI. See
-[ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md) and
-the [System Settings Reference](../reference/settings.md).
+[ADR-0114](../adr/0114-panel-hosted-settings-and-hud-command-panel.md),
+[ADR-0060](../adr/0060-statusbar-system-controls-and-live-system-ipc.md), and
+the [Settings Reference](../reference/settings.md).
 
 ## Session Lock and Inactivity
 

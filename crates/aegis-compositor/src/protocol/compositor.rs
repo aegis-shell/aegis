@@ -399,18 +399,100 @@ pub(crate) unsafe fn transient_parent_keyboard_focus(
     }
 }
 
+/// Focus target when a focused window (or its popup) disappears without a
+/// transient parent to return to: the topmost mapped, visible, non-minimized
+/// toplevel the seat controls. The stacking Vec doubles as the focus MRU
+/// because every focus change raises the focused window's tree, so scanning
+/// from the tail finds the window that held focus before. This keeps typing
+/// continuity instead of leaving the seat unfocused.
+pub(crate) unsafe fn keyboard_focus_fallback(
+    state: &State,
+    seat: SeatId,
+    exclude: *mut ffi::wl_resource,
+) -> *mut ffi::wl_resource {
+    let visible = state.workspaces.visible_toplevels();
+    for ptr in state.surfaces.iter().rev() {
+        if ptr.is_null() {
+            continue;
+        }
+        let rec = *ptr;
+        unsafe {
+            if (*rec).resource == exclude
+                || !(*rec).mapped
+                || (*rec).xdg_toplevel.is_null()
+                || (*rec).window.minimized
+            {
+                continue;
+            }
+            let id = (*rec).window.id;
+            if !visible.contains(&id) || !state.authority.seat_controls_window(seat, id) {
+                continue;
+            }
+            return (*rec).resource;
+        }
+    }
+    std::ptr::null_mut()
+}
+
+/// SurfaceRec backing a wl_surface resource, resolved by walking the live
+/// surface list instead of `wl_resource_get_user_data`, so state-level unit
+/// tests can use synthetic resource pointers. Null for stale resources.
+pub(crate) unsafe fn surface_rec_for_resource(
+    state: &State,
+    resource: *mut ffi::wl_resource,
+) -> *mut SurfaceRec {
+    if resource.is_null() {
+        return std::ptr::null_mut();
+    }
+    state
+        .live_surfaces()
+        .find(|p| unsafe { (**p).resource == resource })
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Whether a deferred focus restoration still applies when `dispatch` drains
+/// it. Restoration must not steal focus once the seat has moved to a
+/// different mapped toplevel — a dialog mapped in the same dispatch batch, or
+/// the user explicitly switching windows while the popup was open. Focus on
+/// the dismissed surface itself, no focus, or focus anywhere inside the
+/// target's own surface tree (a parent popup in a nested menu) all still
+/// apply.
+pub(crate) unsafe fn deferred_focus_restoration_applies(
+    state: &State,
+    current: *mut ffi::wl_resource,
+    restoring_from: *mut ffi::wl_resource,
+    target: *mut ffi::wl_resource,
+) -> bool {
+    if restoring_from.is_null() || current.is_null() || current == restoring_from {
+        return true;
+    }
+    unsafe {
+        let current_root = surface_root_toplevel(surface_rec_for_resource(state, current));
+        if current_root.is_null()
+            || !(*current_root).mapped
+            || (*current_root).xdg_toplevel.is_null()
+        {
+            return true;
+        }
+        let target_root = surface_root_toplevel(surface_rec_for_resource(state, target));
+        current_root == target_root
+    }
+}
+
 /// Defer the focus transition required when a toplevel unmaps or loses its
-/// role. Only seats currently focused on that surface are affected. A
-/// transient returns to its nearest mapped parent; an ordinary toplevel leaves
-/// the seat unfocused.
+/// role. Only seats whose focus rests on that surface's tree (or that already
+/// have a pending transition onto it) are affected. A transient returns to
+/// its nearest mapped parent; otherwise focus falls back to the most recently
+/// raised window the seat controls, so closing a window never strands the
+/// seat without focus while another candidate remains.
 pub(crate) unsafe fn defer_keyboard_focus_after_toplevel_unmap(surface: *mut SurfaceRec) {
     unsafe {
         if surface.is_null() || (*surface).state.is_null() {
             return;
         }
-        let target = transient_parent_keyboard_focus(surface);
         let state = &mut *(*surface).state;
         let resource = (*surface).resource;
+        let transient_parent = transient_parent_keyboard_focus(surface);
         if state
             .pending_activation
             .is_some_and(|(_, pending)| pending == resource)
@@ -421,16 +503,29 @@ pub(crate) unsafe fn defer_keyboard_focus_after_toplevel_unmap(surface: *mut Sur
             .seats
             .iter()
             .filter_map(|(seat, runtime)| {
-                (runtime.keyboard_focus == resource
+                let focused_root =
+                    surface_root_toplevel(surface_rec_for_resource(state, runtime.keyboard_focus));
+                (!focused_root.is_null() && focused_root == surface
                     || state
                         .pending_keyboard_focus
                         .get(seat)
-                        .is_some_and(|pending| *pending == resource))
+                        .is_some_and(|pending| pending.target == resource))
                 .then_some(*seat)
             })
             .collect::<Vec<_>>();
         for seat in affected_seats {
-            state.pending_keyboard_focus.insert(seat, target);
+            let target = if transient_parent.is_null() {
+                keyboard_focus_fallback(state, seat, resource)
+            } else {
+                transient_parent
+            };
+            state.pending_keyboard_focus.insert(
+                seat,
+                DeferredKeyboardFocus {
+                    target,
+                    restoring_from: resource,
+                },
+            );
         }
     }
 }
@@ -958,13 +1053,21 @@ pub(crate) unsafe extern "C" fn surface_commit(
             defer_keyboard_focus_after_toplevel_unmap(rec);
         }
         if !(*rec).mapped && was_mapped && !(*rec).xdg_popup.is_null() && (*rec).popup_grabbed {
-            let focus_after_dismissal = popup_keyboard_focus_after_dismissal(rec);
+            let mut focus_after_dismissal = popup_keyboard_focus_after_dismissal(rec);
             if let Some(seat) = (*rec).popup_grab_seat.take()
                 && !(*rec).state.is_null()
             {
-                (*(*rec).state)
-                    .pending_keyboard_focus
-                    .insert(seat, focus_after_dismissal);
+                if focus_after_dismissal.is_null() {
+                    focus_after_dismissal =
+                        keyboard_focus_fallback(&*(*rec).state, seat, (*rec).resource);
+                }
+                (*(*rec).state).pending_keyboard_focus.insert(
+                    seat,
+                    DeferredKeyboardFocus {
+                        target: focus_after_dismissal,
+                        restoring_from: (*rec).resource,
+                    },
+                );
             }
             (*rec).popup_grabbed = false;
         }
@@ -978,9 +1081,13 @@ pub(crate) unsafe extern "C" fn surface_commit(
             // The xdg-shell grab contract requires the topmost grabbing popup
             // to hold keyboard focus. Defer out of this libwayland callback so
             // no second mutable `Server` aliases `State`.
-            (*(*rec).state)
-                .pending_keyboard_focus
-                .insert(seat, (*rec).resource);
+            (*(*rec).state).pending_keyboard_focus.insert(
+                seat,
+                DeferredKeyboardFocus {
+                    target: (*rec).resource,
+                    restoring_from: std::ptr::null_mut(),
+                },
+            );
         }
         if (*rec).mapped && !was_mapped && !(*rec).state.is_null() {
             let root = surface_root_toplevel(rec);
@@ -1361,7 +1468,7 @@ unsafe extern "C" fn surface_resource_destroy(resource: *mut ffi::wl_resource) {
             revoke_session_lock_focus(state, resource);
             state
                 .pending_keyboard_focus
-                .retain(|_, pending| *pending != resource);
+                .retain(|_, pending| pending.target != resource);
             state.workspaces.remove_toplevel(id);
             // Notify foreign-toplevel listeners the window is gone.
             if !(*rec).xdg_toplevel.is_null() {

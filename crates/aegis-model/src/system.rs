@@ -25,6 +25,45 @@ pub struct BatteryStatus {
     pub charging: bool,
 }
 
+/// Per-threshold "already warned" latches for the low-battery alert.
+///
+/// The compositor runtime feeds every applied battery sample through
+/// [`BatteryWarningLatches::poll`]. A threshold fires once per discharge
+/// cycle and rearms only after the level recovers above it; charging clears
+/// every latch, so the next discharge warns again.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BatteryWarningLatches {
+    fired: Vec<u8>,
+}
+
+impl BatteryWarningLatches {
+    /// Evaluate one battery sample against the configured warning thresholds
+    /// (1..=99, strictly descending — see
+    /// [`crate::settings::BatterySettings`]; an empty slice disables the
+    /// feature). Returns the threshold to alert on, if any.
+    pub fn poll(&mut self, percent: u8, charging: bool, thresholds: &[u8]) -> Option<u8> {
+        if charging {
+            self.fired.clear();
+            return None;
+        }
+        // A threshold whose level recovered above it can fire again.
+        self.fired.retain(|latched| percent <= *latched);
+        let crossed: Vec<u8> = thresholds
+            .iter()
+            .copied()
+            .filter(|threshold| percent <= *threshold && !self.fired.contains(threshold))
+            .collect();
+        if crossed.is_empty() {
+            return None;
+        }
+        // One alert even when a fast drop crosses several thresholds at
+        // once; the lowest is the most severe.
+        let lowest = crossed.iter().min().copied();
+        self.fired.extend(crossed);
+        lowest
+    }
+}
+
 /// One coherent observation of live host and compositor-owned session state.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -180,5 +219,65 @@ mod tests {
                 .validate()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn a_threshold_fires_once_per_discharge_cycle() {
+        let mut latches = BatteryWarningLatches::default();
+        let thresholds = [20, 5];
+        assert_eq!(latches.poll(21, false, &thresholds), None);
+        assert_eq!(latches.poll(20, false, &thresholds), Some(20));
+        assert_eq!(latches.poll(20, false, &thresholds), None);
+        assert_eq!(latches.poll(19, false, &thresholds), None);
+    }
+
+    #[test]
+    fn one_alert_covers_a_fast_drop_across_several_thresholds() {
+        let mut latches = BatteryWarningLatches::default();
+        let thresholds = [20, 5];
+        assert_eq!(latches.poll(4, false, &thresholds), Some(5));
+        // Both crossed thresholds latched: neither refires afterwards.
+        assert_eq!(latches.poll(3, false, &thresholds), None);
+        assert_eq!(latches.poll(1, false, &thresholds), None);
+    }
+
+    #[test]
+    fn charging_clears_the_latches_for_the_next_cycle() {
+        let mut latches = BatteryWarningLatches::default();
+        let thresholds = [20, 5];
+        assert_eq!(latches.poll(19, false, &thresholds), Some(20));
+        assert_eq!(latches.poll(30, true, &thresholds), None);
+        assert_eq!(latches.poll(19, false, &thresholds), Some(20));
+    }
+
+    #[test]
+    fn recovery_rearms_only_the_recovered_thresholds() {
+        let mut latches = BatteryWarningLatches::default();
+        let thresholds = [20, 5];
+        assert_eq!(latches.poll(4, false, &thresholds), Some(5));
+        // Recovering to 10% rearms only the 5% threshold: the 20% one stays
+        // latched until the level climbs back above 20%.
+        assert_eq!(latches.poll(10, false, &thresholds), None);
+        assert_eq!(latches.poll(15, false, &thresholds), None);
+        assert_eq!(latches.poll(4, false, &thresholds), Some(5));
+        assert_eq!(latches.poll(25, false, &thresholds), None);
+        assert_eq!(latches.poll(19, false, &thresholds), Some(20));
+    }
+
+    #[test]
+    fn no_alert_while_charging_even_below_every_threshold() {
+        let mut latches = BatteryWarningLatches::default();
+        let thresholds = [20, 5];
+        assert_eq!(latches.poll(3, true, &thresholds), None);
+        // The charging sample cleared nothing and latched nothing: the next
+        // discharge sample alerts normally.
+        assert_eq!(latches.poll(3, false, &thresholds), Some(5));
+    }
+
+    #[test]
+    fn empty_thresholds_disable_the_feature() {
+        let mut latches = BatteryWarningLatches::default();
+        assert_eq!(latches.poll(3, false, &[]), None);
+        assert_eq!(latches.poll(1, false, &[]), None);
     }
 }

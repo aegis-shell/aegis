@@ -1,7 +1,8 @@
-//! Module contract and built-in pages for the standalone System Settings app.
+//! Module contract and built-in pages for System Settings.
 //!
-//! Settings pages own presentation and draft state. The application host owns
-//! navigation and routes typed intents to the authoritative service.
+//! Settings pages own presentation and draft state. The host (the command
+//! panel) owns navigation and routes typed intents to the authoritative
+//! service.
 
 pub mod module;
 

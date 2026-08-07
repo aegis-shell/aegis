@@ -149,7 +149,8 @@ gdbus call --session \
 ```
 
 The default returns `uint32 0`; a configured dark preference returns
-`uint32 1`. Change the color scheme in System Settings and repeat the call to
+`uint32 1`. Change the color scheme on the command panel's **Appearance** tab
+(`Super+S`) and repeat the call to
 verify the frontend, backend, and compositor IPC chain together.
 
 ## Verify an Interactive Request

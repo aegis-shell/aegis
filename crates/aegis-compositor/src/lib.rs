@@ -1124,6 +1124,23 @@ impl WorkspaceSlide {
     }
 }
 
+/// A deferred per-seat keyboard-focus transition requested from inside a
+/// protocol callback. Callbacks cannot construct a second mutable `Server`,
+/// so `Server::dispatch` applies the newest entry for each seat after they
+/// return.
+///
+/// `restoring_from` distinguishes restoration entries — focus returning after
+/// a dismissed popup or a closed/minimized toplevel — from grabs and explicit
+/// focus requests (null). A restoration is dropped at apply time when the
+/// seat's focus has meanwhile moved to a different mapped toplevel, such as a
+/// dialog mapped in the same dispatch batch or an explicit window switch, so
+/// it never steals focus from a newer window.
+#[derive(Clone, Copy)]
+pub(crate) struct DeferredKeyboardFocus {
+    pub target: *mut ffi::wl_resource,
+    pub restoring_from: *mut ffi::wl_resource,
+}
+
 /// Server-wide state. Its address is handed to the C bind callbacks, so it is
 /// boxed and never moved out.
 pub(crate) struct State {
@@ -1232,12 +1249,11 @@ pub(crate) struct State {
     xdg_foreign_imports: Vec<*mut ffi::wl_resource>,
     activation_tokens: std::collections::HashMap<String, SeatId>,
     pending_activation: Option<(SeatId, *mut ffi::wl_resource)>,
-    /// Keyboard-focus transitions requested from protocol callbacks. Callbacks
-    /// cannot construct a second mutable `Server`, so dispatch applies the
-    /// newest target for each seat after they return. This covers both popup
-    /// grabs and focus returning from a closed transient toplevel to its
-    /// parent.
-    pending_keyboard_focus: std::collections::BTreeMap<SeatId, *mut ffi::wl_resource>,
+    /// Keyboard-focus transitions requested from protocol callbacks, applied
+    /// by `dispatch` after the callbacks return. This covers popup grabs and
+    /// focus returning from a dismissed popup or closed toplevel; see
+    /// [`DeferredKeyboardFocus`] for the restoration semantics.
+    pending_keyboard_focus: std::collections::BTreeMap<SeatId, DeferredKeyboardFocus>,
     /// Active ext-session-lock object and fail-closed visibility phase.
     ///
     /// The object pointer may be null in `Locked` after its client dies. A

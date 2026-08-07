@@ -250,34 +250,6 @@ pub(super) fn interaction_domain_intent_to_action(
     intent: aegis_shell::InteractionDomainIntent,
 ) -> aegis_ipc::InteractionDomainAction {
     match intent {
-        aegis_shell::InteractionDomainIntent::Create { label } => {
-            aegis_ipc::InteractionDomainAction::Create {
-                label,
-                capabilities: aegis_model::interaction_domain::SeatCapabilities::POINTER_KEYBOARD,
-                output: Some(aegis_model::interaction_domain::VirtualOutput::DEFAULT_AGENT),
-            }
-        }
-        aegis_shell::InteractionDomainIntent::SetState {
-            interaction_domain,
-            state,
-            expected_revision,
-        } => aegis_ipc::InteractionDomainAction::Transact {
-            expected_revision: Some(expected_revision),
-            mutations: vec![
-                aegis_model::interaction_domain::InteractionDomainMutation::SetState {
-                    interaction_domain,
-                    state,
-                },
-            ],
-        },
-        aegis_shell::InteractionDomainIntent::Revoke {
-            interaction_domain,
-            expected_revision,
-        } => aegis_ipc::InteractionDomainAction::Revoke {
-            interaction_domain,
-            fallback: aegis_model::interaction_domain::HUMAN_INTERACTION_DOMAIN,
-            expected_revision: Some(expected_revision),
-        },
         aegis_shell::InteractionDomainIntent::TransferWindow {
             window,
             target,

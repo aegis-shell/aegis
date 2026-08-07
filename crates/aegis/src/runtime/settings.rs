@@ -59,6 +59,7 @@ pub(super) fn publish_settings_parts(
         idle: config.map(|config| config.idle).unwrap_or_default(),
     };
     live.set_settings(snapshot.clone());
+    shell.set_settings(snapshot.clone());
     publish_system_status_parts(status, shell, live, ipc);
     if let Some(ipc) = ipc {
         ipc.broadcast(aegis_ipc::Event::SettingsChanged {

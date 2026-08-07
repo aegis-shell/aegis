@@ -31,8 +31,8 @@ aegis is a Wayland compositor for Linux, written in Rust on
 - Looking up compositor versus direct scanout behavior, KMS plane roles, or
   rejection diagnostics: read the
   [Rendering and KMS Plane Reference](reference/rendering.md).
-- Looking for System Settings module routes and backend availability: read the
-  [System Settings Reference](reference/settings.md).
+- Looking for settings module routes and backend availability: read the
+  [Settings Reference](reference/settings.md).
 - Starting applications or using app-level window actions: read
   [How to Use the Dock, Launcher, and Prism](how-to/dock-and-launcher.md).
 - Managing a borderless window: read
@@ -41,8 +41,8 @@ aegis is a Wayland compositor for Linux, written in Rust on
   [How to Install and Verify the Lock Screen](how-to/lock-screen.md).
 - Isolating agent input and applications: read
   [How to Use Agent Workspaces](how-to/ai-workspaces.md).
-- Connecting the agent CLI to scoped desktop and Interaction Domain tools: read
-  [Connect aegis-agent to Aegis](how-to/agent.md).
+- Connecting an MCP agent to scoped desktop and Interaction Domain tools:
+  read [How to Connect an MCP Agent to Aegis](how-to/agent.md).
 - Booting from a TTY and smoke-testing real hardware: read
   [How to Run aegis on Bare Metal (DRM/KMS)](how-to/bare-metal-drm.md).
 - Enabling portal-aware and Flatpak apps through the independently installed

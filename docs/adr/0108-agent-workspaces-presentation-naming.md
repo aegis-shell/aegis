@@ -1,6 +1,6 @@
 # ADR-0108: Agent Workspaces presentation naming
 
-- Status: Accepted
+- Status: Superseded by [ADR-0113](0113-platform-ai-backend-and-agent-product-removal.md)
 - Date: 2026-08-04
 
 ## Context

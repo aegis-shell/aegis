@@ -41,7 +41,7 @@ pub(super) fn effective_icon_scale(output_scale: Option<f32>, backend_scale: f32
     scale.ceil().max(1.0) as u32
 }
 
-/// Enumerate XDG applications and append compositor-owned virtual entries.
+/// Enumerate XDG applications.
 ///
 /// First-party external applications use the same installed metadata path as
 /// every other client. Development tooling stages that layout under `target/`
@@ -50,22 +50,7 @@ pub(super) fn application_catalog(
     icon_theme: &str,
     icon_scale: u32,
 ) -> Vec<aegis_model::app::Entry> {
-    let applications =
-        aegis_desktop_entries::enumerate_with_theme_and_scale(icon_theme, icon_scale.max(1));
-    #[cfg(feature = "chrome-agent-workspaces")]
-    {
-        let mut applications = applications;
-        let i18n = aegis_shell::Localizer::from_env();
-        applications.push(aegis_model::app::Entry::agent_workspaces(
-            i18n.text(aegis_shell::Message::AgentWorkspaces),
-            i18n.text(aegis_shell::Message::AgentWorkspacesDescription),
-        ));
-        applications
-    }
-    #[cfg(not(feature = "chrome-agent-workspaces"))]
-    {
-        applications
-    }
+    aegis_desktop_entries::enumerate_with_theme_and_scale(icon_theme, icon_scale.max(1))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,13 +311,7 @@ pub(super) fn decode_icons(
         for chunk in bgra.chunks_exact_mut(4) {
             chunk.swap(0, 2);
         }
-        let mut keys = vec![format!("aegis-hud:{name}")];
-        if name == "preferences-system-symbolic" {
-            // Stable keys for the external System Settings fallback and the
-            // compositor-owned Agent Workspaces surface.
-            keys.push("aegis-settings".into());
-            keys.push(aegis_model::app::AGENT_WORKSPACES_ID.into());
-        }
+        let keys = vec![format!("aegis-hud:{name}")];
         decoded.push(DecodedIcon {
             keys,
             width: w,
@@ -464,31 +443,6 @@ mod tests {
             false,
         );
         assert_eq!(resolved, apps);
-    }
-
-    #[test]
-    fn legacy_ai_workspaces_pin_is_not_an_agent_workspaces_alias() {
-        let apps = vec![aegis_model::app::Entry::agent_workspaces(
-            "Agent Workspaces",
-            "Manage isolated Agent interaction",
-        )];
-        let legacy = vec!["aegis-ai-workspaces".to_owned()];
-        assert!(
-            resolve_pinned(&apps, &std::collections::HashMap::new(), &legacy, false).is_empty()
-        );
-    }
-
-    #[test]
-    fn legacy_interaction_manager_pin_resolves_to_agent_workspaces() {
-        let apps = vec![aegis_model::app::Entry::agent_workspaces(
-            "Agent Workspaces",
-            "Manage isolated Agent interaction",
-        )];
-        let legacy = vec!["aegis-interaction-manager".to_owned()];
-        assert_eq!(
-            resolve_pinned(&apps, &std::collections::HashMap::new(), &legacy, false),
-            apps
-        );
     }
 
     #[test]

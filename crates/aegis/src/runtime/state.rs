@@ -196,6 +196,9 @@ pub(super) struct CompositorRuntime {
     pub(super) pending_confirm_pick: Option<PendingConfirmPick>,
     pub(super) capability_pick_rx: std::sync::mpsc::Receiver<CapabilityPickControlRequest>,
     pub(super) pending_capability_pick: Option<PendingCapabilityPick>,
+    /// Once-per-discharge-cycle memory of the low-battery warnings already
+    /// shown (`battery.rs`).
+    pub(super) battery_latches: aegis_model::system::BatteryWarningLatches,
     /// IPC connections currently holding a surfaceless idle inhibitor.
     pub(super) ipc_idle_inhibits: IdleInhibits,
     pub(super) journal: std::sync::Arc<std::sync::Mutex<aegis_ipc::Journal>>,

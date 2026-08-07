@@ -14,7 +14,12 @@ through material factories instead of hard-coding values.
 | Floating control layer | Liquid Glass (analytic SDF) | Dock bar, HUD chips, and any persistent or modal body that floats above client content |
 | Transient panels | Frosted popover | Menus, popovers, and small panels that need a readable body over arbitrary content without lensing |
 | Content cards | Card fill | Settings and system-management cards inside a panel; content layer, never floating chrome |
-| Light island | SAO panel | The command panel's frosted white surfaces — header band, icon rail, and content panel: deliberate light islands inside the dark appearance |
+| HUD panel | Dark glass | The command panel's dark translucent surfaces — header band, main panel, and side column: the VR/AR personal-info-HUD language with the cyan accent and corner brackets |
+
+The frosted-white SAO panel material and its `Sao` tokens remain in
+`aegis-design` for other consumers, but no chrome surface currently
+selects them; the command panel moved to the HUD panel material
+([ADR-0114](../../adr/0114-panel-hosted-settings-and-hud-command-panel.md)).
 
 Do not improvise new materials per component. If none of the rows fits,
 extend `aegis-design` with a semantic factory and document it here.
@@ -35,8 +40,11 @@ extend `aegis-design` with a semantic factory and document it here.
 | `preview.inactive_content_brightness` | 0.74 | Opaque brightness for nonfocused preview siblings |
 | `preview.focused` | scale 1.0, lift 0 px | Stationary focus inside an anchored preview panel |
 | `preview.staged` | scale 1.06, lift 7 px | Restrained foreground staging in the window switcher |
-| `sao.surface` | rgb(248, 249, 252), alpha 226 | Command panel surfaces |
-| `sao.border` | SAO palette | Command panel edge |
+| `sao.surface` | rgb(248, 249, 252), alpha 226 | Retained SAO palette; no current chrome consumer |
+| `sao.border` | SAO palette | Retained SAO palette; no current chrome consumer |
+| `hud.surface` | rgb(10, 16, 28), alpha 222 | Command panel dark-glass surfaces |
+| `hud.border` | rgb(96, 205, 255), alpha 52 | Command panel cyan hairline edge |
+| `hud.accent` | rgb(96, 205, 255) | Command panel accent: active tabs, corner brackets, slider and gauge fills |
 
 ## Liquid Glass roles
 

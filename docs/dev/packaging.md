@@ -109,14 +109,10 @@ inside the package build root.
 | `target/release/aegis-idle` | `/usr/bin/aegis-idle` | core |
 | `target/release/aegis-atspi` | `/usr/bin/aegis-atspi` | core |
 | `target/release/aegis-lock` | `/usr/bin/aegis-lock` | core |
-| `target/release/aegis-settings` | `/usr/bin/aegis-settings` | core |
 | Portal: Meson portal executable | `/usr/libexec/xdg-desktop-portal-aegis` by default | portal |
 | Portal: Meson FileChooser executable | `/usr/libexec/aegis-portal-prompter` by default | portal |
 | `target/release/aegis-mcp` | `/usr/bin/aegis-mcp` | agent integration |
-| `target/release/aegis-agent` | `/usr/bin/aegis-agent` | agent integration |
 | `contrib/systemd/user/aegis.service` | `/usr/lib/systemd/user/aegis.service` | core |
-| `contrib/io.github.ming2k.aegis.Settings.desktop` | `/usr/share/applications/io.github.ming2k.aegis.Settings.desktop` | core |
-| `contrib/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg` | `/usr/share/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg` | core |
 | `contrib/pam/aegis-lock` | `/etc/pam.d/aegis-lock` | core |
 | Portal: generated D-Bus service | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.aegis.service` | portal |
 | Portal: optional Meson PAM artifact | `/usr/lib/security/pam_aegis.so` by default | portal |
@@ -155,12 +151,8 @@ install -Dm0755 target/release/aegis-atspi \
   "$package_root/usr/bin/aegis-atspi"
 install -Dm0755 target/release/aegis-lock \
   "$package_root/usr/bin/aegis-lock"
-install -Dm0755 target/release/aegis-settings \
-  "$package_root/usr/bin/aegis-settings"
 install -Dm0755 target/release/aegis-mcp \
   "$package_root/usr/bin/aegis-mcp"
-install -Dm0755 target/release/aegis-agent \
-  "$package_root/usr/bin/aegis-agent"
 ```
 
 Stage the portal executable and all portal-owned data files from the separate
@@ -226,8 +218,6 @@ Test the completed packages in a clean environment rather than running out of
 
 ```bash
 systemd-analyze --user verify aegis.service
-desktop-file-validate \
-  /usr/share/applications/io.github.ming2k.aegis.Settings.desktop
 pkg-config --modversion flux flux-scene-graph lens iris
 test -x /usr/bin/aegis-idle
 test -x /usr/bin/aegis-atspi
@@ -237,7 +227,7 @@ systemctl --user daemon-reload
 systemctl --user start aegis.service
 ```
 
-Confirm that System Settings appears with its icon, the Power Management page
+Confirm that the command panel's Power Management tab
 persists an idle policy, `Super+L` authenticates through the installed PAM
 stack, `xdg-desktop-portal-aegis` activates through D-Bus, the preferred portal
 configuration is selected for an Aegis session, and `aegis window` reaches
@@ -266,7 +256,7 @@ with the compatible release versions being packaged.
 | Package | Provides | Built by |
 |---------|----------|----------|
 | `optics` | `libflux.so`, `libflux-scene-graph.so`, `liblens.so`, `libiris.so`, headers, `flux.pc` … `iris.pc` | Meson/Ninja from the `ming2k/optics` `v<OPTICS_VERSION>` tag |
-| `aegis` | Compositor, System Settings, CLI and agent integration binaries, systemd user unit, desktop entry, icon, and cursor license disclosure | Cargo from the `ming2k/aegis` `v<AEGIS_VERSION>` tag |
+| `aegis` | Compositor, CLI and agent integration binaries, systemd user unit, and cursor license disclosure | Cargo from the `ming2k/aegis` `v<AEGIS_VERSION>` tag |
 | `xdg-desktop-portal-aegis` | Private portal backend plus its D-Bus activation, `.portal`, backend-selection files, and PAM helper | Cargo from the `aegis-shell/xdg-desktop-portal-aegis` `v<PORTAL_VERSION>` tag |
 
 Each repository's CI validates its own dependency surface; the
@@ -332,7 +322,7 @@ package() {
   # Project code is MIT; the embedded Bibata cursor is GPL-3.0-only.
   license=(MIT GPL-3.0-only)
   depends=(optics vulkan-icd-loader wayland libxkbcommon libinput seatd
-           systemd-libs dbus pam brightnessctl hicolor-icon-theme)
+           systemd-libs dbus pam brightnessctl)
   optdepends=(
     "xdg-desktop-portal-aegis=$_portalver: screenshots and screen sharing through xdg-desktop-portal"
     'vulkan-mesa-layers: validation and layers for development'
@@ -345,17 +335,10 @@ package() {
   install -Dm0755 target/release/aegis-idle     "$dest/bin/aegis-idle"
   install -Dm0755 target/release/aegis-atspi    "$dest/bin/aegis-atspi"
   install -Dm0755 target/release/aegis-lock     "$dest/bin/aegis-lock"
-  install -Dm0755 target/release/aegis-settings "$dest/bin/aegis-settings"
   install -Dm0755 target/release/aegis-mcp "$dest/bin/aegis-mcp"
-  install -Dm0755 target/release/aegis-agent    "$dest/bin/aegis-agent"
 
   install -Dm0644 contrib/systemd/user/aegis.service \
     "$pkgdir/usr/lib/systemd/user/aegis.service"
-  install -Dm0644 contrib/io.github.ming2k.aegis.Settings.desktop \
-    "$dest/share/applications/io.github.ming2k.aegis.Settings.desktop"
-  install -Dm0644 \
-    contrib/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg \
-    "$dest/share/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg"
   install -Dm0644 contrib/pam/aegis-lock \
     "$pkgdir/etc/pam.d/aegis-lock"
 

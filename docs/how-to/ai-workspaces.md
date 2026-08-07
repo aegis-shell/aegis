@@ -3,26 +3,23 @@
 Agent Workspaces isolate an agent's pointer, keyboard, focus, rendering, and
 application process tree from the physical desktop.
 
-“Agent Workspace” is the product term shown in the UI. Each workspace is
-backed by an `InteractionDomain`, the compositor's security and routing
-primitive; it is not a normal desktop workspace.
+“Agent Workspace” is the user-facing term for an Agent Interaction Domain,
+shown as a status label in the command panel. Each workspace is backed by an
+`InteractionDomain`, the compositor's security and routing primitive; it is
+not a normal desktop workspace. Lifecycle management uses the
+`aegis interaction-domain *` CLI or the `interaction_domain_*` MCP tools.
 
 ## Create a Workspace
-
-1. Open **Agent Workspaces** from the application launcher (`Super+A`).
-2. Select **Create Empty Workspace**.
-
-The workspace starts with an independent pointer/keyboard seat and a
-1920×1080 virtual output. Creating it does not start or connect an agent.
-Each application launched into it receives a private, mount-scoped Wayland
-portal.
-
-The command-line equivalent is:
 
 ```bash
 aegis interaction-domain create "Research"
 aegis interaction-domain list
 ```
+
+The workspace starts with an independent pointer/keyboard seat and a
+1920×1080 virtual output. Creating it does not start or connect an agent.
+Each application launched into it receives a private, mount-scoped Wayland
+portal.
 
 ## Transfer a Running Window
 
@@ -145,7 +142,7 @@ principal- and resource-filtered push lane is available.
 
 ## Pause or Revoke a Workspace
 
-Use **Pause** in Agent Workspaces, or run:
+Pause and resume with:
 
 ```bash
 aegis interaction-domain pause 2
@@ -156,7 +153,7 @@ Pausing disables the Interaction Domain seat and freezes every compositor-manage
 cgroup. Session lock and an inactive virtual terminal apply the same
 suspension automatically.
 
-Use **Revoke**, confirm the destructive action, or run:
+Revoke with:
 
 ```bash
 aegis interaction-domain revoke 2

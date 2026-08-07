@@ -1548,9 +1548,9 @@ impl CompositorRuntime {
                         Err(error) => {
                             log::warn!("Interaction Domain action from shell refused: {error}");
                             let notification = self.notif_queue.lock().unwrap().push(
-                                "Agent Workspace",
+                                "Interaction Domain",
                                 error.clone(),
-                                Some(aegis_model::app::AGENT_WORKSPACES_ID.into()),
+                                Some("aegis".into()),
                                 ts,
                             );
                             if let Some(ipc) = &self.ipc {
@@ -1624,6 +1624,75 @@ impl CompositorRuntime {
                         let _ = self.status_refresh_tx.send(());
                     }
                 }
+                // Persistent-settings mutations from compositor-owned settings
+                // UI: the same commit/journal path as IPC settings requests.
+                let settings_actions = self.shell.take_settings_actions();
+                for (expected_revision, action) in settings_actions {
+                    let appearance_changed = matches!(
+                        &action,
+                        aegis_ipc::SettingsAction::SetDesktopPreferences { .. }
+                    );
+                    let before_revision = self.settings_revision;
+                    let result = if self.server.session_locked() {
+                        Err("session is locked".into())
+                    } else {
+                        // Disjoint-field form: a Flux frame borrows
+                        // `self.surface` across this whole section.
+                        settings::commit_settings_parts(
+                            expected_revision,
+                            action.clone(),
+                            &mut self.settings_revision,
+                            self.config_path.as_deref(),
+                            &self.config_writer,
+                            &mut self.config,
+                            &mut self.keymap,
+                            &mut self.gesture_map,
+                            &mut self.server,
+                            &mut self.shell,
+                            &mut self.cursor_cache,
+                            &mut self.host,
+                            &mut self.reload,
+                            &mut self.idle_process,
+                            &self.live,
+                            &mut self.system_status,
+                            &mut self.input_acc,
+                            &self.ipc,
+                        )
+                    };
+                    if result.is_ok() {
+                        // A committed settings action may redraw status chrome
+                        // outside the signed server-state paths.
+                        self.damage.chrome_dirty = true;
+                        if appearance_changed {
+                            queue_app_scan_parts(
+                                &self.server,
+                                &self.host,
+                                self.config.as_ref(),
+                                &self.scan_req_tx,
+                                &mut self.next_app_scan,
+                            );
+                        }
+                    }
+                    let after_revision = self.settings_revision;
+                    let effect = match &result {
+                        Ok(_) => aegis_ipc::Effect::Applied,
+                        Err(reason) => aegis_ipc::Effect::Refused {
+                            reason: reason.clone(),
+                        },
+                    };
+                    journal_mutation_effect_and_broadcast(
+                        &self.journal,
+                        &self.ipc,
+                        ts,
+                        origin.clone(),
+                        aegis_ipc::JournalMutation::Settings {
+                            action,
+                            before_revision,
+                            after_revision,
+                        },
+                        effect,
+                    );
+                }
                 // The command panel's Lock now row: lock immediately through
                 // the same idle-process path as the Super+L binding.
                 if self.shell.take_lock() {
@@ -1677,6 +1746,78 @@ impl CompositorRuntime {
                         apps: self.launcher_apps.clone(),
                         pinned,
                         icons: aegis_shell::IconSet::from_raw(self.icon_cache.map.clone()),
+                        position: self
+                            .config
+                            .as_ref()
+                            .map(|c| c.dock.position)
+                            .unwrap_or_default(),
+                    });
+                }
+                // A committed drag reorder carries the complete pinned list
+                // in dock order (entry ids, already materialized from the
+                // visible strip): persist it through the same path as a
+                // pin/unpin edit. The dock applied the order optimistically;
+                // this push reconciles it.
+                if let Some(pinned_list) = self.shell.take_dock_reorder() {
+                    if let Err(error) =
+                        self.config_writer
+                            .enqueue(aegis_config::ConfigEdit::SetDockPinned {
+                                pinned: pinned_list.clone(),
+                            })
+                    {
+                        log::warn!("dock: reordered pins not saved: {error}");
+                    }
+                    if let Some(c) = self.config.as_mut() {
+                        c.dock.pinned = pinned_list.clone();
+                        c.dock.autopopulate = false;
+                    }
+                    let pinned = resolve_chrome_pins(
+                        &self.launcher_apps,
+                        &self.icon_cache.map,
+                        &pinned_list,
+                        false,
+                    );
+                    self.shell.set_app_catalog(aegis_shell::AppCatalog {
+                        apps: self.launcher_apps.clone(),
+                        pinned,
+                        icons: aegis_shell::IconSet::from_raw(self.icon_cache.map.clone()),
+                        position: self
+                            .config
+                            .as_ref()
+                            .map(|c| c.dock.position)
+                            .unwrap_or_default(),
+                    });
+                }
+                // A dock edge drag commits the edge it landed on: persist
+                // it and reconcile the catalog-carried position. The dock
+                // already switched edges optimistically during the gesture.
+                if let Some(position) = self.shell.take_dock_position() {
+                    if let Err(error) = self
+                        .config_writer
+                        .enqueue(aegis_config::ConfigEdit::SetDockPosition { position })
+                    {
+                        log::warn!("dock: position not saved: {error}");
+                    }
+                    if let Some(c) = self.config.as_mut() {
+                        c.dock.position = position;
+                    }
+                    let pinned = resolve_chrome_pins(
+                        &self.launcher_apps,
+                        &self.icon_cache.map,
+                        self.config
+                            .as_ref()
+                            .map(|c| c.dock.pinned.as_slice())
+                            .unwrap_or(&[]),
+                        self.config
+                            .as_ref()
+                            .map(|c| c.dock.autopopulate)
+                            .unwrap_or(false),
+                    );
+                    self.shell.set_app_catalog(aegis_shell::AppCatalog {
+                        apps: self.launcher_apps.clone(),
+                        pinned,
+                        icons: aegis_shell::IconSet::from_raw(self.icon_cache.map.clone()),
+                        position,
                     });
                 }
                 // Launch the application the launcher's clicked row asked for.

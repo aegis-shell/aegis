@@ -31,7 +31,6 @@ components:
 |---------|-----------|--------------------|
 | `chrome-dock` | Persistent application Dock | None |
 | `chrome-prism` | Compact application search | None |
-| `chrome-agent-workspaces` | Agent Workspaces authority UI | None |
 | `chrome-hud` | Display-only status HUD | StatusNotifierItem tray |
 | `chrome-command-panel` | Modal system command panel | StatusNotifierItem tray |
 

@@ -18,7 +18,7 @@ is the bare-metal bring-up and smoke checklist.
 Build the release binary before leaving the graphical session:
 
 ```bash
-cargo build --locked --release -p aegis -p aegis-settings
+cargo build --locked --release -p aegis
 ```
 
 ## Start
@@ -34,9 +34,7 @@ AEGIS_BACKEND=drm RUST_LOG=info target/release/aegis
 one. The Vulkan renderer is strictly bound to the same physical GPU; Aegis
 does not silently select another render device. The log shows both DRM
 identities along with the seat, connector, and modifier choices. Prebuilding
-keeps compiler latency and failures outside the hardware session. Install the
-release first when the launcher must discover System Settings and its desktop
-metadata.
+keeps compiler latency and failures outside the hardware session.
 
 Use the packaged `aegis.service` instead of the direct binary when testing
 Interaction Domain application launch. The service delegates the cgroup controllers that
@@ -62,8 +60,8 @@ the compositor process.
 
 ## Configure displays
 
-Open **System Settings**, then use the **Display**
-card to:
+Open the command panel with `Super+S`, then use the **Display**
+tab to:
 
 1. Select a connected monitor.
 2. Choose one of its advertised resolution and refresh-rate modes.

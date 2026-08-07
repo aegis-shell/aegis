@@ -16,7 +16,7 @@ use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Them
 
 use crate::{
     BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape, IconSet,
-    Localizer, Message, Reserved, WindowAction, ellipsize,
+    LiquidGlassRegion, Localizer, Message, Reserved, WindowAction, ellipsize,
 };
 use aegis_model::app::Entry;
 use aegis_model::input::{KeyAction, KeyChar, key_action};
@@ -772,7 +772,10 @@ impl Chrome for Launcher {
                 self.sync_page_to_selection();
             }
             ChromeUpdate::ReducedMotion(reduced) => self.set_reduced_motion(reduced),
-            ChromeUpdate::Appearance(design) => self.design = *design,
+            ChromeUpdate::Appearance(design) => {
+                self.design = *design;
+                self.app_menu.update(update);
+            }
             _ => {}
         }
     }
@@ -870,6 +873,21 @@ impl Chrome for Launcher {
         } else {
             Vec::new()
         }
+    }
+
+    /// The context menu's glass body. The full-screen frost region above
+    /// already blurs underneath; this adds the analytic glass treatment to
+    /// the menu itself so it reads like the dock's menu anywhere.
+    fn liquid_glass_regions(
+        &self,
+        display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &crate::WorkspaceSnapshot,
+    ) -> Vec<LiquidGlassRegion> {
+        self.app_menu
+            .liquid_glass_region(display)
+            .into_iter()
+            .collect()
     }
 }
 

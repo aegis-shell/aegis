@@ -11,7 +11,8 @@ log diagnostic and never crashes the compositor.
 
 ## Programmatic Edits
 
-System Settings does not write TOML directly. It submits revisioned, typed
+The command panel's settings tabs do not write TOML directly. They submit
+revisioned, typed
 settings transactions to the compositor, which validates authority, serializes
 all configuration writes, and applies live state. Dock pin changes use the
 same serialized path.
@@ -38,6 +39,7 @@ untouched.
 | `[wallpaper]` | table | built-in image | Image, video, 3D, or multi-plane parallax wallpaper. See [Wallpaper](#wallpaper). |
 | `[lock_screen]` | table | cinematic layout, built-in lock artwork | Lock-screen composition and independently selected background. See [Lock Screen](#lock-screen). |
 | `[idle]` | table | dim 5 min, lock 10 min, display off 11 min, suspend 30 min | Ordered inactivity, session-lock, display-power, and suspend policy. See [Idle and Locking](#idle-and-locking). |
+| `[battery]` | table | warn at 20% and 5% | Low-battery warning thresholds. See [Battery](#battery). |
 | `[[output]]` | array of tables | none | Per-connector display policy: mode, scale, position, transform, primary. See [Outputs](#outputs). |
 | `[screenshot]` | table | XDG Pictures directory, cursor included | Screenshot output policy. See [Screenshots](#screenshots). |
 | `[appearance]` | table | system color scheme, normal contrast, standard fonts and scale | Desktop-wide color, contrast, and typography preferences. See [Appearance](#appearance). |
@@ -219,7 +221,8 @@ existing decoration-aware Wayland windows as well as newly created windows.
 ## Touchpad
 
 The `[input.touchpad]` table is applied live to every libinput touchpad in a
-direct DRM session. System Settings submits this profile to the compositor,
+direct DRM session. The command panel's Touchpad tab submits this profile to
+the compositor,
 which persists it without replacing comments or unrelated sections. In a
 nested session the outer compositor owns the physical device, so changes are
 saved for the next direct session.
@@ -285,7 +288,7 @@ Per-surface `zwp_idle_inhibit_v1` inhibitors and authorized portal
 those inhibitors. Activity restores a dimmed backlight and wakes powered-down
 outputs behind the lock.
 
-The command panel's System section (`Super+S`) offers two related controls:
+The command panel's System tab (`Super+S`) offers two related controls:
 Lock Now locks the session immediately through the same path as `Super+L`,
 and Always On holds a session-wide idle inhibitor that keeps every stage
 resumed until it is switched off. Always On is a session toggle; it is not
@@ -297,9 +300,29 @@ display-off, and suspend stages are therefore not executed by the nested
 session.
 
 See [How to Configure Locking and Idle](../how-to/lock-and-idle.md) for the
-System Settings workflow and
+panel workflow and
 [ADR-0078](../adr/0078-out-of-process-idle-and-session-lock.md) for the
 security boundary.
+
+## Battery
+
+The `[battery]` table configures the low-battery warnings on devices with a
+battery. Each threshold fires one modal alert per discharge cycle — a
+centered panel that captures the keyboard and pointer until dismissed; it is
+not a notification and is not affected by do-not-disturb. Charging clears
+the cycle, so the next discharge warns again. Changes apply on live reload.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `warn_at` | array of integers | `[20, 5]` | Discharge percentages that raise the alert, highest first. The lowest value uses the critical wording and fill. An empty list disables the feature. |
+
+Each value must be between 1 and 99, and the list must be strictly
+descending (duplicates are rejected).
+
+```toml
+[battery]
+warn_at = [20, 5]
+```
 
 ## Screenshots
 
@@ -329,7 +352,8 @@ subscribes to that profile and exports its standard and toolkit-compatible
 projections. See
 [ADR-0072](../adr/0072-desktop-preference-authority-and-toolkit-compatibility.md).
 
-Changes apply on live reload. System Settings writes the `[appearance]` and
+Changes apply on live reload. The command panel's Appearance tab writes the
+`[appearance]` and
 preference-related `[ui]` fields as one validated transaction.
 
 | Field | Type | Default | Description |
@@ -393,7 +417,8 @@ Run `aegis display` to see the modes each connector advertises; the
 `mode` value must match one of them (resolution exactly, refresh to the
 nearest whole hertz).
 
-System Settings submits edits for these same `[[output]]` entries through the
+The command panel's Display tab submits edits for these same `[[output]]`
+entries through the
 compositor. Its display page can select a connected output, choose an
 advertised resolution and refresh rate, set fractional scale, select the
 primary output, and place an extended output to the right, left, above, below,
@@ -441,7 +466,7 @@ floating frosted chips composited over the desktop — system status
 (network, Bluetooth, battery), the StatusNotifierItem tray row, the clock,
 and the notification count on the left, and workspace dots in the center.
 The top-right belongs to the frameless notification toast strip, and the
-Agent Workspaces status lives in the command panel's System section. The
+Agent Workspaces status lives in the command panel's System tab. The
 chips reserve no space, so tiled and maximized windows run
 underneath; they accept no pointer input, so clicks fall through to
 windows; and each chip fades out while the cursor is near it. Changes apply
@@ -467,7 +492,7 @@ SNI support runs silently: without a session bus, or when another watcher
 already owns the `org.kde.StatusNotifierWatcher` name, no tray icons appear
 and startup is unaffected. Tray icons in the HUD are display-only;
 activating an item or opening its dbusmenu happens in the command panel's
-Tray section. The row fits a five-slot budget; any excess collapses into a
+always-visible tray grid. The row fits a five-slot budget; any excess collapses into a
 `+N` overflow indicator.
 
 ## Window Rules
@@ -642,7 +667,7 @@ Letters (`a`–`z`, lowercased), digits (`0`–`9`), and the common controls:
 | `launcher` | `togglelauncher`, `apps` | Open or close the application launcher |
 | `prism` | `toggleprism`, `spotlight` | Open or close Prism application search |
 | `overview` | `toggleoverview` | Open or close the window and workspace overview |
-| `command_panel` | `commandpanel`, `panel` | Open or close the command panel (quick settings, tray, notifications) |
+| `command_panel` | `commandpanel`, `panel` | Open or close the command panel (quick settings, settings modules, tray, notifications) |
 | `close` | `closefocused` | Close the focused toplevel |
 | `cycle` | `next` | Move focus to the next toplevel; while `Super` remains held, show the live preview strip |
 | `prev` | `previous`, `cycleback` | Move focus to the previous toplevel; while `Super` remains held, show the live preview strip |

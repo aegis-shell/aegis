@@ -601,7 +601,7 @@ unsafe extern "C" fn popup_destroy(_client: *mut ffi::wl_client, resource: *mut 
         let rec = ffi::wl_resource_get_user_data(resource) as *mut SurfaceRec;
         if !rec.is_null() {
             let grab_seat = (*rec).popup_grab_seat;
-            let focus_after_dismissal = popup_keyboard_focus_after_dismissal(rec);
+            let mut focus_after_dismissal = popup_keyboard_focus_after_dismissal(rec);
             reset_xdg_configure_state_after_unmap(&mut *rec);
             (*rec).xdg_popup = std::ptr::null_mut();
             (*rec).popup_parent = std::ptr::null_mut();
@@ -611,9 +611,17 @@ unsafe extern "C" fn popup_destroy(_client: *mut ffi::wl_client, resource: *mut 
             if let Some(seat) = grab_seat
                 && !(*rec).state.is_null()
             {
-                (*(*rec).state)
-                    .pending_keyboard_focus
-                    .insert(seat, focus_after_dismissal);
+                if focus_after_dismissal.is_null() {
+                    focus_after_dismissal =
+                        keyboard_focus_fallback(&*(*rec).state, seat, (*rec).resource);
+                }
+                (*(*rec).state).pending_keyboard_focus.insert(
+                    seat,
+                    DeferredKeyboardFocus {
+                        target: focus_after_dismissal,
+                        restoring_from: (*rec).resource,
+                    },
+                );
             }
         }
         ffi::wl_resource_destroy(resource);
@@ -645,9 +653,13 @@ unsafe extern "C" fn popup_grab(
         // commit path defers keyboard focus until the surface is actually
         // mapped; see `surface_commit`.
         if (*rec).mapped {
-            (*state)
-                .pending_keyboard_focus
-                .insert((*state).active_seat, (*rec).resource);
+            (*state).pending_keyboard_focus.insert(
+                (*state).active_seat,
+                DeferredKeyboardFocus {
+                    target: (*rec).resource,
+                    restoring_from: std::ptr::null_mut(),
+                },
+            );
         }
     }
 }
@@ -1135,6 +1147,20 @@ pub(crate) unsafe fn minimize_toplevel_record(rec: *mut SurfaceRec) {
             }
             (*state).keyboard_focus = std::ptr::null_mut();
             keyboard_focus_dependencies_changed(state, old_focus, std::ptr::null_mut());
+            // Focus moves on to the next window instead of dying with the
+            // minimized one. `window.minimized` is already set, so the
+            // fallback scan skips this window; dispatch applies the
+            // restoration after this callback returns.
+            let fallback = keyboard_focus_fallback(&*state, seat, std::ptr::null_mut());
+            if !fallback.is_null() {
+                (*state).pending_keyboard_focus.insert(
+                    seat,
+                    DeferredKeyboardFocus {
+                        target: fallback,
+                        restoring_from: old_focus,
+                    },
+                );
+            }
             focus_dropped = true;
         }
         if focus_dropped {

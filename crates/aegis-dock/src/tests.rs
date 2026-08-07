@@ -18,6 +18,7 @@ fn dock_with(pinned: Vec<Entry>) -> Dock {
         apps: pinned.clone(),
         pinned,
         icons: IconSet::default(),
+        position: DockPosition::Bottom,
     });
     dock
 }
@@ -329,7 +330,7 @@ fn pointer_bounds_stay_at_rest_while_tiles_are_magnified() {
         visual_bounds.w,
         2.0 * DOCK_TILE_MAX + DOCK_TILE_GAP + 2.0 * DOCK_PAD
     );
-    assert_eq!(bounds.y, display.1 - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN);
+    assert_eq!(bounds.y, display.1 - DOCK_PANEL_HEIGHT - DOCK_EDGE_MARGIN);
     assert_eq!(bounds.h, DOCK_PANEL_HEIGHT);
     assert!(!dock.captures_pointer(
         display.0 * 0.5,
@@ -382,7 +383,7 @@ fn window_invading_rest_bounds_starts_an_animated_collapse() {
     assert!(!dock.effective_autohide());
     assert_eq!(
         dock.reserved().bottom,
-        (DOCK_PANEL_HEIGHT + DOCK_BOTTOM_MARGIN) as i32
+        (DOCK_PANEL_HEIGHT + DOCK_EDGE_MARGIN) as i32
     );
 }
 
@@ -415,7 +416,7 @@ fn maximized_state_forces_an_animated_collapse_without_geometric_invasion() {
     assert!(!dock.collapse_pending);
     assert_eq!(
         dock.reserved().bottom,
-        (DOCK_PANEL_HEIGHT + DOCK_BOTTOM_MARGIN) as i32
+        (DOCK_PANEL_HEIGHT + DOCK_EDGE_MARGIN) as i32
     );
 }
 
@@ -437,7 +438,7 @@ fn disabling_user_autohide_does_not_override_maximized_collapse() {
 
 #[test]
 fn minimized_window_does_not_count_as_a_dock_invasion() {
-    let bounds = Dock::rest_bounds(1, 1, (1920.0, 1080.0));
+    let bounds = Dock::rest_bounds(1, 1, DockPosition::Bottom, (1920.0, 1080.0));
     let mut minimized = window(7, "org.example.Game", false);
     minimized.position = aegis_model::Point {
         x: bounds.x.round() as i32,
@@ -452,20 +453,17 @@ fn minimized_window_does_not_count_as_a_dock_invasion() {
 fn dock_surface_morphs_between_panel_and_exact_handle_geometry() {
     let display = (1920.0, 1080.0);
     let expanded_width = 320.0;
-    let expanded = Dock::collapsed_panel_rect(display, expanded_width, 1.0);
+    let expanded = Dock::collapsed_panel_rect(DockPosition::Bottom, display, expanded_width, 1.0);
     assert_eq!(expanded.w, expanded_width);
     assert_eq!(expanded.h, DOCK_PANEL_HEIGHT);
-    assert_eq!(
-        expanded.y,
-        display.1 - DOCK_BOTTOM_MARGIN - DOCK_PANEL_HEIGHT
-    );
+    assert_eq!(expanded.y, display.1 - DOCK_EDGE_MARGIN - DOCK_PANEL_HEIGHT);
 
-    let collapsed = Dock::collapsed_panel_rect(display, expanded_width, 0.0);
+    let collapsed = Dock::collapsed_panel_rect(DockPosition::Bottom, display, expanded_width, 0.0);
     assert_eq!(collapsed.w, AUTOHIDE_HANDLE_WIDTH);
     assert_eq!(collapsed.h, AUTOHIDE_HANDLE_HEIGHT);
     assert_eq!(
         collapsed.y,
-        display.1 - DOCK_BOTTOM_MARGIN - AUTOHIDE_HANDLE_HEIGHT
+        display.1 - DOCK_EDGE_MARGIN - AUTOHIDE_HANDLE_HEIGHT
     );
     assert_eq!(expanded.y + expanded.h, collapsed.y + collapsed.h);
 }
@@ -487,8 +485,8 @@ fn dock_content_finishes_draining_before_surface_becomes_handle() {
 #[test]
 fn collapsed_handle_has_no_tile_hover_target() {
     let display = (1920.0, 1080.0);
-    let rest_bounds = Dock::rest_bounds(1, 1, display);
-    let panel_rect = Dock::collapsed_panel_rect(display, rest_bounds.w, 0.0);
+    let rest_bounds = Dock::rest_bounds(1, 1, DockPosition::Bottom, display);
+    let panel_rect = Dock::collapsed_panel_rect(DockPosition::Bottom, display, rest_bounds.w, 0.0);
     let old_icon_rect = Rect {
         x: display.0 * 0.5 - DOCK_TILE * 0.5,
         y: rest_bounds.y + 5.0,
@@ -498,7 +496,14 @@ fn collapsed_handle_has_no_tile_hover_target() {
     let cursor = (display.0 * 0.5, old_icon_rect.y + old_icon_rect.h * 0.5);
 
     assert_eq!(
-        hit_test_tiles(cursor, rest_bounds, rest_bounds, 1.0, &[old_icon_rect]),
+        hit_test_tiles(
+            cursor,
+            rest_bounds,
+            rest_bounds,
+            1.0,
+            &[old_icon_rect],
+            false
+        ),
         Some(0),
         "the same point owns the visible tile while the Dock is expanded"
     );
@@ -509,6 +514,7 @@ fn collapsed_handle_has_no_tile_hover_target() {
             panel_rect,
             Dock::collapse_content_progress(0.0),
             &[old_icon_rect],
+            false,
         )
         .is_none()
     );
@@ -517,7 +523,7 @@ fn collapsed_handle_has_no_tile_hover_target() {
     dock.set_autohide(true);
     dock.autohide_reveal = 0.0;
     assert!(!dock.captures_pointer(cursor.0, cursor.1, display, &[], &workspace_snapshot(),));
-    let indicator = Dock::collapsed_indicator_bounds(display);
+    let indicator = Dock::collapsed_indicator_bounds(DockPosition::Bottom, display);
     assert!(dock.captures_pointer(
         indicator.x + indicator.w * 0.5,
         indicator.y + indicator.h * 0.5,
@@ -540,7 +546,7 @@ fn capsule_is_the_only_collapsed_reveal_target() {
     let mut dock = Dock::new();
     dock.set_autohide(true);
     dock.autohide_reveal = 0.0;
-    let indicator = Dock::collapsed_indicator_bounds(display);
+    let indicator = Dock::collapsed_indicator_bounds(DockPosition::Bottom, display);
     let workspaces = workspace_snapshot();
 
     assert!(dock.captures_pointer(
@@ -574,21 +580,26 @@ fn collapsed_dock_does_not_reuse_its_old_resting_region_as_a_trigger() {
     let display = (1920.0, 1080.0);
     let dock = Dock::new();
     let rest = dock.pointer_bounds(display);
-    let indicator = Dock::collapsed_indicator_bounds(display);
+    let indicator = Dock::collapsed_indicator_bounds(DockPosition::Bottom, display);
     let old_dock_point = (rest.x + rest.w * 0.5, rest.y + 8.0);
     let capsule_point = (
         indicator.x + indicator.w * 0.5,
         indicator.y + indicator.h * 0.5,
     );
 
-    assert!(!Dock::collapsed_indicator_contains(old_dock_point, display));
+    assert!(!Dock::collapsed_indicator_contains(
+        DockPosition::Bottom,
+        old_dock_point,
+        display
+    ));
     assert!(!Dock::pointer_keeps_revealed(
         true,
         0.0,
         false,
         old_dock_point,
         rest,
-        display.1,
+        DockPosition::Bottom,
+        display,
     ));
     assert!(Dock::pointer_keeps_revealed(
         true,
@@ -596,7 +607,8 @@ fn collapsed_dock_does_not_reuse_its_old_resting_region_as_a_trigger() {
         true,
         capsule_point,
         rest,
-        display.1,
+        DockPosition::Bottom,
+        display,
     ));
     assert!(Dock::pointer_keeps_revealed(
         true,
@@ -604,7 +616,8 @@ fn collapsed_dock_does_not_reuse_its_old_resting_region_as_a_trigger() {
         false,
         old_dock_point,
         rest,
-        display.1,
+        DockPosition::Bottom,
+        display,
     ));
 }
 
@@ -615,14 +628,15 @@ fn expanded_autohide_dock_keeps_pointer_across_bottom_gap() {
     dock.set_autohide(true);
     dock.autohide_reveal = 1.0;
     let rest = dock.pointer_bounds(display);
-    let gap_y = rest.y + rest.h + DOCK_BOTTOM_MARGIN * 0.5;
-    let indicator = Dock::collapsed_indicator_bounds(display);
+    let gap_y = rest.y + rest.h + DOCK_EDGE_MARGIN * 0.5;
+    let indicator = Dock::collapsed_indicator_bounds(DockPosition::Bottom, display);
     let former_indicator_edge_x = indicator.x + 1.0;
 
     assert!(Dock::expanded_trigger_contains(
+        DockPosition::Bottom,
         (display.0 * 0.5, gap_y),
         rest,
-        display.1,
+        display,
     ));
     assert!(dock.captures_pointer(display.0 * 0.5, gap_y, display, &[], &workspace_snapshot(),));
     assert!(
@@ -637,9 +651,10 @@ fn expanded_autohide_dock_keeps_pointer_across_bottom_gap() {
         &workspace_snapshot(),
     ));
     assert!(!Dock::expanded_trigger_contains(
+        DockPosition::Bottom,
         (rest.x - 1.0, gap_y),
         rest,
-        display.1,
+        display,
     ));
 }
 
@@ -750,7 +765,7 @@ fn backdrop_prepass_reveals_only_from_the_capsule_body() {
     assert!(dock.requires_composition());
 
     // Hovering the capsule itself starts the normal reveal animation.
-    let indicator = Dock::collapsed_indicator_bounds(display);
+    let indicator = Dock::collapsed_indicator_bounds(DockPosition::Bottom, display);
     let mut capsule = Input::new(display, 0.016);
     capsule.set_cursor(
         indicator.x + indicator.w * 0.5,
@@ -770,7 +785,14 @@ fn running_app_preview_layout_exposes_every_window_inside_the_output() {
         h: 84.0,
     };
     let windows: Vec<_> = (1..=7).map(aegis_model::window::WindowId).collect();
-    let presentation = live_preview_layout(&Design::dark(), (1920.0, 1080.0), owner, &windows, 1.0);
+    let presentation = live_preview_layout(
+        &Design::dark(),
+        (1920.0, 1080.0),
+        owner,
+        &windows,
+        1.0,
+        DockPosition::Bottom,
+    );
 
     assert_eq!(presentation.cards.len(), windows.len());
     assert!(presentation.panel.origin.x >= PREVIEW_SCREEN_MARGIN as i32);
@@ -816,6 +838,7 @@ fn live_preview_adds_one_panel_body_and_keeps_its_pointer_bridge() {
             aegis_model::window::WindowId(8),
         ],
         1.0,
+        DockPosition::Bottom,
     );
     let panel = presentation.panel;
     dock.tooltip_alpha = 1.0;
@@ -858,8 +881,14 @@ fn hovered_live_preview_uses_one_parent_body_with_an_optical_focus_field() {
         h: 84.0,
     };
     let window = aegis_model::window::WindowId(7);
-    let presentation =
-        live_preview_layout(&Design::dark(), (1920.0, 1080.0), owner, &[window], 1.0);
+    let presentation = live_preview_layout(
+        &Design::dark(),
+        (1920.0, 1080.0),
+        owner,
+        &[window],
+        1.0,
+        DockPosition::Bottom,
+    );
     let panel = presentation.panel;
     dock.tooltip_alpha = 1.0;
     dock.hover_surface_bounds = Some(lens::Rect {
@@ -911,7 +940,7 @@ fn fullscreen_policy_wins_and_minimized_windows_do_not_hide_dock() {
     assert_eq!(dock.space_use, SpaceUse::Available);
     assert_eq!(
         dock.reserved().bottom,
-        (DOCK_PANEL_HEIGHT + DOCK_BOTTOM_MARGIN) as i32
+        (DOCK_PANEL_HEIGHT + DOCK_EDGE_MARGIN) as i32
     );
 }
 
@@ -944,4 +973,199 @@ fn rest_centres_include_the_section_gap_for_transient_tiles() {
     let a = Dock::rest_centre_estimate(1, 2, 2, 1920.0);
     let b = Dock::rest_centre_estimate(0, 2, 2, 1920.0);
     assert!((a - b - pitch).abs() < 1e-5);
+}
+
+#[test]
+fn drop_insert_index_swaps_once_the_cursor_passes_a_tile_centre() {
+    // Rest centres of the pinned strip with the dragged tile removed.
+    let centres = [100.0, 166.0, 232.0];
+    assert_eq!(Dock::drop_insert_index(&centres, 50.0), 0);
+    assert_eq!(Dock::drop_insert_index(&centres, 100.0), 0);
+    // Past the next tile's centre (its midpoint) the insertion slot moves
+    // past it — one swap per centre crossed.
+    assert_eq!(Dock::drop_insert_index(&centres, 100.1), 1);
+    assert_eq!(Dock::drop_insert_index(&centres, 166.0), 1);
+    assert_eq!(Dock::drop_insert_index(&centres, 166.1), 2);
+    assert_eq!(Dock::drop_insert_index(&centres, 400.0), 3);
+}
+
+#[test]
+fn reorder_commit_stays_inside_the_pinned_range() {
+    // The insertion index ranges over the pinned sequence (excluding the
+    // dragged tile) by construction, so a committed reorder can neither
+    // displace the leading Launchpad tile nor cross the pinned/transient
+    // separator.
+    let mut ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+    // Drag "a" past "b"'s centre: one swap.
+    assert!(Dock::move_element(&mut ids, 0, 1));
+    assert_eq!(ids, vec!["b", "a", "c"]);
+    // Drag "a" (now at 1) to the end of the pinned strip.
+    assert!(Dock::move_element(&mut ids, 1, 2));
+    assert_eq!(ids, vec!["b", "c", "a"]);
+    // Drag "a" back before every pinned tile.
+    assert!(Dock::move_element(&mut ids, 2, 0));
+    assert_eq!(ids, vec!["a", "b", "c"]);
+    // Dropping on the tile's own slot is a no-op.
+    assert!(!Dock::move_element(&mut ids, 1, 1));
+    assert_eq!(ids, vec!["a", "b", "c"]);
+    // Out-of-range indices never panic or mutate.
+    assert!(!Dock::move_element(&mut ids, 3, 0));
+    assert!(!Dock::move_element(&mut ids, 0, 4));
+    assert_eq!(ids, vec!["a", "b", "c"]);
+}
+
+#[test]
+fn drag_threshold_promotes_only_past_the_threshold() {
+    let origin = (100.0, 100.0);
+    assert!(!Dock::drag_threshold_exceeded(origin, (103.0, 104.0)));
+    assert!(!Dock::drag_threshold_exceeded(origin, origin));
+    assert!(Dock::drag_threshold_exceeded(origin, (107.0, 100.0)));
+    // Diagonal travel past the same distance also promotes.
+    assert!(Dock::drag_threshold_exceeded(origin, (105.0, 105.0)));
+    assert!(!Dock::drag_threshold_exceeded(origin, (104.0, 104.0)));
+}
+
+#[test]
+fn edge_drag_target_prefers_the_nearest_in_zone_edge() {
+    let display = (1920.0, 1080.0);
+    assert_eq!(
+        Dock::edge_drag_target((50.0, 540.0), display),
+        Some(DockPosition::Left)
+    );
+    assert_eq!(
+        Dock::edge_drag_target((960.0, 1000.0), display),
+        Some(DockPosition::Bottom)
+    );
+    assert_eq!(
+        Dock::edge_drag_target((1870.0, 540.0), display),
+        Some(DockPosition::Right)
+    );
+    // In a corner the nearer edge wins.
+    assert_eq!(
+        Dock::edge_drag_target((20.0, 1040.0), display),
+        Some(DockPosition::Left)
+    );
+    assert_eq!(
+        Dock::edge_drag_target((80.0, 1060.0), display),
+        Some(DockPosition::Bottom)
+    );
+    // The screen centre and the top edge are outside every zone; the dock
+    // keeps its current edge there (top is deliberately not a target).
+    assert_eq!(Dock::edge_drag_target((960.0, 540.0), display), None);
+    assert_eq!(Dock::edge_drag_target((960.0, 4.0), display), None);
+}
+
+#[test]
+fn rest_bounds_and_reserved_follow_the_configured_edge() {
+    let display = (1920.0, 1080.0);
+    // Launchpad + one pinned tile: 2 tiles, 1 pinned (both pinned here; the
+    // pinned count only matters for the section gap).
+    let bar_len = 2.0 * DOCK_TILE + DOCK_TILE_GAP + 2.0 * DOCK_PAD;
+
+    let bottom = Dock::rest_bounds(2, 2, DockPosition::Bottom, display);
+    assert_eq!(bottom.y, display.1 - DOCK_PANEL_HEIGHT - DOCK_EDGE_MARGIN);
+    assert_eq!(bottom.h, DOCK_PANEL_HEIGHT);
+    assert_eq!(bottom.w, bar_len);
+
+    let left = Dock::rest_bounds(2, 2, DockPosition::Left, display);
+    assert_eq!(left.x, DOCK_EDGE_MARGIN);
+    assert_eq!(left.w, DOCK_PANEL_HEIGHT);
+    assert_eq!(left.y, (display.1 - bar_len) * 0.5);
+    assert_eq!(left.h, bar_len);
+
+    let right = Dock::rest_bounds(2, 2, DockPosition::Right, display);
+    assert_eq!(right.x, display.0 - DOCK_PANEL_HEIGHT - DOCK_EDGE_MARGIN);
+    assert_eq!(right.w, DOCK_PANEL_HEIGHT);
+    assert_eq!(right.h, bar_len);
+
+    let extent = (DOCK_PANEL_HEIGHT + DOCK_EDGE_MARGIN) as i32;
+    let mut dock = Dock::new();
+    assert_eq!(dock.reserved().bottom, extent);
+    assert_eq!(dock.reserved().left, 0);
+    dock.set_position(DockPosition::Left);
+    assert_eq!(dock.reserved().left, extent);
+    assert_eq!(dock.reserved().bottom, 0);
+    dock.set_position(DockPosition::Right);
+    assert_eq!(dock.reserved().right, extent);
+    assert_eq!(dock.reserved().left, 0);
+}
+
+#[test]
+fn side_dock_collapsed_geometry_anchors_to_its_edge() {
+    let display = (1920.0, 1080.0);
+    let expanded_len = 320.0;
+
+    let expanded = Dock::collapsed_panel_rect(DockPosition::Left, display, expanded_len, 1.0);
+    assert_eq!(expanded.x, DOCK_EDGE_MARGIN);
+    assert_eq!(expanded.w, DOCK_PANEL_HEIGHT);
+    assert_eq!(expanded.h, expanded_len);
+    assert_eq!(expanded.y, (display.1 - expanded_len) * 0.5);
+
+    let collapsed = Dock::collapsed_panel_rect(DockPosition::Left, display, expanded_len, 0.0);
+    assert_eq!(collapsed.x, DOCK_EDGE_MARGIN);
+    assert_eq!(collapsed.w, AUTOHIDE_HANDLE_HEIGHT);
+    assert_eq!(collapsed.h, AUTOHIDE_HANDLE_WIDTH);
+    // The handle stays centred on the edge, like the bottom one.
+    assert_eq!(
+        collapsed.y + collapsed.h * 0.5,
+        display.1 * 0.5,
+        "the side handle is centred vertically"
+    );
+    assert_eq!(expanded.x, collapsed.x);
+
+    let right = Dock::collapsed_panel_rect(DockPosition::Right, display, expanded_len, 1.0);
+    assert_eq!(right.x, display.0 - DOCK_EDGE_MARGIN - DOCK_PANEL_HEIGHT);
+    let right_collapsed =
+        Dock::collapsed_panel_rect(DockPosition::Right, display, expanded_len, 0.0);
+    assert_eq!(
+        right_collapsed.x,
+        display.0 - DOCK_EDGE_MARGIN - AUTOHIDE_HANDLE_HEIGHT
+    );
+}
+
+#[test]
+fn catalog_push_updates_position_and_reconciles_optimistic_order() {
+    let mut dock = dock_with(vec![app("a.desktop"), app("b.desktop")]);
+    assert_eq!(dock.position, DockPosition::Bottom);
+
+    // A push carrying a new edge moves the dock (a live config edit).
+    dock.update_app_catalog(&AppCatalog {
+        apps: vec![app("a.desktop"), app("b.desktop")],
+        pinned: vec![app("a.desktop"), app("b.desktop")],
+        icons: IconSet::default(),
+        position: DockPosition::Right,
+    });
+    assert_eq!(dock.position, DockPosition::Right);
+
+    // A queued optimistic reorder is superseded by the reconciling push.
+    dock.pending_order = Some(vec!["b.desktop".to_string(), "a.desktop".to_string()]);
+    dock.update_app_catalog(&AppCatalog {
+        apps: vec![app("a.desktop"), app("b.desktop")],
+        pinned: vec![app("a.desktop"), app("b.desktop")],
+        icons: IconSet::default(),
+        position: DockPosition::Left,
+    });
+    assert!(dock.pending_order.is_none());
+    assert_eq!(dock.position, DockPosition::Left);
+
+    // While an edge drag holds the panel, a catalog push must not yank the
+    // dock back to the configured edge mid-gesture.
+    dock.press = Some(PressState {
+        origin: (10.0, 500.0),
+        target: PressTarget::Panel,
+        dragging: true,
+        insert: None,
+        start_position: DockPosition::Left,
+    });
+    dock.update_app_catalog(&AppCatalog {
+        apps: vec![app("a.desktop"), app("b.desktop")],
+        pinned: vec![app("a.desktop"), app("b.desktop")],
+        icons: IconSet::default(),
+        position: DockPosition::Bottom,
+    });
+    assert_eq!(
+        dock.position,
+        DockPosition::Left,
+        "an in-flight edge drag owns the live position"
+    );
 }

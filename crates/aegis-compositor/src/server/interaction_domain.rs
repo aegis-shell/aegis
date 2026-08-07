@@ -1138,9 +1138,21 @@ impl Server {
         // wl_surface creation; keep it below the always-on-top band.
         self.restack_always_on_top_band();
         let pending_keyboard_focus = std::mem::take(&mut self.state.pending_keyboard_focus);
-        for (seat, surface) in pending_keyboard_focus {
+        for (seat, pending) in pending_keyboard_focus {
             if let Some(_guard) = ActiveSeatGuard::enter(self.state.as_mut(), seat) {
-                self.change_keyboard_focus(surface);
+                // `pending_activation` was applied above, so a restoration
+                // that loses to a newer window is dropped here instead of
+                // stealing focus back.
+                if unsafe {
+                    deferred_focus_restoration_applies(
+                        self.state.as_ref(),
+                        self.state.keyboard_focus,
+                        pending.restoring_from,
+                        pending.target,
+                    )
+                } {
+                    self.change_keyboard_focus(pending.target);
+                }
             }
         }
         if self.state.lock_focus_dirty {

@@ -14,12 +14,13 @@
 //!
 //! Larger components have graduated to their own crates on top of the same
 //! contract (ADR-0021): the dock lives in `aegis-dock`, Prism in
-//! `aegis-prism`, Agent Workspaces in `aegis-agent-workspaces`, the HUD in
-//! `aegis-hud`, and the command panel in `aegis-command-panel`.
+//! `aegis-prism`, the HUD in `aegis-hud`, and the command panel in
+//! `aegis-command-panel`.
 
 mod agent_feedback;
 mod app_menu;
 mod app_picker;
+mod battery_alert;
 mod capability_prompt;
 mod confirm_prompt;
 mod controlled_window_guard;
@@ -33,6 +34,7 @@ mod window_switcher;
 pub use agent_feedback::AgentFeedback;
 pub use app_menu::{AppMenu, PinAction};
 pub use app_picker::{AppPickParams, AppPicker};
+pub use battery_alert::{BatteryAlert, BatteryAlertParams};
 pub use capability_prompt::{
     CapabilityGroup, CapabilityPickParams, CapabilityPickResult, CapabilityPrompt,
 };

@@ -376,7 +376,7 @@ fn matches_query(e: &Entry, needle: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{Entry, SETTINGS_DESKTOP_ID};
+    use crate::app::Entry;
 
     fn entry(id: &str, name: &str) -> Entry {
         Entry {
@@ -402,22 +402,6 @@ mod tests {
         assert!(l.handle(KeyAction::Char('x')).is_none());
         assert!(l.query().is_empty());
         assert!(!l.is_open());
-    }
-
-    #[test]
-    fn settings_entry_spawns_the_standalone_app() {
-        let mut launcher = Launcher::new(vec![Entry {
-            id: SETTINGS_DESKTOP_ID.into(),
-            name: "System Settings".into(),
-            exec: Some("aegis-settings".into()),
-            ..Entry::default()
-        }]);
-        launcher.open();
-        let Some(Launch::Spawn(entry)) = launcher.handle(KeyAction::Enter) else {
-            panic!("System Settings must launch out of process");
-        };
-        assert_eq!(entry.exec.as_deref(), Some("aegis-settings"));
-        assert!(!launcher.is_open());
     }
 
     #[test]

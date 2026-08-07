@@ -7,6 +7,45 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Shell chrome
+
+- The standalone System Settings application is removed. Persistent
+  settings now live in the command panel (`Super+S`) as flat tabs next to
+  System — one tab per available settings module — rendered in-process
+  from the `aegis-settings` module library. Tab edits commit through the
+  same revisioned, journaled settings transaction the IPC settings API
+  uses; external IPC clients are unaffected. The `aegis-settings` binary,
+  its desktop entry and icon, and the `--module` deep links are gone.
+- The command panel's icon rail and System/Tray/Messages section
+  switching are replaced by the tab bar plus an always-visible side
+  column: the flat notification list (click-to-dismiss) over the tray
+  icon grid (left-click activate, right-click dbusmenu popover).
+- The command panel moves from the frosted-white SAO palette to a
+  dark-glass, cyan-accent HUD visual language with corner-bracket
+  accents.
+- The four consent prompts — app picker, secret prompt, confirmation, and
+  agent capability checklist — are now analytic Liquid Glass panels that own
+  the complete chrome layer while they wait for an answer: the Dock, HUD, and
+  toasts stay suppressed, and row selection follows the shared single-body
+  optical focus contract instead of a structural accent fill.
+- The compositor now raises a modal low-battery alert — the same
+  must-be-handled glass panel treatment as the consent prompts — when the
+  battery crosses a configured `[battery] warn_at` threshold (default 20%
+  and 5%), once per threshold per discharge cycle. The alert never enters
+  the notification queue and ignores do-not-disturb; an empty threshold list
+  disables the feature.
+
+### Agent integration
+
+- Removed the Agent Workspaces management chrome application and its
+  `chrome-agent-workspaces` Cargo feature. Agent Interaction Domain
+  lifecycle is managed through the `aegis interaction-domain *` CLI and the
+  `interaction_domain_*` MCP tools; the command panel's display-only Agent
+  Workspaces status row remains.
+- The legacy `aegis-interaction-manager` Dock pin id no longer resolves.
+- The in-tree `aegis-agent` runtime removal (commit `e2d3346`) is now
+  reflected across the documentation.
+
 ## [0.0.13] - 2026-08-04
 
 ### Packaging

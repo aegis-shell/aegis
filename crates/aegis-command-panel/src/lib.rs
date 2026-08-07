@@ -1,21 +1,25 @@
-//! The command panel: a full-screen modal overlay in the Sword Art
-//! Online menu language (ADR-0080) — frosted white floating panels with an
-//! amber accent over the standard dark blurred scrim.
+//! The command panel: a full-screen modal overlay in a VR/AR personal-info
+//! HUD language (ADR-0080) — deep blue-black translucent "dark glass"
+//! floating panels with a cyan accent, thin hairlines, and corner brackets
+//! over the standard dark blurred scrim.
 //!
-//! One centered cluster of three surfaces: a header band with the user's
+//! One centered cluster of surfaces: a header band with the user's
 //! profile (avatar, display name, groups) on the left and a live machine
 //! monitor (chassis glyph plus CPU/GPU/RAM/NET/DISK/BAT gauges fed by
-//! `ChromeUpdate::ResourceStats`) on the right; a narrow icon rail below
-//! it holding one circular button per section and the close button; and the
-//! content panel filling the rest of the cluster. The sections themselves:
-//! quick settings (volume, brightness, radios, do-not-disturb),
-//! StatusNotifierItem tray activation with host-rendered dbusmenu popovers,
-//! and the notification list with dismissal. The System section also shows
-//! the Agent Workspaces status row that the HUD's dropped right chip once
-//! carried (ADR-0083). The panel opens through the
-//! `Super+S` keybinding or a four-finger touchpad swipe down, and closes on
-//! Escape, a scrim click, the rail's close button, the same binding, or a
-//! four-finger swipe up.
+//! `ChromeUpdate::ResourceStats`) on the right; below it the main panel,
+//! topped by a flat tab bar holding the System quick-settings tab plus one
+//! tab per available `aegis-settings` module (with the close button at its
+//! right end); and the side column stacking the notification list over the
+//! StatusNotifierItem tray. The System tab carries quick settings (volume,
+//! brightness, radios, do-not-disturb) and the Agent Workspaces status row
+//! that the HUD's dropped right chip once carried (ADR-0083); settings
+//! module tabs host the module registry's pages and route their
+//! `SettingsAction`s through `ChromeEvents::settings_actions`; the tray
+//! keeps left-click activation with host-rendered dbusmenu popovers, and
+//! the notification list keeps click-to-dismiss. The panel opens through
+//! the `Super+S` keybinding or a four-finger touchpad swipe down, and
+//! closes on Escape, a scrim click, the tab bar's close button, the same
+//! binding, or a four-finger swipe up.
 //!
 //! Like the HUD and the dock, the panel is compositor-owned lens
 //! chrome on the [`aegis_shell`] `Chrome` seam: snapshots arrive through the
@@ -26,17 +30,20 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 
-use aegis_design::tokens::Sao;
+use aegis_design::tokens::Hud;
 use aegis_design::{AvatarRole, Design, materials, themes};
 use aegis_model::input::KeyChar;
 use aegis_model::interaction_domain::{
     InteractionDomainKind, InteractionDomainSnapshot, InteractionDomainState,
 };
 use aegis_model::notify::{Notification, NotificationQueue};
+use aegis_model::settings::{SettingsAction, SettingsSnapshot};
 use aegis_model::window::{SpaceUse, Window};
 use aegis_model::workspace::WorkspaceSnapshot;
+use aegis_settings::builtin_settings_modules;
+use aegis_settings::module::{ModuleAvailability, ModuleEvents, ModuleId, ModuleRegistry};
 use aegis_shell::persona::{Portrait, PortraitConfig, PortraitWatcher, Profile};
-use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
+use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect, Theme};
 
 use aegis_shell::{
     BackdropRegion, ChassisKind, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
@@ -52,19 +59,34 @@ use rendering::*;
 #[cfg(test)]
 mod tests;
 
-const SCRIM_ALPHA: u8 = 132;
+/// The scrim runs slightly deeper with the dark glass look so the HUD
+/// surfaces still separate from the blurred desktop behind them.
+const SCRIM_ALPHA: u8 = 150;
 const BACKDROP_BLUR_SIGMA: f32 = 14.0;
-/// The cluster's three surfaces: a full-width header band, then the icon
-/// rail at the left and the content panel filling the rest.
+/// The cluster's surfaces: a full-width header band; below it the main
+/// panel (tab bar plus the active tab's body) at the left and the side
+/// column (notifications over tray) at the right.
 const HEADER_H: f32 = 118.0;
-const RAIL_W: f32 = 64.0;
 const CONTENT_W: f32 = 640.0;
 const CONTENT_H: f32 = 420.0;
+const SIDE_W: f32 = 300.0;
+/// Small-display shrink policy: the side column yields to 240 first, then
+/// the main panel to 240; past that the side column drops to 96 and the
+/// main panel to 120 so the cluster always fits on-screen.
+const SIDE_MIN_W: f32 = 240.0;
+const MAIN_MIN_W: f32 = 240.0;
+const SIDE_FLOOR_W: f32 = 96.0;
+const MAIN_FLOOR_W: f32 = 120.0;
+/// The tray panel's fixed height at the side column's bottom: a small
+/// section header plus two tray-grid rows.
+const TRAY_PANEL_H: f32 = 172.0;
+/// The main panel's flat tab bar.
+const TAB_BAR_H: f32 = 40.0;
 const PANEL_GAP: f32 = 12.0;
-/// The rail's reveal lags the header's by this fraction.
-const RAIL_STAGGER: f32 = 0.06;
-/// Content panel's reveal lags the header's by this fraction.
+/// Main panel's reveal lags the header's by this fraction.
 const CONTENT_STAGGER: f32 = 0.18;
+/// The side column's reveal lags the header's by this fraction.
+const SIDE_STAGGER: f32 = 0.26;
 /// Samples kept per sparkline metric (CPU/GPU/RAM).
 const HISTORY_CAP: usize = 48;
 
@@ -95,38 +117,18 @@ fn presentation_anim_pending(
     (reveal - target).abs() > 0.002 || avatar_playing || avatar_reload_pending
 }
 
-/// The panel's sections, one circular button each on the icon rail.
+/// The main panel's tabs: the System quick settings plus one tab per
+/// available settings module from the registry, in registry order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Section {
+enum Tab {
     System,
-    Tray,
-    Messages,
+    Settings(ModuleId),
 }
 
-impl Section {
-    const ALL: [Section; 3] = [Section::System, Section::Tray, Section::Messages];
-
-    fn label(self, i18n: &Localizer) -> &'static str {
-        match self {
-            Section::System => i18n.text(Message::System),
-            Section::Tray => i18n.text(Message::Tray),
-            Section::Messages => i18n.text(Message::Notifications),
-        }
-    }
-
-    fn icon(self) -> Icon {
-        match self {
-            Section::System => Icon::Settings,
-            Section::Tray => Icon::Grid,
-            Section::Messages => Icon::Bell,
-        }
-    }
-}
-
-/// A click resolved inside the icon rail, applied after the render pass so
-/// the rail can finish drawing before state changes.
-enum RailAction {
-    Select(Section),
+/// A click resolved inside the tab bar, applied after the render pass so
+/// the bar can finish drawing before state changes.
+enum TabAction {
+    Select(Tab),
     Close,
 }
 
@@ -206,7 +208,17 @@ pub struct CommandPanel {
     /// Eased reveal amount; kept while closing so the surfaces fade and
     /// slide out instead of vanishing in one frame.
     reveal: f32,
-    section: Section,
+    /// The main panel's active tab.
+    tab: Tab,
+    /// Settings module registry behind the module tabs; modules own their
+    /// draft/apply state and render into the active tab's body.
+    modules: ModuleRegistry,
+    /// Latest persistent-settings snapshot, seeded and refreshed by the
+    /// shell; module tabs render a placeholder until the first one arrives.
+    settings: Option<SettingsSnapshot>,
+    /// The shell-wide design snapshot the hosted settings modules paint
+    /// from, seeded and refreshed by `ChromeUpdate::Appearance`.
+    design: Design,
     /// Accessibility reduced-motion policy shared with the other chrome.
     reduced_motion: bool,
     prev_down: bool,
@@ -244,8 +256,8 @@ pub struct CommandPanel {
     notification_cache: Option<(u64, Arc<Vec<Notification>>)>,
     tray: Option<SniTray>,
     /// SNI item key whose dbusmenu popover is showing (set on the right-click
-    /// that opens it, cleared by click-away, item disappearance, section
-    /// change, or panel close).
+    /// that opens it, cleared by click-away, item disappearance, tab change,
+    /// or panel close).
     menu_open_for: Option<String>,
     /// Breadcrumb of submenu ids from root to the current view; `path[0]` is
     /// always the root sentinel (0), each later id descends one level.
@@ -327,7 +339,10 @@ impl CommandPanel {
         CommandPanel {
             open: false,
             reveal: 0.0,
-            section: Section::System,
+            tab: Tab::System,
+            modules: builtin_settings_modules(),
+            settings: None,
+            design: Design::dark(),
             reduced_motion: false,
             prev_down: false,
             status: SystemStatus::default(),
@@ -367,7 +382,10 @@ impl CommandPanel {
         CommandPanel {
             open: false,
             reveal: 0.0,
-            section: Section::System,
+            tab: Tab::System,
+            modules: builtin_settings_modules(),
+            settings: None,
+            design: Design::dark(),
             reduced_motion: false,
             prev_down: false,
             status: SystemStatus::default(),
@@ -486,11 +504,12 @@ impl CommandPanel {
         }
     }
 
-    fn select_section(&mut self, section: Section) {
-        if self.section != section {
-            self.section = section;
-            // The tray popover anchors to a cell of the Tray section; it does
-            // not survive a section change.
+    fn select_tab(&mut self, tab: Tab) {
+        if self.tab != tab {
+            self.tab = tab;
+            // A tab switch drops an open tray popover even though the tray
+            // itself stays visible in the side column, matching the old
+            // section-switch semantics.
             if let Some(key) = self.menu_open_for.take() {
                 self.menu_path.clear();
                 self.send_tray_command(TrayCommand::CloseMenu { key });
@@ -498,15 +517,29 @@ impl CommandPanel {
         }
     }
 
-    /// The header band, icon rail, and content panel bounds, centered as one
-    /// cluster: the header spans the full cluster width on top, the rail sits
-    /// below it at the left, and the content panel fills the rest. On small
-    /// outputs the cluster shrinks proportionally (rail to a 48px minimum,
-    /// content taking the remainder) so it always fits inside the display.
-    fn cluster_bounds(display: (f32, f32)) -> (Rect, Rect, Rect) {
-        let total_w = (RAIL_W + PANEL_GAP + CONTENT_W).min((display.0 - 32.0).max(120.0));
-        let rail_w = RAIL_W.min((total_w - PANEL_GAP - 120.0).max(48.0));
-        let content_w = (total_w - rail_w - PANEL_GAP).max(60.0);
+    /// The header band, main panel, and side column (notifications over
+    /// tray) bounds, centered as one cluster: the header spans the full
+    /// cluster width on top; below it the main panel sits at the left and
+    /// the side column at the right, the tray panel pinned to the column's
+    /// bottom with the notifications panel filling the rest. On small
+    /// outputs the side column shrinks to its minimum first, then the main
+    /// panel, then the side column past its minimum down to the floors, so
+    /// the cluster always fits inside the display.
+    fn cluster_bounds(display: (f32, f32)) -> (Rect, Rect, Rect, Rect) {
+        let total_w = (CONTENT_W + PANEL_GAP + SIDE_W)
+            .min((display.0 - 32.0).max(MAIN_FLOOR_W + PANEL_GAP + SIDE_FLOOR_W));
+        let available = total_w - PANEL_GAP;
+        let (content_w, side_w) = if available >= CONTENT_W + SIDE_W {
+            (CONTENT_W, SIDE_W)
+        } else if available >= CONTENT_W + SIDE_MIN_W {
+            (CONTENT_W, available - CONTENT_W)
+        } else if available >= MAIN_MIN_W + SIDE_MIN_W {
+            (available - SIDE_MIN_W, SIDE_MIN_W)
+        } else if available >= MAIN_MIN_W + SIDE_FLOOR_W {
+            (MAIN_MIN_W, available - MAIN_MIN_W)
+        } else {
+            (available - SIDE_FLOOR_W, SIDE_FLOOR_W)
+        };
         let total_h = (HEADER_H + PANEL_GAP + CONTENT_H).min((display.1 - 48.0).max(176.0));
         let header_h = HEADER_H.min((total_h - PANEL_GAP - 120.0).max(56.0));
         let content_h = (total_h - header_h - PANEL_GAP).max(80.0);
@@ -518,19 +551,27 @@ impl CommandPanel {
             w: total_w,
             h: header_h,
         };
-        let rail = Rect {
+        let main = Rect {
             x,
             y: y + header_h + PANEL_GAP,
-            w: rail_w,
-            h: content_h,
-        };
-        let content = Rect {
-            x: x + rail_w + PANEL_GAP,
-            y: rail.y,
             w: content_w,
             h: content_h,
         };
-        (header, rail, content)
+        let side_x = x + content_w + PANEL_GAP;
+        let tray_h = TRAY_PANEL_H.min((content_h - PANEL_GAP - 60.0).max(56.0));
+        let tray = Rect {
+            x: side_x,
+            y: main.y + content_h - tray_h,
+            w: side_w,
+            h: tray_h,
+        };
+        let notifications = Rect {
+            x: side_x,
+            y: main.y,
+            w: side_w,
+            h: content_h - tray_h - PANEL_GAP,
+        };
+        (header, main, notifications, tray)
     }
 
     /// Clone the notification queue, memoized on the queue's revision: an
@@ -692,12 +733,12 @@ impl Chrome for CommandPanel {
             self.avatar_warned = true;
         }
         let reveal = self.reveal.clamp(0.0, 1.0);
-        let (header_rect, rail_rect, content_rect) = Self::cluster_bounds(display);
+        let (header_rect, main_rect, notifications_rect, tray_rect) = Self::cluster_bounds(display);
 
         // Dark scrim over the blurred desktop — the product's standard modal
         // backdrop, scaled in with the reveal.
         f.layer(
-            "aegis-sao-scrim",
+            "aegis-hud-scrim",
             Rect {
                 x: 0.0,
                 y: 0.0,
@@ -714,30 +755,39 @@ impl Chrome for CommandPanel {
             |_| {},
         );
 
-        // Click-away: a press landing on none of the three surfaces nor an
-        // open tray popover dismisses the panel.
+        // Click-away: a press landing on none of the cluster's surfaces nor
+        // an open tray popover dismisses the panel.
         let on_popover = self
             .open_popover_bounds(display)
             .map(|rect| contains(rect, cursor.0, cursor.1))
             .unwrap_or(false);
         if pressed
             && !contains(header_rect, cursor.0, cursor.1)
-            && !contains(rail_rect, cursor.0, cursor.1)
-            && !contains(content_rect, cursor.0, cursor.1)
+            && !contains(main_rect, cursor.0, cursor.1)
+            && !contains(notifications_rect, cursor.0, cursor.1)
+            && !contains(tray_rect, cursor.0, cursor.1)
             && !on_popover
         {
             self.close();
         }
 
-        // Sections stop accepting presses while the panel is closing.
+        // Tabs stop accepting presses while the panel is closing.
         let pressed = pressed && self.open;
 
         let header_progress = stagger(reveal, 0.0);
-        let rail_progress = stagger(reveal, RAIL_STAGGER);
         let content_progress = ease_out_cubic(stagger(reveal, CONTENT_STAGGER));
+        let side_progress = ease_out_cubic(stagger(reveal, SIDE_STAGGER));
         self.render_header_band(f, header_rect, header_progress, i18n);
-        self.render_icon_rail(f, rail_rect, rail_progress, cursor, pressed);
-        self.render_content_panel(f, content_rect, content_progress, cursor, i18n, out);
+        self.render_main_panel(f, main_rect, content_progress, i18n, out);
+        self.render_side_column(
+            f,
+            notifications_rect,
+            tray_rect,
+            side_progress,
+            cursor,
+            i18n,
+            out,
+        );
 
         // The dbusmenu popover floats above the panels.
         if self.menu_open_for.is_some()
@@ -844,6 +894,13 @@ impl Chrome for CommandPanel {
             }
             ChromeUpdate::InteractionDomains(snapshot) => {
                 self.interaction_domains = snapshot.clone();
+            }
+            ChromeUpdate::Appearance(design) => {
+                self.design = *design;
+            }
+            ChromeUpdate::Settings(snapshot) => {
+                self.settings = Some(snapshot.clone());
+                self.modules.update_settings(snapshot);
             }
             ChromeUpdate::Windows(windows) => {
                 // A fullscreen window owns the whole output; get out of its way.

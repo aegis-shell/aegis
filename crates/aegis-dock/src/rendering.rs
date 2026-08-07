@@ -29,6 +29,19 @@ impl Chrome for Dock {
             return;
         }
 
+        // The optimistic half of a reorder commit: apply the dragged order
+        // locally so the strip never waits on the catalog round-trip. The
+        // reconciling catalog push clears the flag in `update_app_catalog`.
+        if let Some(order) = self.pending_order.take() {
+            self.apps.sort_by_key(|app| {
+                order
+                    .iter()
+                    .position(|id| id == &app.entry.id)
+                    .unwrap_or(usize::MAX)
+            });
+            self.catalog_revision = self.catalog_revision.wrapping_add(1);
+        }
+
         let dock_obscured = self.obscured_by_windows(windows, (disp.x, disp.y));
         self.set_dock_obscured(dock_obscured);
 
@@ -59,7 +72,13 @@ impl Chrome for Dock {
         } else {
             0.0
         };
-        let rest_bounds = Self::rest_bounds(n, pinned_count, (disp.x, disp.y));
+        let position = self.position;
+        let vertical = position.is_vertical();
+        // The strip's long axis: x for a bottom dock, y for a side dock.
+        // All tile layout runs along this axis and maps to x/y at the end.
+        let axis_disp = if vertical { disp.y } else { disp.x };
+        let cursor_axis = if vertical { cursor.y } else { cursor.x };
+        let rest_bounds = Self::rest_bounds(n, pinned_count, position, (disp.x, disp.y));
 
         // Drop eased sizes for tiles no longer present so the map does not
         // grow unbounded across long sessions.
@@ -67,7 +86,120 @@ impl Chrome for Dock {
             tiles.iter().map(|t| t.key.as_str()).collect();
         self.sizes.retain(|key, _| live_keys.contains(key.as_str()));
 
-        let rest_panel_y = disp.y - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN;
+        // ---- press & drag state machines --------------------------------
+        // The press itself is armed after hit-testing below; this block
+        // promotes an already-armed press past the drag threshold, drives
+        // the live drag preview, and commits on the release edge. Clicks
+        // fire on release (never on press) so the threshold gets first say.
+        // Only disjoint fields are mutated while the tile strip borrow is
+        // live — no `&mut self` calls here.
+        let pressed_edge = down && !self.prev_down;
+        let released_edge = !down && self.prev_down;
+        let mut suppress_release_click = false;
+        let mut released_target: Option<PressTarget> = None;
+        let mut drag_strip: Option<usize> = None;
+        let mut drag_insert: Option<usize> = None;
+
+        if let Some(mut press) = self.press.take() {
+            let mut keep_press = true;
+            if down {
+                if !press.dragging
+                    && Self::drag_threshold_exceeded(press.origin, (cursor.x, cursor.y))
+                {
+                    press.dragging = match &press.target {
+                        PressTarget::PinnedTile(key) => tiles
+                            .iter()
+                            .any(|tile| &tile.key == key && tile.pinned && tile.app.is_some()),
+                        PressTarget::Panel => true,
+                        PressTarget::OtherTile(_) => false,
+                    };
+                }
+                if press.dragging {
+                    self.anim_active = true;
+                    match &press.target {
+                        PressTarget::PinnedTile(key) => {
+                            let strip = tiles.iter().position(|tile| &tile.key == key);
+                            match strip {
+                                Some(strip)
+                                    if tiles[strip].pinned && tiles[strip].app.is_some() =>
+                                {
+                                    drag_strip = Some(strip);
+                                    // The insertion slot over the pinned-app
+                                    // rest centres, the dragged tile excluded.
+                                    let pinned_centres: Vec<f32> = (1..pinned_count)
+                                        .filter(|slot| *slot != strip)
+                                        .map(|slot| {
+                                            Self::rest_centre_estimate(
+                                                slot,
+                                                n,
+                                                pinned_count,
+                                                axis_disp,
+                                            )
+                                        })
+                                        .collect();
+                                    let insert =
+                                        Self::drop_insert_index(&pinned_centres, cursor_axis);
+                                    press.insert = Some(insert);
+                                    drag_insert = Some(insert);
+                                }
+                                // The dragged tile vanished mid-gesture (a
+                                // window or catalog change): cancel the press.
+                                _ => keep_press = false,
+                            }
+                        }
+                        PressTarget::Panel => {
+                            if let Some(target) =
+                                Self::edge_drag_target((cursor.x, cursor.y), (disp.x, disp.y))
+                                && target != self.position
+                            {
+                                // Inline `set_position`: the strip borrow
+                                // rules out `&mut self` calls here.
+                                self.position = target;
+                                self.app_menu.set_side(Self::popup_side_for(target));
+                                self.anim_active = true;
+                            }
+                        }
+                        PressTarget::OtherTile(_) => {}
+                    }
+                }
+            }
+            if released_edge {
+                released_target = Some(press.target.clone());
+                if press.dragging {
+                    suppress_release_click = true;
+                    match &press.target {
+                        PressTarget::PinnedTile(key) => {
+                            let strip = tiles.iter().position(|tile| &tile.key == key);
+                            if let (Some(strip), Some(insert)) = (strip, press.insert)
+                                && strip >= 1
+                                && tiles[strip].pinned
+                                && tiles[strip].app.is_some()
+                            {
+                                let mut ids: Vec<String> =
+                                    self.apps.iter().map(|app| app.entry.id.clone()).collect();
+                                // Strip index 0 is the Launchpad; the pinned
+                                // apps sequence starts at strip index 1.
+                                if Self::move_element(&mut ids, strip - 1, insert) {
+                                    out.dock_reorder = Some(ids.clone());
+                                    self.pending_order = Some(ids);
+                                }
+                            }
+                        }
+                        PressTarget::Panel => {
+                            if self.position != press.start_position {
+                                out.dock_position = Some(self.position);
+                            }
+                        }
+                        PressTarget::OtherTile(_) => {}
+                    }
+                }
+            } else if keep_press {
+                self.press = Some(press);
+            }
+        }
+
+        let drag_active = self.press.as_ref().is_some_and(|press| press.dragging);
+
         let effective_autohide = self.effective_autohide();
 
         // Pointer activation band for magnification. A visible hover surface
@@ -80,8 +212,10 @@ impl Chrome for Dock {
             && cursor.y < rest_bounds.y + rest_bounds.h;
         // The old resting rectangle must stay inert while collapsed. It is
         // enabled for magnification only after the capsule has begun revealing
-        // the Dock.
+        // the Dock. An active drag freezes the wave: the drop preview and the
+        // magnification spring would fight over the same slots.
         let in_band = !self.collapse_pending
+            && !drag_active
             && over_rest_bounds
             && (!effective_autohide || self.autohide_reveal >= 0.2);
         let capsule_entry =
@@ -89,6 +223,7 @@ impl Chrome for Dock {
                 false
             } else {
                 Self::hidden_reveal_requested(
+                    position,
                     &mut self.hidden_trigger_armed,
                     (cursor.x, cursor.y),
                     (disp.x, disp.y),
@@ -101,13 +236,16 @@ impl Chrome for Dock {
                 capsule_entry,
                 (cursor.x, cursor.y),
                 rest_bounds,
-                disp.y,
+                position,
+                (disp.x, disp.y),
             );
         let keeps_revealed = over_dock_trigger || over_hover_surface;
         let menu_open = self.app_menu.is_open();
 
+        // A held drag gesture keeps the Dock revealed even when the cursor
+        // leaves the trigger corridor (an edge drag travels to another edge).
         if effective_autohide {
-            if keeps_revealed || menu_open {
+            if keeps_revealed || menu_open || drag_active {
                 self.autohide_idle = 0.0;
             } else {
                 self.autohide_idle += dt;
@@ -156,7 +294,7 @@ impl Chrome for Dock {
         for (i, t) in tiles.iter().enumerate() {
             let factor = if in_band {
                 Self::magnify_factor(
-                    cursor.x - Self::rest_centre_estimate(i, n, pinned_count, disp.x),
+                    cursor_axis - Self::rest_centre_estimate(i, n, pinned_count, axis_disp),
                 )
             } else {
                 0.0
@@ -197,30 +335,48 @@ impl Chrome for Dock {
             let drifting = (state.value - target).abs() > 0.15 || state.vel.abs() > 0.5;
             unsettled |= drifting;
         }
-        self.anim_active = unsettled || autohide_moving;
+        // An active drag keeps frames ticking: the preview follows the cursor
+        // even when every spring has rested.
+        self.anim_active = unsettled || autohide_moving || drag_active;
 
         // Sum the eased widths (plus the inter-tile gap) to get the live bar
-        // width. The gap is constant; only the tiles widen. Centred horizontally.
+        // length along the strip axis. The gap is constant; only the tiles
+        // widen. Centred on the dock's edge.
         let total_tiles: f32 = eased.iter().sum();
-        let bar_w = total_tiles + (n as f32 - 1.0) * DOCK_TILE_GAP + section_gap + 2.0 * DOCK_PAD;
-        let bar_x = (disp.x - bar_w) * 0.5;
+        let bar_len = total_tiles + (n as f32 - 1.0) * DOCK_TILE_GAP + section_gap + 2.0 * DOCK_PAD;
+        let bar_axis_origin = (axis_disp - bar_len) * 0.5;
 
-        // The running x-offset of each tile's centre, left to right. The
-        // pinned strip and the transient running section are separated by the
-        // wider section gap instead of the ordinary tile gap.
-        let mut centres = Vec::with_capacity(n);
-        let mut x = bar_x + DOCK_PAD;
-        for (i, s) in eased.iter().enumerate() {
-            if i > 0 {
-                let gap = if !tiles[i].pinned && tiles[i - 1].pinned {
+        // The drop-preview permutation: during a reorder drag the dragged
+        // tile still occupies a strip slot (the bar length is unchanged),
+        // but the other tiles shift aside to open the insertion gap at the
+        // preview slot. The Launchpad holds slot 0; the dragged pinned tile
+        // re-enters within the pinned range only.
+        let order: Vec<usize> = match (drag_strip, drag_insert) {
+            (Some(dragged), Some(insert)) if n > 1 => {
+                let mut order: Vec<usize> = (0..n).filter(|slot| *slot != dragged).collect();
+                order.insert((insert + 1).min(order.len()), dragged);
+                order
+            }
+            _ => (0..n).collect(),
+        };
+
+        // The running axis offset of each tile's centre, first to last in
+        // preview order. The pinned strip and the transient running section
+        // are separated by the wider section gap instead of the ordinary
+        // tile gap.
+        let mut centres = vec![0.0_f32; n];
+        let mut next_axis = bar_axis_origin + DOCK_PAD;
+        for (slot, tile_index) in order.iter().copied().enumerate() {
+            if slot > 0 {
+                let gap = if !tiles[tile_index].pinned && tiles[order[slot - 1]].pinned {
                     section_gap
                 } else {
                     DOCK_TILE_GAP
                 };
-                x += gap;
+                next_axis += gap;
             }
-            centres.push(x + s * 0.5);
-            x += *s;
+            centres[tile_index] = next_axis + eased[tile_index] * 0.5;
+            next_axis += eased[tile_index];
         }
         let centre = |i: usize| centres[i];
 
@@ -235,33 +391,63 @@ impl Chrome for Dock {
             1.0
         };
         let panel_rect = if effective_autohide {
-            Self::collapsed_panel_rect((disp.x, disp.y), bar_w, self.autohide_reveal)
+            Self::collapsed_panel_rect(position, (disp.x, disp.y), bar_len, self.autohide_reveal)
         } else {
-            Rect {
-                x: bar_x,
-                y: rest_panel_y,
-                w: bar_w,
-                h: DOCK_PANEL_HEIGHT,
-            }
+            Self::panel_rect_for(position, bar_len, (disp.x, disp.y))
         };
 
-        // Icons are pulled toward the same bottom-centre sink as the panel:
-        // their centres converge horizontally, their baseline follows the
-        // shrinking surface, and their size reaches zero before the final
-        // stadium settles.
-        let icon_bottom = panel_rect.y + panel_rect.h - DOCK_BASELINE_INSET * content_progress;
-        let icon_rects: Vec<Rect> = (0..n)
+        // Icons are anchored to the baseline strip on the panel's inner side
+        // and grow toward the screen centre; as content drains into the
+        // collapsed handle they converge on the same edge-centre sink as the
+        // panel and their size reaches zero before the stadium settles.
+        let icon_baseline = match position {
+            DockPosition::Bottom => {
+                panel_rect.y + panel_rect.h - DOCK_BASELINE_INSET * content_progress
+            }
+            DockPosition::Left => panel_rect.x + DOCK_BASELINE_INSET * content_progress,
+            DockPosition::Right => {
+                panel_rect.x + panel_rect.w - DOCK_BASELINE_INSET * content_progress
+            }
+        };
+        let mut icon_rects: Vec<Rect> = (0..n)
             .map(|i| {
                 let s = (eased[i] * content_progress).max(0.0);
-                let centre_x = disp.x * 0.5 + (centre(i) - disp.x * 0.5) * content_progress;
-                Rect {
-                    x: centre_x - s * 0.5,
-                    y: icon_bottom - s,
-                    w: s,
-                    h: s,
+                let centre_axis =
+                    axis_disp * 0.5 + (centre(i) - axis_disp * 0.5) * content_progress;
+                match position {
+                    DockPosition::Bottom => Rect {
+                        x: centre_axis - s * 0.5,
+                        y: icon_baseline - s,
+                        w: s,
+                        h: s,
+                    },
+                    DockPosition::Left => Rect {
+                        x: icon_baseline,
+                        y: centre_axis - s * 0.5,
+                        w: s,
+                        h: s,
+                    },
+                    DockPosition::Right => Rect {
+                        x: icon_baseline - s,
+                        y: centre_axis - s * 0.5,
+                        w: s,
+                        h: s,
+                    },
                 }
             })
             .collect();
+
+        // During a reorder drag the dragged tile leaves its slot and floats
+        // at the cursor, slightly enlarged; the permutation opened the gap.
+        if let Some(dragged) = drag_strip {
+            let s = icon_rects[dragged].w * DRAG_LIFT_SCALE;
+            icon_rects[dragged] = Rect {
+                x: cursor.x - s * 0.5,
+                y: cursor.y - s * 0.5,
+                w: s,
+                h: s,
+            };
+        }
 
         // The popup belongs to a tile rather than the pointer coordinate.
         // Re-anchor every frame so it follows the tile's live spring geometry.
@@ -282,7 +468,8 @@ impl Chrome for Dock {
         // analytic glass bodies: as it drains, the bar morphs into the
         // stadium handle while keeping lensing, tint and its drop shadow.
         // Edge definition comes from the glass rim, not a painted border.
-        let dock_material = collapsing_dock_material(&self.design, surface_progress, panel_rect.h);
+        let panel_thick = if vertical { panel_rect.w } else { panel_rect.h };
+        let dock_material = collapsing_dock_material(&self.design, surface_progress, panel_thick);
         // A layer with an empty body collapses to ~0 (the rect is only an
         // anchor, not a size); a fixed-size child forces it to the bar size.
         f.layer("aegis-dock", panel_rect, &dock_material, |f| {
@@ -293,13 +480,19 @@ impl Chrome for Dock {
         // The resting bounds remain the outer ownership limit, while the
         // current panel and transformed icon geometry prevent the collapsed
         // handle (or an icon's former position) from impersonating a tile.
-        let hit = hit_test_tiles(
-            (cursor.x, cursor.y),
-            rest_bounds,
-            panel_rect,
-            content_progress,
-            &icon_rects,
-        );
+        // An active drag owns the pointer: no hover, click, or menu target.
+        let hit = if drag_active {
+            None
+        } else {
+            hit_test_tiles(
+                (cursor.x, cursor.y),
+                rest_bounds,
+                panel_rect,
+                content_progress,
+                &icon_rects,
+                vertical,
+            )
+        };
 
         // Draw each tile's icon, then its running dot. Once content has
         // reached the sink, no tile layers remain behind the stadium.
@@ -307,6 +500,7 @@ impl Chrome for Dock {
             for (i, t) in tiles.iter().enumerate() {
                 let s = icon_rects[i].w;
                 let cx = icon_rects[i].x + s * 0.5;
+                let cy = icon_rects[i].y + s * 0.5;
                 let rect = icon_rects[i];
                 let icon_id = format!("aegis-dock-icon-{}", t.key);
                 if t.launchpad {
@@ -357,24 +551,38 @@ impl Chrome for Dock {
                     });
                 }
 
-                if t.running {
-                    // Centre the dot in the flat strip between the icon baseline
-                    // and the panel bottom, so it never falls into the rounded
-                    // corner region (and outside the bar) on the leftmost or
-                    // rightmost tiles.
-                    let dot_w = if t.windows.len() > 1 {
+                if t.running && Some(i) != drag_strip {
+                    // Centre the dot in the flat strip between the icon
+                    // baseline and the panel's near edge, so it never falls
+                    // into the rounded corner region (and outside the bar)
+                    // on the first or last tile. On a side dock the strip —
+                    // and the stadium's long axis — is vertical.
+                    let dot_long = if t.windows.len() > 1 {
                         DOCK_DOT_STADIUM
                     } else {
                         DOCK_DOT
                     } * content_progress;
-                    let dot_h = DOCK_DOT * content_progress;
-                    let strip_h = DOCK_BASELINE_INSET.max(DOCK_DOT) * content_progress;
-                    let dot_y = icon_bottom + (strip_h - dot_h) * 0.5 + dot_h * 0.5;
-                    let dot_rect = Rect {
-                        x: cx - dot_w * 0.5,
-                        y: dot_y - dot_h * 0.5,
-                        w: dot_w,
-                        h: dot_h,
+                    let dot_thick = DOCK_DOT * content_progress;
+                    let strip_span = DOCK_BASELINE_INSET.max(DOCK_DOT) * content_progress;
+                    let dot_rect = match position {
+                        DockPosition::Bottom => Rect {
+                            x: cx - dot_long * 0.5,
+                            y: icon_baseline + (strip_span - dot_thick) * 0.5,
+                            w: dot_long,
+                            h: dot_thick,
+                        },
+                        DockPosition::Left => Rect {
+                            x: icon_baseline + (strip_span - dot_thick) * 0.5,
+                            y: cy - dot_long * 0.5,
+                            w: dot_thick,
+                            h: dot_long,
+                        },
+                        DockPosition::Right => Rect {
+                            x: icon_baseline - strip_span + (strip_span - dot_thick) * 0.5,
+                            y: cy - dot_long * 0.5,
+                            w: dot_thick,
+                            h: dot_long,
+                        },
                     };
                     let color = if t.activated {
                         Color::rgba(236, 238, 245, scaled_alpha(255, content_progress))
@@ -383,24 +591,37 @@ impl Chrome for Dock {
                     };
                     let dot_id = format!("aegis-dock-dot-{}", t.key);
                     f.layer(&dot_id, dot_rect, &tile_opts(), |f| {
-                        f.column_ex(&sized_fill(dot_w, dot_h, color, dot_h * 0.5), |_| {});
+                        f.column_ex(
+                            &sized_fill(dot_rect.w, dot_rect.h, color, dot_thick * 0.5),
+                            |_| {},
+                        );
                     });
                 }
             }
         }
 
         // A slim divider in the section gap separates the kept strip from the
-        // transient running apps, like macOS's Dock.
+        // transient running apps, like macOS's Dock. On a side dock the
+        // divider lies across the strip: a horizontal hairline.
         if section_gap > 0.0 && content_progress > AUTOHIDE_CONTENT_INTERACTION_MIN {
-            let normal_divider_x = (centre(pinned_count - 1) + centre(pinned_count)) * 0.5;
-            let divider_x = disp.x * 0.5 + (normal_divider_x - disp.x * 0.5) * content_progress;
-            let (divider_center, divider_w) = snapped_hairline(divider_x, self.scale);
-            let divider_h = DOCK_TILE * 0.55 * content_progress;
-            let divider_rect = Rect {
-                x: divider_center - divider_w * 0.5,
-                y: panel_rect.y + (panel_rect.h - divider_h) * 0.5,
-                w: divider_w,
-                h: divider_h,
+            let divider_axis = (centre(pinned_count - 1) + centre(pinned_count)) * 0.5;
+            let divider_axis =
+                axis_disp * 0.5 + (divider_axis - axis_disp * 0.5) * content_progress;
+            let (divider_center, divider_thick) = snapped_hairline(divider_axis, self.scale);
+            let divider_len = DOCK_TILE * 0.55 * content_progress;
+            let divider_rect = match position {
+                DockPosition::Bottom => Rect {
+                    x: divider_center - divider_thick * 0.5,
+                    y: panel_rect.y + (panel_rect.h - divider_len) * 0.5,
+                    w: divider_thick,
+                    h: divider_len,
+                },
+                DockPosition::Left | DockPosition::Right => Rect {
+                    x: panel_rect.x + (panel_rect.w - divider_len) * 0.5,
+                    y: divider_center - divider_thick * 0.5,
+                    w: divider_len,
+                    h: divider_thick,
+                },
             };
             f.layer(
                 "aegis-dock-section-divider",
@@ -409,8 +630,8 @@ impl Chrome for Dock {
                 |f| {
                     f.column_ex(
                         &sized_fill(
-                            divider_w,
-                            divider_h,
+                            divider_rect.w,
+                            divider_rect.h,
                             Color::rgba(255, 255, 255, scaled_alpha(80, content_progress)),
                             // Deliberately sharp: the divider is a hairline,
                             // and any radius at or below 0.5 falls back to the
@@ -423,9 +644,9 @@ impl Chrome for Dock {
             );
         }
 
-        // Fire a click once on the press edge (the host does not clear the
-        // per-frame pressed flag, so track the button-down level transition).
-        let pressed_edge = down && !self.prev_down;
+        // Preview cards keep press-edge activation (no drag gesture starts
+        // on them); the per-frame pressed flag is not cleared by the host,
+        // so the button-level transition was tracked at the top of render.
         let previous_hovered_preview = self.hovered_preview;
         let preview_hit = self
             .live_preview
@@ -451,18 +672,62 @@ impl Chrome for Dock {
             self.hovered_preview = None;
         }
 
-        if pressed_edge
+        // Arm the press lifecycle: a pinned-app tile press may become a
+        // reorder drag; a press on empty panel space may become an edge
+        // drag. Anything else stays a pending click.
+        if pressed_edge && !menu_was_open && !clicked_preview && self.press.is_none() {
+            if let Some(i) = hit {
+                let tile = &tiles[i];
+                let target = if tile.pinned && tile.app.is_some() {
+                    PressTarget::PinnedTile(tile.key.clone())
+                } else {
+                    PressTarget::OtherTile(tile.key.clone())
+                };
+                self.press = Some(PressState {
+                    origin: (cursor.x, cursor.y),
+                    target,
+                    dragging: false,
+                    insert: None,
+                    start_position: position,
+                });
+            } else if over_rest_bounds
+                && content_progress > AUTOHIDE_CONTENT_INTERACTION_MIN
+                && cursor.x >= panel_rect.x
+                && cursor.y >= panel_rect.y
+                && cursor.x < panel_rect.x + panel_rect.w
+                && cursor.y < panel_rect.y + panel_rect.h
+            {
+                self.press = Some(PressState {
+                    origin: (cursor.x, cursor.y),
+                    target: PressTarget::Panel,
+                    dragging: false,
+                    insert: None,
+                    start_position: position,
+                });
+            }
+        }
+
+        // A click fires on the release edge, and only when the press began
+        // on the same tile and never became a drag. A release after a drag,
+        // or off the pressed tile, activates nothing.
+        if released_edge
+            && !suppress_release_click
             && !menu_was_open
-            && !clicked_preview
-            && let Some(i) = hit
+            && let (Some(target), Some(i)) = (released_target, hit)
         {
-            let t = &tiles[i];
-            if t.launchpad {
-                out.toggle_launcher = true;
-            } else if let Some(id) = t.focus {
-                out.clicked = Some(id);
-            } else if let Some(ai) = t.spawn {
-                out.activate_entry(self.apps[ai].entry.clone());
+            let pressed_this_tile = match &target {
+                PressTarget::PinnedTile(key) | PressTarget::OtherTile(key) => key == &tiles[i].key,
+                PressTarget::Panel => false,
+            };
+            if pressed_this_tile {
+                let t = &tiles[i];
+                if t.launchpad {
+                    out.toggle_launcher = true;
+                } else if let Some(id) = t.focus {
+                    out.clicked = Some(id);
+                } else if let Some(ai) = t.spawn {
+                    out.activate_entry(self.apps[ai].entry.clone());
+                }
             }
         }
         let right_pressed = input
@@ -471,7 +736,12 @@ impl Chrome for Dock {
             .get(1)
             .copied()
             .unwrap_or(false);
-        if right_pressed && let Some(i) = hit {
+        // A held left press (pending click or drag) suppresses the menu for
+        // its tile; the dragged tile in particular must not pop one up.
+        if right_pressed
+            && self.press.is_none()
+            && let Some(i) = hit
+        {
             let tile = &tiles[i];
             if !tile.launchpad {
                 let pin_action = if let Some(ai) = tile.app {
@@ -566,9 +836,16 @@ impl Chrome for Dock {
             // frame apart.
             let owner = self.hover_owner_bounds.unwrap_or(icon_rects[index]);
             self.hover_owner_bounds = Some(owner);
+            let side = Self::popup_side_for(position);
             if tile.windows.is_empty() {
-                let rect =
-                    tooltip_rect(f, &tile.label, owner, (disp.x, disp.y), self.tooltip_alpha);
+                let rect = tooltip_rect(
+                    f,
+                    &tile.label,
+                    owner,
+                    (disp.x, disp.y),
+                    self.tooltip_alpha,
+                    side,
+                );
                 self.hover_surface_bounds = Some(rect);
                 self.live_preview = None;
                 self.hovered_preview = None;
@@ -580,6 +857,7 @@ impl Chrome for Dock {
                     owner,
                     &tile.windows,
                     self.tooltip_alpha,
+                    position,
                 );
                 self.hover_surface_bounds = Some(to_lens_rect(presentation.panel));
                 let previous_hovered_preview = self.hovered_preview;
@@ -614,19 +892,33 @@ impl Chrome for Dock {
         self.prev_down = down;
     }
 
-    /// The dock reserves the bottom edge so tiled windows do not render under
+    /// The dock reserves its screen edge so tiled windows do not render under
     /// the bar (ADR-0024 chrome-aware work-area). The magnified-icon overshoot
-    /// above the bar is intentionally not reserved — chrome draws over windows.
+    /// past the bar is intentionally not reserved — chrome draws over windows.
     fn reserved(&self) -> Reserved {
         if self.effective_autohide() || self.fullscreen_locked() {
-            Reserved::default()
-        } else {
-            Reserved {
+            return Reserved::default();
+        }
+        let extent = (DOCK_PANEL_HEIGHT + DOCK_EDGE_MARGIN) as i32;
+        match self.position {
+            DockPosition::Bottom => Reserved {
                 top: 0,
-                bottom: (DOCK_PANEL_HEIGHT + DOCK_BOTTOM_MARGIN) as i32,
+                bottom: extent,
                 left: 0,
                 right: 0,
-            }
+            },
+            DockPosition::Left => Reserved {
+                top: 0,
+                bottom: 0,
+                left: extent,
+                right: 0,
+            },
+            DockPosition::Right => Reserved {
+                top: 0,
+                bottom: 0,
+                left: 0,
+                right: extent,
+            },
         }
     }
 
@@ -652,6 +944,7 @@ impl Chrome for Dock {
             return;
         }
         let requested = Self::hidden_reveal_requested(
+            self.position,
             &mut self.hidden_trigger_armed,
             (raw.cursor.x, raw.cursor.y),
             display,
@@ -675,11 +968,14 @@ impl Chrome for Dock {
         _windows: &[Window],
         _workspaces: &WorkspaceSnapshot,
     ) -> Vec<BackdropRegion> {
-        let mut regions = Vec::with_capacity(2);
+        let mut regions = Vec::with_capacity(3);
         if let Some(region) = self.liquid_glass_region(display) {
             regions.push(region.bounds);
         }
         if let Some(region) = self.hover_liquid_glass_region() {
+            regions.push(region.bounds);
+        }
+        if let Some(region) = self.app_menu.liquid_glass_region(display) {
             regions.push(region.bounds);
         }
         regions
@@ -694,6 +990,7 @@ impl Chrome for Dock {
         self.liquid_glass_region(display)
             .into_iter()
             .chain(self.hover_liquid_glass_region())
+            .chain(self.app_menu.liquid_glass_region(display))
             .collect()
     }
 
@@ -742,7 +1039,10 @@ impl Chrome for Dock {
             ChromeUpdate::Windows(windows) => self.update_windows(windows),
             ChromeUpdate::AllWindows(windows) => self.update_all_windows(windows),
             ChromeUpdate::Scale(scale) => self.scale = scale,
-            ChromeUpdate::Appearance(design) => self.design = *design,
+            ChromeUpdate::Appearance(design) => {
+                self.design = *design;
+                self.app_menu.update(update);
+            }
             ChromeUpdate::AppCatalog(catalog) => self.update_app_catalog(catalog),
             _ => {}
         }
@@ -759,6 +1059,12 @@ impl Chrome for Dock {
         if self.fullscreen_locked() {
             return false;
         }
+        // A held drag gesture owns the pointer across the whole output: a
+        // reorder drag previews across the strip and an edge drag travels to
+        // another screen edge.
+        if self.press.as_ref().is_some_and(|press| press.dragging) {
+            return true;
+        }
         if self.app_menu.contains(x, y, display) {
             return true;
         }
@@ -767,22 +1073,29 @@ impl Chrome for Dock {
         }
         let rest = self.pointer_bounds(display);
         let effective_autohide = self.effective_autohide();
-        let collapsed_indicator = Self::collapsed_indicator_contains((x, y), display);
+        let collapsed_indicator =
+            Self::collapsed_indicator_contains(self.position, (x, y), display);
         if Self::pointer_keeps_revealed(
             effective_autohide,
             self.autohide_reveal,
             collapsed_indicator,
             (x, y),
             rest,
-            display.1,
+            self.position,
+            display,
         ) {
             return true;
         }
         if effective_autohide && self.autohide_reveal < 0.2 {
             return false;
         }
+        let rest_len = if self.position.is_vertical() {
+            rest.h
+        } else {
+            rest.w
+        };
         let r = if effective_autohide {
-            Self::collapsed_panel_rect(display, rest.w, self.autohide_reveal)
+            Self::collapsed_panel_rect(self.position, display, rest_len, self.autohide_reveal)
         } else {
             rest
         };
@@ -880,6 +1193,18 @@ impl Dock {
             .collect();
         self.icons = catalog.icons.clone();
         self.catalog_revision = self.catalog_revision.wrapping_add(1);
+        // The push reconciles an optimistic drag reorder: the locally applied
+        // order and the pushed order are the same list by construction.
+        self.pending_order = None;
+        // An edge drag in flight owns the live position; the catalog catches
+        // up when the gesture ends.
+        if !self
+            .press
+            .as_ref()
+            .is_some_and(|press| press.dragging && matches!(press.target, PressTarget::Panel))
+        {
+            self.set_position(catalog.position);
+        }
     }
     /// Resolve the single animated Dock body once for both capture bounds and
     /// the analytic glass pass. The foreground material uses the same radius
@@ -890,8 +1215,13 @@ impl Dock {
             return None;
         }
         let expanded = self.visual_panel_bounds(display);
+        let expanded_len = if self.position.is_vertical() {
+            expanded.h
+        } else {
+            expanded.w
+        };
         let bounds = if self.effective_autohide() {
-            Self::collapsed_panel_rect(display, expanded.w, self.autohide_reveal)
+            Self::collapsed_panel_rect(self.position, display, expanded_len, self.autohide_reveal)
         } else {
             expanded
         };
@@ -902,14 +1232,20 @@ impl Dock {
         };
         // The shadow follows the morph in logical pixels: the full bar
         // casts the deep Dock shadow, the collapsed handle keeps a
-        // proportionally tight one.
-        let shadow_factor = (bounds.h / DOCK_PANEL_HEIGHT).clamp(0.35, 1.0);
+        // proportionally tight one. The panel's thickness is its height on
+        // the bottom edge and its width on a side edge.
+        let thick = if self.position.is_vertical() {
+            bounds.w
+        } else {
+            bounds.h
+        };
+        let shadow_factor = (thick / DOCK_PANEL_HEIGHT).clamp(0.35, 1.0);
         let design = self.design;
         let mut region = LiquidGlassRegion::from_role(
             &design,
             GlassRole::Dock,
             BackdropRegion::from(bounds),
-            collapsing_radius(&design, surface_progress, bounds.h),
+            collapsing_radius(&design, surface_progress, thick),
             1.0,
         );
         region.shadow_blur *= shadow_factor;
@@ -958,12 +1294,16 @@ pub(super) fn snapped_hairline(center: f32, scale: f32) -> (f32, f32) {
     ((center * scale).round() / scale, 1.0 / scale)
 }
 
+/// Nearest-tile hit test along the strip axis (`vertical` picks y for a
+/// side dock, x for a bottom dock). Gated by the resting bounds, the live
+/// panel, and the content drain, so collapsed geometry owns no tiles.
 pub(super) fn hit_test_tiles(
     cursor: (f32, f32),
     rest_bounds: Rect,
     panel_rect: Rect,
     content_progress: f32,
     icon_rects: &[Rect],
+    vertical: bool,
 ) -> Option<usize> {
     let contains = |rect: Rect| {
         cursor.0 >= rect.x
@@ -980,10 +1320,16 @@ pub(super) fn hit_test_tiles(
 
     let mut hit = None;
     let mut best = f32::MAX;
+    let cursor_axis = if vertical { cursor.1 } else { cursor.0 };
     for (i, rect) in icon_rects.iter().enumerate() {
-        let centre = rect.x + rect.w * 0.5;
+        // Tiles are square, so either dimension reads the axis centre.
+        let centre = if vertical {
+            rect.y + rect.h * 0.5
+        } else {
+            rect.x + rect.w * 0.5
+        };
         let half = rect.w * 0.5 + DOCK_TILE_GAP * content_progress * 0.5;
-        let distance = (cursor.0 - centre).abs();
+        let distance = (cursor_axis - centre).abs();
         if distance <= half && distance < best {
             best = distance;
             hit = Some(i);
@@ -1089,24 +1435,47 @@ fn tile_opts() -> OverlayOpts {
 }
 
 /// Resolve the name bubble once so the painted foreground and compositor
-/// liquid-glass body use identical geometry on the following frame.
+/// liquid-glass body use identical geometry on the following frame. The
+/// bubble opens toward `side` of its owner: above a bottom dock's tile, or
+/// into the output beside a side dock's tile.
 fn tooltip_rect(
     frame: &mut Frame,
     label: &str,
     owner: Rect,
     display: (f32, f32),
     _alpha: f32,
+    side: PopupSide,
 ) -> Rect {
     let label = ellipsize(frame, label, 12.5, 224.0 - 22.0);
     let text = frame.measure_text(&label, 12.5);
     let width = (text.width + 22.0).clamp(54.0, 224.0);
-    let x = (owner.x + owner.w * 0.5 - width * 0.5).clamp(8.0, (display.0 - width - 8.0).max(8.0));
-    let y = (owner.y - TOOLTIP_GAP - TOOLTIP_HEIGHT).max(8.0);
-    Rect {
-        x,
-        y,
-        w: width,
-        h: TOOLTIP_HEIGHT,
+    match side {
+        PopupSide::Above => {
+            let x = (owner.x + owner.w * 0.5 - width * 0.5)
+                .clamp(8.0, (display.0 - width - 8.0).max(8.0));
+            let y = (owner.y - TOOLTIP_GAP - TOOLTIP_HEIGHT).max(8.0);
+            Rect {
+                x,
+                y,
+                w: width,
+                h: TOOLTIP_HEIGHT,
+            }
+        }
+        PopupSide::Right | PopupSide::Left => {
+            let x = if side == PopupSide::Right {
+                (owner.x + owner.w + TOOLTIP_GAP).min((display.0 - width - 8.0).max(8.0))
+            } else {
+                (owner.x - TOOLTIP_GAP - width).max(8.0)
+            };
+            let y = (owner.y + owner.h * 0.5 - TOOLTIP_HEIGHT * 0.5)
+                .clamp(8.0, (display.1 - TOOLTIP_HEIGHT - 8.0).max(8.0));
+            Rect {
+                x,
+                y,
+                w: width,
+                h: TOOLTIP_HEIGHT,
+            }
+        }
     }
 }
 
@@ -1142,16 +1511,30 @@ fn render_tooltip(frame: &mut Frame, design: &Design, label: &str, rect: Rect, a
 
 /// Lay out every running window for one Dock application. Typical groups stay
 /// in a single row; large groups wrap into a centred grid while preserving a
-/// usable card width and staying inside the output margins.
+/// usable card width and staying inside the output margins. The panel opens
+/// toward the output interior — above a bottom dock's owner tile, beside a
+/// side dock's — and the dock's edge decides which axis bounds the cards.
 pub(super) fn live_preview_layout(
     design: &Design,
     display: (f32, f32),
     owner: Rect,
     windows: &[aegis_model::window::WindowId],
     visibility: f32,
+    position: DockPosition,
 ) -> LivePreviewPresentation {
     let count = windows.len().max(1);
-    let available_w = (display.0 - PREVIEW_SCREEN_MARGIN * 2.0).max(1.0);
+    // Room for the panel along each axis. For a bottom dock the horizontal
+    // room is the output width and the vertical room is the space above the
+    // owner; for a side dock the panel sits beside the owner, so the roles
+    // swap to the room toward the far edge and the full output height.
+    let horizontal_room = match position {
+        DockPosition::Bottom => display.0 - PREVIEW_SCREEN_MARGIN * 2.0,
+        DockPosition::Left => {
+            display.0 - (owner.x + owner.w) - PREVIEW_PANEL_GAP - PREVIEW_SCREEN_MARGIN * 2.0
+        }
+        DockPosition::Right => owner.x - PREVIEW_PANEL_GAP - PREVIEW_SCREEN_MARGIN * 2.0,
+    };
+    let available_w = horizontal_room.max(1.0);
     let max_columns = (((available_w - PREVIEW_PANEL_PAD * 2.0 + PREVIEW_CARD_GAP)
         / (PREVIEW_CARD_MIN_WIDTH + PREVIEW_CARD_GAP))
         .floor() as usize)
@@ -1162,9 +1545,11 @@ pub(super) fn live_preview_layout(
         - PREVIEW_PANEL_PAD * 2.0
         - PREVIEW_CARD_GAP * columns.saturating_sub(1) as f32)
         / columns as f32;
-    let vertical_space = (owner.y
-        - PREVIEW_PANEL_GAP
-        - PREVIEW_SCREEN_MARGIN
+    let vertical_room = match position {
+        DockPosition::Bottom => owner.y - PREVIEW_PANEL_GAP - PREVIEW_SCREEN_MARGIN,
+        DockPosition::Left | DockPosition::Right => display.1 - PREVIEW_SCREEN_MARGIN * 2.0,
+    };
+    let vertical_space = (vertical_room
         - PREVIEW_PANEL_PAD * 2.0
         - PREVIEW_CARD_GAP * rows.saturating_sub(1) as f32)
         .max(1.0);
@@ -1182,11 +1567,23 @@ pub(super) fn live_preview_layout(
     let panel_h = card_h * rows as f32
         + PREVIEW_CARD_GAP * rows.saturating_sub(1) as f32
         + PREVIEW_PANEL_PAD * 2.0;
-    let panel_x = (owner.x + owner.w * 0.5 - panel_w * 0.5).clamp(
-        PREVIEW_SCREEN_MARGIN,
-        (display.0 - panel_w - PREVIEW_SCREEN_MARGIN).max(PREVIEW_SCREEN_MARGIN),
-    );
-    let panel_y = (owner.y - PREVIEW_PANEL_GAP - panel_h).max(PREVIEW_SCREEN_MARGIN);
+    let panel_x = match position {
+        DockPosition::Bottom => (owner.x + owner.w * 0.5 - panel_w * 0.5).clamp(
+            PREVIEW_SCREEN_MARGIN,
+            (display.0 - panel_w - PREVIEW_SCREEN_MARGIN).max(PREVIEW_SCREEN_MARGIN),
+        ),
+        DockPosition::Left => (owner.x + owner.w + PREVIEW_PANEL_GAP)
+            .min((display.0 - panel_w - PREVIEW_SCREEN_MARGIN).max(PREVIEW_SCREEN_MARGIN)),
+        DockPosition::Right => (owner.x - PREVIEW_PANEL_GAP - panel_w).max(PREVIEW_SCREEN_MARGIN),
+    };
+    let panel_y = match position {
+        DockPosition::Bottom => (owner.y - PREVIEW_PANEL_GAP - panel_h).max(PREVIEW_SCREEN_MARGIN),
+        DockPosition::Left | DockPosition::Right => (owner.y + owner.h * 0.5 - panel_h * 0.5)
+            .clamp(
+                PREVIEW_SCREEN_MARGIN,
+                (display.1 - panel_h - PREVIEW_SCREEN_MARGIN).max(PREVIEW_SCREEN_MARGIN),
+            ),
+    };
     let panel = Rect {
         x: panel_x,
         y: panel_y,

@@ -7,6 +7,7 @@
 
 pub mod app;
 pub mod dmabuf;
+pub mod dock;
 pub mod gesture;
 pub mod input;
 pub mod interaction_domain;

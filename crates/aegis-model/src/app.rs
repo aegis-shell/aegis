@@ -11,20 +11,10 @@
 
 use std::path::PathBuf;
 
-/// Desktop-file id, icon name, and Wayland app id of System Settings.
-pub const SETTINGS_DESKTOP_ID: &str = "io.github.ming2k.aegis.Settings.desktop";
-pub const SETTINGS_ICON_NAME: &str = "io.github.ming2k.aegis.Settings";
-pub const SETTINGS_APP_ID: &str = "io.github.ming2k.aegis.Settings";
-pub const AGENT_WORKSPACES_ID: &str = "aegis-agent-workspaces";
-/// Previous built-in id accepted only when resolving persisted Dock pins.
-const AGENT_WORKSPACES_LEGACY_ID: &str = "aegis-interaction-manager";
-
 /// A compositor-owned application that is part of the desktop itself rather
 /// than an external process described by a desktop entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltInApplication {
-    /// Agent Workspaces lifecycle and Interaction Domain-authority presentation.
-    AgentWorkspaces,
     /// Interactive screenshot region selector.
     ScreenshotSelector,
 }
@@ -122,61 +112,16 @@ impl Entry {
         keys
     }
 
-    /// Match the canonical id or a narrowly scoped compatibility identity
-    /// accepted while reading persisted application references.
+    /// Match the canonical id accepted while reading persisted application
+    /// references.
     pub fn matches_persistent_id(&self, candidate: &str) -> bool {
         self.id.eq_ignore_ascii_case(candidate)
-            || (self.id == AGENT_WORKSPACES_ID
-                && candidate.eq_ignore_ascii_case(AGENT_WORKSPACES_LEGACY_ID))
-    }
-
-    /// Construct the compositor-owned Agent Workspaces catalog entry.
-    pub fn agent_workspaces(name: impl Into<String>, summary: impl Into<String>) -> Entry {
-        Entry {
-            target: ApplicationTarget::BuiltIn(BuiltInApplication::AgentWorkspaces),
-            id: AGENT_WORKSPACES_ID.into(),
-            name: name.into(),
-            generic_name: Some(summary.into()),
-            comment: Some(
-                "Manage AI-controlled application interaction domains and authority".into(),
-            ),
-            icon: Some("preferences-system-symbolic".into()),
-            categories: vec!["System".into()],
-            keywords: vec![
-                "ai".into(),
-                "workspace".into(),
-                "interaction".into(),
-                "domain".into(),
-                "agent".into(),
-            ],
-            ..Entry::default()
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn settings_ids_share_one_canonical_stem() {
-        assert_eq!(SETTINGS_DESKTOP_ID, format!("{SETTINGS_APP_ID}.desktop"));
-        assert_eq!(SETTINGS_ICON_NAME, SETTINGS_APP_ID);
-    }
-
-    #[test]
-    fn agent_workspaces_has_a_stable_builtin_identity() {
-        let workspaces =
-            Entry::agent_workspaces("Agent Workspaces", "Interaction domain management");
-        assert_eq!(workspaces.id, AGENT_WORKSPACES_ID);
-        assert_eq!(
-            workspaces.target,
-            ApplicationTarget::BuiltIn(BuiltInApplication::AgentWorkspaces)
-        );
-        assert!(workspaces.matches_persistent_id(AGENT_WORKSPACES_ID));
-        assert!(workspaces.matches_persistent_id(AGENT_WORKSPACES_LEGACY_ID));
-        assert!(!workspaces.matches_persistent_id("aegis-ai-workspaces"));
-    }
 
     #[test]
     fn match_keys_cover_wm_class_stem_and_icon_lowercased() {

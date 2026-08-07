@@ -14,10 +14,10 @@
 use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
 
 use crate::{
-    BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape, Localizer,
-    Reserved, ellipsize,
+    BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
+    LiquidGlassRegion, Localizer, Reserved, ellipsize,
 };
-use aegis_design::{Design, themes};
+use aegis_design::{Design, GlassRole, materials, themes};
 use aegis_model::input::{KeyAction, KeyChar, key_action};
 use aegis_model::window::Window;
 use zeroize::Zeroize;
@@ -215,17 +215,12 @@ impl Chrome for SecretPrompt {
         let original_theme = frame.theme();
         frame.set_theme(themes::application(&design));
 
+        // Minimal foreground tint only. The compositor-owned analytic pass
+        // supplies the body, refraction, rim light, and shadow.
         frame.layer(
             "aegis-secret-prompt-panel",
             layout.panel,
-            &OverlayOpts {
-                bg: design.colors.application_surface.with_alpha(238),
-                border: design.colors.application_border,
-                border_width: design.strokes.hairline,
-                radius: design.radii.card,
-                pad: 0.0,
-                ..Default::default()
-            },
+            &materials::glass_panel(&design),
             |_| {},
         );
 
@@ -275,7 +270,7 @@ impl Chrome for SecretPrompt {
             layout.field,
             &OverlayOpts {
                 bg: design.colors.card_surface,
-                border: design.colors.application_accent,
+                border: design.colors.application_border,
                 border_width: design.strokes.hairline,
                 radius: design.radii.control,
                 pad: 0.0,
@@ -325,8 +320,6 @@ impl Chrome for SecretPrompt {
                 } else {
                     design.colors.card_surface
                 },
-                border: design.colors.application_border,
-                border_width: design.strokes.hairline,
                 radius: design.radii.control,
                 pad: 0.0,
                 cross: Align::Center,
@@ -386,6 +379,12 @@ impl Chrome for SecretPrompt {
     }
 
     fn modal_active(&self) -> bool {
+        self.active
+    }
+
+    // A pending consent owns the complete chrome layer: the Dock, HUD, and
+    // toasts stay suppressed until the prompt is answered.
+    fn exclusive_presentation_active(&self) -> bool {
         self.active
     }
 
@@ -473,22 +472,29 @@ impl Chrome for SecretPrompt {
             return Vec::new();
         }
         let layout = PromptLayout::for_display(display, self.modal_reserved, self.reason.is_some());
-        let panel = layout.panel;
-        let radius = self.design.radii.card;
-        vec![
-            BackdropRegion {
-                x: panel.x + radius,
-                y: panel.y,
-                w: (panel.w - radius * 2.0).max(0.0),
-                h: panel.h,
-            },
-            BackdropRegion {
-                x: panel.x,
-                y: panel.y + radius,
-                w: panel.w,
-                h: (panel.h - radius * 2.0).max(0.0),
-            },
-        ]
+        // One region exactly matching the glass body below: the runtime drops
+        // it from the rectangular frost set, so the analytic pass alone owns
+        // the rounded panel.
+        vec![BackdropRegion::from(layout.panel)]
+    }
+
+    fn liquid_glass_regions(
+        &self,
+        display: (f32, f32),
+        _windows: &[Window],
+        _workspaces: &crate::WorkspaceSnapshot,
+    ) -> Vec<LiquidGlassRegion> {
+        if !self.active {
+            return Vec::new();
+        }
+        let layout = PromptLayout::for_display(display, self.modal_reserved, self.reason.is_some());
+        vec![LiquidGlassRegion::from_role(
+            &self.design,
+            GlassRole::ProminentPanel,
+            BackdropRegion::from(layout.panel),
+            self.design.radii.glass_panel,
+            1.0,
+        )]
     }
 }
 
@@ -590,5 +596,30 @@ mod tests {
         assert!(out.secret_prompt_cancelled);
         assert!(!prompt.secret_prompt_active());
         assert!(prompt.buffer.is_empty());
+    }
+
+    #[test]
+    fn the_active_panel_is_one_analytic_glass_body() {
+        let mut prompt = SecretPrompt::new();
+        let display = (1280.0, 800.0);
+        let workspaces = crate::WorkspaceSnapshot {
+            outputs: Vec::new(),
+        };
+        assert!(
+            prompt
+                .liquid_glass_regions(display, &[], &workspaces)
+                .is_empty()
+        );
+        assert!(!prompt.exclusive_presentation_active());
+
+        prompt.start_secret_prompt(params());
+        let backdrop = prompt.backdrop_regions(display, &[], &workspaces);
+        let glass = prompt.liquid_glass_regions(display, &[], &workspaces);
+        assert_eq!(backdrop.len(), 1);
+        assert_eq!(glass.len(), 1);
+        assert_eq!(glass[0].bounds, backdrop[0]);
+        assert_eq!(glass[0].corner_radius, Design::dark().radii.glass_panel);
+        assert_eq!(glass[0].opacity, 1.0);
+        assert!(prompt.exclusive_presentation_active());
     }
 }

@@ -1,25 +1,30 @@
-//! macOS-style dock: a rounded translucent bar at the bottom-center of the
-//! output holding a persistent strip of pinned application icons. Unlike a
-//! window list, the dock is populated from launchable `.desktop` entries the
-//! binary pins (plus any running window that is not already pinned), so it
-//! shows real XDG icons even when nothing is running.
+//! macOS-style dock: a rounded translucent bar anchored to a screen edge of
+//! the output (bottom by default; the left or right edge via
+//! `[dock] position`) holding a persistent strip of pinned application
+//! icons. Unlike a window list, the dock is populated from launchable
+//! `.desktop` entries the binary pins (plus any running window that is not
+//! already pinned), so it shows real XDG icons even when nothing is running.
 //!
 //! Each tile is one app:
 //!   - Clicking a tile whose app has a running window focuses that window;
 //!     clicking a tile with no running window launches the app (`out.spawn`).
-//!   - A small dot beneath a tile marks a running app; the dot brightens for
-//!     the activated window.
+//!   - Dragging a pinned tile past a neighbour's midpoint reorders the pinned
+//!     strip (`out.dock_reorder`); dragging empty panel space toward another
+//!     screen edge moves the dock there (`out.dock_position`).
+//!   - A small dot beside a tile (beneath it on a bottom dock) marks a
+//!     running app; the dot brightens for the activated window.
 //!
 //! Visuals are deliberately icon-first, not button-first: tiles are drawn as
 //! bare raster icons (no pill / border), and hovering magnifies the tile under
 //! the cursor and its neighbours along a cosine bell. Unlike a fixed-slot
 //! dock, the bar *reflows*: it widens to fit the magnified widths and the
 //! neighbouring tiles spread apart around the cursor — the classic macOS
-//! squeeze-and-lift. Tiles are bottom-anchored and scale upward, so a
-//! magnified icon pops *above* the bar. Each tile's size is driven by a
-//! damped spring with a slight under-damped overshoot, so the wave tracks a
-//! moving cursor and settles with a gentle bounce. Brand-new tiles (a window
-//! just mapped) spring up from a seed size instead of popping in.
+//! squeeze-and-lift. Tiles are anchored to the bar's inner baseline and scale
+//! toward the screen centre, so a magnified icon pops *out* of the bar. Each
+//! tile's size is driven by a damped spring with a slight under-damped
+//! overshoot, so the wave tracks a moving cursor and settles with a gentle
+//! bounce. Brand-new tiles (a window just mapped) spring up from a seed size
+//! instead of popping in.
 
 use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
@@ -30,20 +35,22 @@ use aegis_design::{Design, GlassRole, materials};
 use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect};
 
 use aegis_model::app::Entry;
+use aegis_model::dock::DockPosition;
 use aegis_model::input::{KeyAction, KeyChar, key_action};
 use aegis_model::window::{SpaceUse, Window};
 use aegis_model::workspace::WorkspaceSnapshot;
 use aegis_shell::{
     AppCatalog, AppMenu, BackdropRegion, Chrome, ChromeEvents, ChromeUpdate, CursorShape, IconSet,
-    LiquidGlassRegion, LivePreviewPresentation, Localizer, Message, PinAction, PreviewCard,
-    Reserved, ellipsize, preview,
+    LiquidGlassRegion, LivePreviewPresentation, Localizer, Message, PinAction, PopupSide,
+    PreviewCard, Reserved, ellipsize, preview,
 };
 
 /// Visual height of the dock bar. Tiles rest inside it; magnified tiles pop
-/// above its top edge (they are drawn as their own layers, unclipped).
+/// above its top edge (they are drawn as their own layers, unclipped). On a
+/// side edge this is the panel's thickness (width).
 const DOCK_PANEL_HEIGHT: f32 = 74.0;
-/// Gap between the dock bar and the bottom edge of the output.
-const DOCK_BOTTOM_MARGIN: f32 = 12.0;
+/// Gap between the dock bar and the screen edge it is anchored to.
+const DOCK_EDGE_MARGIN: f32 = 12.0;
 /// Distance from the bar's bottom edge up to the icon baseline (the bottom of
 /// every tile). Leaves room for the running-indicator dot strip plus a small
 /// gap, while keeping the dot clear of the panel's rounded bottom corners.
@@ -99,6 +106,15 @@ const TOOLTIP_DWELL: f32 = 0.30;
 const TOOLTIP_FADE_SPEED: f32 = 18.0;
 const TOOLTIP_HEIGHT: f32 = 28.0;
 const TOOLTIP_GAP: f32 = 9.0;
+/// Pointer travel (logical px) from the press point that promotes a held
+/// left-button press into a drag — a tile reorder or a panel edge drag.
+const DRAG_THRESHOLD: f32 = 6.0;
+/// Distance from a screen edge (logical px) within which a panel edge drag
+/// snaps the dock to that edge.
+const EDGE_DRAG_PROXIMITY: f32 = 96.0;
+/// Scale bump applied to a reordered tile while it floats at the cursor —
+/// the "lifted" read without touching the raster icon's alpha.
+const DRAG_LIFT_SCALE: f32 = 1.12;
 /// Geometry for the live window cards shown above a running Dock tile.
 const PREVIEW_CARD_MAX_WIDTH: f32 = 224.0;
 const PREVIEW_CARD_MIN_WIDTH: f32 = 112.0;
@@ -173,6 +189,44 @@ impl Tile {
             pinned: true,
         }
     }
+}
+
+/// What a left-button press on the dock panel landed on.
+#[derive(Clone)]
+enum PressTarget {
+    /// A pinned application tile (identified by its stable tile key): the
+    /// reorderable class. The strip index is re-resolved from the key every
+    /// frame, so windows opening or closing mid-gesture cannot shift the
+    /// drag anchor.
+    PinnedTile(String),
+    /// A tile that cannot be reordered — the Launchpad or a transient
+    /// running window. The press stays a pending click until release.
+    OtherTile(String),
+    /// Empty panel space (padding, gaps, or the collapsed autohide handle).
+    /// A press-and-drag here moves the dock between screen edges.
+    Panel,
+}
+
+/// A held left-button press on the dock. Movement past [`DRAG_THRESHOLD`]
+/// promotes it: a pinned-app tile press becomes a reorder drag and an
+/// empty-panel press becomes an edge drag; anything else remains a pending
+/// click fired on release. Click activation deliberately happens on the
+/// release edge, never the press edge, so the threshold gets first say.
+#[derive(Clone)]
+struct PressState {
+    /// Cursor position at the press; the drag-threshold reference.
+    origin: (f32, f32),
+    /// What the press landed on.
+    target: PressTarget,
+    /// Whether the press has been promoted to a drag.
+    dragging: bool,
+    /// The latest reorder insertion slot previewed during a tile drag (an
+    /// index into the pinned-app sequence with the dragged tile removed).
+    /// The release commits it.
+    insert: Option<usize>,
+    /// The dock position when the press started. An edge drag that ends
+    /// back on the original edge persists nothing.
+    start_position: DockPosition,
 }
 
 /// The macOS-style dock.
@@ -276,6 +330,21 @@ pub struct Dock {
     /// [`aegis_shell::Shell::add`] and refreshed when the desktop color scheme
     /// changes; defaults to the dark appearance until the first update arrives.
     design: Design,
+    /// The screen edge the panel anchors to. Carried on the pushed
+    /// [`AppCatalog`] from the `[dock] position` configuration, switched
+    /// optimistically by an edge drag, and persisted by the runtime through
+    /// `ConfigEdit::SetDockPosition`. Drives panel geometry, strip
+    /// orientation, the magnification axis, reserved space, popup placement,
+    /// and the autohide trigger shape.
+    position: DockPosition,
+    /// The live left-button press lifecycle (pending click, reorder drag, or
+    /// edge drag), `None` while no gesture is held.
+    press: Option<PressState>,
+    /// The committed order of a just-finished reorder drag (entry ids),
+    /// applied to [`Dock::apps`] at the top of the next render so the strip
+    /// does not wait on the catalog round-trip. Cleared by
+    /// [`Dock::update_app_catalog`], whose push reconciles the same order.
+    pending_order: Option<Vec<String>>,
 }
 
 /// The cached tile strip plus the signature of the inputs it was built from.
@@ -348,6 +417,9 @@ impl Dock {
             all_windows: Vec::new(),
             scale: 1.0,
             design: Design::dark(),
+            position: DockPosition::default(),
+            press: None,
+            pending_order: None,
         }
     }
 
@@ -373,6 +445,28 @@ impl Dock {
     pub fn toggle_autohide(&mut self) {
         let current = self.autohide;
         self.set_autohide(!current);
+    }
+
+    /// Move the panel to a different screen edge. Panel geometry, strip
+    /// orientation, and popup placement all derive from this value on the
+    /// next frame; the autohide reveal state carries over unchanged.
+    pub fn set_position(&mut self, position: DockPosition) {
+        if position == self.position {
+            return;
+        }
+        self.position = position;
+        self.app_menu.set_side(Self::popup_side_for(position));
+        self.anim_active = true;
+    }
+
+    /// The side of a tile its context menu, tooltip, and previews open
+    /// toward: into the output, away from the dock's screen edge.
+    fn popup_side_for(position: DockPosition) -> PopupSide {
+        match position {
+            DockPosition::Bottom => PopupSide::Above,
+            DockPosition::Left => PopupSide::Right,
+            DockPosition::Right => PopupSide::Left,
+        }
     }
 
     /// Fullscreen owns the complete output: unlike maximized mode, it exposes
@@ -411,31 +505,54 @@ impl Dock {
         Self::smoothstep(normalized)
     }
 
-    /// The Dock and its autohide indicator are one bottom-anchored surface.
-    /// Width, height, and corner radius morph continuously instead of moving a
-    /// fully rendered panel offscreen and fading in a second object.
-    fn collapsed_panel_rect(display: (f32, f32), expanded_width: f32, reveal: f32) -> Rect {
+    /// The Dock and its autohide indicator are one edge-anchored surface.
+    /// Length (along the strip axis), thickness, and corner radius morph
+    /// continuously instead of moving a fully rendered panel offscreen and
+    /// fading in a second object.
+    fn collapsed_panel_rect(
+        position: DockPosition,
+        display: (f32, f32),
+        expanded_len: f32,
+        reveal: f32,
+    ) -> Rect {
         let progress = Self::collapse_surface_progress(reveal);
-        let width = AUTOHIDE_HANDLE_WIDTH + (expanded_width - AUTOHIDE_HANDLE_WIDTH) * progress;
-        let height =
+        let len = AUTOHIDE_HANDLE_WIDTH + (expanded_len - AUTOHIDE_HANDLE_WIDTH) * progress;
+        let thick =
             AUTOHIDE_HANDLE_HEIGHT + (DOCK_PANEL_HEIGHT - AUTOHIDE_HANDLE_HEIGHT) * progress;
-        let bottom = display.1 - DOCK_BOTTOM_MARGIN;
-        Rect {
-            x: (display.0 - width) * 0.5,
-            y: bottom - height,
-            w: width,
-            h: height,
+        match position {
+            DockPosition::Bottom => Rect {
+                x: (display.0 - len) * 0.5,
+                y: display.1 - DOCK_EDGE_MARGIN - thick,
+                w: len,
+                h: thick,
+            },
+            DockPosition::Left => Rect {
+                x: DOCK_EDGE_MARGIN,
+                y: (display.1 - len) * 0.5,
+                w: thick,
+                h: len,
+            },
+            DockPosition::Right => Rect {
+                x: display.0 - DOCK_EDGE_MARGIN - thick,
+                y: (display.1 - len) * 0.5,
+                w: thick,
+                h: len,
+            },
         }
     }
 
     /// The collapsed capsule is both the visible affordance and the complete
     /// reveal target. Pixels around it remain owned by the client below.
-    fn collapsed_indicator_bounds(display: (f32, f32)) -> Rect {
-        Self::collapsed_panel_rect(display, AUTOHIDE_HANDLE_WIDTH, 0.0)
+    fn collapsed_indicator_bounds(position: DockPosition, display: (f32, f32)) -> Rect {
+        Self::collapsed_panel_rect(position, display, AUTOHIDE_HANDLE_WIDTH, 0.0)
     }
 
-    fn collapsed_indicator_contains(cursor: (f32, f32), display: (f32, f32)) -> bool {
-        let indicator = Self::collapsed_indicator_bounds(display);
+    fn collapsed_indicator_contains(
+        position: DockPosition,
+        cursor: (f32, f32),
+        display: (f32, f32),
+    ) -> bool {
+        let indicator = Self::collapsed_indicator_bounds(position, display);
         cursor.0 >= indicator.x
             && cursor.1 >= indicator.y
             && cursor.0 < indicator.x + indicator.w
@@ -443,26 +560,49 @@ impl Dock {
     }
 
     /// While an autohiding Dock is expanded, keep the stable resting strip
-    /// and the gap below it as one continuous approach corridor. Without the
-    /// gap, the pointer that revealed the Dock can fall out of its ownership
-    /// as soon as the panel expands, starting an expand/collapse loop.
-    fn expanded_trigger_contains(cursor: (f32, f32), rest_bounds: Rect, display_h: f32) -> bool {
-        cursor.0 >= rest_bounds.x
-            && cursor.1 >= rest_bounds.y
-            && cursor.0 < rest_bounds.x + rest_bounds.w
-            && cursor.1 < display_h
+    /// and the gap toward its screen edge as one continuous approach
+    /// corridor. Without the gap, the pointer that revealed the Dock can
+    /// fall out of its ownership as soon as the panel expands, starting an
+    /// expand/collapse loop.
+    fn expanded_trigger_contains(
+        position: DockPosition,
+        cursor: (f32, f32),
+        rest_bounds: Rect,
+        display: (f32, f32),
+    ) -> bool {
+        match position {
+            DockPosition::Bottom => {
+                cursor.0 >= rest_bounds.x
+                    && cursor.1 >= rest_bounds.y
+                    && cursor.0 < rest_bounds.x + rest_bounds.w
+                    && cursor.1 < display.1
+            }
+            DockPosition::Left => {
+                cursor.0 < rest_bounds.x + rest_bounds.w
+                    && cursor.1 >= rest_bounds.y
+                    && cursor.1 < rest_bounds.y + rest_bounds.h
+            }
+            DockPosition::Right => {
+                cursor.0 >= rest_bounds.x
+                    && cursor.0 < display.0
+                    && cursor.1 >= rest_bounds.y
+                    && cursor.1 < rest_bounds.y + rest_bounds.h
+            }
+        }
     }
 
     /// Resolve the single pointer region that may keep the Dock revealed.
     /// While collapsed, the caller-provided capsule entry is the only trigger;
     /// the resting Dock rectangle becomes active only after reveal has begun.
+    #[allow(clippy::too_many_arguments)]
     fn pointer_keeps_revealed(
         effective_autohide: bool,
         reveal: f32,
         capsule_entry: bool,
         cursor: (f32, f32),
         rest_bounds: Rect,
-        display_h: f32,
+        position: DockPosition,
+        display: (f32, f32),
     ) -> bool {
         if !effective_autohide {
             return cursor.0 >= rest_bounds.x
@@ -473,14 +613,19 @@ impl Dock {
         if reveal < 0.2 {
             return capsule_entry;
         }
-        Self::expanded_trigger_contains(cursor, rest_bounds, display_h)
+        Self::expanded_trigger_contains(position, cursor, rest_bounds, display)
     }
 
     /// A forced collapse must observe a pointer exit before the same pointer
     /// can reveal the Dock again. This turns reveal into an entry gesture
     /// instead of a level-triggered condition under a stationary cursor.
-    fn hidden_reveal_requested(armed: &mut bool, cursor: (f32, f32), display: (f32, f32)) -> bool {
-        if !Self::collapsed_indicator_contains(cursor, display) {
+    fn hidden_reveal_requested(
+        position: DockPosition,
+        armed: &mut bool,
+        cursor: (f32, f32),
+        display: (f32, f32),
+    ) -> bool {
+        if !Self::collapsed_indicator_contains(position, cursor, display) {
             *armed = true;
             return false;
         }
@@ -491,6 +636,7 @@ impl Dock {
     fn dismiss_transient_ui(&mut self) {
         self.app_menu.dismiss();
         self.menu_tile = None;
+        self.press = None;
         self.hovered_tile = None;
         self.hover_elapsed = 0.0;
         self.tooltip_tile = None;
@@ -512,9 +658,11 @@ impl Dock {
         self.hovered_preview = None;
     }
 
-    /// Keep a preview open while the pointer crosses the small air gap above
-    /// its owner icon. The bridge uses the popover's horizontal span so users
-    /// can move diagonally toward any card in a multi-window group.
+    /// Keep a preview open while the pointer crosses the small air gap
+    /// between the popover and its owner icon. The bridge spans the gap on
+    /// whichever axis separates them — above the tile for a bottom dock,
+    /// beside it for a side dock — so users can move diagonally toward any
+    /// card in a multi-window group.
     fn hover_surface_contains(&self, x: f32, y: f32) -> bool {
         let contains =
             |rect: Rect| x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h;
@@ -530,13 +678,7 @@ impl Dock {
         if contains(owner) {
             return true;
         }
-        let bridge = Rect {
-            x: surface.x.min(owner.x),
-            y: (surface.y + surface.h).min(owner.y),
-            w: (surface.x + surface.w).max(owner.x + owner.w) - surface.x.min(owner.x),
-            h: (owner.y - (surface.y + surface.h)).max(0.0),
-        };
-        contains(bridge)
+        gap_bridge(surface, owner).is_some_and(contains)
     }
 
     fn set_dock_obscured(&mut self, obscured: bool) {
@@ -578,8 +720,10 @@ impl Dock {
     /// the *factor* from the fixed rest position so the wave does not chase its
     /// own tail (a wider tile pulling the cursor closer, magnifying more, …).
     /// `pinned_count` accounts for the extra section gap between the kept strip
-    /// and the transient running section.
-    fn rest_centre_estimate(i: usize, n: usize, pinned_count: usize, disp_w: f32) -> f32 {
+    /// and the transient running section. `axis_len` is the display extent
+    /// along the strip axis (width for a bottom dock, height for a side dock);
+    /// the bar is centred on its edge, so the math is orientation-independent.
+    fn rest_centre_estimate(i: usize, n: usize, pinned_count: usize, axis_len: f32) -> f32 {
         let unpinned = n.saturating_sub(pinned_count);
         let section_gap = if pinned_count > 0 && unpinned > 0 {
             DOCK_SECTION_GAP
@@ -588,7 +732,7 @@ impl Dock {
         };
         let bar_w =
             n as f32 * DOCK_TILE + (n as f32 - 1.0) * DOCK_TILE_GAP + section_gap + 2.0 * DOCK_PAD;
-        let bar_x = (disp_w - bar_w) * 0.5;
+        let bar_x = (axis_len - bar_w) * 0.5;
         let extra = if i >= pinned_count && pinned_count > 0 && unpinned > 0 {
             section_gap
         } else {
@@ -597,10 +741,42 @@ impl Dock {
         bar_x + DOCK_PAD + i as f32 * (DOCK_TILE + DOCK_TILE_GAP) + extra + DOCK_TILE * 0.5
     }
 
+    /// Panel rectangle for a strip of long-axis length `bar_len` anchored to
+    /// `position`, centred on that edge. The panel is one tile thick on every
+    /// edge; `bar_len` is the width of a bottom dock and the height of a side
+    /// dock.
+    fn panel_rect_for(position: DockPosition, bar_len: f32, display: (f32, f32)) -> Rect {
+        match position {
+            DockPosition::Bottom => Rect {
+                x: (display.0 - bar_len) * 0.5,
+                y: display.1 - DOCK_PANEL_HEIGHT - DOCK_EDGE_MARGIN,
+                w: bar_len,
+                h: DOCK_PANEL_HEIGHT,
+            },
+            DockPosition::Left => Rect {
+                x: DOCK_EDGE_MARGIN,
+                y: (display.1 - bar_len) * 0.5,
+                w: DOCK_PANEL_HEIGHT,
+                h: bar_len,
+            },
+            DockPosition::Right => Rect {
+                x: display.0 - DOCK_PANEL_HEIGHT - DOCK_EDGE_MARGIN,
+                y: (display.1 - bar_len) * 0.5,
+                w: DOCK_PANEL_HEIGHT,
+                h: bar_len,
+            },
+        }
+    }
+
     /// Stable, unanimated panel rectangle used by hover activation, pointer
     /// capture, and click gating. Keeping this geometry in one place prevents
     /// the magnification spring from expanding chrome's input ownership.
-    fn rest_bounds(tile_count: usize, pinned_count: usize, display: (f32, f32)) -> Rect {
+    fn rest_bounds(
+        tile_count: usize,
+        pinned_count: usize,
+        position: DockPosition,
+        display: (f32, f32),
+    ) -> Rect {
         let unpinned = tile_count.saturating_sub(pinned_count);
         let section_gap = if pinned_count > 0 && unpinned > 0 {
             DOCK_SECTION_GAP
@@ -608,13 +784,59 @@ impl Dock {
             0.0
         };
         let gaps = tile_count.saturating_sub(1) as f32 * DOCK_TILE_GAP + section_gap;
-        let bar_w = tile_count as f32 * DOCK_TILE + gaps + 2.0 * DOCK_PAD;
-        Rect {
-            x: (display.0 - bar_w) * 0.5,
-            y: display.1 - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN,
-            w: bar_w,
-            h: DOCK_PANEL_HEIGHT,
+        let bar_len = tile_count as f32 * DOCK_TILE + gaps + 2.0 * DOCK_PAD;
+        Self::panel_rect_for(position, bar_len, display)
+    }
+
+    /// Whether the cursor has travelled far enough from the press point to
+    /// promote a held press into a drag.
+    fn drag_threshold_exceeded(origin: (f32, f32), cursor: (f32, f32)) -> bool {
+        let dx = cursor.0 - origin.0;
+        let dy = cursor.1 - origin.1;
+        dx * dx + dy * dy > DRAG_THRESHOLD * DRAG_THRESHOLD
+    }
+
+    /// The insertion slot for a dragged pinned tile: the number of pinned-app
+    /// rest centres — the dragged tile excluded — the cursor has passed along
+    /// the strip axis. The result ranges over the pinned strip only, so a
+    /// drop can never cross the pinned/transient separator or displace the
+    /// leading Launchpad tile.
+    fn drop_insert_index(pinned_centres: &[f32], cursor_axis: f32) -> usize {
+        pinned_centres
+            .iter()
+            .filter(|centre| cursor_axis > **centre)
+            .count()
+    }
+
+    /// Move the element at `from` to insertion slot `insert`, an index into
+    /// the sequence with the element already removed. Returns whether the
+    /// order changed.
+    fn move_element<T>(items: &mut Vec<T>, from: usize, insert: usize) -> bool {
+        if from == insert || from >= items.len() || insert > items.len() {
+            return false;
         }
+        let item = items.remove(from);
+        items.insert(insert.min(items.len()), item);
+        true
+    }
+
+    /// The screen edge an in-progress panel drag snaps to, if the cursor has
+    /// entered an edge's proximity zone. The nearest in-zone edge wins in a
+    /// corner; outside every zone the drag keeps the dock's current edge.
+    fn edge_drag_target(cursor: (f32, f32), display: (f32, f32)) -> Option<DockPosition> {
+        let mut best: Option<(f32, DockPosition)> = None;
+        for (distance, position) in [
+            (cursor.0, DockPosition::Left),
+            (display.1 - cursor.1, DockPosition::Bottom),
+            (display.0 - cursor.0, DockPosition::Right),
+        ] {
+            if distance <= EDGE_DRAG_PROXIMITY
+                && best.is_none_or(|(best_distance, _)| distance < best_distance)
+            {
+                best = Some((distance, position));
+            }
+        }
+        best.map(|(_, position)| position)
     }
 
     /// Advance a damped spring one `dt` seconds toward `target`. The exact
@@ -842,7 +1064,7 @@ impl Dock {
             None,
         );
         let pinned_count = tiles.iter().filter(|t| t.pinned).count();
-        Self::rest_bounds(tiles.len(), pinned_count, display)
+        Self::rest_bounds(tiles.len(), pinned_count, self.position, display)
     }
 
     fn window_overlaps_bounds(window: &Window, bounds: Rect) -> bool {
@@ -898,19 +1120,55 @@ impl Dock {
             0.0
         };
         let gaps = tiles.len().saturating_sub(1) as f32 * DOCK_TILE_GAP + section_gap;
-        let bar_w = widths.sum::<f32>() + gaps + 2.0 * DOCK_PAD;
-        Rect {
-            x: (display.0 - bar_w) * 0.5,
-            y: display.1 - DOCK_PANEL_HEIGHT - DOCK_BOTTOM_MARGIN,
-            w: bar_w,
-            h: DOCK_PANEL_HEIGHT,
-        }
+        let bar_len = widths.sum::<f32>() + gaps + 2.0 * DOCK_PAD;
+        Self::panel_rect_for(self.position, bar_len, display)
     }
 }
 
 impl Default for Dock {
     fn default() -> Self {
         Dock::new()
+    }
+}
+
+/// The rectangular air gap between two rects separated along one axis — a
+/// popover and its owner tile — used as a pointer bridge. `None` when the
+/// rects overlap or touch (then there is no gap to cross).
+fn gap_bridge(a: Rect, b: Rect) -> Option<Rect> {
+    let horizontal_span = |x0: f32, x1: f32, y: f32, h: f32| Rect {
+        x: x0,
+        y,
+        w: x1 - x0,
+        h,
+    };
+    let min_x = a.x.min(b.x);
+    let max_x = (a.x + a.w).max(b.x + b.w);
+    let min_y = a.y.min(b.y);
+    let max_y = (a.y + a.h).max(b.y + b.h);
+    if a.y + a.h <= b.y {
+        // a above b.
+        Some(horizontal_span(min_x, max_x, a.y + a.h, b.y - (a.y + a.h)))
+    } else if b.y + b.h <= a.y {
+        // a below b.
+        Some(horizontal_span(min_x, max_x, b.y + b.h, a.y - (b.y + b.h)))
+    } else if a.x + a.w <= b.x {
+        // a left of b.
+        Some(Rect {
+            x: a.x + a.w,
+            y: min_y,
+            w: b.x - (a.x + a.w),
+            h: max_y - min_y,
+        })
+    } else if b.x + b.w <= a.x {
+        // a right of b.
+        Some(Rect {
+            x: b.x + b.w,
+            y: min_y,
+            w: a.x - (b.x + b.w),
+            h: max_y - min_y,
+        })
+    } else {
+        None
     }
 }
 

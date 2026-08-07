@@ -19,8 +19,9 @@ AI-specific lives out of process, on the other side of the introspection
 IPC. The `aegis-mcp` integration follows this boundary while shipping
 the platform adapter in the same distribution
 ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md),
-[ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md),
 [ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md)).
+Agent products themselves live out of tree
+([ADR-0113](../adr/0113-platform-ai-backend-and-agent-product-removal.md)).
 
 The stack, from the rendering layer up:
 
@@ -35,7 +36,7 @@ The stack, from the rendering layer up:
 | Accessibility adapter | `aegis-atspi` (supervised separate process) | AT-SPI discovery, tree publication, live precondition recheck, and toolkit action dispatch |
 | IPC clients | any number, all equal | Native `aegis` commands, the agent, future bridges |
 | Platform adapter | `aegis-mcp` (separate process and crate) | Scoped Aegis tools and one bridge-managed Agent Interaction Domain over MCP |
-| Agent product | `aegis-agent` (in-tree `aegis-agent`) | Providers, credentials, sessions, skills, permissions, and the CLI |
+| Agent product | out of tree | Providers, credentials, sessions, skills, permissions, and the agent-facing CLI or frontend |
 | Other skill and tool layers | external projects | Other model-specific adapters, prompts, and schemas |
 
 The line that matters is between the seam and the clients. Above that line,
@@ -143,7 +144,7 @@ pattern, not a reimplementation per pattern. The compositor stays put.
 | Current pattern | Representatives | Bridge shape |
 |-----------------|-----------------|--------------|
 | Function calling / tool use | Claude, GPT, Gemini, Qwen, Mistral | Each IPC request becomes a tool; the adapter translates between the model's tool-call schema and aegis's JSON. |
-| Model Context Protocol | fuji, Claude Desktop, Cline, Cursor | `aegis-mcp` exposes snapshots, journals, and operations as scoped tools, with Interaction Domain pixels as MCP image content. |
+| Model Context Protocol | Claude Desktop, Cline, Cursor, and other MCP clients | `aegis-mcp` exposes snapshots, journals, and operations as scoped tools, with Interaction Domain pixels as MCP image content. |
 | Vision-based computer use | Claude Computer Use, OpenAI Operator | Damage-driven Interaction Domain capture supplies separately authorized pixels plus a semantic observation; bounded actions must consume its precondition token. |
 | Agent SDKs | Claude Agent SDK, LangGraph, custom | The agent process uses an SDK; tools call through the IPC. The SDK is indifferent to the transport. |
 | Local models | Ollama, llama.cpp, MLX | Same tool-calling interface, routed to a local endpoint. Smaller models benefit most from the structured path. |
@@ -153,7 +154,7 @@ The fit with the Model Context Protocol is unusually clean. aegis's
 introspection surface and MCP converged independently on the same shape:
 the versioned schema against tool schemas; capabilities and scope against
 authorization; and the typed model and journal against structured tool
-results. The current fuji adapter uses tools and image content rather than
+results. The `aegis-mcp` adapter uses tools and image content rather than
 MCP resources or subscriptions. It is still a thin translation, not a
 re-architecture. This is not coincidence: both are answers to the same
 question — how does an out-of-process agent address a system it did not
@@ -203,9 +204,9 @@ The shape is defined as much by what it refuses as by what it adds.
 
 - **No model inside the compositor.** The compositor never calls a model.
   Inference, prompt assembly, and tool selection live out of process.
-- **No prompt storage in the compositor.** Product prompts live in fuji or
-  another out-of-process skill layer. Aegis ships only the platform tool
-  contract and an optional fuji skill.
+- **No prompt storage in the compositor.** Product prompts live in the
+  out-of-tree agent product or another out-of-process skill layer. Aegis
+  ships only the platform tool contract.
 - **No retrieval index inside the compositor.** If the agent needs semantic
   search over its history, the agent indexes the journal; the compositor
   provides the data, not the index.
@@ -233,10 +234,11 @@ without committing to.
   decision.
 - [ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md) — the MCP
   platform bridge that remains outside the compositor.
-- [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md) — the fuji
-  rename and the in-tree, self-contained agent runtime.
 - [ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md) —
   the bridge as the standalone `aegis-mcp` platform crate.
+- [ADR-0113](../adr/0113-platform-ai-backend-and-agent-product-removal.md) —
+  the platform-only scope: AI interfaces and the authority backend, never an
+  agent product.
 - [ADR-0048](../adr/0048-compositor-owned-agent-operation-feedback.md) — the
   trusted visual distinction between human and Agent input.
 - [ADR-0102](../adr/0102-actor-scoped-semantic-observation-and-transactional-actions.md)

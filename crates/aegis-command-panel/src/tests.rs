@@ -97,15 +97,32 @@ fn escape_peels_the_tray_menu_before_the_panel() {
 }
 
 #[test]
-fn selecting_another_section_closes_the_tray_menu() {
+fn selecting_another_tab_closes_the_tray_menu() {
     let mut panel = CommandPanel::without_sources();
-    panel.select_section(Section::Tray);
+    let module = panel
+        .modules
+        .metadata()
+        .find(|module| module.availability == ModuleAvailability::Available)
+        .expect("at least one available settings module");
     panel.menu_open_for = Some("org.example.Tray".to_string());
     panel.menu_path = vec![0];
 
-    panel.select_section(Section::Messages);
+    panel.select_tab(Tab::Settings(module.id));
     assert!(panel.menu_open_for.is_none());
     assert!(panel.menu_path.is_empty());
+}
+
+#[test]
+fn settings_actions_coalesce_per_variant() {
+    let set_idle = || SettingsAction::SetIdle {
+        settings: aegis_model::settings::IdleSettings::default(),
+    };
+    let set_preferences = || SettingsAction::SetDesktopPreferences {
+        preferences: aegis_model::settings::DesktopPreferences::default(),
+    };
+    assert!(same_action_kind(&set_idle(), &set_idle()));
+    assert!(same_action_kind(&set_preferences(), &set_preferences()));
+    assert!(!same_action_kind(&set_idle(), &set_preferences()));
 }
 
 #[test]
@@ -126,29 +143,38 @@ fn a_fullscreen_window_closes_the_panel() {
 #[test]
 fn cluster_bounds_stay_inside_small_displays() {
     for display in [(320.0, 480.0), (800.0, 600.0), (1920.0, 1080.0)] {
-        let (header, rail, content) = CommandPanel::cluster_bounds(display);
-        assert!(header.x >= 0.0 && header.y >= 0.0);
-        assert!(header.x + header.w <= display.0 + 0.01);
-        assert!(header.y + header.h <= display.1 + 0.01);
-        assert!(rail.x >= header.x && rail.y >= header.y + header.h);
-        assert!(content.x + content.w <= display.0 + 0.01);
-        assert!(content.y + content.h <= display.1 + 0.01);
-        assert!(content.x >= rail.x + rail.w);
-        assert!(rail.w >= 48.0);
-        // The header spans the full cluster width; rail + gap + content
+        let (header, main, notifications, tray) = CommandPanel::cluster_bounds(display);
+        for rect in [header, main, notifications, tray] {
+            assert!(rect.x >= 0.0 && rect.y >= 0.0);
+            assert!(rect.x + rect.w <= display.0 + 0.01);
+            assert!(rect.y + rect.h <= display.1 + 0.01);
+        }
+        assert!(main.y >= header.y + header.h);
+        assert!(notifications.x >= main.x + main.w);
+        // The header spans the full cluster width; main + gap + side column
         // divide the same width below it.
-        assert!((header.w - (rail.w + PANEL_GAP + content.w)).abs() < 0.01);
+        assert!((header.w - (main.w + PANEL_GAP + notifications.w)).abs() < 0.01);
+        // The side column: notifications on top, tray pinned to the bottom,
+        // both full column width and together as tall as the main panel.
+        assert_eq!(notifications.w, tray.w);
+        assert_eq!(notifications.y, main.y);
+        assert!((notifications.h + PANEL_GAP + tray.h - main.h).abs() < 0.01);
+        assert!(main.w >= MAIN_FLOOR_W);
+        assert!(notifications.w >= SIDE_FLOOR_W);
     }
 }
 
 #[test]
 fn full_size_displays_get_the_design_geometry() {
-    let (header, rail, content) = CommandPanel::cluster_bounds((1920.0, 1080.0));
+    let (header, main, notifications, tray) = CommandPanel::cluster_bounds((1920.0, 1080.0));
     assert_eq!(header.h, HEADER_H);
-    assert_eq!(rail.w, RAIL_W);
-    assert_eq!(content.w, CONTENT_W);
-    assert_eq!(content.h, CONTENT_H);
-    assert_eq!(header.w, RAIL_W + PANEL_GAP + CONTENT_W);
+    assert_eq!(main.w, CONTENT_W);
+    assert_eq!(main.h, CONTENT_H);
+    assert_eq!(notifications.w, SIDE_W);
+    assert_eq!(tray.w, SIDE_W);
+    assert_eq!(tray.h, TRAY_PANEL_H);
+    assert_eq!(header.w, CONTENT_W + PANEL_GAP + SIDE_W);
+    assert_eq!(notifications.h + PANEL_GAP + tray.h, CONTENT_H);
 }
 
 #[test]

@@ -37,7 +37,7 @@ impl Design {
                 menu_border: Color::rgba(255, 255, 255, 78),
                 menu_hover: Color::rgba(255, 255, 255, 22),
                 menu_active: Color::rgba(255, 255, 255, 36),
-                popover_surface: Color::rgba(255, 255, 255, 38),
+                popover_surface: Color::rgba(255, 255, 255, 110),
                 popover_border: Color::rgba(255, 255, 255, 72),
                 glass_surface: Color::rgba(255, 255, 255, 12),
                 glass_border: Color::rgba(255, 255, 255, 0),
@@ -263,6 +263,62 @@ impl Sao {
 }
 
 impl Default for Sao {
+    fn default() -> Self {
+        Self::classic()
+    }
+}
+
+/// The VR/AR HUD palette for the command panel (ADR-0080): deep blue-black
+/// translucent "dark glass" floating panels with a cyan accent, thin
+/// hairlines, and corner brackets — the futuristic personal-info HUD
+/// language. Kept separate from [`Colors`] because the panel paints its own
+/// scheme-invariant island; same structural shape as [`Sao`] so panel call
+/// sites port mechanically.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct Hud {
+    /// Deep blue-black translucent panel surface.
+    pub surface: Color,
+    /// Even deeper surface for recessed areas inside a panel.
+    pub surface_dim: Color,
+    /// Low-alpha cyan hairline panel edge.
+    pub border: Color,
+    /// Primary near-white text on the dark surface.
+    pub text: Color,
+    /// Secondary blue-grey text on the dark surface.
+    pub text_muted: Color,
+    /// The signature cyan accent: active tabs, corner brackets, slider fill.
+    pub accent: Color,
+    /// Low-alpha accent tint for hover feedback on rows.
+    pub accent_soft: Color,
+    /// Text/icons drawn on top of a solid accent fill.
+    pub on_accent: Color,
+    /// Slider/gauge track on the dark surface.
+    pub track: Color,
+    /// Control knob on the dark surface.
+    pub knob: Color,
+}
+
+impl Hud {
+    /// The canonical VR/AR HUD palette.
+    #[must_use]
+    pub fn classic() -> Self {
+        Self {
+            surface: Color::rgba(10, 16, 28, 222),
+            surface_dim: Color::rgba(7, 12, 22, 208),
+            border: Color::rgba(96, 205, 255, 52),
+            text: Color::rgba(230, 240, 250, 255),
+            text_muted: Color::rgba(122, 148, 176, 255),
+            accent: Color::rgba(96, 205, 255, 255),
+            accent_soft: Color::rgba(96, 205, 255, 40),
+            on_accent: Color::rgba(4, 12, 20, 255),
+            track: Color::rgba(126, 178, 220, 30),
+            knob: Color::rgba(224, 242, 252, 255),
+        }
+    }
+}
+
+impl Default for Hud {
     fn default() -> Self {
         Self::classic()
     }
@@ -543,6 +599,23 @@ mod tests {
         assert!(surface_alpha > 200);
         let (r, g, b, _) = sao.text.components();
         assert!(r < 64 && g < 64 && b < 64);
+    }
+
+    #[test]
+    fn hud_palette_is_a_dark_glass_island_with_cyan_accent() {
+        let hud = Hud::classic();
+        assert_eq!(hud.surface, Color::rgba(10, 16, 28, 222));
+        assert_eq!(hud.accent, Color::rgba(96, 205, 255, 255));
+        assert_eq!(hud.accent_soft, Color::rgba(96, 205, 255, 40));
+        assert_eq!(hud.on_accent, Color::rgba(4, 12, 20, 255));
+        assert_eq!(hud.text_muted, Color::rgba(122, 148, 176, 255));
+        let (_, _, _, surface_alpha) = hud.surface.components();
+        assert!(surface_alpha > 200);
+        // Dark glass: the surface is much darker than the near-white text.
+        let (sr, sg, sb, _) = hud.surface.components();
+        assert!(sr < 32 && sg < 32 && sb < 48);
+        let (r, g, b, _) = hud.text.components();
+        assert!(r > 200 && g > 200 && b > 200);
     }
 
     #[test]

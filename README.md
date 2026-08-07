@@ -1,7 +1,7 @@
 # Aegis
 
 Aegis is a Wayland compositor and desktop shell for Linux. It combines a
-Vulkan-first renderer, native shell surfaces, standalone System Settings,
+Vulkan-first renderer, native shell surfaces, panel-hosted system settings,
 and scoped AI-agent workspaces behind explicit process and security
 boundaries.
 
@@ -66,7 +66,7 @@ systemctl --user enable --now aegis.service
 | Action | Shortcut or command |
 |--------|---------------------|
 | Open Applications | Click Launchpad or press `Super` |
-| Open System Settings | Select it in Applications or run `aegis-settings` |
+| Open System Settings | Press `Super+S` and select a settings tab |
 | Lock the session | Press `Super+L` |
 | Inspect compositor state | Run `aegis window` |
 

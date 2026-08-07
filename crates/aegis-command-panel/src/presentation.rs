@@ -1,5 +1,7 @@
 use super::*;
 
+use lens::Icon;
+
 // ---- rendering -----------------------------------------------------------
 
 impl CommandPanel {
@@ -22,18 +24,18 @@ impl CommandPanel {
         progress: f32,
         i18n: &Localizer,
     ) {
-        let sao = Sao::classic();
+        let hud = Hud::classic();
         let slide = (1.0 - ease_out_cubic(progress)) * -24.0;
         let rect = Rect {
             x: rect.x + slide,
             ..rect
         };
         f.layer(
-            "aegis-sao-header-panel",
+            "aegis-hud-header-panel",
             rect,
             &OverlayOpts {
-                bg: fade_color(sao.surface, progress),
-                border: fade_color(sao.border, progress),
+                bg: fade_color(hud.surface, progress),
+                border: fade_color(hud.border, progress),
                 border_width: 1.0,
                 radius: 16.0,
                 pad: 0.0,
@@ -48,11 +50,11 @@ impl CommandPanel {
         let inner_y = rect.y + pad;
         let inner_h = (rect.h - pad * 2.0).max(1.0);
         let center_y = rect.y + rect.h * 0.5;
-        let base_theme = themes::sao(&sao);
-        let muted_theme = themes::sao_muted(base_theme, &sao);
-        // The panel is a scheme-invariant light island (ADR-0080), so the
-        // persona header keeps the dark appearance's avatar style — the warm
-        // graphite disc below — regardless of the desktop color scheme.
+        let base_theme = themes::hud(&hud);
+        let muted_theme = themes::hud_muted(base_theme, &hud);
+        // The panel is a scheme-invariant dark-glass island (ADR-0080); the
+        // persona header's avatar style — the warm graphite disc below —
+        // comes from the dark appearance and now matches the panel itself.
         let avatar_style = Design::dark().avatars.for_role(AvatarRole::PersonaHeader);
         let original = f.theme();
 
@@ -60,18 +62,18 @@ impl CommandPanel {
         let avatar_center = (rect.x + pad + 42.0, center_y);
         // The avatar crate supplies only the portrait texture. Its surrounding
         // chrome belongs to this host: a flat warm graphite disc replaces the
-        // old blue-white gradient fallback, while a quiet amber keyline keeps
-        // the profile tied to the panel's accent language.
+        // old blue-white gradient fallback, with the shared persona keyline
+        // ring around it.
         render_disc(
             f,
-            "aegis-sao-avatar-backdrop",
+            "aegis-hud-avatar-backdrop",
             avatar_center,
             72.0,
             fade_color(avatar_style.fallback_surface, progress),
         );
         render_ring(
             f,
-            "aegis-sao-avatar-ring",
+            "aegis-hud-avatar-ring",
             avatar_center,
             80.0,
             fade_color(avatar_style.ring, progress),
@@ -86,7 +88,7 @@ impl CommandPanel {
         match &self.avatar {
             Some(avatar) => {
                 let texture = avatar.texture().as_raw();
-                f.layer("aegis-sao-avatar", avatar_rect, &transparent(), |f| {
+                f.layer("aegis-hud-avatar", avatar_rect, &transparent(), |f| {
                     f.row_ex(&sized(72.0, 72.0), |f| {
                         unsafe {
                             f.image_tinted(
@@ -104,7 +106,7 @@ impl CommandPanel {
                     base_theme.with_fg(fade_color(avatar_style.fallback_foreground, progress)),
                 );
                 f.layer(
-                    "aegis-sao-avatar-initials",
+                    "aegis-hud-avatar-initials",
                     avatar_rect,
                     &transparent(),
                     |f| {
@@ -136,7 +138,7 @@ impl CommandPanel {
         let display_name = truncate(&self.profile.display_name, (text_w / 9.0).max(4.0) as usize);
         f.set_theme(faded_theme(base_theme, progress));
         f.layer(
-            "aegis-sao-profile-name",
+            "aegis-hud-profile-name",
             Rect {
                 x: text_x,
                 y: center_y - 21.0,
@@ -164,7 +166,7 @@ impl CommandPanel {
         let sub_line = truncate(&sub_line, (text_w / 5.8).max(8.0) as usize);
         f.set_theme(faded_theme(muted_theme, progress));
         f.layer(
-            "aegis-sao-profile-sub",
+            "aegis-hud-profile-sub",
             Rect {
                 x: text_x,
                 y: center_y + 3.0,
@@ -188,7 +190,7 @@ impl CommandPanel {
         // -- divider ---------------------------------------------------------
         let divider_x = rect.x + pad + 270.0 + 12.0;
         f.layer(
-            "aegis-sao-header-divider",
+            "aegis-hud-header-divider",
             Rect {
                 x: divider_x,
                 y: rect.y + 22.0,
@@ -196,7 +198,7 @@ impl CommandPanel {
                 h: (rect.h - 44.0).max(1.0),
             },
             &OverlayOpts {
-                bg: fade_color(sao.border, progress),
+                bg: fade_color(hud.border, progress),
                 border: Color::TRANSPARENT,
                 radius: 0.0,
                 pad: 0.0,
@@ -224,7 +226,7 @@ impl CommandPanel {
             ChassisKind::Desktop => 22.0 + 7.0 + 2.0,
         };
         let glyph_top = inner_y + (inner_h - 17.0 - glyph_h).max(0.0) * 0.5;
-        let muted_line = fade_color(sao.text_muted, progress);
+        let muted_line = fade_color(hud.text_muted, progress);
         let outline = |radius: f32| OverlayOpts {
             bg: Color::TRANSPARENT,
             border: muted_line,
@@ -248,14 +250,14 @@ impl CommandPanel {
                     w: 36.0,
                     h: 24.0,
                 };
-                f.layer("aegis-sao-chassis-screen", screen, &outline(3.0), |_| {});
+                f.layer("aegis-hud-chassis-screen", screen, &outline(3.0), |_| {});
                 let base = Rect {
                     x: glyph_cx - 22.0,
                     y: glyph_top + 24.0 + 2.0,
                     w: 44.0,
                     h: 2.5,
                 };
-                f.layer("aegis-sao-chassis-base", base, &filled(1.25), |_| {});
+                f.layer("aegis-hud-chassis-base", base, &filled(1.25), |_| {});
             }
             ChassisKind::Desktop => {
                 let monitor = Rect {
@@ -264,26 +266,26 @@ impl CommandPanel {
                     w: 34.0,
                     h: 22.0,
                 };
-                f.layer("aegis-sao-chassis-screen", monitor, &outline(2.0), |_| {});
+                f.layer("aegis-hud-chassis-screen", monitor, &outline(2.0), |_| {});
                 let stand = Rect {
                     x: glyph_cx - 1.0,
                     y: glyph_top + 22.0,
                     w: 2.0,
                     h: 7.0,
                 };
-                f.layer("aegis-sao-chassis-stand", stand, &filled(0.0), |_| {});
+                f.layer("aegis-hud-chassis-stand", stand, &filled(0.0), |_| {});
                 let base = Rect {
                     x: glyph_cx - 8.0,
                     y: glyph_top + 29.0,
                     w: 16.0,
                     h: 2.0,
                 };
-                f.layer("aegis-sao-chassis-base", base, &filled(1.0), |_| {});
+                f.layer("aegis-hud-chassis-base", base, &filled(1.0), |_| {});
             }
         }
         f.set_theme(faded_theme(muted_theme, progress));
         f.layer(
-            "aegis-sao-chassis-label",
+            "aegis-hud-chassis-label",
             Rect {
                 x: machine_x,
                 y: rect.y + rect.h - pad - 13.0,
@@ -390,9 +392,9 @@ impl CommandPanel {
         progress: f32,
         i18n: &Localizer,
     ) {
-        let sao = Sao::classic();
-        let base_theme = themes::sao(&sao);
-        let muted_theme = themes::sao_muted(base_theme, &sao);
+        let hud = Hud::classic();
+        let base_theme = themes::hud(&hud);
+        let muted_theme = themes::hud_muted(base_theme, &hud);
         let original = f.theme();
         let label_rect = Rect {
             x: row.x,
@@ -406,13 +408,13 @@ impl CommandPanel {
 
         // Label cell: a 9.5pt caption, or a 10px icon for NET/BAT.
         let icon_label: Option<(Icon, Color)> = match gauge {
-            Gauge::Net { .. } => Some((Icon::Globe, sao.text_muted)),
+            Gauge::Net { .. } => Some((Icon::Globe, hud.text_muted)),
             Gauge::Battery { charging, .. } => Some((
                 Icon::Zap,
                 if *charging {
-                    sao.accent
+                    hud.accent
                 } else {
-                    sao.text_muted
+                    hud.text_muted
                 },
             )),
             _ => None,
@@ -430,7 +432,7 @@ impl CommandPanel {
             f.set_theme(faded_theme(base_theme.with_fg(color), progress));
         }
         f.layer(
-            &format!("aegis-sao-gauge-label-{index}"),
+            &format!("aegis-hud-gauge-label-{index}"),
             label_rect,
             &transparent(),
             |f| {
@@ -472,7 +474,7 @@ impl CommandPanel {
             Gauge::Gpu(gpu) => {
                 gauge_bar(
                     f,
-                    &format!("aegis-sao-gauge-bar-{index}"),
+                    &format!("aegis-hud-gauge-bar-{index}"),
                     Rect {
                         x: bar_x,
                         y: row.y + (row.h - 4.0) * 0.5,
@@ -487,7 +489,7 @@ impl CommandPanel {
             Gauge::Ram { fraction, value } => {
                 gauge_bar(
                     f,
-                    &format!("aegis-sao-gauge-bar-{index}"),
+                    &format!("aegis-hud-gauge-bar-{index}"),
                     Rect {
                         x: bar_x,
                         y: row.y + (row.h - 4.0) * 0.5,
@@ -503,7 +505,7 @@ impl CommandPanel {
             Gauge::Disk { fraction, value } => {
                 gauge_bar(
                     f,
-                    &format!("aegis-sao-gauge-bar-{index}"),
+                    &format!("aegis-hud-gauge-bar-{index}"),
                     Rect {
                         x: bar_x,
                         y: row.y + (row.h - 4.0) * 0.5,
@@ -520,7 +522,7 @@ impl CommandPanel {
             } => {
                 gauge_bar(
                     f,
-                    &format!("aegis-sao-gauge-bar-{index}"),
+                    &format!("aegis-hud-gauge-bar-{index}"),
                     Rect {
                         x: bar_x,
                         y: row.y + (row.h - 4.0) * 0.5,
@@ -550,7 +552,7 @@ impl CommandPanel {
         };
         f.set_theme(faded_theme(base_theme, progress));
         f.layer(
-            &format!("aegis-sao-gauge-value-{index}"),
+            &format!("aegis-hud-gauge-value-{index}"),
             value_rect,
             &transparent(),
             |f| {
@@ -572,203 +574,30 @@ impl CommandPanel {
         f.set_theme(original);
     }
 
-    /// The icon rail: one 44px circular button per section (ring + accent
-    /// glyph at rest, solid accent disc when selected, a soft disc on
-    /// hover), plus the panel's close button at the bottom. Fades in.
-    pub(super) fn render_icon_rail(
+    /// The dark glass main panel: a flat tab bar (the System tab plus one
+    /// tab per available settings module, with the close button at the
+    /// right end) over the active tab's body, sliding up slightly as it
+    /// reveals.
+    pub(super) fn render_main_panel(
         &mut self,
         f: &mut Frame,
         rect: Rect,
         progress: f32,
-        cursor: (f32, f32),
-        pressed: bool,
-    ) {
-        let sao = Sao::classic();
-        f.layer(
-            "aegis-sao-rail-panel",
-            rect,
-            &OverlayOpts {
-                bg: fade_color(sao.surface, progress),
-                border: fade_color(sao.border, progress),
-                border_width: 1.0,
-                radius: 16.0,
-                pad: 0.0,
-                ..Default::default()
-            },
-            |f| {
-                f.column_ex(&sized(rect.w, rect.h), |_| {});
-            },
-        );
-
-        let cx = rect.x + rect.w * 0.5;
-        let mut rail_action = None;
-        for (index, section) in Section::ALL.iter().enumerate() {
-            let center = (cx, rect.y + 18.0 + 22.0 + index as f32 * 56.0);
-            let hit = Rect {
-                x: center.0 - 22.0,
-                y: center.1 - 22.0,
-                w: 44.0,
-                h: 44.0,
-            };
-            let hovered = contains(hit, cursor.0, cursor.1);
-            let selected = self.section == *section;
-            let glyph_color = if selected {
-                render_disc(
-                    f,
-                    &format!("aegis-sao-rail-disc-{index}"),
-                    center,
-                    44.0,
-                    fade_color(sao.accent, progress),
-                );
-                sao.on_accent
-            } else {
-                if hovered {
-                    render_disc(
-                        f,
-                        &format!("aegis-sao-rail-hover-{index}"),
-                        center,
-                        44.0,
-                        fade_color(sao.accent_soft, progress),
-                    );
-                }
-                render_ring(
-                    f,
-                    &format!("aegis-sao-rail-ring-{index}"),
-                    center,
-                    44.0,
-                    fade_color(sao.accent, progress),
-                    1.5,
-                );
-                sao.accent
-            };
-            let original = f.theme();
-            f.set_theme(faded_theme(
-                themes::sao(&sao).with_fg(glyph_color),
-                progress,
-            ));
-            f.layer(
-                &format!("aegis-sao-rail-icon-{index}"),
-                Rect {
-                    x: center.0 - 15.0,
-                    y: center.1 - 15.0,
-                    w: 30.0,
-                    h: 30.0,
-                },
-                &transparent(),
-                |f| {
-                    f.row_ex(
-                        &LayoutOpts {
-                            width: 30.0,
-                            height: 30.0,
-                            cross: Align::Center,
-                            ..Default::default()
-                        },
-                        |f| {
-                            f.flex(1.0);
-                            f.spacer(0.0);
-                            f.icon(section.icon(), 15.0);
-                            f.flex(1.0);
-                            f.spacer(0.0);
-                        },
-                    );
-                },
-            );
-            f.set_theme(original);
-            if pressed && hovered {
-                rail_action = Some(RailAction::Select(*section));
-            }
-        }
-
-        // Close button at the rail bottom: ring + X, same idiom.
-        let center = (cx, rect.y + rect.h - 30.0);
-        let hit = Rect {
-            x: center.0 - 22.0,
-            y: center.1 - 22.0,
-            w: 44.0,
-            h: 44.0,
-        };
-        let hovered = contains(hit, cursor.0, cursor.1);
-        if hovered {
-            render_disc(
-                f,
-                "aegis-sao-rail-close-hover",
-                center,
-                44.0,
-                fade_color(sao.accent_soft, progress),
-            );
-        }
-        render_ring(
-            f,
-            "aegis-sao-rail-close-ring",
-            center,
-            44.0,
-            fade_color(sao.accent, progress),
-            1.5,
-        );
-        let original = f.theme();
-        f.set_theme(faded_theme(themes::sao(&sao).with_fg(sao.accent), progress));
-        f.layer(
-            "aegis-sao-rail-close-icon",
-            Rect {
-                x: center.0 - 15.0,
-                y: center.1 - 15.0,
-                w: 30.0,
-                h: 30.0,
-            },
-            &transparent(),
-            |f| {
-                f.row_ex(
-                    &LayoutOpts {
-                        width: 30.0,
-                        height: 30.0,
-                        cross: Align::Center,
-                        ..Default::default()
-                    },
-                    |f| {
-                        f.flex(1.0);
-                        f.spacer(0.0);
-                        f.icon(Icon::X, 14.0);
-                        f.flex(1.0);
-                        f.spacer(0.0);
-                    },
-                );
-            },
-        );
-        f.set_theme(original);
-        if pressed && hovered {
-            rail_action = Some(RailAction::Close);
-        }
-
-        match rail_action {
-            Some(RailAction::Select(section)) => self.select_section(section),
-            Some(RailAction::Close) => self.close(),
-            None => {}
-        }
-    }
-
-    /// The white content panel: section title header plus the active
-    /// section's body, sliding up slightly as it reveals.
-    pub(super) fn render_content_panel(
-        &mut self,
-        f: &mut Frame,
-        rect: Rect,
-        progress: f32,
-        cursor: (f32, f32),
         i18n: &Localizer,
         out: &mut ChromeEvents,
     ) {
-        let sao = Sao::classic();
+        let hud = Hud::classic();
         let rise = (1.0 - progress) * 16.0;
         let rect = Rect {
             y: rect.y + rise,
             ..rect
         };
         f.layer(
-            "aegis-sao-content-panel",
+            "aegis-hud-content-panel",
             rect,
             &OverlayOpts {
-                bg: fade_color(sao.surface, progress),
-                border: fade_color(sao.border, progress),
+                bg: fade_color(hud.surface, progress),
+                border: fade_color(hud.border, progress),
                 border_width: 1.0,
                 radius: 16.0,
                 pad: 0.0,
@@ -778,49 +607,375 @@ impl CommandPanel {
                 f.column_ex(&sized(rect.w, rect.h), |_| {});
             },
         );
+        render_corner_brackets(
+            f,
+            "aegis-hud-content-panel-brackets",
+            rect,
+            fade_color(hud.accent, progress),
+        );
 
-        // Header: the section title alone; the close button lives on the
-        // icon rail now.
-        let original = f.theme();
-        f.set_theme(faded_theme(themes::sao(&sao), progress));
-        let header = Rect {
+        self.render_tab_bar(
+            f,
+            Rect {
+                x: rect.x + 10.0,
+                y: rect.y + 4.0,
+                w: rect.w - 20.0,
+                h: TAB_BAR_H - 4.0,
+            },
+            progress,
+            i18n,
+        );
+        // Hairline separating the tab bar from the tab body.
+        f.layer(
+            "aegis-hud-tab-divider",
+            Rect {
+                x: rect.x + 12.0,
+                y: rect.y + TAB_BAR_H,
+                w: rect.w - 24.0,
+                h: 1.0,
+            },
+            &OverlayOpts {
+                bg: fade_color(hud.border, progress),
+                border: Color::TRANSPARENT,
+                radius: 0.0,
+                pad: 0.0,
+                ..Default::default()
+            },
+            |_| {},
+        );
+
+        let area = Rect {
             x: rect.x + 18.0,
-            y: rect.y + 10.0,
+            y: rect.y + TAB_BAR_H + 8.0,
             w: rect.w - 36.0,
-            h: 34.0,
+            h: rect.h - TAB_BAR_H - 22.0,
         };
-        let section_label = self.section.label(i18n);
-        f.layer("aegis-sao-content-header", header, &transparent(), |f| {
+        match self.tab {
+            Tab::System => self.render_system_section(f, area, progress, i18n, out),
+            Tab::Settings(id) => self.render_settings_tab(f, id, area, progress, i18n, out),
+        }
+    }
+
+    /// The flat tab bar: one text tab for the System quick settings plus
+    /// one per available settings module in registry order, evenly sharing
+    /// the bar's width, with the panel's close button at the right end.
+    /// The active tab gets the accent label and an underline; hovered tabs
+    /// get the theme's soft disc. Clicks are applied after the render pass.
+    pub(super) fn render_tab_bar(
+        &mut self,
+        f: &mut Frame,
+        rect: Rect,
+        progress: f32,
+        i18n: &Localizer,
+    ) {
+        let hud = Hud::classic();
+        let mut tabs: Vec<(Tab, &'static str)> = vec![(Tab::System, i18n.text(Message::System))];
+        tabs.extend(
+            self.modules
+                .metadata()
+                .filter(|module| module.availability == ModuleAvailability::Available)
+                .map(|module| (Tab::Settings(module.id), i18n.text(module.title))),
+        );
+        let close_w = 34.0;
+        let tab_w = ((rect.w - close_w - 4.0 * tabs.len() as f32) / tabs.len() as f32).max(24.0);
+        let muted_theme = faded_theme(themes::hud_muted(themes::hud(&hud), &hud), progress);
+        let active_theme = faded_theme(themes::hud(&hud).with_fg(hud.accent), progress);
+        let mut action: Option<TabAction> = None;
+        let mut underline: Option<Rect> = None;
+        let original = f.theme();
+        f.layer("aegis-hud-tab-bar", rect, &transparent(), |f| {
             f.row_ex(
                 &LayoutOpts {
-                    width: header.w,
-                    height: header.h,
-                    gap: 10.0,
+                    width: rect.w,
+                    height: rect.h,
+                    gap: 4.0,
                     cross: Align::Center,
                     ..Default::default()
                 },
                 |f| {
-                    f.label_compact_sized(section_label, 15.0);
+                    for (index, (tab, label)) in tabs.iter().enumerate() {
+                        let selected = self.tab == *tab;
+                        f.set_theme(if selected { active_theme } else { muted_theme });
+                        let label = truncate(label, ((tab_w - 16.0) / 6.5).max(4.0) as usize);
+                        let (response, _) = f.pressable_row(
+                            &format!("aegis-hud-tab-{index}"),
+                            &label,
+                            &LayoutOpts {
+                                flex: 1.0,
+                                height: 30.0,
+                                pad: 6.0,
+                                radius: 8.0,
+                                cross: Align::Center,
+                                ..Default::default()
+                            },
+                            |f, _| {
+                                f.row_ex(
+                                    &LayoutOpts {
+                                        cross: Align::Center,
+                                        ..Default::default()
+                                    },
+                                    |f| {
+                                        f.flex(1.0);
+                                        f.spacer(0.0);
+                                        f.label_compact_sized(&label, 11.5);
+                                        f.flex(1.0);
+                                        f.spacer(0.0);
+                                    },
+                                );
+                            },
+                        );
+                        if selected {
+                            underline = Some(response.rect);
+                        }
+                        if response.clicked && !selected {
+                            action = Some(TabAction::Select(*tab));
+                        }
+                    }
+                    // The close button at the bar's right end: the rail's X
+                    // glyph carried over as a flat button.
+                    f.set_theme(active_theme);
+                    let (response, _) = f.pressable_row(
+                        "aegis-hud-tab-close",
+                        "×",
+                        &LayoutOpts {
+                            width: close_w,
+                            height: 30.0,
+                            radius: 8.0,
+                            cross: Align::Center,
+                            ..Default::default()
+                        },
+                        |f, _| {
+                            f.row_ex(
+                                &LayoutOpts {
+                                    cross: Align::Center,
+                                    ..Default::default()
+                                },
+                                |f| {
+                                    f.flex(1.0);
+                                    f.spacer(0.0);
+                                    f.icon(Icon::X, 13.0);
+                                    f.flex(1.0);
+                                    f.spacer(0.0);
+                                },
+                            );
+                        },
+                    );
+                    if response.clicked {
+                        action = Some(TabAction::Close);
+                    }
                 },
             );
         });
         f.set_theme(original);
+        if let Some(tab_rect) = underline {
+            f.layer(
+                "aegis-hud-tab-underline",
+                Rect {
+                    x: tab_rect.x + 10.0,
+                    y: tab_rect.y + tab_rect.h - 3.0,
+                    w: (tab_rect.w - 20.0).max(8.0),
+                    h: 2.0,
+                },
+                &OverlayOpts {
+                    bg: fade_color(hud.accent, progress),
+                    border: Color::TRANSPARENT,
+                    radius: 1.0,
+                    pad: 0.0,
+                    ..Default::default()
+                },
+                |_| {},
+            );
+        }
+        match action {
+            Some(TabAction::Select(tab)) => self.select_tab(tab),
+            Some(TabAction::Close) => self.close(),
+            None => {}
+        }
+    }
 
-        let area = Rect {
-            x: rect.x + 18.0,
-            y: rect.y + 52.0,
-            w: rect.w - 36.0,
-            h: rect.h - 70.0,
+    /// A settings module tab's body: the module's page inside a scroll
+    /// area, painted with the theme matching the stored design snapshot.
+    /// Emitted `SettingsAction`s are forwarded to the shell tagged with the
+    /// current snapshot revision, coalesced to the newest draft per action
+    /// kind (instant modules emit per change while a control drags). Until
+    /// the first settings snapshot arrives the tab shows a muted
+    /// placeholder instead.
+    pub(super) fn render_settings_tab(
+        &mut self,
+        f: &mut Frame,
+        id: ModuleId,
+        area: Rect,
+        progress: f32,
+        i18n: &Localizer,
+        out: &mut ChromeEvents,
+    ) {
+        let hud = Hud::classic();
+        if self.settings.is_none() {
+            let original = f.theme();
+            let muted = themes::hud_muted(themes::hud(&hud), &hud);
+            f.set_theme(faded_theme(muted, progress));
+            f.layer("aegis-hud-settings-empty", area, &transparent(), |f| {
+                f.row_ex(
+                    &LayoutOpts {
+                        width: area.w,
+                        height: area.h,
+                        cross: Align::Center,
+                        ..Default::default()
+                    },
+                    |f| {
+                        f.flex(1.0);
+                        f.spacer(0.0);
+                        f.label_compact_sized(i18n.text(Message::ConnectingToDesktop), 12.0);
+                        f.flex(1.0);
+                        f.spacer(0.0);
+                    },
+                );
+            });
+            f.set_theme(original);
+            return;
+        }
+        let design = self.design;
+        let mut events = ModuleEvents::default();
+        let original = f.theme();
+        f.set_theme(faded_theme(themes::application(&design), progress));
+        f.layer("aegis-hud-settings", area, &transparent(), |f| {
+            f.column_ex(&sized(area.w, area.h), |f| {
+                f.flex(1.0);
+                f.scroll("aegis-hud-settings-scroll", |f| {
+                    f.column_ex(
+                        &LayoutOpts {
+                            gap: 12.0,
+                            cross: Align::Stretch,
+                            ..Default::default()
+                        },
+                        |f| {
+                            self.modules.render(id, f, i18n, &design, &mut events);
+                        },
+                    );
+                });
+            });
+        });
+        f.set_theme(original);
+        let revision = self.settings.as_ref().map(|settings| settings.revision);
+        for action in events.actions {
+            out.settings_actions
+                .retain(|(_, queued)| !same_action_kind(queued, &action));
+            out.settings_actions.push((revision, action));
+        }
+    }
+
+    /// The side column: the notification list in a flexible panel on top
+    /// and the StatusNotifierItem tray in a fixed-height panel pinned to
+    /// the bottom, each with a small muted section header.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn render_side_column(
+        &mut self,
+        f: &mut Frame,
+        notifications: Rect,
+        tray: Rect,
+        progress: f32,
+        cursor: (f32, f32),
+        i18n: &Localizer,
+        out: &mut ChromeEvents,
+    ) {
+        let rise = (1.0 - progress) * 16.0;
+        let notifications = Rect {
+            y: notifications.y + rise,
+            ..notifications
         };
-        match self.section {
-            Section::System => self.render_system_section(f, area, progress, i18n, out),
-            Section::Tray => self.render_tray_section(f, area, progress, cursor, i18n),
-            Section::Messages => self.render_messages_section(f, area, progress, i18n, out),
+        let tray = Rect {
+            y: tray.y + rise,
+            ..tray
+        };
+        let body = self.render_side_panel(
+            f,
+            "aegis-hud-notifications-panel",
+            notifications,
+            i18n.text(Message::Notifications),
+            progress,
+        );
+        self.render_messages_section(f, body, progress, i18n, out);
+        let body = self.render_side_panel(
+            f,
+            "aegis-hud-tray-panel",
+            tray,
+            i18n.text(Message::Tray),
+            progress,
+        );
+        self.render_tray_section(f, body, progress, cursor, i18n);
+    }
+
+    /// One dark glass side-column panel with a small muted section header
+    /// at its top; returns the body area below the header.
+    fn render_side_panel(
+        &self,
+        f: &mut Frame,
+        id: &str,
+        rect: Rect,
+        title: &str,
+        progress: f32,
+    ) -> Rect {
+        let hud = Hud::classic();
+        f.layer(
+            id,
+            rect,
+            &OverlayOpts {
+                bg: fade_color(hud.surface, progress),
+                border: fade_color(hud.border, progress),
+                border_width: 1.0,
+                radius: 16.0,
+                pad: 0.0,
+                ..Default::default()
+            },
+            |f| {
+                f.column_ex(&sized(rect.w, rect.h), |_| {});
+            },
+        );
+        render_corner_brackets(
+            f,
+            &format!("{id}-brackets"),
+            rect,
+            fade_color(hud.accent, progress),
+        );
+        let original = f.theme();
+        f.set_theme(faded_theme(
+            themes::hud_muted(themes::hud(&hud), &hud),
+            progress,
+        ));
+        f.layer(
+            &format!("{id}-header"),
+            Rect {
+                x: rect.x + 14.0,
+                y: rect.y + 8.0,
+                w: rect.w - 28.0,
+                h: 15.0,
+            },
+            &transparent(),
+            |f| {
+                f.row_ex(
+                    &LayoutOpts {
+                        width: rect.w - 28.0,
+                        height: 15.0,
+                        cross: Align::Center,
+                        ..Default::default()
+                    },
+                    |f| {
+                        f.label_compact_sized(title, 10.5);
+                    },
+                );
+            },
+        );
+        f.set_theme(original);
+        Rect {
+            x: rect.x + 12.0,
+            y: rect.y + 27.0,
+            w: rect.w - 24.0,
+            h: (rect.h - 37.0).max(1.0),
         }
     }
 
     /// Quick settings, ported from the status bar's old status-and-controls
-    /// panel and laid out as full-width SAO groups.
+    /// panel and laid out as full-width HUD groups.
     pub(super) fn render_system_section(
         &mut self,
         f: &mut Frame,
@@ -829,9 +984,9 @@ impl CommandPanel {
         i18n: &Localizer,
         out: &mut ChromeEvents,
     ) {
-        let sao = Sao::classic();
+        let hud = Hud::classic();
         let original = f.theme();
-        f.set_theme(faded_theme(themes::sao(&sao), progress));
+        f.set_theme(faded_theme(themes::hud(&hud), progress));
         let status = self.status.clone();
         let volume_themed = self.themed_icon(volume_icon_name(&status));
         let network_themed = self.themed_icon(network_icon_name(status.network));
@@ -844,17 +999,17 @@ impl CommandPanel {
         };
         // Group headers: a small muted caption above each control group,
         // replacing the old bare separators.
-        let base_theme = faded_theme(themes::sao(&sao), progress);
-        let muted_theme = faded_theme(themes::sao_muted(themes::sao(&sao), &sao), progress);
+        let base_theme = faded_theme(themes::hud(&hud), progress);
+        let muted_theme = faded_theme(themes::hud_muted(themes::hud(&hud), &hud), progress);
         let group_header = move |f: &mut Frame, label: &str| {
             f.set_theme(muted_theme);
             f.label_compact_sized(label, 10.5);
             f.set_theme(base_theme);
         };
-        f.layer("aegis-sao-system", area, &transparent(), |f| {
+        f.layer("aegis-hud-system", area, &transparent(), |f| {
             f.column_ex(&sized(area.w, area.h), |f| {
                 f.flex(1.0);
-                f.scroll("aegis-sao-system-scroll", |f| {
+                f.scroll("aegis-hud-system-scroll", |f| {
                     f.column_ex(
                         &LayoutOpts {
                             gap: 8.0,
@@ -892,7 +1047,7 @@ impl CommandPanel {
                             );
                             if status.volume.is_some() {
                                 let mut volume = status.volume.unwrap_or(0) as f32;
-                                if f.slider("##sao-volume", &mut volume, 0.0, 100.0) {
+                                if f.slider("##hud-volume", &mut volume, 0.0, 100.0) {
                                     out.system_actions.push(SystemAction::SetVolume {
                                         level: volume.round().clamp(0.0, 100.0) as u8,
                                     });
@@ -931,7 +1086,7 @@ impl CommandPanel {
                             );
                             if status.brightness.is_some() {
                                 let mut brightness = status.brightness.unwrap_or(1) as f32;
-                                if f.slider("##sao-brightness", &mut brightness, 1.0, 100.0) {
+                                if f.slider("##hud-brightness", &mut brightness, 1.0, 100.0) {
                                     out.system_actions.push(SystemAction::SetBrightness {
                                         level: brightness.round().clamp(1.0, 100.0) as u8,
                                     });
@@ -1064,13 +1219,13 @@ impl CommandPanel {
         cursor: (f32, f32),
         i18n: &Localizer,
     ) {
-        let sao = Sao::classic();
+        let hud = Hud::classic();
         let mut cells = self.sni_cells();
         if cells.is_empty() {
             let original = f.theme();
-            let muted = themes::sao_muted(themes::sao(&sao), &sao);
+            let muted = themes::hud_muted(themes::hud(&hud), &hud);
             f.set_theme(faded_theme(muted, progress));
-            f.layer("aegis-sao-tray-empty", area, &transparent(), |f| {
+            f.layer("aegis-hud-tray-empty", area, &transparent(), |f| {
                 f.row_ex(
                     &LayoutOpts {
                         width: area.w,
@@ -1119,11 +1274,11 @@ impl CommandPanel {
         let mut secondary: Vec<(String, bool)> = Vec::new();
         let mut resolved: Vec<(String, Rect)> = Vec::new();
         let original = f.theme();
-        f.set_theme(faded_theme(themes::sao(&sao), progress));
-        f.layer("aegis-sao-tray", area, &transparent(), |f| {
+        f.set_theme(faded_theme(themes::hud(&hud), progress));
+        f.layer("aegis-hud-tray", area, &transparent(), |f| {
             f.column_ex(&sized(area.w, area.h), |f| {
                 f.flex(1.0);
-                f.scroll("aegis-sao-tray-scroll", |f| {
+                f.scroll("aegis-hud-tray-scroll", |f| {
                     f.column_ex(
                         &LayoutOpts {
                             gap: 8.0,
@@ -1142,7 +1297,7 @@ impl CommandPanel {
                                     |f| {
                                         for cell in row {
                                             let (response, _) = f.pressable_row(
-                                                &format!("aegis-sao-tray-cell-{}", cell.key),
+                                                &format!("aegis-hud-tray-cell-{}", cell.key),
                                                 &cell.title,
                                                 &LayoutOpts {
                                                     width: TRAY_CELL_W - 8.0,
@@ -1235,8 +1390,8 @@ impl CommandPanel {
         }
     }
 
-    /// The notification list, newest first, as SAO "quest item" cards in a
-    /// scroll area; a card click dismisses.
+    /// The notification list, newest first, as recessed dark glass cards in
+    /// a scroll area; a card click dismisses.
     pub(super) fn render_messages_section(
         &mut self,
         f: &mut Frame,
@@ -1245,13 +1400,13 @@ impl CommandPanel {
         i18n: &Localizer,
         out: &mut ChromeEvents,
     ) {
-        let sao = Sao::classic();
+        let hud = Hud::classic();
         let notifications = self.notification_snapshot();
         let original = f.theme();
         if notifications.is_empty() {
-            let muted = themes::sao_muted(themes::sao(&sao), &sao);
+            let muted = themes::hud_muted(themes::hud(&hud), &hud);
             f.set_theme(faded_theme(muted, progress));
-            f.layer("aegis-sao-messages-empty", area, &transparent(), |f| {
+            f.layer("aegis-hud-messages-empty", area, &transparent(), |f| {
                 f.row_ex(
                     &LayoutOpts {
                         width: area.w,
@@ -1271,14 +1426,14 @@ impl CommandPanel {
             f.set_theme(original);
             return;
         }
-        let base = themes::sao(&sao);
+        let base = themes::hud(&hud);
         let row_theme = faded_theme(base, progress);
-        let muted_theme = faded_theme(themes::sao_muted(base, &sao), progress);
+        let muted_theme = faded_theme(themes::hud_muted(base, &hud), progress);
         f.set_theme(row_theme);
-        f.layer("aegis-sao-messages", area, &transparent(), |f| {
+        f.layer("aegis-hud-messages", area, &transparent(), |f| {
             f.column_ex(&sized(area.w, area.h), |f| {
                 f.flex(1.0);
-                f.scroll("aegis-sao-messages-scroll", |f| {
+                f.scroll("aegis-hud-messages-scroll", |f| {
                     f.column_ex(
                         &LayoutOpts {
                             gap: 6.0,
@@ -1290,7 +1445,7 @@ impl CommandPanel {
                                 let summary = truncate(&notification.summary, 48);
                                 let body = truncate(&notification.body, 72);
                                 let (response, _) = f.pressable_row(
-                                    &format!("aegis-sao-message-{}", notification.id),
+                                    &format!("aegis-hud-message-{}", notification.id),
                                     &summary,
                                     &LayoutOpts {
                                         height: 58.0,
@@ -1298,7 +1453,7 @@ impl CommandPanel {
                                         pad: 10.0,
                                         radius: 12.0,
                                         cross: Align::Center,
-                                        bg: fade_color(sao.surface_dim, progress),
+                                        bg: fade_color(hud.surface_dim, progress),
                                         ..Default::default()
                                     },
                                     |f, _| {
@@ -1364,18 +1519,18 @@ impl CommandPanel {
         }
         self.menu_just_opened = false;
 
-        let sao = Sao::classic();
+        let hud = Hud::classic();
         let original_theme = f.theme();
-        let menu_theme = themes::sao(&sao);
-        let dim_theme = themes::sao_muted(menu_theme, &sao);
+        let menu_theme = themes::hud(&hud);
+        let dim_theme = themes::hud_muted(menu_theme, &hud);
 
         let header_visible = self.menu_path.len() > 1;
         let mut action: Option<MenuRowAction> = None;
         f.set_theme(menu_theme);
         f.layer(
-            "aegis-sao-sni-menu",
+            "aegis-hud-sni-menu",
             popover_bounds,
-            &materials::sao_panel(&sao),
+            &materials::hud_panel(&hud),
             |f| {
                 f.column_ex(
                     &LayoutOpts {
@@ -1389,7 +1544,7 @@ impl CommandPanel {
                         let inner_w = popover_bounds.w - MENU_PAD * 2.0;
                         if header_visible {
                             f.size_next(inner_w, MENU_HEADER_HEIGHT);
-                            f.push_id("sao-menu-back");
+                            f.push_id("hud-menu-back");
                             if f.selectable("‹ Back", false) {
                                 action = Some(MenuRowAction::Back);
                             }
@@ -1405,7 +1560,7 @@ impl CommandPanel {
                                 continue;
                             }
                             f.size_next(inner_w, MENU_ROW_HEIGHT);
-                            f.push_id(&format!("sao-menu-row-{}", row.id));
+                            f.push_id(&format!("hud-menu-row-{}", row.id));
                             if !row.enabled {
                                 // Disabled rows render as inert labels with a
                                 // dim foreground — selectable would still

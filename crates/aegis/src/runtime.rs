@@ -5,6 +5,7 @@ use aegis_security::authority::{ActorBinding, ObservationLeaseRegistry as Observ
 mod agent_auth;
 mod app_pick;
 mod apps;
+mod battery;
 mod capability_pick;
 mod capture;
 mod commands;
@@ -359,12 +360,6 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         tray,
         std::sync::Arc::clone(&notif_queue),
     )));
-    // Built-in applications share the launcher catalog with XDG entries but
-    // render in-process through optics/lens. Immediate system controls live in
-    // the command panel (ADR-0080); Agent Workspaces lifecycle controls remain
-    // their own surface.
-    #[cfg(feature = "chrome-agent-workspaces")]
-    shell.add(Box::new(aegis_agent_workspaces::AgentWorkspaces::new()));
     // Interactive screenshot region selector, triggered by the Print key.
     shell.add(Box::new(aegis_shell::ScreenshotSelector::new()));
     // User-consent application picker (the AppChooser portal's compositor
@@ -379,6 +374,9 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Capability-borrowing checklist (ADR-0088 agent pairing), opened by
     // PairAgent IPC requests.
     shell.add(Box::new(aegis_shell::CapabilityPrompt::new()));
+    // Low-battery alert, opened by the compositor itself when the battery
+    // crosses a configured `[battery] warn_at` threshold.
+    shell.add(Box::new(aegis_shell::BatteryAlert::new()));
     // The dock is registered after the config is loaded below, so the pushed
     // catalog already carries the resolved `[dock]` pinned list.
     let mut input_acc = InputAccumulator::default();
@@ -505,6 +503,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         apps: launcher_apps.clone(),
         pinned,
         icons: aegis_shell::IconSet::from_raw(icon_cache.map.clone()),
+        position: config.as_ref().map(|c| c.dock.position).unwrap_or_default(),
     });
     #[cfg(feature = "chrome-dock")]
     {
@@ -791,7 +790,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         journal_broadcaster.clone(),
     ));
     let settings_revision = 0;
-    live.set_settings(aegis_ipc::SettingsSnapshot {
+    let settings_snapshot = aegis_ipc::SettingsSnapshot {
         revision: settings_revision,
         touchpad: system_status.touchpad.clone(),
         display: system_status.display.clone(),
@@ -800,7 +799,9 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .as_ref()
             .map(|config| config.idle)
             .unwrap_or_default(),
-    });
+    };
+    live.set_settings(settings_snapshot.clone());
+    shell.set_settings(settings_snapshot);
     live.set_system_status(system_status.clone());
     let ipc: Option<aegis_ipc::Server> = match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(d) => {
@@ -977,6 +978,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         pending_confirm_pick: None,
         capability_pick_rx: capability_pick_control_rx,
         pending_capability_pick: None,
+        battery_latches: aegis_model::system::BatteryWarningLatches::default(),
         ipc_idle_inhibits: IdleInhibits::default(),
         journal,
         live,

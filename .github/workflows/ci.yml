@@ -115,6 +115,6 @@ jobs:
           cargo check --locked -p aegis --no-default-features --features chrome-hud
           cargo check --locked -p aegis --no-default-features --features chrome-command-panel
           cargo check --locked -p aegis --no-default-features \
-            --features chrome-dock,chrome-prism,chrome-agent-workspaces
+            --features chrome-dock,chrome-prism
       - name: Build release binaries
         run: cargo build --locked --release --workspace

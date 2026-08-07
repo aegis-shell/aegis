@@ -1,29 +1,33 @@
 # Command Panel
 
-The command panel is a three-surface cluster — a header band, an icon
-rail, and a content panel — presented as one centered group above the
-dark blurred scrim. All three surfaces are the SAO light island: the
-frosted white [SAO panel](surfaces.md) material with the amber accent.
-The cluster is one island per surface, not one island stretched across
-three roles; seams between surfaces are deliberate.
+The command panel is a three-surface cluster — a full-width header band,
+a main panel, and a side column — presented as one centered group above
+the dark blurred scrim. All three surfaces use the HUD material: the
+dark glass [HUD panel](surfaces.md) with the cyan accent, thin
+hairlines, and corner-bracket accents — the VR/AR personal-info-HUD
+language. Seams between surfaces are deliberate.
 
 ## Cluster Geometry
 
-- The cluster measures 716×550 logical px at full size and centers on
-  the output. On displays too small to host it, the cluster shrinks
-  rather than overflowing; the proportions hold.
-- The scrim is unchanged: dark, blurred, click-to-dismiss. The cluster
-  is the only light element in the presentation.
+- The header band spans the full cluster width at 118 logical px. Below
+  it, the main panel (640×420 logical px at full size) sits at the left
+  and the 300 px side column at the right, separated by a 12 px gap.
+- The cluster centers on the output. On displays too small to host it,
+  the side column shrinks to its minimum first, then the main panel;
+  past those minima both yield down to their floors, so the cluster
+  always fits on-screen.
+- The scrim runs slightly deeper than the default blur so the dark
+  glass surfaces still separate from the desktop; it remains
+  click-to-dismiss.
 
 ## Header Band
 
-The header band spans the full cluster width at 118 logical px and
-carries two zones separated by a vertical divider: persona on the
-left, machine state on the right.
+The header band carries two zones separated by a vertical hairline:
+persona on the left, machine state on the right.
 
 ### Persona Zone
 
-- A 72 px avatar orb sits in an amber ring. Every avatar texture is
+- A 72 px avatar orb sits in the persona ring. Every avatar texture is
   circle-masked in its alpha channel — still photos, animated VRM
   models, and the gradient orb fallback all render as discs. The orb
   follows the same user-configured avatar sources as the lock screen.
@@ -33,58 +37,67 @@ left, machine state on the right.
 ### Machine Zone
 
 - A thin-line vector chassis pictogram — laptop or desktop — opens the
-  zone, captioned in muted text. The pictogram reflects the detected
-  chassis, with battery presence as the fallback signal.
-- Below it, live gauge rows report machine state: CPU, GPU, RAM,
-  network, disk, and battery.
+  zone. The pictogram reflects the detected chassis, with battery
+  presence as the fallback signal.
+- Beside it, live gauge rows report machine state: CPU, GPU, RAM,
+  network, disk, and battery, capped at five rows.
 
 ### Gauge Grammar
 
-- A gauge is a 4 px rounded track with an amber fill, a right-aligned
-  value, and a 9.5 pt muted label. CPU leads with a 48-sample
-  history-bar sparkline alongside the current percent.
+- A gauge row is a label cell, a bar or sparkline zone, and a
+  right-aligned value cell. CPU, GPU, and RAM lead with a 48-sample
+  history sparkline alongside the current percent.
 - Rows are honest: a row appears only when backed by real data. No GPU
   busy percent, no GPU row; no battery, no battery row. A charging
   battery tints its row with the accent. Gauges sample on a two-second
   cadence — live, not animated.
 
-## Icon Rail
+## Main Panel
 
-The rail runs 64 px wide down the cluster's left edge and holds the
-section buttons — System, Tray, Messages — plus a circular close
-button pinned to its bottom.
+The main panel is a flat tab bar over the active tab's body.
 
-- Section buttons are icon-only circles in the SAO ring idiom:
-  unselected is an amber ring with an accent icon; selected is a solid
-  amber disc with an on-accent icon; hover is a soft accent wash.
-- The close button shares the ring grammar. It duplicates the scrim
-  click and `Escape`, never replaces them.
+- The tab bar holds the **System** tab plus one tab per available
+  settings module, in registry order, with the close button at its
+  right end. The active tab gets the accent label and an underline;
+  hovered tabs take the soft accent wash. Modules without a working
+  backend render no tab.
+- The close button duplicates the scrim click and `Escape`, never
+  replaces them.
+- The **System** tab groups quick settings under muted group headers
+  (Sound, Brightness, Connectivity, Desktop, Agent Workspaces, Session)
+  inside a scroll view, ending in the display-only Agent Workspaces
+  status row.
+- Each settings tab renders the module's page from the `aegis-settings`
+  registry in place; explicit-apply modules stage edits behind their
+  Apply button.
+- Tab bodies scroll when they overflow.
 
-## Content Panel
+## Side Column
 
-The content panel shows one section at a time. Its header carries only
-the section title — no breadcrumbs, no controls.
+The side column is always visible, regardless of the active tab: the
+notifications panel fills the flexible height on top, and the tray
+panel pins to the bottom at a fixed height. Each carries a small muted
+section header.
 
-- **System** groups quick settings under muted group headers (Sound,
-  Brightness, Connectivity, Desktop, Agent Workspaces, Session) inside
-  a scroll view. Bare separator lines do not appear; group headers do
-  the dividing.
-- **Tray** lays StatusNotifierItem icons in a scroll-view grid whose
-  column count derives from the panel width, never a hard-coded count.
-  Activation and the host-rendered dbusmenu popover are unchanged.
-- **Messages** lists notifications as SAO quest-item cards — summary
-  plus body — in a scroll view. Clicking a card dismisses it. The list
-  has no row cap.
+- **Notifications** lists every retained notification as a card —
+  summary plus body — in a scroll view. Clicking a card dismisses it.
+  The list has no row cap.
+- **Tray** lays StatusNotifierItem icons in a grid whose column count
+  derives from the panel width, never a hard-coded count. Left-click
+  activates an item; right-click opens the host-rendered dbusmenu
+  popover anchored to the live cell rect. Switching tabs closes an open
+  popover even though the tray stays visible.
 
 ## Motion
 
-The cluster reveals with a stagger: the header band slides in from the
-left, the rail fades, and the content panel rises. Reduced motion
-resolves directly to the end state.
+The cluster reveals with a stagger: the header band leads, the main
+panel lags behind it, and the side column lags furthest, rising into
+place. The corner brackets fade with each surface's reveal. Reduced
+motion resolves directly to the end state.
 
 ## Material Rules
 
-- Every surface in the cluster uses the SAO panel material; no surface
+- Every surface in the cluster uses the HUD panel material; no surface
   introduces a new material, tint, or border treatment.
-- The amber accent belongs to rings, fills, and selected discs. It
-  does not tint text outside the gauge values' fill role.
+- The cyan accent belongs to active tabs, underlines, corner brackets,
+  and slider or gauge fills. It does not tint body text.

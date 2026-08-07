@@ -10,7 +10,7 @@ repository root:
 
 ```bash
 meson compile -C ../optics/build
-cargo build --locked --release -p aegis -p aegis-settings
+cargo build --locked --release -p aegis
 ```
 
 Do not compile on the test VT. Building first keeps compiler latency and build
@@ -67,7 +67,7 @@ Check the areas affected by the change. A useful general pass is:
 2. Move and click the pointer, type into a client, change focus, and move a
    window with `Super+drag`.
 3. Open a terminal with `Super+A`, launch and close applications, and try the
-   dock, launcher, Prism, overview, HUD, command panel, and Agent Workspaces.
+   dock, launcher, Prism, overview, HUD, and command panel.
 4. Switch to another VT, wait a few seconds, and switch back. Rendering and
    input should resume without restarting aegis.
 5. If the change affects outputs, test display settings, multiple monitors,

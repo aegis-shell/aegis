@@ -70,21 +70,17 @@ server: listening on WAYLAND_DISPLAY=wayland-N
 Close the outer window or press `Ctrl+C` in the terminal to stop the nested
 session.
 
-The Cargo command starts only the compositor. Stage the development prefix
-from [Setup](setup.md#build-and-run) first when the test includes System
-Settings discovery or launch through its XDG metadata.
-
 ## Run Applications Inside aegis
 
 Prefer the built-in launcher. It passes the inner socket to the child process
 explicitly, so launched applications reach the nested compositor regardless of
 the environment they inherited.
 
-An installed System Settings application appears in Applications. Launch it
-there to exercise binary discovery, desktop metadata, icon resolution,
-window grouping, and IPC together. See
+The command panel's settings tabs (`Super+S`) exercise the hosted settings
+modules and the compositor's commit path without any separate application.
+See
 [First-Party Application Development](first-party-applications.md) for the
-installation contract and focused workflows.
+contract that applies when a standalone first-party application is added.
 
 To start a test client from another terminal, copy the inner socket name from
 the `server: listening` log line:

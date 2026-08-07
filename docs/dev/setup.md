@@ -166,39 +166,10 @@ The development commands have distinct responsibilities:
 |---------|------|
 | `cargo run --locked -p aegis` | Build and run the compositor with automatic backend selection |
 | `AEGIS_BACKEND=drm cargo run --locked -p aegis` | Force direct-display testing |
-| `cargo run --locked -p aegis-settings` | Run System Settings directly |
 
-Run Settings directly from a second terminal only for focused UI or IPC
-testing:
-
-```bash
-cargo run --locked -p aegis-settings
-```
-
-This direct command does not register the application with the Dock or
-launcher. Stage the development artifacts into a throwaway prefix when a test
-needs desktop-entry discovery, icon resolution, `TryExec`, and detached
-launch:
-
-```bash
-aegis_stage=$(mktemp -d)
-cargo build --locked -p aegis-settings
-install -Dm0755 target/debug/aegis-settings \
-  "$aegis_stage/bin/aegis-settings"
-install -Dm0644 contrib/io.github.ming2k.aegis.Settings.desktop \
-  "$aegis_stage/share/applications/io.github.ming2k.aegis.Settings.desktop"
-install -Dm0644 \
-  contrib/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg \
-  "$aegis_stage/share/icons/hicolor/scalable/apps/io.github.ming2k.aegis.Settings.svg"
-export PATH="$aegis_stage/bin:$PATH"
-export XDG_DATA_DIRS="$aegis_stage/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
-cargo run --locked -p aegis
-rm -rf -- "$aegis_stage"
-```
-
-The temporary prefix keeps the user's `~/.local` clean: the desktop entry's
-`Exec` resolves through `PATH`, its `Icon` through `XDG_DATA_DIRS`, and the
-whole prefix is removed when the shell exits. Distribution installation,
+Persistent settings have no separate binary: the settings pages are tabs in
+the command panel (`Super+S`), hosted in-process from the `aegis-settings`
+module library. Distribution installation,
 which owns systemd units, D-Bus services, and portal metadata, is documented
 separately in [Distribution Packaging](packaging.md).
 
@@ -210,8 +181,6 @@ system dynamic-loader configuration.
 Use the [Nested Backend Development](nested-backend.md) workflow for daily
 iteration, Cargo command selection, inner client launch, and the boundary
 between nested and DRM/KMS validation.
-Use [First-Party Application Development](first-party-applications.md) for
-the staging contract and focused application test matrix.
 
 The compositor logs through the `log` facade; `RUST_LOG` controls verbosity
 (default `info`):

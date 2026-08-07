@@ -18,11 +18,11 @@ seconds without interaction. Rejected attempts use an increasing retry delay.
 
 ## Configure Automatic Actions
 
-Open **System Settings**, then select **Power Management**.
+Open the command panel with `Super+S`, then select **Power Management**.
 
 1. Turn **Automatic idle actions** on or off.
 2. Enable the stages the session should use.
-3. Choose an exact time for each enabled stage. System Settings keeps later
+3. Choose an exact time for each enabled stage. The power settings keep later
    enabled stages after earlier stages.
 4. Choose the dimmed brightness.
 5. Select **Apply Power Settings**.

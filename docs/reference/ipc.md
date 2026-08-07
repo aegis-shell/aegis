@@ -320,7 +320,7 @@ Display, touchpad, desktop appearance, and idle power policy are settings
 domains in the current snapshot. Mouse, keyboard, accounts, and window-rule
 modules remain unavailable until their authoritative services expose typed
 state and actions.
-See the [System Settings Reference](settings.md#modules) and
+See the [Settings Reference](settings.md#modules) and
 [ADR-0072](../adr/0072-desktop-preference-authority-and-toolkit-compatibility.md).
 
 ## Interaction Domain Authority

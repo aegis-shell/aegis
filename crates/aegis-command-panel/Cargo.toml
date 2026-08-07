@@ -1,6 +1,6 @@
 [package]
 name = "aegis-command-panel"
-description = "Modal command panel for the aegis compositor: quick settings, tray interaction, and notifications in frosted white floating panels (ADR-0080)"
+description = "Modal command panel for the aegis compositor: quick settings, hosted settings modules, tray interaction, and notifications in dark glass VR/AR HUD panels (ADR-0080)"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
@@ -11,6 +11,8 @@ build = "build.rs"
 [dependencies]
 aegis-model = { workspace = true }
 aegis-design = { workspace = true }
+# Settings module registry hosted in the main panel's module tabs.
+aegis-settings = { workspace = true }
 # Shared personalized profile plus the optional still/VRM portrait runtime.
 aegis-shell = { workspace = true, features = ["persona"] }
 aegis-tray = { workspace = true }

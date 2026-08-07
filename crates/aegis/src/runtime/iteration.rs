@@ -14,18 +14,36 @@ pub(super) struct IterationWork {
     pub(super) pending_screenshots: Vec<PendingScreenshot>,
 }
 
+/// Disjoint-field form used while a Flux frame borrows `surface` (the same
+/// split as `commit_settings`/`commit_settings_parts`).
+pub(super) fn queue_app_scan_parts(
+    server: &aegis_compositor::Server,
+    host: &Host,
+    config: Option<&aegis_config::Config>,
+    scan_req_tx: &std::sync::mpsc::Sender<AppScanRequest>,
+    next_app_scan: &mut std::time::Instant,
+) {
+    let scale = effective_icon_scale(
+        server
+            .output_infos()
+            .first()
+            .map(|output| output.geometry.scale.as_f32()),
+        host.scale(),
+    );
+    let icon_theme = effective_desktop_preferences(config).icon_theme;
+    let _ = scan_req_tx.send(AppScanRequest { icon_theme, scale });
+    *next_app_scan = std::time::Instant::now() + APP_RESCAN_INTERVAL;
+}
+
 impl CompositorRuntime {
     fn queue_app_scan(&mut self) {
-        let scale = effective_icon_scale(
-            self.server
-                .output_infos()
-                .first()
-                .map(|output| output.geometry.scale.as_f32()),
-            self.host.scale(),
+        queue_app_scan_parts(
+            &self.server,
+            &self.host,
+            self.config.as_ref(),
+            &self.scan_req_tx,
+            &mut self.next_app_scan,
         );
-        let icon_theme = effective_desktop_preferences(self.config.as_ref()).icon_theme;
-        let _ = self.scan_req_tx.send(AppScanRequest { icon_theme, scale });
-        self.next_app_scan = std::time::Instant::now() + APP_RESCAN_INTERVAL;
     }
 
     pub(super) fn prepare_iteration(
@@ -465,6 +483,9 @@ impl CompositorRuntime {
                 );
                 self.damage.chrome_dirty = true;
             }
+            // Evaluate every drained sample, not only changed ones: a warning
+            // skipped behind a lock or another modal retries on the next tick.
+            self.poll_battery_warning();
         }
         while let Ok(stats) = self.resource_rx.try_recv() {
             self.shell.set_resource_stats(stats);
@@ -593,6 +614,11 @@ impl CompositorRuntime {
                 apps: self.launcher_apps.clone(),
                 pinned,
                 icons: aegis_shell::IconSet::from_raw(self.icon_cache.map.clone()),
+                position: self
+                    .config
+                    .as_ref()
+                    .map(|c| c.dock.position)
+                    .unwrap_or_default(),
             });
             // Theme selection follows the same live-reload contract as the
             // rest of the effective desktop-preferences snapshot.
@@ -646,6 +672,11 @@ impl CompositorRuntime {
                     apps: refreshed.clone(),
                     pinned,
                     icons: aegis_shell::IconSet::from_raw(refreshed_icons.map.clone()),
+                    position: self
+                        .config
+                        .as_ref()
+                        .map(|c| c.dock.position)
+                        .unwrap_or_default(),
                 });
                 // Components now point only at refreshed_icons; dropping the
                 // old cache after the update cannot leave dangling textures.

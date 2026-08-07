@@ -19,16 +19,14 @@ aegis/
     aegis-shell/         chrome host plus feature-gated persona domain
     aegis-dock/          bottom-center dock chrome component
     aegis-prism/         compact application-search chrome component
-    aegis-agent-workspaces/     Agent Workspaces lifecycle and authority UI
-    aegis-settings/       standalone modular System Settings application
+    aegis-settings/       settings module library: contract, registry, and built-in pages
     aegis-atspi/          supervised out-of-process AT-SPI semantic adapter
     aegis-hud/           display-only HUD status chips (system status, workspace dots, clock, SNI tray)
-    aegis-command-panel/ full-screen modal command panel (quick settings, tray, notifications)
+    aegis-command-panel/ full-screen modal command panel (quick settings, settings modules, tray, notifications)
     aegis-wallpaper/     image, video, 3D, and parallax background layer
     aegis-config/        TOML schema, typed atomic persistence, loader, live reload
     aegis-ipc/           Actor capability broker and introspection over a unix socket
     aegis-commands/    domain command parser and IPC dispatcher (lib-only)
-    aegis-agent/         the in-tree agent runtime CLI (`aegis-agent`), internal persona: fuji (宓姬)
 
     aegis-desktop-entries/          freedesktop.org desktop-entry enumeration + icon lookup
     aegis-launcher/        detached, XDG-environment-aware app launching
@@ -65,17 +63,15 @@ compatible Aegis tag; none of its crates are workspace members here. See
 | [`aegis-shell`](../../crates/aegis-shell/README.md) | Chrome host, `Chrome` contract, shared components, and the feature-gated `persona` profile/portrait domain | [ADR-0021](../adr/0021-chrome-component-trait.md), [ADR-0111](../adr/0111-persona-as-shell-domain-with-feature-gated-portrait-runtime.md) |
 | [`aegis-dock`](../../crates/aegis-dock/README.md) | Bottom-center dock chrome component | [ADR-0019](../adr/0019-dock-as-bottom-center-overlay.md), [ADR-0021](../adr/0021-chrome-component-trait.md) |
 | [`aegis-prism`](../../crates/aegis-prism/README.md) | Compact Spotlight-style application search component | [ADR-0021](../adr/0021-chrome-component-trait.md), [ADR-0044](../adr/0044-dock-and-control-center-crates.md) |
-| [`aegis-agent-workspaces`](../../crates/aegis-agent-workspaces/README.md) | Compositor-owned Agent Workspaces lifecycle and authority UI | [ADR-0108](../adr/0108-agent-workspaces-presentation-naming.md) |
-| [`aegis-settings`](../../crates/aegis-settings/README.md) | Standalone modular System Settings application | [ADR-0069](../adr/0069-documentation-owned-installation-and-throwaway-development-staging.md) |
+| [`aegis-settings`](../../crates/aegis-settings/README.md) | Settings module library: the `SettingsModule` contract, registry, and built-in pages hosted by the command panel | [ADR-0114](../adr/0114-panel-hosted-settings-and-hud-command-panel.md) |
 | [`aegis-atspi`](../../crates/aegis-atspi/README.md) | Supervised out-of-process AT-SPI semantic observation and action adapter | [ADR-0104](../adr/0104-actor-sessions-resource-grants-and-accessibility-adapter.md) |
 | [`aegis-hud`](../../crates/aegis-hud/README.md) | Display-only HUD status chips with the StatusNotifierItem tray row | [ADR-0080](../adr/0080-hud-status-chips-and-sao-command-panel.md), [ADR-0081](../adr/0081-hud-and-command-panel-naming.md) |
-| [`aegis-command-panel`](../../crates/aegis-command-panel/README.md) | Full-screen modal command panel: quick settings, tray activation, and notifications | [ADR-0080](../adr/0080-hud-status-chips-and-sao-command-panel.md), [ADR-0081](../adr/0081-hud-and-command-panel-naming.md) |
+| [`aegis-command-panel`](../../crates/aegis-command-panel/README.md) | Full-screen modal command panel: quick settings, hosted settings modules, tray activation, and notifications | [ADR-0080](../adr/0080-hud-status-chips-and-sao-command-panel.md), [ADR-0081](../adr/0081-hud-and-command-panel-naming.md), [ADR-0114](../adr/0114-panel-hosted-settings-and-hud-command-panel.md) |
 | [`aegis-wallpaper`](../../crates/aegis-wallpaper/README.md) | Image, video, 3D, and parallax background layer | [ADR-0018](../adr/0018-wallpaper-crate.md), [ADR-0092](../adr/0092-explicit-wallpaper-modes-and-continuous-parallax.md) |
 | [`aegis-config`](../../crates/aegis-config/README.md) | Versioned TOML schema, typed atomic persistence, loader, and mtime-based live reload | [ADR-0026](../adr/0026-configuration-system.md) |
 | [`aegis-ipc`](../../crates/aegis-ipc/README.md) | Versioned Actor identity, capability, semantic observation, action, and audit protocol over a unix socket | [ADR-0027](../adr/0027-ipc-and-introspection.md), [ADR-0102](../adr/0102-actor-scoped-semantic-observation-and-transactional-actions.md) |
 | [`aegis-commands`](../../crates/aegis-commands/README.md) | Domain command parser, IPC dispatcher, and output formatter; no installed binary | [ADR-0093](../adr/0093-unified-domain-oriented-aegis-command-surface.md) |
 | [`aegis-mcp`](../../crates/aegis-mcp/README.md) | The platform's scoped MCP bridge for any agent (`aegis-mcp`) | [ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md), [ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md) |
-| [`aegis-agent`](../../crates/aegis-agent/README.md) | Aegis agent runtime: self-contained agent CLI (`aegis-agent`), internal persona fuji | [ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md), [ADR-0089](../adr/0089-aegis-agent-product-and-fuji-identity-rename.md) |
 
 | [`aegis-desktop-entries`](../../crates/aegis-desktop-entries/README.md) | freedesktop.org desktop-entry enumeration and icon-theme lookup | [ADR-0022](../adr/0022-application-launcher.md) |
 | [`aegis-launcher`](../../crates/aegis-launcher/README.md) | Detached, XDG-environment-aware launching of desktop applications | [ADR-0022](../adr/0022-application-launcher.md) |
@@ -102,8 +98,10 @@ compatible Aegis tag; none of its crates are workspace members here. See
   reload. Authentication and Actor principals do not enter this module.
 - A persistent settings page belongs behind the `aegis-settings` module
   contract. The module emits typed settings intents; it does not write the
-  configuration file or call its backing service. Compositor-owned settings
-  use revisioned `aegis-ipc` transactions. System-owned settings use a separate
+  configuration file or call its backing service. The command panel hosts
+  the modules in-process and routes their intents into the compositor's
+  commit path; external clients reach the same path through revisioned
+  `aegis-ipc` transactions. System-owned settings use a separate
   authorized service adapter.
 - TOML parsing, schema validation, explicit comment-preserving migrations,
   typed edits, and atomic replacement belong in `aegis-config`.
@@ -112,10 +110,9 @@ compatible Aegis tag; none of its crates are workspace members here. See
 - A rendering or texture capability missing from flux is added to flux, not
   worked around in aegis; see
   [ADR-0001](../adr/0001-scope-and-responsibility-boundary.md).
-- Generic agent execution and product policy belong in `aegis-agent`, the
-  self-contained runtime whose internal persona remains fuji. Aegis-specific
-  capability borrowing and Interaction Domain adaptation belong in the separately
-  launched `aegis-mcp` process, never in the agent or compositor binary.
+- Agent runtimes and agent products live out of tree. Aegis-specific MCP
+  exposure lives in the separately launched `aegis-mcp` process, never in
+  the compositor binary.
 - Actor capability vocabulary, sessions, exact resource grants, observation
   leases, action preconditions, and generic durable audit mechanisms belong
   in the corresponding `aegis-security` modules. Untrusted
@@ -129,7 +126,7 @@ compatible Aegis tag; none of its crates are workspace members here. See
 ## Dependency Direction
 
 The workspace enforces the lowest-level dependency boundaries in CI.
-`aegis-model` and `aegis-agent` do not depend on another Aegis crate.
+`aegis-model` does not depend on another Aegis crate.
 Security, semantic, configuration, IPC, backend, render, and compositor
 crates use explicit downward allowlists. `aegis-commands` remains a lib-only
 client layer over `aegis-model`, `aegis-config`, and `aegis-ipc`; it does not

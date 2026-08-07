@@ -235,11 +235,12 @@ land with the libinput backend.
 flux engine first). Multi-monitor rendering correctness and gesture/tablet
 feel need real hardware to verify. The per-output display policy landed as
 `[[output]]` config entries: scale, live DRM mode selection, position, and
-primary are in effect and editable through System Settings; the output
+primary are in effect and editable through the command panel's settings
+tabs; the output
 transform is parsed but deferred until the renderer applies it.
-System Settings now runs as an ordinary Wayland application; display and
-touchpad pages share a module contract, while unfinished settings domains
-remain visible but explicitly unavailable.
+The settings pages share one module contract hosted by the command panel,
+while unfinished settings domains keep stable module routes but remain
+unavailable.
 
 **Verification.** Two outputs at different scales render correctly and the
 compositor's own chrome stays pixel-perfect. A touchpad three-finger swipe
@@ -326,15 +327,16 @@ The remaining
 desktop-dependent semantic surface (window-content capture per window,
 semantic element trees) stays open.
 
-The `aegis-mcp` integration now closes the client-side Interaction Domain loop:
-fuji discovers scoped tools through MCP, while the bridge manages one
-recoverable Agent Interaction Domain across application launch, authority transfer,
-directed capture, bounded input, and revocation. The renamed fuji agent is
-self-contained in this workspace; neither Praxion nor Neenee is required.
-Voice activation and shell-native conversation chrome remain follow-up product
-surfaces ([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md),
-[ADR-0050](../adr/0050-fuji-agent-product-and-bridge-rename.md),
-[ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md)).
+The `aegis-mcp` integration closes the client-side Interaction Domain loop:
+an MCP-compatible agent discovers scoped tools through the bridge, while the
+bridge manages one recoverable Agent Interaction Domain across application
+launch, authority transfer, directed capture, bounded input, and revocation.
+Agent products live out of tree; Aegis ships the platform bridge and the
+authority backend, never an agent runtime or frontend. Voice activation and
+shell-native conversation chrome remain follow-up product surfaces
+([ADR-0047](../adr/0047-neenee-agent-realm-platform-bridge.md),
+[ADR-0087](../adr/0087-aegis-mcp-standalone-platform-bridge-crate.md),
+[ADR-0113](../adr/0113-platform-ai-backend-and-agent-product-removal.md)).
 
 ## Sequencing Rationale
 

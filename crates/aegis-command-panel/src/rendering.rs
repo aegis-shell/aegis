@@ -2,6 +2,8 @@ use super::*;
 
 use std::collections::VecDeque;
 
+use lens::Icon;
+
 /// A deferred row click captured during the menu frame's column closure.
 pub(super) enum MenuRowAction {
     Back,
@@ -11,6 +13,13 @@ pub(super) enum MenuRowAction {
 
 pub(super) fn contains(rect: Rect, x: f32, y: f32) -> bool {
     x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h
+}
+
+/// Two settings actions are the same kind when they mutate the same
+/// settings section; the queue keeps only the newest draft of each kind
+/// (instant modules emit one action per control change while dragging).
+pub(super) fn same_action_kind(left: &SettingsAction, right: &SettingsAction) -> bool {
+    std::mem::discriminant(left) == std::mem::discriminant(right)
 }
 
 pub(super) fn ease_out_cubic(value: f32) -> f32 {
@@ -67,7 +76,7 @@ pub(super) fn transparent() -> OverlayOpts {
     }
 }
 
-/// Filled circle used for the SAO menu's ringed section icons.
+/// Filled circle used for the header band's avatar backdrop.
 pub(super) fn render_disc(
     frame: &mut Frame,
     id: &str,
@@ -94,7 +103,7 @@ pub(super) fn render_disc(
     );
 }
 
-/// Ring (hollow circle) for unselected SAO section icons.
+/// Ring (hollow circle) used for the header band's avatar keyline.
 pub(super) fn render_ring(
     frame: &mut Frame,
     id: &str,
@@ -121,6 +130,42 @@ pub(super) fn render_ring(
         },
         |_| {},
     );
+}
+
+/// The HUD flourish: short L-shaped strokes (12px arms, 1.5px thick) just
+/// inside the four corners of a panel rect, like a VR visor's frame
+/// markers. The color arrives pre-faded — lens has no layer opacity, so
+/// the reveal fades the brackets per-color like everything else.
+pub(super) fn render_corner_brackets(frame: &mut Frame, id: &str, rect: Rect, color: Color) {
+    const ARM: f32 = 12.0;
+    const THICK: f32 = 1.5;
+    const INSET: f32 = 6.0;
+    let mut bar = |suffix: &str, x: f32, y: f32, w: f32, h: f32| {
+        frame.layer(
+            &format!("{id}-{suffix}"),
+            Rect { x, y, w, h },
+            &OverlayOpts {
+                bg: color,
+                border: Color::TRANSPARENT,
+                radius: 0.0,
+                pad: 0.0,
+                ..Default::default()
+            },
+            |_| {},
+        );
+    };
+    let left = rect.x + INSET;
+    let right = rect.x + rect.w - INSET;
+    let top = rect.y + INSET;
+    let bottom = rect.y + rect.h - INSET;
+    bar("tl-h", left, top, ARM, THICK);
+    bar("tl-v", left, top, THICK, ARM);
+    bar("tr-h", right - ARM, top, ARM, THICK);
+    bar("tr-v", right - THICK, top, THICK, ARM);
+    bar("bl-h", left, bottom - THICK, ARM, THICK);
+    bar("bl-v", left, bottom - THICK, THICK, ARM);
+    bar("br-h", right - ARM, bottom - THICK, ARM, THICK);
+    bar("br-v", right - THICK, bottom - THICK, THICK, ARM);
 }
 
 pub(super) fn volume_icon(status: &SystemStatus) -> Icon {
@@ -328,12 +373,12 @@ impl History {
 /// A thin horizontal gauge: rounded track with an accent fill of
 /// `fraction * width`, both faded with the reveal progress.
 pub(super) fn gauge_bar(f: &mut Frame, id: &str, rect: Rect, fraction: f32, progress: f32) {
-    let sao = Sao::classic();
+    let hud = Hud::classic();
     f.layer(
         id,
         rect,
         &OverlayOpts {
-            bg: fade_color(sao.track, progress),
+            bg: fade_color(hud.track, progress),
             border: Color::TRANSPARENT,
             radius: rect.h * 0.5,
             pad: 0.0,
@@ -347,7 +392,7 @@ pub(super) fn gauge_bar(f: &mut Frame, id: &str, rect: Rect, fraction: f32, prog
             &format!("{id}-fill"),
             Rect { w: fill_w, ..rect },
             &OverlayOpts {
-                bg: fade_color(sao.accent, progress),
+                bg: fade_color(hud.accent, progress),
                 border: Color::TRANSPARENT,
                 radius: rect.h * 0.5,
                 pad: 0.0,
@@ -369,7 +414,7 @@ pub(super) fn render_sparkline(
 ) {
     const BAR_W: f32 = 2.0;
     const BAR_GAP: f32 = 1.5;
-    let sao = Sao::classic();
+    let hud = Hud::classic();
     let max_bars = ((rect.w + BAR_GAP) / (BAR_W + BAR_GAP)).floor().max(0.0) as usize;
     let samples: Vec<f32> = history.samples().collect();
     let count = samples.len().min(max_bars);
@@ -379,7 +424,7 @@ pub(super) fn render_sparkline(
             .min(rect.h);
         let right = rect.x + rect.w - (count - 1 - index) as f32 * (BAR_W + BAR_GAP);
         f.layer(
-            &format!("aegis-sao-spark-{metric}-{index}"),
+            &format!("aegis-hud-spark-{metric}-{index}"),
             Rect {
                 x: right - BAR_W,
                 y: rect.y + rect.h - h,
@@ -387,7 +432,7 @@ pub(super) fn render_sparkline(
                 h,
             },
             &OverlayOpts {
-                bg: fade_color(sao.accent, progress),
+                bg: fade_color(hud.accent, progress),
                 border: Color::TRANSPARENT,
                 radius: 0.75,
                 pad: 0.0,
