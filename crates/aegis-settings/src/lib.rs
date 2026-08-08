@@ -15,7 +15,7 @@ use aegis_shell::Message;
 use module::{
     ApplyPolicy, ModuleAvailability, ModuleCategory, ModuleId, ModuleMetadata, ModuleRegistry,
 };
-use modules::{AppearanceModule, DisplayModule, PowerModule, TouchpadModule, UnavailableModule};
+use modules::{AppearanceModule, DisplayModule, DockModule, PowerModule, TouchpadModule, UnavailableModule};
 
 /// Construct the built-in module set in stable navigation order.
 pub fn builtin_settings_modules() -> ModuleRegistry {
@@ -47,6 +47,7 @@ pub fn builtin_settings_modules() -> ModuleRegistry {
         Message::KeyboardDescription,
     ));
     modules.register(AppearanceModule::new());
+    modules.register(DockModule::new());
     modules.register(PowerModule::new());
     modules.register(UnavailableModule::new(
         ModuleMetadata {
@@ -93,6 +94,7 @@ mod tests {
                 "touchpad",
                 "keyboard",
                 "appearance",
+                "dock",
                 "power",
                 "users",
                 "window-rules",
@@ -104,7 +106,7 @@ mod tests {
                 .filter(|module| module.availability == ModuleAvailability::Available)
                 .map(|module| module.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["display", "touchpad", "appearance", "power"]
+            vec!["display", "touchpad", "appearance", "dock", "power"]
         );
     }
 }

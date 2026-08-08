@@ -120,6 +120,8 @@ impl State {
             output,
             layout_params: aegis_model::layout::LayoutParams::default(),
             reduced_motion: false,
+            minimize_animation: aegis_model::dock::MinimizeAnimationStyle::default(),
+            minimize_targets: std::collections::HashMap::new(),
             decoration_policy: aegis_model::window::DecorationPolicy::default(),
             window_rules: Vec::new(),
             output_geometry: aegis_model::output::OutputGeometry::default(),

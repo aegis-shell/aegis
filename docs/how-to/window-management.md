@@ -73,6 +73,17 @@ required window action. Follow [How to Use the Dock and
 Launcher](dock-and-launcher.md#use-the-application-menu) for multi-window and
 restore behavior.
 
+## Choose the Minimize Animation
+
+1. Press `Super+S` to open the command panel.
+2. Select the `Dock` tab.
+3. Set `Minimize animation` to `Genie`, `Scale`, or `Suck`.
+
+The change applies immediately and persists as `minimize_animation` in the
+`[dock]` table. Windows fly into their Dock tile with the selected effect;
+restoring a window plays the flight in reverse out of the same tile. See
+the [configuration reference](../reference/config.md#dock) for the key.
+
 ## Keep a Window on Top
 
 1. Focus the window to keep above the others.

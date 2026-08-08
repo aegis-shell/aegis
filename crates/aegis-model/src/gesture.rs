@@ -29,6 +29,9 @@ pub enum GestureAction {
     /// Vertical swipe: down opens the command panel, up closes it
     /// (ADR-0080). Fires at most once per gesture.
     CommandPanel,
+    /// Vertical swipe: up opens the window/workspace overview, down closes
+    /// it (M9, ADR-0116). Fires at most once per gesture.
+    Overview,
 }
 
 /// The axis a swipe binding listens on.
@@ -54,13 +57,13 @@ pub struct GestureMap {
 }
 
 impl GestureMap {
-    /// Built-in defaults (ADR-0080, ADR-0082).
+    /// Built-in defaults (ADR-0080, ADR-0082, ADR-0116).
     pub fn defaults() -> GestureMap {
         GestureMap {
             binds: vec![
                 gb(3, GestureAxis::Horizontal, GestureAction::WorkspaceSwitch),
                 gb(3, GestureAxis::Vertical, GestureAction::WindowCycle),
-                gb(4, GestureAxis::Vertical, GestureAction::CommandPanel),
+                gb(4, GestureAxis::Vertical, GestureAction::Overview),
             ],
         }
     }
@@ -132,6 +135,7 @@ pub fn gesture_action_from_name(s: &str) -> Option<GestureAction> {
         "workspace_switch" | "workspaces" | "workspace" => GestureAction::WorkspaceSwitch,
         "window_cycle" | "cycle_windows" | "windows" | "switcher" => GestureAction::WindowCycle,
         "command_panel" | "commandpanel" | "panel" => GestureAction::CommandPanel,
+        "overview" | "window_overview" | "picker" => GestureAction::Overview,
         _ => return None,
     })
 }
@@ -153,7 +157,7 @@ mod tests {
         );
         assert_eq!(
             gm.lookup(4, GestureAxis::Vertical),
-            Some(GestureAction::CommandPanel)
+            Some(GestureAction::Overview)
         );
         // Unbound axes and finger counts have no listener.
         assert_eq!(gm.lookup(4, GestureAxis::Horizontal), None);
@@ -199,8 +203,7 @@ mod tests {
 
     #[test]
     fn action_filter_releases_removed_finger_count() {
-        let gm =
-            GestureMap::defaults().retain_actions(|action| action != GestureAction::CommandPanel);
+        let gm = GestureMap::defaults().retain_actions(|action| action != GestureAction::Overview);
         assert_eq!(gm.lookup(4, GestureAxis::Vertical), None);
         assert!(!gm.claims(4));
         assert!(gm.claims(3));
@@ -228,6 +231,10 @@ mod tests {
         assert_eq!(
             gesture_action_from_name("command_panel"),
             Some(GestureAction::CommandPanel)
+        );
+        assert_eq!(
+            gesture_action_from_name("overview"),
+            Some(GestureAction::Overview)
         );
         assert_eq!(gesture_action_from_name("none"), Some(GestureAction::None));
         assert_eq!(gesture_action_from_name("nonsense"), None);

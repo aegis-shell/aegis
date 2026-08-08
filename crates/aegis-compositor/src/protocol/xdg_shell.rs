@@ -1080,6 +1080,52 @@ unsafe extern "C" fn toplevel_set_minimized(
     }
 }
 
+/// The rect a minimize flight aims at for `window_id`: the style-adjusted
+/// resting dock-icon rect when the shell has reported one, else the legacy
+/// screen-edge stub derived from `window_rect`. Shared by the minimize and
+/// restore paths so a window flies out of the point it flew into.
+pub(crate) fn minimize_flight_target(
+    state: &State,
+    window_id: aegis_model::window::WindowId,
+    window_rect: aegis_model::Rect,
+) -> aegis_model::Rect {
+    if let Some(icon) = state.minimize_targets.get(&window_id) {
+        return aegis_model::transition::minimize_target_rect(state.minimize_animation, *icon);
+    }
+    let screen_h = state.output_geometry.logical_rect().size.h;
+    aegis_model::Rect {
+        origin: aegis_model::Point {
+            x: window_rect.origin.x + window_rect.size.w / 4,
+            y: screen_h - 20,
+        },
+        size: aegis_model::Size {
+            w: (window_rect.size.w / 2).max(40),
+            h: 20,
+        },
+    }
+}
+
+/// The transition driving a minimize flight (or, with `from` on the icon
+/// side, a restore). When the window has a reported dock tile the transition
+/// carries the configured genie/scale/suck effect and per-style timing; the
+/// stub fallback keeps the legacy plain lerp.
+pub(crate) fn minimize_transition(
+    state: &State,
+    window_id: aegis_model::window::WindowId,
+    from: aegis_model::Rect,
+) -> aegis_model::transition::WindowTransition {
+    let now = state.now_ms();
+    match state.minimize_targets.get(&window_id) {
+        Some(icon) => aegis_model::transition::WindowTransition::minimize(
+            from,
+            now,
+            state.minimize_animation,
+            *icon,
+        ),
+        None => aegis_model::transition::WindowTransition::new(from, now),
+    }
+}
+
 /// Apply compositor-internal minimization to one live toplevel record.
 /// Kept separate from the protocol callback so shell/IPC actions follow the
 /// exact same focus, configure, and client-flush semantics.
@@ -1094,21 +1140,12 @@ pub(crate) unsafe fn minimize_toplevel_record(rec: *mut SurfaceRec) {
                 origin: (*rec).position,
                 size: (*rec).window.size,
             };
-            let old_screen_h = (*state).output_geometry.logical_rect().size.h;
-            let now = (*state).now_ms();
-            (*rec).window.transition =
-                Some(aegis_model::transition::WindowTransition::new(old, now));
-            let target_origin = aegis_model::Point {
-                x: old.origin.x + old.size.w / 4,
-                y: old_screen_h - 20,
-            };
-            let target_size = aegis_model::Size {
-                w: (old.size.w / 2).max(40),
-                h: 20,
-            };
-            (*rec).position = target_origin;
-            (*rec).window.position = target_origin;
-            (*rec).window.size = target_size;
+            let window_id = (*rec).window.id;
+            let target = minimize_flight_target(&*state, window_id, old);
+            (*rec).window.transition = Some(minimize_transition(&*state, window_id, old));
+            (*rec).position = target.origin;
+            (*rec).window.position = target.origin;
+            (*rec).window.size = target.size;
         }
         (*rec).window.minimized = true;
         if state.is_null() {

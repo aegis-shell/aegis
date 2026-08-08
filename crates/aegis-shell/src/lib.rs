@@ -572,6 +572,17 @@ pub trait Chrome {
         false
     }
 
+    /// Resting tile-icon rectangles for every running window, in output
+    /// coordinates — the compositor's minimize-animation flight targets
+    /// (ADR-0029). Only components with a window tile strip (the dock)
+    /// contribute; the default is a no-op.
+    fn minimize_targets(
+        &self,
+        _display: (f32, f32),
+        _out: &mut Vec<(aegis_model::window::WindowId, aegis_model::Rect)>,
+    ) {
+    }
+
     /// Whether this component remains visible and interactive while another
     /// component is modal. Modal components opt in themselves; persistent
     /// decorations share the default opt-in through
@@ -606,6 +617,14 @@ pub trait Chrome {
     /// Default `false`.
     fn overview_active(&self) -> bool {
         false
+    }
+
+    /// The component's overview reveal progress (0 = hidden, 1 = fully
+    /// open). The compositor feeds it to the thumbnail pass so windows fly
+    /// in from their real positions instead of popping onto the grid.
+    /// Default `0`.
+    fn overview_progress(&self) -> f32 {
+        0.0
     }
 
     /// Advance and cache the switcher's shared live-preview layout.
@@ -758,7 +777,10 @@ pub struct CompositionRequirements {
 
 /// Whether one component participates in the current shell pass. Ordinary
 /// modal overlays preserve persistent decorations; an exclusive presentation
-/// temporarily owns the complete chrome layer.
+/// temporarily owns the complete chrome layer. A held screenshot freeze
+/// outranks every other state: the frozen snapshot already contains the other
+/// components (an open command panel included), so only the selector itself
+/// may draw and receive input until it closes.
 fn participates_in_shell_pass(
     component: &dyn Chrome,
     screenshot_freeze: bool,
@@ -766,8 +788,10 @@ fn participates_in_shell_pass(
     window_switcher_active: bool,
     exclusive_presentation_active: bool,
 ) -> bool {
-    (!screenshot_freeze || component.screenshot_active())
-        && (!window_switcher_active || component.window_switcher_active())
+    if screenshot_freeze {
+        return component.screenshot_active();
+    }
+    (!window_switcher_active || component.window_switcher_active())
         && (!exclusive_presentation_active || component.exclusive_presentation_active())
         && (!modal_active || component.visible_during_modal())
 }
@@ -1122,6 +1146,15 @@ impl Shell {
     /// desktop scene for the overview thumbnail grid while this holds.
     pub fn overview_active(&self) -> bool {
         self.components.iter().any(|c| c.overview_active())
+    }
+
+    /// The overview's reveal progress (0 = hidden, 1 = fully open), the
+    /// maximum across components. Drives the thumbnail pass fly-in.
+    pub fn overview_progress(&self) -> f32 {
+        self.components
+            .iter()
+            .map(|c| c.overview_progress())
+            .fold(0.0_f32, f32::max)
     }
 
     /// Toggle the command panel on the component that owns it
@@ -1677,6 +1710,21 @@ impl Shell {
         }
     }
 
+    /// Aggregate every component's resting minimize-flight targets (the
+    /// dock's tile icons), in output coordinates. The main loop pushes these
+    /// into the server each frame so even a client-initiated minimize
+    /// animates toward the real icon instead of a hardcoded point.
+    pub fn minimize_targets(
+        &self,
+        display: (f32, f32),
+    ) -> Vec<(aegis_model::window::WindowId, aegis_model::Rect)> {
+        let mut targets = Vec::new();
+        for component in &self.components {
+            component.minimize_targets(display, &mut targets);
+        }
+        targets
+    }
+
     /// Glass regions contributed by components that will render this frame.
     /// Ordinary chrome is excluded while a modal is active, matching the
     /// render path below.
@@ -1894,6 +1942,25 @@ mod tests {
         }
     }
 
+    struct ScreenshotSessionChrome;
+
+    impl Chrome for ScreenshotSessionChrome {
+        fn render(
+            &mut self,
+            _frame: &mut Frame,
+            _input: &Input,
+            _windows: &[Window],
+            _workspaces: &WorkspaceSnapshot,
+            _i18n: &Localizer,
+            _out: &mut ChromeEvents,
+        ) {
+        }
+
+        fn screenshot_active(&self) -> bool {
+            true
+        }
+    }
+
     #[test]
     fn ordinary_overlays_preserve_decorations_but_exclusive_presentations_do_not() {
         let ordinary = OrdinaryChrome;
@@ -1926,6 +1993,26 @@ mod tests {
         ));
         assert!(participates_in_shell_pass(
             &switcher, false, true, true, true
+        ));
+    }
+
+    #[test]
+    fn screenshot_freeze_outranks_modal_and_exclusive_presentations() {
+        let selector = ScreenshotSessionChrome;
+        let decoration = PersistentDecoration;
+        let exclusive = ExclusivePresentation;
+
+        // While the freeze holds, only the selector participates — even when
+        // an exclusive presentation such as the command panel is still open
+        // underneath (its pixels are already part of the frozen snapshot).
+        assert!(participates_in_shell_pass(
+            &selector, true, true, false, true
+        ));
+        assert!(!participates_in_shell_pass(
+            &exclusive, true, true, false, true
+        ));
+        assert!(!participates_in_shell_pass(
+            &decoration, true, true, false, true
         ));
     }
 

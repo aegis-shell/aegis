@@ -474,6 +474,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         server.set_decoration_policy(c.ui.window_decorations);
         server.set_output_policies(c.output_policies());
         server.set_allow_quit_while_locked(c.dev.allow_quit_while_locked);
+        server.set_minimize_animation(c.dock.minimize_animation);
     }
     shell.set_reduced_motion(desktop_preferences.reduced_motion);
     server.set_reduced_motion(desktop_preferences.reduced_motion);
@@ -798,6 +799,12 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         idle: config
             .as_ref()
             .map(|config| config.idle)
+            .unwrap_or_default(),
+        dock: config
+            .as_ref()
+            .map(|config| aegis_model::settings::DockSettings {
+                minimize_animation: config.dock.minimize_animation,
+            })
             .unwrap_or_default(),
     };
     live.set_settings(settings_snapshot.clone());

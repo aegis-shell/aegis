@@ -210,6 +210,11 @@ fn viewport_uv(
     )
 }
 
+/// Number of horizontal slices the genie minimize warp draws per frame:
+/// enough that the pinch curve reads as smooth, few enough to stay
+/// negligible next to the texture upload the flight already pays for.
+const GENIE_STRIPS: usize = 24;
+
 /// A sub-rectangle of the destination blit in framebuffer pixels, paired with
 /// the matching normalised source-UV box so a single texture can be sampled
 /// into an arbitrary destination rectangle.
@@ -223,6 +228,47 @@ struct BlitRect {
     src_v: f32,
     src_du: f32,
     src_dv: f32,
+}
+
+/// Horizontal-slice blits for the genie minimize warp (ADR-0029
+/// `TransitionEffect::Minimize`, genie style). The destination rect is cut
+/// into horizontal strips and each strip is pinched horizontally toward the
+/// dock icon's centre by `progress * strip_v`, so the lower edge funnels
+/// into the icon first while the top edge follows. The window's overall rect
+/// still interpolates toward the icon; `progress` only shapes the funnel.
+/// Source UVs span the full texture; callers with a `wp_viewport` crop remap
+/// them into the cropped region.
+fn genie_strips(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    target: aegis_model::Point,
+    progress: f32,
+) -> Vec<BlitRect> {
+    let n = GENIE_STRIPS as f32;
+    let cx = x + w * 0.5;
+    let tx = target.x as f32;
+    (0..GENIE_STRIPS)
+        .map(|i| {
+            let v0 = i as f32 / n;
+            let v1 = (i + 1) as f32 / n;
+            let strip_v = (i as f32 + 0.5) / n;
+            let pinch = (progress * strip_v).clamp(0.0, 1.0);
+            let half = w * 0.5 * (1.0 - pinch);
+            let centre = cx + (tx - cx) * pinch;
+            BlitRect {
+                dst_x: centre - half,
+                dst_y: y + h * v0,
+                dst_w: (half * 2.0).max(0.0),
+                dst_h: h * (v1 - v0),
+                src_u: 0.0,
+                src_v: v0,
+                src_du: 1.0,
+                src_dv: v1 - v0,
+            }
+        })
+        .collect()
 }
 
 /// Split a full-surface blit into opaque and blended destination pieces using
@@ -1171,6 +1217,31 @@ impl Renderer {
                     continue;
                 }
                 match f.geometry.viewport_src {
+                    _ if map.is_none() && f.geometry.minimize_warp.is_some() => {
+                        // Genie minimize flight: slice the window into
+                        // horizontal strips pinched toward the dock icon. The
+                        // opaque-region split is skipped for the few hundred
+                        // milliseconds the warp lasts.
+                        let warp = f.geometry.minimize_warp.expect("checked above");
+                        let (su, sv, sw, sh) = match f.geometry.viewport_src {
+                            Some(src) => viewport_uv(src, (tw, th), f.geometry.buffer_scale),
+                            None => (0.0, 0.0, 1.0, 1.0),
+                        };
+                        for strip in genie_strips(x, y, dst_w, dst_h, warp.target, warp.progress)
+                        {
+                            canvas.draw_image_sub(
+                                img,
+                                strip.dst_x,
+                                strip.dst_y,
+                                strip.dst_w,
+                                strip.dst_h,
+                                su + sw * strip.src_u,
+                                sv + sh * strip.src_v,
+                                sw * strip.src_du,
+                                sh * strip.src_dv,
+                            );
+                        }
+                    }
                     Some(src) => {
                         let (su, sv, sw, sh) = viewport_uv(src, (tw, th), f.geometry.buffer_scale);
                         canvas.draw_image_sub(img, x, y, dst_w, dst_h, su, sv, sw, sh);
@@ -1490,6 +1561,30 @@ impl Renderer {
                     continue;
                 }
                 match f.geometry.viewport_src {
+                    _ if map.is_none() && f.geometry.minimize_warp.is_some() => {
+                        // Genie minimize flight, mirroring the shm path.
+                        let warp = f.geometry.minimize_warp.expect("checked above");
+                        let (su, sv, sw, sh) = match f.geometry.viewport_src {
+                            Some(src) => {
+                                viewport_uv(src, (f.width, f.height), f.geometry.buffer_scale)
+                            }
+                            None => (0.0, 0.0, 1.0, 1.0),
+                        };
+                        for strip in genie_strips(x, y, dst_w, dst_h, warp.target, warp.progress)
+                        {
+                            canvas.draw_image_sub(
+                                img,
+                                strip.dst_x,
+                                strip.dst_y,
+                                strip.dst_w,
+                                strip.dst_h,
+                                su + sw * strip.src_u,
+                                sv + sh * strip.src_v,
+                                sw * strip.src_du,
+                                sh * strip.src_dv,
+                            );
+                        }
+                    }
                     Some(src) => {
                         let (su, sv, sw, sh) =
                             viewport_uv(src, (f.width, f.height), f.geometry.buffer_scale);
@@ -1774,6 +1869,47 @@ mod tests {
         assert_eq!(r(1, 0), 0x10);
         assert_eq!(r(0, 1), 0x40);
         assert_eq!(r(1, 1), 0x30);
+    }
+
+    /// Genie strips leave the destination untouched at progress zero.
+    #[test]
+    fn genie_strips_are_undeformed_at_progress_zero() {
+        let target = aegis_model::Point { x: 500, y: 1000 };
+        let strips = genie_strips(100.0, 50.0, 400.0, 240.0, target, 0.0);
+        assert_eq!(strips.len(), GENIE_STRIPS);
+        let n = GENIE_STRIPS as f32;
+        for (i, strip) in strips.iter().enumerate() {
+            assert_eq!(strip.dst_x, 100.0, "strip {i} x");
+            assert_eq!(strip.dst_w, 400.0, "strip {i} w");
+            assert!((strip.dst_y - (50.0 + 240.0 * i as f32 / n)).abs() < 1e-4);
+            assert!((strip.src_v - i as f32 / n).abs() < 1e-6);
+            assert!((strip.src_dv - 1.0 / n).abs() < 1e-6);
+        }
+    }
+
+    /// The pinch strengthens toward the bottom edge and funnels the lowest
+    /// strip onto the icon's centre as progress completes.
+    #[test]
+    fn genie_strips_funnel_the_bottom_edge_into_the_icon() {
+        let target = aegis_model::Point { x: 700, y: 1000 };
+        let strips = genie_strips(100.0, 50.0, 400.0, 240.0, target, 1.0);
+        let widths: Vec<f32> = strips.iter().map(|strip| strip.dst_w).collect();
+        assert!(
+            widths.windows(2).all(|pair| pair[0] >= pair[1]),
+            "pinch widens downward: {widths:?}"
+        );
+        let top = strips.first().unwrap();
+        assert!(top.dst_w > 300.0, "top edge barely pinches: {top:?}");
+        let bottom = strips.last().unwrap();
+        let bottom_centre = bottom.dst_x + bottom.dst_w * 0.5;
+        assert!(
+            (bottom_centre - 700.0).abs() < 30.0,
+            "bottom edge converges on the icon: {bottom:?}"
+        );
+        assert!(bottom.dst_w < 200.0, "bottom edge nearly closes: {bottom:?}");
+        // Vertical coverage stays intact: the funnel is horizontal only.
+        let covered = strips.iter().map(|strip| strip.dst_h).sum::<f32>();
+        assert!((covered - 240.0).abs() < 1e-3);
     }
 
     /// `destination_size` covers the four viewport/scale combinations.

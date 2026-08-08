@@ -1009,6 +1009,20 @@ impl Server {
             extensions::pointer_lock_active(self.state.as_ref() as *const State as *mut State)
         };
         if locked {
+            // wl_pointer.frame is a batch delimiter, not motion: it must still
+            // terminate the relative-motion batch while the lock holds.
+            // wl_pointer >= 5 clients (notably SDL) accumulate
+            // zwp_relative_pointer_v1.relative_motion and dispatch it only on
+            // frame, so withholding it freezes locked game cameras.
+            for p in self.iter_focus_pointers(unsafe {
+                ffi::wl_resource_get_client(self.state.pointer_focus)
+            }) {
+                unsafe {
+                    if ffi::wl_resource_get_version(p) >= 5 {
+                        ffi::wl_resource_post_event(p, ffi::WL_POINTER_FRAME);
+                    }
+                }
+            }
             return;
         }
         let focus = self.state.pointer_focus;

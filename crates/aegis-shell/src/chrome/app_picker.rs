@@ -504,7 +504,9 @@ impl Chrome for AppPicker {
             }
         }
 
-        let wheel = raw.scroll_y * WHEEL_ROWS + raw.scroll_pixels_y / ROW_H;
+        // Shell input carries lens-convention scroll deltas: scrolling down
+        // is negative. Negate so wheel-down advances the list downward.
+        let wheel = -(raw.scroll_y * WHEEL_ROWS + raw.scroll_pixels_y / ROW_H);
         if contains(layout.list, cursor.x, cursor.y) && wheel != 0.0 {
             self.wheel += wheel;
             let steps = self.wheel.trunc() as i32;

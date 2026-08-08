@@ -323,6 +323,18 @@ impl CompositorRuntime {
                             }
                         }
                     }
+                    GestureAction::Overview => {
+                        // Up opens the overview, down closes it; fires at
+                        // most once per gesture so a long swipe cannot
+                        // oscillate the picker (ADR-0116).
+                        if !swipe.overview_fired {
+                            let open = self.shell.overview_active();
+                            if (!open && swipe.dy < -STEP_PX) || (open && swipe.dy > STEP_PX) {
+                                self.shell.toggle_overview();
+                                swipe.overview_fired = true;
+                            }
+                        }
+                    }
                 }
                 true
             }
@@ -763,15 +775,22 @@ impl CompositorRuntime {
                     }
                     PointerAxis(frame) => {
                         use aegis_model::input::PointerAxisSource;
+                        // Wayland axis values are positive for a downward
+                        // scroll gesture, while lens input follows the
+                        // conventional UI delta contract in which scrolling
+                        // down is negative (its scroll containers apply
+                        // `offset -= delta`). Invert once at this platform
+                        // boundary, the same way iris does for standalone
+                        // lens apps.
                         if matches!(
                             frame.source,
                             Some(PointerAxisSource::Wheel | PointerAxisSource::WheelTilt)
                         ) {
-                            shell_scroll.0 += frame.horizontal.wheel_steps();
-                            shell_scroll.1 += frame.vertical.wheel_steps();
+                            shell_scroll.0 -= frame.horizontal.wheel_steps();
+                            shell_scroll.1 -= frame.vertical.wheel_steps();
                         } else {
-                            shell_scroll_pixels.0 += frame.dx();
-                            shell_scroll_pixels.1 += frame.dy();
+                            shell_scroll_pixels.0 -= frame.dx();
+                            shell_scroll_pixels.1 -= frame.dy();
                         }
                     }
                     // Touch events are not handled by the shell chrome yet;

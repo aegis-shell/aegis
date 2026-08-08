@@ -1169,3 +1169,72 @@ fn catalog_push_updates_position_and_reconciles_optimistic_order() {
         "an in-flight edge drag owns the live position"
     );
 }
+
+#[test]
+fn minimize_targets_map_windows_to_their_resting_tile_icons() {
+    let mut dock = dock_with(vec![app("firefox.desktop")]);
+    let pinned_window = window(1, "firefox", true);
+    let transient = window(2, "terminal", false);
+    dock.update(ChromeUpdate::AllWindows(&[
+        pinned_window.clone(),
+        transient.clone(),
+    ]));
+    let targets = dock.minimize_targets((1920.0, 1080.0));
+    assert_eq!(targets.len(), 2, "one target per running window");
+
+    let firefox = targets
+        .iter()
+        .find(|(id, _)| *id == pinned_window.id)
+        .expect("pinned window has a target")
+        .1;
+    let terminal = targets
+        .iter()
+        .find(|(id, _)| *id == transient.id)
+        .expect("transient window has a target")
+        .1;
+    // Bottom dock: resting icons are DOCK_TILE squares inside the bottom panel.
+    assert_eq!(firefox.size.w, DOCK_TILE as i32);
+    assert_eq!(firefox.size.h, DOCK_TILE as i32);
+    assert!(firefox.origin.y + firefox.size.h > 1080 - 100);
+    assert!(firefox.origin.y + firefox.size.h <= 1080);
+    assert_ne!(firefox, terminal, "different tiles give different targets");
+
+    // A second window of the same app folds into the same tile: same target.
+    // The transient stays around so the strip length (and therefore every
+    // icon's resting position) is unchanged.
+    let second_firefox = window(3, "Firefox", false);
+    dock.update(ChromeUpdate::AllWindows(&[
+        pinned_window.clone(),
+        second_firefox.clone(),
+        transient.clone(),
+    ]));
+    let targets = dock.minimize_targets((1920.0, 1080.0));
+    let first = targets
+        .iter()
+        .find(|(id, _)| *id == pinned_window.id)
+        .map(|(_, rect)| *rect);
+    let second = targets
+        .iter()
+        .find(|(id, _)| *id == second_firefox.id)
+        .map(|(_, rect)| *rect);
+    assert_eq!(first, Some(firefox));
+    assert_eq!(second, Some(firefox));
+}
+
+#[test]
+fn minimize_targets_follow_the_dock_edge() {
+    let mut dock = dock_with(vec![app("firefox.desktop")]);
+    dock.set_position(DockPosition::Left);
+    let w = window(1, "firefox", false);
+    dock.update(ChromeUpdate::AllWindows(std::slice::from_ref(&w)));
+    let targets = dock.minimize_targets((1920.0, 1080.0));
+    let rect = targets
+        .iter()
+        .find(|(id, _)| *id == w.id)
+        .expect("window has a target")
+        .1;
+    // Left dock: the resting icon sits inside the left panel, vertically centred.
+    assert!(rect.origin.x < 100, "icon hugs the left edge: {rect:?}");
+    let centre_y = rect.origin.y + rect.size.h / 2;
+    assert!((centre_y - 540).abs() < 100, "icon near vertical centre: {rect:?}");
+}

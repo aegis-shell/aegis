@@ -2,6 +2,20 @@
 
 Modal command panel for the aegis compositor (ADR-0080).
 
+## Scope
+
+The panel is the display-and-control surface for desktop-computer behavior
+(ADR-0115): the domains daily desktop use involves — sound, displays,
+network and Bluetooth, power, the session, notifications, the tray, the
+user's persona, machine resources, and desktop preferences. The scope test
+is the user's computer, not this compositor: a surface belongs when its
+subject exists on any desktop computer regardless of the compositor
+implementation. Compositor-mechanism surfaces — window-tree internals,
+protocol or IPC state, introspection, developer tooling — stay out and
+remain CLI/MCP territory. Domains follow the user's model rather than the
+implementing component, so window tiling and Agent Workspaces are in scope
+while Interaction Domain lifecycle management is not.
+
 The HUD is display-only: it reserves no space and accepts no
 pointer input. The interactions it used to host live here instead — a
 full-screen modal overlay in a VR/AR personal-info HUD language: deep

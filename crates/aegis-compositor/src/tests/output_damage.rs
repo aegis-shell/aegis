@@ -317,6 +317,8 @@ fn committed_opaque_region_culls_a_fully_covered_window_tree() {
         from: aegis_model::Rect::new(0, 0, output.size.w / 2, output.size.h / 2),
         started_ms: server.now_ms(),
         duration_ms: 60_000,
+        easing: aegis_model::transition::Easing::EaseOutCubic,
+        effect: None,
     });
     assert!(!server.occluded_window_ids().contains(&background_id));
 
@@ -327,6 +329,8 @@ fn committed_opaque_region_culls_a_fully_covered_window_tree() {
         from: aegis_model::Rect::new(0, 0, output.size.w / 2, output.size.h / 2),
         started_ms: 0,
         duration_ms: 0,
+        easing: aegis_model::transition::Easing::EaseOutCubic,
+        effect: None,
     });
     assert_eq!(server.settle_finished_transitions(), 1);
     assert!(foreground.window.transition.is_none());

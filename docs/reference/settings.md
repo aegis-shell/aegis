@@ -27,6 +27,7 @@ command-line deep links; external tools use the settings IPC instead.
 | `touchpad` | Hardware | Instant | Available; aegis input policy and libinput backend |
 | `keyboard` | Hardware | Explicit | Not available yet; keymap, repeat, compose, and shortcut backend required |
 | `appearance` | Personalization | Explicit Apply button | Available; Aegis desktop-preference authority and portal projection |
+| `dock` | Personalization | Instant | Available; Aegis `[dock]` configuration authority |
 | `power` | System | Explicit Apply button | Available; Aegis idle policy, session lock, output power, and logind sleep coordination |
 | `users` | System | Explicit | Not available yet; AccountsService and authorization adapter required |
 | `window-rules` | System | Explicit | Not available yet; revisioned window-rule settings backend required |

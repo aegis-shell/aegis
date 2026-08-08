@@ -427,18 +427,21 @@ or at custom logical coordinates. Existing comments, unrelated settings, and
 
 ## Dock
 
-The `[dock]` table controls persistent application pins. Changes apply on
-live reload. Each value matches a desktop-file id, desktop-file stem,
-`StartupWMClass`, or icon name, case-insensitively.
+The `[dock]` table controls persistent application pins and the minimize
+flight effect. Changes apply on live reload. Each value matches a
+desktop-file id, desktop-file stem, `StartupWMClass`, or icon name,
+case-insensitively.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `pinned` | array of strings | `[]` | Persistent applications shown in the listed order. An empty array leaves only the `Applications` tile plus transient running applications. |
 | `autopopulate` | boolean | `false` | Whether an empty `pinned` list auto-selects up to 12 applications with decoded icons. Manual pin or unpin actions write this as `false`. |
+| `minimize_animation` | string | `"genie"` | The effect played when a window minimizes into its dock tile (and, reversed, when it restores): `"genie"` funnels the window's lower edge into the icon first, `"scale"` shrinks the window uniformly into the icon, and `"suck"` collapses it into the icon's centre with accelerating ease-in. Also selectable from the command panel's Dock tab. |
 
 ```toml
 [dock]
 pinned = ["foot.desktop", "firefox", "org.gnome.Nautilus"]
+minimize_animation = "genie"
 ```
 
 Pinned applications stay on the left of the dock; running applications that
@@ -736,6 +739,7 @@ swipe's dominant direction selects the direction inside the action.
 | `workspace_switch` | `workspaces`, `workspace` | Horizontal: swipe left switches to the next workspace, right to the previous one |
 | `window_cycle` | `cycle_windows`, `windows`, `switcher` | Vertical: swipe up focuses the next toplevel on the current workspace, down the previous one; the live switcher stays open until the gesture ends |
 | `command_panel` | `commandpanel`, `panel` | Vertical: swipe down opens the command panel, up closes it; fires once per gesture |
+| `overview` | `window_overview`, `picker` | Vertical: swipe up opens the window/workspace overview, down closes it; fires once per gesture |
 | `none` | `unbind`, `disabled` | Consume the swipe without acting; shadows the built-in default on this axis |
 
 ### Default Gesture Bindings
@@ -747,7 +751,17 @@ configured:
 |---------|------|--------|
 | 3 | horizontal | `workspace_switch` |
 | 3 | vertical | `window_cycle` |
-| 4 | vertical | `command_panel` |
+| 4 | vertical | `overview` |
+
+The four-finger vertical swipe opened the command panel before ADR-0116.
+Re-add that binding (shadowing the overview default) with:
+
+```toml
+[[gesture]]
+fingers = 4
+axis = "vertical"
+action = "command_panel"
+```
 
 ## Example
 

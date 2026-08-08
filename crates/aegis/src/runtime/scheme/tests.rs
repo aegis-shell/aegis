@@ -3,10 +3,7 @@ use super::*;
 #[test]
 fn dark_scheme_keeps_the_historical_scene_colors() {
     assert_eq!(clear_color(ColorScheme::Dark), flux::rgba(30, 30, 46, 255));
-    assert_eq!(
-        overview_scrim(ColorScheme::Dark),
-        flux::rgba(8, 10, 20, 200)
-    );
+    assert_eq!(overview_scrim(ColorScheme::Dark), (8, 10, 20));
     assert_eq!(window_switcher_scrim(ColorScheme::Dark), (5, 7, 12));
     assert_eq!(
         interaction_domain_clear(ColorScheme::Dark),

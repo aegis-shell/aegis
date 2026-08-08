@@ -434,6 +434,22 @@ pub struct SurfaceGeometry {
     /// The renderer draws the root texture scaled to this instead of the
     /// buffer-implied size. `None` outside transitions and for subsurfaces.
     pub transition_size: Option<Size>,
+    /// Genie minimize/restore warp (ADR-0029 `TransitionEffect::Minimize`).
+    /// The renderer draws the root texture as horizontal strips pinched
+    /// toward `target` by `progress`. `None` for every other draw.
+    pub minimize_warp: Option<MinimizeWarp>,
+}
+
+/// A genie-style minimize deformation: horizontal slices of the window are
+/// pinched horizontally toward the dock icon's centre as `progress` (eased,
+/// `0.0..=1.0`) advances. Applies to the root toplevel surface only.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MinimizeWarp {
+    /// Eased deformation amount: 0.0 is the undeformed window, 1.0 fully
+    /// funnels into `target`.
+    pub progress: f32,
+    /// The dock icon's centre in output coordinates.
+    pub target: Point,
 }
 
 impl Default for SurfaceGeometry {
@@ -450,6 +466,7 @@ impl Default for SurfaceGeometry {
             viewport_src: None,
             viewport_dst: None,
             transition_size: None,
+            minimize_warp: None,
         }
     }
 }

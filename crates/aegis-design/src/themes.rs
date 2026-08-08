@@ -1,6 +1,6 @@
 //! lens theme factories for product-level surfaces.
 
-use lens::Theme;
+use lens::{Color, Theme};
 
 use crate::Design;
 
@@ -53,6 +53,10 @@ pub fn application(design: &Design) -> Theme {
         .with_slider_knob_color(design.colors.slider_knob)
         .with_scrollbar_width(design.strokes.scrollbar)
         .with_scrollbar_radius(design.radii.scrollbar)
+        // Thumb-only bar: a permanent track strip reads as a stray divider
+        // on cards and chrome surfaces. The scheme-correct rest/hover/active
+        // thumb ramp comes from the lens base theme.
+        .with_scrollbar_track_color(Color::TRANSPARENT)
 }
 
 /// The light widget theme inside the SAO command panel's white surfaces
@@ -101,6 +105,13 @@ pub fn hud(hud: &crate::tokens::Hud) -> Theme {
         .with_slider_knob_color(hud.knob)
         .with_scrollbar_width(5.0)
         .with_scrollbar_radius(2.5)
+        // Thumb-only bar on the glass: no permanent track strip. The rest
+        // state borrows the gauge-track hue at a readable alpha; dragging
+        // lights up the signature cyan like every other active element.
+        .with_scrollbar_track_color(Color::TRANSPARENT)
+        .with_scrollbar_thumb_color(hud.track.with_alpha(80))
+        .with_scrollbar_thumb_hover_color(hud.track.with_alpha(130))
+        .with_scrollbar_thumb_active_color(hud.accent.with_alpha(170))
 }
 
 /// Derive the subdued HUD caption theme without changing other tokens.

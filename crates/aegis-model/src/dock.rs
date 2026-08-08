@@ -40,6 +40,38 @@ impl DockPosition {
     }
 }
 
+/// The animation played when a window minimizes into the dock (and,
+/// reversed, when it restores), mirroring the classic macOS effects.
+///
+/// Written in kebab-case in the `[dock]` configuration table
+/// (`minimize_animation = "genie"`).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MinimizeAnimationStyle {
+    /// The window funnels into the icon: its lower edge pinches toward the
+    /// icon first while the top edge follows, like a genie returning to its
+    /// bottle. Rendered as a horizontal-strip warp approximation.
+    #[default]
+    Genie,
+    /// The window scales down uniformly into the icon's rectangle.
+    Scale,
+    /// The window accelerates as it collapses into the icon's centre point,
+    /// as if vacuumed in.
+    Suck,
+}
+
+impl MinimizeAnimationStyle {
+    /// The canonical kebab-case name used in configuration.
+    pub fn name(self) -> &'static str {
+        match self {
+            MinimizeAnimationStyle::Genie => "genie",
+            MinimizeAnimationStyle::Scale => "scale",
+            MinimizeAnimationStyle::Suck => "suck",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,5 +88,12 @@ mod tests {
         assert_eq!(DockPosition::Left.name(), "left");
         assert_eq!(DockPosition::Bottom.name(), "bottom");
         assert_eq!(DockPosition::Right.name(), "right");
+    }
+
+    #[test]
+    fn minimize_animation_names_are_the_config_spellings() {
+        assert_eq!(MinimizeAnimationStyle::Genie.name(), "genie");
+        assert_eq!(MinimizeAnimationStyle::Scale.name(), "scale");
+        assert_eq!(MinimizeAnimationStyle::Suck.name(), "suck");
     }
 }

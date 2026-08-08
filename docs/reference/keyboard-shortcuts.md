@@ -57,10 +57,11 @@ does not perform VT switching.
 | Three-finger swipe right | Switch to the previous workspace |
 | Three-finger swipe up | Focus the next toplevel on the current workspace, showing the live switcher until the gesture ends |
 | Three-finger swipe down | Focus the previous toplevel on the current workspace, showing the live switcher until the gesture ends |
-| Four-finger swipe down | Open the command panel |
-| Four-finger swipe up (panel open) | Close the command panel |
+| Four-finger swipe up | Open the window and workspace overview |
+| Four-finger swipe down (overview open) | Close the overview |
 
-Three- and four-finger swipes are compositor-owned (ADR-0080, ADR-0082):
+Three- and four-finger swipes are compositor-owned (ADR-0080, ADR-0082,
+ADR-0116):
 they are claimed by Aegis and never forwarded to client
 `zwp_pointer_gestures_v1` objects. A three-finger swipe latches its axis
 once it travels 30 px, then fires one step per 120 px of travel. Swipes

@@ -1322,7 +1322,10 @@ pub(super) fn draw_lock_scene(
 /// as a live thumbnail on the shared `aegis_model::overview` grid — the exact
 /// geometry the overview chrome uses for its frames, labels, and hit-testing.
 /// Z-order is preserved bottom-to-top so overlapping thumbnails read like
-/// the desktop stack.
+/// the desktop stack. `progress` (0..1) is the chrome's reveal animation:
+/// thumbnails interpolate from each window's real geometry into its grid
+/// cell (and the scrim fades in) instead of popping onto the grid.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn draw_overview_scene(
     canvas: &flux::Canvas,
     device: &flux::Device,
@@ -1331,23 +1334,24 @@ pub(super) fn draw_overview_scene(
     logical_size: (u32, u32),
     scale: f32,
     scheme: aegis_model::settings::ColorScheme,
+    progress: f32,
 ) {
+    let t = progress.clamp(0.0, 1.0);
+    let scrim_alpha = (200.0 * t).round() as u8;
+    let (scrim_r, scrim_g, scrim_b) = overview_scrim(scheme);
     canvas.save();
     canvas.fill_rect(
         0.0,
         0.0,
         logical_size.0 as f32 * scale,
         logical_size.1 as f32 * scale,
-        overview_scrim(scheme),
+        flux::rgba(scrim_r, scrim_g, scrim_b, scrim_alpha),
     );
     canvas.restore();
 
     let windows = server.windows();
-    if windows.is_empty() {
-        return;
-    }
-    let rail = server
-        .workspace_snapshot()
+    let snapshot = server.workspace_snapshot();
+    let rail = snapshot
         .outputs
         .first()
         .map(|o| o.workspaces.len() > 1)
@@ -1362,12 +1366,41 @@ pub(super) fn draw_overview_scene(
                     != aegis_model::interaction_domain::InteractionDomainState::Revoked
         });
     let display = aegis_model::Rect::new(0, 0, logical_size.0 as i32, logical_size.1 as i32);
+
+    // Workspace rail miniatures along the top edge: every workspace on the
+    // output drawn live into its tile, independent of the main grid — an
+    // empty current workspace must not starve the rail.
+    if rail {
+        draw_workspace_rail_tiles(canvas, device, renderer, server, &snapshot, display, scale, t);
+    }
+
+    if windows.is_empty() {
+        return;
+    }
     let area = aegis_model::overview::grid_area_with_interaction_domain_shelf(
         display,
         rail,
         interaction_domain_shelf,
     );
-    let slots = aegis_model::overview::grid(area, windows.len());
+    let window_rects: Vec<(aegis_model::window::WindowId, aegis_model::Rect)> = windows
+        .iter()
+        .map(|w| {
+            (
+                w.id,
+                aegis_model::Rect {
+                    origin: w.position,
+                    size: w.size,
+                },
+            )
+        })
+        .collect();
+    // Closest-slot assignment pairs each window with the slot nearest its
+    // real position, in input order; the chrome's hit-testing pairs the same
+    // list the same way, so cells agree.
+    let slots: Vec<aegis_model::Rect> = aegis_model::overview::assign_slots(area, &window_rects)
+        .into_iter()
+        .map(|(_, slot)| slot)
+        .collect();
     let cells: std::collections::HashMap<
         aegis_model::window::WindowId,
         (aegis_model::Rect, aegis_model::Point, aegis_model::Size),
@@ -1375,14 +1408,22 @@ pub(super) fn draw_overview_scene(
         .iter()
         .zip(slots.iter())
         .map(|(w, slot)| {
-            (
-                w.id,
-                (
-                    aegis_model::overview::fit(*slot, w.size),
-                    w.position,
-                    w.size,
-                ),
-            )
+            // Fly-in: the cell starts at the window's real geometry and
+            // lands on its aspect-fitted grid slot as `t` reaches 1.
+            let cell = aegis_model::overview::fit(*slot, w.size);
+            let cell = if t >= 1.0 {
+                cell
+            } else {
+                lerp_rect(
+                    aegis_model::Rect {
+                        origin: w.position,
+                        size: w.size,
+                    },
+                    cell,
+                    t,
+                )
+            };
+            (w.id, (cell, w.position, w.size))
         })
         .collect();
     let map = move |window: Option<aegis_model::window::WindowId>, natural: aegis_model::Rect| {
@@ -1407,6 +1448,112 @@ pub(super) fn draw_overview_scene(
     let dmabuf = server.client_preview_surface_dmabuf_frames();
     let surface_order = server.client_preview_surface_frame_order();
     renderer.draw_surfaces_ordered_mapped(device, canvas, &surface_order, &shm, &dmabuf, &map);
+    canvas.restore();
+}
+
+/// Linear interpolation between two rects, used by the overview fly-in to
+/// move each thumbnail from the window's real geometry to its grid cell.
+fn lerp_rect(from: aegis_model::Rect, to: aegis_model::Rect, t: f32) -> aegis_model::Rect {
+    let l = |a: i32, b: i32| (a as f32 + (b - a) as f32 * t).round() as i32;
+    aegis_model::Rect::new(
+        l(from.origin.x, to.origin.x),
+        l(from.origin.y, to.origin.y),
+        l(from.size.w, to.size.w).max(1),
+        l(from.size.h, to.size.h).max(1),
+    )
+}
+
+/// Workspace rail miniatures: each workspace of the output drawn live into
+/// its top-rail tile using the shared `aegis_model::overview` geometry, so
+/// the chrome's tile frames, captions, and hit-testing line up. A tile is
+/// clipped to its rounded rect so miniature surface trees never spill into
+/// neighbouring tiles.
+fn draw_workspace_rail_tiles(
+    canvas: &flux::Canvas,
+    device: &flux::Device,
+    renderer: &mut aegis_render::Renderer,
+    server: &aegis_compositor::Server,
+    snapshot: &aegis_model::workspace::WorkspaceSnapshot,
+    display: aegis_model::Rect,
+    scale: f32,
+    progress: f32,
+) {
+    let Some(output) = snapshot.outputs.first() else {
+        return;
+    };
+    let tiles = aegis_model::overview::rail(display, output.workspaces.len());
+    let all = server.all_windows();
+    canvas.save();
+    if scale != 1.0 {
+        canvas.scale(scale, scale);
+    }
+    for (entry, tile) in output.workspaces.iter().zip(tiles.iter()) {
+        let tile_windows: Vec<&aegis_model::window::Window> = entry
+            .toplevels
+            .iter()
+            .filter_map(|id| all.iter().find(|w| w.id == *id))
+            .collect();
+        if tile_windows.is_empty() {
+            continue;
+        }
+        let content = aegis_model::overview::tile_content(*tile);
+        let slots = aegis_model::overview::grid_with_spacing(
+            content,
+            tile_windows.len(),
+            aegis_model::overview::TILE_GRID_MARGIN,
+            aegis_model::overview::TILE_GRID_GAP,
+        );
+        let cells: std::collections::HashMap<
+            aegis_model::window::WindowId,
+            (aegis_model::Rect, aegis_model::Point, aegis_model::Size),
+        > = tile_windows
+            .iter()
+            .zip(slots.iter())
+            .map(|(window, slot)| {
+                (
+                    window.id,
+                    (
+                        aegis_model::overview::fit(*slot, window.size),
+                        window.position,
+                        window.size,
+                    ),
+                )
+            })
+            .collect();
+        let map = move |wid: Option<aegis_model::window::WindowId>,
+                        natural: aegis_model::Rect| {
+            let Some((cell, base, win_size)) = wid.and_then(|id| cells.get(&id)) else {
+                return natural;
+            };
+            let k = cell.size.w as f32 / win_size.w.max(1) as f32;
+            let remap = |v: i32, b: i32| (v - b) as f32 * k;
+            aegis_model::Rect::new(
+                cell.origin.x + remap(natural.origin.x, base.x).round() as i32,
+                cell.origin.y + remap(natural.origin.y, base.y).round() as i32,
+                (natural.size.w as f32 * k).round().max(1.0) as i32,
+                (natural.size.h as f32 * k).round().max(1.0) as i32,
+            )
+        };
+        let set: std::collections::HashSet<aegis_model::window::WindowId> =
+            tile_windows.iter().map(|w| w.id).collect();
+        let shm = server.client_preview_frames_for(&set);
+        let dmabuf = server.client_preview_dmabuf_frames_for(&set);
+        let order = server.client_preview_frame_order_for(&set);
+        renderer.draw_surfaces_ordered_mapped_with_style(
+            device,
+            canvas,
+            &order,
+            &shm,
+            &dmabuf,
+            &map,
+            aegis_render::MappedSurfaceStyle {
+                opacity: progress.clamp(0.0, 1.0),
+                brightness: 1.0,
+                rounded_clip: *tile,
+                corner_radius: 10.0,
+            },
+        );
+    }
     canvas.restore();
 }
 

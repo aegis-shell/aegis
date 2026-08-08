@@ -1067,6 +1067,81 @@ impl Dock {
         Self::rest_bounds(tiles.len(), pinned_count, self.position, display)
     }
 
+    /// Resting dock-icon rectangles for every running window, keyed by window
+    /// id — the compositor's minimize-animation flight targets. Computed from
+    /// the same tile strip and resting layout math as pointer ownership, so
+    /// the flight lands where the tile sits once the magnification springs
+    /// settle, never on the live, spring-widened geometry.
+    pub fn minimize_targets(
+        &self,
+        display: (f32, f32),
+    ) -> Vec<(aegis_model::window::WindowId, aegis_model::Rect)> {
+        let tiles = Self::frame_tiles(
+            &self.tile_cache,
+            &self.apps,
+            &self.icons,
+            self.catalog_revision,
+            &self.all_windows,
+            None,
+        );
+        let pinned_count = tiles.iter().filter(|t| t.pinned).count();
+        let mut targets = Vec::new();
+        for (i, tile) in tiles.iter().enumerate() {
+            if tile.windows.is_empty() {
+                continue;
+            }
+            let rect = Self::rest_icon_rect(i, tiles.len(), pinned_count, self.position, display);
+            for id in &tile.windows {
+                targets.push((*id, rect));
+            }
+        }
+        targets
+    }
+
+    /// The resting (un-magnified) icon rectangle of tile `i` in a row of `n`,
+    /// following the frame's baseline math with every spring at rest.
+    fn rest_icon_rect(
+        i: usize,
+        n: usize,
+        pinned_count: usize,
+        position: DockPosition,
+        display: (f32, f32),
+    ) -> aegis_model::Rect {
+        let axis_len = match position {
+            DockPosition::Bottom => display.0,
+            DockPosition::Left | DockPosition::Right => display.1,
+        };
+        let centre = Self::rest_centre_estimate(i, n, pinned_count, axis_len);
+        let panel = Self::rest_bounds(n, pinned_count, position, display);
+        let s = DOCK_TILE;
+        let rect = match position {
+            DockPosition::Bottom => Rect {
+                x: centre - s * 0.5,
+                y: panel.y + panel.h - DOCK_BASELINE_INSET - s,
+                w: s,
+                h: s,
+            },
+            DockPosition::Left => Rect {
+                x: panel.x + DOCK_BASELINE_INSET,
+                y: centre - s * 0.5,
+                w: s,
+                h: s,
+            },
+            DockPosition::Right => Rect {
+                x: panel.x + panel.w - DOCK_BASELINE_INSET - s,
+                y: centre - s * 0.5,
+                w: s,
+                h: s,
+            },
+        };
+        aegis_model::Rect::new(
+            rect.x.round() as i32,
+            rect.y.round() as i32,
+            rect.w.round() as i32,
+            rect.h.round() as i32,
+        )
+    }
+
     fn window_overlaps_bounds(window: &Window, bounds: Rect) -> bool {
         if window.minimized || window.size.w <= 0 || window.size.h <= 0 {
             return false;

@@ -57,6 +57,11 @@ pub(super) fn publish_settings_parts(
         display: status.display.clone(),
         preferences: effective_desktop_preferences(config),
         idle: config.map(|config| config.idle).unwrap_or_default(),
+        dock: config
+            .map(|config| aegis_model::settings::DockSettings {
+                minimize_animation: config.dock.minimize_animation,
+            })
+            .unwrap_or_default(),
     };
     live.set_settings(snapshot.clone());
     shell.set_settings(snapshot.clone());
@@ -157,6 +162,18 @@ pub(super) fn commit_settings_parts(
                     .map_err(|error| format!("failed to reload idle settings: {error}"))?;
             }
             idle_process.reconfigure(settings);
+            Ok(())
+        }
+        aegis_ipc::SettingsAction::SetDock { settings } => {
+            config_writer
+                .apply_and_wait(aegis_config::ConfigEdit::SetDockMinimizeAnimation {
+                    style: settings.minimize_animation,
+                })
+                .map_err(|error| format!("failed to persist dock settings: {error}"))?;
+            if let Some(current) = config.as_mut() {
+                current.dock.minimize_animation = settings.minimize_animation;
+            }
+            server.set_minimize_animation(settings.minimize_animation);
             Ok(())
         }
     };

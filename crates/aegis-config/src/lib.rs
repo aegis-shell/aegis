@@ -416,6 +416,8 @@ impl Default for ScreenshotConfig {
 /// dock's context menu, `autopopulate` is written as `false` so the persisted
 /// list is the sole source of truth. `position` selects the screen edge the
 /// dock anchors to (left, bottom, or right); it defaults to `bottom`.
+/// `minimize_animation` selects the effect played when a window minimizes
+/// into its dock tile (`genie`, `scale`, or `suck`); it defaults to `genie`.
 #[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DockConfig {
@@ -429,6 +431,8 @@ pub struct DockConfig {
     pub autohide_timeout: f32,
     #[serde(default)]
     pub position: aegis_model::dock::DockPosition,
+    #[serde(default)]
+    pub minimize_animation: aegis_model::dock::MinimizeAnimationStyle,
 }
 
 fn default_dock_autohide_timeout() -> f32 {
@@ -1388,6 +1392,10 @@ pub enum ConfigEdit {
     SetDockPosition {
         position: aegis_model::dock::DockPosition,
     },
+    /// Select the animation played when a window minimizes into the dock.
+    SetDockMinimizeAnimation {
+        style: aegis_model::dock::MinimizeAnimationStyle,
+    },
     /// Replace the complete `[input.touchpad]` profile.
     SetTouchpad { config: TouchpadConfig },
     /// Replace the user-editable fields for one `[[output]]` entry.
@@ -1437,6 +1445,9 @@ impl ConfigStore {
             ConfigEdit::SetDockPinned { pinned } => apply_dock_pinned(&mut document, &pinned),
             ConfigEdit::SetDockPosition { position } => {
                 apply_dock_position(&mut document, position)
+            }
+            ConfigEdit::SetDockMinimizeAnimation { style } => {
+                apply_dock_minimize_animation(&mut document, style)
             }
             ConfigEdit::SetTouchpad { config } => apply_touchpad(&mut document, &config),
             ConfigEdit::SetOutput { settings } => apply_output(&mut document, settings),
@@ -1526,6 +1537,16 @@ fn apply_dock_position(document: &mut DocumentMut, position: aegis_model::dock::
         document["dock"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
     document["dock"]["position"] = toml_edit::value(position.name());
+}
+
+fn apply_dock_minimize_animation(
+    document: &mut DocumentMut,
+    style: aegis_model::dock::MinimizeAnimationStyle,
+) {
+    if !document.get("dock").is_some_and(toml_edit::Item::is_table) {
+        document["dock"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    document["dock"]["minimize_animation"] = toml_edit::value(style.name());
 }
 
 fn apply_touchpad(document: &mut DocumentMut, config: &TouchpadConfig) {

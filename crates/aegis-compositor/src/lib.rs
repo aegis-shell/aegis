@@ -1279,6 +1279,13 @@ pub(crate) struct State {
     /// Accessibility reduced-motion policy (ADR-0029): when true, window
     /// transitions resolve in one frame and none are recorded.
     reduced_motion: bool,
+    /// The configured minimize flight style (`[dock] minimize_animation`).
+    pub(crate) minimize_animation: aegis_model::dock::MinimizeAnimationStyle,
+    /// Resting dock-icon rectangles per window, pushed by the shell every
+    /// frame: the minimize flight targets. While empty (startup, no dock),
+    /// minimize falls back to a screen-edge stub target.
+    pub(crate) minimize_targets:
+        std::collections::HashMap<aegis_model::window::WindowId, aegis_model::Rect>,
     /// Effective decoration ownership announced to xdg-decoration clients.
     /// Borderless is compositor-owned: clients omit CSDs while window
     /// controls remain available through gestures and shell surfaces.

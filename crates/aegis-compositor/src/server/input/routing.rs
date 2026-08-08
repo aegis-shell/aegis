@@ -861,22 +861,24 @@ impl Server {
                     origin: aegis_model::Point { x: 100, y: 100 },
                     size: aegis_model::Size { w: 800, h: 600 },
                 });
-                let old_screen_h = self.state.output_geometry.logical_rect().size.h;
-                let from = aegis_model::Rect {
-                    origin: aegis_model::Point {
-                        x: saved.origin.x + saved.size.w / 4,
-                        y: old_screen_h - 20,
-                    },
-                    size: aegis_model::Size {
-                        w: (saved.size.w / 2).max(40),
-                        h: 20,
-                    },
-                };
+                let window_id = (*rec).window.id;
+                // The flight leaves from the same dock icon (or stub point)
+                // the minimize flight landed on.
+                let from = minimize_flight_target(&self.state, window_id, saved);
+                let styled = self.state.minimize_targets.contains_key(&window_id);
                 (*rec).position = saved.origin;
                 (*rec).window.position = saved.origin;
                 (*rec).window.size = saved.size;
                 (*rec).window.minimized = false;
-                self.note_transition(rec, from);
+                if styled && !self.state.reduced_motion {
+                    // Carry the minimize effect so a genie flight warps back
+                    // out of the icon; the scene derives the reversed
+                    // direction from the cleared minimized flag.
+                    (*rec).window.transition =
+                        Some(minimize_transition(&self.state, window_id, from));
+                } else {
+                    self.note_transition(rec, from);
+                }
             }
         }
         let resource = unsafe { (*rec).resource };

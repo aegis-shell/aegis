@@ -257,6 +257,25 @@ impl Server {
         self.toplevel_frames_with(&visible, &occluded)
     }
 
+    /// The genie warp for a root toplevel mid minimize/restore flight, if its
+    /// transition carries the genie minimize effect (ADR-0029). Restores play
+    /// the deformation in reverse; the direction comes from the minimized
+    /// flag, which the restore path clears before recording its transition.
+    fn minimize_warp(&self, s: &SurfaceRec) -> Option<aegis_model::MinimizeWarp> {
+        if s.xdg_toplevel.is_null() {
+            return None;
+        }
+        let transition = s.window.transition?;
+        let aegis_model::transition::TransitionEffect::Minimize { style, target } =
+            transition.effect?;
+        if style != aegis_model::dock::MinimizeAnimationStyle::Genie {
+            return None;
+        }
+        let t = transition.progress_at(self.state.now_ms())?;
+        let progress = if s.window.minimized { t } else { 1.0 - t };
+        Some(aegis_model::MinimizeWarp { progress, target })
+    }
+
     fn toplevel_frames_with(
         &self,
         visible: &std::collections::HashSet<aegis_model::window::WindowId>,
@@ -293,6 +312,7 @@ impl Server {
                 // at the interpolated rect; the model stays at the target.
                 // The origin delta carries the whole subsurface tree with it.
                 let render_rect = self.transition_render_rect(s);
+                let minimize_warp = self.minimize_warp(s);
                 let root =
                     unsafe { surface_root_toplevel(s as *const SurfaceRec as *mut SurfaceRec) };
                 let delta = if root.is_null() {
@@ -327,6 +347,7 @@ impl Server {
                         viewport_src: s.viewport_src,
                         viewport_dst: s.viewport_dst,
                         transition_size: render_rect.map(|r| r.size),
+                        minimize_warp,
                         ..Default::default()
                     },
                     damage: &s.committed_damage,
@@ -363,7 +384,9 @@ impl Server {
                 s.mapped
                     && (!s.xdg_toplevel.is_null() || !s.xdg_popup.is_null())
                     && !root.is_null()
-                    && unsafe { !(*root).window.minimized }
+                    && unsafe {
+                        !(*root).window.minimized || self.transition_render_rect(&*root).is_some()
+                    }
                     && s.content_is_dmabuf
                     && s.dmabuf.is_some()
                     && visible.contains(unsafe { &(*root).window.id })
@@ -378,6 +401,7 @@ impl Server {
             .filter_map(|s| {
                 let db = s.dmabuf.as_ref()?;
                 let render_rect = self.transition_render_rect(s);
+                let minimize_warp = self.minimize_warp(s);
                 let root =
                     unsafe { surface_root_toplevel(s as *const SurfaceRec as *mut SurfaceRec) };
                 let delta = if root.is_null() {
@@ -419,6 +443,7 @@ impl Server {
                         viewport_src: s.viewport_src,
                         viewport_dst: s.viewport_dst,
                         transition_size: render_rect.map(|r| r.size),
+                        minimize_warp,
                         ..Default::default()
                     },
                     opaque_region: s.opaque_region.clone(),
@@ -474,6 +499,49 @@ impl Server {
         frames.extend(self.subsurface_dmabuf_frames_below_with(&visible, &occluded));
         frames.extend(self.subsurface_dmabuf_frames_above_with(&visible, &occluded));
         frames
+    }
+
+    /// SHM client surfaces for an explicit preview window set. The overview's
+    /// workspace rail draws live miniatures of workspaces other than the
+    /// visible one, so unlike [`client_preview_surface_frames`](Self::client_preview_surface_frames)
+    /// the caller supplies the window set instead of the presentation-visible
+    /// one. Occlusion is still bypassed.
+    pub fn client_preview_frames_for(
+        &self,
+        windows: &std::collections::HashSet<aegis_model::window::WindowId>,
+    ) -> Vec<SurfacePixels<'_>> {
+        let occluded = std::collections::HashSet::new();
+        let mut frames = self.toplevel_frames_with(windows, &occluded);
+        frames.extend(self.subsurface_frames_below_with(windows, &occluded));
+        frames.extend(self.subsurface_frames_above_with(windows, &occluded));
+        frames
+    }
+
+    /// DMA-BUF client surfaces for an explicit preview window set; see
+    /// [`client_preview_frames_for`](Self::client_preview_frames_for).
+    pub fn client_preview_dmabuf_frames_for(
+        &self,
+        windows: &std::collections::HashSet<aegis_model::window::WindowId>,
+    ) -> Vec<SurfaceDmabuf> {
+        let occluded = std::collections::HashSet::new();
+        let mut frames = self.toplevel_dmabuf_frames_with(windows, &occluded);
+        frames.extend(self.subsurface_dmabuf_frames_below_with(windows, &occluded));
+        frames.extend(self.subsurface_dmabuf_frames_above_with(windows, &occluded));
+        frames
+    }
+
+    /// Paint order for an explicit preview window set; see
+    /// [`client_preview_frames_for`](Self::client_preview_frames_for) and
+    /// [`client_preview_surface_frame_order`](Self::client_preview_surface_frame_order).
+    pub fn client_preview_frame_order_for(
+        &self,
+        windows: &std::collections::HashSet<aegis_model::window::WindowId>,
+    ) -> Vec<usize> {
+        self.client_surface_frame_order_for_interaction_domain(
+            HUMAN_INTERACTION_DOMAIN,
+            Some(windows),
+            None,
+        )
     }
 
     /// Directed offscreen scene for one interaction domain. Unlike the physical desktop,
@@ -1765,6 +1833,8 @@ mod tests {
             from: aegis_model::Rect::new(0, 0, 100, 100),
             started_ms: 10,
             duration_ms: 100,
+            easing: aegis_model::transition::Easing::EaseOutCubic,
+            effect: None,
         });
         assert!(unsafe {
             surface_receives_output_frame_callback(surface.as_mut(), &visible, &occluded, false, 50)

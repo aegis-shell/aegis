@@ -19,6 +19,7 @@ pub(super) fn draw_direct_desktop_scene(
     geometry: RenderGeometry,
     render_area: Option<flux::CanvasRenderArea>,
     overview: bool,
+    overview_progress: f32,
     window_switcher: Option<&aegis_shell::WindowSwitcherPresentation>,
     live_previews: &[aegis_shell::LivePreviewPresentation],
     scheme: aegis_model::settings::ColorScheme,
@@ -57,6 +58,7 @@ pub(super) fn draw_direct_desktop_scene(
             logical_size,
             scale,
             scheme,
+            overview_progress,
         );
     } else {
         draw_client_scene(

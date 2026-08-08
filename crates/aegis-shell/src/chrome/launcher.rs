@@ -367,9 +367,11 @@ impl Chrome for Launcher {
         let page_total = page_count(filtered.len(), self.page_capacity);
         self.page = self.page.min(page_total.saturating_sub(1));
 
-        // Wayland axis values are positive when scrolling down. Paging keeps
-        // the number of live lens nodes bounded and mirrors Launchpad's
-        // spatial model better than one enormous vertically scrolling list.
+        // Shell input carries lens-convention scroll deltas: scrolling down
+        // is negative (the compositor inverts the Wayland axis sign at the
+        // input boundary). Paging keeps the number of live lens nodes
+        // bounded and mirrors Launchpad's spatial model better than one
+        // enormous vertically scrolling list.
         let mut page_changed = false;
         if self.brain.is_open() && page_total > 1 {
             let scroll_x = raw.scroll_x * 40.0 + raw.scroll_pixels_x;
@@ -379,10 +381,10 @@ impl Chrome for Launcher {
             } else {
                 scroll_y
             };
-            if page_axis > 0.05 && self.page + 1 < page_total {
+            if page_axis < -0.05 && self.page + 1 < page_total {
                 self.change_page(self.page + 1);
                 page_changed = true;
-            } else if page_axis < -0.05 && self.page > 0 {
+            } else if page_axis > 0.05 && self.page > 0 {
                 self.change_page(self.page - 1);
                 page_changed = true;
             }

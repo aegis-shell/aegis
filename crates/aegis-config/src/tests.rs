@@ -317,6 +317,57 @@ fn config_store_creates_the_dock_table_for_a_position_edit() {
 }
 
 #[test]
+fn dock_minimize_animation_defaults_to_genie_and_parses_every_style() {
+    use aegis_model::dock::MinimizeAnimationStyle;
+    let cfg = Config::parse("schema_version = 2\n").unwrap();
+    assert_eq!(cfg.dock.minimize_animation, MinimizeAnimationStyle::Genie);
+
+    for (spelling, want) in [
+        ("genie", MinimizeAnimationStyle::Genie),
+        ("scale", MinimizeAnimationStyle::Scale),
+        ("suck", MinimizeAnimationStyle::Suck),
+    ] {
+        let cfg = Config::parse(&format!(
+            "schema_version = 2\n[dock]\nminimize_animation = \"{spelling}\"\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            cfg.dock.minimize_animation, want,
+            "minimize_animation = {spelling:?}"
+        );
+    }
+
+    assert!(
+        Config::parse("schema_version = 2\n[dock]\nminimize_animation = \"magic\"\n").is_err(),
+        "unknown styles must be rejected"
+    );
+}
+
+#[test]
+fn config_store_writes_the_dock_minimize_animation_without_touching_pins() {
+    let path = temp_config_path("dock-minimize-animation");
+    let original = "schema_version = 2\n\n[dock]\npinned = [\"a.desktop\"]\nposition = \"left\"\n";
+    std::fs::write(&path, original).unwrap();
+    ConfigStore::new(&path)
+        .apply(ConfigEdit::SetDockMinimizeAnimation {
+            style: aegis_model::dock::MinimizeAnimationStyle::Suck,
+        })
+        .unwrap();
+    let cfg = load(&path).unwrap().expect("file still valid");
+    assert_eq!(
+        cfg.dock.minimize_animation,
+        aegis_model::dock::MinimizeAnimationStyle::Suck
+    );
+    assert_eq!(cfg.dock.pinned, vec!["a.desktop"], "pins survive the edit");
+    assert_eq!(
+        cfg.dock.position,
+        aegis_model::dock::DockPosition::Left,
+        "position survives the edit"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn hud_can_be_disabled() {
     let cfg = Config::parse("schema_version = 2\n[hud]\nenabled = false\n").unwrap();
     assert!(!cfg.hud.enabled);

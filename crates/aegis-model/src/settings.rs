@@ -265,6 +265,18 @@ pub struct DisplayStatus {
     pub error: Option<String>,
 }
 
+/// Compositor-owned dock preferences exposed to System Settings.
+///
+/// Pinning and dock position stay dock-context-menu edits; this struct
+/// carries the settings-panel surface of the `[dock]` configuration table.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DockSettings {
+    /// The animation played when a window minimizes into the dock.
+    pub minimize_animation: crate::dock::MinimizeAnimationStyle,
+}
+
 /// One complete, validated output edit.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
@@ -286,6 +298,7 @@ pub struct SettingsSnapshot {
     pub display: DisplayStatus,
     pub preferences: DesktopPreferences,
     pub idle: IdleSettings,
+    pub dock: DockSettings,
 }
 
 /// One typed persistent-settings transaction.
@@ -297,6 +310,7 @@ pub enum SettingsAction {
     SetDisplay { settings: DisplaySettings },
     SetDesktopPreferences { preferences: DesktopPreferences },
     SetIdle { settings: IdleSettings },
+    SetDock { settings: DockSettings },
 }
 
 impl SettingsAction {

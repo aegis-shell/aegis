@@ -321,6 +321,7 @@ impl Handler for TestHandler {
                 snapshot.preferences = preferences;
             }
             SettingsAction::SetIdle { settings } => snapshot.idle = settings,
+            SettingsAction::SetDock { settings } => snapshot.dock = settings,
         }
         snapshot.revision += 1;
         Ok(SettingsReceipt {

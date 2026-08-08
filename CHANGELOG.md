@@ -7,6 +7,39 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Shell chrome
+
+- The window/workspace overview gains a macOS-style entry point and look
+  (ADR-0116): a four-finger upward swipe now opens it (downward closes),
+  the workspace rail moved to the top edge and each tile live-renders its
+  workspace's windows instead of a bare number, thumbnails fly in from
+  their real window positions, and grid slots are assigned nearest-first
+  so the picker keeps a spatial echo of the desktop. The four-finger
+  vertical swipe previously opened the command panel; `Super+S` still
+  does, and the old gesture binding can be restored with a `[[gesture]]`
+  entry (see the Configuration Reference).
+- Minimizing a window now flies it into its actual dock tile with one of
+  three macOS-style effects — `genie` (the window's lower edge funnels into
+  the icon first), `scale` (uniform shrink), or `suck` (accelerating
+  collapse into the icon's centre) — and restoring plays the flight in
+  reverse out of the same icon. The effect is selected with the new
+  `[dock] minimize_animation` config key (default `"genie"`) or from the
+  command panel's new Dock settings tab; reduced motion still resolves
+  every flight in one frame. Previously the minimize animation targeted a
+  hardcoded point above the screen's bottom edge.
+- The command panel's scope is now codified (ADR-0115): the panel is the
+  display-and-control surface for desktop-computer behavior — the
+  daily-use domains such as sound, displays, network and Bluetooth, power,
+  the session, notifications, the tray, persona, machine resources, and
+  desktop preferences — not a console for compositor internals.
+
+### Fixed
+
+- The screenshot region selector no longer deadlocks when triggered with
+  the command panel open: a held screenshot freeze now outranks modal and
+  exclusive chrome presentations, so the selector renders and receives
+  input, with the panel still part of the frozen snapshot.
+
 ## [0.0.14] - 2026-08-07
 
 ### Shell chrome

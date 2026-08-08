@@ -302,6 +302,22 @@ impl Server {
         }
     }
 
+    /// Set the minimize flight style (`[dock] minimize_animation`). Applies
+    /// to the next minimize/restore; in-flight transitions keep their style.
+    pub fn set_minimize_animation(&mut self, style: aegis_model::dock::MinimizeAnimationStyle) {
+        self.state.minimize_animation = style;
+    }
+
+    /// Replace the minimize flight targets — the resting dock-icon rect per
+    /// window — with the shell's latest report. Pushed every frame so even a
+    /// client-initiated `xdg_toplevel.set_minimized` flies at the real icon.
+    pub fn set_minimize_targets(
+        &mut self,
+        targets: Vec<(aegis_model::window::WindowId, aegis_model::Rect)>,
+    ) {
+        self.state.minimize_targets = targets.into_iter().collect();
+    }
+
     /// Apply the desktop-wide xdg-decoration ownership policy.
     ///
     /// Existing decoration-aware toplevels receive a fresh decoration

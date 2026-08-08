@@ -52,7 +52,7 @@ backend, renderer, and shell behind clear seams so the
 | | `aegis-dock` | Bottom-center dock chrome component: pinned and running apps, magnification, pin actions |
 | | `aegis-settings` | Settings module library: module contract, registry, and built-in pages hosted by the command panel |
 | | `aegis-hud` | Display-only HUD status chips: system status, workspace dots, clock, notification count, and the StatusNotifierItem tray row |
-| | `aegis-command-panel` | Full-screen modal command panel: quick settings, hosted settings modules, tray activation, and notification dismissal |
+| | `aegis-command-panel` | Full-screen modal command panel: the display-and-control surface for desktop-computer behavior (quick settings, hosted settings modules, tray activation, notification dismissal) — scoped by [ADR-0115](../adr/0115-command-panel-desktop-behavior-scope.md) |
 | | `aegis-wallpaper` | Background layer: image, video, 3D, and multi-plane parallax wallpaper |
 | | `aegis-config` | Declarative configuration: versioned TOML schema, loader, live reload |
 | **Session services** | `aegis-lock` | Multi-output session-lock presentation and PAM authentication |
@@ -131,6 +131,9 @@ user sees or can do" tasks:
 - **"Change the chrome / interactions"** (dock, launcher, HUD, panel) → `aegis-shell`
   for the host and contract; the HUD and command panel live in the
   `aegis-hud` and `aegis-command-panel` component crates. The command panel
+  is scoped to desktop-computer behavior — the user's computer, not
+  compositor internals
+  ([ADR-0115](../adr/0115-command-panel-desktop-behavior-scope.md)) — and
   owns live-system controls, the display-only Agent Workspaces status row,
   and the persistent settings pages hosted from the `aegis-settings`
   module library

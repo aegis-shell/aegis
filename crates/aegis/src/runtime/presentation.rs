@@ -355,6 +355,7 @@ impl CompositorRuntime {
                 // Overview mode (M9) swaps the whole client scene for the
                 // thumbnail grid and skips the launcher-blur capture path.
                 let overview_active = self.shell.overview_active();
+                let overview_progress = self.shell.overview_progress();
                 // A screenshot freeze session replaces the whole frame with
                 // the trigger-frame snapshot: the capture frame renders the
                 // desktop scene *and* the chrome into an offscreen target
@@ -725,6 +726,7 @@ impl CompositorRuntime {
                                 render_geometry,
                                 output_render_area,
                                 overview_active,
+                                overview_progress,
                                 window_switcher.as_ref(),
                                 &live_previews,
                                 color_scheme,
@@ -772,6 +774,7 @@ impl CompositorRuntime {
                                 render_geometry,
                                 output_render_area,
                                 overview_active,
+                                overview_progress,
                                 window_switcher.as_ref(),
                                 &live_previews,
                                 color_scheme,
@@ -910,6 +913,7 @@ impl CompositorRuntime {
                                     render_geometry,
                                     None,
                                     overview_active,
+                                    overview_progress,
                                     window_switcher.as_ref(),
                                     &live_previews,
                                     color_scheme,
@@ -934,6 +938,7 @@ impl CompositorRuntime {
                                 render_geometry,
                                 output_render_area,
                                 overview_active,
+                                overview_progress,
                                 window_switcher.as_ref(),
                                 &live_previews,
                                 color_scheme,
@@ -996,6 +1001,11 @@ impl CompositorRuntime {
                     self.last_all_windows_hash = Some(all_windows_hash);
                     self.shell.set_all_windows(self.server.all_windows());
                 }
+                // Minimize flight targets follow the dock's resting tile
+                // layout; pushing them every frame keeps even
+                // client-initiated minimizes aimed at the real icon.
+                let targets = self.shell.minimize_targets(self.input_acc.display_size);
+                self.server.set_minimize_targets(targets);
                 // Mirror the workspace snapshot and broadcast `WorkspaceChanged`
                 // on any model mutation (switch, place, remove, reap).
                 let ws_sig = self.server.workspace_signature();

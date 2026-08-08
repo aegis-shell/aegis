@@ -21,6 +21,19 @@
 //! closes on Escape, a scrim click, the tab bar's close button, the same
 //! binding, or a four-finger swipe up.
 //!
+//! Scope (ADR-0115): the panel is the display-and-control surface for
+//! desktop-computer behavior — the domains daily desktop use involves:
+//! sound, displays, network and Bluetooth, power, the session,
+//! notifications, the tray, the user's persona, machine resources, and
+//! desktop preferences. The scope test is the user's computer, not this
+//! compositor: a surface belongs when its subject exists on any desktop
+//! computer regardless of the compositor implementation. Compositor-
+//! mechanism surfaces — window-tree internals, protocol or IPC state,
+//! introspection, developer tooling — stay out and remain CLI/MCP
+//! territory. Domains follow the user's model rather than the implementing
+//! component, so window tiling and Agent Workspaces are in scope while
+//! Interaction Domain lifecycle management is not.
+//!
 //! Like the HUD and the dock, the panel is compositor-owned lens
 //! chrome on the [`aegis_shell`] `Chrome` seam: snapshots arrive through the
 //! trait each frame, and user intents leave through `ChromeEvents` plus the

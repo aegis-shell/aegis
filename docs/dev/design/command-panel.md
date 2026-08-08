@@ -1,6 +1,21 @@
 # Command Panel
 
-The command panel is a three-surface cluster — a full-width header band,
+The command panel is the display-and-control surface for desktop-computer
+behavior
+([ADR-0115](../../adr/0115-command-panel-desktop-behavior-scope.md)): the
+domains daily desktop use involves — sound, displays, network and
+Bluetooth, power, the session, notifications, the tray, the user's persona,
+machine resources, and desktop preferences. The scope test is the user's
+computer, not the compositor: a surface belongs when its subject exists on
+any desktop computer regardless of the compositor implementation.
+Compositor-mechanism surfaces — window-tree internals, protocol or IPC
+state, introspection, developer tooling — stay out and remain CLI/MCP
+territory. Domains follow the user's model rather than the implementing
+component, so window tiling and Agent Workspaces are in scope while
+Interaction Domain lifecycle management is not. Every proposed tab,
+section, or status row justifies itself against this scope.
+
+Visually the panel is a three-surface cluster — a full-width header band,
 a main panel, and a side column — presented as one centered group above
 the dark blurred scrim. All three surfaces use the HUD material: the
 dark glass [HUD panel](surfaces.md) with the cyan accent, thin

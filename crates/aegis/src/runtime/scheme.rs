@@ -16,11 +16,12 @@ pub(super) fn clear_color(scheme: ColorScheme) -> u32 {
     }
 }
 
-/// Translucent dim beneath the overview's window thumbnails.
-pub(super) fn overview_scrim(scheme: ColorScheme) -> u32 {
+/// Base RGB of the overview scrim; the caller scales its alpha by the
+/// overview's reveal progress.
+pub(super) fn overview_scrim(scheme: ColorScheme) -> (u8, u8, u8) {
     match scheme.or_dark() {
-        ColorScheme::Dark | ColorScheme::System => flux::rgba(8, 10, 20, 200),
-        ColorScheme::Light => flux::rgba(243, 245, 249, 200),
+        ColorScheme::Dark | ColorScheme::System => (8, 10, 20),
+        ColorScheme::Light => (243, 245, 249),
     }
 }
 

@@ -7,11 +7,57 @@
 //! never mutates the state the chrome, the IPC, or the agent read. The
 //! reduced-motion policy resolves every transition in at most one frame.
 
+use crate::dock::MinimizeAnimationStyle;
 use crate::{Point, Rect, Size};
 
 /// Default transition length. Short enough to feel instant, long enough to
 /// read as motion.
 pub const DEFAULT_DURATION_MS: u64 = 180;
+
+/// Minimize/restore transition lengths per style. Genie runs longest so the
+/// funnel deformation stays readable; scale and suck stay snappy.
+pub const MINIMIZE_GENIE_DURATION_MS: u64 = 360;
+pub const MINIMIZE_SCALE_DURATION_MS: u64 = 200;
+pub const MINIMIZE_SUCK_DURATION_MS: u64 = 240;
+
+/// The interpolation curve of a [`WindowTransition`].
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Easing {
+    /// `1 - (1 - t)³`: fast start, gentle settle — the standard compositor
+    /// curve.
+    #[default]
+    EaseOutCubic,
+    /// `t³`: slow start, accelerating finish — the "sucked in" feel.
+    EaseInCubic,
+}
+
+impl Easing {
+    /// Apply the curve to a linear progress value in `0.0..=1.0`.
+    pub fn apply(self, t: f32) -> f32 {
+        match self {
+            Easing::EaseOutCubic => ease_out_cubic(t),
+            Easing::EaseInCubic => ease_in_cubic(t),
+        }
+    }
+}
+
+/// Presentation-only extra data for transitions that are more than a plain
+/// rectangle interpolation.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransitionEffect {
+    /// A minimize (or reversed-restore) flight into the dock. `target` is the
+    /// dock icon's centre; `style` selects how the flight renders. Only the
+    /// genie style needs renderer support (a strip warp); scale and suck are
+    /// pure rectangle interpolations distinguished by their target and
+    /// easing.
+    Minimize {
+        style: MinimizeAnimationStyle,
+        target: Point,
+    },
+}
 
 /// One in-flight geometry transition. `to` is always the window's model
 /// rect, so it is not stored here; [`WindowTransition::rect_at`] takes it as
@@ -25,6 +71,14 @@ pub struct WindowTransition {
     pub started_ms: u64,
     /// How long the transition runs, in milliseconds.
     pub duration_ms: u64,
+    /// The interpolation curve. Everything but the suck minimize style keeps
+    /// the default ease-out.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub easing: Easing,
+    /// Optional presentation effect (minimize flight) layered on top of the
+    /// rectangle interpolation.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub effect: Option<TransitionEffect>,
 }
 
 impl WindowTransition {
@@ -34,6 +88,39 @@ impl WindowTransition {
             from,
             started_ms: now_ms,
             duration_ms: DEFAULT_DURATION_MS,
+            easing: Easing::default(),
+            effect: None,
+        }
+    }
+
+    /// Start a minimize (or reversed restore) transition from `from` toward
+    /// `icon_rect` — the window's dock tile. The style picks the duration,
+    /// easing, and the exact target rectangle: scale and genie land on the
+    /// icon itself, suck collapses into the icon's centre point.
+    pub fn minimize(
+        from: Rect,
+        now_ms: u64,
+        style: MinimizeAnimationStyle,
+        icon_rect: Rect,
+    ) -> WindowTransition {
+        let centre = Point {
+            x: icon_rect.origin.x + icon_rect.size.w / 2,
+            y: icon_rect.origin.y + icon_rect.size.h / 2,
+        };
+        let (duration_ms, easing) = match style {
+            MinimizeAnimationStyle::Genie => (MINIMIZE_GENIE_DURATION_MS, Easing::EaseOutCubic),
+            MinimizeAnimationStyle::Scale => (MINIMIZE_SCALE_DURATION_MS, Easing::EaseOutCubic),
+            MinimizeAnimationStyle::Suck => (MINIMIZE_SUCK_DURATION_MS, Easing::EaseInCubic),
+        };
+        WindowTransition {
+            from,
+            started_ms: now_ms,
+            duration_ms,
+            easing,
+            effect: Some(TransitionEffect::Minimize {
+                style,
+                target: centre,
+            }),
         }
     }
 
@@ -46,15 +133,37 @@ impl WindowTransition {
         self.duration_ms > 0 && now_ms.saturating_sub(self.started_ms) < self.duration_ms
     }
 
-    /// The interpolated rect at `now_ms` (ease-out cubic), or `None` when
-    /// the transition has settled and the window renders at `target`.
-    pub fn rect_at(&self, target: Rect, now_ms: u64) -> Option<Rect> {
+    /// The eased progress in `0.0..=1.0` at `now_ms`, or `None` when the
+    /// transition has settled. Effects that deform rather than interpolate
+    /// (the genie warp) drive themselves from this value.
+    pub fn progress_at(&self, now_ms: u64) -> Option<f32> {
         if !self.is_active_at(now_ms) {
             return None;
         }
         let elapsed = now_ms.saturating_sub(self.started_ms);
-        let t = ease_out_cubic(elapsed as f32 / self.duration_ms as f32);
+        Some(self.easing.apply(elapsed as f32 / self.duration_ms as f32))
+    }
+
+    /// The interpolated rect at `now_ms`, or `None` when the transition has
+    /// settled and the window renders at `target`.
+    pub fn rect_at(&self, target: Rect, now_ms: u64) -> Option<Rect> {
+        let t = self.progress_at(now_ms)?;
         Some(lerp_rect(self.from, target, t))
+    }
+}
+
+/// The rectangle a minimize flight aims at: the icon rect itself, or — for
+/// the suck style — a point at the icon's centre.
+pub fn minimize_target_rect(style: MinimizeAnimationStyle, icon_rect: Rect) -> Rect {
+    match style {
+        MinimizeAnimationStyle::Genie | MinimizeAnimationStyle::Scale => icon_rect,
+        MinimizeAnimationStyle::Suck => Rect {
+            origin: Point {
+                x: icon_rect.origin.x + icon_rect.size.w / 2 - 1,
+                y: icon_rect.origin.y + icon_rect.size.h / 2 - 1,
+            },
+            size: Size { w: 2, h: 2 },
+        },
     }
 }
 
@@ -62,6 +171,11 @@ impl WindowTransition {
 pub fn ease_out_cubic(t: f32) -> f32 {
     let u = (1.0 - t.clamp(0.0, 1.0)).powi(3);
     1.0 - u
+}
+
+/// `t³`: slow start, accelerating finish.
+pub fn ease_in_cubic(t: f32) -> f32 {
+    t.clamp(0.0, 1.0).powi(3)
 }
 
 /// Interpolate two rects component-wise, rounding to the nearest pixel.
@@ -127,5 +241,66 @@ mod tests {
         let mid = lerp_rect(from, to, 0.5);
         assert_eq!(mid.origin, Point { x: 60, y: 70 });
         assert_eq!(mid.size, Size { w: 200, h: 150 });
+    }
+
+    #[test]
+    fn ease_in_cubic_endpoints_and_shape() {
+        assert_eq!(ease_in_cubic(0.0), 0.0);
+        assert_eq!(ease_in_cubic(1.0), 1.0);
+        // Ease-in: behind linear early, accelerating late.
+        assert!(ease_in_cubic(0.25) < 0.25);
+        assert!(ease_in_cubic(0.75) > 0.25);
+        assert!(ease_in_cubic(0.3) < ease_in_cubic(0.6));
+    }
+
+    #[test]
+    fn minimize_transition_carries_style_easing_and_icon_centre() {
+        let from = Rect::new(100, 100, 800, 600);
+        let icon = Rect::new(500, 1020, 48, 48);
+        let tr = WindowTransition::minimize(from, 1000, MinimizeAnimationStyle::Suck, icon);
+        assert_eq!(tr.duration_ms, MINIMIZE_SUCK_DURATION_MS);
+        assert_eq!(tr.easing, Easing::EaseInCubic);
+        assert_eq!(
+            tr.effect,
+            Some(TransitionEffect::Minimize {
+                style: MinimizeAnimationStyle::Suck,
+                target: Point { x: 524, y: 1044 },
+            })
+        );
+
+        let genie = WindowTransition::minimize(from, 1000, MinimizeAnimationStyle::Genie, icon);
+        assert_eq!(genie.duration_ms, MINIMIZE_GENIE_DURATION_MS);
+        assert_eq!(genie.easing, Easing::EaseOutCubic);
+    }
+
+    #[test]
+    fn progress_at_uses_the_transition_easing() {
+        let from = Rect::new(0, 0, 100, 100);
+        let icon = Rect::new(500, 1020, 48, 48);
+        let suck = WindowTransition::minimize(from, 1000, MinimizeAnimationStyle::Suck, icon);
+        let half = suck.duration_ms / 2;
+        let progress = suck.progress_at(1000 + half).expect("in flight");
+        // Ease-in at the midpoint is well behind linear.
+        assert!(progress < 0.5, "progress: {progress}");
+        assert!(suck.progress_at(1000 + suck.duration_ms).is_none());
+        assert!(suck.progress_at(1000).is_some());
+    }
+
+    #[test]
+    fn minimize_target_rect_collapses_to_a_point_only_for_suck() {
+        let icon = Rect::new(500, 1020, 48, 48);
+        assert_eq!(
+            minimize_target_rect(MinimizeAnimationStyle::Genie, icon),
+            icon
+        );
+        assert_eq!(
+            minimize_target_rect(MinimizeAnimationStyle::Scale, icon),
+            icon
+        );
+        let suck = minimize_target_rect(MinimizeAnimationStyle::Suck, icon);
+        assert_eq!(suck.size, Size { w: 2, h: 2 });
+        // The point is centred on the icon.
+        assert_eq!(suck.origin.x + 1, icon.origin.x + 24);
+        assert_eq!(suck.origin.y + 1, icon.origin.y + 24);
     }
 }

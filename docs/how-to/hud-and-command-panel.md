@@ -2,7 +2,11 @@
 
 Aegis presents system status as a minimal HUD and keeps every related
 interaction in one modal panel, the command panel (ADR-0080, ADR-0081,
-ADR-0083, ADR-0114).
+ADR-0083, ADR-0114). The panel is the display-and-control surface for
+desktop-computer behavior (ADR-0115): the state and controls of the
+daily-use domains — sound, displays, network and Bluetooth, power, the
+session, notifications, the tray, your account persona, machine resources,
+and desktop preferences. It is not a console for the compositor itself.
 
 ## Read the HUD Chips
 
@@ -82,8 +86,8 @@ backlight, no audio device) read as unavailable.
 ## Edit Persistent Settings
 
 Select a settings module tab — **Display**, **Touchpad**, **Appearance**,
-or **Power Management**. Display, appearance, and power edits stage
-locally and commit when you select their **Apply** button; touchpad
+**Dock**, or **Power Management**. Display, appearance, and power edits stage
+locally and commit when you select their **Apply** button; touchpad and dock
 edits apply immediately. Committed changes persist to `config.toml`
 through the compositor's revisioned settings transaction; see the
 [Settings Reference](../reference/settings.md) for module routes, apply

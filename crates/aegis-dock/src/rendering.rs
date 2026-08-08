@@ -1106,6 +1106,14 @@ impl Chrome for Dock {
         true
     }
 
+    fn minimize_targets(
+        &self,
+        display: (f32, f32),
+        out: &mut Vec<(aegis_model::window::WindowId, aegis_model::Rect)>,
+    ) {
+        out.extend(self.minimize_targets(display));
+    }
+
     fn cursor_shape_at(
         &self,
         _x: f32,

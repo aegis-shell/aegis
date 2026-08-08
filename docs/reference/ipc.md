@@ -304,6 +304,7 @@ Nonzero stage times must be strictly increasing in the order shown.
 | `SetDisplay` | connector, mode, scale, position, and primary flag | Validate, atomically persist the output entry, and reconcile the live direct-DRM output. |
 | `SetDesktopPreferences` | complete `DesktopPreferences` | Validate, atomically persist the `[appearance]` and preference-related `[ui]` fields, apply chrome and cursor policy, and refresh application icons. |
 | `SetIdle` | complete `IdleSettings` | Validate and atomically persist `[idle]`, then replace the supervised idle policy client. |
+| `SetDock` | complete `DockSettings` | Validate, atomically persist the `[dock]` presentation fields, and apply the minimize flight style to the compositor. |
 
 The operation requires `session` plus a live privileged lease. It is refused
 while the session is locked. When `expected_revision` does not match the

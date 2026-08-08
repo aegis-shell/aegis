@@ -882,3 +882,56 @@ fn deferred_restoration_is_dropped_once_focus_moves_to_a_new_toplevel() {
         ));
     }
 }
+
+#[test]
+fn minimize_flight_targets_the_dock_icon_per_style() {
+    let mut state = State::new(std::ptr::null_mut());
+    let window = aegis_model::window::WindowId(9);
+    let icon = aegis_model::Rect::new(500, 1020, 56, 56);
+    state.minimize_targets.insert(window, icon);
+    let window_rect = aegis_model::Rect::new(100, 100, 800, 600);
+
+    state.minimize_animation = aegis_model::dock::MinimizeAnimationStyle::Scale;
+    assert_eq!(minimize_flight_target(&state, window, window_rect), icon);
+    state.minimize_animation = aegis_model::dock::MinimizeAnimationStyle::Genie;
+    assert_eq!(minimize_flight_target(&state, window, window_rect), icon);
+
+    state.minimize_animation = aegis_model::dock::MinimizeAnimationStyle::Suck;
+    let suck = minimize_flight_target(&state, window, window_rect);
+    assert_eq!(suck.size, aegis_model::Size { w: 2, h: 2 });
+    assert_eq!(suck.origin, aegis_model::Point { x: 527, y: 1047 });
+
+    let transition = minimize_transition(&state, window, window_rect);
+    assert_eq!(
+        transition.easing,
+        aegis_model::transition::Easing::EaseInCubic
+    );
+    assert_eq!(
+        transition.effect,
+        Some(aegis_model::transition::TransitionEffect::Minimize {
+            style: aegis_model::dock::MinimizeAnimationStyle::Suck,
+            target: aegis_model::Point { x: 528, y: 1048 },
+        })
+    );
+}
+
+#[test]
+fn minimize_flight_falls_back_to_the_screen_edge_stub_without_an_icon() {
+    let state = State::new(std::ptr::null_mut());
+    let window = aegis_model::window::WindowId(9);
+    let window_rect = aegis_model::Rect::new(100, 100, 800, 600);
+
+    let target = minimize_flight_target(&state, window, window_rect);
+    let screen_h = state.output_geometry.logical_rect().size.h;
+    assert_eq!(
+        target.origin,
+        aegis_model::Point {
+            x: 300,
+            y: screen_h - 20
+        }
+    );
+    assert_eq!(target.size, aegis_model::Size { w: 400, h: 20 });
+
+    let transition = minimize_transition(&state, window, window_rect);
+    assert_eq!(transition.effect, None);
+}

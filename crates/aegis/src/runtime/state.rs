@@ -36,6 +36,9 @@ pub(super) struct SwipeState {
     /// Whether the command-panel binding already fired (`CommandPanel`);
     /// latches until SwipeEnd so a long swipe cannot oscillate the panel.
     pub(super) panel_fired: bool,
+    /// Whether the overview binding already fired (`Overview`); latches
+    /// until SwipeEnd so a long swipe cannot oscillate the picker.
+    pub(super) overview_fired: bool,
 }
 
 /// Baselines and carry-over owned by the output-damage pipeline.

@@ -190,7 +190,25 @@ impl Chrome for Overview {
             has_rail,
             has_interaction_domain_shelf,
         );
-        let slots = geom::grid(area, windows.len());
+        // Closest-slot assignment: the same pairing the compositor's
+        // thumbnail pass computes, so hover and click land on the cell the
+        // user actually sees under the cursor.
+        let window_rects: Vec<(aegis_model::window::WindowId, aegis_model::Rect)> = windows
+            .iter()
+            .map(|w| {
+                (
+                    w.id,
+                    aegis_model::Rect {
+                        origin: w.position,
+                        size: w.size,
+                    },
+                )
+            })
+            .collect();
+        let slots: Vec<aegis_model::Rect> = geom::assign_slots(area, &window_rects)
+            .into_iter()
+            .map(|(_, slot)| slot)
+            .collect();
         let tiles = geom::rail(display, rail_tiles.len());
         let interaction_domain_tiles = if has_interaction_domain_shelf {
             geom::interaction_domain_shelf(display, live_interaction_domains.len())
@@ -285,40 +303,62 @@ impl Chrome for Overview {
             return;
         }
 
-        // Workspace rail: one tile per workspace, current highlighted. Token
-        // hues keep the fade-driven alphas below scheme-aware.
+        // Workspace rail: one tile per workspace along the top edge, current
+        // highlighted. The compositor draws each workspace's live miniature
+        // inside the tile; chrome adds only a translucent tint, the frame,
+        // and the caption so the thumbnails stay visible. Token hues keep
+        // the fade-driven alphas below scheme-aware.
         let colors = self.design.colors;
         if has_rail {
             for (i, tile) in tiles.iter().enumerate() {
-                let (id, current) = rail_tiles[i];
+                let (_, current) = rail_tiles[i];
                 let hovered = self.rail_hovered == Some(i);
                 let bg = if current {
-                    colors.application_accent.with_alpha(self.alpha(200))
+                    colors.application_accent.with_alpha(self.alpha(70))
                 } else if hovered {
-                    colors.application_surface.with_alpha(self.alpha(210))
+                    colors.application_surface.with_alpha(self.alpha(110))
                 } else {
-                    colors.application_surface.with_alpha(self.alpha(190))
+                    colors.application_surface.with_alpha(self.alpha(60))
                 };
-                let tid = id;
+                let border = if current {
+                    colors.application_accent.with_alpha(self.alpha(255))
+                } else if hovered {
+                    colors.application_accent.with_alpha(self.alpha(190))
+                } else {
+                    colors.application_border.with_alpha(self.alpha(160))
+                };
                 frame.layer(
                     &format!("aegis-overview-ws-{i}"),
                     to_lens(*tile),
                     &OverlayOpts {
                         bg,
+                        border,
+                        border_width: if current { 2.0 } else { 1.0 },
                         radius: 10.0,
                         ..Default::default()
                     },
+                    |_| {},
+                );
+                let caption = Rect {
+                    x: tile.origin.x as f32,
+                    y: (tile.origin.y + tile.size.h - geom::RAIL_LABEL_H) as f32,
+                    w: tile.size.w as f32,
+                    h: geom::RAIL_LABEL_H as f32,
+                };
+                frame.layer(
+                    &format!("aegis-overview-ws-label-{i}"),
+                    caption,
+                    &OverlayOpts::default(),
                     move |frame| {
                         frame.column_ex(
                             &LayoutOpts {
-                                width: tile.size.w as f32,
-                                height: tile.size.h as f32,
+                                width: caption.w,
+                                height: caption.h,
                                 cross: Align::Center,
                                 ..Default::default()
                             },
                             move |frame| {
-                                let _ = tid;
-                                frame.label_sized(&format!("{}", i + 1), 15.0);
+                                frame.label_compact_sized(&format!("{}", i + 1), 12.0);
                             },
                         );
                     },
@@ -552,6 +592,10 @@ impl Chrome for Overview {
 
     fn overview_active(&self) -> bool {
         self.open
+    }
+
+    fn overview_progress(&self) -> f32 {
+        self.visibility
     }
 
     fn anim_pending(&self) -> bool {
