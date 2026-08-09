@@ -18,11 +18,14 @@ const MAX_PRINCIPALS: usize = 4_096;
 const MAX_GRANTS: usize = 16_384;
 
 /// Operation families a self-registered agent may request. Component-only
-/// operations (target/application picks, output capture and streaming,
+/// operations (target/application picks, whole-output capture and streaming,
 /// wallpaper, idle inhibition, global input, session control, plain
 /// screenshots) are never
 /// agent-requestable: they belong to platform components, not to borrowing
-/// agents.
+/// agents. Per-window content capture is the deliberate exception: unlike
+/// whole-output capture it is bounded to one window the scope's `windows`
+/// axis can name, and first use always routes through the interactive
+/// runtime grant, so an agent may request it.
 pub(crate) const AGENT_REQUESTABLE: &[ActorCapability] = &[
     ActorCapability::ObserveWindows,
     ActorCapability::ObserveWorkspaces,
@@ -55,8 +58,10 @@ pub(crate) const AGENT_REQUESTABLE: &[ActorCapability] = &[
     ActorCapability::TransactInteractionDomain,
     ActorCapability::RevokeInteractionDomain,
     ActorCapability::CaptureInteractionDomain,
+    ActorCapability::CaptureWindow,
     ActorCapability::ObserveInteractionDomain,
     ActorCapability::LaunchInInteractionDomain,
+    ActorCapability::LaunchApp,
 ];
 
 const SYSTEM_COMPONENT_CAPABILITIES: &[ActorCapability] = &[
@@ -82,8 +87,10 @@ pub(crate) fn is_runtime_gated(op: ActorCapability) -> bool {
             | ActorCapability::TransactInteractionDomain
             | ActorCapability::RevokeInteractionDomain
             | ActorCapability::CaptureInteractionDomain
+            | ActorCapability::CaptureWindow
             | ActorCapability::ObserveInteractionDomain
             | ActorCapability::LaunchInInteractionDomain
+            | ActorCapability::LaunchApp
     )
 }
 
@@ -711,8 +718,10 @@ fn op_key(op: ActorCapability) -> &'static str {
         ActorCapability::TransactInteractionDomain => "TransactInteractionDomain",
         ActorCapability::RevokeInteractionDomain => "RevokeInteractionDomain",
         ActorCapability::CaptureInteractionDomain => "CaptureInteractionDomain",
+        ActorCapability::CaptureWindow => "CaptureWindow",
         ActorCapability::ObserveInteractionDomain => "ObserveInteractionDomain",
         ActorCapability::LaunchInInteractionDomain => "LaunchInInteractionDomain",
+        ActorCapability::LaunchApp => "LaunchApp",
         // Component-only families never reach the pairing checklist:
         // `capability_groups` filters them out first.
         _ => unreachable!("op_key is only called for agent-requestable ops"),

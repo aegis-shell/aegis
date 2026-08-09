@@ -1249,6 +1249,12 @@ pub(crate) struct State {
     xdg_foreign_imports: Vec<*mut ffi::wl_resource>,
     activation_tokens: std::collections::HashMap<String, SeatId>,
     pending_activation: Option<(SeatId, *mut ffi::wl_resource)>,
+    /// First-map workspace placements registered by `Command::LaunchApp`.
+    /// Each entry places exactly one root toplevel: the first map whose
+    /// client pid or app_id matches consumes it (FIFO), so a user's later
+    /// manual launch of the same app can only steal a stale entry within
+    /// the TTL.
+    pub(crate) pending_launch_placements: Vec<server::PendingLaunchPlacement>,
     /// Keyboard-focus transitions requested from protocol callbacks, applied
     /// by `dispatch` after the callbacks return. This covers popup grabs and
     /// focus returning from a dismissed popup or closed toplevel; see

@@ -596,11 +596,13 @@ fn window_focus_sends_focus() {
     let out = aegis_commands::run(&path, &["window".into(), "focus".into(), "1".into()]).unwrap();
     assert!(out.contains("focused 1"), "{out}");
     assert!(
-        h.commands
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|c| matches!(c, Command::Focus { id: WindowId(1) })),
+        h.commands.lock().unwrap().iter().any(|c| matches!(
+            c,
+            Command::Focus {
+                id: WindowId(1),
+                ..
+            }
+        )),
         "{:?}",
         h.commands
     );

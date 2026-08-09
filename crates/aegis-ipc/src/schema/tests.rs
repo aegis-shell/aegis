@@ -362,7 +362,14 @@ fn synthetic_input_is_separately_capability_and_window_scoped() {
 
 #[test]
 fn required_cap_separates_control_and_session() {
-    assert!(Command::Focus { id: WindowId(1) }.required_cap().control);
+    assert!(
+        Command::Focus {
+            id: WindowId(1),
+            reveal: true
+        }
+        .required_cap()
+        .control
+    );
     assert!(Command::Cycle { forward: true }.required_cap().control);
     assert!(Command::Quit.required_cap().session);
     assert!(!Command::Quit.required_cap().control);
@@ -502,7 +509,10 @@ fn dismiss_notification_command_round_trips() {
 #[test]
 fn unscoped_scope_permits_everything() {
     let s = Scope::unscoped();
-    assert!(s.permits(&Command::Focus { id: WindowId(1) }));
+    assert!(s.permits(&Command::Focus {
+        id: WindowId(1),
+        reveal: true
+    }));
     assert!(s.permits(&Command::Close { id: WindowId(99) }));
     assert!(s.permits(&Command::Quit));
     assert!(!s.permits(&Command::InjectInput {
@@ -517,7 +527,10 @@ fn scoped_ops_reject_unlisted_commands() {
         ops: Some(vec![ActorCapability::Focus]),
         ..Scope::default()
     };
-    assert!(s.permits(&Command::Focus { id: WindowId(1) }));
+    assert!(s.permits(&Command::Focus {
+        id: WindowId(1),
+        reveal: true
+    }));
     assert!(!s.permits(&Command::Close { id: WindowId(1) }));
 }
 
@@ -557,7 +570,10 @@ fn ask_ops_make_unlisted_commands_requestable_not_permitted() {
         AuthorizationDecision::Ask(ActorCapability::Close)
     );
     assert_eq!(
-        s.decide_command(&Command::Focus { id: WindowId(1) }),
+        s.decide_command(&Command::Focus {
+            id: WindowId(1),
+            reveal: true
+        }),
         AuthorizationDecision::Permit
     );
     assert_eq!(
@@ -643,9 +659,18 @@ fn scoped_windows_enforce_allowlist() {
         windows: Some(vec![WindowId(1), WindowId(2)]),
         ..Scope::default()
     };
-    assert!(s.permits(&Command::Focus { id: WindowId(1) }));
-    assert!(s.permits(&Command::Focus { id: WindowId(2) }));
-    assert!(!s.permits(&Command::Focus { id: WindowId(3) }));
+    assert!(s.permits(&Command::Focus {
+        id: WindowId(1),
+        reveal: true
+    }));
+    assert!(s.permits(&Command::Focus {
+        id: WindowId(2),
+        reveal: true
+    }));
+    assert!(!s.permits(&Command::Focus {
+        id: WindowId(3),
+        reveal: true
+    }));
 }
 
 #[test]
@@ -777,6 +802,143 @@ fn command_validation_bounds_private_text_and_exact_paths() {
 }
 
 #[test]
+fn launch_app_command_round_trips_with_and_without_placement() {
+    let commands = [
+        Command::LaunchApp {
+            desktop_id: "org.example.App.desktop".into(),
+            placement: None,
+        },
+        Command::LaunchApp {
+            desktop_id: "org.example.App.desktop".into(),
+            placement: Some(LaunchPlacement::Workspace { id: WorkspaceId(3) }),
+        },
+        Command::LaunchApp {
+            desktop_id: "org.example.App.desktop".into(),
+            placement: Some(LaunchPlacement::FreshWorkspace {
+                label: Some("research".into()),
+            }),
+        },
+    ];
+    for cmd in &commands {
+        let json = serde_json::to_string(cmd).unwrap();
+        assert_eq!(&serde_json::from_str::<Command>(&json).unwrap(), cmd);
+        assert!(cmd.required_cap().control);
+    }
+    // `placement` is additive: it stays off the wire when absent.
+    let json = serde_json::to_string(&commands[0]).unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"LaunchApp","desktop_id":"org.example.App.desktop"}"#
+    );
+    assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), commands[0]);
+}
+
+#[test]
+fn focus_reveal_defaults_to_true_for_older_peers() {
+    let legacy: Command = serde_json::from_str(r#"{"type":"Focus","id":5}"#).unwrap();
+    assert_eq!(
+        legacy,
+        Command::Focus {
+            id: WindowId(5),
+            reveal: true
+        }
+    );
+    let explicit: Command =
+        serde_json::from_str(r#"{"type":"Focus","id":5,"reveal":false}"#).unwrap();
+    assert_eq!(
+        explicit,
+        Command::Focus {
+            id: WindowId(5),
+            reveal: false
+        }
+    );
+}
+
+#[test]
+fn launch_app_validation_bounds_desktop_id_and_workspace_label() {
+    for desktop_id in ["", ".", "..", "../app.desktop", "bad\\app.desktop"] {
+        assert!(
+            Command::LaunchApp {
+                desktop_id: desktop_id.into(),
+                placement: None,
+            }
+            .validate()
+            .is_err(),
+            "accepted malformed desktop id {desktop_id}"
+        );
+    }
+    assert!(
+        Command::LaunchApp {
+            desktop_id: "a".repeat(513),
+            placement: None,
+        }
+        .validate()
+        .is_err(),
+        "accepted oversized desktop id"
+    );
+    assert!(
+        Command::LaunchApp {
+            desktop_id: "org.example.App.desktop".into(),
+            placement: None,
+        }
+        .validate()
+        .is_ok()
+    );
+
+    for label in ["  ".to_string(), "x".repeat(200)] {
+        assert!(
+            Command::LaunchApp {
+                desktop_id: "org.example.App.desktop".into(),
+                placement: Some(LaunchPlacement::FreshWorkspace {
+                    label: Some(label.clone()),
+                }),
+            }
+            .validate()
+            .is_err(),
+            "accepted invalid workspace label {label:?}"
+        );
+    }
+    assert!(
+        Command::LaunchApp {
+            desktop_id: "org.example.App.desktop".into(),
+            placement: Some(LaunchPlacement::FreshWorkspace {
+                label: Some("research".into()),
+            }),
+        }
+        .validate()
+        .is_ok()
+    );
+}
+
+#[test]
+fn launch_app_scoped_to_named_workspace_only() {
+    let launch = |workspace| Command::LaunchApp {
+        desktop_id: "org.example.App.desktop".into(),
+        placement: Some(LaunchPlacement::Workspace { id: workspace }),
+    };
+    assert_eq!(
+        launch(WorkspaceId(2)).op_class(),
+        ActorCapability::LaunchApp
+    );
+    let s = Scope {
+        workspaces: Some(vec![WorkspaceId(2)]),
+        ..Scope::default()
+    };
+    assert!(s.permits(&launch(WorkspaceId(2))));
+    assert!(!s.permits(&launch(WorkspaceId(3))));
+    // No placement or a fresh workspace names no existing workspace, so the
+    // workspace allowlist does not apply.
+    assert!(s.permits(&Command::LaunchApp {
+        desktop_id: "org.example.App.desktop".into(),
+        placement: None,
+    }));
+    assert!(s.permits(&Command::LaunchApp {
+        desktop_id: "org.example.App.desktop".into(),
+        placement: Some(LaunchPlacement::FreshWorkspace { label: None }),
+    }));
+}
+
+#[test]
 fn capture_output_request_round_trips_with_optional_region() {
     let req = Request::CaptureOutput {
         region: Some(Rect::new(10, 20, 100, 80)),
@@ -829,6 +991,39 @@ fn interaction_domain_capture_response_round_trips_correlated_layout_metadata() 
         aegis_model::Size { w: 900, h: 450 }
     );
     assert_eq!(capture.revision, 19);
+}
+
+#[test]
+fn capture_window_request_round_trips() {
+    let req = Request::CaptureWindow {
+        window: WindowId(9),
+    };
+    let json = serde_json::to_string(&req).unwrap();
+    assert!(json.contains(r#""type":"CaptureWindow""#), "{json}");
+    let back: Request = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, req);
+}
+
+#[test]
+fn window_capture_response_round_trips_geometry_metadata() {
+    let capture = WindowCapture {
+        window: WindowId(9),
+        width: 640,
+        height: 400,
+        scale_milli: 1000,
+        rect: Rect::new(30, 40, 640, 400),
+        png_bytes: 5,
+    };
+    let json =
+        serde_json::to_string(&Response::CaptureWindow { capture }).expect("serialize capture");
+    let decoded: Response = serde_json::from_str(&json).expect("deserialize capture");
+    let Response::CaptureWindow { capture } = decoded else {
+        panic!("expected window capture response");
+    };
+    assert_eq!(capture.window, WindowId(9));
+    assert_eq!(capture.rect, Rect::new(30, 40, 640, 400));
+    assert_eq!(capture.scale_milli, 1000);
+    assert_eq!(capture.png_bytes, 5);
 }
 
 #[test]
@@ -1123,10 +1318,7 @@ fn stream_buffer_release_round_trips() {
         json,
         r#"{"type":"StreamBufferRelease","stream_id":7,"slot":1}"#
     );
-    assert_eq!(
-        serde_json::from_str::<Request>(&json).unwrap(),
-        request
-    );
+    assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), request);
     let response = Response::StreamBufferReleased {
         stream_id: 7,
         slot: 1,

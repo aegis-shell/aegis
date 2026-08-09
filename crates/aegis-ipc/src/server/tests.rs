@@ -465,7 +465,10 @@ fn dmabuf_stream_start_requires_opt_in_and_protocol_25() {
             },
         )
         .unwrap();
-        match rx25.recv_timeout(std::time::Duration::from_secs(5)).unwrap() {
+        match rx25
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+        {
             Outbound::StreamStarted { response, table } => {
                 match response {
                     Response::StreamOutputStarted {

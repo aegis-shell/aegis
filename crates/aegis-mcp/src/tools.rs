@@ -12,7 +12,7 @@ use aegis_model::interaction_domain::{
 };
 use aegis_model::semantic::{SemanticActionIntent, SemanticObjectId};
 use aegis_model::window::WindowId;
-use aegis_model::workspace::{Switch, WorkspaceId};
+use aegis_model::workspace::{LaunchPlacement, Switch, WorkspaceId};
 use aegis_model::{Point, Rect};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -174,8 +174,10 @@ fn catalog_ops() -> Vec<ActorCapability> {
         ActorCapability::TransactInteractionDomain,
         ActorCapability::RevokeInteractionDomain,
         ActorCapability::CaptureInteractionDomain,
+        ActorCapability::CaptureWindow,
         ActorCapability::ObserveInteractionDomain,
         ActorCapability::LaunchInInteractionDomain,
+        ActorCapability::LaunchApp,
         ActorCapability::InjectInteractionDomainInput,
     ]
 }
@@ -185,6 +187,7 @@ enum ToolKind {
     DesktopSnapshot,
     DesktopJournal,
     AppsList,
+    LaunchApp,
     FocusWindow,
     MinimizeWindow,
     CloseWindow,
@@ -204,13 +207,15 @@ enum ToolKind {
     InteractionDomainCapture,
     InteractionDomainInput,
     InteractionDomainReset,
+    WindowCapture,
 }
 
 impl ToolKind {
-    const ALL: [Self; 22] = [
+    const ALL: [Self; 24] = [
         Self::DesktopSnapshot,
         Self::DesktopJournal,
         Self::AppsList,
+        Self::LaunchApp,
         Self::FocusWindow,
         Self::MinimizeWindow,
         Self::CloseWindow,
@@ -230,6 +235,7 @@ impl ToolKind {
         Self::InteractionDomainCapture,
         Self::InteractionDomainInput,
         Self::InteractionDomainReset,
+        Self::WindowCapture,
     ];
 
     fn from_name(name: &str) -> Option<Self> {
@@ -270,6 +276,7 @@ impl ToolKind {
             _ => {}
         }
         let (capability, op) = match self {
+            Self::LaunchApp => (grant.capabilities.control, ActorCapability::LaunchApp),
             Self::FocusWindow => (grant.capabilities.control, ActorCapability::Focus),
             Self::MinimizeWindow => (grant.capabilities.control, ActorCapability::Minimize),
             Self::CloseWindow => (grant.capabilities.control, ActorCapability::Close),
@@ -316,6 +323,7 @@ impl ToolKind {
                 grant.capabilities.interaction_domain,
                 ActorCapability::RevokeInteractionDomain,
             ),
+            Self::WindowCapture => (grant.capabilities.control, ActorCapability::CaptureWindow),
             Self::DesktopSnapshot
             | Self::DesktopJournal
             | Self::AppsList
@@ -337,10 +345,11 @@ impl ToolKind {
                     | Self::InteractionDomainCapture
                     | Self::InteractionDomainInput
                     | Self::InteractionDomainReset
+                    | Self::WindowCapture
             ) {
-                // Interaction Domain and input operations are never inherited from an
-                // omitted op allowlist; mirror the compositor's fail-closed
-                // rule. Runtime-gated operations stay advertised: calling
+                // Interaction Domain, input, and pixel-capture operations are never
+                // inherited from an omitted op allowlist; mirror the compositor's
+                // fail-closed rule. Runtime-gated operations stay advertised: calling
                 // them asks the user first (ADR-0088).
                 requestable
             } else {
@@ -368,15 +377,22 @@ impl ToolKind {
             ),
             Self::AppsList => definition(
                 "apps_list",
-                "Search the host XDG application catalog. Use the returned desktop_id with interaction_domain_launch_app; never invent desktop ids.",
+                "Search the host XDG application catalog. Use the returned desktop_id with launch_app or interaction_domain_launch_app; never invent desktop ids.",
                 json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":MAX_APP_RESULTS}},"additionalProperties":false}),
                 true,
                 false,
             ),
+            Self::LaunchApp => definition(
+                "launch_app",
+                "Launch one catalogued desktop application directly on the desktop (outside any Interaction Domain). Without placement the window opens on the user's current workspace and may take focus. Pass workspace_id to open it on an existing workspace, or new_workspace to open it on a fresh workspace created right after the current one; with either placement the user's view never switches and the window waits on its workspace until the user switches to it. Call apps_list first; never invent desktop ids.",
+                json!({"type":"object","properties":{"desktop_id":{"type":"string","minLength":1,"maxLength":512},"workspace_id":{"type":"integer","minimum":1},"new_workspace":{"type":"boolean"},"workspace_label":{"type":"string","maxLength":128}},"required":["desktop_id"],"additionalProperties":false}),
+                false,
+                false,
+            ),
             Self::FocusWindow => definition(
                 "focus_window",
-                "Queue focus for a live window id.",
-                id_schema("window_id"),
+                "Queue focus for a live window id. By default the view switches to the window's workspace; pass switch_workspace=false to avoid moving the user's view.",
+                json!({"type":"object","properties":{"window_id":{"type":"integer","minimum":1},"switch_workspace":{"type":"boolean","description":"Bring the window's workspace into view before focusing; default true. Set false to activate the window without leaving the current workspace (a hidden window is only raised within its own workspace, never focused)."}},"required":["window_id"],"additionalProperties":false}),
                 false,
                 false,
             ),
@@ -506,6 +522,13 @@ impl ToolKind {
                 false,
                 true,
             ),
+            Self::WindowCapture => definition(
+                "window_capture",
+                "Capture one window's real content by id, on any workspace and whether visible, occluded, or minimized; popups extending past the toplevel bounds are clipped. Returns geometry metadata, an owner-only PNG path, and an attached image when it is within the inline limit. First use asks the user for a runtime grant. Get window ids from desktop_snapshot.",
+                id_schema("window_id"),
+                false,
+                false,
+            ),
         }
     }
 }
@@ -634,6 +657,79 @@ struct AppsArgs {
 #[serde(deny_unknown_fields)]
 struct WindowArgs {
     window_id: u64,
+    #[serde(default)]
+    switch_workspace: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LaunchAppArgs {
+    desktop_id: String,
+    #[serde(default)]
+    workspace_id: Option<u64>,
+    #[serde(default)]
+    new_workspace: Option<bool>,
+    #[serde(default)]
+    workspace_label: Option<String>,
+}
+
+/// Build the `focus_window` command; `switch_workspace` defaults to reveal.
+fn focus_command(args: WindowArgs) -> Result<Command, PlatformError> {
+    Ok(Command::Focus {
+        id: window_id(args.window_id)?,
+        reveal: args.switch_workspace.unwrap_or(true),
+    })
+}
+
+/// Build the `launch_app` command from validated args (ADR-0118). A
+/// placement never switches the user's view.
+fn launch_app_command(args: LaunchAppArgs) -> Result<Command, PlatformError> {
+    let desktop_id = args.desktop_id.trim();
+    if desktop_id.is_empty() {
+        return Err(invalid("desktop_id must not be empty"));
+    }
+    if desktop_id.len() > 512 {
+        return Err(invalid("desktop_id must be at most 512 bytes"));
+    }
+    if args.workspace_id.is_some()
+        && (args.new_workspace == Some(true) || args.workspace_label.is_some())
+    {
+        return Err(invalid(
+            "workspace_id cannot be combined with new_workspace or workspace_label",
+        ));
+    }
+    let label = match args.workspace_label {
+        Some(label) => {
+            if args.new_workspace != Some(true) {
+                return Err(invalid("workspace_label requires new_workspace"));
+            }
+            let label = label.trim();
+            if label.is_empty() {
+                return Err(invalid("workspace_label must not be empty"));
+            }
+            if label.len() > 128 {
+                return Err(invalid("workspace_label must be at most 128 bytes"));
+            }
+            if label.contains('\0') {
+                return Err(invalid("workspace_label must not contain NUL bytes"));
+            }
+            Some(label.to_string())
+        }
+        None => None,
+    };
+    let placement = if let Some(id) = args.workspace_id {
+        Some(LaunchPlacement::Workspace {
+            id: workspace_id(id)?,
+        })
+    } else if args.new_workspace == Some(true) {
+        Some(LaunchPlacement::FreshWorkspace { label })
+    } else {
+        None
+    };
+    Ok(Command::LaunchApp {
+        desktop_id: desktop_id.to_string(),
+        placement,
+    })
 }
 
 #[derive(Deserialize)]
@@ -898,9 +994,11 @@ mod tests {
     fn interaction_domain_tools_require_explicit_high_risk_operations() {
         let unscoped = grant(None);
         assert!(ToolKind::FocusWindow.allowed(&unscoped));
+        assert!(ToolKind::LaunchApp.allowed(&unscoped));
         assert!(!ToolKind::InteractionDomainObserve.allowed(&unscoped));
         assert!(!ToolKind::InteractionDomainCapture.allowed(&unscoped));
         assert!(!ToolKind::InteractionDomainInput.allowed(&unscoped));
+        assert!(!ToolKind::WindowCapture.allowed(&unscoped));
 
         let scoped = grant(Some(vec![
             ActorCapability::ObserveInteractionDomain,
@@ -911,6 +1009,28 @@ mod tests {
         assert!(ToolKind::InteractionDomainCapture.allowed(&scoped));
         assert!(ToolKind::InteractionDomainInput.allowed(&scoped));
         assert!(!ToolKind::InteractionDomainReset.allowed(&scoped));
+        assert!(!ToolKind::WindowCapture.allowed(&scoped));
+        assert!(!ToolKind::LaunchApp.allowed(&scoped));
+
+        let launch = grant(Some(vec![ActorCapability::LaunchApp]));
+        assert!(ToolKind::LaunchApp.allowed(&launch));
+
+        let mut no_control = grant(None);
+        no_control.capabilities.control = false;
+        assert!(!ToolKind::LaunchApp.allowed(&no_control));
+        assert!(!ToolKind::FocusWindow.allowed(&no_control));
+
+        let window_capture = grant(Some(vec![ActorCapability::CaptureWindow]));
+        assert!(ToolKind::WindowCapture.allowed(&window_capture));
+
+        let askable = ToolGrant {
+            scope: Scope {
+                ask_ops: Some(vec![ActorCapability::CaptureWindow]),
+                ..Scope::default()
+            },
+            ..window_capture.clone()
+        };
+        assert!(ToolKind::WindowCapture.allowed(&askable));
     }
 
     #[test]
@@ -933,6 +1053,115 @@ mod tests {
     }
 
     #[test]
+    fn launch_app_arguments_validate_placement() {
+        let args = LaunchAppArgs {
+            desktop_id: "org.example.App.desktop".into(),
+            workspace_id: None,
+            new_workspace: None,
+            workspace_label: None,
+        };
+        assert_eq!(
+            launch_app_command(args).expect("command"),
+            Command::LaunchApp {
+                desktop_id: "org.example.App.desktop".into(),
+                placement: None,
+            }
+        );
+
+        let args = LaunchAppArgs {
+            desktop_id: "org.example.App.desktop".into(),
+            workspace_id: Some(3),
+            new_workspace: None,
+            workspace_label: None,
+        };
+        assert_eq!(
+            launch_app_command(args).expect("command"),
+            Command::LaunchApp {
+                desktop_id: "org.example.App.desktop".into(),
+                placement: Some(LaunchPlacement::Workspace { id: WorkspaceId(3) }),
+            }
+        );
+
+        let args = LaunchAppArgs {
+            desktop_id: "org.example.App.desktop".into(),
+            workspace_id: None,
+            new_workspace: Some(true),
+            workspace_label: Some(" agent run ".into()),
+        };
+        assert_eq!(
+            launch_app_command(args).expect("command"),
+            Command::LaunchApp {
+                desktop_id: "org.example.App.desktop".into(),
+                placement: Some(LaunchPlacement::FreshWorkspace {
+                    label: Some("agent run".into())
+                }),
+            }
+        );
+
+        let mut args = LaunchAppArgs {
+            desktop_id: "org.example.App.desktop".into(),
+            workspace_id: Some(3),
+            new_workspace: Some(true),
+            workspace_label: None,
+        };
+        assert!(launch_app_command(args).is_err());
+        args = LaunchAppArgs {
+            desktop_id: "org.example.App.desktop".into(),
+            workspace_id: Some(3),
+            new_workspace: None,
+            workspace_label: Some("agent run".into()),
+        };
+        assert!(launch_app_command(args).is_err());
+        args = LaunchAppArgs {
+            desktop_id: "org.example.App.desktop".into(),
+            workspace_id: None,
+            new_workspace: None,
+            workspace_label: Some("agent run".into()),
+        };
+        assert!(launch_app_command(args).is_err());
+        args = LaunchAppArgs {
+            desktop_id: "  ".into(),
+            workspace_id: None,
+            new_workspace: None,
+            workspace_label: None,
+        };
+        assert!(launch_app_command(args).is_err());
+        args = LaunchAppArgs {
+            desktop_id: "org.example.App.desktop".into(),
+            workspace_id: None,
+            new_workspace: Some(true),
+            workspace_label: Some("bad\0label".into()),
+        };
+        assert!(launch_app_command(args).is_err());
+    }
+
+    #[test]
+    fn focus_window_switch_workspace_defaults_to_reveal() {
+        let args = WindowArgs {
+            window_id: 7,
+            switch_workspace: None,
+        };
+        assert_eq!(
+            focus_command(args).expect("command"),
+            Command::Focus {
+                id: WindowId(7),
+                reveal: true,
+            }
+        );
+        let args = WindowArgs {
+            window_id: 7,
+            switch_workspace: Some(false),
+        };
+        assert_eq!(
+            focus_command(args).expect("command"),
+            Command::Focus {
+                id: WindowId(7),
+                reveal: false,
+            }
+        );
+    }
+
+    #[test]
     fn tool_names_are_connector_local_and_stable() {
         let names = ToolKind::ALL
             .iter()
@@ -940,8 +1169,10 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(names.contains(&"interaction_domain_capture"));
         assert!(names.contains(&"interaction_domain_observe"));
+        assert!(names.contains(&"window_capture"));
         assert!(names.contains(&"apps_list"));
-        assert_eq!(names.len(), 22);
+        assert!(names.contains(&"launch_app"));
+        assert_eq!(names.len(), 24);
     }
 
     #[test]

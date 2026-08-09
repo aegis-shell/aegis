@@ -832,6 +832,20 @@ impl Server {
     /// in [`Self::switch_workspace_to`]), so a focus request never lands on a
     /// window the user cannot see.
     pub fn focus_surface_by_id(&mut self, surface_id: aegis_model::window::WindowId) {
+        self.focus_surface_by_id_reveal(surface_id, true);
+    }
+
+    /// Focus a toplevel by id like [`Self::focus_surface_by_id`], but with
+    /// explicit control over view switching. With `reveal = false` the output
+    /// never switches workspace: a window on a hidden workspace is only raised
+    /// within its own workspace's z-order and unminimized — it does NOT receive
+    /// keyboard focus (the physical seat must never type into an invisible
+    /// window). A window on the current workspace is focused normally.
+    pub fn focus_surface_by_id_reveal(
+        &mut self,
+        surface_id: aegis_model::window::WindowId,
+        reveal: bool,
+    ) {
         let rec = self.find_surface_by_window_id(surface_id);
         if rec.is_null() {
             return;
@@ -848,42 +862,72 @@ impl Server {
                     != Some(*workspace)
             });
         if let Some(workspace) = off_workspace {
-            // The switch ends with `drop_focus_if_hidden`; the focus below is
-            // applied afterwards so it survives the cleanup.
-            self.switch_workspace_to(workspace);
+            if reveal {
+                // The switch ends with `drop_focus_if_hidden`; the focus below is
+                // applied afterwards so it survives the cleanup.
+                self.switch_workspace_to(workspace);
+            } else {
+                // Agent workspace isolation (ADR-0118): raise and
+                // unminimize the window in place so it is
+                // ready when the user switches over, but never switch the view
+                // or type into an invisible window.
+                unsafe {
+                    if (*rec).xdg_toplevel.is_null() || !(*rec).mapped {
+                        return;
+                    }
+                }
+                // `WorkspaceModel` has no raise method; re-placing on the same
+                // workspace removes then re-pushes the id, landing it at the
+                // most-recently-placed (top) end of the workspace's z-order.
+                // The workspace stays non-empty, so the invariant/reap work in
+                // `place_toplevel` is a no-op here.
+                self.state.workspaces.place_toplevel(workspace, surface_id);
+                unsafe { self.unminimize_toplevel(rec) };
+                unsafe { ffi::wl_display_flush_clients(self.state.display) };
+                return;
+            }
         }
         unsafe {
             if (*rec).xdg_toplevel.is_null() || !(*rec).mapped {
                 return;
             }
-            if (*rec).window.minimized {
-                let saved = (*rec).saved_floating_rect.unwrap_or(aegis_model::Rect {
-                    origin: aegis_model::Point { x: 100, y: 100 },
-                    size: aegis_model::Size { w: 800, h: 600 },
-                });
-                let window_id = (*rec).window.id;
-                // The flight leaves from the same dock icon (or stub point)
-                // the minimize flight landed on.
-                let from = minimize_flight_target(&self.state, window_id, saved);
-                let styled = self.state.minimize_targets.contains_key(&window_id);
-                (*rec).position = saved.origin;
-                (*rec).window.position = saved.origin;
-                (*rec).window.size = saved.size;
-                (*rec).window.minimized = false;
-                if styled && !self.state.reduced_motion {
-                    // Carry the minimize effect so a genie flight warps back
-                    // out of the icon; the scene derives the reversed
-                    // direction from the cleared minimized flag.
-                    (*rec).window.transition =
-                        Some(minimize_transition(&self.state, window_id, from));
-                } else {
-                    self.note_transition(rec, from);
-                }
-            }
+            self.unminimize_toplevel(rec);
         }
         let resource = unsafe { (*rec).resource };
         self.change_keyboard_focus(resource);
         unsafe { ffi::wl_display_flush_clients(self.state.display) };
+    }
+
+    /// Reverse a minimize in place: restore the saved floating rect, clear
+    /// the flag, and fly back out of the same dock icon (or stub point) the
+    /// minimize flight landed on.
+    unsafe fn unminimize_toplevel(&mut self, rec: *mut SurfaceRec) {
+        unsafe {
+            if !(*rec).window.minimized {
+                return;
+            }
+            let saved = (*rec).saved_floating_rect.unwrap_or(aegis_model::Rect {
+                origin: aegis_model::Point { x: 100, y: 100 },
+                size: aegis_model::Size { w: 800, h: 600 },
+            });
+            let window_id = (*rec).window.id;
+            // The flight leaves from the same dock icon (or stub point)
+            // the minimize flight landed on.
+            let from = minimize_flight_target(&self.state, window_id, saved);
+            let styled = self.state.minimize_targets.contains_key(&window_id);
+            (*rec).position = saved.origin;
+            (*rec).window.position = saved.origin;
+            (*rec).window.size = saved.size;
+            (*rec).window.minimized = false;
+            if styled && !self.state.reduced_motion {
+                // Carry the minimize effect so a genie flight warps back
+                // out of the icon; the scene derives the reversed
+                // direction from the cleared minimized flag.
+                (*rec).window.transition = Some(minimize_transition(&self.state, window_id, from));
+            } else {
+                self.note_transition(rec, from);
+            }
+        }
     }
 
     /// Surface id of the toplevel currently holding keyboard focus, if any.

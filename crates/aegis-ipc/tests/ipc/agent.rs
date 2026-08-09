@@ -419,7 +419,10 @@ fn declared_scope_without_pairing_cannot_use_askable_operations() {
     )
     .expect("declared scope connects");
     client
-        .command(Command::Focus { id: WindowId(1) })
+        .command(Command::Focus {
+            id: WindowId(1),
+            reveal: true,
+        })
         .expect("pregranted operations work without pairing");
     let error = client
         .command(Command::Close { id: WindowId(1) })

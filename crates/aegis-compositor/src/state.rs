@@ -108,6 +108,7 @@ impl State {
             xdg_foreign_imports: Vec::new(),
             activation_tokens: std::collections::HashMap::new(),
             pending_activation: None,
+            pending_launch_placements: Vec::new(),
             pending_keyboard_focus: std::collections::BTreeMap::new(),
             session_lock: std::ptr::null_mut(),
             session_lock_phase: SessionLockPhase::Unlocked,

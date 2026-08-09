@@ -339,20 +339,28 @@ pub(crate) fn centered_transient_position(
     }
 }
 
-unsafe fn transient_parent_rect(rec: *mut SurfaceRec) -> Option<aegis_model::Rect> {
+/// The live, mapped parent toplevel record behind a transient's protocol
+/// parent pointer. Verify that the protocol-object pointer still names a live
+/// surface before dereferencing it; a parent may be destroyed first.
+unsafe fn live_transient_parent(rec: *mut SurfaceRec) -> Option<*mut SurfaceRec> {
     unsafe {
         let parent = (*rec).window.parent? as *mut SurfaceRec;
         if parent.is_null() || (*rec).state.is_null() {
             return None;
         }
-        // Verify that the protocol-object pointer still names a live surface
-        // before dereferencing it; a parent may be destroyed first.
         let live = (*(*rec).state)
             .live_surfaces()
             .any(|candidate| candidate == parent);
         if !live || !(*parent).mapped || (*parent).xdg_toplevel.is_null() {
             return None;
         }
+        Some(parent)
+    }
+}
+
+unsafe fn transient_parent_rect(rec: *mut SurfaceRec) -> Option<aegis_model::Rect> {
+    unsafe {
+        let parent = live_transient_parent(rec)?;
         Some(aegis_model::Rect {
             origin: (*parent).position,
             size: (*parent).window.size,
@@ -891,6 +899,9 @@ pub(crate) unsafe extern "C" fn surface_commit(
                 None
             };
             let parent_rect = transient_parent_rect(rec);
+            // The live, mapped transient parent, if any. Computed here, before
+            // `st` is borrowed below, because the guard re-dereferences state.
+            let transient_parent_id = live_transient_parent(rec).map(|parent| (*parent).window.id);
 
             let target_pos =
                 rule_pos.or_else(|| remembered_store_entry.as_ref().and_then(|s| s.position));
@@ -983,19 +994,73 @@ pub(crate) unsafe extern "C" fn surface_commit(
                 if let Some(wid) = st.workspaces.current_workspace(st.output) {
                     st.workspaces.place_toplevel(wid, id);
                 }
-                let target_workspace = rule.as_ref().and_then(|r| r.workspace).or_else(|| {
-                    if allow_remember {
-                        remembered_store_entry.as_ref().and_then(|s| s.workspace)
-                    } else {
-                        None
+                // A dialog must never open on a different workspace than its
+                // parent: previously a moved or re-targeted parent's dialogs
+                // opened on the user's current workspace.
+                if let Some(parent_ws) =
+                    transient_parent_id.and_then(|parent| st.workspaces.workspace_of(parent))
+                {
+                    st.workspaces.move_toplevel(id, parent_ws);
+                }
+                // An explicit launch placement (ADR-0118) beats the
+                // rule/store workspace override below.
+                // Transients follow their parent instead, so only root
+                // toplevels consume a pending entry.
+                let launch_placement_applied = if is_transient {
+                    false
+                } else {
+                    let pid = {
+                        let mut pid = 0;
+                        let mut uid = 0;
+                        let mut gid = 0;
+                        ffi::wl_client_get_credentials(
+                            ffi::wl_resource_get_client((*rec).resource),
+                            &mut pid,
+                            &mut uid,
+                            &mut gid,
+                        );
+                        // pid 0 means the credentials lookup failed.
+                        u32::try_from(pid).ok().filter(|pid| *pid != 0)
+                    };
+                    match server::take_pending_launch_placement(
+                        &mut st.pending_launch_placements,
+                        app_id.as_deref(),
+                        pid,
+                        std::time::Instant::now(),
+                    ) {
+                        Some(aegis_model::workspace::LaunchPlacement::Workspace { id: target })
+                            // The target may be gone by map time; fall through
+                            // to the rule/store override then.
+                            if st.workspaces.workspace(target).is_some() =>
+                        {
+                            st.workspaces.move_toplevel(id, target);
+                            true
+                        }
+                        Some(aegis_model::workspace::LaunchPlacement::FreshWorkspace {
+                            label,
+                        }) => st
+                            .workspaces
+                            // `None` (unknown output) likewise falls through.
+                            .place_toplevel_on_fresh_workspace(st.output, id, label)
+                            .is_some(),
+                        _ => false,
                     }
-                });
-                if let Some(ws_idx1) = target_workspace {
-                    let idx = (ws_idx1 as usize).saturating_sub(1);
-                    if let Some(o) = st.workspaces.output(st.output)
-                        && let Some(&target) = o.workspaces.get(idx)
-                    {
-                        st.workspaces.move_toplevel(id, target);
+                };
+                if !launch_placement_applied {
+                    let target_workspace = rule.as_ref().and_then(|r| r.workspace).or_else(|| {
+                        if allow_remember {
+                            remembered_store_entry.as_ref().and_then(|s| s.workspace)
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(ws_idx1) = target_workspace {
+                        let idx = (ws_idx1 as usize).saturating_sub(1);
+                        if let Some(o) = st.workspaces.output(st.output)
+                            && let Some(&target) = o.workspaces.get(idx)
+                        {
+                            st.workspaces.move_toplevel(id, target);
+                        }
                     }
                 }
 
@@ -1023,6 +1088,11 @@ pub(crate) unsafe extern "C" fn surface_commit(
                 let id = (*rec).window.id;
                 let visible = state.workspaces.visible_toplevels().contains(&id);
                 let human_controls = state.authority.seat_controls_window(HUMAN_SEAT, id);
+                // A window placed off the current workspace (launch placement,
+                // or a dialog following a moved parent) is invisible here, so
+                // `should_focus_mapped_toplevel` keeps it from taking
+                // `pending_activation`: it never steals the user's keyboard
+                // focus.
                 // Mapping happens inside libwayland's dispatch callback, where
                 // constructing a second mutable `Server` would alias state.
                 // Use the same deferred handoff as xdg-activation; `dispatch`

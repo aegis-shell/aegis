@@ -128,6 +128,7 @@ pub(super) struct CompositorRuntime {
         InteractionDomainRenderTarget,
     >,
     pub(super) pending_interaction_domain_capture: Option<PendingInteractionDomainCapture>,
+    pub(super) pending_window_capture: Option<PendingWindowCapture>,
     pub(super) interaction_domain_damage_sequence: u64,
     pub(super) agent_activity_sequence: u64,
     pub(super) start: std::time::Instant,
@@ -173,6 +174,7 @@ pub(super) struct CompositorRuntime {
     pub(super) wallpaper_control_rx: std::sync::mpsc::Receiver<WallpaperControlRequest>,
     pub(super) interaction_domain_capture_rx:
         std::sync::mpsc::Receiver<InteractionDomainCaptureRequest>,
+    pub(super) window_capture_rx: std::sync::mpsc::Receiver<WindowCaptureRequest>,
     pub(super) interaction_domain_observe_rx:
         std::sync::mpsc::Receiver<InteractionDomainObserveRequest>,
     pub(super) actor_action_rx: std::sync::mpsc::Receiver<InteractionDomainActorActionRequest>,

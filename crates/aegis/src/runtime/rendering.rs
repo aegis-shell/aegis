@@ -1468,6 +1468,7 @@ fn lerp_rect(from: aegis_model::Rect, to: aegis_model::Rect, t: f32) -> aegis_mo
 /// the chrome's tile frames, captions, and hit-testing line up. A tile is
 /// clipped to its rounded rect so miniature surface trees never spill into
 /// neighbouring tiles.
+#[allow(clippy::too_many_arguments)]
 fn draw_workspace_rail_tiles(
     canvas: &flux::Canvas,
     device: &flux::Device,
@@ -1560,6 +1561,7 @@ fn draw_workspace_rail_tiles(
 /// Super+Tab scene: preserve the live desktop underneath a dim scrim, then
 /// paint every visible window again into the shared horizontal preview strip.
 /// Shell chrome draws labels and the selected-card border over these targets.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn draw_window_switcher_scene(
     canvas: &flux::Canvas,
     device: &flux::Device,

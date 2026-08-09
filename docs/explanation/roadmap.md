@@ -324,8 +324,9 @@ The blueprint is in
 [The Agent Phase](agent-phase.md); decisions are recorded in
 [ADR-0031](../adr/0031-agent-as-scoped-ipc-client.md) and its follow-ons.
 The remaining
-desktop-dependent semantic surface (window-content capture per window,
-semantic element trees) stays open.
+desktop-dependent semantic surface (semantic element trees) stays open;
+per-window content capture landed with protocol 26
+([ADR-0117](../adr/0117-per-window-content-capture.md)).
 
 The `aegis-mcp` integration closes the client-side Interaction Domain loop:
 an MCP-compatible agent discovers scoped tools through the bridge, while the

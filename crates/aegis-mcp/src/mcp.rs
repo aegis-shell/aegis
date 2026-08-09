@@ -8,7 +8,7 @@ use crate::tools::{AegisPlatform, PlatformError, ToolCallResult, ToolDefinition}
 
 const MCP_PROTOCOL_VERSION: &str = "2026-07-28";
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
-const SERVER_INSTRUCTIONS: &str = "Use desktop_snapshot before desktop ids. The Agent Interaction Domain handle is bridge-managed: never ask for or invent a raw Interaction Domain id. Capture before Interaction Domain input and verify queued effects with a fresh capture or journal.";
+const SERVER_INSTRUCTIONS: &str = "Use desktop_snapshot before desktop ids. The Agent Interaction Domain handle is bridge-managed: never ask for or invent a raw Interaction Domain id. Capture before Interaction Domain input and verify queued effects with a fresh capture or journal. Use window_capture with a window_id from desktop_snapshot to read one human-desktop window's real content; first use asks the user.";
 
 trait ToolHost {
     fn definitions(&mut self) -> Result<Vec<ToolDefinition>, PlatformError>;

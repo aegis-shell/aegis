@@ -60,6 +60,8 @@ pub enum ActorCapability {
     TransactInteractionDomain,
     RevokeInteractionDomain,
     CaptureInteractionDomain,
+    /// Capture the real pixels of one authorized window, wherever it lives.
+    CaptureWindow,
     /// Read semantic state without receiving framebuffer pixels.
     ObserveInteractionDomain,
     /// Publish validated accessibility trees as a dedicated semantic adapter.
@@ -67,6 +69,9 @@ pub enum ActorCapability {
     /// Receive and execute semantic actions through the accessibility API.
     DispatchAccessibilityAction,
     LaunchInInteractionDomain,
+    /// Launch a desktop entry, optionally directing its first toplevel to a
+    /// chosen or fresh workspace without switching the user's view (ADR-0118).
+    LaunchApp,
 }
 
 impl ActorCapability {
@@ -121,10 +126,12 @@ impl ActorCapability {
             "transactinteractiondomain" => Self::TransactInteractionDomain,
             "revokeinteractiondomain" => Self::RevokeInteractionDomain,
             "captureinteractiondomain" => Self::CaptureInteractionDomain,
+            "capturewindow" => Self::CaptureWindow,
             "observeinteractiondomain" => Self::ObserveInteractionDomain,
             "publishaccessibilitytree" => Self::PublishAccessibilityTree,
             "dispatchaccessibilityaction" => Self::DispatchAccessibilityAction,
             "launchininteractiondomain" => Self::LaunchInInteractionDomain,
+            "launchapp" => Self::LaunchApp,
             _ => return None,
         })
     }
@@ -174,10 +181,12 @@ impl ActorCapability {
             Self::TransactInteractionDomain => "Transfer Interaction Domain authority",
             Self::RevokeInteractionDomain => "Revoke Agent Interaction Domains",
             Self::CaptureInteractionDomain => "Capture its Interaction Domain",
+            Self::CaptureWindow => "Capture window contents",
             Self::ObserveInteractionDomain => "Observe its semantic objects",
             Self::PublishAccessibilityTree => "Publish application accessibility trees",
             Self::DispatchAccessibilityAction => "Dispatch application accessibility actions",
             Self::LaunchInInteractionDomain => "Launch apps in its Interaction Domain",
+            Self::LaunchApp => "Launch applications",
         }
     }
 }
@@ -199,6 +208,14 @@ mod tests {
         assert_eq!(
             ActorCapability::from_name("inject_interaction_domain_input"),
             Some(ActorCapability::InjectInteractionDomainInput)
+        );
+        assert_eq!(
+            ActorCapability::from_name("capture-window"),
+            Some(ActorCapability::CaptureWindow)
+        );
+        assert_eq!(
+            ActorCapability::from_name("launch_app"),
+            Some(ActorCapability::LaunchApp)
         );
         assert_eq!(ActorCapability::from_name("InjectRealmInput"), None);
     }

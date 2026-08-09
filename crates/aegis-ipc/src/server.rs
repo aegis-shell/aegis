@@ -52,6 +52,14 @@ pub struct CaptureInteractionDomainPayload {
     pub png: Vec<u8>,
 }
 
+/// Correlated window-capture metadata and its PNG. The writer serializes
+/// only `capture` and passes `png` as a sealed memfd.
+#[derive(Debug, Clone)]
+pub struct CaptureWindowPayload {
+    pub capture: crate::schema::WindowCapture,
+    pub png: Vec<u8>,
+}
+
 /// Geometry and format of a stream started through
 /// [`Handler::stream_output_start`] (ADR-0052). A zero-copy dmabuf stream
 /// (protocol 25) also carries its slot table; the writer transfers the
@@ -255,6 +263,14 @@ enum Outbound {
     },
     CaptureInteractionDomain {
         payload: CaptureInteractionDomainPayload,
+        lease_deadline: std::time::Instant,
+        scope: LiveScopeBinding,
+        /// The request was authorized through a runtime grant rather than
+        /// the scope's pregranted operations (ADR-0088).
+        via_grant: bool,
+    },
+    CaptureWindow {
+        payload: CaptureWindowPayload,
         lease_deadline: std::time::Instant,
         scope: LiveScopeBinding,
         /// The request was authorized through a runtime grant rather than
@@ -480,7 +496,7 @@ use dispatch::drive_read_loop;
 mod writer;
 use writer::{
     write_interaction_domain_capture, write_output_capture, write_stream_frame,
-    write_stream_started,
+    write_stream_started, write_window_capture,
 };
 #[cfg(test)]
 mod tests;

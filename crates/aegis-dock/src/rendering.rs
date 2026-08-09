@@ -604,7 +604,15 @@ impl Chrome for Dock {
         // transient running apps, like macOS's Dock. On a side dock the
         // divider lies across the strip: a horizontal hairline.
         if section_gap > 0.0 && content_progress > AUTOHIDE_CONTENT_INTERACTION_MIN {
-            let divider_axis = (centre(pinned_count - 1) + centre(pinned_count)) * 0.5;
+            // Sit at the midpoint of the edge-to-edge gap rather than the
+            // centre-to-centre midpoint: a boundary tile magnifying toward
+            // the divider pushes it aside instead of swallowing it, so the
+            // clearance stays section_gap/2 on both sides through the wave.
+            let divider_axis = (centre(pinned_count - 1)
+                + eased[pinned_count - 1] * 0.5
+                + centre(pinned_count)
+                - eased[pinned_count] * 0.5)
+                * 0.5;
             let divider_axis =
                 axis_disp * 0.5 + (divider_axis - axis_disp * 0.5) * content_progress;
             let (divider_center, divider_thick) = snapped_hairline(divider_axis, self.scale);

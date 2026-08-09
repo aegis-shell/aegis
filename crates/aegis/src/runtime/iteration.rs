@@ -148,6 +148,18 @@ impl CompositorRuntime {
                     &self.ipc,
                 );
             }
+            if let Some(pending) = self.pending_window_capture.take() {
+                refuse_capture_target(
+                    &self.capture_worker,
+                    CaptureTarget::WindowReply {
+                        context: pending.context,
+                        reply: pending.reply,
+                    },
+                    "session locked before window capture completed".into(),
+                    &self.journal,
+                    &self.ipc,
+                );
+            }
             // A pick presents screen content through chrome; the lock must
             // not cover a live picker (ADR-0054).
             self.abandon_pending_pick("session locked before the pick completed");
@@ -305,12 +317,23 @@ impl CompositorRuntime {
                         self.observations.discard(&token);
                     }
                 }
+                CaptureCompletion::WindowReply {
+                    reply,
+                    security_generation,
+                    encoded,
+                } => {
+                    let result = if self.capture_worker.permits(security_generation) {
+                        encoded
+                    } else {
+                        Err("capture authority changed before delivery".into())
+                    };
+                    let _ = reply.send(result);
+                }
                 CaptureCompletion::Pixel {
                     reply,
                     security_generation,
                     picked,
-                } => {
-                    let result = if self.capture_worker.permits(security_generation) {
+                } => {                    let result = if self.capture_worker.permits(security_generation) {
                         picked
                     } else {
                         Err("capture authority changed before delivery".into())
@@ -385,6 +408,63 @@ impl CompositorRuntime {
         // Zero-copy streams (IPC protocol 25): deliver every slot frame whose
         // acquire fence signaled since the last iteration.
         self.poll_dmabuf_stream_fences();
+        if self.pending_window_capture.is_some() {
+            let readiness = self
+                .pending_window_capture
+                .as_ref()
+                .expect("checked above")
+                .surface
+                .read_pixels_ready()
+                .map_err(|error| {
+                    format!(
+                        "window capture readback readiness: {error}{}",
+                        flux_last_error_detail()
+                    )
+                });
+            match readiness {
+                Ok(false) => {}
+                Ok(true) => {
+                    let pending = self.pending_window_capture.take().expect("checked above");
+                    let reply_target = CaptureTarget::WindowReply {
+                        context: pending.context,
+                        reply: pending.reply,
+                    };
+                    // The per-capture offscreen target is a require_readback
+                    // surface: flux keeps its staging surface-owned and refuses
+                    // take_readback there, so copy the completed frame into an
+                    // owned buffer instead of detaching it.
+                    match read_captured_pixels_owned(&pending.surface, pending.readback) {
+                        Ok(capture) => queue_captured_pixels(
+                            &self.capture_worker,
+                            capture,
+                            reply_target,
+                            &self.journal,
+                            &self.ipc,
+                        ),
+                        Err(reason) => refuse_capture_target(
+                            &self.capture_worker,
+                            reply_target,
+                            reason,
+                            &self.journal,
+                            &self.ipc,
+                        ),
+                    }
+                }
+                Err(reason) => {
+                    let pending = self.pending_window_capture.take().expect("checked above");
+                    refuse_capture_target(
+                        &self.capture_worker,
+                        CaptureTarget::WindowReply {
+                            context: pending.context,
+                            reply: pending.reply,
+                        },
+                        reason,
+                        &self.journal,
+                        &self.ipc,
+                    );
+                }
+            }
+        }
         if self.pending_interaction_domain_capture.is_some() {
             let interaction_domain = self
                 .pending_interaction_domain_capture
@@ -1397,6 +1477,62 @@ impl CompositorRuntime {
                                 aegis_ipc::Effect::Applied
                             }
                             Err(reason) => aegis_ipc::Effect::Refused { reason },
+                        }
+                    }
+                    None => aegis_ipc::Effect::Refused {
+                        reason: format!("unknown desktop entry {desktop_id:?}"),
+                    },
+                };
+                journal_effect_and_broadcast(&self.journal, &self.ipc, ts, origin, cmd, effect);
+                continue;
+            }
+            // A plain desktop launch; the optional placement is held pending
+            // and applied to the app's first mapped window (ADR-0118).
+            if let aegis_ipc::Command::LaunchApp {
+                desktop_id,
+                placement,
+            } = &cmd
+            {
+                let effect = match self
+                    .launcher_apps
+                    .iter()
+                    .find(|entry| entry.id == *desktop_id)
+                {
+                    Some(entry) => {
+                        let opts = aegis_launcher::LaunchOpts {
+                            wayland_display: Some(self.server.socket().to_owned()),
+                            ..Default::default()
+                        };
+                        match aegis_launcher::launch(entry, &opts) {
+                            Ok(report) => {
+                                log::info!("launcher: spawned {} (pid {})", entry.id, report.pid);
+                                if let Some(placement) = placement {
+                                    // Cover the common app_id spellings the
+                                    // case-sensitive first-map matcher sees.
+                                    let mut app_ids: Vec<String> = Vec::new();
+                                    for candidate in [
+                                        entry.startup_wm_class.clone(),
+                                        desktop_id.strip_suffix(".desktop").map(str::to_string),
+                                        Some(desktop_id.clone()),
+                                    ]
+                                    .into_iter()
+                                    .flatten()
+                                    {
+                                        if !candidate.is_empty() && !app_ids.contains(&candidate) {
+                                            app_ids.push(candidate);
+                                        }
+                                    }
+                                    self.server.register_launch_placement(
+                                        app_ids,
+                                        Some(report.pid),
+                                        placement.clone(),
+                                    );
+                                }
+                                aegis_ipc::Effect::Applied
+                            }
+                            Err(error) => aegis_ipc::Effect::Refused {
+                                reason: error.to_string(),
+                            },
                         }
                     }
                     None => aegis_ipc::Effect::Refused {

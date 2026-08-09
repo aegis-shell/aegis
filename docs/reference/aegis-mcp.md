@@ -108,7 +108,8 @@ label triggers a warning in the prompt.
 
 A platform-owned **dangerous set** — `Close`, `InjectInteractionDomainInput`,
 `CreateInteractionDomain`, `TransactInteractionDomain`, `RevokeInteractionDomain`, `CaptureInteractionDomain`,
-`ObserveInteractionDomain`, `LaunchInInteractionDomain` — always requires an interactive **runtime
+`CaptureWindow`,
+`ObserveInteractionDomain`, `LaunchInInteractionDomain`, `LaunchApp` — always requires an interactive **runtime
 grant** on first use, however the ceiling was approved:
 
 - **Deny** refuses and is remembered for the session (no prompt spam).
@@ -155,7 +156,8 @@ tool prompts for a runtime grant (once / session / always).
 | `desktop_snapshot` | `query` / `ObserveWindows`, `ObserveWorkspaces`, `ObserveOutputs`, `ObserveInteractionDomains` | Actor-scoped windows, workspaces, outputs, Interaction Domains, and the granted ceiling. |
 | `desktop_journal` | `query` / `ObserveJournal` | Up to 200 principal- and resource-filtered mutations and a pagination cursor. |
 | `apps_list` | `query` | Filtered XDG applications with trusted `desktop_id` values. |
-| `focus_window` | `control` / `Focus` | Queue focus. |
+| `launch_app` ▲ | `control` / `LaunchApp` | Launch a catalogued application on the desktop. `workspace_id` places its first window on an existing workspace, `new_workspace` (with optional `workspace_label`) on a fresh one; placement never switches the user's view. |
+| `focus_window` | `control` / `Focus` | Queue focus. `switch_workspace` (default true) reveals the window's workspace; `false` raises a hidden window within its own workspace without switching the user's view or taking keyboard focus. |
 | `minimize_window` | `control` / `Minimize` | Queue minimization. |
 | `close_window` ▲ | `control` / `Close` | Queue an explicit close request. |
 | `move_window_to_workspace` | `control` / `MoveToWorkspace` | Queue a move by durable ids. |
@@ -174,6 +176,7 @@ tool prompts for a runtime grant (once / session / always).
 | `interaction_domain_capture` ▲ | `interaction_domain` / `CaptureInteractionDomain` | Return directed PNG image content, a compatibility path, placements, revision, and the correlated semantic observation. |
 | `interaction_domain_input` ▲ | `input` / `InjectInteractionDomainInput` | Revalidate one observation token and commit semantic actions through the target's owning provider, or bounded target-local fallback actions through the Interaction Domain seat. |
 | `interaction_domain_reset` ▲ | `interaction_domain` / `RevokeInteractionDomain` | Revoke and atomically return controlled groups to the human Interaction Domain. |
+| `window_capture` ▲ | `control` / `CaptureWindow` | Return one window's real PNG content, a compatibility path, and its geometry, whether the window is visible, occluded, minimized, or on another workspace. |
 
 `interaction_domain_transfer_window` accepts `agent` or `human` as its `target`.
 `interaction_domain_input` requires `target_window_id`, optional
@@ -219,3 +222,13 @@ Inline MCP images are capped at 32 MiB; larger captures set
 `image_attached = false` and remain available through `image_path`. The
 compatibility file is replaced by each capture and removed when the managed
 Interaction Domain is reset or cleanly revoked.
+
+`window_capture` follows the same dual-channel contract for windows on the
+human desktop: standard MCP `image` content plus an atomically written
+owner-only file at `{key}.window-capture.png` under the connector's runtime
+directory (the directed Interaction Domain capture keeps `{key}.capture.png`,
+so the two kinds never overwrite each other). Its JSON metadata carries
+`window_id`, physical `width`/`height`, `scale_milli`, the toplevel's logical
+`rect`, `image_bytes`, `image_attached`, and `image_path`. Unlike
+`interaction_domain_capture` it returns no observation token: pixels from the
+human desktop never carry input authority.

@@ -1272,6 +1272,42 @@ impl CompositorRuntime {
             }
         }
 
+        for request in self.window_capture_rx.try_iter() {
+            if self.server.session_locked() || !self.host.is_active() {
+                let _ = request
+                    .reply
+                    .send(Err("session is locked or inactive".into()));
+                continue;
+            }
+            if !self.capture_worker.reserve() {
+                let _ = request
+                    .reply
+                    .send(Err("another capture is still being processed".into()));
+                continue;
+            }
+            match begin_window_capture(
+                &self.device,
+                &mut self.renderer,
+                &self.server,
+                request.window,
+                self.capture_worker.security_generation(),
+                self.shell.design().scheme,
+            ) {
+                Ok(prepared) => {
+                    self.pending_window_capture = Some(PendingWindowCapture {
+                        surface: prepared.surface,
+                        readback: prepared.readback,
+                        context: prepared.context,
+                        reply: request.reply,
+                    });
+                }
+                Err(reason) => {
+                    self.capture_worker.release();
+                    let _ = request.reply.send(Err(reason));
+                }
+            }
+        }
+
         Ok(FrameState {
             input,
             session_locked,

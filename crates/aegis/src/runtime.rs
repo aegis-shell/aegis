@@ -30,6 +30,7 @@ mod settings;
 mod state;
 mod stream;
 mod system;
+mod window_capture;
 
 use agent_auth::*;
 use app_pick::*;
@@ -55,6 +56,7 @@ use secret_prompt::*;
 use state::*;
 use stream::*;
 use system::*;
+use window_capture::*;
 
 const DEFAULT_WALLPAPER: &[u8] =
     include_bytes!("../../../assets/wallpapers/procedural-generation.png");
@@ -405,6 +407,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         InteractionDomainRenderTarget,
     > = std::collections::BTreeMap::new();
     let pending_interaction_domain_capture: Option<PendingInteractionDomainCapture> = None;
+    let pending_window_capture: Option<PendingWindowCapture> = None;
     let interaction_domain_damage_sequence = 0u64;
     let start = std::time::Instant::now();
 
@@ -702,6 +705,8 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::sync::mpsc::channel::<WallpaperControlRequest>();
     let (interaction_domain_capture_tx, interaction_domain_capture_rx) =
         std::sync::mpsc::channel::<InteractionDomainCaptureRequest>();
+    let (window_capture_tx, window_capture_rx) =
+        std::sync::mpsc::channel::<WindowCaptureRequest>();
     let (interaction_domain_observe_tx, interaction_domain_observe_rx) =
         std::sync::mpsc::sync_channel::<InteractionDomainObserveRequest>(1_024);
     let (actor_action_tx, actor_action_rx) =
@@ -766,6 +771,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
             settings_controls: settings_control_tx,
             wallpaper_controls: wallpaper_control_tx,
             interaction_domain_capture: interaction_domain_capture_tx,
+            window_capture: window_capture_tx,
             interaction_domain_observe: interaction_domain_observe_tx,
             actor_actions: actor_action_tx,
             semantic_tree_updates: semantic_tree_update_tx,
@@ -937,6 +943,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         interaction_domain_processes,
         interaction_domain_render_targets,
         pending_interaction_domain_capture,
+        pending_window_capture,
         interaction_domain_damage_sequence,
         agent_activity_sequence,
         start,
@@ -964,6 +971,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         settings_control_rx,
         wallpaper_control_rx,
         interaction_domain_capture_rx,
+        window_capture_rx,
         interaction_domain_observe_rx,
         actor_action_rx,
         semantic_tree_update_rx,

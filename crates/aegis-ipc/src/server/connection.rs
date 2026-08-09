@@ -109,6 +109,19 @@ pub(super) fn serve_connection<H: Handler + 'static>(
                         &scope,
                         via_grant,
                     ),
+                    Outbound::CaptureWindow {
+                        payload,
+                        lease_deadline,
+                        scope,
+                        via_grant,
+                    } => write_window_capture(
+                        &mut w,
+                        payload,
+                        lease_deadline,
+                        &*writer_handler,
+                        &scope,
+                        via_grant,
+                    ),
                     Outbound::StreamFrame {
                         payload,
                         lease_deadline,

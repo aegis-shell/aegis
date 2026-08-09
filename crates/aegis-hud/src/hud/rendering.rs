@@ -91,6 +91,7 @@ pub(super) fn render_text(
 /// One display-only status cell: a themed raster icon (or vector fallback)
 /// plus an optional compact label. The raster tint follows the exact same
 /// fade as the chip theme and compositor glass body.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_status_cell(
     f: &mut Frame,
     design: &Design,

@@ -92,7 +92,7 @@ pub(super) fn physical_window_target(
 ) -> Option<aegis_model::window::WindowId> {
     use aegis_ipc::Command;
     match cmd {
-        Command::Focus { id }
+        Command::Focus { id, .. }
         | Command::Minimize { id }
         | Command::SetMaximized { id, .. }
         | Command::SetAlwaysOnTop { id, .. }
@@ -121,7 +121,7 @@ pub(super) fn apply_command(
 
     use aegis_ipc::Command;
     match cmd {
-        Command::Focus { id } => server.focus_surface_by_id(*id),
+        Command::Focus { id, reveal } => server.focus_surface_by_id_reveal(*id, *reveal),
         Command::Minimize { id } => server.minimize_toplevel(*id),
         Command::SetMaximized { id, maximized } => {
             server.set_toplevel_maximized(*id, *maximized);
@@ -144,6 +144,11 @@ pub(super) fn apply_command(
                 false,
                 "LaunchInInteractionDomain reached the generic command path"
             );
+        }
+        Command::LaunchApp { .. } => {
+            // Application launches go through the launcher and are handled
+            // beside the IPC command drain in the main loop.
+            debug_assert!(false, "LaunchApp reached the generic command path");
         }
         Command::Screenshot { .. } => {
             // Screenshots need the GPU objects and are handled beside the

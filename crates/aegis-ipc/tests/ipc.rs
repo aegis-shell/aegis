@@ -647,6 +647,27 @@ impl Handler for TestHandler {
             png: vec![9u8, 8, 7],
         })
     }
+    fn capture_window(
+        &self,
+        _conn_id: u64,
+        _subject: Option<&str>,
+        window: WindowId,
+    ) -> Result<aegis_ipc::CaptureWindowPayload, String> {
+        std::thread::sleep(std::time::Duration::from_millis(
+            self.capture_delay_ms.load(Ordering::Relaxed),
+        ));
+        Ok(aegis_ipc::CaptureWindowPayload {
+            capture: aegis_ipc::WindowCapture {
+                window,
+                width: 2,
+                height: 1,
+                scale_milli: 1000,
+                rect: aegis_model::Rect::new(0, 0, 2, 1),
+                png_bytes: 3,
+            },
+            png: vec![6u8, 5, 4],
+        })
+    }
     fn observe_interaction_domain(
         &self,
         _conn_id: u64,
@@ -734,6 +755,14 @@ fn test_scopes() -> HashMap<String, Scope> {
             "capture".into(),
             Scope {
                 ops: Some(vec![ActorCapability::CaptureOutput]),
+                ..Scope::default()
+            },
+        ),
+        (
+            "capture-window".into(),
+            Scope {
+                windows: Some(vec![WindowId(1)]),
+                ops: Some(vec![ActorCapability::CaptureWindow]),
                 ..Scope::default()
             },
         ),

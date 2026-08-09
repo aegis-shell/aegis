@@ -151,6 +151,22 @@ provides. Stop before coordinate input rather than guessing if neither
 route makes pixels model-visible. See
 [Capture Compatibility](../reference/aegis-mcp.md#capture-compatibility).
 
+## Observe Human-Desktop Windows
+
+The Interaction Domain loop above observes applications the agent owns. To
+look at a window on the user's desktop instead — frontmost or background,
+minimized, or on another workspace — ask the agent to:
+
+1. `desktop_snapshot` lists live window ids and titles.
+2. `window_capture` with one of those ids returns the window's real content
+   as MCP image content plus a compatibility `image_path`.
+
+`window_capture` never carries an observation token and never feeds
+`interaction_domain_input`: pixels from the human desktop are observation
+only. The first call prompts you for a runtime grant, and the window set the
+agent may capture is bounded by its approved scope. Popups extending past
+the window's own bounds are clipped from the image.
+
 ## Recover or Reset
 
 The bridge stores the managed Interaction Domain handle under

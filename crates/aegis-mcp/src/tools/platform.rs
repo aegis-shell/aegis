@@ -491,10 +491,14 @@ impl AegisPlatform {
                 })))
             }
             ToolKind::AppsList => self.list_apps(arguments),
-            ToolKind::FocusWindow => self.command(
-                window_command(arguments, |id| Command::Focus { id })?,
-                "focus_window",
-            ),
+            ToolKind::LaunchApp => {
+                let args: LaunchAppArgs = parse(arguments)?;
+                self.command(launch_app_command(args)?, "launch_app")
+            }
+            ToolKind::FocusWindow => {
+                let args: WindowArgs = parse(arguments)?;
+                self.command(focus_command(args)?, "focus_window")
+            }
             ToolKind::MinimizeWindow => self.command(
                 window_command(arguments, |id| Command::Minimize { id })?,
                 "minimize_window",
@@ -576,6 +580,7 @@ impl AegisPlatform {
             ToolKind::InteractionDomainCapture => self.interaction_domain_capture(arguments),
             ToolKind::InteractionDomainInput => self.interaction_domain_input(arguments),
             ToolKind::InteractionDomainReset => self.interaction_domain_reset(arguments),
+            ToolKind::WindowCapture => self.window_capture(arguments),
         }
     }
 
@@ -922,6 +927,29 @@ impl AegisPlatform {
                 "observation_token": observation_token.0,
                 "observation_ttl_ms": observation_ttl_ms,
                 "semantic": semantic,
+                "image_bytes": image_bytes,
+                "image_attached": image_png.is_some(),
+                "image_path": image_path
+            }),
+            image_png,
+        })
+    }
+
+    fn window_capture(&mut self, arguments: Value) -> Result<ToolCallResult, PlatformError> {
+        let args: WindowArgs = parse(arguments)?;
+        let window = window_id(args.window_id)?;
+        let mut client = self.connect_ipc_grant()?;
+        let capture = client.capture_window(window)?;
+        let image_path = self.interaction_domain.store_window_capture(&capture.png)?;
+        let image_bytes = capture.png.len();
+        let image_png = (image_bytes <= MAX_INLINE_MCP_IMAGE_BYTES).then_some(capture.png);
+        Ok(ToolCallResult {
+            value: json!({
+                "window_id": capture.window.0,
+                "width": capture.width,
+                "height": capture.height,
+                "scale_milli": capture.scale_milli,
+                "rect": capture.rect,
                 "image_bytes": image_bytes,
                 "image_attached": image_png.is_some(),
                 "image_path": image_path

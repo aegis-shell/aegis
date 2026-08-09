@@ -544,6 +544,235 @@ impl Server {
         )
     }
 
+    /// SHM client surfaces of one window's complete surface tree for
+    /// per-window content capture. Unlike the preview enumerations this keeps
+    /// minimized, occluded, and foreign-workspace windows: their buffers stay
+    /// live regardless of presentation, and authorization happened at the IPC
+    /// layer. Geometry stays in compositor logical coordinates; the capture
+    /// renderer translates the window origin to (0, 0), so popups extending
+    /// past the toplevel bounds are clipped by the offscreen target.
+    pub fn window_capture_frames(
+        &self,
+        window: aegis_model::window::WindowId,
+    ) -> Vec<SurfacePixels<'_>> {
+        let mut frames = self.window_capture_toplevel_frames(window);
+        frames.extend(self.collect_window_capture_subsurfaces_shm(window, false));
+        frames.extend(self.collect_window_capture_subsurfaces_shm(window, true));
+        frames
+    }
+
+    /// DMA-BUF counterpart of
+    /// [`window_capture_frames`](Self::window_capture_frames).
+    pub fn window_capture_dmabuf_frames(
+        &self,
+        window: aegis_model::window::WindowId,
+    ) -> Vec<SurfaceDmabuf> {
+        let mut frames = self.window_capture_toplevel_dmabuf_frames(window);
+        frames.extend(self.collect_window_capture_subsurfaces_dmabuf(window, false));
+        frames.extend(self.collect_window_capture_subsurfaces_dmabuf(window, true));
+        frames
+    }
+
+    /// Paint order for the window-capture frames: the target toplevel's
+    /// surface tree plus its popup trees, with no presentation filtering.
+    pub fn window_capture_frame_order(
+        &self,
+        window: aegis_model::window::WindowId,
+    ) -> Vec<usize> {
+        let roots = self
+            .state
+            .live_surfaces()
+            .filter(|pointer| unsafe {
+                let surface = &**pointer;
+                surface.mapped
+                    && !surface.xdg_toplevel.is_null()
+                    && surface.window.id == window
+            })
+            .collect::<Vec<_>>();
+        let popups = self
+            .state
+            .live_surfaces()
+            .filter(|pointer| unsafe {
+                let surface = &**pointer;
+                surface.mapped && !surface.xdg_popup.is_null()
+            })
+            .collect::<Vec<_>>();
+        let mut order = Vec::new();
+        for root in roots {
+            unsafe {
+                append_surface_tree_frame_order(root, &mut order, 0);
+            }
+            // Keep every popup with its owning toplevel, exactly like the
+            // physical-desktop order: parts outside the toplevel's logical
+            // rectangle land outside the offscreen target and are clipped.
+            for popup in &popups {
+                if unsafe { surface_root_toplevel(*popup) == root } {
+                    unsafe {
+                        append_surface_tree_frame_order(*popup, &mut order, 0);
+                    }
+                }
+            }
+        }
+        order
+    }
+
+    fn window_capture_toplevel_frames(
+        &self,
+        window: aegis_model::window::WindowId,
+    ) -> Vec<SurfacePixels<'_>> {
+        self.state
+            .live_surfaces()
+            .map(|pointer| unsafe { &*pointer })
+            .filter(|surface| {
+                let root = unsafe {
+                    surface_root_toplevel(*surface as *const SurfaceRec as *mut SurfaceRec)
+                };
+                surface.mapped
+                    && (!surface.xdg_toplevel.is_null() || !surface.xdg_popup.is_null())
+                    && !root.is_null()
+                    && unsafe { (*root).window.id == window }
+                    && !surface.content_is_dmabuf
+                    && !surface.pixels.is_empty()
+            })
+            .map(|surface| SurfacePixels {
+                id: surface.resource as usize,
+                window: Some(window),
+                width: surface.width,
+                height: surface.height,
+                generation: surface.generation,
+                pixels: &surface.pixels,
+                geometry: aegis_model::SurfaceGeometry {
+                    position: surface_draw_origin(surface),
+                    transform: surface.buffer_transform,
+                    buffer_scale: surface.buffer_scale,
+                    viewport_src: surface.viewport_src,
+                    viewport_dst: surface.viewport_dst,
+                    ..Default::default()
+                },
+                damage: &surface.committed_damage,
+                opaque_region: surface.opaque_region.as_deref(),
+            })
+            .collect()
+    }
+
+    fn window_capture_toplevel_dmabuf_frames(
+        &self,
+        window: aegis_model::window::WindowId,
+    ) -> Vec<SurfaceDmabuf> {
+        self.state
+            .live_surfaces()
+            .map(|pointer| unsafe { &*pointer })
+            .filter(|surface| {
+                let root = unsafe {
+                    surface_root_toplevel(*surface as *const SurfaceRec as *mut SurfaceRec)
+                };
+                surface.mapped
+                    && (!surface.xdg_toplevel.is_null() || !surface.xdg_popup.is_null())
+                    && !root.is_null()
+                    && unsafe { (*root).window.id == window }
+                    && surface.content_is_dmabuf
+                    && surface.dmabuf.is_some()
+            })
+            .filter_map(|surface| {
+                let dmabuf = surface.dmabuf.as_ref()?;
+                Some(SurfaceDmabuf {
+                    id: surface.resource as usize,
+                    window: Some(window),
+                    width: surface.width,
+                    height: surface.height,
+                    generation: surface.generation,
+                    damage: surface.committed_damage.clone(),
+                    buffer_id: dmabuf.buffer_id,
+                    fd: dmabuf.fd,
+                    drm_format: dmabuf.drm_format,
+                    modifier: dmabuf.modifier,
+                    offset: dmabuf.offset,
+                    stride: dmabuf.stride,
+                    acquire_fence: dmabuf.acquire_fence,
+                    geometry: aegis_model::SurfaceGeometry {
+                        position: surface_draw_origin(surface),
+                        transform: surface.buffer_transform,
+                        buffer_scale: surface.buffer_scale,
+                        viewport_src: surface.viewport_src,
+                        viewport_dst: surface.viewport_dst,
+                        ..Default::default()
+                    },
+                    opaque_region: surface.opaque_region.clone(),
+                })
+            })
+            .collect()
+    }
+
+    fn collect_window_capture_subsurfaces_shm(
+        &self,
+        window: aegis_model::window::WindowId,
+        want_above: bool,
+    ) -> Vec<SurfacePixels<'_>> {
+        let mut out = Vec::new();
+        for role_pointer in self.state.live_surfaces() {
+            let role_surface = unsafe { &*role_pointer };
+            if !role_surface.mapped
+                || (role_surface.xdg_toplevel.is_null() && role_surface.xdg_popup.is_null())
+            {
+                continue;
+            }
+            let root = unsafe { surface_root_toplevel(role_pointer) };
+            if root.is_null() {
+                continue;
+            }
+            let root_surface = unsafe { &*root };
+            if !root_surface.mapped || root_surface.window.id != window {
+                continue;
+            }
+            for &child_ptr in &role_surface.children {
+                if child_ptr.is_null() {
+                    continue;
+                }
+                let child = unsafe { &*child_ptr };
+                if child.subsurface_above_parent != want_above {
+                    continue;
+                }
+                Self::collect_subtree_shm(child, &mut out, (0, 0), window, 0);
+            }
+        }
+        out
+    }
+
+    fn collect_window_capture_subsurfaces_dmabuf(
+        &self,
+        window: aegis_model::window::WindowId,
+        want_above: bool,
+    ) -> Vec<SurfaceDmabuf> {
+        let mut out = Vec::new();
+        for role_pointer in self.state.live_surfaces() {
+            let role_surface = unsafe { &*role_pointer };
+            if !role_surface.mapped
+                || (role_surface.xdg_toplevel.is_null() && role_surface.xdg_popup.is_null())
+            {
+                continue;
+            }
+            let root = unsafe { surface_root_toplevel(role_pointer) };
+            if root.is_null() {
+                continue;
+            }
+            let root_surface = unsafe { &*root };
+            if !root_surface.mapped || root_surface.window.id != window {
+                continue;
+            }
+            for &child_ptr in &role_surface.children {
+                if child_ptr.is_null() {
+                    continue;
+                }
+                let child = unsafe { &*child_ptr };
+                if child.subsurface_above_parent != want_above {
+                    continue;
+                }
+                Self::collect_subtree_dmabuf(child, &mut out, (0, 0), window, 0);
+            }
+        }
+        out
+    }
+
     /// Directed offscreen scene for one interaction domain. Unlike the physical desktop,
     /// virtual interaction domains are independent of the user's currently visible
     /// workspace and use interaction domain-local placements on their virtual output.

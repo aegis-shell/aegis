@@ -24,7 +24,7 @@ use aegis_model::semantic::{SemanticAction, SemanticRole, SemanticSnapshot, Sema
 pub use aegis_model::settings::{SettingsAction, SettingsReceipt, SettingsSnapshot};
 pub use aegis_model::system::{SystemAction, SystemStatus};
 use aegis_model::window::{SpaceUse, Window, WindowId};
-use aegis_model::workspace::{Switch, WorkspaceId, WorkspaceSnapshot};
+use aegis_model::workspace::{LaunchPlacement, Switch, WorkspaceId, WorkspaceSnapshot};
 pub use aegis_security::authority::{
     ActorActionIntent, ActorActionReceipt, ActorCapability, ActorResource, AuthorizationDecision,
     ObservationToken, ResourceGrant, ResourceGrantId, SemanticObservation,
@@ -37,7 +37,12 @@ pub use aegis_semantic::{
 
 /// The protocol major version this build speaks. A client offering a newer
 /// major version is refused at the [`Request::Hello`] handshake; an older
-/// client is answered at its own version. Version 25 adds the zero-copy
+/// client is answered at its own version. Version 27 adds workspace-directed
+/// application launching (`LaunchApp` with an optional `LaunchPlacement` that
+/// never switches the user's view) and the additive `reveal` flag on `Focus`
+/// (ADR-0118). Version 26 adds per-window content
+/// capture (`CaptureWindow` → `WindowCapture`): one authorized window's real
+/// pixels, offscreen-rendered wherever the window lives. Version 25 adds the zero-copy
 /// dmabuf slot streaming protocol (slot descriptors on
 /// `StreamOutputStarted`, slot-referenced frames, `StreamBufferRelease`)
 /// and the handshake downgrade. Version 24 binds
@@ -77,7 +82,7 @@ pub use aegis_semantic::{
 /// `Event::StreamFrame`, `Event::StreamEnded`, `StreamOutputStop`,
 /// ADR-0052). Version 4 adds revisioned desktop-settings snapshots,
 /// subscriptions, and confirmed settings transactions.
-pub const PROTOCOL_VERSION: u32 = 25;
+pub const PROTOCOL_VERSION: u32 = 27;
 /// Built-in owner-only scope used by native `aegis` commands for Interaction Domain
 /// recovery and administration. The Unix socket remains user-private; naming
 /// this scope opts the connection into the high-risk Interaction Domain operation allowlist
@@ -291,7 +296,7 @@ impl CommandScopePolicy for Scope {
     /// a runtime grant has authorized the operation itself.
     fn permits_resources(&self, cmd: &Command) -> bool {
         match cmd {
-            Command::Focus { id }
+            Command::Focus { id, .. }
             | Command::Minimize { id }
             | Command::SetMaximized { id, .. }
             | Command::SetAlwaysOnTop { id, .. }
@@ -306,6 +311,11 @@ impl CommandScopePolicy for Scope {
                 self.permits_window(*window) && self.permits_workspace(*workspace)
             }
             Command::SwitchWorkspaceTo { id } => self.permits_workspace(*id),
+            Command::LaunchApp {
+                placement: Some(LaunchPlacement::Workspace { id }),
+                ..
+            } => self.permits_workspace(*id),
+            Command::LaunchApp { .. } => true,
             _ => true,
         }
     }
@@ -443,7 +453,15 @@ pub enum InteractionDomainActionResult {
 #[serde(tag = "type")]
 pub enum Command {
     /// Focus (activate) a toplevel by id. `control`.
-    Focus { id: WindowId },
+    /// `reveal` (additive since protocol 27, defaults to `true` for older
+    /// peers): when `false` the compositor must not switch the view to the
+    /// window's workspace; a hidden window is only raised within its own
+    /// workspace and never steals the physical seat's keyboard focus.
+    Focus {
+        id: WindowId,
+        #[serde(default = "default_reveal")]
+        reveal: bool,
+    },
     /// Minimize a toplevel by id while keeping it mapped. `control`.
     Minimize { id: WindowId },
     /// Set or clear compositor-managed maximization for a toplevel. `control`.
@@ -471,6 +489,15 @@ pub enum Command {
     LaunchInInteractionDomain {
         interaction_domain: InteractionDomainId,
         desktop_id: String,
+    },
+    /// Launch a desktop entry on the desktop (no Interaction Domain sandbox),
+    /// optionally directing its first toplevel to a workspace at map time.
+    /// A placement never switches the user's current view; the window opens
+    /// on the target workspace even while it is hidden. `control`.
+    LaunchApp {
+        desktop_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        placement: Option<LaunchPlacement>,
     },
     /// Cycle keyboard focus. `forward = true` for next, `false` for previous. `control`.
     Cycle { forward: bool },
@@ -512,6 +539,12 @@ pub enum Command {
     ToggleOverview,
     /// Quit the compositor. `session`.
     Quit,
+}
+
+/// Serde default for [`Command::Focus::reveal`]: peers predating protocol 27
+/// expect the historical focus-and-reveal behavior.
+fn default_reveal() -> bool {
+    true
 }
 
 impl Command {
@@ -626,6 +659,7 @@ impl Command {
                 Ok(())
             }
             Command::LaunchInInteractionDomain { desktop_id, .. }
+            | Command::LaunchApp { desktop_id, .. }
                 if desktop_id.trim().is_empty()
                     || desktop_id.len() > 512
                     || desktop_id
@@ -635,6 +669,12 @@ impl Command {
                     || desktop_id == ".." =>
             {
                 Err("desktop id is empty, oversized, or malformed")
+            }
+            Command::LaunchApp {
+                placement: Some(LaunchPlacement::FreshWorkspace { label: Some(label) }),
+                ..
+            } if label.trim().is_empty() || label.len() > 128 || label.contains('\0') => {
+                Err("workspace label is empty, oversized, or contains NUL")
             }
             Command::System { action } => action.validate(),
             _ => Ok(()),
@@ -654,6 +694,7 @@ impl Command {
             Command::SetWindowGeometry { .. } => ActorCapability::SetWindowGeometry,
             Command::InjectInput { .. } => ActorCapability::InjectInput,
             Command::LaunchInInteractionDomain { .. } => ActorCapability::LaunchInInteractionDomain,
+            Command::LaunchApp { .. } => ActorCapability::LaunchApp,
             Command::Cycle { .. } => ActorCapability::Cycle,
             Command::SwitchWorkspace { .. } => ActorCapability::SwitchWorkspace,
             Command::SwitchWorkspaceTo { .. } => ActorCapability::SwitchWorkspaceTo,
@@ -909,6 +950,27 @@ pub struct InteractionDomainCapture {
     /// response through `SCM_RIGHTS`.
     pub png_bytes: u64,
     pub revision: u64,
+}
+
+/// One atomic pixel observation of a single window (version 26).
+///
+/// The window's real surface tree is rendered offscreen, so the capture
+/// carries true content whether the window is visible, occluded, minimized,
+/// or on another workspace. `rect` is the toplevel's logical rectangle at
+/// capture time; the image's origin is the toplevel's origin, so popups
+/// extending past the toplevel bounds are clipped (mirroring
+/// [`StreamTarget::Window`] semantics). `width` and `height` are the encoded
+/// PNG's physical-pixel extent after applying `scale_milli`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WindowCapture {
+    pub window: WindowId,
+    pub width: u32,
+    pub height: u32,
+    pub scale_milli: u32,
+    pub rect: Rect,
+    /// Byte length of the sealed PNG memfd sent immediately after this JSON
+    /// response through `SCM_RIGHTS`.
+    pub png_bytes: u64,
 }
 
 /// Agent self-declaration carried on [`Request::Hello`] (ADR-0088). The
@@ -1185,6 +1247,14 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         region: Option<Rect>,
     },
+    /// Capture one window's real content as a PNG (version 26). The window
+    /// is rendered offscreen, so foreground, occluded, minimized, and
+    /// foreign-workspace windows all capture; popups past the toplevel
+    /// bounds are clipped. Authorization mirrors [`Request::CaptureOutput`]:
+    /// `control`, a live lease, and an explicit
+    /// [`ActorCapability::CaptureWindow`] scope decision for this window —
+    /// never inherited — and it is refused while the session is locked.
+    CaptureWindow { window: WindowId },
     /// Read semantic objects for one Interaction Domain without receiving framebuffer
     /// pixels. The returned observation is a short-lived precondition lease,
     /// not action authority.
@@ -1388,6 +1458,11 @@ pub enum Response {
     CaptureInteractionDomain {
         capture: InteractionDomainCapture,
     },
+    /// Reply to [`Request::CaptureWindow`] (version 26): the captured
+    /// window's geometry metadata; the sealed PNG memfd follows immediately.
+    CaptureWindow {
+        capture: WindowCapture,
+    },
     /// Reply to [`Request::ObserveInteractionDomain`].
     InteractionDomainObserved {
         observation: SemanticObservation,
@@ -1494,6 +1569,7 @@ impl std::fmt::Debug for Response {
             Self::InteractionDomain { .. } => "InteractionDomain",
             Self::CaptureOutput { .. } => "CaptureOutput",
             Self::CaptureInteractionDomain { .. } => "CaptureInteractionDomain",
+            Self::CaptureWindow { .. } => "CaptureWindow",
             Self::InteractionDomainObserved { .. } => "InteractionDomainObserved",
             Self::ActorActionCommitted { .. } => "ActorActionCommitted",
             Self::StreamOutputStarted { .. } => "StreamOutputStarted",

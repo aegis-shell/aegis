@@ -98,6 +98,22 @@ impl ActorScope {
         }
     }
 
+    /// Decide one per-window content capture. The window axis bounds which
+    /// windows may be captured; the operation itself must still be named
+    /// explicitly as a pregrant or an ask.
+    pub fn decide_window_capture(&self, window: WindowId) -> AuthorizationDecision {
+        if !self.permits_window(window) {
+            return AuthorizationDecision::Deny;
+        }
+        if self.pregrants(ActorCapability::CaptureWindow) {
+            AuthorizationDecision::Permit
+        } else if self.asks(ActorCapability::CaptureWindow) {
+            AuthorizationDecision::Ask(ActorCapability::CaptureWindow)
+        } else {
+            AuthorizationDecision::Deny
+        }
+    }
+
     pub fn decide_interaction_domain_capture(
         &self,
         interaction_domain: InteractionDomainId,
@@ -166,6 +182,41 @@ mod tests {
                 InteractionDomainId(9),
                 ActorCapability::ObserveInteractionDomain,
             ),
+            AuthorizationDecision::Deny
+        );
+    }
+
+    #[test]
+    fn window_capture_requires_window_and_named_operation() {
+        let scope = ActorScope {
+            windows: Some(vec![WindowId(7)]),
+            ops: Some(vec![ActorCapability::CaptureWindow]),
+            ..ActorScope::default()
+        };
+        assert_eq!(
+            scope.decide_window_capture(WindowId(7)),
+            AuthorizationDecision::Permit
+        );
+        assert_eq!(
+            scope.decide_window_capture(WindowId(8)),
+            AuthorizationDecision::Deny
+        );
+
+        let asking = ActorScope {
+            ask_ops: Some(vec![ActorCapability::CaptureWindow]),
+            ..ActorScope::default()
+        };
+        assert_eq!(
+            asking.decide_window_capture(WindowId(7)),
+            AuthorizationDecision::Ask(ActorCapability::CaptureWindow)
+        );
+
+        let unrelated = ActorScope {
+            ops: Some(vec![ActorCapability::CaptureOutput]),
+            ..ActorScope::default()
+        };
+        assert_eq!(
+            unrelated.decide_window_capture(WindowId(7)),
             AuthorizationDecision::Deny
         );
     }

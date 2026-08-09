@@ -1,6 +1,6 @@
 # IPC Reference
 
-The aegis IPC is protocol version 24, carried as length-framed JSON over the
+The aegis IPC is protocol version 27, carried as length-framed JSON over the
 owner-only Unix socket at `$XDG_RUNTIME_DIR/aegis.sock`. Every connection starts
 with `Hello`; commands are accepted only after capability and scope checks.
 JSON messages are limited to 16 MiB. Large immutable capture and frame
@@ -184,7 +184,7 @@ or signed checkpoints to a separately administered system.
 
 | Command | Connection capability | Actor capability | Target |
 |---------|------------|-----------------|--------|
-| `Focus { id }` | `control` | `Focus` | Window |
+| `Focus { id, reveal }` | `control` | `Focus` | Window |
 | `Minimize { id }` | `control` | `Minimize` | Window |
 | `Close { id }` | `control` | `Close` | Window |
 | `Move { id }` | `control` | `Move` | Window |
@@ -192,6 +192,7 @@ or signed checkpoints to a separately administered system.
 | `SetAlwaysOnTop { id, on_top }` | `control` | `SetWindowGeometry` | Window |
 | `InjectInput { id, actions }` | `input` | `InjectInput` | Window |
 | `LaunchInInteractionDomain { interaction_domain, desktop_id }` | `interaction_domain` | `LaunchInInteractionDomain` | Interaction Domain |
+| `LaunchApp { desktop_id, placement }` | `control` | `LaunchApp` | Workspace, when the placement names one |
 | `Cycle { forward }` | `control` | `Cycle` | — |
 | `SwitchWorkspace { dir }` | `control` | `SwitchWorkspace` | Focused output |
 | `SwitchWorkspaceTo { id }` | `control` | `SwitchWorkspaceTo` | Workspace |
@@ -215,6 +216,23 @@ If the human Interaction Domain is only an observer, focus, minimize, close, mov
 geometry, and workspace mutations produce `Effect::Refused` and do not reach
 the client. Its mirror also blocks physical hit-testing, so a refused click
 cannot fall through to an unrelated window underneath.
+
+`LaunchApp` launches an enumerated desktop entry directly on the desktop —
+no Interaction Domain sandbox — and optionally directs its first root
+toplevel to a workspace at map time (protocol 27,
+[ADR-0118](../adr/0118-launch-placement-and-workspace-isolation.md)).
+`placement` is either `Workspace { id }`, an existing workspace by durable
+id (the default current-workspace placement applies if it is gone by map
+time), or `FreshWorkspace { label }`, a workspace created directly after
+the current one on the window's output. A placement never switches the
+user's view: the window opens on its target workspace even while hidden
+and never takes keyboard focus on map. The compositor matches the first
+mapped root toplevel by exact client pid, falling back to a case-sensitive
+app_id FIFO, and expires unmatched entries after 60 seconds; a placement
+beats `[[window_rule]]` and remembered workspace state, and transients
+always follow their parent's workspace instead. With `reveal = false`,
+`Focus` raises such a hidden window within its own workspace without
+moving the user's view or granting keyboard focus.
 
 ## Live System Controls
 
@@ -548,8 +566,9 @@ checks. GPU readback and PNG encoding therefore do not consume the advertised
 
 ## Capture
 
-aegis exposes pixel capture through two fail-closed operations that share one
-same-frame presentation readback path (ADR-0037). Both are refused while the
+aegis exposes pixel capture through fail-closed operations that share one
+same-frame presentation readback path (ADR-0037), plus per-window offscreen
+capture. All are refused while the
 session is locked or the seat is inactive. The request copies the exact frame
 being submitted; later client commits, animations, or wallpaper frames cannot
 change the detached snapshot. Captures include the overview grid while
@@ -586,6 +605,26 @@ descriptor. Each placement contains a window id, its rectangle in
 virtual-output logical coordinates, and the target-local surface size. The
 observation token must be supplied to `ActInInteractionDomain`; pixels and coordinates
 alone carry no authority.
+
+`Request::CaptureWindow { window }` (protocol 26, ADR-0117) captures one
+window's real content wherever it lives: the compositor renders the window's
+complete surface tree into a fresh offscreen target, so foreground, occluded,
+minimized, and foreign-workspace windows all capture their true pixels. The
+image's origin is the toplevel's logical origin; popups extending past the
+toplevel bounds are clipped, mirroring `StreamTarget::Window` semantics. The
+reply `Response::CaptureWindow { capture }` carries `window`, physical
+`width`/`height`, `scale_milli`, the toplevel's logical `rect` at capture
+time, and `png_bytes`, followed by one sealed PNG `memfd` under the same
+sealed-blob rules as `CaptureOutput`. `scale_milli` comes from the output the
+window is currently visible on, falling back to the primary output and then
+to 1000. Authorization is fail-closed like `CaptureOutput`: the `control`
+capability, a live lease, and an explicit `CaptureWindow` scope decision for
+that exact window — the scope's `windows` axis bounds which windows may be
+captured, and the operation is never inherited through the unrestricted
+default. Agents may request `CaptureWindow` at pairing; the first use always
+asks the user through a runtime grant. The writer rechecks the live scope,
+the lock/VT gate, the lease, and that the window still exists immediately
+before sending the sealed descriptor.
 
 A security generation invalidates in-flight pixels across session-lock,
 inactive-seat, pause, and revocation boundaries, including a lock followed by
@@ -722,6 +761,11 @@ Protocol 24 adds `GetAccessibilityWindows`, a provider-only process-bound
 window seam. It prevents the trusted adapter from assigning an untrusted
 AT-SPI tree to a Wayland window based only on spoofable application metadata.
 
+Protocol 27 adds workspace-directed application launching (`LaunchApp`
+with an optional `LaunchPlacement`) and the additive `reveal` flag on
+`Focus`, serde-defaulted to `true` for older peers. See
+[ADR-0118](../adr/0118-launch-placement-and-workspace-isolation.md).
+
 **Agent authorization** (protocol 19, ADR-0090) replaces configured scopes
 for agents. `Hello.agent` carries a self-declaration: a cosmetic `label`,
 the `requested` operation families, and an optional `credential` from an
@@ -732,7 +776,7 @@ and `Hello.agent` in the reply carries the issued `principal` and a new
 from the ceiling: ordinary approved operations are pregranted, and the
 platform dangerous set (`Close`, `InjectInteractionDomainInput`, `CreateInteractionDomain`,
 `TransactInteractionDomain`, `RevokeInteractionDomain`, `CaptureInteractionDomain`, `ObserveInteractionDomain`,
-`LaunchInInteractionDomain`) lands in
+`LaunchInInteractionDomain`, `LaunchApp`) lands in
 `ask_ops`, where every use routes through an interactive runtime grant
 (Deny / Allow once / Allow session / Always allow) before dispatch.
 

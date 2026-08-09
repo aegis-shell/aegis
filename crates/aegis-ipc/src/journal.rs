@@ -82,6 +82,11 @@ pub enum AuditedCommand {
         interaction_domain: InteractionDomainId,
         desktop_id: String,
     },
+    LaunchApp {
+        desktop_id: String,
+        /// The explicit target workspace, when placement named one (`FreshWorkspace` records `None`).
+        workspace: Option<aegis_model::workspace::WorkspaceId>,
+    },
     Cycle {
         forward: bool,
     },
@@ -128,6 +133,9 @@ impl AuditedCommand {
             Self::LaunchInInteractionDomain {
                 interaction_domain, ..
             } => scope.permits_interaction_domain(*interaction_domain),
+            Self::LaunchApp { workspace, .. } => workspace
+                .map(|id| scope.permits_workspace(id))
+                .unwrap_or(true),
             Self::SwitchWorkspaceTo { id } => scope.permits_workspace(*id),
             Self::MoveToWorkspace { window, workspace } => {
                 scope.permits_window(*window) && scope.permits_workspace(*workspace)
@@ -148,7 +156,7 @@ impl AuditedCommand {
 impl From<&Command> for AuditedCommand {
     fn from(command: &Command) -> Self {
         match command {
-            Command::Focus { id } => Self::Focus { id: *id },
+            Command::Focus { id, .. } => Self::Focus { id: *id },
             Command::Minimize { id } => Self::Minimize { id: *id },
             Command::SetMaximized { id, maximized } => Self::SetMaximized {
                 id: *id,
@@ -189,6 +197,16 @@ impl From<&Command> for AuditedCommand {
             } => Self::LaunchInInteractionDomain {
                 interaction_domain: *interaction_domain,
                 desktop_id: desktop_id.clone(),
+            },
+            Command::LaunchApp {
+                desktop_id,
+                placement,
+            } => Self::LaunchApp {
+                desktop_id: desktop_id.clone(),
+                workspace: match placement {
+                    Some(aegis_model::workspace::LaunchPlacement::Workspace { id }) => Some(*id),
+                    _ => None,
+                },
             },
             Command::Cycle { forward } => Self::Cycle { forward: *forward },
             Command::SwitchWorkspace { dir } => Self::SwitchWorkspace { dir: *dir },
@@ -556,6 +574,7 @@ mod tests {
     fn cmd(n: u64) -> Command {
         Command::Focus {
             id: aegis_model::window::WindowId(n),
+            reveal: true,
         }
     }
 

@@ -44,13 +44,17 @@ impl Handler for TestHandler {
                 ActorCapability::ObserveNotifications,
                 ActorCapability::ObserveJournal,
                 ActorCapability::ObserveInteractionDomains,
+                ActorCapability::Focus,
                 ActorCapability::CreateInteractionDomain,
                 ActorCapability::TransactInteractionDomain,
                 ActorCapability::RevokeInteractionDomain,
                 ActorCapability::CaptureInteractionDomain,
+                ActorCapability::CaptureWindow,
                 ActorCapability::ObserveInteractionDomain,
                 ActorCapability::LaunchInInteractionDomain,
+                ActorCapability::LaunchApp,
                 ActorCapability::InjectInteractionDomainInput,
+                ActorCapability::Focus,
                 ActorCapability::Notify,
             ],
             gated: vec![],
@@ -239,6 +243,25 @@ impl Handler for TestHandler {
         })
     }
 
+    fn capture_window(
+        &self,
+        _conn_id: u64,
+        _subject: Option<&str>,
+        window: WindowId,
+    ) -> Result<aegis_ipc::CaptureWindowPayload, String> {
+        Ok(aegis_ipc::CaptureWindowPayload {
+            capture: aegis_ipc::WindowCapture {
+                window,
+                width: 1,
+                height: 1,
+                scale_milli: 1000,
+                rect: aegis_model::Rect::new(0, 0, 1, 1),
+                png_bytes: 8,
+            },
+            png: b"\x89PNG\r\n\x1a\n".to_vec(),
+        })
+    }
+
     fn observe_interaction_domain(
         &self,
         conn_id: u64,
@@ -383,7 +406,11 @@ fn stdio_discovers_manages_captures_and_revokes_interaction_domain() {
         json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"interaction_domain_observe","arguments":{},"_meta":meta.clone()}}),
         json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"interaction_domain_input","arguments":{"target_window_id":7,"target_local_id":0,"observation_token":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","actions":[{"type":"pointer_move","x":160,"y":90}]},"_meta":meta.clone()}}),
         json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"interaction_domain_capture","arguments":{},"_meta":meta.clone()}}),
-        json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"interaction_domain_reset","arguments":{},"_meta":meta}}),
+        json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"window_capture","arguments":{"window_id":7},"_meta":meta.clone()}}),
+        json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"launch_app","arguments":{"desktop_id":"visual-smoke.test.desktop","new_workspace":true,"workspace_label":"smoke run"},"_meta":meta.clone()}}),
+        json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"launch_app","arguments":{"desktop_id":"visual-smoke.test.desktop","workspace_id":1,"new_workspace":true},"_meta":meta.clone()}}),
+        json!({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"focus_window","arguments":{"window_id":7,"switch_workspace":false},"_meta":meta.clone()}}),
+        json!({"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"interaction_domain_reset","arguments":{},"_meta":meta}}),
     ];
     {
         let stdin = child.stdin.as_mut().expect("child stdin");
@@ -404,7 +431,7 @@ fn stdio_discovers_manages_captures_and_revokes_interaction_domain() {
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("response json"))
         .collect::<Vec<_>>();
-    assert_eq!(responses.len(), 7);
+    assert_eq!(responses.len(), 11);
     assert_eq!(responses[0]["result"]["supportedVersions"][0], "2026-07-28");
     let names = responses[1]["result"]["tools"]
         .as_array()
@@ -415,6 +442,8 @@ fn stdio_discovers_manages_captures_and_revokes_interaction_domain() {
     assert!(names.contains(&"interaction_domain_capture"));
     assert!(names.contains(&"interaction_domain_observe"));
     assert!(names.contains(&"interaction_domain_input"));
+    assert!(names.contains(&"window_capture"));
+    assert!(names.contains(&"launch_app"));
     assert_eq!(responses[2]["result"]["isError"], false);
     assert_eq!(responses[3]["result"]["isError"], false);
     assert_eq!(responses[4]["result"]["isError"], false);
@@ -426,6 +455,35 @@ fn stdio_discovers_manages_captures_and_revokes_interaction_domain() {
     assert!(input_result.contains(r#""local":0"#));
     assert_eq!(responses[5]["result"]["content"][1]["type"], "image");
     assert_eq!(responses[6]["result"]["isError"], false);
+    let window_capture_text = responses[6]["result"]["content"][0]["text"]
+        .as_str()
+        .expect("window_capture JSON text");
+    assert!(window_capture_text.contains(r#""window_id":7"#));
+    assert_eq!(responses[6]["result"]["content"][1]["type"], "image");
+    assert_eq!(responses[7]["result"]["isError"], false);
+    let launch_text = responses[7]["result"]["content"][0]["text"]
+        .as_str()
+        .expect("launch_app JSON text");
+    assert!(launch_text.contains(r#""status":"queued""#));
+    assert_eq!(responses[8]["result"]["isError"], true);
+    assert_eq!(responses[9]["result"]["isError"], false);
+    assert_eq!(responses[10]["result"]["isError"], false);
+    assert!(
+        handler
+            .journal
+            .lock()
+            .expect("journal lock")
+            .since(0)
+            .entries
+            .iter()
+            .any(|entry| matches!(
+                &entry.mutation,
+                JournalMutation::Command {
+                    cmd: aegis_ipc::AuditedCommand::LaunchApp { desktop_id, workspace }
+                } if desktop_id == "visual-smoke.test.desktop" && workspace.is_none()
+            )),
+        "launch_app with fresh-workspace placement was not journaled"
+    );
     assert!(
         handler
             .interaction_domains

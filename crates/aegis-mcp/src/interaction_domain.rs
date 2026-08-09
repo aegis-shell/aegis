@@ -180,6 +180,12 @@ impl InteractionDomainSession {
     pub fn store_capture(&self, png: &[u8]) -> Result<PathBuf, InteractionDomainSessionError> {
         self.store.write_capture(png)
     }
+
+    /// Atomically persist the latest per-window capture under its own name
+    /// so it never overwrites the directed Interaction Domain capture.
+    pub fn store_window_capture(&self, png: &[u8]) -> Result<PathBuf, InteractionDomainSessionError> {
+        self.store.write_capture_named("window", png)
+    }
 }
 
 fn interaction_domain_is_managed(
@@ -329,26 +335,65 @@ impl StateStore {
     fn clear(&self) -> Result<(), InteractionDomainSessionError> {
         remove_if_exists(&self.state_path)?;
         remove_if_exists(&self.capture_path)?;
+        let (window_capture, _) = self.named_capture_paths("window");
+        remove_if_exists(&window_capture)?;
         if let Some(parent) = self.state_path.parent() {
             File::open(parent)?.sync_all()?;
         }
         Ok(())
     }
 
+    /// The sibling paths of one named capture kind. `name` is a fixed
+    /// lowercase token ("window"): the legacy directed capture keeps
+    /// `{key}.capture.png`, a named kind lands at `{key}.{name}-capture.png`.
+    fn named_capture_paths(&self, name: &str) -> (PathBuf, PathBuf) {
+        let base = self
+            .capture_path
+            .file_name()
+            .and_then(|file| file.to_str())
+            .and_then(|file| file.strip_suffix("capture.png"))
+            .expect("capture path carries the .capture.png suffix");
+        let path = self
+            .capture_path
+            .with_file_name(format!("{base}{name}-capture.png"));
+        let temp = self.capture_temp_path.with_file_name(format!(
+            "{base}{name}-capture.png.tmp-{}",
+            std::process::id()
+        ));
+        (path, temp)
+    }
+
     fn write_capture(&self, png: &[u8]) -> Result<PathBuf, InteractionDomainSessionError> {
-        remove_if_exists(&self.capture_temp_path)?;
+        Self::write_capture_at(&self.capture_path, &self.capture_temp_path, png)
+    }
+
+    fn write_capture_named(
+        &self,
+        name: &str,
+        png: &[u8],
+    ) -> Result<PathBuf, InteractionDomainSessionError> {
+        let (path, temp) = self.named_capture_paths(name);
+        Self::write_capture_at(&path, &temp, png)
+    }
+
+    fn write_capture_at(
+        path: &Path,
+        temp_path: &Path,
+        png: &[u8],
+    ) -> Result<PathBuf, InteractionDomainSessionError> {
+        remove_if_exists(temp_path)?;
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&self.capture_temp_path)?;
+            .open(temp_path)?;
         file.write_all(png)?;
         file.sync_all()?;
-        fs::rename(&self.capture_temp_path, &self.capture_path)?;
-        if let Some(parent) = self.capture_path.parent() {
+        fs::rename(temp_path, path)?;
+        if let Some(parent) = path.parent() {
             File::open(parent)?.sync_all()?;
         }
-        Ok(self.capture_path.clone())
+        Ok(path.to_path_buf())
     }
 }
 

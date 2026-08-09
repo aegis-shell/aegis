@@ -195,6 +195,100 @@ pub(super) fn write_interaction_domain_capture<H: Handler>(
     }
 }
 
+pub(super) fn write_window_capture<H: Handler>(
+    stream: &mut UnixStream,
+    mut payload: CaptureWindowPayload,
+    lease_deadline: std::time::Instant,
+    handler: &H,
+    scope: &LiveScopeBinding,
+    via_grant: bool,
+) -> io::Result<()> {
+    match crate::blob::SealedBlob::new(&payload.png) {
+        Ok(_blob) if std::time::Instant::now() >= lease_deadline => {
+            audit_capability_effect(
+                handler,
+                scope,
+                ActorCapability::CaptureWindow,
+                crate::journal::CapabilityUseAction::Capture,
+                crate::journal::Effect::Refused {
+                    reason: "window capture delivery refused".into(),
+                },
+            );
+            write_msg(
+                stream,
+                &Response::Error {
+                    message: "privileged capability lease expired before window capture delivery"
+                        .into(),
+                },
+            )
+        }
+        Ok(blob) => {
+            let capture_allowed = scope.resolve(handler).is_some_and(|scope| {
+                if via_grant {
+                    scope.asks(ActorCapability::CaptureWindow)
+                        && scope.permits_window(payload.capture.window)
+                } else {
+                    scope.decide_window_capture(payload.capture.window)
+                        == crate::schema::AuthorizationDecision::Permit
+                }
+            });
+            let authorized = handler.capture_security_active()
+                && capture_allowed
+                && handler.window_capture_target_exists(payload.capture.window);
+            if !authorized {
+                audit_capability_effect(
+                    handler,
+                    scope,
+                    ActorCapability::CaptureWindow,
+                    crate::journal::CapabilityUseAction::Capture,
+                    crate::journal::Effect::Refused {
+                        reason: "window capture delivery refused".into(),
+                    },
+                );
+                return write_msg(
+                    stream,
+                    &Response::Error {
+                        message: "window capture authorization changed before final delivery"
+                            .into(),
+                    },
+                );
+            }
+            payload.capture.png_bytes = blob.len();
+            audit_capability_effect(
+                handler,
+                scope,
+                ActorCapability::CaptureWindow,
+                crate::journal::CapabilityUseAction::Capture,
+                crate::journal::Effect::Applied,
+            );
+            write_msg(
+                stream,
+                &Response::CaptureWindow {
+                    capture: payload.capture,
+                },
+            )?;
+            blob.send(stream)
+        }
+        Err(error) => {
+            audit_capability_effect(
+                handler,
+                scope,
+                ActorCapability::CaptureWindow,
+                crate::journal::CapabilityUseAction::Capture,
+                crate::journal::Effect::Refused {
+                    reason: "window capture delivery refused".into(),
+                },
+            );
+            write_msg(
+                stream,
+                &Response::Error {
+                    message: format!("prepare window capture transfer: {error}"),
+                },
+            )
+        }
+    }
+}
+
 /// Write one stream frame: the JSON [`Event::StreamFrame`] metadata,
 /// followed by its sealed pixel memfd for SHM frames. Live policy is
 /// re-checked per frame (ADR-0052): an expired lease or a revoked/narrowed

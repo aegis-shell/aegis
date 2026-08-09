@@ -100,6 +100,90 @@ fn authenticated_capture_rechecks_the_live_principal_ceiling() {
 }
 
 #[test]
+fn capture_window_delivers_pixels_for_a_pregranted_window() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, handler).expect("bind");
+    let requested = ConnectionCapabilities {
+        query: true,
+        control: true,
+        input: false,
+        session: false,
+        interaction_domain: false,
+    };
+    let mut client = Client::connect_scoped(&path, requested, "capture-window").expect("connect");
+    let capture = client
+        .capture_window(WindowId(1))
+        .expect("pregranted window capture");
+    assert_eq!(capture.window, WindowId(1));
+    assert_eq!(capture.png, vec![6u8, 5, 4]);
+    assert_eq!(capture.scale_milli, 1000);
+}
+
+#[test]
+fn capture_window_is_refused_without_the_explicit_operation() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, handler).expect("bind");
+    let requested = ConnectionCapabilities {
+        query: true,
+        control: true,
+        input: false,
+        session: false,
+        interaction_domain: false,
+    };
+    let mut client = Client::connect_scoped(&path, requested, "capture").expect("connect");
+    let error = client
+        .capture_window(WindowId(1))
+        .expect_err("CaptureOutput must not imply CaptureWindow");
+    assert!(error.to_string().contains("out of scope"), "{error}");
+}
+
+#[test]
+fn capture_window_is_refused_outside_the_window_allowlist() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, handler).expect("bind");
+    let requested = ConnectionCapabilities {
+        query: true,
+        control: true,
+        input: false,
+        session: false,
+        interaction_domain: false,
+    };
+    let mut client = Client::connect_scoped(&path, requested, "capture-window").expect("connect");
+    let error = client
+        .capture_window(WindowId(2))
+        .expect_err("window outside the scope allowlist must be refused");
+    assert!(error.to_string().contains("out of scope"), "{error}");
+}
+
+#[test]
+fn capture_window_writer_rechecks_live_security_before_sending_memfd() {
+    let path = scratch();
+    let handler = Arc::new(TestHandler::permissive(sample_windows()));
+    let _server = Server::start(&path, Arc::clone(&handler)).expect("bind");
+    let requested = ConnectionCapabilities {
+        query: true,
+        control: true,
+        input: false,
+        session: false,
+        interaction_domain: false,
+    };
+    let mut client = Client::connect_scoped(&path, requested, "capture-window").expect("connect");
+    handler
+        .capture_security_active
+        .store(false, Ordering::Release);
+    let error = client
+        .capture_window(WindowId(1))
+        .expect_err("writer must refuse pixels after the live gate closes");
+    assert!(
+        error.to_string().contains("authorization changed"),
+        "{error}"
+    );
+}
+
+#[test]
 fn wrong_protocol_version_is_refused_at_handshake() {
     use aegis_ipc::Request;
     let path = scratch();
@@ -148,7 +232,10 @@ fn control_command_is_queued_and_acked() {
         .command(Command::Close { id: WindowId(2) })
         .expect("command");
     client
-        .command(Command::Focus { id: WindowId(1) })
+        .command(Command::Focus {
+            id: WindowId(1),
+            reveal: true,
+        })
         .expect("command");
     client
         .command(Command::Cycle { forward: true })
@@ -159,7 +246,10 @@ fn control_command_is_queued_and_acked() {
     let recorded = handler.commands.lock().unwrap();
     assert_eq!(recorded.len(), 3, "{recorded:?}");
     assert!(recorded.contains(&Command::Close { id: WindowId(2) }));
-    assert!(recorded.contains(&Command::Focus { id: WindowId(1) }));
+    assert!(recorded.contains(&Command::Focus {
+        id: WindowId(1),
+        reveal: true
+    }));
 }
 
 #[test]
@@ -177,10 +267,16 @@ fn ipc_origins_are_unique_and_pre_dispatch_refusals_are_audited() {
     let mut first = Client::connect_with(&path, requested).expect("first connection");
     let mut second = Client::connect_with(&path, requested).expect("second connection");
     first
-        .command(Command::Focus { id: WindowId(1) })
+        .command(Command::Focus {
+            id: WindowId(1),
+            reveal: true,
+        })
         .expect("first command");
     second
-        .command(Command::Focus { id: WindowId(2) })
+        .command(Command::Focus {
+            id: WindowId(2),
+            reveal: true,
+        })
         .expect("second command");
     let ids = handler.command_connections.lock().unwrap().clone();
     assert_eq!(ids.len(), 2);

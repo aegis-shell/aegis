@@ -34,7 +34,9 @@ pub use aegis_security::authority::{
 
 mod blob;
 
-pub use client::{CapturedInteractionDomain, Client, StreamFrame, StreamMessage, StreamStarted};
+pub use client::{
+    CapturedInteractionDomain, CapturedWindow, Client, StreamFrame, StreamMessage, StreamStarted,
+};
 pub use journal::{
     ActorSessionAuditAction, AgentAuthAction, AuditedCommand, AuditedSemanticAction,
     CapabilityUseAction, DEFAULT_CAPACITY, Effect, GrantPersistence, Journal, JournalEntry,
@@ -51,9 +53,10 @@ pub use schema::{
     LeaseRequest, ObservationToken, PROTOCOL_VERSION, PickKind, PickResult, Request, Response,
     Scope, SecretPromptResult, SemanticActionRequest, SemanticObservation, SettingsAction,
     SettingsReceipt, SettingsSnapshot, StreamPixelFormat, StreamTarget, SystemAction, SystemStatus,
+    WindowCapture,
 };
 pub use server::{
-    AgentIdentity, CaptureInteractionDomainPayload, CaptureOutputPayload, Handler,
-    JournalBroadcaster, PairedAgent, Server, StreamFramePayload, StreamInfo, StreamPixelFrame,
-    StreamSlotFrame, StreamSlotTable,
+    AgentIdentity, CaptureInteractionDomainPayload, CaptureOutputPayload, CaptureWindowPayload,
+    Handler, JournalBroadcaster, PairedAgent, Server, StreamFramePayload, StreamInfo,
+    StreamPixelFrame, StreamSlotFrame, StreamSlotTable,
 };

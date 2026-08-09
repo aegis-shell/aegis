@@ -19,12 +19,11 @@ fn compiled_chrome_controls_default_input_ownership() {
     let gestures = build_gesture_map(None);
     assert_eq!(
         gestures.lookup(4, GestureAxis::Vertical),
-        cfg!(feature = "chrome-command-panel").then_some(GestureAction::CommandPanel)
+        Some(GestureAction::Overview)
     );
-    assert_eq!(
+    assert!(
         gestures.claims(4),
-        cfg!(feature = "chrome-command-panel"),
-        "a build without the command panel must leave four-finger gestures to clients"
+        "the four-finger overview gesture is compositor-owned in every build"
     );
 }
 
@@ -242,6 +241,7 @@ fn builtin_scopes_are_fail_closed_allowlists() {
         .expect("built-in owner scope");
     assert!(owner.permits(&aegis_ipc::Command::Focus {
         id: aegis_model::window::WindowId(9),
+        reveal: true,
     }));
     assert!(
         !owner.permits(&aegis_ipc::Command::LaunchInInteractionDomain {
@@ -249,6 +249,16 @@ fn builtin_scopes_are_fail_closed_allowlists() {
             desktop_id: "foot.desktop".into(),
         })
     );
+    assert!(!owner.permits(&aegis_ipc::Command::LaunchApp {
+        desktop_id: "foot.desktop".into(),
+        placement: None,
+    }));
+    assert!(!owner.permits(&aegis_ipc::Command::LaunchApp {
+        desktop_id: "foot.desktop".into(),
+        placement: Some(aegis_model::workspace::LaunchPlacement::Workspace {
+            id: aegis_model::workspace::WorkspaceId(9),
+        }),
+    }));
 
     let agent_admin = scopes
         .get(aegis_ipc::LOCAL_AGENT_ADMIN_SCOPE)
@@ -264,6 +274,16 @@ fn builtin_scopes_are_fail_closed_allowlists() {
             desktop_id: "foot.desktop".into(),
         })
     );
+    assert!(!admin.permits(&aegis_ipc::Command::LaunchApp {
+        desktop_id: "foot.desktop".into(),
+        placement: None,
+    }));
+    assert!(!admin.permits(&aegis_ipc::Command::LaunchApp {
+        desktop_id: "foot.desktop".into(),
+        placement: Some(aegis_model::workspace::LaunchPlacement::Workspace {
+            id: aegis_model::workspace::WorkspaceId(9),
+        }),
+    }));
 
     let portal = scopes
         .get(aegis_ipc::LOCAL_PORTAL_SCOPE)

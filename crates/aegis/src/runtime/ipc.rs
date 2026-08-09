@@ -82,6 +82,7 @@ pub(super) struct LiveChannels {
     pub(super) settings_controls: std::sync::mpsc::Sender<SettingsControlRequest>,
     pub(super) wallpaper_controls: std::sync::mpsc::Sender<WallpaperControlRequest>,
     pub(super) interaction_domain_capture: std::sync::mpsc::Sender<InteractionDomainCaptureRequest>,
+    pub(super) window_capture: std::sync::mpsc::Sender<WindowCaptureRequest>,
     pub(super) interaction_domain_observe:
         std::sync::mpsc::SyncSender<InteractionDomainObserveRequest>,
     pub(super) actor_actions: std::sync::mpsc::SyncSender<InteractionDomainActorActionRequest>,
@@ -101,6 +102,11 @@ pub(super) struct LiveChannels {
 
 pub(super) struct LiveState {
     windows: std::sync::RwLock<Vec<aegis_model::window::Window>>,
+    /// Workspace-global toplevel set (background, minimized, and
+    /// foreign-workspace windows included). Window-capture delivery rechecks
+    /// against this set: a capturable window stays capturable while it lives,
+    /// regardless of presentation.
+    all_windows: std::sync::RwLock<Vec<aegis_model::window::Window>>,
     accessibility_windows: std::sync::RwLock<Vec<aegis_semantic::AccessibilityWindowBinding>>,
     workspaces: std::sync::RwLock<aegis_model::workspace::WorkspaceSnapshot>,
     outputs: std::sync::RwLock<Vec<aegis_model::output::OutputInfo>>,
@@ -119,6 +125,7 @@ pub(super) struct LiveState {
     wallpaper_controls: std::sync::Mutex<std::sync::mpsc::Sender<WallpaperControlRequest>>,
     interaction_domain_capture:
         std::sync::Mutex<std::sync::mpsc::Sender<InteractionDomainCaptureRequest>>,
+    window_capture: std::sync::Mutex<std::sync::mpsc::Sender<WindowCaptureRequest>>,
     interaction_domain_observe:
         std::sync::Mutex<std::sync::mpsc::SyncSender<InteractionDomainObserveRequest>>,
     actor_actions:
@@ -236,6 +243,7 @@ impl LiveState {
     ) -> LiveState {
         LiveState {
             windows: std::sync::RwLock::new(Vec::new()),
+            all_windows: std::sync::RwLock::new(Vec::new()),
             accessibility_windows: std::sync::RwLock::new(Vec::new()),
             workspaces: std::sync::RwLock::new(
                 aegis_model::workspace::WorkspaceModel::new().snapshot(),
@@ -257,6 +265,7 @@ impl LiveState {
             settings_controls: std::sync::Mutex::new(channels.settings_controls),
             wallpaper_controls: std::sync::Mutex::new(channels.wallpaper_controls),
             interaction_domain_capture: std::sync::Mutex::new(channels.interaction_domain_capture),
+            window_capture: std::sync::Mutex::new(channels.window_capture),
             interaction_domain_observe: std::sync::Mutex::new(channels.interaction_domain_observe),
             actor_actions: std::sync::Mutex::new(channels.actor_actions),
             semantic_tree_updates: std::sync::Mutex::new(channels.semantic_tree_updates),
@@ -505,6 +514,10 @@ impl LiveState {
     ) {
         *self.windows.write().unwrap() = windows;
         *self.accessibility_windows.write().unwrap() = accessibility_windows;
+    }
+
+    pub(super) fn set_all_windows(&self, windows: Vec<aegis_model::window::Window>) {
+        *self.all_windows.write().unwrap() = windows;
     }
 
     pub(super) fn set_workspaces(&self, snapshot: aegis_model::workspace::WorkspaceSnapshot) {
@@ -1409,6 +1422,34 @@ impl aegis_ipc::Handler for LiveState {
         reply_rx
             .recv_timeout(std::time::Duration::from_secs(2))
             .map_err(|_| "interaction_domain capture timed out".to_owned())?
+    }
+
+    fn capture_window(
+        &self,
+        _conn_id: u64,
+        _subject: Option<&str>,
+        window: aegis_model::window::WindowId,
+    ) -> Result<aegis_ipc::CaptureWindowPayload, String> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.window_capture
+            .lock()
+            .unwrap()
+            .send(WindowCaptureRequest {
+                window,
+                reply: reply_tx,
+            })
+            .map_err(|_| "compositor is shutting down".to_owned())?;
+        reply_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|_| "window capture timed out".to_owned())?
+    }
+
+    fn window_capture_target_exists(&self, window: aegis_model::window::WindowId) -> bool {
+        self.all_windows
+            .read()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate.id == window)
     }
 
     fn observe_interaction_domain(

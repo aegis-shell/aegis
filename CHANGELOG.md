@@ -7,6 +7,54 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### IPC
+
+- Protocol 26 adds per-window content capture (ADR-0117):
+  `Request::CaptureWindow { window }` renders one authorized window's real
+  surface tree offscreen and replies with its geometry metadata plus a sealed
+  PNG memfd, capturing true content whether the window is visible, occluded,
+  minimized, or on another workspace; popups past the toplevel bounds are
+  clipped. Authorization is fail-closed — `control`, a live lease, and an
+  explicit `CaptureWindow` scope decision bounded by the scope's `windows`
+  axis — with the lock/VT gate, security generation, and a pre-delivery
+  window-existence recheck preserved end to end. The new
+  `ActorCapability::CaptureWindow` is agent-requestable and always
+  runtime-gated, so first use prompts the user.
+- Protocol 27 adds workspace-directed application launching (ADR-0118):
+  `Command::LaunchApp { desktop_id, placement }` launches a catalogued
+  desktop entry unsandboxed and optionally places its first toplevel on an
+  existing workspace by durable id or on a fresh workspace created
+  directly after the current one — the window opens on its target
+  workspace even while hidden, and the user's view never switches. The
+  compositor matches the placement at first map by exact client pid,
+  falling back to an app_id FIFO, with a 60-second TTL; placements take
+  precedence over `[[window_rule]]` and remembered workspace state, and an
+  off-workspace window never steals keyboard focus. `Command::Focus`
+  gains the additive `reveal` flag (serde-default `true` for older peers;
+  `false` raises a hidden window within its own workspace without focusing
+  it), and the new `ActorCapability::LaunchApp` is agent-requestable and
+  always runtime-gated, so first use prompts the user.
+
+### MCP bridge
+
+- New `window_capture` tool: capture one human-desktop window by id (from
+  `desktop_snapshot`), returning inline MCP image content up to 32 MiB plus
+  an owner-only compatibility file at `{key}.window-capture.png`. It carries
+  no observation token and feeds no input path.
+- New `launch_app` tool: launch a catalogued application by `desktop_id`
+  (from `apps_list`) directly on the desktop, optionally placing its first
+  window on an existing workspace (`workspace_id`) or a fresh one
+  (`new_workspace`, with optional `workspace_label`) — placement never
+  switches the user's view. `focus_window` gains `switch_workspace`
+  (default true); set it false to raise a window on another workspace
+  without moving the user's view or taking keyboard focus.
+
+### Window management
+
+- Transient windows (dialogs) now always map onto their parent's
+  workspace; previously a moved or re-targeted parent's dialogs opened on
+  the user's current workspace.
+
 ## [0.0.15] - 2026-08-10
 
 ### IPC

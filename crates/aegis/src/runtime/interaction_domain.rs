@@ -236,6 +236,7 @@ pub(super) fn virtual_output_physical_size(
     Ok((width.max(1), height.max(1)))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn begin_interaction_domain_capture(
     targets: &mut std::collections::BTreeMap<
         aegis_model::interaction_domain::InteractionDomainId,

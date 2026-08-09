@@ -1,6 +1,7 @@
 use super::encoding::{CapturedPixels, PendingReadback, encode_capture};
 use crate::runtime::commands::journal_effect_and_broadcast;
 use crate::runtime::interaction_domain::InteractionDomainCaptureContext;
+use crate::runtime::window_capture::WindowCaptureContext;
 
 /// Pollable completion wakeup shared by the capture worker and the compositor
 /// event loop. The backend currently accepts one auxiliary wakeup fd, so an
@@ -144,6 +145,12 @@ pub(in crate::runtime) enum CaptureTarget {
         context: InteractionDomainCaptureContext,
         reply: std::sync::mpsc::Sender<Result<aegis_ipc::CaptureInteractionDomainPayload, String>>,
     },
+    /// One per-window content readback answered through the IPC with the
+    /// window's real pixels, wherever the window lives.
+    WindowReply {
+        context: WindowCaptureContext,
+        reply: std::sync::mpsc::Sender<Result<aegis_ipc::CaptureWindowPayload, String>>,
+    },
     /// One user-picked pixel readback (ADR-0054). The main loop answers the
     /// waiting `PickTarget` IPC request with the colour.
     Pixel {
@@ -177,6 +184,11 @@ enum CaptureJob {
         capture: CapturedPixels,
         context: InteractionDomainCaptureContext,
         reply: std::sync::mpsc::Sender<Result<aegis_ipc::CaptureInteractionDomainPayload, String>>,
+    },
+    WindowReply {
+        capture: CapturedPixels,
+        context: WindowCaptureContext,
+        reply: std::sync::mpsc::Sender<Result<aegis_ipc::CaptureWindowPayload, String>>,
     },
     Pixel {
         capture: CapturedPixels,
@@ -222,6 +234,11 @@ pub(in crate::runtime) enum CaptureCompletion {
         security_generation: u64,
         observation_token: aegis_ipc::ObservationToken,
         encoded: Result<aegis_ipc::CaptureInteractionDomainPayload, String>,
+    },
+    WindowReply {
+        reply: std::sync::mpsc::Sender<Result<aegis_ipc::CaptureWindowPayload, String>>,
+        security_generation: u64,
+        encoded: Result<aegis_ipc::CaptureWindowPayload, String>,
     },
     Pixel {
         reply: std::sync::mpsc::Sender<Result<aegis_ipc::PickResult, String>>,
@@ -432,12 +449,52 @@ impl CaptureWorker {
                                 break;
                             }
                         }
+                        CaptureJob::WindowReply {
+                            capture,
+                            context,
+                            reply,
+                        } => {
+                            let generation = capture.security_generation;
+                            let encoded = if worker_allowed
+                                .load(std::sync::atomic::Ordering::Acquire)
+                                && generation
+                                    == worker_security_generation
+                                        .load(std::sync::atomic::Ordering::Acquire)
+                            {
+                                encode_capture(capture).map(|(width, height, png)| {
+                                    aegis_ipc::CaptureWindowPayload {
+                                        capture: aegis_ipc::WindowCapture {
+                                            window: context.window,
+                                            width,
+                                            height,
+                                            scale_milli: context.scale_milli,
+                                            rect: context.rect,
+                                            png_bytes: png.len() as u64,
+                                        },
+                                        png,
+                                    }
+                                })
+                            } else {
+                                Err("session locked before window capture completed".into())
+                            };
+                            if !send_completion(
+                                &completion_tx,
+                                worker_wake.as_ref(),
+                                CaptureCompletion::WindowReply {
+                                    reply,
+                                    security_generation: generation,
+                                    encoded,
+                                },
+                            ) {
+                                worker_busy.store(false, std::sync::atomic::Ordering::Release);
+                                break;
+                            }
+                        }
                         CaptureJob::Pixel {
                             capture,
                             point,
                             reply,
-                        } => {
-                            let generation = capture.security_generation;
+                        } => {                            let generation = capture.security_generation;
                             let picked = if worker_allowed
                                 .load(std::sync::atomic::Ordering::Acquire)
                                 && generation
@@ -606,6 +663,9 @@ pub(in crate::runtime) fn refuse_capture_target(
         CaptureTarget::InteractionDomainReply { reply, .. } => {
             let _ = reply.send(Err(reason));
         }
+        CaptureTarget::WindowReply { reply, .. } => {
+            let _ = reply.send(Err(reason));
+        }
         CaptureTarget::Pixel { reply, .. } => {
             let _ = reply.send(Err(reason));
         }
@@ -643,6 +703,11 @@ pub(in crate::runtime) fn queue_captured_pixels(
                 reply,
             }
         }
+        CaptureTarget::WindowReply { context, reply } => CaptureJob::WindowReply {
+            capture,
+            context,
+            reply,
+        },
         CaptureTarget::Pixel { point, reply } => CaptureJob::Pixel {
             capture,
             point,
@@ -667,6 +732,9 @@ pub(in crate::runtime) fn queue_captured_pixels(
             CaptureJob::Reply { reply, .. } => CaptureTarget::Reply { reply },
             CaptureJob::InteractionDomainReply { context, reply, .. } => {
                 CaptureTarget::InteractionDomainReply { context, reply }
+            }
+            CaptureJob::WindowReply { context, reply, .. } => {
+                CaptureTarget::WindowReply { context, reply }
             }
             CaptureJob::Pixel { point, reply, .. } => CaptureTarget::Pixel { point, reply },
             CaptureJob::Stream { .. } => CaptureTarget::Stream,

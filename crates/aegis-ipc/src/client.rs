@@ -35,6 +35,19 @@ pub struct CapturedInteractionDomain {
     pub revision: u64,
 }
 
+/// Decoded window capture returned by [`Client::capture_window`] (protocol
+/// 26). `rect` is the toplevel's logical rectangle at capture time; the
+/// image's origin is the toplevel's origin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedWindow {
+    pub window: aegis_model::window::WindowId,
+    pub width: u32,
+    pub height: u32,
+    pub scale_milli: u32,
+    pub rect: aegis_model::Rect,
+    pub png: Vec<u8>,
+}
+
 /// Negotiated stream parameters returned by [`Client::start_output_stream`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamStarted {
@@ -775,6 +788,42 @@ impl Client {
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("expected CaptureInteractionDomain, got {other:?}"),
+            )),
+        }
+    }
+
+    /// Capture one window's real content as a PNG (protocol 26). The window
+    /// is rendered offscreen, so it captures whether visible, occluded,
+    /// minimized, or on another workspace. Requires the `control` capability
+    /// and an explicit `CaptureWindow` scope decision for this window.
+    pub fn capture_window(
+        &mut self,
+        window: aegis_model::window::WindowId,
+    ) -> io::Result<CapturedWindow> {
+        write_msg(&mut self.stream, &Request::CaptureWindow { window })?;
+        match read_msg::<_, Response>(&mut self.stream)? {
+            Response::CaptureWindow { capture } if capture.window == window => {
+                let png = crate::blob::receive(&self.stream, capture.png_bytes)?;
+                Ok(CapturedWindow {
+                    window: capture.window,
+                    width: capture.width,
+                    height: capture.height,
+                    scale_milli: capture.scale_milli,
+                    rect: capture.rect,
+                    png,
+                })
+            }
+            Response::CaptureWindow { capture } => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "expected CaptureWindow for window {}, got window {}",
+                    window.0, capture.window.0
+                ),
+            )),
+            Response::Error { message } => Err(io::Error::other(message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected CaptureWindow, got {other:?}"),
             )),
         }
     }

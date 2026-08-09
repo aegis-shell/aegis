@@ -130,6 +130,24 @@ pub enum Switch {
     Prev,
 }
 
+/// Where a launched application's first toplevel is placed at map time.
+/// Shared by the IPC (`Command::LaunchApp`) and the compositor's pending
+/// launch-placement registry. The default (no placement) remains the current
+/// workspace of the focused output; a placement never switches the view.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "type"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchPlacement {
+    /// Place on an existing workspace by durable id. If the workspace is
+    /// gone by map time, the default current-workspace placement applies.
+    Workspace { id: WorkspaceId },
+    /// Create a fresh workspace directly after the current one on the
+    /// window's output and place the window there. The view stays on the
+    /// current workspace; the user reaches the new workspace only by an
+    /// explicit switch.
+    FreshWorkspace { label: Option<String> },
+}
+
 /// The workspace model: the pure, testable brain that owns outputs,
 /// workspaces, and the dynamic invariants (ADR-0025). No flux, lens, or
 /// Wayland dependency.
@@ -369,6 +387,41 @@ impl WorkspaceModel {
     /// [`Self::place_toplevel`].
     pub fn move_toplevel(&mut self, toplevel: WindowId, target: WorkspaceId) {
         self.place_toplevel(target, toplevel);
+    }
+
+    /// Create a fresh workspace on `oid`, inserted directly after the current
+    /// one, place `toplevel` on it, and return its id. The view stays on the
+    /// current workspace (insertion after `current` never moves it), so a
+    /// window placed this way opens "in the background" — the basis of
+    /// agent/workspace isolation: the user reaches the window only by an
+    /// explicit switch. `None` if `oid` is unknown.
+    pub fn place_toplevel_on_fresh_workspace(
+        &mut self,
+        oid: OutputId,
+        toplevel: WindowId,
+        label: Option<String>,
+    ) -> Option<WorkspaceId> {
+        let oi = self.output_index(oid)?;
+        // Defensive: a map-time caller passes an unplaced toplevel, but a
+        // toplevel already on a workspace must not appear twice.
+        if let Some(src) = self.workspace_of(toplevel)
+            && let Some(ws) = self.workspaces.get_mut(&src)
+        {
+            ws.toplevels.retain(|&t| t != toplevel);
+        }
+        let connector = self.outputs[oi].connector.clone();
+        let output_id = self.outputs[oi].id;
+        let insert_at = self.outputs[oi].current + 1;
+        let wid = self.fresh_workspace(&connector, output_id);
+        if let Some(ws) = self.workspaces.get_mut(&wid) {
+            ws.label = label;
+            ws.toplevels.push(toplevel);
+        }
+        self.outputs[oi].workspaces.insert(insert_at, wid);
+        // Invariant B only: the fresh workspace is born non-empty and no
+        // other workspace emptied, so there is nothing to reap.
+        self.ensure_trailing_empty(oi);
+        Some(wid)
     }
 
     /// Remove `toplevel` entirely (on close/unmap). Reaps its workspace if it
@@ -840,6 +893,59 @@ mod tests {
         assert!(o.workspaces[2].toplevels.is_empty());
         // Current is the workspace we switched to (index 1).
         assert_eq!(o.current, Some(second));
+    }
+
+    #[test]
+    fn fresh_workspace_inserts_after_current_and_keeps_the_view() {
+        let (mut m, oid, ws0) = one_output();
+        m.place_toplevel(ws0, WindowId(1)); // ws0=[1], trailing ws1=[] appended
+        assert_eq!(m.output(oid).unwrap().current, 0);
+
+        // A launched window opens on a fresh workspace behind the current one.
+        let fresh = m
+            .place_toplevel_on_fresh_workspace(oid, WindowId(2), Some("agent".into()))
+            .unwrap();
+        let o = m.output(oid).unwrap();
+        assert_eq!(o.workspaces, vec![ws0, fresh, o.workspaces[2]]);
+        assert_eq!(o.workspaces.len(), 3, "fresh ws + trailing empty retained");
+        assert_eq!(o.current, 0, "the view never moves to the fresh workspace");
+        let ws = m.workspace(fresh).unwrap();
+        assert_eq!(ws.toplevels, vec![WindowId(2)]);
+        assert_eq!(ws.label.as_deref(), Some("agent"));
+        // The window is invisible while the user stays on ws0.
+        assert!(!m.visible_toplevels().contains(&WindowId(2)));
+        // Invariant B: the last workspace is still empty.
+        let last = *m.output(oid).unwrap().workspaces.last().unwrap();
+        assert!(m.workspace(last).unwrap().toplevels.is_empty());
+        // An explicit switch reaches the fresh workspace.
+        assert_eq!(m.switch_to(fresh), Some(fresh));
+        assert!(m.visible_toplevels().contains(&WindowId(2)));
+    }
+
+    #[test]
+    fn fresh_workspace_rejects_unknown_output_and_rehomes_toplevel() {
+        let (mut m, oid, ws0) = one_output();
+        assert!(
+            m.place_toplevel_on_fresh_workspace(OutputId(999), WindowId(9), None)
+                .is_none()
+        );
+        // A toplevel that was already placed moves to the fresh workspace
+        // instead of appearing on two workspaces.
+        m.place_toplevel(ws0, WindowId(1));
+        let fresh = m
+            .place_toplevel_on_fresh_workspace(oid, WindowId(1), None)
+            .unwrap();
+        assert_eq!(m.workspace_of(WindowId(1)), Some(fresh));
+        let total = m
+            .output(oid)
+            .unwrap()
+            .workspaces
+            .iter()
+            .flat_map(|wid| m.workspace(*wid).unwrap().toplevels.iter())
+            .filter(|&&t| t == WindowId(1))
+            .count();
+        assert_eq!(total, 1, "toplevel appears exactly once across workspaces");
+        assert_eq!(m.workspace(ws0).unwrap().toplevels, Vec::<WindowId>::new());
     }
 
     #[test]

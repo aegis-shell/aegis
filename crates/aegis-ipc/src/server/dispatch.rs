@@ -168,15 +168,7 @@ pub(super) fn drive_read_loop<H: Handler>(
                 } else {
                     None
                 };
-                (
-                    gc,
-                    gs,
-                    scope,
-                    active_lease,
-                    principal,
-                    agent_reply,
-                    version,
-                )
+                (gc, gs, scope, active_lease, principal, agent_reply, version)
             }
             Ok(_) => {
                 let _ = tx.send(Outbound::Response(Response::Error {
@@ -1336,6 +1328,84 @@ pub(super) fn drive_read_loop<H: Handler>(
                     handler,
                     &live_scope,
                     ActorCapability::CaptureInteractionDomain,
+                    crate::journal::CapabilityUseAction::Capture,
+                    &response,
+                );
+                response
+            }
+            Request::CaptureWindow { window } => {
+                // Per-window pixel capture is fail-closed like CaptureOutput:
+                // `control` plus an explicit CaptureWindow scope decision for
+                // this exact window — never inherited through None-means-all.
+                let current_scope = live_scope.resolve(handler);
+                let (authorized, via_grant) = match current_scope
+                    .as_ref()
+                    .map(|scope| scope.decide_window_capture(window))
+                {
+                    Some(AuthorizationDecision::Permit) => (true, false),
+                    Some(AuthorizationDecision::Ask(op)) => {
+                        match grant_authorize(handler, conn_id, principal.as_deref(), op) {
+                            Ok(true) => (
+                                current_scope
+                                    .as_ref()
+                                    .is_some_and(|scope| scope.permits_window(window)),
+                                true,
+                            ),
+                            Ok(false) | Err(_) => (false, false),
+                        }
+                    }
+                    _ => (false, false),
+                };
+                let response = if !granted.control {
+                    Response::Error {
+                        message: "CaptureWindow requires the control capability".into(),
+                    }
+                } else if !lease_alive {
+                    Response::Error {
+                        message: "privileged capability lease expired".into(),
+                    }
+                } else if !authorized {
+                    Response::Error {
+                        message: "out of scope".into(),
+                    }
+                } else {
+                    match handler.capture_window(conn_id, principal.as_deref(), window) {
+                        Ok(payload) if payload.capture.window == window => {
+                            let lease_deadline = active_lease
+                                .as_ref()
+                                .map(|(_, deadline)| *deadline)
+                                .expect("granted control has an active lease");
+                            if std::time::Instant::now() >= lease_deadline {
+                                Response::Error {
+                                    message: "privileged capability lease expired".into(),
+                                }
+                            } else if tx
+                                .send(Outbound::CaptureWindow {
+                                    payload,
+                                    lease_deadline,
+                                    scope: live_scope.clone(),
+                                    via_grant,
+                                })
+                                .is_err()
+                            {
+                                break;
+                            } else {
+                                continue;
+                            }
+                        }
+                        Ok(payload) => Response::Error {
+                            message: format!(
+                                "capture handler returned window {} for requested window {}",
+                                payload.capture.window.0, window.0
+                            ),
+                        },
+                        Err(message) => Response::Error { message },
+                    }
+                };
+                audit_capability_response(
+                    handler,
+                    &live_scope,
+                    ActorCapability::CaptureWindow,
                     crate::journal::CapabilityUseAction::Capture,
                     &response,
                 );

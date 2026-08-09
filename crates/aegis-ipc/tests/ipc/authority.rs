@@ -17,10 +17,16 @@ fn named_scope_is_reported_and_enforced() {
     assert_eq!(client.scope().windows, Some(vec![WindowId(1)]));
     assert_eq!(client.scope().ops, Some(vec![ActorCapability::Focus]));
     client
-        .command(Command::Focus { id: WindowId(1) })
+        .command(Command::Focus {
+            id: WindowId(1),
+            reveal: true,
+        })
         .expect("allowed focus");
     let wrong_window = client
-        .command(Command::Focus { id: WindowId(2) })
+        .command(Command::Focus {
+            id: WindowId(2),
+            reveal: true,
+        })
         .unwrap_err();
     assert!(wrong_window.to_string().contains("out of scope"));
     let wrong_operation = client
@@ -623,7 +629,10 @@ fn expired_privileged_lease_fails_closed_without_losing_query_access() {
         "query survives lease expiry but remains resource-scoped"
     );
     let error = client
-        .command(Command::Focus { id: WindowId(1) })
+        .command(Command::Focus {
+            id: WindowId(1),
+            reveal: true,
+        })
         .expect_err("expired lease must reject control");
     assert!(error.to_string().contains("lease expired"), "{error}");
     assert!(handler.commands.lock().unwrap().is_empty());
@@ -731,12 +740,18 @@ fn scope_revocation_applies_to_existing_connections() {
     };
     let mut client = Client::connect_scoped(&path, requested, "focus-first").expect("connect");
     client
-        .command(Command::Focus { id: WindowId(1) })
+        .command(Command::Focus {
+            id: WindowId(1),
+            reveal: true,
+        })
         .expect("allowed before revoke");
 
     handler.scopes.lock().unwrap().clear();
     let err = client
-        .command(Command::Focus { id: WindowId(1) })
+        .command(Command::Focus {
+            id: WindowId(1),
+            reveal: true,
+        })
         .unwrap_err();
     assert!(err.to_string().contains("out of scope"), "{err}");
 }

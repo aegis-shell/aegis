@@ -281,6 +281,7 @@ fn dispatch_window(
             client
                 .command(aegis_ipc::Command::Focus {
                     id: aegis_model::window::WindowId(id),
+                    reveal: true,
                 })
                 .map_err(io_err)?;
             Ok(receipt(format!("focused {id}"), json))

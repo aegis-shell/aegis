@@ -400,6 +400,18 @@ pub trait Handler: Send + Sync {
     ) -> Result<CaptureInteractionDomainPayload, String> {
         Err("interaction_domain capture unsupported".into())
     }
+    /// Capture one window's real content, rendered offscreen. Called from a
+    /// connection thread; the implementation forwards to the main loop and
+    /// blocks briefly for the reply. The writer transfers the PNG through a
+    /// sealed memfd after the small JSON response.
+    fn capture_window(
+        &self,
+        _conn_id: u64,
+        _subject: Option<&str>,
+        _window: aegis_model::window::WindowId,
+    ) -> Result<CaptureWindowPayload, String> {
+        Err("window capture unsupported".into())
+    }
     /// Read compositor-owned semantic objects without transferring pixels.
     fn observe_interaction_domain(
         &self,
@@ -421,6 +433,15 @@ pub trait Handler: Send + Sync {
         _intent: ActorActionIntent,
     ) -> Result<ActorActionReceipt, String> {
         Err("observation-bound Interaction Domain actions unsupported".into())
+    }
+    /// Whether a window is still live for a pending window-capture delivery.
+    /// The default consults the published window snapshot; compositors that
+    /// capture occluded or background windows should answer from their full
+    /// toplevel set instead.
+    fn window_capture_target_exists(&self, window: aegis_model::window::WindowId) -> bool {
+        self.windows()
+            .iter()
+            .any(|candidate| candidate.id == window)
     }
     /// Revoke a syntactically plausible observation token after an action is
     /// refused before main-loop dispatch. Implementations must verify the

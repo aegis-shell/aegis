@@ -1013,7 +1013,11 @@ impl CompositorRuntime {
                 let all_windows_hash = self.server.all_windows_signature();
                 if self.last_all_windows_hash != Some(all_windows_hash) {
                     self.last_all_windows_hash = Some(all_windows_hash);
-                    self.shell.set_all_windows(self.server.all_windows());
+                    let all_windows = self.server.all_windows();
+                    // The window-capture delivery recheck reads the same
+                    // workspace-global set from the IPC live state.
+                    self.live.set_all_windows(all_windows.clone());
+                    self.shell.set_all_windows(all_windows);
                 }
                 // Minimize flight targets follow the dock's resting tile
                 // layout; pushing them every frame keeps even
@@ -1402,7 +1406,7 @@ impl CompositorRuntime {
                         &mut self.server,
                         &self.notif_queue,
                         &mut self.quit_requested,
-                        aegis_ipc::Command::Focus { id },
+                        aegis_ipc::Command::Focus { id, reveal: true },
                         &self.ipc,
                         &self.journal,
                         ts,
@@ -1417,7 +1421,7 @@ impl CompositorRuntime {
                         &mut self.server,
                         &self.notif_queue,
                         &mut self.quit_requested,
-                        aegis_ipc::Command::Focus { id },
+                        aegis_ipc::Command::Focus { id, reveal: true },
                         &self.ipc,
                         &self.journal,
                         ts,
@@ -1430,7 +1434,7 @@ impl CompositorRuntime {
                         &mut self.server,
                         &self.notif_queue,
                         &mut self.quit_requested,
-                        aegis_ipc::Command::Focus { id },
+                        aegis_ipc::Command::Focus { id, reveal: true },
                         &self.ipc,
                         &self.journal,
                         ts,
@@ -1451,7 +1455,9 @@ impl CompositorRuntime {
                 }
                 for action in self.shell.take_window_actions() {
                     let cmd = match action {
-                        aegis_shell::WindowAction::Focus(id) => aegis_ipc::Command::Focus { id },
+                        aegis_shell::WindowAction::Focus(id) => {
+                            aegis_ipc::Command::Focus { id, reveal: true }
+                        }
                         aegis_shell::WindowAction::Minimize(id) => {
                             aegis_ipc::Command::Minimize { id }
                         }
