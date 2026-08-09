@@ -7,6 +7,20 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.15] - 2026-08-10
+
+### IPC
+
+- Protocol 25 adds zero-copy dmabuf streaming to `StreamOutputStart`
+  (ADR-0055): an opted-in client on an exportable (DRM) backend receives a
+  per-stream offscreen capture surface whose fixed slot ring is enumerated
+  once at start; presented frames are GPU-copied into free ring slots and
+  delivered as slot-referenced `StreamFrame` events after the slot's
+  acquire fence signals, and the consumer returns slots with
+  `StreamBufferRelease`. The handshake now negotiates down to older
+  clients; non-opted-in clients, window streams, and the nested backend
+  keep the sealed-memfd SHM transport.
+
 ### Shell chrome
 
 - The window/workspace overview gains a macOS-style entry point and look
