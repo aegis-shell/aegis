@@ -1,7 +1,9 @@
 //! The schema for the aegis IPC.
 //!
-//! One major version ([`PROTOCOL_VERSION`]); a client offering any other
-//! major version is refused at the handshake. Messages are internally
+//! One major version ([`PROTOCOL_VERSION`]); a client offering a NEWER
+//! major version is refused at the handshake, while an older client is
+//! answered at its own version (the server speaks the minimum of the two).
+//! Messages are internally
 //! tagged (`{"type": "..."}`) so the wire is self-describing and new
 //! variants add without renaming existing fields. See
 //! [ADR-0027](../../docs/adr/0027-ipc-and-introspection.md).
@@ -33,8 +35,12 @@ pub use aegis_semantic::{
     AccessibilityTreeUpdate, AccessibilityWindowBinding, SemanticActionRequest,
 };
 
-/// The protocol major version this build speaks. A client must offer the
-/// same major version at the [`Request::Hello`] handshake. Version 24 binds
+/// The protocol major version this build speaks. A client offering a newer
+/// major version is refused at the [`Request::Hello`] handshake; an older
+/// client is answered at its own version. Version 25 adds the zero-copy
+/// dmabuf slot streaming protocol (slot descriptors on
+/// `StreamOutputStarted`, slot-referenced frames, `StreamBufferRelease`)
+/// and the handshake downgrade. Version 24 binds
 /// accessibility windows to kernel-authenticated Wayland process ids before
 /// accepting AT-SPI trees. Version 23 adds
 /// explicit Actor sessions, exact resource-grant handles, and the bounded
@@ -71,7 +77,7 @@ pub use aegis_semantic::{
 /// `Event::StreamFrame`, `Event::StreamEnded`, `StreamOutputStop`,
 /// ADR-0052). Version 4 adds revisioned desktop-settings snapshots,
 /// subscriptions, and confirmed settings transactions.
-pub const PROTOCOL_VERSION: u32 = 24;
+pub const PROTOCOL_VERSION: u32 = 25;
 /// Built-in owner-only scope used by native `aegis` commands for Interaction Domain
 /// recovery and administration. The Unix socket remains user-private; naming
 /// this scope opts the connection into the high-risk Interaction Domain operation allowlist
@@ -709,12 +715,16 @@ pub enum Event {
         damage: Vec<Rect>,
     },
     /// One presented output frame for a stream opened with
-    /// [`Request::StreamOutputStart`] (ADR-0052). The JSON event is followed
-    /// immediately by one sealed memfd of `byte_len` tightly packed pixels
-    /// transferred with `SCM_RIGHTS`, reusing the one-shot capture blob
-    /// channel (ADR-0041). `dropped` is the cumulative count of frames the
-    /// stream dropped to backpressure since it started. `damage` is
-    /// conservative: the first version reports one full-frame rectangle.
+    /// [`Request::StreamOutputStart`] (ADR-0052). For SHM streams the JSON
+    /// event is followed immediately by one sealed memfd of `byte_len`
+    /// tightly packed pixels transferred with `SCM_RIGHTS`, reusing the
+    /// one-shot capture blob channel (ADR-0041). For dmabuf streams
+    /// (version 25) `slot` names one of the descriptors transferred once at
+    /// start and no blob follows; the slot stays owned by the consumer
+    /// until [`Request::StreamBufferRelease`]. `dropped` is the cumulative
+    /// count of frames the stream dropped to backpressure since it started.
+    /// `damage` is conservative: the first version reports one full-frame
+    /// rectangle.
     StreamFrame {
         stream_id: u64,
         sequence: u64,
@@ -725,6 +735,9 @@ pub enum Event {
         damage: Vec<Rect>,
         dropped: u64,
         byte_len: u64,
+        /// dmabuf slot index (version 25); absent on SHM frames.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slot: Option<u32>,
     },
     /// The server ended a stream: the connection's scope was revoked or
     /// narrowed, its lease expired, the output geometry changed, or the
@@ -1197,9 +1210,20 @@ pub enum Request {
         max_fps: Option<u32>,
         #[serde(default, skip_serializing_if = "StreamTarget::is_output")]
         target: StreamTarget,
+        /// Opt in to a zero-copy dmabuf stream (version 25): the reply may
+        /// announce [`StreamPixelFormat::Dmabuf`] and carry the slot table.
+        /// Absent or `Some(false)` keeps the sealed-memfd SHM stream. A
+        /// client that did not opt in never sees a dmabuf announcement, so
+        /// its framing stays synchronized.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dmabuf: Option<bool>,
     },
     /// Stop a stream owned by this connection.
     StreamOutputStop { stream_id: u64 },
+    /// Release a dmabuf stream slot (version 25) after the consumer finished
+    /// reading it. The compositor must not reuse a slot between delivering
+    /// its frame and receiving this release.
+    StreamBufferRelease { stream_id: u64, slot: u32 },
     /// Set or clear this connection's global idle inhibitor (the Inhibit
     /// portal, ADR-0075). Authorization mirrors
     /// [`Request::StreamOutputStart`]: `control`, a live lease, and an
@@ -1373,16 +1397,35 @@ pub enum Response {
         receipt: ActorActionReceipt,
     },
     /// Reply to [`Request::StreamOutputStart`]: the stream id and the
-    /// output's physical size and pixel format at start time.
+    /// output's physical size and pixel format at start time. When `format`
+    /// is [`StreamPixelFormat::Dmabuf`] (version 25), the reply is followed
+    /// immediately by `slots` fixed-size dmabuf descriptors on the blob
+    /// channel (one `0xfd`-marked `SCM_RIGHTS` message per slot, each
+    /// `slot_bytes` long with rows of `slot_stride` bytes); frames then
+    /// reference slots by index and carry no descriptor.
     StreamOutputStarted {
         stream_id: u64,
         width: u32,
         height: u32,
         format: StreamPixelFormat,
+        /// dmabuf slot count (version 25); absent on SHM streams.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slots: Option<u32>,
+        /// dmabuf slot row stride in bytes (version 25).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slot_stride: Option<u32>,
+        /// dmabuf slot byte length (version 25).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slot_bytes: Option<u64>,
     },
     /// Reply to [`Request::StreamOutputStop`].
     StreamOutputStopped {
         stream_id: u64,
+    },
+    /// Reply to [`Request::StreamBufferRelease`] (version 25).
+    StreamBufferReleased {
+        stream_id: u64,
+        slot: u32,
     },
     /// Reply to [`Request::SetIdleInhibit`]: the inhibitor state this
     /// connection now holds.
@@ -1454,6 +1497,7 @@ impl std::fmt::Debug for Response {
             Self::InteractionDomainObserved { .. } => "InteractionDomainObserved",
             Self::ActorActionCommitted { .. } => "ActorActionCommitted",
             Self::StreamOutputStarted { .. } => "StreamOutputStarted",
+            Self::StreamBufferReleased { .. } => "StreamBufferReleased",
             Self::StreamOutputStopped { .. } => "StreamOutputStopped",
             Self::IdleInhibitSet { .. } => "IdleInhibitSet",
             Self::Picked { .. } => "Picked",

@@ -1502,6 +1502,7 @@ impl aegis_ipc::Handler for LiveState {
         conn_id: u64,
         max_fps: Option<u32>,
         target: aegis_ipc::StreamTarget,
+        allow_dmabuf: bool,
     ) -> Result<aegis_ipc::StreamInfo, String> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         self.stream_controls
@@ -1512,6 +1513,7 @@ impl aegis_ipc::Handler for LiveState {
                 action: StreamControl::Start {
                     max_fps,
                     target,
+                    allow_dmabuf,
                     reply: reply_tx,
                 },
             })
@@ -1529,6 +1531,17 @@ impl aegis_ipc::Handler for LiveState {
             .send(StreamControlRequest {
                 conn_id: 0,
                 action: StreamControl::Stop { stream_id },
+            });
+    }
+
+    fn stream_buffer_release(&self, stream_id: u64, slot: u32) {
+        let _ = self
+            .stream_controls
+            .lock()
+            .unwrap()
+            .send(StreamControlRequest {
+                conn_id: 0,
+                action: StreamControl::ReleaseSlot { stream_id, slot },
             });
     }
 

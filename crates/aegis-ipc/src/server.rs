@@ -53,22 +53,60 @@ pub struct CaptureInteractionDomainPayload {
 }
 
 /// Geometry and format of a stream started through
-/// [`Handler::stream_output_start`] (ADR-0052).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// [`Handler::stream_output_start`] (ADR-0052). A zero-copy dmabuf stream
+/// (protocol 25) also carries its slot table; the writer transfers the
+/// descriptors on the blob channel right after the `StreamOutputStarted`
+/// reply, one `0xfd`-marked `SCM_RIGHTS` message per slot in slot order.
+#[derive(Debug)]
 pub struct StreamInfo {
     pub stream_id: u64,
     pub width: u32,
     pub height: u32,
     pub format: StreamPixelFormat,
+    /// dmabuf slot table (protocol 25); `None` for SHM streams.
+    pub slots: Option<StreamSlotTable>,
 }
 
-/// One presented frame pushed to a stream's connection. `pixels` are raw,
-/// tightly packed (row stride `stride`) and transferred as a sealed memfd
-/// after the JSON [`Event::StreamFrame`] metadata; the blob intentionally is
-/// not part of the JSON schema. Shared cheaply between streams fanning out
-/// from one readback.
+/// The fixed dmabuf slot ring of a zero-copy stream (protocol 25). Every
+/// slot shares `stride`/`byte_len`; `fds` holds one exportable descriptor
+/// per slot, in slot order. The descriptors stay valid for the stream's
+/// lifetime; frames reference slots by index and carry no descriptor.
+#[derive(Debug)]
+pub struct StreamSlotTable {
+    pub stride: u32,
+    pub byte_len: u64,
+    pub fds: Vec<std::os::fd::OwnedFd>,
+}
+
+/// One presented frame pushed to a stream's connection. The two transports
+/// are distinct variants so a slot-referenced frame can never accidentally
+/// send (or be expected to send) a pixel blob.
 #[derive(Debug, Clone)]
-pub struct StreamFramePayload {
+pub enum StreamFramePayload {
+    /// SHM stream: `pixels` are raw, tightly packed (row stride `stride`)
+    /// and transferred as a sealed memfd after the JSON
+    /// [`Event::StreamFrame`] metadata; the blob intentionally is not part
+    /// of the JSON schema. Shared cheaply between streams fanning out from
+    /// one readback.
+    Pixels(StreamPixelFrame),
+    /// Zero-copy dmabuf stream (protocol 25): the frame references one slot
+    /// of the table transferred at start and no blob follows the JSON
+    /// [`Event::StreamFrame`] header.
+    Slot(StreamSlotFrame),
+}
+
+impl StreamFramePayload {
+    pub fn stream_id(&self) -> u64 {
+        match self {
+            Self::Pixels(frame) => frame.stream_id,
+            Self::Slot(frame) => frame.stream_id,
+        }
+    }
+}
+
+/// SHM frame metadata plus the pixel bytes transferred as a sealed memfd.
+#[derive(Debug, Clone)]
+pub struct StreamPixelFrame {
     pub stream_id: u64,
     pub sequence: u64,
     pub width: u32,
@@ -78,6 +116,23 @@ pub struct StreamFramePayload {
     pub damage: Vec<aegis_model::Rect>,
     pub dropped: u64,
     pub pixels: Arc<[u8]>,
+}
+
+/// dmabuf frame metadata (protocol 25): `slot` names the descriptor the
+/// consumer already holds and `byte_len` is the slot's byte length; no blob
+/// follows on the wire.
+#[derive(Debug, Clone)]
+pub struct StreamSlotFrame {
+    pub stream_id: u64,
+    pub sequence: u64,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub format: StreamPixelFormat,
+    pub damage: Vec<aegis_model::Rect>,
+    pub dropped: u64,
+    pub slot: u32,
+    pub byte_len: u64,
 }
 
 /// Frames a single stream may have queued to its connection writer before
@@ -180,10 +235,19 @@ type SubId = u64;
 
 /// What the writer thread sends on the wire. Both kinds go through one inbox
 /// so the writer is the single owner of the write half.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum Outbound {
     Response(Response),
     Event(Event),
+    /// A `StreamOutputStarted` reply for a zero-copy dmabuf stream
+    /// (protocol 25): the JSON response first, then the slot table's
+    /// descriptors, one `0xfd`-marked `SCM_RIGHTS` message per slot in slot
+    /// order. Sharing the ordered writer channel keeps the reply and its
+    /// descriptors atomic with respect to other messages.
+    StreamStarted {
+        response: Response,
+        table: StreamSlotTable,
+    },
     CaptureOutput {
         payload: CaptureOutputPayload,
         lease_deadline: std::time::Instant,
@@ -352,7 +416,7 @@ impl Server {
     pub fn push_stream_frame(&self, payload: StreamFramePayload) -> bool {
         let (tx, scope, target, lease_deadline, queued) = {
             let streams = self.streams.lock().unwrap();
-            let Some(lane) = streams.get(&payload.stream_id) else {
+            let Some(lane) = streams.get(&payload.stream_id()) else {
                 return false;
             };
             if lane.queued.load(Ordering::Acquire) >= STREAM_LANE_DEPTH {
@@ -414,6 +478,9 @@ use authorization::*;
 mod dispatch;
 use dispatch::drive_read_loop;
 mod writer;
-use writer::{write_interaction_domain_capture, write_output_capture, write_stream_frame};
+use writer::{
+    write_interaction_domain_capture, write_output_capture, write_stream_frame,
+    write_stream_started,
+};
 #[cfg(test)]
 mod tests;

@@ -97,7 +97,33 @@ fn composite_fb_slot_conflicts(existing: CompositeFbKey, candidate: CompositeFbK
     existing.epoch == candidate.epoch && existing.slot == candidate.slot && existing != candidate
 }
 
+/// The retained dma-buf descriptor of the currently scanned-out composited
+/// frame (see [`DrmBackend::presented_dmabuf`]).
+pub(super) struct PresentedComposite {
+    fd: OwnedFd,
+    width: u32,
+    height: u32,
+    stride: u32,
+    modifier: u64,
+}
+
 impl DrmBackend {
+    /// Duplicate the dma-buf descriptor of the composited frame most recently
+    /// presented to scanout, for the zero-copy stream fan-out (IPC protocol
+    /// 25). `None` when no composited frame is on screen (startup, direct
+    /// client scanout) or the descriptor cannot be duplicated.
+    pub fn presented_dmabuf(&self) -> Option<crate::host::PresentedDmabuf> {
+        let presented = self.presented_composite.as_ref()?;
+        let fd = presented.fd.try_clone().ok()?;
+        Some(crate::host::PresentedDmabuf {
+            fd,
+            width: presented.width,
+            height: presented.height,
+            stride: presented.stride,
+            modifier: presented.modifier,
+        })
+    }
+
     /// Start a new Flux surface/storage epoch. Existing cache entries stay
     /// alive while `current` or `retiring` references them, then are reaped.
     pub(super) fn invalidate_composite_fb_cache(&mut self) {
@@ -349,6 +375,7 @@ impl DrmBackend {
             sync_capable: false,
             render_ready: true,
             outputs_powered: true,
+            presented_composite: None,
             hotplug_pending: false,
             pending_resize: None,
             surface_modifiers: Vec::new(),
@@ -371,6 +398,9 @@ impl DrmBackend {
         // Advance the epoch before allocating it so an equal-size recreation
         // can never hit a framebuffer imported from the previous surface.
         self.invalidate_composite_fb_cache();
+        // The retained presented descriptor belongs to the previous surface's
+        // images; a recreated surface never reuses them.
+        self.presented_composite = None;
         let (width, height) = self.physical_size();
         let surface =
             flux::Surface::offscreen_dmabuf(device, width, height, &self.displays.modifiers)?;
@@ -589,6 +619,21 @@ impl DrmBackend {
         } else {
             surface.export_dmabuf()?
         };
+        // Retain an independent descriptor of the frame going to scanout so
+        // zero-copy stream consumers can import exactly what is on screen.
+        self.presented_composite = match dmabuf.fd.try_clone() {
+            Ok(fd) => Some(PresentedComposite {
+                fd,
+                width: dmabuf.width,
+                height: dmabuf.height,
+                stride: dmabuf.stride,
+                modifier: dmabuf.modifier,
+            }),
+            Err(error) => {
+                log::warn!("drm: cannot retain presented dma-buf for streaming: {error}");
+                None
+            }
+        };
         let completion_fence = dmabuf
             .acquire_fence
             .as_ref()
@@ -669,6 +714,9 @@ impl DrmBackend {
         )?;
         let completion_fence =
             self.commit_scanout(scanout, damage, PrimaryPlaneFrame::DirectClient)?;
+        // A client buffer now owns the primary plane; the retained composited
+        // descriptor no longer describes what is on screen.
+        self.presented_composite = None;
         if completion_fence.is_none() {
             // Older KMS drivers lack CRTC OUT_FENCE_PTR. Preserve correct
             // wl_buffer release semantics by waiting for the page flip only

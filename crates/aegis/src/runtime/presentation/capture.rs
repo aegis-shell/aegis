@@ -85,16 +85,21 @@ impl CompositorRuntime {
         }
         // Stream fan-out (ADR-0052): when no one-shot capture claimed this
         // frame's readback and the staging slot and worker lane are free,
-        // bind one readback shared by every due stream. One-shots keep
+        // bind one readback shared by every due SHM stream. One-shots keep
         // priority; a locked or inactive session simply produces no stream
-        // frames (the stream survives).
+        // frames (the stream survives). Due dmabuf streams bind no readback:
+        // their present is forced separately and their frame is copied on
+        // the GPU (IPC protocol 25).
         if frame_capture.is_none()
             && self.pending_capture.is_none()
             && !self.stream_job_in_flight
             && !session_locked
             && self.host.is_active()
             && !self.capture_worker.is_busy()
-            && !self.streams.due_ids(std::time::Instant::now()).is_empty()
+            && !self
+                .streams
+                .due_shm_ids(std::time::Instant::now())
+                .is_empty()
         {
             frame_capture = Some(FrameCapture {
                 crop: None,

@@ -115,7 +115,7 @@ fn capture_output_requires_control_and_an_explicit_scope_op() {
 }
 
 fn stream_frame(stream_id: u64, sequence: u64) -> aegis_ipc::StreamFramePayload {
-    aegis_ipc::StreamFramePayload {
+    aegis_ipc::StreamFramePayload::Pixels(aegis_ipc::StreamPixelFrame {
         stream_id,
         sequence,
         width: 2,
@@ -125,7 +125,7 @@ fn stream_frame(stream_id: u64, sequence: u64) -> aegis_ipc::StreamFramePayload 
         damage: vec![aegis_model::Rect::new(0, 0, 2, 2)],
         dropped: 0,
         pixels: Arc::from(&[7u8; 16][..]),
-    }
+    })
 }
 
 #[test]

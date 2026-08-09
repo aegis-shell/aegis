@@ -382,6 +382,9 @@ impl CompositorRuntime {
                 }
             }
         }
+        // Zero-copy streams (IPC protocol 25): deliver every slot frame whose
+        // acquire fence signaled since the last iteration.
+        self.poll_dmabuf_stream_fences();
         if self.pending_interaction_domain_capture.is_some() {
             let interaction_domain = self
                 .pending_interaction_domain_capture
@@ -710,6 +713,7 @@ impl CompositorRuntime {
                 StreamControl::Start {
                     max_fps,
                     target,
+                    allow_dmabuf,
                     reply,
                 } => {
                     let result = if self.server.session_locked() || !self.host.is_active() {
@@ -717,12 +721,35 @@ impl CompositorRuntime {
                     } else {
                         let (width, height) = self.surface.size();
                         match target {
-                            aegis_ipc::StreamTarget::Output => Ok(self.streams.start(
-                                request.conn_id,
-                                max_fps,
-                                (width, height),
-                                target,
-                            )),
+                            aegis_ipc::StreamTarget::Output => {
+                                // The zero-copy dmabuf transport (protocol 25)
+                                // needs an exportable presentation surface;
+                                // every other case announces SHM pixels.
+                                let mut capture = None;
+                                if allow_dmabuf {
+                                    match self.create_dmabuf_capture(width, height) {
+                                        Ok(created) => capture = Some(created),
+                                        Err(reason) => log::warn!(
+                                            "stream: dmabuf capture unavailable ({reason}); \
+                                             falling back to shm"
+                                        ),
+                                    }
+                                }
+                                match capture {
+                                    Some(capture) => Ok(self.streams.start_dmabuf(
+                                        request.conn_id,
+                                        max_fps,
+                                        (width, height),
+                                        capture,
+                                    )),
+                                    None => Ok(self.streams.start(
+                                        request.conn_id,
+                                        max_fps,
+                                        (width, height),
+                                        target,
+                                    )),
+                                }
+                            }
                             aegis_ipc::StreamTarget::Window { window } => {
                                 let scale = output_render_scale(&self.server, &self.host);
                                 match window_physical_rect(
@@ -763,6 +790,9 @@ impl CompositorRuntime {
                 StreamControl::Stop { stream_id } => {
                     log::info!("stream {stream_id}: stopped");
                     self.streams.stop(stream_id);
+                }
+                StreamControl::ReleaseSlot { stream_id, slot } => {
+                    self.streams.release_slot(stream_id, slot);
                 }
                 StreamControl::Disconnect => {
                     self.streams.disconnect(request.conn_id);

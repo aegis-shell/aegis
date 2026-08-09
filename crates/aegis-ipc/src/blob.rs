@@ -106,7 +106,10 @@ fn validate_len(len: u64) -> io::Result<()> {
     Ok(())
 }
 
-fn send_fd(stream: &UnixStream, fd: RawFd) -> io::Result<()> {
+/// Send one `0xfd` marker byte carrying `fd` as an `SCM_RIGHTS` descriptor.
+/// Used for sealed capture memfds and for the dmabuf slot descriptors of a
+/// zero-copy stream (protocol 25); the sender retains its own reference.
+pub(crate) fn send_fd(stream: &UnixStream, fd: RawFd) -> io::Result<()> {
     let mut marker = BLOB_MARKER;
     let mut iov = libc::iovec {
         iov_base: (&mut marker as *mut u8).cast(),
@@ -146,7 +149,9 @@ fn send_fd(stream: &UnixStream, fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-fn receive_fd(stream: &UnixStream) -> io::Result<RawFd> {
+/// Receive one `0xfd`-marked `SCM_RIGHTS` descriptor (the receive half of
+/// [`send_fd`]). The returned descriptor is caller-owned and close-on-exec.
+pub(crate) fn receive_fd(stream: &UnixStream) -> io::Result<RawFd> {
     let mut marker = 0u8;
     let mut iov = libc::iovec {
         iov_base: (&mut marker as *mut u8).cast(),

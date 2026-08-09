@@ -78,6 +78,18 @@ pub enum HostError {
     },
 }
 
+/// A duplicate descriptor of the composited frame most recently presented to
+/// scanout, for the zero-copy stream fan-out (IPC protocol 25). The backend
+/// retains its own reference (the KMS framebuffer's GEM handle); this fd is
+/// independently owned by the caller.
+pub struct PresentedDmabuf {
+    pub fd: OwnedFd,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub modifier: u64,
+}
+
 /// One runtime-selected compositor host.
 // There is exactly one process-lifetime Host. Keeping both backends inline
 // avoids an allocation and makes ownership explicit; enum stack size is not a
@@ -209,6 +221,18 @@ impl Host {
                 Ok(None)
             }
             Self::Drm(host) => Ok(host.present(surface, frame, damage)?),
+        }
+    }
+
+    /// Duplicate the descriptor of the composited frame most recently
+    /// presented to scanout, so zero-copy stream consumers can import exactly
+    /// what is on screen (IPC protocol 25). `None` on the nested backend
+    /// (its swapchain is never dma-buf exportable) and whenever no composited
+    /// frame is on screen (startup, direct client scanout).
+    pub fn presented_dmabuf(&self) -> Option<PresentedDmabuf> {
+        match self {
+            Self::Nested(_) => None,
+            Self::Drm(host) => host.presented_dmabuf(),
         }
     }
 

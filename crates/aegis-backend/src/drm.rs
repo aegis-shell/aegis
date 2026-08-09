@@ -21,6 +21,7 @@ mod device;
 mod events;
 mod output;
 
+use device::PresentedComposite;
 use output::*;
 
 use aegis_model::Size;
@@ -688,6 +689,11 @@ pub struct DrmBackend {
     /// KMS scanout power requested by the session idle policy. Input and
     /// Wayland dispatch remain active while this is false.
     outputs_powered: bool,
+    /// Descriptor duplicate of the most recently presented composited
+    /// frame, retained so zero-copy stream consumers (IPC protocol 25) can
+    /// import exactly what is on screen. Cleared when a direct client
+    /// scanout owns the primary plane and on surface recreation.
+    presented_composite: Option<PresentedComposite>,
     hotplug_pending: bool,
     pending_resize: Option<Size>,
     /// Modifier intersection the live Flux surface was created with.

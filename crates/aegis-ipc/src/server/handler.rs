@@ -445,12 +445,16 @@ pub trait Handler: Send + Sync {
     /// briefly for the reply. Frames are pushed back through
     /// [`Server::push_stream_frame`]. `target` (version 6) selects the whole
     /// output or one window's visible region (ADR-0054); an unknown window
-    /// id is an error.
+    /// id is an error. `allow_dmabuf` (version 25) is the client's explicit
+    /// zero-copy opt-in: only then may the reply announce
+    /// [`StreamPixelFormat::Dmabuf`] and carry a slot table; any reason the
+    /// transport is unavailable falls back to SHM pixels instead of failing.
     fn stream_output_start(
         &self,
         _conn_id: u64,
         _max_fps: Option<u32>,
         _target: crate::schema::StreamTarget,
+        _allow_dmabuf: bool,
     ) -> Result<StreamInfo, String> {
         Err("streaming unsupported".into())
     }
@@ -458,6 +462,10 @@ pub trait Handler: Send + Sync {
     /// request, a per-frame authorization failure in the writer, or a
     /// disconnect. Fire-and-forget; the main loop drops its stream state.
     fn stream_output_stop(&self, _stream_id: u64) {}
+    /// The consumer finished reading a dmabuf stream's slot (version 25);
+    /// the compositor may reuse it for a later frame. Fire-and-forget, and
+    /// only ever sent for a stream the releasing connection owns.
+    fn stream_buffer_release(&self, _stream_id: u64, _slot: u32) {}
     /// Notification that a connection owning one or more streams
     /// disconnected. The server has already unregistered the delivery lanes;
     /// the main loop drops its stream state.

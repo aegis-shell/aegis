@@ -850,6 +850,7 @@ fn stream_output_start_round_trips_with_optional_max_fps() {
     let with_fps = Request::StreamOutputStart {
         max_fps: Some(60),
         target: StreamTarget::Output,
+        dmabuf: None,
     };
     let json = serde_json::to_string(&with_fps).unwrap();
     assert!(json.contains(r#""type":"StreamOutputStart""#), "{json}");
@@ -858,6 +859,10 @@ fn stream_output_start_round_trips_with_optional_max_fps() {
         !json.contains("target"),
         "default target is skipped: {json}"
     );
+    assert!(
+        !json.contains("dmabuf"),
+        "dmabuf opt-in is skipped when unset: {json}"
+    );
     assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), with_fps);
 
     let default: Request = serde_json::from_str(r#"{"type":"StreamOutputStart"}"#).unwrap();
@@ -865,9 +870,22 @@ fn stream_output_start_round_trips_with_optional_max_fps() {
         default,
         Request::StreamOutputStart {
             max_fps: None,
-            target: StreamTarget::Output
+            target: StreamTarget::Output,
+            dmabuf: None,
         }
     );
+}
+
+#[test]
+fn stream_output_start_dmabuf_opt_in_round_trips() {
+    let req = Request::StreamOutputStart {
+        max_fps: None,
+        target: StreamTarget::Output,
+        dmabuf: Some(true),
+    };
+    let json = serde_json::to_string(&req).unwrap();
+    assert!(json.contains(r#""dmabuf":true"#), "{json}");
+    assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
 }
 
 #[test]
@@ -877,6 +895,7 @@ fn stream_output_start_round_trips_a_window_target() {
         target: StreamTarget::Window {
             window: WindowId(7),
         },
+        dmabuf: None,
     };
     let json = serde_json::to_string(&req).unwrap();
     assert!(
@@ -945,6 +964,9 @@ fn stream_output_started_response_round_trips() {
         width: 1920,
         height: 1080,
         format: StreamPixelFormat::Bgra8,
+        slots: None,
+        slot_stride: None,
+        slot_bytes: None,
     };
     let json = serde_json::to_string(&resp).unwrap();
     assert!(json.contains(r#""format":{"type":"Bgra8"}"#), "{json}");
@@ -955,10 +977,89 @@ fn stream_output_started_response_round_trips() {
             width,
             height,
             format,
+            ..
         } => {
             assert_eq!((stream_id, width, height), (3, 1920, 1080));
             assert_eq!(format, StreamPixelFormat::Bgra8);
         }
+        other => panic!("expected StreamOutputStarted, got {other:?}"),
+    }
+}
+
+#[test]
+fn dmabuf_stream_output_started_carries_the_slot_table_shape() {
+    let resp = Response::StreamOutputStarted {
+        stream_id: 3,
+        width: 1920,
+        height: 1080,
+        format: StreamPixelFormat::Dmabuf {
+            drm_format: 0x3432_5258,
+            modifier: 0,
+        },
+        slots: Some(3),
+        slot_stride: Some(7680),
+        slot_bytes: Some(8_294_400),
+    };
+    let json = serde_json::to_string(&resp).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "type": "StreamOutputStarted",
+            "stream_id": 3,
+            "width": 1920,
+            "height": 1080,
+            "format": {"type": "Dmabuf", "drm_format": 875713112, "modifier": 0},
+            "slots": 3,
+            "slot_stride": 7680,
+            "slot_bytes": 8294400
+        })
+    );
+    match serde_json::from_str::<Response>(&json).unwrap() {
+        Response::StreamOutputStarted {
+            stream_id,
+            width,
+            height,
+            format,
+            slots,
+            slot_stride,
+            slot_bytes,
+        } => {
+            assert_eq!((stream_id, width, height), (3, 1920, 1080));
+            assert_eq!(
+                format,
+                StreamPixelFormat::Dmabuf {
+                    drm_format: 0x3432_5258,
+                    modifier: 0,
+                }
+            );
+            assert_eq!(slots, Some(3));
+            assert_eq!(slot_stride, Some(7680));
+            assert_eq!(slot_bytes, Some(8_294_400));
+        }
+        other => panic!("expected StreamOutputStarted, got {other:?}"),
+    }
+    // SHM replies omit the slot fields entirely.
+    let shm = Response::StreamOutputStarted {
+        stream_id: 3,
+        width: 1920,
+        height: 1080,
+        format: StreamPixelFormat::Bgra8,
+        slots: None,
+        slot_stride: None,
+        slot_bytes: None,
+    };
+    let json = serde_json::to_string(&shm).unwrap();
+    assert!(!json.contains("slots"), "{json}");
+    assert!(!json.contains("slot_stride"), "{json}");
+    assert!(!json.contains("slot_bytes"), "{json}");
+    match serde_json::from_str::<Response>(&json).unwrap() {
+        Response::StreamOutputStarted {
+            slots,
+            slot_stride,
+            slot_bytes,
+            ..
+        } => assert_eq!((slots, slot_stride, slot_bytes), (None, None, None)),
         other => panic!("expected StreamOutputStarted, got {other:?}"),
     }
 }
@@ -975,11 +1076,72 @@ fn stream_frame_event_round_trips_with_metadata() {
         damage: vec![Rect::new(0, 0, 640, 480)],
         dropped: 7,
         byte_len: 640 * 480 * 4,
+        slot: None,
     };
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""sequence":42"#), "{json}");
     assert!(json.contains(r#""dropped":7"#), "{json}");
     assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event);
+    assert!(!json.contains(r#""slot""#), "{json}");
+}
+
+#[test]
+fn dmabuf_stream_frame_references_a_slot_without_a_blob() {
+    let event = Event::StreamFrame {
+        stream_id: 1,
+        sequence: 42,
+        width: 640,
+        height: 480,
+        stride: 2560,
+        format: StreamPixelFormat::Dmabuf {
+            drm_format: 0x3432_5258,
+            modifier: 0,
+        },
+        damage: vec![Rect::new(0, 0, 640, 480)],
+        dropped: 0,
+        byte_len: 640 * 480 * 4,
+        slot: Some(2),
+    };
+    let json = serde_json::to_string(&event).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["slot"], serde_json::json!(2));
+    assert_eq!(
+        value["format"],
+        serde_json::json!({"type": "Dmabuf", "drm_format": 875713112, "modifier": 0})
+    );
+    assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event);
+}
+
+#[test]
+fn stream_buffer_release_round_trips() {
+    let request = Request::StreamBufferRelease {
+        stream_id: 7,
+        slot: 1,
+    };
+    let json = serde_json::to_string(&request).unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"StreamBufferRelease","stream_id":7,"slot":1}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<Request>(&json).unwrap(),
+        request
+    );
+    let response = Response::StreamBufferReleased {
+        stream_id: 7,
+        slot: 1,
+    };
+    let json = serde_json::to_string(&response).unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"StreamBufferReleased","stream_id":7,"slot":1}"#
+    );
+    match serde_json::from_str::<Response>(&json).unwrap() {
+        Response::StreamBufferReleased { stream_id, slot } => {
+            assert_eq!((stream_id, slot), (7, 1));
+        }
+        other => panic!("expected StreamBufferReleased, got {other:?}"),
+    }
 }
 
 #[test]

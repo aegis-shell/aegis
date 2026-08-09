@@ -54,5 +54,6 @@ pub use schema::{
 };
 pub use server::{
     AgentIdentity, CaptureInteractionDomainPayload, CaptureOutputPayload, Handler,
-    JournalBroadcaster, PairedAgent, Server, StreamFramePayload, StreamInfo,
+    JournalBroadcaster, PairedAgent, Server, StreamFramePayload, StreamInfo, StreamPixelFrame,
+    StreamSlotFrame, StreamSlotTable,
 };

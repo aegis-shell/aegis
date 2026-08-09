@@ -800,7 +800,11 @@ impl Client {
     ) -> io::Result<StreamStarted> {
         write_msg(
             &mut self.stream,
-            &Request::StreamOutputStart { max_fps, target },
+            &Request::StreamOutputStart {
+                max_fps,
+                target,
+                dmabuf: None,
+            },
         )?;
         match read_msg::<_, Response>(&mut self.stream)? {
             Response::StreamOutputStarted {
@@ -808,6 +812,7 @@ impl Client {
                 width,
                 height,
                 format,
+                ..
             } => Ok(StreamStarted {
                 stream_id,
                 width,
@@ -1142,7 +1147,17 @@ impl Client {
                     damage,
                     dropped,
                     byte_len,
+                    slot,
                 }) => {
+                    if slot.is_some() {
+                        // This client never opts into the dmabuf transport,
+                        // so a slot-referenced frame has no blob to consume;
+                        // reading one would desynchronize the framing.
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "dmabuf stream frames require slot-capable client",
+                        ));
+                    }
                     let pixels = crate::blob::receive(&self.stream, byte_len)?;
                     return Ok(StreamMessage::Frame(StreamFrame {
                         stream_id,

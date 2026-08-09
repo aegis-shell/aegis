@@ -17,7 +17,7 @@ pub(super) fn drive_read_loop<H: Handler>(
 ) -> (Option<SubId>, Option<SubId>, bool) {
     const MIN_LEASE_MS: u64 = 1_000;
     const MAX_LEASE_MS: u64 = 86_400_000;
-    let (granted, granted_scope, scope_name, mut active_lease, principal, agent_reply) =
+    let (granted, granted_scope, scope_name, mut active_lease, principal, agent_reply, version) =
         match read_msg::<_, Request>(read) {
             Ok(Request::Hello {
                 version,
@@ -26,7 +26,7 @@ pub(super) fn drive_read_loop<H: Handler>(
                 lease,
                 agent,
             }) => {
-                if version != PROTOCOL_VERSION {
+                if version > PROTOCOL_VERSION {
                     let _ = tx.send(Outbound::Response(Response::Error {
                     message: format!(
                         "unsupported protocol version {version} (server supports {PROTOCOL_VERSION})"
@@ -168,7 +168,15 @@ pub(super) fn drive_read_loop<H: Handler>(
                 } else {
                     None
                 };
-                (gc, gs, scope, active_lease, principal, agent_reply)
+                (
+                    gc,
+                    gs,
+                    scope,
+                    active_lease,
+                    principal,
+                    agent_reply,
+                    version,
+                )
             }
             Ok(_) => {
                 let _ = tx.send(Outbound::Response(Response::Error {
@@ -202,9 +210,11 @@ pub(super) fn drive_read_loop<H: Handler>(
     {
         return (None, None, false);
     }
+    // Older clients are answered at their own version; version-gated
+    // behavior (such as dmabuf streams) keys off the negotiated version.
     if tx
         .send(Outbound::Response(Response::Hello {
-            version: PROTOCOL_VERSION,
+            version: version.min(PROTOCOL_VERSION),
             caps: granted,
             scope: granted_scope.clone(),
             lease: active_lease.as_ref().map(|(grant, _)| *grant),
@@ -247,6 +257,10 @@ pub(super) fn drive_read_loop<H: Handler>(
             .is_some_and(|(_, deadline)| std::time::Instant::now() < *deadline);
         let agent_admin = scope_name.as_deref() == Some(LOCAL_AGENT_ADMIN_SCOPE)
             && handler.resolve_scope(LOCAL_AGENT_ADMIN_SCOPE).is_some();
+        // Set by the StreamOutputStart arm when a zero-copy stream began:
+        // the reply then carries the slot table's descriptors on the blob
+        // channel right after the JSON (protocol 25).
+        let mut stream_start_table: Option<StreamSlotTable> = None;
         let resp = match req {
             Request::Hello { .. } => Response::Error {
                 message: "Hello already exchanged".into(),
@@ -1477,7 +1491,11 @@ pub(super) fn drive_read_loop<H: Handler>(
                     }
                 }
             }
-            Request::StreamOutputStart { max_fps, target } => {
+            Request::StreamOutputStart {
+                max_fps,
+                target,
+                dmabuf,
+            } => {
                 // Fail-closed exactly like CaptureOutput: `control`, a live
                 // lease, and an explicit StreamOutput op in the granted
                 // scope — never inherited through None-means-all (ADR-0052).
@@ -1502,7 +1520,12 @@ pub(super) fn drive_read_loop<H: Handler>(
                         message: "session is locked or inactive".into(),
                     }
                 } else {
-                    match handler.stream_output_start(conn_id, max_fps, target) {
+                    // The zero-copy transport requires an explicit opt-in at
+                    // protocol 25 or later: a client that did not opt in must
+                    // never receive a dmabuf announcement, or its framing
+                    // desynchronizes.
+                    let allow_dmabuf = dmabuf == Some(true) && version >= 25;
+                    match handler.stream_output_start(conn_id, max_fps, target, allow_dmabuf) {
                         Ok(info) => {
                             streams.lock().unwrap().insert(
                                 info.stream_id,
@@ -1515,11 +1538,31 @@ pub(super) fn drive_read_loop<H: Handler>(
                                     queued: Arc::new(AtomicU32::new(0)),
                                 },
                             );
-                            Response::StreamOutputStarted {
-                                stream_id: info.stream_id,
-                                width: info.width,
-                                height: info.height,
-                                format: info.format,
+                            match info.slots {
+                                Some(table) => {
+                                    let slots = table.fds.len() as u32;
+                                    let slot_stride = table.stride;
+                                    let slot_bytes = table.byte_len;
+                                    stream_start_table = Some(table);
+                                    Response::StreamOutputStarted {
+                                        stream_id: info.stream_id,
+                                        width: info.width,
+                                        height: info.height,
+                                        format: info.format,
+                                        slots: Some(slots),
+                                        slot_stride: Some(slot_stride),
+                                        slot_bytes: Some(slot_bytes),
+                                    }
+                                }
+                                None => Response::StreamOutputStarted {
+                                    stream_id: info.stream_id,
+                                    width: info.width,
+                                    height: info.height,
+                                    format: info.format,
+                                    slots: None,
+                                    slot_stride: None,
+                                    slot_bytes: None,
+                                },
                             }
                         }
                         Err(message) => Response::Error { message },
@@ -1533,6 +1576,24 @@ pub(super) fn drive_read_loop<H: Handler>(
                     &response,
                 );
                 response
+            }
+            Request::StreamBufferRelease { stream_id, slot } => {
+                // A connection may release slots only of a stream it owns
+                // (same ownership rule as StreamOutputStop). Releases arrive
+                // per consumed frame, so they are deliberately not journaled.
+                let owned = streams
+                    .lock()
+                    .unwrap()
+                    .get(&stream_id)
+                    .is_some_and(|lane| lane.conn_id == conn_id);
+                if owned {
+                    handler.stream_buffer_release(stream_id, slot);
+                    Response::StreamBufferReleased { stream_id, slot }
+                } else {
+                    Response::Error {
+                        message: format!("unknown stream {stream_id}"),
+                    }
+                }
             }
             Request::StreamOutputStop { stream_id } => {
                 // A connection may stop only a stream it owns.
@@ -1970,7 +2031,14 @@ pub(super) fn drive_read_loop<H: Handler>(
                 response
             }
         };
-        if tx.send(Outbound::Response(resp)).is_err() {
+        let outbound = match stream_start_table {
+            Some(table) => Outbound::StreamStarted {
+                response: resp,
+                table,
+            },
+            None => Outbound::Response(resp),
+        };
+        if tx.send(outbound).is_err() {
             break;
         }
     }

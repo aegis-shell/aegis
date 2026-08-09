@@ -1,3 +1,5 @@
+use std::os::fd::AsRawFd;
+
 use super::*;
 
 pub(super) fn write_output_capture<H: Handler>(
@@ -193,11 +195,14 @@ pub(super) fn write_interaction_domain_capture<H: Handler>(
     }
 }
 
-/// Write one stream frame: the JSON [`Event::StreamFrame`] metadata followed
-/// by its sealed pixel memfd. Live policy is re-checked per frame
-/// (ADR-0052): an expired lease or a revoked/narrowed scope ends the stream
-/// (`StreamEnded`, lane unregistered, handler notified); an inactive
-/// lock/VT gate drops the frame silently and the stream survives.
+/// Write one stream frame: the JSON [`Event::StreamFrame`] metadata,
+/// followed by its sealed pixel memfd for SHM frames. Live policy is
+/// re-checked per frame (ADR-0052): an expired lease or a revoked/narrowed
+/// scope ends the stream (`StreamEnded`, lane unregistered, handler
+/// notified); an inactive lock/VT gate drops the frame silently and the
+/// stream survives. A dmabuf slot frame (protocol 25) references a
+/// descriptor the consumer received at start, so only the JSON header —
+/// with `slot` set and the slot's byte length — crosses the wire.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn write_stream_frame<H: Handler>(
     stream: &mut UnixStream,
@@ -218,9 +223,9 @@ pub(super) fn write_stream_frame<H: Handler>(
         } else {
             "stream scope was revoked or narrowed"
         };
-        let lane = streams.lock().unwrap().remove(&payload.stream_id);
+        let lane = streams.lock().unwrap().remove(&payload.stream_id());
         if lane.is_some() {
-            handler.stream_output_stop(payload.stream_id);
+            handler.stream_output_stop(payload.stream_id());
         }
         audit_capability_effect(
             handler,
@@ -234,7 +239,7 @@ pub(super) fn write_stream_frame<H: Handler>(
         return write_msg(
             stream,
             &Event::StreamEnded {
-                stream_id: payload.stream_id,
+                stream_id: payload.stream_id(),
                 reason: reason.to_owned(),
             },
         );
@@ -243,24 +248,61 @@ pub(super) fn write_stream_frame<H: Handler>(
         // Session locked or seat inactive: pause delivery, keep the stream.
         return Ok(());
     }
-    let blob = match crate::blob::SealedBlob::new(&payload.pixels) {
-        Ok(blob) => blob,
-        // A malformed frame (size overflow) is dropped, not fatal.
-        Err(_) => return Ok(()),
-    };
-    write_msg(
-        stream,
-        &Event::StreamFrame {
-            stream_id: payload.stream_id,
-            sequence: payload.sequence,
-            width: payload.width,
-            height: payload.height,
-            stride: payload.stride,
-            format: payload.format,
-            damage: payload.damage,
-            dropped: payload.dropped,
-            byte_len: blob.len(),
-        },
-    )?;
-    blob.send(stream)
+    match payload {
+        StreamFramePayload::Pixels(frame) => {
+            let blob = match crate::blob::SealedBlob::new(&frame.pixels) {
+                Ok(blob) => blob,
+                // A malformed frame (size overflow) is dropped, not fatal.
+                Err(_) => return Ok(()),
+            };
+            write_msg(
+                stream,
+                &Event::StreamFrame {
+                    stream_id: frame.stream_id,
+                    sequence: frame.sequence,
+                    width: frame.width,
+                    height: frame.height,
+                    stride: frame.stride,
+                    format: frame.format,
+                    damage: frame.damage,
+                    dropped: frame.dropped,
+                    byte_len: blob.len(),
+                    slot: None,
+                },
+            )?;
+            blob.send(stream)
+        }
+        StreamFramePayload::Slot(frame) => write_msg(
+            stream,
+            &Event::StreamFrame {
+                stream_id: frame.stream_id,
+                sequence: frame.sequence,
+                width: frame.width,
+                height: frame.height,
+                stride: frame.stride,
+                format: frame.format,
+                damage: frame.damage,
+                dropped: frame.dropped,
+                byte_len: frame.byte_len,
+                slot: Some(frame.slot),
+            },
+        ),
+    }
+}
+
+/// Write a `StreamOutputStarted` reply for a zero-copy dmabuf stream
+/// (protocol 25): the JSON response first, then one `0xfd`-marked
+/// `SCM_RIGHTS` message per slot in slot order. A failed descriptor send
+/// tears down the connection like any other writer error; the client then
+/// drops the stream instead of running with a partial slot table.
+pub(super) fn write_stream_started(
+    stream: &mut UnixStream,
+    response: &Response,
+    table: &StreamSlotTable,
+) -> io::Result<()> {
+    write_msg(stream, response)?;
+    for fd in &table.fds {
+        crate::blob::send_fd(stream, fd.as_raw_fd())?;
+    }
+    Ok(())
 }

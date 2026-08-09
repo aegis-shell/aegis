@@ -536,6 +536,7 @@ impl Handler for TestHandler {
         _conn_id: u64,
         _max_fps: Option<u32>,
         target: aegis_ipc::StreamTarget,
+        _allow_dmabuf: bool,
     ) -> Result<aegis_ipc::StreamInfo, String> {
         self.stream_targets.lock().unwrap().push(target);
         let stream_id = self.stream_starts.fetch_add(1, Ordering::AcqRel) + 1;
@@ -544,6 +545,7 @@ impl Handler for TestHandler {
             width: 2,
             height: 2,
             format: aegis_ipc::StreamPixelFormat::Bgra8,
+            slots: None,
         })
     }
     fn stream_output_stop(&self, stream_id: u64) {

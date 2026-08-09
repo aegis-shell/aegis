@@ -84,6 +84,15 @@ impl CompositorRuntime {
         // capture always forces a presentation frame.
         let mut frame_capture =
             self.prepare_frame_capture(session_locked, &mut pending_screenshots);
+        // A due dmabuf stream (IPC protocol 25) forces a composite present
+        // exactly like a bound readback: its capture-surface slot is filled
+        // from the presented frame right after the commit.
+        let dmabuf_stream_due = !session_locked
+            && self.host.is_active()
+            && !self
+                .streams
+                .due_dmabuf_ids(std::time::Instant::now())
+                .is_empty();
         let screenshot_include_cursor = self
             .config
             .as_ref()
@@ -127,6 +136,7 @@ impl CompositorRuntime {
         let cursor_only_eligible = matches!(damage, FrameDamage::None)
             && cursor_plane_changed
             && frame_capture.is_none()
+            && !dmabuf_stream_due
             && self.pending_capture.is_none()
             && self.pending_interaction_domain_capture.is_none()
             && !self.screenshot_freeze.armed
@@ -166,6 +176,7 @@ impl CompositorRuntime {
         }
         if matches!(damage, FrameDamage::None)
             && frame_capture.is_none()
+            && !dmabuf_stream_due
             && self.pending_capture.is_none()
             && self.pending_interaction_domain_capture.is_none()
             && !self.screenshot_freeze.armed
@@ -200,8 +211,11 @@ impl CompositorRuntime {
         // composite, or the fallback frame could skip rendering and show a
         // frozen image.
         let was_scanout = self.primary_plane_state.is_direct();
-        let primary_plane_plan =
-            self.plan_primary_plane(physical_size, cursor_hidden, frame_capture.is_some());
+        let primary_plane_plan = self.plan_primary_plane(
+            physical_size,
+            cursor_hidden,
+            frame_capture.is_some() || dmabuf_stream_due,
+        );
         if let Some(candidate) = primary_plane_plan.direct_candidate() {
             match self.host.present_scanout(candidate, damage.area_rects()) {
                 Ok(completion_fence) => {
@@ -2018,6 +2032,12 @@ impl CompositorRuntime {
                 if let Some(capture) = capture_for_present {
                     debug_assert!(self.pending_capture.is_none());
                     self.pending_capture = Some(capture);
+                }
+                // The frame is on its way to scanout: copy it into every due
+                // dmabuf stream's capture-surface slot (IPC protocol 25). The
+                // frame events go out once each slot's acquire fence signals.
+                if dmabuf_stream_due {
+                    self.blit_dmabuf_stream_frames(completion_fence.as_ref());
                 }
                 self.server.acknowledge_presented_surface_damage();
                 if self.server.lock_confirmation_pending() {

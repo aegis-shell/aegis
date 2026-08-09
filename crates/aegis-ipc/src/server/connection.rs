@@ -82,6 +82,9 @@ pub(super) fn serve_connection<H: Handler + 'static>(
                         result
                     }
                     Outbound::Event(e) => write_msg(&mut w, &e),
+                    Outbound::StreamStarted { response, table } => {
+                        write_stream_started(&mut w, &response, &table)
+                    }
                     Outbound::CaptureOutput {
                         payload,
                         lease_deadline,
