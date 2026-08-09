@@ -7,6 +7,8 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.16] - 2026-08-10
+
 ### IPC
 
 - Protocol 26 adds per-window content capture (ADR-0117):
