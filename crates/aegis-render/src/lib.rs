@@ -1027,19 +1027,23 @@ impl Renderer {
                 // and the server supplied usable surface-local damage. Unlike
                 // the historical guard, a buffer_scale > 1 is NOT a barrier:
                 // the server already normalises buffer damage to surface-local
-                // logical coordinates at commit, so we only have to multiply
-                // those coordinates by `buffer_scale` to reach buffer pixels.
+                // logical coordinates at commit, so we only have to scale
+                // those coordinates into buffer pixels (buffer_scale, or the
+                // viewport-implied factor for fractional-scale clients).
                 let incremental =
                     dims_match && f.geometry.transform == Transform::Normal && !f.damage.is_empty();
                 if incremental {
                     // Union of the damage rects mapped from surface-local
-                    // logical coordinates to buffer pixels (× buffer_scale,
-                    // rounded outward so no edge pixel is dropped), then
-                    // clamped to the buffer extent. Uploaded in a single
-                    // update_region: pixels outside every damaged rect are
-                    // identical to the previous frame by the damage protocol,
-                    // so refreshing a bounding superset is always correct.
-                    let scale = f.geometry.buffer_scale.max(1);
+                    // logical coordinates to buffer pixels (rounded outward so
+                    // no edge pixel is dropped), then clamped to the buffer
+                    // extent. Uploaded in a single update_region: pixels
+                    // outside every damaged rect are identical to the previous
+                    // frame by the damage protocol, so refreshing a bounding
+                    // superset is always correct. The factor is the effective
+                    // logical→buffer scale — fractional-scale clients keep
+                    // buffer_scale at 1 and carry the density in a wp_viewport
+                    // destination, which buffer_scale alone under-covers.
+                    let (scale_x, scale_y) = f.geometry.logical_to_buffer_scale(f.width, f.height);
                     let mut x0 = i32::MAX;
                     let mut y0 = i32::MAX;
                     let mut x1 = i32::MIN;
@@ -1048,14 +1052,16 @@ impl Renderer {
                         // Outward rounding so a partially-covered buffer pixel
                         // is always included (mirrors the server's
                         // buffer_damage_to_surface division).
-                        let sx0 = d.origin.x.saturating_mul(scale).max(0).min(f.width);
-                        let sy0 = d.origin.y.saturating_mul(scale).max(0).min(f.height);
-                        let sx1 = (d.origin.x + d.size.w)
-                            .saturating_mul(scale)
+                        let sx0 = ((d.origin.x as f32 * scale_x).floor() as i32)
                             .max(0)
                             .min(f.width);
-                        let sy1 = (d.origin.y + d.size.h)
-                            .saturating_mul(scale)
+                        let sy0 = ((d.origin.y as f32 * scale_y).floor() as i32)
+                            .max(0)
+                            .min(f.height);
+                        let sx1 = (((d.origin.x + d.size.w) as f32 * scale_x).ceil() as i32)
+                            .max(0)
+                            .min(f.width);
+                        let sy1 = (((d.origin.y + d.size.h) as f32 * scale_y).ceil() as i32)
                             .max(0)
                             .min(f.height);
                         if sx1 <= sx0 || sy1 <= sy0 {

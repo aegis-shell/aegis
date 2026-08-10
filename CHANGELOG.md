@@ -7,6 +7,25 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Fractional-scale shm surfaces no longer repaint partially: with
+  `wp_viewport` carrying the density (`buffer_scale` stays 1), surface-local
+  damage was mapped to buffer pixels with `buffer_scale` instead of the
+  viewport-implied factor, so both the compositor's incremental snapshot copy
+  and the renderer's incremental texture upload refreshed only the leading
+  portion of every alternated buffer. Visible as truncated or stale popup
+  content, e.g. Chrome hover tooltips clipped mid-text on a 2× output. The
+  logical→buffer factor now comes from the viewport destination when one is
+  set, in both paths.
+- Popups that map or unmap under a stationary cursor now trigger a pointer
+  re-hit on the affected seat, and releasing a button ends the implicit grab
+  with the same re-hit. A Qt menu or Chrome bubble that opens under the
+  cursor previously never received `wl_pointer.enter` until the next motion,
+  so the client's pointer tracking stayed on the owning toplevel and the
+  first click after the menu opened was misrouted — the item did not
+  activate and the menu could dismiss instead.
+
 ## [0.0.16] - 2026-08-10
 
 ### IPC

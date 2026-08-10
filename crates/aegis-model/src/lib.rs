@@ -471,6 +471,45 @@ impl Default for SurfaceGeometry {
     }
 }
 
+impl SurfaceGeometry {
+    /// Multiplier from surface-local logical coordinates to buffer pixels for
+    /// the committed buffer of `buffer_width`×`buffer_height`, per axis.
+    ///
+    /// `wl_surface.damage` arrives in surface-local coordinates; both the
+    /// compositor's incremental shm snapshot copy and the renderer's
+    /// incremental texture upload must scale those rects into buffer pixels
+    /// to refresh exactly the changed region. `wl_surface.set_buffer_scale`
+    /// alone is *not* the whole story: fractional-scale clients keep
+    /// `buffer_scale` at 1 and commit a buffer N× denser than the logical
+    /// surface behind a `wp_viewport` destination, so the factor has to be
+    /// derived from the viewport when one is set.
+    ///
+    /// - `viewport_dst` set: the logical surface extent is the destination
+    ///   size, so the factor is `buffer ÷ destination` per axis (2.0 for a
+    ///   2× fractional-scale client, 1.5 for 150%, ...). A `viewport_src`
+    ///   sub-rect narrows the sampled region, so this can over-cover — always
+    ///   safe for damage tracking, which tolerates refreshing extra pixels
+    ///   but never under-refreshing.
+    /// - `viewport_src` only: damage shares the source's surface-local
+    ///   coordinate space, so the factor stays `buffer_scale`.
+    /// - neither: plain `buffer_scale`.
+    pub fn logical_to_buffer_scale(&self, buffer_width: i32, buffer_height: i32) -> (f32, f32) {
+        let scale = self.buffer_scale.max(1) as f32;
+        if let Some(dst) = self.viewport_dst {
+            let (bw, bh) = if self.transform.swap_axes() {
+                (buffer_height, buffer_width)
+            } else {
+                (buffer_width, buffer_height)
+            };
+            return (
+                (bw as f32 / dst.w.max(1) as f32).max(0.01),
+                (bh as f32 / dst.h.max(1) as f32).max(0.01),
+            );
+        }
+        (scale, scale)
+    }
+}
+
 /// A borrowed view of a surface's current contents, handed from the server to
 /// the renderer. Pixels are tightly packed BGRA8 (`stride == width * 4`).
 /// `generation` increments on every new commit so the renderer can cache the
