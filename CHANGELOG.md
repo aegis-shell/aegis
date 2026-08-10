@@ -7,6 +7,20 @@ project cuts a tagged release.
 
 ## [Unreleased]
 
+## [0.0.17] - 2026-08-10
+
+### Changed
+
+- Migrate every chrome surface to the lens single-tree placement API
+  (optics ADR-0060) and promote the optics bindings to v0.0.13:
+  `Frame::layer`/`OverlayOpts` are replaced by `Frame::place` with
+  `PlaceOpts` over closed z bands (all former layers land in the Chrome
+  band, preserving registration-order stacking), and outlined
+  foregrounds are `push_style` outline atoms instead of dedicated
+  widget calls (ADR-0061). Visuals are unchanged: the retired
+  `OverlayOpts` 4px-gap/6px-padding defaults are carried by the new
+  `aegis-design` surface helpers.
+
 ### Fixed
 
 - Fractional-scale shm surfaces no longer repaint partially: with
