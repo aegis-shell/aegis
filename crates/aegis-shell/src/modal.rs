@@ -4,8 +4,9 @@
 //! components retain their open state, typed intents, and authoritative
 //! snapshots.
 
+use aegis_design::materials::{chrome_place, surface_layout};
 use aegis_design::{Design, themes};
-use lens::{Align, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect};
+use lens::{Align, Frame, Icon, Input, LayoutOpts, Rect};
 
 use crate::{BackdropRegion, Localizer, Message, Reserved};
 
@@ -60,35 +61,39 @@ impl ModalApplicationSpec {
         let raw = input.as_raw();
         let display = (raw.display_size.x, raw.display_size.y);
         let bounds = self.bounds(display, reserved);
-        frame.layer(
+        frame.place(
             self.scrim_id,
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                w: display.0,
-                h: display.1,
-            },
-            &OverlayOpts {
-                bg: design.colors.scrim,
-                ..Default::default()
-            },
+            &chrome_place(
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: display.0,
+                    h: display.1,
+                },
+                LayoutOpts {
+                    bg: design.colors.scrim,
+                    ..surface_layout()
+                },
+            ),
             |_| {},
         );
 
         let original_theme = frame.theme();
         frame.set_theme(themes::application(design));
         let mut close = false;
-        frame.layer(
+        frame.place(
             self.panel_id,
-            bounds,
-            &OverlayOpts {
-                bg: design.colors.application_surface.with_alpha(238),
-                border: design.colors.application_border,
-                border_width: 1.0,
-                radius: APP_RADIUS,
-                pad: 0.0,
-                ..Default::default()
-            },
+            &chrome_place(
+                bounds,
+                LayoutOpts {
+                    bg: design.colors.application_surface.with_alpha(238),
+                    border: design.colors.application_border,
+                    border_width: 1.0,
+                    radius: APP_RADIUS,
+                    pad: 0.0,
+                    ..surface_layout()
+                },
+            ),
             |frame| {
                 frame.column_ex(
                     &LayoutOpts {

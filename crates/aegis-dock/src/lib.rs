@@ -31,8 +31,9 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::hash::Hasher;
 
+use aegis_design::materials::{chrome_place, surface_layout};
 use aegis_design::{Design, GlassRole, materials};
-use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect};
+use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, Rect};
 
 use aegis_model::app::Entry;
 use aegis_model::dock::DockPosition;
@@ -46,7 +47,7 @@ use aegis_shell::{
 };
 
 /// Visual height of the dock bar. Tiles rest inside it; magnified tiles pop
-/// above its top edge (they are drawn as their own layers, unclipped). On a
+/// above its top edge (they are drawn as their own placed subtrees, unclipped). On a
 /// side edge this is the panel's thickness (width).
 const DOCK_PANEL_HEIGHT: f32 = 74.0;
 /// Gap between the dock bar and the screen edge it is anchored to.

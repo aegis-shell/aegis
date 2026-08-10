@@ -8,11 +8,12 @@ use std::time::Instant;
 use aegis_config::{
     ColorScheme, LockScreenBackgroundConfig, LockScreenBackgroundMode, LockScreenStyle,
 };
+use aegis_design::materials::{chrome_place, surface_layout};
 use aegis_design::{AvatarRole, Design, themes};
 use aegis_lock::{LockState, PresentationMode, lock_layout_for};
 use ash::vk::{self, Handle};
 use flux::{GradientStop, Image};
-use lens::{Align, Color, Input, LayoutOpts, OverlayOpts, Rect, Theme, Ui};
+use lens::{Align, Color, Input, LayoutOpts, Rect, Theme, Ui};
 use thiserror::Error;
 use wayland_client::{Connection, Proxy, protocol::wl_surface};
 
@@ -968,27 +969,31 @@ fn draw_clock(
         LockScreenStyle::Centered => Align::Center,
         LockScreenStyle::Cinematic => Align::End,
     };
-    ui.layer(
+    ui.place(
         "lock-clock",
-        Rect {
-            x: layout.clock_x,
-            y: layout.clock_y,
-            w: layout.clock_width,
-            h: layout.clock_size + 12.0,
-        },
-        &aligned_layer(alignment),
+        &chrome_place(
+            Rect {
+                x: layout.clock_x,
+                y: layout.clock_y,
+                w: layout.clock_width,
+                h: layout.clock_size + 12.0,
+            },
+            aligned_layer(alignment),
+        ),
         |ui| ui.label_compact_sized(clock, layout.clock_size),
     );
     ui.set_theme(lock_theme(&visual.design, palette.muted, 255));
-    ui.layer(
+    ui.place(
         "lock-date",
-        Rect {
-            x: layout.clock_x,
-            y: layout.clock_y + layout.clock_size + 8.0,
-            w: layout.clock_width,
-            h: 28.0,
-        },
-        &aligned_layer(alignment),
+        &chrome_place(
+            Rect {
+                x: layout.clock_x,
+                y: layout.clock_y + layout.clock_size + 8.0,
+                w: layout.clock_width,
+                h: 28.0,
+            },
+            aligned_layer(alignment),
+        ),
         |ui| {
             ui.label_compact_sized(
                 date,
@@ -1031,15 +1036,17 @@ fn draw_identity(ui: &mut lens::Frame, presentation: ProfilePresentation<'_>) {
     if style == LockScreenStyle::Centered && avatar_status == AvatarStatus::Fallback {
         let avatar_style = visual.design.avatars.for_role(AvatarRole::LockHero);
         ui.set_theme(lock_theme(&visual.design, palette.avatar_foreground, alpha));
-        ui.layer(
+        ui.place(
             "lock-avatar-label",
-            Rect {
-                x: layout.avatar_x,
-                y: shifted_avatar_y,
-                w: layout.avatar_size,
-                h: layout.avatar_size,
-            },
-            &centered_layer(),
+            &chrome_place(
+                Rect {
+                    x: layout.avatar_x,
+                    y: shifted_avatar_y,
+                    w: layout.avatar_size,
+                    h: layout.avatar_size,
+                },
+                centered_layer(),
+            ),
             |ui| {
                 ui.row_ex(
                     &LayoutOpts {
@@ -1087,15 +1094,17 @@ fn draw_identity(ui: &mut lens::Frame, presentation: ProfilePresentation<'_>) {
     } else {
         profile.display_name.clone()
     };
-    ui.layer(
+    ui.place(
         "lock-display-name",
-        Rect {
-            x: name_x,
-            y: name_y,
-            w: name_width,
-            h: name_height,
-        },
-        &aligned_layer(name_alignment),
+        &chrome_place(
+            Rect {
+                x: name_x,
+                y: name_y,
+                w: name_width,
+                h: name_height,
+            },
+            aligned_layer(name_alignment),
+        ),
         |ui| {
             if style == LockScreenStyle::Cinematic {
                 // Keep the cinematic profile quiet and precise. Lens titles
@@ -1113,17 +1122,19 @@ fn draw_identity(ui: &mut lens::Frame, presentation: ProfilePresentation<'_>) {
     {
         ui.set_theme(lock_theme(&visual.design, palette.muted, alpha));
         let indicator_width = layout.field_width * 0.32;
-        ui.layer(
+        ui.place(
             "lock-keyboard-status",
-            Rect {
-                x: layout.field_x + layout.field_width - indicator_width,
-                // Both boxes finish on the same line even though their
-                // type sizes differ.
-                y: name_y + name_height - 17.0,
-                w: indicator_width,
-                h: 17.0,
-            },
-            &aligned_layer(Align::End),
+            &chrome_place(
+                Rect {
+                    x: layout.field_x + layout.field_width - indicator_width,
+                    // Both boxes finish on the same line even though their
+                    // type sizes differ.
+                    y: name_y + name_height - 17.0,
+                    w: indicator_width,
+                    h: 17.0,
+                },
+                aligned_layer(Align::End),
+            ),
             |ui| ui.label_compact_sized(&keyboard, 11.0),
         );
     }
@@ -1160,19 +1171,21 @@ fn draw_identity(ui: &mut lens::Frame, presentation: ProfilePresentation<'_>) {
         palette.foreground
     };
     ui.set_theme(lock_theme(&visual.design, credential_color, alpha));
-    ui.layer(
+    ui.place(
         "lock-password-content",
-        Rect {
-            x: field_x,
-            y: field_y,
-            w: layout.field_width,
-            h: layout.field_height,
-        },
-        &OverlayOpts {
-            pad: 0.0,
-            cross: Align::Stretch,
-            ..Default::default()
-        },
+        &chrome_place(
+            Rect {
+                x: field_x,
+                y: field_y,
+                w: layout.field_width,
+                h: layout.field_height,
+            },
+            LayoutOpts {
+                pad: 0.0,
+                cross: Align::Stretch,
+                ..surface_layout()
+            },
+        ),
         |ui| {
             ui.row_ex(
                 &LayoutOpts {
@@ -1222,23 +1235,25 @@ fn draw_identity(ui: &mut lens::Frame, presentation: ProfilePresentation<'_>) {
             LockScreenStyle::Centered => (field_y + layout.field_height + 12.0, Align::Center),
             LockScreenStyle::Cinematic => (field_y - 48.0, Align::End),
         };
-        ui.layer(
+        ui.place(
             "lock-status",
-            Rect {
-                x: if style == LockScreenStyle::Centered {
-                    (layout.width - 520.0) * 0.5
-                } else {
-                    field_x
+            &chrome_place(
+                Rect {
+                    x: if style == LockScreenStyle::Centered {
+                        (layout.width - 520.0) * 0.5
+                    } else {
+                        field_x
+                    },
+                    y: status_y,
+                    w: if style == LockScreenStyle::Centered {
+                        520.0
+                    } else {
+                        layout.field_width
+                    },
+                    h: 24.0,
                 },
-                y: status_y,
-                w: if style == LockScreenStyle::Centered {
-                    520.0
-                } else {
-                    layout.field_width
-                },
-                h: 24.0,
-            },
-            &aligned_layer(alignment),
+                aligned_layer(alignment),
+            ),
             |ui| ui.label_compact_sized(&message, 12.0),
         );
     }
@@ -1253,15 +1268,15 @@ fn keyboard_status(state: &LockState) -> Option<String> {
     }
 }
 
-fn centered_layer() -> OverlayOpts {
+fn centered_layer() -> LayoutOpts {
     aligned_layer(Align::Center)
 }
 
-fn aligned_layer(alignment: Align) -> OverlayOpts {
-    OverlayOpts {
+fn aligned_layer(alignment: Align) -> LayoutOpts {
+    LayoutOpts {
         pad: 0.0,
         cross: alignment,
-        ..Default::default()
+        ..surface_layout()
     }
 }
 

@@ -64,15 +64,15 @@ pub(super) fn sized(w: f32, h: f32) -> LayoutOpts {
     }
 }
 
-/// An invisible layer used purely as a layout anchor for its children.
-pub(super) fn transparent() -> OverlayOpts {
-    OverlayOpts {
+/// An invisible placement used purely as a layout anchor for its children.
+pub(super) fn transparent() -> LayoutOpts {
+    LayoutOpts {
         bg: Color::TRANSPARENT,
         border: Color::TRANSPARENT,
         border_width: 0.0,
         radius: 0.0,
         pad: 0.0,
-        ..Default::default()
+        ..materials::surface_layout()
     }
 }
 
@@ -90,15 +90,17 @@ pub(super) fn render_disc(
         w: diameter,
         h: diameter,
     };
-    frame.layer(
+    frame.place(
         id,
-        rect,
-        &OverlayOpts {
-            bg: color,
-            border: Color::TRANSPARENT,
-            radius: diameter * 0.5,
-            ..Default::default()
-        },
+        &materials::chrome_place(
+            rect,
+            LayoutOpts {
+                bg: color,
+                border: Color::TRANSPARENT,
+                radius: diameter * 0.5,
+                ..materials::surface_layout()
+            },
+        ),
         |_| {},
     );
 }
@@ -118,16 +120,18 @@ pub(super) fn render_ring(
         w: diameter,
         h: diameter,
     };
-    frame.layer(
+    frame.place(
         id,
-        rect,
-        &OverlayOpts {
-            bg: Color::TRANSPARENT,
-            border: color,
-            border_width: width,
-            radius: diameter * 0.5,
-            ..Default::default()
-        },
+        &materials::chrome_place(
+            rect,
+            LayoutOpts {
+                bg: Color::TRANSPARENT,
+                border: color,
+                border_width: width,
+                radius: diameter * 0.5,
+                ..materials::surface_layout()
+            },
+        ),
         |_| {},
     );
 }
@@ -141,16 +145,18 @@ pub(super) fn render_corner_brackets(frame: &mut Frame, id: &str, rect: Rect, co
     const THICK: f32 = 1.5;
     const INSET: f32 = 6.0;
     let mut bar = |suffix: &str, x: f32, y: f32, w: f32, h: f32| {
-        frame.layer(
+        frame.place(
             &format!("{id}-{suffix}"),
-            Rect { x, y, w, h },
-            &OverlayOpts {
-                bg: color,
-                border: Color::TRANSPARENT,
-                radius: 0.0,
-                pad: 0.0,
-                ..Default::default()
-            },
+            &materials::chrome_place(
+                Rect { x, y, w, h },
+                LayoutOpts {
+                    bg: color,
+                    border: Color::TRANSPARENT,
+                    radius: 0.0,
+                    pad: 0.0,
+                    ..materials::surface_layout()
+                },
+            ),
             |_| {},
         );
     };
@@ -374,30 +380,34 @@ impl History {
 /// `fraction * width`, both faded with the reveal progress.
 pub(super) fn gauge_bar(f: &mut Frame, id: &str, rect: Rect, fraction: f32, progress: f32) {
     let hud = Hud::classic();
-    f.layer(
+    f.place(
         id,
-        rect,
-        &OverlayOpts {
-            bg: fade_color(hud.track, progress),
-            border: Color::TRANSPARENT,
-            radius: rect.h * 0.5,
-            pad: 0.0,
-            ..Default::default()
-        },
+        &materials::chrome_place(
+            rect,
+            LayoutOpts {
+                bg: fade_color(hud.track, progress),
+                border: Color::TRANSPARENT,
+                radius: rect.h * 0.5,
+                pad: 0.0,
+                ..materials::surface_layout()
+            },
+        ),
         |_| {},
     );
     let fill_w = rect.w * fraction.clamp(0.0, 1.0);
     if fill_w >= 0.5 {
-        f.layer(
+        f.place(
             &format!("{id}-fill"),
-            Rect { w: fill_w, ..rect },
-            &OverlayOpts {
-                bg: fade_color(hud.accent, progress),
-                border: Color::TRANSPARENT,
-                radius: rect.h * 0.5,
-                pad: 0.0,
-                ..Default::default()
-            },
+            &materials::chrome_place(
+                Rect { w: fill_w, ..rect },
+                LayoutOpts {
+                    bg: fade_color(hud.accent, progress),
+                    border: Color::TRANSPARENT,
+                    radius: rect.h * 0.5,
+                    pad: 0.0,
+                    ..materials::surface_layout()
+                },
+            ),
             |_| {},
         );
     }
@@ -423,21 +433,23 @@ pub(super) fn render_sparkline(
             .max(1.5)
             .min(rect.h);
         let right = rect.x + rect.w - (count - 1 - index) as f32 * (BAR_W + BAR_GAP);
-        f.layer(
+        f.place(
             &format!("aegis-hud-spark-{metric}-{index}"),
-            Rect {
-                x: right - BAR_W,
-                y: rect.y + rect.h - h,
-                w: BAR_W,
-                h,
-            },
-            &OverlayOpts {
-                bg: fade_color(hud.accent, progress),
-                border: Color::TRANSPARENT,
-                radius: 0.75,
-                pad: 0.0,
-                ..Default::default()
-            },
+            &materials::chrome_place(
+                Rect {
+                    x: right - BAR_W,
+                    y: rect.y + rect.h - h,
+                    w: BAR_W,
+                    h,
+                },
+                LayoutOpts {
+                    bg: fade_color(hud.accent, progress),
+                    border: Color::TRANSPARENT,
+                    radius: 0.75,
+                    pad: 0.0,
+                    ..materials::surface_layout()
+                },
+            ),
             |_| {},
         );
     }

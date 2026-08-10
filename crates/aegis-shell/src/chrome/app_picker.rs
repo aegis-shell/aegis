@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant};
 
-use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
+use lens::{Align, Color, Frame, Input, LayoutOpts, Rect};
 
 use crate::{
     AppCatalog, BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
@@ -293,18 +293,20 @@ impl Chrome for AppPicker {
             PickerLayout::for_display(display, self.modal_reserved, self.subject.is_some());
         self.visible_rows = layout.visible_rows;
 
-        frame.layer(
+        frame.place(
             "aegis-app-picker-scrim",
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                w: display.0,
-                h: display.1,
-            },
-            &OverlayOpts {
-                bg: design.colors.scrim,
-                ..Default::default()
-            },
+            &materials::chrome_place(
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: display.0,
+                    h: display.1,
+                },
+                LayoutOpts {
+                    bg: design.colors.scrim,
+                    ..materials::surface_layout()
+                },
+            ),
             |_| {},
         );
 
@@ -313,17 +315,15 @@ impl Chrome for AppPicker {
 
         // Minimal foreground tint only. The compositor-owned analytic pass
         // supplies the body, refraction, rim light, and shadow.
-        frame.layer(
+        frame.place(
             "aegis-app-picker-panel",
-            layout.panel,
-            &materials::glass_panel(&design),
+            &materials::chrome_place(layout.panel, materials::glass_panel(&design)),
             |_| {},
         );
 
-        frame.layer(
+        frame.place(
             "aegis-app-picker-title",
-            layout.title,
-            &transparent(),
+            &materials::chrome_place(layout.title, transparent()),
             |frame| {
                 frame.row_ex(&stretch(layout.title), |frame| {
                     frame.label_sized("Choose Application", 15.0);
@@ -338,10 +338,9 @@ impl Chrome for AppPicker {
                 11.5,
                 subject_rect.w,
             );
-            frame.layer(
+            frame.place(
                 "aegis-app-picker-subject",
-                subject_rect,
-                &transparent(),
+                &materials::chrome_place(subject_rect, transparent()),
                 |frame| {
                     frame.row_ex(&stretch(subject_rect), |frame| {
                         frame.label_compact_sized(&subject, 11.5);
@@ -374,22 +373,22 @@ impl Chrome for AppPicker {
             let icon = self.icon(row);
             let row_name = ellipsize(frame, &row.name, 13.0, (rect.w - 48.0).max(0.0));
             // Selection is the panel's single optical focus (declared in
-            // `liquid_glass_regions`); the painted layer is only the shared
-            // neutral fallback wash, never a structural accent fill.
+            // `liquid_glass_regions`); the painted placement is only the
+            // shared neutral fallback wash, never a structural accent fill.
             let mut material = if selected {
                 materials::glass_focus(&design, true, 1.0)
             } else if hovered {
                 materials::glass_focus(&design, false, 1.0)
             } else {
-                OverlayOpts {
+                LayoutOpts {
                     bg: Color::TRANSPARENT,
-                    ..Default::default()
+                    ..materials::surface_layout()
                 }
             };
             material.radius = design.radii.menu_item;
             material.pad = 0.0;
             let id = format!("aegis-app-picker-row-{pos}");
-            frame.layer(&id, rect, &material, |frame| {
+            frame.place(&id, &materials::chrome_place(rect, material), |frame| {
                 frame.row_ex(&stretch(rect), |frame| {
                     frame.spacer(10.0);
                     frame.column_ex(
@@ -415,10 +414,9 @@ impl Chrome for AppPicker {
         }
 
         if self.rows.is_empty() {
-            frame.layer(
+            frame.place(
                 "aegis-app-picker-empty",
-                layout.list,
-                &transparent(),
+                &materials::chrome_place(layout.list, transparent()),
                 |frame| {
                     frame.column_ex(
                         &LayoutOpts {
@@ -439,36 +437,40 @@ impl Chrome for AppPicker {
         let accept_hovered = contains(layout.accept, cursor.x, cursor.y);
         let clicked_cancel = pressed && cancel_hovered;
         let clicked_accept = pressed && accept_hovered;
-        frame.layer(
+        frame.place(
             "aegis-app-picker-cancel",
-            layout.cancel,
-            &OverlayOpts {
-                bg: if cancel_hovered {
-                    design.colors.application_hover
-                } else {
-                    design.colors.card_surface
+            &materials::chrome_place(
+                layout.cancel,
+                LayoutOpts {
+                    bg: if cancel_hovered {
+                        design.colors.application_hover
+                    } else {
+                        design.colors.card_surface
+                    },
+                    radius: design.radii.control,
+                    pad: 0.0,
+                    cross: Align::Center,
+                    ..materials::surface_layout()
                 },
-                radius: design.radii.control,
-                pad: 0.0,
-                cross: Align::Center,
-                ..Default::default()
-            },
+            ),
             |frame| {
                 frame.column_ex(&stretch(layout.cancel), |frame| {
                     frame.label_sized("Cancel", 13.0);
                 });
             },
         );
-        frame.layer(
+        frame.place(
             "aegis-app-picker-accept",
-            layout.accept,
-            &OverlayOpts {
-                bg: design.colors.application_accent,
-                radius: design.radii.control,
-                pad: 0.0,
-                cross: Align::Center,
-                ..Default::default()
-            },
+            &materials::chrome_place(
+                layout.accept,
+                LayoutOpts {
+                    bg: design.colors.application_accent,
+                    radius: design.radii.control,
+                    pad: 0.0,
+                    cross: Align::Center,
+                    ..materials::surface_layout()
+                },
+            ),
             |frame| {
                 frame.column_ex(&stretch(layout.accept), |frame| {
                     frame.label_sized("Open", 13.0);
@@ -537,7 +539,7 @@ impl Chrome for AppPicker {
         self.active
     }
 
-    // A pending consent owns the complete chrome layer: the Dock, HUD, and
+    // A pending consent owns the complete chrome band: the Dock, HUD, and
     // toasts stay suppressed until the prompt is answered.
     fn exclusive_presentation_active(&self) -> bool {
         self.active
@@ -699,11 +701,11 @@ fn stretch(rect: Rect) -> LayoutOpts {
     }
 }
 
-fn transparent() -> OverlayOpts {
-    OverlayOpts {
+fn transparent() -> LayoutOpts {
+    LayoutOpts {
         bg: Color::TRANSPARENT,
         pad: 0.0,
-        ..Default::default()
+        ..materials::surface_layout()
     }
 }
 

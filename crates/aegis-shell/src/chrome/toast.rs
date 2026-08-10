@@ -13,9 +13,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
+use lens::{Align, Color, Frame, Input, LayoutOpts, Rect};
 
 use crate::{Chrome, ChromeEvents, Localizer, ellipsize};
+use aegis_design::materials::{chrome_place, surface_layout};
 use aegis_model::notify::{Notification, NotificationQueue};
 use aegis_model::window::Window;
 use aegis_model::workspace::WorkspaceSnapshot;
@@ -130,17 +131,17 @@ impl Chrome for Toast {
             slot += 1;
             // Frameless: transparent background, no border, no radius —
             // floating text over the desktop.
-            let opts = OverlayOpts {
+            let opts = LayoutOpts {
                 bg: Color::TRANSPARENT,
                 border: Color::TRANSPARENT,
                 border_width: 0.0,
                 radius: 0.0,
                 pad: 0.0,
-                ..Default::default()
+                ..surface_layout()
             };
             let id: usize = n.id as usize;
             let overlay_id = format!("aegis-toast-{id}");
-            f.layer(&overlay_id, rect, &opts, |f| {
+            f.place(&overlay_id, &chrome_place(rect, opts), |f| {
                 let title = match &n.app_id {
                     Some(app) => format!("{} · {app}", n.summary),
                     None => n.summary.clone(),

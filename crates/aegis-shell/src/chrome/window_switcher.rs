@@ -7,8 +7,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use aegis_design::materials::{chrome_place, surface_layout};
 use aegis_design::{Design, GlassRole, PreviewSelectionStyle};
-use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
+use lens::{Align, Color, Frame, Input, LayoutOpts, Rect};
 
 use crate::{
     BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape, IconSet,
@@ -308,10 +309,9 @@ impl Chrome for WindowSwitcher {
         let design = self.design;
         let panel = to_lens(presentation.panel);
         let panel_material = preview::panel_material(&design, presentation.visibility);
-        frame.layer(
+        frame.place(
             "aegis-window-switcher-panel",
-            panel,
-            &panel_material,
+            &chrome_place(panel, panel_material),
             |frame| {
                 frame.column_ex(
                     &LayoutOpts {
@@ -326,14 +326,16 @@ impl Chrome for WindowSwitcher {
 
         if let Some(indicator) = presentation.selection_indicator {
             let selection = to_lens(indicator.outer);
-            frame.layer(
+            frame.place(
                 "aegis-window-switcher-selection",
-                selection,
-                &preview::card_material(
-                    &design,
-                    preview::PreviewCardState::Selected,
-                    presentation.visibility,
-                    design.radii.control,
+                &chrome_place(
+                    selection,
+                    preview::card_material(
+                        &design,
+                        preview::PreviewCardState::Selected,
+                        presentation.visibility,
+                        design.radii.control,
+                    ),
                 ),
                 |frame| {
                     frame.column_ex(&layer_size(selection.w, selection.h), |_| {});
@@ -351,14 +353,16 @@ impl Chrome for WindowSwitcher {
             let hovered = Some(window.id) == self.hovered && !window.read_only;
             let outer = to_lens(presented.geometry.outer);
             if hovered && !selected {
-                frame.layer(
+                frame.place(
                     &format!("aegis-window-switcher-card-{index}"),
-                    outer,
-                    &preview::card_material(
-                        &design,
-                        preview::PreviewCardState::Hovered,
-                        presentation.visibility,
-                        presented.corner_radius,
+                    &chrome_place(
+                        outer,
+                        preview::card_material(
+                            &design,
+                            preview::PreviewCardState::Hovered,
+                            presentation.visibility,
+                            presented.corner_radius,
+                        ),
                     ),
                     |frame| {
                         frame.column_ex(&layer_size(outer.w, outer.h), |_| {});
@@ -386,14 +390,16 @@ impl Chrome for WindowSwitcher {
             let icon_tint = design.colors.application_text.with_alpha(item_alpha);
             frame.set_theme(original_theme.with_fg(original_theme.fg().with_alpha(item_alpha)));
             let label = ellipsize(frame, title, 11.5, (label_rect.w - occupied_width).max(0.0));
-            frame.layer(
+            frame.place(
                 &format!("aegis-window-switcher-label-{index}"),
-                label_rect,
-                &OverlayOpts {
-                    bg: Color::TRANSPARENT,
-                    radius: design.radii.control,
-                    ..Default::default()
-                },
+                &chrome_place(
+                    label_rect,
+                    LayoutOpts {
+                        bg: Color::TRANSPARENT,
+                        radius: design.radii.control,
+                        ..surface_layout()
+                    },
+                ),
                 move |frame| {
                     frame.row_ex(
                         &LayoutOpts {

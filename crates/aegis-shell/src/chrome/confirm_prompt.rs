@@ -9,7 +9,7 @@
 //! [`ChromeEvents::confirm_pick_answered`]. Ordinary modal chrome over the
 //! live scene: no freeze, no screen-content capture.
 
-use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
+use lens::{Align, Color, Frame, Input, LayoutOpts, Rect};
 
 use crate::{
     BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
@@ -250,18 +250,20 @@ impl Chrome for ConfirmPrompt {
         let design = self.design;
         let layout = PromptLayout::for_display(display, self.modal_reserved);
 
-        frame.layer(
+        frame.place(
             "aegis-confirm-prompt-scrim",
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                w: display.0,
-                h: display.1,
-            },
-            &OverlayOpts {
-                bg: design.colors.scrim,
-                ..Default::default()
-            },
+            &materials::chrome_place(
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: display.0,
+                    h: display.1,
+                },
+                LayoutOpts {
+                    bg: design.colors.scrim,
+                    ..materials::surface_layout()
+                },
+            ),
             |_| {},
         );
 
@@ -270,10 +272,9 @@ impl Chrome for ConfirmPrompt {
 
         // Minimal foreground tint only. The compositor-owned analytic pass
         // supplies the body, refraction, rim light, and shadow.
-        frame.layer(
+        frame.place(
             "aegis-confirm-prompt-panel",
-            layout.panel,
-            &materials::glass_panel(&design),
+            &materials::chrome_place(layout.panel, materials::glass_panel(&design)),
             |_| {},
         );
 
@@ -283,10 +284,9 @@ impl Chrome for ConfirmPrompt {
             15.0,
             (layout.title.w - frame.theme().padding() * 2.0).max(0.0),
         );
-        frame.layer(
+        frame.place(
             "aegis-confirm-prompt-title",
-            layout.title,
-            &transparent(),
+            &materials::chrome_place(layout.title, transparent()),
             |frame| {
                 frame.row_ex(&stretch(layout.title), |frame| {
                     frame.label_sized(&title, 15.0);
@@ -295,10 +295,9 @@ impl Chrome for ConfirmPrompt {
         );
 
         let body = ellipsize(frame, &self.body, 12.0, layout.body.w);
-        frame.layer(
+        frame.place(
             "aegis-confirm-prompt-body",
-            layout.body,
-            &transparent(),
+            &materials::chrome_place(layout.body, transparent()),
             |frame| {
                 frame.row_ex(&stretch_top(layout.body), |frame| {
                     frame.label_compact_sized(&body, 12.0);
@@ -309,36 +308,40 @@ impl Chrome for ConfirmPrompt {
         match self.style {
             ConfirmPickStyle::YesNo => {
                 let cancel_hovered = contains(layout.cancel, cursor.x, cursor.y);
-                frame.layer(
+                frame.place(
                     "aegis-confirm-prompt-cancel",
-                    layout.cancel,
-                    &OverlayOpts {
-                        bg: if cancel_hovered {
-                            design.colors.application_hover
-                        } else {
-                            design.colors.card_surface
+                    &materials::chrome_place(
+                        layout.cancel,
+                        LayoutOpts {
+                            bg: if cancel_hovered {
+                                design.colors.application_hover
+                            } else {
+                                design.colors.card_surface
+                            },
+                            radius: design.radii.control,
+                            pad: 0.0,
+                            cross: Align::Center,
+                            ..materials::surface_layout()
                         },
-                        radius: design.radii.control,
-                        pad: 0.0,
-                        cross: Align::Center,
-                        ..Default::default()
-                    },
+                    ),
                     |frame| {
                         frame.column_ex(&stretch(layout.cancel), |frame| {
                             frame.label_sized("Cancel", 13.0);
                         });
                     },
                 );
-                frame.layer(
+                frame.place(
                     "aegis-confirm-prompt-accept",
-                    layout.accept,
-                    &OverlayOpts {
-                        bg: design.colors.application_accent,
-                        radius: design.radii.control,
-                        pad: 0.0,
-                        cross: Align::Center,
-                        ..Default::default()
-                    },
+                    &materials::chrome_place(
+                        layout.accept,
+                        LayoutOpts {
+                            bg: design.colors.application_accent,
+                            radius: design.radii.control,
+                            pad: 0.0,
+                            cross: Align::Center,
+                            ..materials::surface_layout()
+                        },
+                    ),
                     |frame| {
                         frame.column_ex(&stretch(layout.accept), |frame| {
                             frame.label_sized(&self.accept_label.clone(), 13.0);
@@ -350,15 +353,15 @@ impl Chrome for ConfirmPrompt {
                 for (index, (rect, label)) in layout.grant.iter().zip(GRANT_LABELS).enumerate() {
                     let hovered = contains(*rect, cursor.x, cursor.y);
                     let opts = if index == GRANT_ACCENT {
-                        OverlayOpts {
+                        LayoutOpts {
                             bg: design.colors.application_accent,
                             radius: design.radii.control,
                             pad: 0.0,
                             cross: Align::Center,
-                            ..Default::default()
+                            ..materials::surface_layout()
                         }
                     } else {
-                        OverlayOpts {
+                        LayoutOpts {
                             bg: if hovered {
                                 design.colors.application_hover
                             } else {
@@ -367,13 +370,12 @@ impl Chrome for ConfirmPrompt {
                             radius: design.radii.control,
                             pad: 0.0,
                             cross: Align::Center,
-                            ..Default::default()
+                            ..materials::surface_layout()
                         }
                     };
-                    frame.layer(
+                    frame.place(
                         &format!("aegis-confirm-prompt-grant-{index}"),
-                        *rect,
-                        &opts,
+                        &materials::chrome_place(*rect, opts),
                         |frame| {
                             frame.column_ex(&stretch(*rect), |frame| {
                                 frame.label_sized(label, 13.0);
@@ -410,7 +412,7 @@ impl Chrome for ConfirmPrompt {
         self.active
     }
 
-    // A pending consent owns the complete chrome layer: the Dock, HUD, and
+    // A pending consent owns the complete chrome band: the Dock, HUD, and
     // toasts stay suppressed until the prompt is answered.
     fn exclusive_presentation_active(&self) -> bool {
         self.active
@@ -549,11 +551,11 @@ fn stretch_top(rect: Rect) -> LayoutOpts {
     }
 }
 
-fn transparent() -> OverlayOpts {
-    OverlayOpts {
+fn transparent() -> LayoutOpts {
+    LayoutOpts {
         bg: Color::TRANSPARENT,
         pad: 0.0,
-        ..Default::default()
+        ..materials::surface_layout()
     }
 }
 

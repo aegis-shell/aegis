@@ -7,7 +7,8 @@
 //! component reads — it never mutates the window model itself.
 
 use aegis_design::Design;
-use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
+use aegis_design::materials::{chrome_place, surface_layout};
+use lens::{Align, Color, Frame, Input, LayoutOpts, Rect};
 
 use crate::{
     Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape, InteractionDomainIntent,
@@ -327,16 +328,18 @@ impl Chrome for Overview {
                 } else {
                     colors.application_border.with_alpha(self.alpha(160))
                 };
-                frame.layer(
+                frame.place(
                     &format!("aegis-overview-ws-{i}"),
-                    to_lens(*tile),
-                    &OverlayOpts {
-                        bg,
-                        border,
-                        border_width: if current { 2.0 } else { 1.0 },
-                        radius: 10.0,
-                        ..Default::default()
-                    },
+                    &chrome_place(
+                        to_lens(*tile),
+                        LayoutOpts {
+                            bg,
+                            border,
+                            border_width: if current { 2.0 } else { 1.0 },
+                            radius: 10.0,
+                            ..surface_layout()
+                        },
+                    ),
                     |_| {},
                 );
                 let caption = Rect {
@@ -345,10 +348,9 @@ impl Chrome for Overview {
                     w: tile.size.w as f32,
                     h: geom::RAIL_LABEL_H as f32,
                 };
-                frame.layer(
+                frame.place(
                     &format!("aegis-overview-ws-label-{i}"),
-                    caption,
-                    &OverlayOpts::default(),
+                    &chrome_place(caption, surface_layout()),
                     move |frame| {
                         frame.column_ex(
                             &LayoutOpts {
@@ -397,20 +399,22 @@ impl Chrome for Overview {
                 } else {
                     i18n.text(Message::InteractionDomainPaused)
                 };
-                frame.layer(
+                frame.place(
                     &format!("aegis-overview-interaction_domain-{i}"),
-                    to_lens(*tile),
-                    &OverlayOpts {
-                        bg,
-                        border: if hovered {
-                            colors.application_accent.with_alpha(self.alpha(255))
-                        } else {
-                            colors.application_border.with_alpha(self.alpha(150))
+                    &chrome_place(
+                        to_lens(*tile),
+                        LayoutOpts {
+                            bg,
+                            border: if hovered {
+                                colors.application_accent.with_alpha(self.alpha(255))
+                            } else {
+                                colors.application_border.with_alpha(self.alpha(150))
+                            },
+                            border_width: if hovered { 2.0 } else { 1.0 },
+                            radius: 12.0,
+                            ..surface_layout()
                         },
-                        border_width: if hovered { 2.0 } else { 1.0 },
-                        radius: 12.0,
-                        ..Default::default()
-                    },
+                    ),
                     move |frame| {
                         frame.column_ex(
                             &LayoutOpts {
@@ -445,15 +449,17 @@ impl Chrome for Overview {
             } else {
                 colors.application_border.with_alpha(self.alpha(160))
             };
-            frame.layer(
+            frame.place(
                 &format!("aegis-overview-cell-{i}"),
-                to_lens(cell),
-                &OverlayOpts {
-                    border,
-                    border_width: if hovered { 2.0 } else { 1.0 },
-                    radius: 8.0,
-                    ..Default::default()
-                },
+                &chrome_place(
+                    to_lens(cell),
+                    LayoutOpts {
+                        border,
+                        border_width: if hovered { 2.0 } else { 1.0 },
+                        radius: 8.0,
+                        ..surface_layout()
+                    },
+                ),
                 |_| {},
             );
             let mut label = window
@@ -474,10 +480,9 @@ impl Chrome for Overview {
                     w: cell.size.w as f32,
                     h: LABEL_H as f32,
                 };
-                frame.layer(
+                frame.place(
                     &format!("aegis-overview-label-{i}"),
-                    label_rect,
-                    &OverlayOpts::default(),
+                    &chrome_place(label_rect, surface_layout()),
                     move |frame| {
                         frame.column_ex(
                             &LayoutOpts {
@@ -502,16 +507,18 @@ impl Chrome for Overview {
                 w: 132.0,
                 h: 48.0,
             };
-            frame.layer(
+            frame.place(
                 "aegis-overview-interaction_domain-drag-ghost",
-                ghost,
-                &OverlayOpts {
-                    bg: colors.application_accent.with_alpha(self.alpha(230)),
-                    border: colors.application_accent.with_alpha(self.alpha(255)),
-                    border_width: 1.0,
-                    radius: 10.0,
-                    ..Default::default()
-                },
+                &chrome_place(
+                    ghost,
+                    LayoutOpts {
+                        bg: colors.application_accent.with_alpha(self.alpha(230)),
+                        border: colors.application_accent.with_alpha(self.alpha(255)),
+                        border_width: 1.0,
+                        radius: 10.0,
+                        ..surface_layout()
+                    },
+                ),
                 |frame| {
                     frame.column_ex(
                         &LayoutOpts {

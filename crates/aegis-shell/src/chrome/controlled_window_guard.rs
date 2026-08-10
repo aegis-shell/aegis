@@ -7,12 +7,13 @@
 //! `not-allowed` cursor.
 
 use aegis_design::Design;
+use aegis_design::materials::{chrome_place, surface_layout};
 use aegis_model::interaction_domain::{
     InteractionDomain, InteractionDomainId, InteractionDomainSnapshot, InteractionDomainState,
 };
 use aegis_model::window::{Window, WindowId};
 use aegis_model::workspace::WorkspaceSnapshot;
-use lens::{Align, Frame, Input, LayoutOpts, OverlayOpts, Rect};
+use lens::{Align, Frame, Input, LayoutOpts, Rect};
 
 use crate::{Chrome, ChromeEvents, ChromeUpdate, CursorShape, Localizer, Message, ellipsize};
 
@@ -93,16 +94,18 @@ impl Chrome for ControlledWindowGuard {
                 accent.with_alpha(220)
             };
 
-            frame.layer(
+            frame.place(
                 &format!("aegis-controlled-window-wash-{}", window.id.0),
-                rect,
-                &OverlayOpts {
-                    bg: self.design.colors.scrim.with_alpha(WASH_ALPHA),
-                    border,
-                    border_width: 2.0,
-                    radius: if window.state.fullscreen { 0.0 } else { 7.0 },
-                    ..Default::default()
-                },
+                &chrome_place(
+                    rect,
+                    LayoutOpts {
+                        bg: self.design.colors.scrim.with_alpha(WASH_ALPHA),
+                        border,
+                        border_width: 2.0,
+                        radius: if window.state.fullscreen { 0.0 } else { 7.0 },
+                        ..surface_layout()
+                    },
+                ),
                 |_| {},
             );
 
@@ -114,18 +117,20 @@ impl Chrome for ControlledWindowGuard {
                 if y >= rect.y + rect.h - 1.0 {
                     break;
                 }
-                frame.layer(
+                frame.place(
                     &format!("aegis-controlled-window-scan-{}-{index}", window.id.0),
-                    Rect {
-                        x: rect.x + 2.0,
-                        y,
-                        w: (rect.w - 4.0).max(0.0),
-                        h: 1.0,
-                    },
-                    &OverlayOpts {
-                        bg: border.with_alpha(25),
-                        ..Default::default()
-                    },
+                    &chrome_place(
+                        Rect {
+                            x: rect.x + 2.0,
+                            y,
+                            w: (rect.w - 4.0).max(0.0),
+                            h: 1.0,
+                        },
+                        LayoutOpts {
+                            bg: border.with_alpha(25),
+                            ..surface_layout()
+                        },
+                    ),
                     |_| {},
                 );
             }
@@ -163,16 +168,18 @@ impl Chrome for ControlledWindowGuard {
                 w: badge_width,
                 h: BADGE_HEIGHT,
             };
-            frame.layer(
+            frame.place(
                 &format!("aegis-controlled-window-badge-{}", window.id.0),
-                badge,
-                &OverlayOpts {
-                    bg: self.design.colors.application_surface.with_alpha(232),
-                    border,
-                    border_width: 1.0,
-                    radius: BADGE_HEIGHT * 0.5,
-                    ..Default::default()
-                },
+                &chrome_place(
+                    badge,
+                    LayoutOpts {
+                        bg: self.design.colors.application_surface.with_alpha(232),
+                        border,
+                        border_width: 1.0,
+                        radius: BADGE_HEIGHT * 0.5,
+                        ..surface_layout()
+                    },
+                ),
                 move |frame| {
                     frame.column_ex(
                         &LayoutOpts {

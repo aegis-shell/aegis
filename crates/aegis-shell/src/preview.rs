@@ -7,7 +7,7 @@
 
 use aegis_design::{Design, PreviewSelectionStyle, materials};
 use aegis_model::window::WindowId;
-use lens::{Color, OverlayOpts};
+use lens::{Color, LayoutOpts};
 
 use crate::{BackdropRegion, LiquidGlassFocus};
 
@@ -69,7 +69,7 @@ pub enum PreviewCardState {
 
 /// Minimal painted foreground for the parent preview panel.
 #[must_use]
-pub fn panel_material(design: &Design, visibility: f32) -> OverlayOpts {
+pub fn panel_material(design: &Design, visibility: f32) -> LayoutOpts {
     let mut material = materials::glass_panel(design);
     material.bg = scale_alpha(material.bg, visibility);
     material.radius = design.radii.glass_panel;
@@ -83,9 +83,9 @@ pub fn card_material(
     state: PreviewCardState,
     visibility: f32,
     corner_radius: f32,
-) -> OverlayOpts {
+) -> LayoutOpts {
     let mut material = match state {
-        PreviewCardState::Rest => OverlayOpts::default(),
+        PreviewCardState::Rest => materials::surface_layout(),
         PreviewCardState::Hovered => materials::glass_focus(design, false, visibility),
         PreviewCardState::Selected => materials::glass_focus(design, true, visibility),
     };

@@ -548,14 +548,14 @@ pub trait Chrome {
         false
     }
 
-    /// Whether this component temporarily owns the chrome presentation layer.
+    /// Whether this component temporarily owns the chrome presentation band.
     /// While a modal component is active, the shell skips ordinary components
     /// so visually covered controls cannot still respond to pointer input.
     fn modal_active(&self) -> bool {
         false
     }
 
-    /// Whether this component temporarily owns the complete chrome layer.
+    /// Whether this component temporarily owns the complete chrome band.
     ///
     /// Full-output presentations such as the window switcher and command
     /// panel suppress every other component, including persistent HUD and
@@ -777,7 +777,7 @@ pub struct CompositionRequirements {
 
 /// Whether one component participates in the current shell pass. Ordinary
 /// modal overlays preserve persistent decorations; an exclusive presentation
-/// temporarily owns the complete chrome layer. A held screenshot freeze
+/// temporarily owns the complete chrome band. A held screenshot freeze
 /// outranks every other state: the frozen snapshot already contains the other
 /// components (an open command panel included), so only the selector itself
 /// may draw and receive input until it closes.

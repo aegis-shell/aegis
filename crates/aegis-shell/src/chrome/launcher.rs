@@ -12,7 +12,8 @@
 use std::ffi::c_void;
 
 use aegis_design::Design;
-use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
+use aegis_design::materials::{chrome_place, surface_layout};
+use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, Rect, Theme};
 
 use crate::{
     BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape, IconSet,
@@ -425,19 +426,18 @@ impl Chrome for Launcher {
         let mut clicked_page = None;
         let mut context_app = None;
 
-        // Paint the scrim on the fixed full-screen layer itself. A nested
-        // child would inherit OverlayOpts' default padding and leave visible
-        // seams along the top and sides.
+        // Paint the scrim on the fixed full-screen placement itself. A nested
+        // child would inherit the surface layout's default padding and leave
+        // visible seams along the top and sides.
         let full = Rect {
             x: 0.0,
             y: 0.0,
             w: display.x,
             h: display.y,
         };
-        frame.layer(
+        frame.place(
             "aegis-launcher-backdrop",
-            full,
-            &backdrop_layer(progress, &self.design),
+            &chrome_place(full, backdrop_layer(progress, &self.design)),
             |_| {},
         );
 
@@ -463,10 +463,12 @@ impl Chrome for Launcher {
         if pressed {
             self.search_focused = contains(search_rect, cursor.x, cursor.y);
         }
-        frame.layer(
+        frame.place(
             "aegis-launcher-search",
-            search_rect,
-            &glass_panel(progress, SEARCH_H * 0.5, self.search_focused, &self.design),
+            &chrome_place(
+                search_rect,
+                glass_panel(progress, SEARCH_H * 0.5, self.search_focused, &self.design),
+            ),
             |frame| {
                 frame.row_ex(
                     &LayoutOpts {
@@ -483,14 +485,15 @@ impl Chrome for Launcher {
                         frame.spacer(10.0);
                         if self.brain.query().is_empty() {
                             // Keep the placeholder on the exact same text
-                            // origin as a real query. Its caret is an overlay
-                            // below so the caret does not consume layout width.
+                            // origin as a real query. Its caret is a separate
+                            // placement below so the caret does not consume
+                            // layout width.
                             frame.label_compact_sized(&shown_placeholder, SEARCH_FONT_SIZE);
                         } else {
                             // The regular label carries theme padding, which
                             // shifts text inside this fixed-height field. The
                             // compact form keeps its measured box vertically
-                            // centred; the caret is overlaid at the shaped text
+                            // centred; the caret is placed at the shaped text
                             // edge below so it does not alter layout.
                             frame.label_compact_sized(&shown_query, SEARCH_FONT_SIZE);
                         }
@@ -499,10 +502,9 @@ impl Chrome for Launcher {
             },
         );
         if self.search_focused {
-            frame.layer(
+            frame.place(
                 "aegis-launcher-search-caret",
-                caret_rect,
-                &search_caret_layer(progress, &self.design),
+                &chrome_place(caret_rect, search_caret_layer(progress, &self.design)),
                 |_| {},
             );
         }
@@ -514,10 +516,9 @@ impl Chrome for Launcher {
             w: display.x,
             h: 20.0,
         };
-        frame.layer(
+        frame.place(
             "aegis-launcher-result-count",
-            result_rect,
-            &centered_layer(),
+            &chrome_place(result_rect, centered_layer()),
             |frame| {
                 frame.column_ex(&sized(display.x, 20.0), |frame| {
                     frame.label_compact_sized(&result_text, 11.0);
@@ -532,11 +533,15 @@ impl Chrome for Launcher {
                 w: display.x,
                 h: 32.0,
             };
-            frame.layer("aegis-launcher-empty", empty, &centered_layer(), |frame| {
-                frame.column_ex(&sized(display.x, 32.0), |frame| {
-                    frame.label_sized(i18n.text(Message::TryAnotherSearch), 16.0);
-                });
-            });
+            frame.place(
+                "aegis-launcher-empty",
+                &chrome_place(empty, centered_layer()),
+                |frame| {
+                    frame.column_ex(&sized(display.x, 32.0), |frame| {
+                        frame.label_sized(i18n.text(Message::TryAnotherSearch), 16.0);
+                    });
+                },
+            );
         }
 
         let colors = self.design.colors;
@@ -562,22 +567,24 @@ impl Chrome for Launcher {
                 Color::TRANSPARENT
             };
             let id = format!("aegis-launcher-cell-{}", cell.filtered_position);
-            frame.layer(
+            frame.place(
                 &id,
-                rect,
-                &OverlayOpts {
-                    bg: cell_bg,
-                    border: if cell.selected {
-                        colors.menu_border.with_alpha(alpha(54, progress))
-                    } else {
-                        Color::TRANSPARENT
+                &chrome_place(
+                    rect,
+                    LayoutOpts {
+                        bg: cell_bg,
+                        border: if cell.selected {
+                            colors.menu_border.with_alpha(alpha(54, progress))
+                        } else {
+                            Color::TRANSPARENT
+                        },
+                        border_width: if cell.selected { 1.0 } else { 0.0 },
+                        radius: 22.0,
+                        pad: 0.0,
+                        cross: Align::Center,
+                        ..surface_layout()
                     },
-                    border_width: if cell.selected { 1.0 } else { 0.0 },
-                    radius: 22.0,
-                    pad: 0.0,
-                    cross: Align::Center,
-                    ..Default::default()
-                },
+                ),
                 |frame| {
                     frame.column_ex(
                         &LayoutOpts {
@@ -620,7 +627,7 @@ impl Chrome for Launcher {
                     h: diameter,
                 };
                 let id = format!("aegis-launcher-page-{page}");
-                frame.layer(&id, dot, &OverlayOpts::default(), |frame| {
+                frame.place(&id, &chrome_place(dot, surface_layout()), |frame| {
                     frame.column_ex(
                         &sized_fill(
                             diameter,
@@ -652,35 +659,35 @@ impl Chrome for Launcher {
             if pressed && contains(next, cursor.x, cursor.y) && self.page + 1 < page_total {
                 clicked_page = Some(self.page + 1);
             }
-            frame.layer(
+            frame.place(
                 "aegis-launcher-page-previous",
-                previous,
-                &centered_layer(),
+                &chrome_place(previous, centered_layer()),
                 |frame| {
                     frame.column_ex(&sized(previous.w, previous.h), |frame| {
                         frame.icon(Icon::ChevronLeft, 16.0);
                     });
                 },
             );
-            frame.layer(
+            frame.place(
                 "aegis-launcher-page-label",
-                Rect {
-                    x: display.x * 0.5 - 54.0,
-                    y: footer_y,
-                    w: 108.0,
-                    h: 24.0,
-                },
-                &centered_layer(),
+                &chrome_place(
+                    Rect {
+                        x: display.x * 0.5 - 54.0,
+                        y: footer_y,
+                        w: 108.0,
+                        h: 24.0,
+                    },
+                    centered_layer(),
+                ),
                 |frame| {
                     frame.column_ex(&sized(108.0, 24.0), |frame| {
                         frame.label_sized(&format!("{} / {}", self.page + 1, page_total), 11.0);
                     });
                 },
             );
-            frame.layer(
+            frame.place(
                 "aegis-launcher-page-next",
-                next,
-                &centered_layer(),
+                &chrome_place(next, centered_layer()),
                 |frame| {
                     frame.column_ex(&sized(next.w, next.h), |frame| {
                         frame.icon(Icon::ChevronRight, 16.0);
@@ -936,45 +943,45 @@ fn sized_fill(width: f32, height: f32, bg: Color, radius: f32) -> LayoutOpts {
     }
 }
 
-fn centered_layer() -> OverlayOpts {
-    OverlayOpts {
+fn centered_layer() -> LayoutOpts {
+    LayoutOpts {
         cross: Align::Center,
         bg: Color::TRANSPARENT,
         border: Color::TRANSPARENT,
         pad: 0.0,
-        ..Default::default()
+        ..surface_layout()
     }
 }
 
-fn backdrop_layer(progress: f32, design: &Design) -> OverlayOpts {
-    OverlayOpts {
+fn backdrop_layer(progress: f32, design: &Design) -> LayoutOpts {
+    LayoutOpts {
         gap: 0.0,
         pad: 0.0,
         bg: design.colors.scrim.with_alpha(alpha(126, progress)),
-        ..Default::default()
+        ..surface_layout()
     }
 }
 
 /// Frosted-glass panel material shared with the dock: a light translucent
 /// tint over the compositor's backdrop blur with a bright 1px edge.
-fn glass_panel(progress: f32, radius: f32, focused: bool, design: &Design) -> OverlayOpts {
+fn glass_panel(progress: f32, radius: f32, focused: bool, design: &Design) -> LayoutOpts {
     let surface = design.colors.popover_surface;
     let border = design.colors.popover_border;
     let (_, _, _, surface_alpha) = surface.components();
     let (_, _, _, border_alpha) = border.components();
-    OverlayOpts {
+    LayoutOpts {
         bg: surface.with_alpha(alpha(surface_alpha, progress)),
         border: border.with_alpha(alpha(if focused { 150 } else { border_alpha }, progress)),
         border_width: if focused { 1.5 } else { 1.0 },
         radius,
         pad: 0.0,
         cross: Align::Center,
-        ..Default::default()
+        ..surface_layout()
     }
 }
 
-fn search_caret_layer(progress: f32, design: &Design) -> OverlayOpts {
-    OverlayOpts {
+fn search_caret_layer(progress: f32, design: &Design) -> LayoutOpts {
+    LayoutOpts {
         gap: 0.0,
         pad: 0.0,
         bg: design
@@ -982,7 +989,7 @@ fn search_caret_layer(progress: f32, design: &Design) -> OverlayOpts {
             .application_text
             .with_alpha(alpha(230, progress)),
         radius: SEARCH_CARET_W * 0.5,
-        ..Default::default()
+        ..surface_layout()
     }
 }
 

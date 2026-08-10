@@ -11,13 +11,14 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use aegis_design::Design;
+use aegis_design::materials::{chrome_place, surface_layout};
 use aegis_model::Point;
 use aegis_model::interaction_domain::{
     InteractionDomainId, InteractionDomainSnapshot, InteractionDomainState,
 };
 use aegis_model::window::{Window, WindowId};
 use aegis_model::workspace::WorkspaceSnapshot;
-use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
+use lens::{Align, Color, Frame, Input, LayoutOpts, Rect};
 
 use crate::{
     AgentActivity, AgentInputKind, Chrome, ChromeEvents, ChromeUpdate, HUD_HEIGHT, Localizer,
@@ -357,19 +358,21 @@ fn render_pointer_feedback(
         .min((display.0 - 16.0).max(1.0));
     let label_rect = marker_label_rect(position, width, display);
     let label = ellipsize(f, &label, 11.0, (label_rect.w - 14.0).max(0.0));
-    f.layer(
+    f.place(
         &format!("aegis-agent-label-{}", interaction_domain.0),
-        label_rect,
-        &OverlayOpts {
-            bg: design
-                .colors
-                .application_surface
-                .with_alpha(scaled_alpha(alpha, 9, 10)),
-            border: accent,
-            border_width: 1.0,
-            radius: LABEL_HEIGHT * 0.5,
-            ..Default::default()
-        },
+        &chrome_place(
+            label_rect,
+            LayoutOpts {
+                bg: design
+                    .colors
+                    .application_surface
+                    .with_alpha(scaled_alpha(alpha, 9, 10)),
+                border: accent,
+                border_width: 1.0,
+                radius: LABEL_HEIGHT * 0.5,
+                ..surface_layout()
+            },
+        ),
         |f| {
             f.column_ex(
                 &LayoutOpts {
@@ -410,19 +413,21 @@ fn render_background_activity(
     };
     let label = ellipsize(f, &label, 11.0, (rect.w - 31.0).max(0.0));
     let accent = interaction_domain_color(interaction_domain).with_alpha(alpha);
-    f.layer(
+    f.place(
         &format!("aegis-agent-background-{}", interaction_domain.0),
-        rect,
-        &OverlayOpts {
-            bg: design
-                .colors
-                .application_surface
-                .with_alpha(scaled_alpha(alpha, 9, 10)),
-            border: accent,
-            border_width: 1.0,
-            radius: BACKGROUND_HEIGHT * 0.5,
-            ..Default::default()
-        },
+        &chrome_place(
+            rect,
+            LayoutOpts {
+                bg: design
+                    .colors
+                    .application_surface
+                    .with_alpha(scaled_alpha(alpha, 9, 10)),
+                border: accent,
+                border_width: 1.0,
+                radius: BACKGROUND_HEIGHT * 0.5,
+                ..surface_layout()
+            },
+        ),
         |f| {
             f.row_ex(
                 &LayoutOpts {
@@ -628,16 +633,18 @@ fn render_shape(
     border_width: f32,
     radius: f32,
 ) {
-    f.layer(
+    f.place(
         id,
-        rect,
-        &OverlayOpts {
-            bg: background,
-            border,
-            border_width,
-            radius,
-            ..Default::default()
-        },
+        &chrome_place(
+            rect,
+            LayoutOpts {
+                bg: background,
+                border,
+                border_width,
+                radius,
+                ..surface_layout()
+            },
+        ),
         |f| {
             f.column_ex(
                 &LayoutOpts {

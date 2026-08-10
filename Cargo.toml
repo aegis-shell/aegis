@@ -18,13 +18,13 @@ repository = "https://github.com/ming2k/aegis"
 # development worktree can patch these sources through
 # .cargo/optics-local.toml without making a sibling checkout mandatory for CI
 # or downstream packagers.
-flux = { git = "https://github.com/ming2k/optics", tag = "v0.0.11" }
-flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.11" }
-flux-scene-graph = { git = "https://github.com/ming2k/optics", tag = "v0.0.11" }
-flux-scene-graph-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.11" }
-lens = { git = "https://github.com/ming2k/optics", tag = "v0.0.11" }
-lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.11" }
-iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.11" }
+flux = { git = "https://github.com/ming2k/optics", tag = "v0.0.13" }
+flux-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.13" }
+flux-scene-graph = { git = "https://github.com/ming2k/optics", tag = "v0.0.13" }
+flux-scene-graph-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.13" }
+lens = { git = "https://github.com/ming2k/optics", tag = "v0.0.13" }
+lens-sys = { git = "https://github.com/ming2k/optics", tag = "v0.0.13" }
+iris = { git = "https://github.com/ming2k/optics", tag = "v0.0.13" }
 
 # Observability: crates emit through the `log` facade; each binary installs a
 # `tracing`-based subscriber through the shared `aegis-logging` crate, which

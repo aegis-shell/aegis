@@ -384,10 +384,9 @@ impl AppMenu {
         let design = self.design;
         let menu_theme = themes::menu(original_theme, &design);
         frame.set_theme(menu_theme);
-        frame.layer(
+        frame.place(
             self.layer_id,
-            bounds,
-            &materials::popover(&design),
+            &materials::chrome_place(bounds, materials::popover(&design)),
             |frame| {
                 frame.column_ex(
                     &LayoutOpts {

@@ -1,6 +1,6 @@
 //! The low-battery alert: a modal, centered panel raised by the compositor
 //! itself when the battery crosses a configured `[battery] warn_at`
-//! threshold. Like the user-consent prompts it owns the chrome layer until
+//! threshold. Like the user-consent prompts it owns the chrome band until
 //! dismissed — full-screen scrim, analytic-glass panel, exclusive
 //! presentation, keyboard and pointer captured — but it is compositor-owned:
 //! dismissal simply closes it, no answer travels back through
@@ -10,7 +10,7 @@
 //! [`ChromeCommand::StartBatteryAlert`] opens or updates the panel;
 //! [`ChromeCommand::CancelBatteryAlert`] closes it without a reply.
 
-use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
+use lens::{Align, Color, Frame, Input, LayoutOpts, Rect};
 
 use crate::{
     BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
@@ -186,18 +186,20 @@ impl Chrome for BatteryAlert {
         let design = self.design;
         let layout = AlertLayout::for_display(display, self.modal_reserved);
 
-        frame.layer(
+        frame.place(
             "aegis-battery-alert-scrim",
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                w: display.0,
-                h: display.1,
-            },
-            &OverlayOpts {
-                bg: design.colors.scrim,
-                ..Default::default()
-            },
+            &materials::chrome_place(
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: display.0,
+                    h: display.1,
+                },
+                LayoutOpts {
+                    bg: design.colors.scrim,
+                    ..materials::surface_layout()
+                },
+            ),
             |_| {},
         );
 
@@ -206,10 +208,9 @@ impl Chrome for BatteryAlert {
 
         // Minimal foreground tint only. The compositor-owned analytic pass
         // supplies the body, refraction, rim light, and shadow.
-        frame.layer(
+        frame.place(
             "aegis-battery-alert-panel",
-            layout.panel,
-            &materials::glass_panel(&design),
+            &materials::chrome_place(layout.panel, materials::glass_panel(&design)),
             |_| {},
         );
 
@@ -228,58 +229,63 @@ impl Chrome for BatteryAlert {
             w: GLYPH_W,
             h: GLYPH_H,
         };
-        frame.layer(
+        frame.place(
             "aegis-battery-alert-glyph-outline",
-            outline,
-            &OverlayOpts {
-                bg: Color::TRANSPARENT,
-                border: design.colors.application_text,
-                border_width: 2.0,
-                radius: 6.0,
-                pad: 0.0,
-                ..Default::default()
-            },
+            &materials::chrome_place(
+                outline,
+                LayoutOpts {
+                    bg: Color::TRANSPARENT,
+                    border: design.colors.application_text,
+                    border_width: 2.0,
+                    radius: 6.0,
+                    pad: 0.0,
+                    ..materials::surface_layout()
+                },
+            ),
             |_| {},
         );
         let charge = (f32::from(self.percent) / 100.0).clamp(0.0, 1.0);
-        frame.layer(
+        frame.place(
             "aegis-battery-alert-glyph-fill",
-            Rect {
-                x: outline.x + 4.0,
-                y: outline.y + 4.0,
-                w: ((GLYPH_W - 8.0) * charge).max(0.0),
-                h: GLYPH_H - 8.0,
-            },
-            &OverlayOpts {
-                bg: fill_color,
-                radius: 3.0,
-                pad: 0.0,
-                ..Default::default()
-            },
+            &materials::chrome_place(
+                Rect {
+                    x: outline.x + 4.0,
+                    y: outline.y + 4.0,
+                    w: ((GLYPH_W - 8.0) * charge).max(0.0),
+                    h: GLYPH_H - 8.0,
+                },
+                LayoutOpts {
+                    bg: fill_color,
+                    radius: 3.0,
+                    pad: 0.0,
+                    ..materials::surface_layout()
+                },
+            ),
             |_| {},
         );
-        frame.layer(
+        frame.place(
             "aegis-battery-alert-glyph-nub",
-            Rect {
-                x: outline.x + GLYPH_W + 2.0,
-                y: outline.y + (GLYPH_H - 10.0) * 0.5,
-                w: GLYPH_NUB_W,
-                h: 10.0,
-            },
-            &OverlayOpts {
-                bg: design.colors.application_text,
-                radius: 2.0,
-                pad: 0.0,
-                ..Default::default()
-            },
+            &materials::chrome_place(
+                Rect {
+                    x: outline.x + GLYPH_W + 2.0,
+                    y: outline.y + (GLYPH_H - 10.0) * 0.5,
+                    w: GLYPH_NUB_W,
+                    h: 10.0,
+                },
+                LayoutOpts {
+                    bg: design.colors.application_text,
+                    radius: 2.0,
+                    pad: 0.0,
+                    ..materials::surface_layout()
+                },
+            ),
             |_| {},
         );
 
         let percent = format!("{}%", self.percent);
-        frame.layer(
+        frame.place(
             "aegis-battery-alert-percent",
-            layout.percent,
-            &transparent(),
+            &materials::chrome_place(layout.percent, transparent()),
             |frame| {
                 frame.row_ex(&stretch(layout.percent), |frame| {
                     frame.label_sized(&percent, 24.0);
@@ -298,10 +304,9 @@ impl Chrome for BatteryAlert {
             15.0,
             (layout.title.w - frame.theme().padding() * 2.0).max(0.0),
         );
-        frame.layer(
+        frame.place(
             "aegis-battery-alert-title",
-            layout.title,
-            &transparent(),
+            &materials::chrome_place(layout.title, transparent()),
             |frame| {
                 frame.row_ex(&stretch(layout.title), |frame| {
                     frame.label_sized(&title, 15.0);
@@ -315,10 +320,9 @@ impl Chrome for BatteryAlert {
             "Connect a charger."
         };
         let body = ellipsize(frame, body, 12.0, layout.body.w);
-        frame.layer(
+        frame.place(
             "aegis-battery-alert-body",
-            layout.body,
-            &transparent(),
+            &materials::chrome_place(layout.body, transparent()),
             |frame| {
                 frame.row_ex(&stretch_top(layout.body), |frame| {
                     frame.label_compact_sized(&body, 12.0);
@@ -326,16 +330,18 @@ impl Chrome for BatteryAlert {
             },
         );
 
-        frame.layer(
+        frame.place(
             "aegis-battery-alert-ok",
-            layout.ok,
-            &OverlayOpts {
-                bg: design.colors.application_accent,
-                radius: design.radii.control,
-                pad: 0.0,
-                cross: Align::Center,
-                ..Default::default()
-            },
+            &materials::chrome_place(
+                layout.ok,
+                LayoutOpts {
+                    bg: design.colors.application_accent,
+                    radius: design.radii.control,
+                    pad: 0.0,
+                    cross: Align::Center,
+                    ..materials::surface_layout()
+                },
+            ),
             |frame| {
                 frame.column_ex(&stretch(layout.ok), |frame| {
                     frame.label_sized("OK", 13.0);
@@ -369,7 +375,7 @@ impl Chrome for BatteryAlert {
         self.active
     }
 
-    // A battery warning owns the complete chrome layer: the Dock, HUD, and
+    // A battery warning owns the complete chrome band: the Dock, HUD, and
     // toasts stay suppressed until the alert is dismissed.
     fn exclusive_presentation_active(&self) -> bool {
         self.active
@@ -497,11 +503,11 @@ fn stretch_top(rect: Rect) -> LayoutOpts {
     }
 }
 
-fn transparent() -> OverlayOpts {
-    OverlayOpts {
+fn transparent() -> LayoutOpts {
+    LayoutOpts {
         bg: Color::TRANSPARENT,
         pad: 0.0,
-        ..Default::default()
+        ..materials::surface_layout()
     }
 }
 

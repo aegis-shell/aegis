@@ -1,19 +1,51 @@
 //! Pure lens option factories for aegis surface materials.
 
-use lens::{Align, Color, LayoutOpts, OverlayOpts};
+use lens::{Align, Band, Color, LayoutOpts, PlaceMode, PlaceOpts, Rect};
 
 use crate::Design;
 
+/// Base layout for absolutely-placed aegis surfaces.
+///
+/// Preserves the defaults of the retired lens `OverlayOpts` (4px child gap,
+/// 6px padding) that the materials below were tuned against; the
+/// [`LayoutOpts`] default of zero gap and padding would silently compact
+/// every migrated surface.
+#[must_use]
+pub fn surface_layout() -> LayoutOpts {
+    LayoutOpts {
+        gap: 4.0,
+        pad: 6.0,
+        ..Default::default()
+    }
+}
+
+/// Persistent chrome-band placement for a surface that stays on screen every
+/// frame — the ADR-0060 replacement for the retired `Frame::layer`. `rect` is
+/// the top-left position plus a minimum extent; the surface grows to fit its
+/// body. The body always builds: there is no open/close state and no
+/// dismissal.
+#[must_use]
+pub fn chrome_place(rect: Rect, layout: LayoutOpts) -> PlaceOpts {
+    PlaceOpts {
+        band: Band::Chrome,
+        mode: PlaceMode::Exact,
+        rect,
+        transient: false,
+        layout,
+        ..Default::default()
+    }
+}
+
 /// The frosted-glass material used by compact menus and popovers.
 #[must_use]
-pub fn popover(design: &Design) -> OverlayOpts {
-    OverlayOpts {
+pub fn popover(design: &Design) -> LayoutOpts {
+    LayoutOpts {
         bg: design.colors.popover_surface,
         border: design.colors.popover_border,
         border_width: design.strokes.hairline,
         radius: design.radii.popover,
         pad: 0.0,
-        ..Default::default()
+        ..surface_layout()
     }
 }
 
@@ -24,15 +56,15 @@ pub fn popover(design: &Design) -> OverlayOpts {
 /// deliberately minimal: a whisper of white for cohesion and no painted
 /// border (the glass rim provides the edge definition, not an outline).
 #[must_use]
-pub fn glass_panel(design: &Design) -> OverlayOpts {
-    OverlayOpts {
+pub fn glass_panel(design: &Design) -> LayoutOpts {
+    LayoutOpts {
         bg: design.colors.glass_surface,
         border: design.colors.glass_border,
         border_width: 0.0,
         radius: design.radii.glass_panel,
         pad: 0.0,
         cross: Align::Center,
-        ..Default::default()
+        ..surface_layout()
     }
 }
 
@@ -42,19 +74,19 @@ pub fn glass_panel(design: &Design) -> OverlayOpts {
 /// single-body focus field supplies optical lift for selected content; this
 /// layer provides a restrained fallback and immediate pointer feedback.
 #[must_use]
-pub fn glass_focus(design: &Design, selected: bool, visibility: f32) -> OverlayOpts {
+pub fn glass_focus(design: &Design, selected: bool, visibility: f32) -> LayoutOpts {
     let color = if selected {
         design.glass_focus.selected_tint
     } else {
         design.glass_focus.hover_tint
     };
-    OverlayOpts {
+    LayoutOpts {
         bg: scale_alpha(color, visibility),
         border: Color::TRANSPARENT,
         border_width: 0.0,
         radius: design.radii.control,
         pad: 0.0,
-        ..Default::default()
+        ..surface_layout()
     }
 }
 
@@ -81,14 +113,14 @@ pub fn card(design: &Design) -> LayoutOpts {
 /// white tint, edge, and corner. Callers add geometry through struct update
 /// syntax.
 #[must_use]
-pub fn sao_panel(sao: &crate::tokens::Sao) -> OverlayOpts {
-    OverlayOpts {
+pub fn sao_panel(sao: &crate::tokens::Sao) -> LayoutOpts {
+    LayoutOpts {
         bg: sao.surface,
         border: sao.border,
         border_width: 1.0,
         radius: 16.0,
         pad: 0.0,
-        ..Default::default()
+        ..surface_layout()
     }
 }
 
@@ -98,14 +130,14 @@ pub fn sao_panel(sao: &crate::tokens::Sao) -> OverlayOpts {
 /// deep blue-black tint, the low-alpha cyan edge, and the corner. Callers
 /// add geometry through struct update syntax.
 #[must_use]
-pub fn hud_panel(hud: &crate::tokens::Hud) -> OverlayOpts {
-    OverlayOpts {
+pub fn hud_panel(hud: &crate::tokens::Hud) -> LayoutOpts {
+    LayoutOpts {
         bg: hud.surface,
         border: hud.border,
         border_width: 1.0,
         radius: 16.0,
         pad: 0.0,
-        ..Default::default()
+        ..surface_layout()
     }
 }
 

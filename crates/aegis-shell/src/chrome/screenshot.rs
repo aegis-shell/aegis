@@ -25,9 +25,7 @@
 //! answering the IPC request.
 
 use aegis_design::{Design, GlassRole, materials};
-use lens::{
-    Align, Color, ForegroundOutline, Frame, Input, LayoutOpts, OverlayOpts, Rect as LensRect,
-};
+use lens::{Align, Color, Frame, Input, LayoutOpts, Rect as LensRect, Style};
 
 use crate::{
     BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
@@ -277,12 +275,12 @@ impl ScreenshotSelector {
     }
 
     /// Dim only outside the active optical body. A full-screen translucent
-    /// layer would dim the already-composited Liquid Glass along with the
+    /// placement would dim the already-composited Liquid Glass along with the
     /// desktop and collapse it back into a classic flat selection rectangle.
     fn render_scrim(&self, frame: &mut Frame, display: (f32, f32), hole: Option<LensRect>) {
-        let scrim = OverlayOpts {
+        let scrim = LayoutOpts {
             bg: self.design.colors.scrim.with_alpha(128),
-            ..Default::default()
+            ..materials::surface_layout()
         };
         let full = LensRect {
             x: 0.0,
@@ -295,10 +293,9 @@ impl ScreenshotSelector {
             if rect.w <= 0.0 || rect.h <= 0.0 {
                 continue;
             }
-            frame.layer(
+            frame.place(
                 &format!("aegis-screenshot-scrim-{index}"),
-                rect,
-                &scrim,
+                &materials::chrome_place(rect, scrim),
                 |_| {},
             );
         }
@@ -329,7 +326,7 @@ impl ScreenshotSelector {
 
         let original_theme = frame.theme();
         frame.set_theme(original_theme.with_fg(design.hud_foreground.primary));
-        frame.layer(id, rect, &material, |frame| {
+        frame.place(id, &materials::chrome_place(rect, material), |frame| {
             // A row's cross axis is vertical. With an explicitly measured body
             // and equal padding on both sides, the compact glyph box is centred
             // on both axes instead of inheriting the regular label's theme pad.
@@ -342,14 +339,13 @@ impl ScreenshotSelector {
                     ..Default::default()
                 },
                 |frame| {
-                    frame.label_compact_outlined_sized(
-                        &text,
-                        STATUS_FONT_SIZE,
-                        ForegroundOutline::new(
-                            design.hud_foreground.contour,
-                            design.hud_foreground.text_contour_width,
-                        ),
+                    frame.push_style(
+                        Style::new()
+                            .with_outline_color(design.hud_foreground.contour)
+                            .with_outline_width(design.hud_foreground.text_contour_width),
                     );
+                    frame.label_compact_sized(&text, STATUS_FONT_SIZE);
+                    frame.pop_style();
                 },
             );
         });
@@ -374,7 +370,11 @@ impl ScreenshotSelector {
         let design = &self.design;
         let mut material = materials::glass_panel(design);
         material.radius = Self::glass_radius(lens_rect);
-        frame.layer("aegis-screenshot-selection", lens_rect, &material, |_| {});
+        frame.place(
+            "aegis-screenshot-selection",
+            &materials::chrome_place(lens_rect, material),
+            |_| {},
+        );
 
         // One measured status pill is content inside the glass body, not a
         // second outlined material. It expands to include the confirmation
@@ -410,20 +410,26 @@ impl ScreenshotSelector {
         let design = &self.design;
         let mut material = materials::glass_panel(design);
         material.radius = Self::glass_radius(rect);
-        frame.layer("aegis-picker-pixel-lens", rect, &material, |_| {});
-        frame.layer(
+        frame.place(
+            "aegis-picker-pixel-lens",
+            &materials::chrome_place(rect, material),
+            |_| {},
+        );
+        frame.place(
             "aegis-picker-pixel-centre",
-            LensRect {
-                x: self.current.x.round() - 2.0,
-                y: self.current.y.round() - 2.0,
-                w: 4.0,
-                h: 4.0,
-            },
-            &OverlayOpts {
-                bg: design.hud_foreground.primary,
-                radius: 2.0,
-                ..Default::default()
-            },
+            &materials::chrome_place(
+                LensRect {
+                    x: self.current.x.round() - 2.0,
+                    y: self.current.y.round() - 2.0,
+                    w: 4.0,
+                    h: 4.0,
+                },
+                LayoutOpts {
+                    bg: design.hud_foreground.primary,
+                    radius: 2.0,
+                    ..materials::surface_layout()
+                },
+            ),
             |_| {},
         );
     }
@@ -447,14 +453,13 @@ impl ScreenshotSelector {
             h: window.size.h.max(1) as f32,
         };
         let label = window.title.clone().unwrap_or_default();
-        frame.layer(
+        frame.place(
             "aegis-picker-window",
-            rect,
-            &{
+            &materials::chrome_place(rect, {
                 let mut material = materials::glass_panel(&self.design);
                 material.radius = Self::glass_radius(rect);
                 material
-            },
+            }),
             |_| {},
         );
         if !label.is_empty() {
@@ -586,16 +591,15 @@ fn render_rounded_scrim_corners(frame: &mut Frame, hole: LensRect, radius: f32, 
     if bands.is_empty() {
         return;
     }
-    let layer = OverlayOpts {
+    let layer = LayoutOpts {
         gap: 0.0,
         pad: 0.0,
         cross: Align::Stretch,
-        ..Default::default()
+        ..materials::surface_layout()
     };
-    frame.layer(
+    frame.place(
         "aegis-screenshot-scrim-rounded-corners",
-        hole,
-        &layer,
+        &materials::chrome_place(hole, layer),
         |frame| {
             frame.column_ex(
                 &LayoutOpts {

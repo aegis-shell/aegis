@@ -13,7 +13,6 @@ pub fn menu(base: Theme, design: &Design) -> Theme {
         .with_active(design.colors.menu_active)
         .with_corner_radius(design.radii.menu_item)
         .with_border_width(0.0)
-        .with_active_indicator_width(0.0)
 }
 
 /// Derive the subdued menu-heading theme without changing other menu tokens.

@@ -464,17 +464,22 @@ impl Chrome for Dock {
             }
         }
 
-        // The bar and collapsed indicator are the same layer, and both are
-        // analytic glass bodies: as it drains, the bar morphs into the
-        // stadium handle while keeping lensing, tint and its drop shadow.
+        // The bar and collapsed indicator are the same placed surface, and
+        // both are analytic glass bodies: as it drains, the bar morphs into
+        // the stadium handle while keeping lensing, tint and its drop shadow.
         // Edge definition comes from the glass rim, not a painted border.
         let panel_thick = if vertical { panel_rect.w } else { panel_rect.h };
         let dock_material = collapsing_dock_material(&self.design, surface_progress, panel_thick);
-        // A layer with an empty body collapses to ~0 (the rect is only an
-        // anchor, not a size); a fixed-size child forces it to the bar size.
-        f.layer("aegis-dock", panel_rect, &dock_material, |f| {
-            f.column_ex(&sized(panel_rect.w, panel_rect.h), |_| {});
-        });
+        // A placed surface with an empty body collapses to ~0 (the rect is
+        // only an anchor, not a size); a fixed-size child forces it to the
+        // bar size.
+        f.place(
+            "aegis-dock",
+            &chrome_place(panel_rect, dock_material),
+            |f| {
+                f.column_ex(&sized(panel_rect.w, panel_rect.h), |_| {});
+            },
+        );
 
         // Hit-test only content that still exists in the morphing surface.
         // The resting bounds remain the outer ownership limit, while the
@@ -495,7 +500,7 @@ impl Chrome for Dock {
         };
 
         // Draw each tile's icon, then its running dot. Once content has
-        // reached the sink, no tile layers remain behind the stadium.
+        // reached the sink, no tile placements remain behind the stadium.
         if content_progress > AUTOHIDE_CONTENT_INTERACTION_MIN {
             for (i, t) in tiles.iter().enumerate() {
                 let s = icon_rects[i].w;
@@ -505,20 +510,20 @@ impl Chrome for Dock {
                 let icon_id = format!("aegis-dock-icon-{}", t.key);
                 if t.launchpad {
                     // A rounded "app tile" with a 3×3 grid, so it reads as macOS's
-                    // Launchpad button. The grid (real content) sizes the layer;
-                    // the layer paints the rounded background behind it.
-                    let bg = OverlayOpts {
+                    // Launchpad button. The grid (real content) sizes the surface;
+                    // the surface paints the rounded background behind it.
+                    let bg = LayoutOpts {
                         bg: Color::rgba(70, 78, 110, scaled_alpha(240, content_progress)),
                         border: Color::rgba(150, 160, 195, scaled_alpha(180, content_progress)),
                         border_width: 1.0,
                         radius: s * 0.22,
                         pad: s * 0.2,
                         cross: Align::Center,
-                        ..Default::default()
+                        ..surface_layout()
                     };
                     let gap = s * 0.1;
                     let d = (s - 2.0 * (s * 0.2) - 2.0 * gap) / 3.0;
-                    f.layer(&icon_id, rect, &bg, |f| {
+                    f.place(&icon_id, &chrome_place(rect, bg), |f| {
                         f.column_ex(&grid(gap), |f| {
                             for _ in 0..3 {
                                 f.row_ex(&grid(gap), |f| {
@@ -543,11 +548,15 @@ impl Chrome for Dock {
                         });
                     });
                 } else {
-                    f.layer(&icon_id, rect, &tile_opts(), |f| match t.icon {
-                        // The pointer crosses from the binary's flux binding type to
-                        // lens's ABI-identical flux_image.
-                        Some(ptr) => unsafe { f.image(ptr as *mut lens::sys::flux_image, s, s) },
-                        None => f.icon(Icon::FileText, s * 0.6),
+                    f.place(&icon_id, &chrome_place(rect, tile_opts()), |f| {
+                        match t.icon {
+                            // The pointer crosses from the binary's flux binding type to
+                            // lens's ABI-identical flux_image.
+                            Some(ptr) => unsafe {
+                                f.image(ptr as *mut lens::sys::flux_image, s, s)
+                            },
+                            None => f.icon(Icon::FileText, s * 0.6),
+                        }
                     });
                 }
 
@@ -590,7 +599,7 @@ impl Chrome for Dock {
                         Color::rgba(200, 204, 220, scaled_alpha(170, content_progress))
                     };
                     let dot_id = format!("aegis-dock-dot-{}", t.key);
-                    f.layer(&dot_id, dot_rect, &tile_opts(), |f| {
+                    f.place(&dot_id, &chrome_place(dot_rect, tile_opts()), |f| {
                         f.column_ex(
                             &sized_fill(dot_rect.w, dot_rect.h, color, dot_thick * 0.5),
                             |_| {},
@@ -631,10 +640,9 @@ impl Chrome for Dock {
                     h: divider_thick,
                 },
             };
-            f.layer(
+            f.place(
                 "aegis-dock-section-divider",
-                divider_rect,
-                &OverlayOpts::default(),
+                &chrome_place(divider_rect, surface_layout()),
                 |f| {
                     f.column_ex(
                         &sized_fill(
@@ -1376,8 +1384,8 @@ pub(super) fn entry_matches_app_id(entry: &Entry, app_id: &str) -> bool {
             .is_some_and(|icon| icon.eq_ignore_ascii_case(app_id))
 }
 
-/// A fixed-size, transparent container used to force a layer (whose `rect` is
-/// only an anchor, not a size) to a known width and height.
+/// A fixed-size, transparent container used to force a placed surface (whose
+/// `rect` is only an anchor, not a size) to a known width and height.
 fn sized(w: f32, h: f32) -> LayoutOpts {
     LayoutOpts {
         width: w,
@@ -1415,7 +1423,7 @@ fn collapsing_radius(design: &Design, surface_progress: f32, height: f32) -> f32
     radius.min(height * 0.5)
 }
 
-fn collapsing_dock_material(design: &Design, surface_progress: f32, height: f32) -> OverlayOpts {
+fn collapsing_dock_material(design: &Design, surface_progress: f32, height: f32) -> LayoutOpts {
     let mut material = materials::glass_panel(design);
     material.bg = Color::rgba(
         mix_channel(240, 255, surface_progress),
@@ -1438,15 +1446,15 @@ fn grid(gap: f32) -> LayoutOpts {
 
 /// A single icon tile: no fill, no border, no padding — just the raster icon
 /// (or glyph fallback), centred so a glyph smaller than the cell is centred.
-fn tile_opts() -> OverlayOpts {
-    OverlayOpts {
+fn tile_opts() -> LayoutOpts {
+    LayoutOpts {
         bg: Color::TRANSPARENT,
         border: Color::TRANSPARENT,
         border_width: 0.0,
         radius: 0.0,
         pad: 0.0,
         cross: Align::Center,
-        ..Default::default()
+        ..surface_layout()
     }
 }
 
@@ -1512,16 +1520,20 @@ fn render_tooltip(frame: &mut Frame, design: &Design, label: &str, rect: Rect, a
         .glass_surface
         .with_alpha(scaled_alpha(surface_alpha, alpha));
     material.radius = TOOLTIP_HEIGHT * 0.5;
-    frame.layer("aegis-dock-app-name", rect, &material, |frame| {
-        frame.row_ex(
-            &LayoutOpts {
-                height: TOOLTIP_HEIGHT,
-                cross: Align::Center,
-                ..Default::default()
-            },
-            |frame| frame.label_compact_sized(&label, 12.5),
-        );
-    });
+    frame.place(
+        "aegis-dock-app-name",
+        &chrome_place(rect, material),
+        |frame| {
+            frame.row_ex(
+                &LayoutOpts {
+                    height: TOOLTIP_HEIGHT,
+                    cross: Align::Center,
+                    ..Default::default()
+                },
+                |frame| frame.label_compact_sized(&label, 12.5),
+            );
+        },
+    );
     frame.set_theme(original);
 }
 
@@ -1665,9 +1677,13 @@ fn render_live_preview_chrome(
     let opacity = |base: u8| (base as f32 * presentation.visibility.clamp(0.0, 1.0)).round() as u8;
     let panel = to_lens_rect(presentation.panel);
     let material = preview::panel_material(design, presentation.visibility);
-    frame.layer("aegis-dock-live-previews", panel, &material, |frame| {
-        frame.column_ex(&sized(panel.w, panel.h), |_| {});
-    });
+    frame.place(
+        "aegis-dock-live-previews",
+        &chrome_place(panel, material),
+        |frame| {
+            frame.column_ex(&sized(panel.w, panel.h), |_| {});
+        },
+    );
 
     let original = frame.theme();
     frame.set_theme(original.with_fg(design.colors.menu_text.with_alpha(opacity(255))));
@@ -1690,18 +1706,20 @@ fn render_live_preview_chrome(
                     .with_alpha(opacity((255.0 * content_brightness).round() as u8)),
             ),
         );
-        frame.layer(
+        frame.place(
             &format!("aegis-dock-live-preview-card-{index}"),
-            outer,
-            &preview::card_material(
-                design,
-                if is_hovered {
-                    preview::PreviewCardState::Selected
-                } else {
-                    preview::PreviewCardState::Rest
-                },
-                presentation.visibility,
-                card.corner_radius,
+            &chrome_place(
+                outer,
+                preview::card_material(
+                    design,
+                    if is_hovered {
+                        preview::PreviewCardState::Selected
+                    } else {
+                        preview::PreviewCardState::Rest
+                    },
+                    presentation.visibility,
+                    card.corner_radius,
+                ),
             ),
             |frame| frame.column_ex(&sized(outer.w, outer.h), |_| {}),
         );
@@ -1713,16 +1731,18 @@ fn render_live_preview_chrome(
             .or(window.app_id.as_deref())
             .unwrap_or("Untitled");
         let label = ellipsize(frame, title, 11.5, (label_rect.w - 16.0).max(0.0));
-        frame.layer(
+        frame.place(
             &format!("aegis-dock-live-preview-label-{index}"),
-            label_rect,
-            &OverlayOpts {
-                bg: Color::TRANSPARENT,
-                radius: design.radii.control,
-                pad: 0.0,
-                cross: Align::Center,
-                ..Default::default()
-            },
+            &chrome_place(
+                label_rect,
+                LayoutOpts {
+                    bg: Color::TRANSPARENT,
+                    radius: design.radii.control,
+                    pad: 0.0,
+                    cross: Align::Center,
+                    ..surface_layout()
+                },
+            ),
             |frame| {
                 frame.row_ex(
                     &LayoutOpts {

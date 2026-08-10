@@ -9,6 +9,7 @@
 use std::ffi::c_void;
 use std::ops::Range;
 
+use aegis_design::materials::{chrome_place, surface_layout};
 use aegis_design::{Design, GlassRole, materials};
 use aegis_model::app::Entry;
 use aegis_model::input::{KeyChar, key_action};
@@ -19,7 +20,7 @@ use aegis_shell::{
     AppCatalog, BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
     IconSet, LiquidGlassRegion, Localizer, Message, ellipsize,
 };
-use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme};
+use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, Rect, Theme};
 
 const PANEL_MAX_WIDTH: f32 = 680.0;
 const PANEL_SIDE_MARGIN: f32 = 20.0;
@@ -227,22 +228,24 @@ impl Chrome for Prism {
 
         let original_theme = frame.theme();
         frame.set_theme(faded_theme(original_theme, progress));
-        frame.layer(
+        frame.place(
             "aegis-prism-scrim",
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                w: display.x,
-                h: display.y,
-            },
-            &OverlayOpts {
-                // A gentle dark veil behind the panel — lighter than the
-                // `scrim` color token's modal dim, so the desktop stays
-                // readable behind the glass. Dark in both appearances.
-                bg: Color::rgba(4, 6, 14, alpha(54, progress)),
-                pad: 0.0,
-                ..Default::default()
-            },
+            &chrome_place(
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: display.x,
+                    h: display.y,
+                },
+                LayoutOpts {
+                    // A gentle dark veil behind the panel — lighter than the
+                    // `scrim` color token's modal dim, so the desktop stays
+                    // readable behind the glass. Dark in both appearances.
+                    bg: Color::rgba(4, 6, 14, alpha(54, progress)),
+                    pad: 0.0,
+                    ..surface_layout()
+                },
+            ),
             |_| {},
         );
 
@@ -250,7 +253,11 @@ impl Chrome for Prism {
         let mut panel_material = materials::glass_panel(&design);
         panel_material.bg = with_progress(design.colors.glass_surface, progress);
         panel_material.radius = PANEL_RADIUS;
-        frame.layer("aegis-prism-panel", panel, &panel_material, |_| {});
+        frame.place(
+            "aegis-prism-panel",
+            &chrome_place(panel, panel_material),
+            |_| {},
+        );
 
         let search = Rect {
             x: panel.x,
@@ -268,15 +275,17 @@ impl Chrome for Prism {
             search_text_width,
         );
         let query_metrics = frame.measure_text(&shown_query, 20.0);
-        frame.layer(
+        frame.place(
             "aegis-prism-search",
-            search,
-            &OverlayOpts {
-                bg: Color::TRANSPARENT,
-                pad: 0.0,
-                cross: Align::Center,
-                ..Default::default()
-            },
+            &chrome_place(
+                search,
+                LayoutOpts {
+                    bg: Color::TRANSPARENT,
+                    pad: 0.0,
+                    cross: Align::Center,
+                    ..surface_layout()
+                },
+            ),
             |frame| {
                 frame.row_ex(
                     &LayoutOpts {
@@ -299,55 +308,61 @@ impl Chrome for Prism {
             },
         );
         if self.brain.is_open() {
-            frame.layer(
+            frame.place(
                 "aegis-prism-caret",
-                Rect {
-                    x: (search.x + 55.0 + query_metrics.width).min(search.x + search.w - 20.0),
-                    y: search.y + 22.0,
-                    w: 2.0,
-                    h: 26.0,
-                },
-                &OverlayOpts {
-                    bg: with_progress(design.colors.application_text, progress),
-                    radius: 1.0,
-                    pad: 0.0,
-                    ..Default::default()
-                },
+                &chrome_place(
+                    Rect {
+                        x: (search.x + 55.0 + query_metrics.width).min(search.x + search.w - 20.0),
+                        y: search.y + 22.0,
+                        w: 2.0,
+                        h: 26.0,
+                    },
+                    LayoutOpts {
+                        bg: with_progress(design.colors.application_text, progress),
+                        radius: 1.0,
+                        pad: 0.0,
+                        ..surface_layout()
+                    },
+                ),
                 |_| {},
             );
         }
-        frame.layer(
+        frame.place(
             "aegis-prism-divider",
-            Rect {
-                x: panel.x + 16.0,
-                y: panel.y + SEARCH_HEIGHT - 1.0,
-                w: (panel.w - 32.0).max(0.0),
-                h: 1.0,
-            },
-            &OverlayOpts {
-                bg: with_progress(design.colors.application_border, progress),
-                pad: 0.0,
-                ..Default::default()
-            },
+            &chrome_place(
+                Rect {
+                    x: panel.x + 16.0,
+                    y: panel.y + SEARCH_HEIGHT - 1.0,
+                    w: (panel.w - 32.0).max(0.0),
+                    h: 1.0,
+                },
+                LayoutOpts {
+                    bg: with_progress(design.colors.application_border, progress),
+                    pad: 0.0,
+                    ..surface_layout()
+                },
+            ),
             |_| {},
         );
 
         let mut clicked = None;
         if filtered.is_empty() {
-            frame.layer(
+            frame.place(
                 "aegis-prism-empty",
-                Rect {
-                    x: panel.x,
-                    y: panel.y + SEARCH_HEIGHT,
-                    w: panel.w,
-                    h: (panel.h - SEARCH_HEIGHT).max(1.0),
-                },
-                &OverlayOpts {
-                    bg: Color::TRANSPARENT,
-                    pad: 0.0,
-                    cross: Align::Center,
-                    ..Default::default()
-                },
+                &chrome_place(
+                    Rect {
+                        x: panel.x,
+                        y: panel.y + SEARCH_HEIGHT,
+                        w: panel.w,
+                        h: (panel.h - SEARCH_HEIGHT).max(1.0),
+                    },
+                    LayoutOpts {
+                        bg: Color::TRANSPARENT,
+                        pad: 0.0,
+                        cross: Align::Center,
+                        ..surface_layout()
+                    },
+                ),
                 |frame| {
                     frame.column_ex(
                         &LayoutOpts {
@@ -384,20 +399,22 @@ impl Chrome for Prism {
                     .or(entry.comment.as_deref())
                     .map(|text| ellipsize(frame, text, 10.5, text_width));
                 let running = self.brain.is_running(app_index);
-                frame.layer(
+                frame.place(
                     &format!("aegis-prism-result-{filtered_position}"),
-                    row,
-                    &OverlayOpts {
-                        bg: if selected {
-                            with_progress(design.colors.application_active, progress)
-                        } else if hovered {
-                            with_progress(design.colors.application_hover, progress)
-                        } else {
-                            Color::TRANSPARENT
+                    &chrome_place(
+                        row,
+                        LayoutOpts {
+                            bg: if selected {
+                                with_progress(design.colors.application_active, progress)
+                            } else if hovered {
+                                with_progress(design.colors.application_hover, progress)
+                            } else {
+                                Color::TRANSPARENT
+                            },
+                            pad: 0.0,
+                            ..surface_layout()
                         },
-                        pad: 0.0,
-                        ..Default::default()
-                    },
+                    ),
                     |frame| {
                         frame.row_ex(
                             &LayoutOpts {

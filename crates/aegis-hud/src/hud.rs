@@ -19,13 +19,11 @@ use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use aegis_design::{Design, GlassRole};
+use aegis_design::{Design, GlassRole, materials::chrome_place};
 use aegis_model::notify::{Notification, NotificationQueue};
 use aegis_model::window::{SpaceUse, Window};
 use aegis_model::workspace::WorkspaceSnapshot;
-use lens::{
-    Align, Color, ForegroundOutline, Frame, Icon, Input, LayoutOpts, OverlayOpts, Rect, Theme,
-};
+use lens::{Align, Color, Frame, Icon, Input, LayoutOpts, Rect, Theme};
 
 use aegis_shell::{
     BackdropRegion, BatteryStatus, Chrome, ChromeEvents, ChromeUpdate, HUD_HEIGHT, IconSet,
@@ -511,9 +509,13 @@ impl Chrome for Hud {
         if layout.visible[LEFT] && self.chip_fade[LEFT] > 0.01 {
             let fade = self.chip_fade[LEFT];
             let chip = layout.chips[LEFT];
-            f.layer("aegis-hud-chip-left", chip, &chip_opts(fade), |f| {
-                f.column_ex(&sized(chip.w, chip.h), |_| {});
-            });
+            f.place(
+                "aegis-hud-chip-left",
+                &chrome_place(chip, chip_opts(fade)),
+                |f| {
+                    f.column_ex(&sized(chip.w, chip.h), |_| {});
+                },
+            );
             f.set_theme(
                 faded_theme(original_theme, fade).with_fg(hud_foreground_color(&design, fade)),
             );
@@ -546,25 +548,30 @@ impl Chrome for Hud {
                 // dimmed to a whisper while the radio is off.
                 let bt_fade = fade * if enabled { 1.0 } else { 0.35 };
                 if let Some(icon) = self.themed_icon("bluetooth-symbolic") {
-                    f.layer("aegis-hud-bluetooth", rect, &centered_layer(), |f| {
-                        f.row_ex(
-                            &LayoutOpts {
-                                width: rect.w,
-                                height: rect.h,
-                                cross: Align::Center,
-                                ..Default::default()
-                            },
-                            |f| unsafe {
-                                f.image_tinted_outlined(
-                                    icon as *mut lens::sys::flux_image,
-                                    16.0,
-                                    16.0,
-                                    hud_foreground_color(&design, bt_fade),
-                                    hud_glyph_outline(&design, bt_fade),
-                                )
-                            },
-                        );
-                    });
+                    f.place(
+                        "aegis-hud-bluetooth",
+                        &chrome_place(rect, centered_layer()),
+                        |f| {
+                            f.row_ex(
+                                &LayoutOpts {
+                                    width: rect.w,
+                                    height: rect.h,
+                                    cross: Align::Center,
+                                    ..Default::default()
+                                },
+                                |f| unsafe {
+                                    f.push_style(hud_glyph_outline(&design, bt_fade));
+                                    f.image_tinted(
+                                        icon as *mut lens::sys::flux_image,
+                                        16.0,
+                                        16.0,
+                                        hud_foreground_color(&design, bt_fade),
+                                    );
+                                    f.pop_style();
+                                },
+                            );
+                        },
+                    );
                 }
             }
             if let Some(battery) = self.status.battery {
@@ -594,7 +601,7 @@ impl Chrome for Hud {
                 };
                 let fallback = self.themed_icon("application-x-executable-symbolic");
                 let id = format!("aegis-hud-sni-{}", sni_cell.key);
-                f.layer(&id, rect, &centered_layer(), |f| {
+                f.place(&id, &chrome_place(rect, centered_layer()), |f| {
                     f.row_ex(
                         &LayoutOpts {
                             width: rect.w,
@@ -604,29 +611,31 @@ impl Chrome for Hud {
                         },
                         |f| match texture {
                             Some(texture) => unsafe {
-                                f.image_tinted_outlined(
+                                f.push_style(hud_glyph_outline(&design, fade));
+                                f.image_tinted(
                                     texture as *mut lens::sys::flux_image,
                                     18.0,
                                     18.0,
                                     hud_foreground_color(&design, fade),
-                                    hud_glyph_outline(&design, fade),
-                                )
+                                );
+                                f.pop_style();
                             },
                             None => match fallback {
                                 Some(icon) => unsafe {
-                                    f.image_tinted_outlined(
+                                    f.push_style(hud_glyph_outline(&design, fade));
+                                    f.image_tinted(
                                         icon as *mut lens::sys::flux_image,
                                         18.0,
                                         18.0,
                                         hud_foreground_color(&design, fade),
-                                        hud_glyph_outline(&design, fade),
-                                    )
+                                    );
+                                    f.pop_style();
                                 },
-                                None => f.icon_outlined(
-                                    Icon::FileText,
-                                    16.0,
-                                    hud_glyph_outline(&design, fade),
-                                ),
+                                None => {
+                                    f.push_style(hud_glyph_outline(&design, fade));
+                                    f.icon(Icon::FileText, 16.0);
+                                    f.pop_style();
+                                }
                             },
                         },
                     );
@@ -674,9 +683,13 @@ impl Chrome for Hud {
         if layout.visible[CENTER] && self.chip_fade[CENTER] > 0.01 {
             let fade = self.chip_fade[CENTER];
             let chip = layout.chips[CENTER];
-            f.layer("aegis-hud-chip-center", chip, &chip_opts(fade), |f| {
-                f.column_ex(&sized(chip.w, chip.h), |_| {});
-            });
+            f.place(
+                "aegis-hud-chip-center",
+                &chrome_place(chip, chip_opts(fade)),
+                |f| {
+                    f.column_ex(&sized(chip.w, chip.h), |_| {});
+                },
+            );
             if let Some((slots, _)) = workspace_indicator_state(workspaces) {
                 let mut x = chip.x + CHIP_PAD_X;
                 for index in 0..slots {
@@ -703,10 +716,9 @@ impl Chrome for Hud {
                         .and_then(|output| output.workspaces.get(index))
                         .map(|workspace| workspace.id.0.to_string())
                         .unwrap_or_else(|| format!("preview-{index}"));
-                    f.layer(
+                    f.place(
                         &format!("aegis-hud-workspace-contour-{id}"),
-                        contour,
-                        &centered_layer(),
+                        &chrome_place(contour, centered_layer()),
                         |f| {
                             f.column_ex(
                                 &sized_fill(
@@ -719,10 +731,9 @@ impl Chrome for Hud {
                             );
                         },
                     );
-                    f.layer(
+                    f.place(
                         &format!("aegis-hud-workspace-dot-{id}"),
-                        dot,
-                        &centered_layer(),
+                        &chrome_place(dot, centered_layer()),
                         |f| {
                             f.column_ex(
                                 &sized_fill(

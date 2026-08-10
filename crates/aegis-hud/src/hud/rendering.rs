@@ -1,4 +1,6 @@
 use super::*;
+use aegis_design::materials::{chrome_place, surface_layout};
+use lens::Style;
 use std::ffi::c_void;
 
 /// The current local time as `HH:MM` — the same string `date +%H:%M`
@@ -75,7 +77,7 @@ pub(super) fn render_text(
     size: f32,
     fade: f32,
 ) {
-    f.layer(id, rect, &centered_layer(), |f| {
+    f.place(id, &chrome_place(rect, centered_layer()), |f| {
         f.row_ex(
             &LayoutOpts {
                 width: rect.w,
@@ -83,7 +85,11 @@ pub(super) fn render_text(
                 cross: Align::Center,
                 ..Default::default()
             },
-            |f| f.label_compact_outlined_sized(text, size, hud_text_outline(design, fade)),
+            |f| {
+                f.push_style(hud_text_outline(design, fade));
+                f.label_compact_sized(text, size);
+                f.pop_style();
+            },
         );
     });
 }
@@ -102,7 +108,7 @@ pub(super) fn render_status_cell(
     fallback: Icon,
     label: &str,
 ) {
-    f.layer(id, rect, &centered_layer(), |f| {
+    f.place(id, &chrome_place(rect, centered_layer()), |f| {
         f.row_ex(
             &LayoutOpts {
                 width: rect.w,
@@ -114,18 +120,25 @@ pub(super) fn render_status_cell(
             |f| {
                 match themed_icon {
                     Some(icon) => unsafe {
-                        f.image_tinted_outlined(
+                        f.push_style(hud_glyph_outline(design, fade));
+                        f.image_tinted(
                             icon as *mut lens::sys::flux_image,
                             16.0,
                             16.0,
                             hud_foreground_color(design, fade),
-                            hud_glyph_outline(design, fade),
-                        )
+                        );
+                        f.pop_style();
                     },
-                    None => f.icon_outlined(fallback, 15.0, hud_glyph_outline(design, fade)),
+                    None => {
+                        f.push_style(hud_glyph_outline(design, fade));
+                        f.icon(fallback, 15.0);
+                        f.pop_style();
+                    }
                 }
                 if !label.is_empty() {
-                    f.label_compact_outlined_sized(label, 11.0, hud_text_outline(design, fade));
+                    f.push_style(hud_text_outline(design, fade));
+                    f.label_compact_sized(label, 11.0);
+                    f.pop_style();
                 }
             },
         );
@@ -145,14 +158,32 @@ pub(super) fn hud_contour_color(design: &Design) -> Color {
     design.hud_foreground.contour
 }
 
-pub(super) fn hud_text_outline(design: &Design, fade: f32) -> ForegroundOutline {
+/// The `(color, width)` pair behind [`hud_text_outline`], factored out so the
+/// contour policy stays testable now that `lens::Style` is opaque.
+pub(super) fn hud_text_outline_params(design: &Design, fade: f32) -> (Color, f32) {
     let hud = design.hud_foreground;
-    ForegroundOutline::new(fade_color(hud.contour, fade), hud.text_contour_width)
+    (fade_color(hud.contour, fade), hud.text_contour_width)
 }
 
-pub(super) fn hud_glyph_outline(design: &Design, fade: f32) -> ForegroundOutline {
+pub(super) fn hud_text_outline(design: &Design, fade: f32) -> Style {
+    let (color, width) = hud_text_outline_params(design, fade);
+    Style::new()
+        .with_outline_color(color)
+        .with_outline_width(width)
+}
+
+/// The `(color, width)` pair behind [`hud_glyph_outline`]; see
+/// [`hud_text_outline_params`].
+pub(super) fn hud_glyph_outline_params(design: &Design, fade: f32) -> (Color, f32) {
     let hud = design.hud_foreground;
-    ForegroundOutline::new(fade_color(hud.contour, fade), hud.glyph_contour_width)
+    (fade_color(hud.contour, fade), hud.glyph_contour_width)
+}
+
+pub(super) fn hud_glyph_outline(design: &Design, fade: f32) -> Style {
+    let (color, width) = hud_glyph_outline_params(design, fade);
+    Style::new()
+        .with_outline_color(color)
+        .with_outline_width(width)
 }
 
 /// The floating HUD chip foreground tint. The compositor's SDF glass pass now
@@ -160,14 +191,14 @@ pub(super) fn hud_glyph_outline(design: &Design, fade: f32) -> ForegroundOutline
 /// it does not turn the physical glass back into an opaque dark pill. The
 /// whisper is scheme-invariant: the scheme-aware pieces are the glass body
 /// and the HUD foreground/contour pair, not this tint.
-pub(super) fn chip_opts(fade: f32) -> OverlayOpts {
-    OverlayOpts {
+pub(super) fn chip_opts(fade: f32) -> LayoutOpts {
+    LayoutOpts {
         bg: fade_color(Color::rgba(24, 26, 36, 42), fade),
         border: fade_color(Color::rgba(255, 255, 255, 18), fade),
         border_width: 0.75,
         radius: CHIP_RADIUS,
         pad: 0.0,
-        ..Default::default()
+        ..surface_layout()
     }
 }
 
@@ -186,15 +217,15 @@ pub(super) fn workspace_dot_intensity(index: usize, position: f32) -> f32 {
     (1.0 - (index as f32 - position).abs()).clamp(0.0, 1.0)
 }
 
-pub(super) fn centered_layer() -> OverlayOpts {
-    OverlayOpts {
+pub(super) fn centered_layer() -> LayoutOpts {
+    LayoutOpts {
         bg: Color::TRANSPARENT,
         border: Color::TRANSPARENT,
         border_width: 0.0,
         radius: 0.0,
         pad: 0.0,
         cross: Align::Center,
-        ..Default::default()
+        ..surface_layout()
     }
 }
 

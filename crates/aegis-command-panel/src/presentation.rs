@@ -1,5 +1,6 @@
 use super::*;
 
+use aegis_design::materials::{chrome_place, surface_layout};
 use lens::Icon;
 
 // ---- rendering -----------------------------------------------------------
@@ -30,17 +31,19 @@ impl CommandPanel {
             x: rect.x + slide,
             ..rect
         };
-        f.layer(
+        f.place(
             "aegis-hud-header-panel",
-            rect,
-            &OverlayOpts {
-                bg: fade_color(hud.surface, progress),
-                border: fade_color(hud.border, progress),
-                border_width: 1.0,
-                radius: 16.0,
-                pad: 0.0,
-                ..Default::default()
-            },
+            &chrome_place(
+                rect,
+                LayoutOpts {
+                    bg: fade_color(hud.surface, progress),
+                    border: fade_color(hud.border, progress),
+                    border_width: 1.0,
+                    radius: 16.0,
+                    pad: 0.0,
+                    ..surface_layout()
+                },
+            ),
             |f| {
                 f.column_ex(&sized(rect.w, rect.h), |_| {});
             },
@@ -88,27 +91,30 @@ impl CommandPanel {
         match &self.avatar {
             Some(avatar) => {
                 let texture = avatar.texture().as_raw();
-                f.layer("aegis-hud-avatar", avatar_rect, &transparent(), |f| {
-                    f.row_ex(&sized(72.0, 72.0), |f| {
-                        unsafe {
-                            f.image_tinted(
-                                texture as *mut lens::sys::flux_image,
-                                72.0,
-                                72.0,
-                                Color::rgba(255, 255, 255, fade_alpha(255, progress)),
-                            )
-                        };
-                    });
-                });
+                f.place(
+                    "aegis-hud-avatar",
+                    &chrome_place(avatar_rect, transparent()),
+                    |f| {
+                        f.row_ex(&sized(72.0, 72.0), |f| {
+                            unsafe {
+                                f.image_tinted(
+                                    texture as *mut lens::sys::flux_image,
+                                    72.0,
+                                    72.0,
+                                    Color::rgba(255, 255, 255, fade_alpha(255, progress)),
+                                )
+                            };
+                        });
+                    },
+                );
             }
             None => {
                 f.set_theme(
                     base_theme.with_fg(fade_color(avatar_style.fallback_foreground, progress)),
                 );
-                f.layer(
+                f.place(
                     "aegis-hud-avatar-initials",
-                    avatar_rect,
-                    &transparent(),
+                    &chrome_place(avatar_rect, transparent()),
                     |f| {
                         f.row_ex(
                             &LayoutOpts {
@@ -137,15 +143,17 @@ impl CommandPanel {
         let text_w = (rect.x + pad + 270.0 - text_x).max(40.0);
         let display_name = truncate(&self.profile.display_name, (text_w / 9.0).max(4.0) as usize);
         f.set_theme(faded_theme(base_theme, progress));
-        f.layer(
+        f.place(
             "aegis-hud-profile-name",
-            Rect {
-                x: text_x,
-                y: center_y - 21.0,
-                w: text_w,
-                h: 22.0,
-            },
-            &transparent(),
+            &chrome_place(
+                Rect {
+                    x: text_x,
+                    y: center_y - 21.0,
+                    w: text_w,
+                    h: 22.0,
+                },
+                transparent(),
+            ),
             |f| {
                 f.row_ex(
                     &LayoutOpts {
@@ -165,15 +173,17 @@ impl CommandPanel {
         }
         let sub_line = truncate(&sub_line, (text_w / 5.8).max(8.0) as usize);
         f.set_theme(faded_theme(muted_theme, progress));
-        f.layer(
+        f.place(
             "aegis-hud-profile-sub",
-            Rect {
-                x: text_x,
-                y: center_y + 3.0,
-                w: text_w,
-                h: 15.0,
-            },
-            &transparent(),
+            &chrome_place(
+                Rect {
+                    x: text_x,
+                    y: center_y + 3.0,
+                    w: text_w,
+                    h: 15.0,
+                },
+                transparent(),
+            ),
             |f| {
                 f.row_ex(
                     &LayoutOpts {
@@ -189,21 +199,23 @@ impl CommandPanel {
 
         // -- divider ---------------------------------------------------------
         let divider_x = rect.x + pad + 270.0 + 12.0;
-        f.layer(
+        f.place(
             "aegis-hud-header-divider",
-            Rect {
-                x: divider_x,
-                y: rect.y + 22.0,
-                w: 1.0,
-                h: (rect.h - 44.0).max(1.0),
-            },
-            &OverlayOpts {
-                bg: fade_color(hud.border, progress),
-                border: Color::TRANSPARENT,
-                radius: 0.0,
-                pad: 0.0,
-                ..Default::default()
-            },
+            &chrome_place(
+                Rect {
+                    x: divider_x,
+                    y: rect.y + 22.0,
+                    w: 1.0,
+                    h: (rect.h - 44.0).max(1.0),
+                },
+                LayoutOpts {
+                    bg: fade_color(hud.border, progress),
+                    border: Color::TRANSPARENT,
+                    radius: 0.0,
+                    pad: 0.0,
+                    ..surface_layout()
+                },
+            ),
             |_| {},
         );
 
@@ -215,7 +227,7 @@ impl CommandPanel {
             return;
         }
 
-        // Chassis glyph: a thin-line machine pictogram built from layer rects.
+        // Chassis glyph: a thin-line machine pictogram built from placed rects.
         let glyph_cx = machine_x + 28.0;
         let chassis_label = match self.stats.chassis {
             ChassisKind::Laptop => i18n.text(Message::Laptop),
@@ -227,20 +239,20 @@ impl CommandPanel {
         };
         let glyph_top = inner_y + (inner_h - 17.0 - glyph_h).max(0.0) * 0.5;
         let muted_line = fade_color(hud.text_muted, progress);
-        let outline = |radius: f32| OverlayOpts {
+        let outline = |radius: f32| LayoutOpts {
             bg: Color::TRANSPARENT,
             border: muted_line,
             border_width: 1.2,
             radius,
             pad: 0.0,
-            ..Default::default()
+            ..surface_layout()
         };
-        let filled = |radius: f32| OverlayOpts {
+        let filled = |radius: f32| LayoutOpts {
             bg: muted_line,
             border: Color::TRANSPARENT,
             radius,
             pad: 0.0,
-            ..Default::default()
+            ..surface_layout()
         };
         match self.stats.chassis {
             ChassisKind::Laptop => {
@@ -250,14 +262,22 @@ impl CommandPanel {
                     w: 36.0,
                     h: 24.0,
                 };
-                f.layer("aegis-hud-chassis-screen", screen, &outline(3.0), |_| {});
+                f.place(
+                    "aegis-hud-chassis-screen",
+                    &chrome_place(screen, outline(3.0)),
+                    |_| {},
+                );
                 let base = Rect {
                     x: glyph_cx - 22.0,
                     y: glyph_top + 24.0 + 2.0,
                     w: 44.0,
                     h: 2.5,
                 };
-                f.layer("aegis-hud-chassis-base", base, &filled(1.25), |_| {});
+                f.place(
+                    "aegis-hud-chassis-base",
+                    &chrome_place(base, filled(1.25)),
+                    |_| {},
+                );
             }
             ChassisKind::Desktop => {
                 let monitor = Rect {
@@ -266,33 +286,47 @@ impl CommandPanel {
                     w: 34.0,
                     h: 22.0,
                 };
-                f.layer("aegis-hud-chassis-screen", monitor, &outline(2.0), |_| {});
+                f.place(
+                    "aegis-hud-chassis-screen",
+                    &chrome_place(monitor, outline(2.0)),
+                    |_| {},
+                );
                 let stand = Rect {
                     x: glyph_cx - 1.0,
                     y: glyph_top + 22.0,
                     w: 2.0,
                     h: 7.0,
                 };
-                f.layer("aegis-hud-chassis-stand", stand, &filled(0.0), |_| {});
+                f.place(
+                    "aegis-hud-chassis-stand",
+                    &chrome_place(stand, filled(0.0)),
+                    |_| {},
+                );
                 let base = Rect {
                     x: glyph_cx - 8.0,
                     y: glyph_top + 29.0,
                     w: 16.0,
                     h: 2.0,
                 };
-                f.layer("aegis-hud-chassis-base", base, &filled(1.0), |_| {});
+                f.place(
+                    "aegis-hud-chassis-base",
+                    &chrome_place(base, filled(1.0)),
+                    |_| {},
+                );
             }
         }
         f.set_theme(faded_theme(muted_theme, progress));
-        f.layer(
+        f.place(
             "aegis-hud-chassis-label",
-            Rect {
-                x: machine_x,
-                y: rect.y + rect.h - pad - 13.0,
-                w: 56.0,
-                h: 13.0,
-            },
-            &transparent(),
+            &chrome_place(
+                Rect {
+                    x: machine_x,
+                    y: rect.y + rect.h - pad - 13.0,
+                    w: 56.0,
+                    h: 13.0,
+                },
+                transparent(),
+            ),
             |f| {
                 f.row_ex(
                     &LayoutOpts {
@@ -431,10 +465,9 @@ impl CommandPanel {
         } else if let Some((_, color)) = icon_label {
             f.set_theme(faded_theme(base_theme.with_fg(color), progress));
         }
-        f.layer(
+        f.place(
             &format!("aegis-hud-gauge-label-{index}"),
-            label_rect,
-            &transparent(),
+            &chrome_place(label_rect, transparent()),
             |f| {
                 f.row_ex(
                     &LayoutOpts {
@@ -551,10 +584,9 @@ impl CommandPanel {
             }
         };
         f.set_theme(faded_theme(base_theme, progress));
-        f.layer(
+        f.place(
             &format!("aegis-hud-gauge-value-{index}"),
-            value_rect,
-            &transparent(),
+            &chrome_place(value_rect, transparent()),
             |f| {
                 f.row_ex(
                     &LayoutOpts {
@@ -592,17 +624,19 @@ impl CommandPanel {
             y: rect.y + rise,
             ..rect
         };
-        f.layer(
+        f.place(
             "aegis-hud-content-panel",
-            rect,
-            &OverlayOpts {
-                bg: fade_color(hud.surface, progress),
-                border: fade_color(hud.border, progress),
-                border_width: 1.0,
-                radius: 16.0,
-                pad: 0.0,
-                ..Default::default()
-            },
+            &chrome_place(
+                rect,
+                LayoutOpts {
+                    bg: fade_color(hud.surface, progress),
+                    border: fade_color(hud.border, progress),
+                    border_width: 1.0,
+                    radius: 16.0,
+                    pad: 0.0,
+                    ..surface_layout()
+                },
+            ),
             |f| {
                 f.column_ex(&sized(rect.w, rect.h), |_| {});
             },
@@ -626,21 +660,23 @@ impl CommandPanel {
             i18n,
         );
         // Hairline separating the tab bar from the tab body.
-        f.layer(
+        f.place(
             "aegis-hud-tab-divider",
-            Rect {
-                x: rect.x + 12.0,
-                y: rect.y + TAB_BAR_H,
-                w: rect.w - 24.0,
-                h: 1.0,
-            },
-            &OverlayOpts {
-                bg: fade_color(hud.border, progress),
-                border: Color::TRANSPARENT,
-                radius: 0.0,
-                pad: 0.0,
-                ..Default::default()
-            },
+            &chrome_place(
+                Rect {
+                    x: rect.x + 12.0,
+                    y: rect.y + TAB_BAR_H,
+                    w: rect.w - 24.0,
+                    h: 1.0,
+                },
+                LayoutOpts {
+                    bg: fade_color(hud.border, progress),
+                    border: Color::TRANSPARENT,
+                    radius: 0.0,
+                    pad: 0.0,
+                    ..surface_layout()
+                },
+            ),
             |_| {},
         );
 
@@ -683,27 +719,66 @@ impl CommandPanel {
         let mut action: Option<TabAction> = None;
         let mut underline: Option<Rect> = None;
         let original = f.theme();
-        f.layer("aegis-hud-tab-bar", rect, &transparent(), |f| {
-            f.row_ex(
-                &LayoutOpts {
-                    width: rect.w,
-                    height: rect.h,
-                    gap: 4.0,
-                    cross: Align::Center,
-                    ..Default::default()
-                },
-                |f| {
-                    for (index, (tab, label)) in tabs.iter().enumerate() {
-                        let selected = self.tab == *tab;
-                        f.set_theme(if selected { active_theme } else { muted_theme });
-                        let label = truncate(label, ((tab_w - 16.0) / 6.5).max(4.0) as usize);
+        f.place(
+            "aegis-hud-tab-bar",
+            &chrome_place(rect, transparent()),
+            |f| {
+                f.row_ex(
+                    &LayoutOpts {
+                        width: rect.w,
+                        height: rect.h,
+                        gap: 4.0,
+                        cross: Align::Center,
+                        ..Default::default()
+                    },
+                    |f| {
+                        for (index, (tab, label)) in tabs.iter().enumerate() {
+                            let selected = self.tab == *tab;
+                            f.set_theme(if selected { active_theme } else { muted_theme });
+                            let label = truncate(label, ((tab_w - 16.0) / 6.5).max(4.0) as usize);
+                            let (response, _) = f.pressable_row(
+                                &format!("aegis-hud-tab-{index}"),
+                                &label,
+                                &LayoutOpts {
+                                    flex: 1.0,
+                                    height: 30.0,
+                                    pad: 6.0,
+                                    radius: 8.0,
+                                    cross: Align::Center,
+                                    ..Default::default()
+                                },
+                                |f, _| {
+                                    f.row_ex(
+                                        &LayoutOpts {
+                                            cross: Align::Center,
+                                            ..Default::default()
+                                        },
+                                        |f| {
+                                            f.flex(1.0);
+                                            f.spacer(0.0);
+                                            f.label_compact_sized(&label, 11.5);
+                                            f.flex(1.0);
+                                            f.spacer(0.0);
+                                        },
+                                    );
+                                },
+                            );
+                            if selected {
+                                underline = Some(response.rect);
+                            }
+                            if response.clicked && !selected {
+                                action = Some(TabAction::Select(*tab));
+                            }
+                        }
+                        // The close button at the bar's right end: the rail's X
+                        // glyph carried over as a flat button.
+                        f.set_theme(active_theme);
                         let (response, _) = f.pressable_row(
-                            &format!("aegis-hud-tab-{index}"),
-                            &label,
+                            "aegis-hud-tab-close",
+                            "×",
                             &LayoutOpts {
-                                flex: 1.0,
+                                width: close_w,
                                 height: 30.0,
-                                pad: 6.0,
                                 radius: 8.0,
                                 cross: Align::Center,
                                 ..Default::default()
@@ -717,72 +792,39 @@ impl CommandPanel {
                                     |f| {
                                         f.flex(1.0);
                                         f.spacer(0.0);
-                                        f.label_compact_sized(&label, 11.5);
+                                        f.icon(Icon::X, 13.0);
                                         f.flex(1.0);
                                         f.spacer(0.0);
                                     },
                                 );
                             },
                         );
-                        if selected {
-                            underline = Some(response.rect);
+                        if response.clicked {
+                            action = Some(TabAction::Close);
                         }
-                        if response.clicked && !selected {
-                            action = Some(TabAction::Select(*tab));
-                        }
-                    }
-                    // The close button at the bar's right end: the rail's X
-                    // glyph carried over as a flat button.
-                    f.set_theme(active_theme);
-                    let (response, _) = f.pressable_row(
-                        "aegis-hud-tab-close",
-                        "×",
-                        &LayoutOpts {
-                            width: close_w,
-                            height: 30.0,
-                            radius: 8.0,
-                            cross: Align::Center,
-                            ..Default::default()
-                        },
-                        |f, _| {
-                            f.row_ex(
-                                &LayoutOpts {
-                                    cross: Align::Center,
-                                    ..Default::default()
-                                },
-                                |f| {
-                                    f.flex(1.0);
-                                    f.spacer(0.0);
-                                    f.icon(Icon::X, 13.0);
-                                    f.flex(1.0);
-                                    f.spacer(0.0);
-                                },
-                            );
-                        },
-                    );
-                    if response.clicked {
-                        action = Some(TabAction::Close);
-                    }
-                },
-            );
-        });
+                    },
+                );
+            },
+        );
         f.set_theme(original);
         if let Some(tab_rect) = underline {
-            f.layer(
+            f.place(
                 "aegis-hud-tab-underline",
-                Rect {
-                    x: tab_rect.x + 10.0,
-                    y: tab_rect.y + tab_rect.h - 3.0,
-                    w: (tab_rect.w - 20.0).max(8.0),
-                    h: 2.0,
-                },
-                &OverlayOpts {
-                    bg: fade_color(hud.accent, progress),
-                    border: Color::TRANSPARENT,
-                    radius: 1.0,
-                    pad: 0.0,
-                    ..Default::default()
-                },
+                &chrome_place(
+                    Rect {
+                        x: tab_rect.x + 10.0,
+                        y: tab_rect.y + tab_rect.h - 3.0,
+                        w: (tab_rect.w - 20.0).max(8.0),
+                        h: 2.0,
+                    },
+                    LayoutOpts {
+                        bg: fade_color(hud.accent, progress),
+                        border: Color::TRANSPARENT,
+                        radius: 1.0,
+                        pad: 0.0,
+                        ..surface_layout()
+                    },
+                ),
                 |_| {},
             );
         }
@@ -814,23 +856,27 @@ impl CommandPanel {
             let original = f.theme();
             let muted = themes::hud_muted(themes::hud(&hud), &hud);
             f.set_theme(faded_theme(muted, progress));
-            f.layer("aegis-hud-settings-empty", area, &transparent(), |f| {
-                f.row_ex(
-                    &LayoutOpts {
-                        width: area.w,
-                        height: area.h,
-                        cross: Align::Center,
-                        ..Default::default()
-                    },
-                    |f| {
-                        f.flex(1.0);
-                        f.spacer(0.0);
-                        f.label_compact_sized(i18n.text(Message::ConnectingToDesktop), 12.0);
-                        f.flex(1.0);
-                        f.spacer(0.0);
-                    },
-                );
-            });
+            f.place(
+                "aegis-hud-settings-empty",
+                &chrome_place(area, transparent()),
+                |f| {
+                    f.row_ex(
+                        &LayoutOpts {
+                            width: area.w,
+                            height: area.h,
+                            cross: Align::Center,
+                            ..Default::default()
+                        },
+                        |f| {
+                            f.flex(1.0);
+                            f.spacer(0.0);
+                            f.label_compact_sized(i18n.text(Message::ConnectingToDesktop), 12.0);
+                            f.flex(1.0);
+                            f.spacer(0.0);
+                        },
+                    );
+                },
+            );
             f.set_theme(original);
             return;
         }
@@ -838,23 +884,27 @@ impl CommandPanel {
         let mut events = ModuleEvents::default();
         let original = f.theme();
         f.set_theme(faded_theme(themes::application(&design), progress));
-        f.layer("aegis-hud-settings", area, &transparent(), |f| {
-            f.column_ex(&sized(area.w, area.h), |f| {
-                f.flex(1.0);
-                f.scroll("aegis-hud-settings-scroll", |f| {
-                    f.column_ex(
-                        &LayoutOpts {
-                            gap: 12.0,
-                            cross: Align::Stretch,
-                            ..Default::default()
-                        },
-                        |f| {
-                            self.modules.render(id, f, i18n, &design, &mut events);
-                        },
-                    );
+        f.place(
+            "aegis-hud-settings",
+            &chrome_place(area, transparent()),
+            |f| {
+                f.column_ex(&sized(area.w, area.h), |f| {
+                    f.flex(1.0);
+                    f.scroll("aegis-hud-settings-scroll", |f| {
+                        f.column_ex(
+                            &LayoutOpts {
+                                gap: 12.0,
+                                cross: Align::Stretch,
+                                ..Default::default()
+                            },
+                            |f| {
+                                self.modules.render(id, f, i18n, &design, &mut events);
+                            },
+                        );
+                    });
                 });
-            });
-        });
+            },
+        );
         f.set_theme(original);
         let revision = self.settings.as_ref().map(|settings| settings.revision);
         for action in events.actions {
@@ -916,17 +966,19 @@ impl CommandPanel {
         progress: f32,
     ) -> Rect {
         let hud = Hud::classic();
-        f.layer(
+        f.place(
             id,
-            rect,
-            &OverlayOpts {
-                bg: fade_color(hud.surface, progress),
-                border: fade_color(hud.border, progress),
-                border_width: 1.0,
-                radius: 16.0,
-                pad: 0.0,
-                ..Default::default()
-            },
+            &chrome_place(
+                rect,
+                LayoutOpts {
+                    bg: fade_color(hud.surface, progress),
+                    border: fade_color(hud.border, progress),
+                    border_width: 1.0,
+                    radius: 16.0,
+                    pad: 0.0,
+                    ..surface_layout()
+                },
+            ),
             |f| {
                 f.column_ex(&sized(rect.w, rect.h), |_| {});
             },
@@ -942,15 +994,17 @@ impl CommandPanel {
             themes::hud_muted(themes::hud(&hud), &hud),
             progress,
         ));
-        f.layer(
+        f.place(
             &format!("{id}-header"),
-            Rect {
-                x: rect.x + 14.0,
-                y: rect.y + 8.0,
-                w: rect.w - 28.0,
-                h: 15.0,
-            },
-            &transparent(),
+            &chrome_place(
+                Rect {
+                    x: rect.x + 14.0,
+                    y: rect.y + 8.0,
+                    w: rect.w - 28.0,
+                    h: 15.0,
+                },
+                transparent(),
+            ),
             |f| {
                 f.row_ex(
                     &LayoutOpts {
@@ -1006,206 +1060,223 @@ impl CommandPanel {
             f.label_compact_sized(label, 10.5);
             f.set_theme(base_theme);
         };
-        f.layer("aegis-hud-system", area, &transparent(), |f| {
-            f.column_ex(&sized(area.w, area.h), |f| {
-                f.flex(1.0);
-                f.scroll("aegis-hud-system-scroll", |f| {
-                    f.column_ex(
-                        &LayoutOpts {
-                            gap: 8.0,
-                            cross: Align::Stretch,
-                            ..Default::default()
-                        },
-                        |f| {
-                            // Sound group.
-                            group_header(f, i18n.text(Message::Sound));
-                            f.row_ex(
-                                &LayoutOpts {
-                                    height: 22.0,
-                                    gap: 8.0,
-                                    cross: Align::Center,
-                                    ..Default::default()
-                                },
-                                |f| {
-                                    match volume_themed {
-                                        Some(icon) => unsafe {
-                                            f.image(icon as *mut lens::sys::flux_image, 16.0, 16.0)
-                                        },
-                                        None => f.icon(volume_icon(&status), 15.0),
+        f.place(
+            "aegis-hud-system",
+            &chrome_place(area, transparent()),
+            |f| {
+                f.column_ex(&sized(area.w, area.h), |f| {
+                    f.flex(1.0);
+                    f.scroll("aegis-hud-system-scroll", |f| {
+                        f.column_ex(
+                            &LayoutOpts {
+                                gap: 8.0,
+                                cross: Align::Stretch,
+                                ..Default::default()
+                            },
+                            |f| {
+                                // Sound group.
+                                group_header(f, i18n.text(Message::Sound));
+                                f.row_ex(
+                                    &LayoutOpts {
+                                        height: 22.0,
+                                        gap: 8.0,
+                                        cross: Align::Center,
+                                        ..Default::default()
+                                    },
+                                    |f| {
+                                        match volume_themed {
+                                            Some(icon) => unsafe {
+                                                f.image(
+                                                    icon as *mut lens::sys::flux_image,
+                                                    16.0,
+                                                    16.0,
+                                                )
+                                            },
+                                            None => f.icon(volume_icon(&status), 15.0),
+                                        }
+                                        f.label_compact_sized(i18n.text(Message::Sound), 12.5);
+                                        f.flex(1.0);
+                                        f.spacer(0.0);
+                                        f.label_compact_sized(
+                                            &status
+                                                .volume
+                                                .map(|level| format!("{level}%"))
+                                                .unwrap_or_else(|| "--".into()),
+                                            11.0,
+                                        );
+                                    },
+                                );
+                                if status.volume.is_some() {
+                                    let mut volume = status.volume.unwrap_or(0) as f32;
+                                    if f.slider("##hud-volume", &mut volume, 0.0, 100.0) {
+                                        out.system_actions.push(SystemAction::SetVolume {
+                                            level: volume.round().clamp(0.0, 100.0) as u8,
+                                        });
                                     }
-                                    f.label_compact_sized(i18n.text(Message::Sound), 12.5);
-                                    f.flex(1.0);
-                                    f.spacer(0.0);
-                                    f.label_compact_sized(
-                                        &status
-                                            .volume
-                                            .map(|level| format!("{level}%"))
-                                            .unwrap_or_else(|| "--".into()),
-                                        11.0,
-                                    );
-                                },
-                            );
-                            if status.volume.is_some() {
-                                let mut volume = status.volume.unwrap_or(0) as f32;
-                                if f.slider("##hud-volume", &mut volume, 0.0, 100.0) {
-                                    out.system_actions.push(SystemAction::SetVolume {
-                                        level: volume.round().clamp(0.0, 100.0) as u8,
+                                    let mut muted = status.muted;
+                                    if f.checkbox(i18n.text(Message::Muted), &mut muted) {
+                                        out.system_actions.push(SystemAction::ToggleMute);
+                                    }
+                                } else {
+                                    unavailable_control(f, i18n.text(Message::Volume), i18n);
+                                }
+                                f.spacer(2.0);
+
+                                // Brightness group.
+                                group_header(f, i18n.text(Message::Brightness));
+                                f.row_ex(
+                                    &LayoutOpts {
+                                        height: 22.0,
+                                        gap: 8.0,
+                                        cross: Align::Center,
+                                        ..Default::default()
+                                    },
+                                    |f| {
+                                        f.icon(Icon::Zap, 15.0);
+                                        f.label_compact_sized(i18n.text(Message::Brightness), 12.5);
+                                        f.flex(1.0);
+                                        f.spacer(0.0);
+                                        f.label_compact_sized(
+                                            &status
+                                                .brightness
+                                                .map(|level| format!("{level}%"))
+                                                .unwrap_or_else(|| "--".into()),
+                                            11.0,
+                                        );
+                                    },
+                                );
+                                if status.brightness.is_some() {
+                                    let mut brightness = status.brightness.unwrap_or(1) as f32;
+                                    if f.slider("##hud-brightness", &mut brightness, 1.0, 100.0) {
+                                        out.system_actions.push(SystemAction::SetBrightness {
+                                            level: brightness.round().clamp(1.0, 100.0) as u8,
+                                        });
+                                    }
+                                } else {
+                                    unavailable_control(f, i18n.text(Message::Brightness), i18n);
+                                }
+                                f.spacer(2.0);
+
+                                // Connectivity group.
+                                group_header(f, i18n.text(Message::Connectivity));
+                                f.row_ex(
+                                    &LayoutOpts {
+                                        height: 22.0,
+                                        gap: 8.0,
+                                        cross: Align::Center,
+                                        ..Default::default()
+                                    },
+                                    |f| {
+                                        match network_themed {
+                                            Some(icon) => unsafe {
+                                                f.image(
+                                                    icon as *mut lens::sys::flux_image,
+                                                    16.0,
+                                                    16.0,
+                                                )
+                                            },
+                                            None => f.icon(Icon::Globe, 15.0),
+                                        }
+                                        f.label_compact_sized(
+                                            i18n.text(Message::Connectivity),
+                                            12.5,
+                                        );
+                                        f.flex(1.0);
+                                        f.spacer(0.0);
+                                        f.label_compact_sized(network_label, 11.0);
+                                    },
+                                );
+                                if status.wifi_enabled.is_some() {
+                                    let mut wifi = status.wifi_enabled.unwrap_or(false);
+                                    if f.checkbox(i18n.text(Message::Wifi), &mut wifi) {
+                                        out.system_actions
+                                            .push(SystemAction::SetWifi { enabled: wifi });
+                                    }
+                                } else {
+                                    unavailable_control(f, i18n.text(Message::Wifi), i18n);
+                                }
+                                if status.bluetooth_enabled.is_some() {
+                                    let mut bluetooth = status.bluetooth_enabled.unwrap_or(false);
+                                    if f.checkbox(i18n.text(Message::Bluetooth), &mut bluetooth) {
+                                        out.system_actions.push(SystemAction::SetBluetooth {
+                                            enabled: bluetooth,
+                                        });
+                                    }
+                                } else {
+                                    unavailable_control(f, i18n.text(Message::Bluetooth), i18n);
+                                }
+                                f.spacer(2.0);
+
+                                // Desktop group.
+                                group_header(f, i18n.text(Message::Desktop));
+                                f.row_ex(
+                                    &LayoutOpts {
+                                        height: 22.0,
+                                        gap: 8.0,
+                                        cross: Align::Center,
+                                        ..Default::default()
+                                    },
+                                    |f| {
+                                        f.icon(Icon::Grid, 15.0);
+                                        f.label_compact_sized(i18n.text(Message::Desktop), 12.5);
+                                    },
+                                );
+                                let mut do_not_disturb = status.do_not_disturb;
+                                if f.checkbox(i18n.text(Message::DoNotDisturb), &mut do_not_disturb)
+                                {
+                                    out.system_actions.push(SystemAction::SetDoNotDisturb {
+                                        enabled: do_not_disturb,
                                     });
                                 }
-                                let mut muted = status.muted;
-                                if f.checkbox(i18n.text(Message::Muted), &mut muted) {
-                                    out.system_actions.push(SystemAction::ToggleMute);
-                                }
-                            } else {
-                                unavailable_control(f, i18n.text(Message::Volume), i18n);
-                            }
-                            f.spacer(2.0);
-
-                            // Brightness group.
-                            group_header(f, i18n.text(Message::Brightness));
-                            f.row_ex(
-                                &LayoutOpts {
-                                    height: 22.0,
-                                    gap: 8.0,
-                                    cross: Align::Center,
-                                    ..Default::default()
-                                },
-                                |f| {
-                                    f.icon(Icon::Zap, 15.0);
-                                    f.label_compact_sized(i18n.text(Message::Brightness), 12.5);
-                                    f.flex(1.0);
-                                    f.spacer(0.0);
-                                    f.label_compact_sized(
-                                        &status
-                                            .brightness
-                                            .map(|level| format!("{level}%"))
-                                            .unwrap_or_else(|| "--".into()),
-                                        11.0,
-                                    );
-                                },
-                            );
-                            if status.brightness.is_some() {
-                                let mut brightness = status.brightness.unwrap_or(1) as f32;
-                                if f.slider("##hud-brightness", &mut brightness, 1.0, 100.0) {
-                                    out.system_actions.push(SystemAction::SetBrightness {
-                                        level: brightness.round().clamp(1.0, 100.0) as u8,
-                                    });
-                                }
-                            } else {
-                                unavailable_control(f, i18n.text(Message::Brightness), i18n);
-                            }
-                            f.spacer(2.0);
-
-                            // Connectivity group.
-                            group_header(f, i18n.text(Message::Connectivity));
-                            f.row_ex(
-                                &LayoutOpts {
-                                    height: 22.0,
-                                    gap: 8.0,
-                                    cross: Align::Center,
-                                    ..Default::default()
-                                },
-                                |f| {
-                                    match network_themed {
-                                        Some(icon) => unsafe {
-                                            f.image(icon as *mut lens::sys::flux_image, 16.0, 16.0)
-                                        },
-                                        None => f.icon(Icon::Globe, 15.0),
-                                    }
-                                    f.label_compact_sized(i18n.text(Message::Connectivity), 12.5);
-                                    f.flex(1.0);
-                                    f.spacer(0.0);
-                                    f.label_compact_sized(network_label, 11.0);
-                                },
-                            );
-                            if status.wifi_enabled.is_some() {
-                                let mut wifi = status.wifi_enabled.unwrap_or(false);
-                                if f.checkbox(i18n.text(Message::Wifi), &mut wifi) {
+                                let mut tiled = status.tiled;
+                                if f.checkbox(i18n.text(Message::TiledLayout), &mut tiled) {
                                     out.system_actions
-                                        .push(SystemAction::SetWifi { enabled: wifi });
+                                        .push(SystemAction::SetTiling { enabled: tiled });
                                 }
-                            } else {
-                                unavailable_control(f, i18n.text(Message::Wifi), i18n);
-                            }
-                            if status.bluetooth_enabled.is_some() {
-                                let mut bluetooth = status.bluetooth_enabled.unwrap_or(false);
-                                if f.checkbox(i18n.text(Message::Bluetooth), &mut bluetooth) {
+                                f.spacer(2.0);
+
+                                // Agent Workspaces group: display-only aggregate of
+                                // the live Agent Interaction Domains (moved here from the HUD's right
+                                // chip, ADR-0083).
+                                group_header(f, i18n.text(Message::AgentWorkspaces));
+                                f.row_ex(
+                                    &LayoutOpts {
+                                        height: 22.0,
+                                        gap: 8.0,
+                                        cross: Align::Center,
+                                        ..Default::default()
+                                    },
+                                    |f| {
+                                        f.icon(Icon::Users, 15.0);
+                                        f.label_compact_sized(
+                                            i18n.text(Message::AgentWorkspaces),
+                                            12.5,
+                                        );
+                                        f.flex(1.0);
+                                        f.spacer(0.0);
+                                        f.label_compact_sized(&agent_status_text, 11.0);
+                                    },
+                                );
+                                f.spacer(2.0);
+
+                                // Session group: an immediate lock trigger and the
+                                // "always on" idle inhibitor, which suspends automatic
+                                // dimming, locking, and display power-off while held.
+                                group_header(f, i18n.text(Message::Session));
+                                if f.button(i18n.text(Message::LockNow)) {
+                                    out.lock = true;
+                                }
+                                let mut always_on = status.idle_inhibited;
+                                if f.checkbox(i18n.text(Message::AlwaysOn), &mut always_on) {
                                     out.system_actions
-                                        .push(SystemAction::SetBluetooth { enabled: bluetooth });
+                                        .push(SystemAction::SetIdleInhibit { inhibit: always_on });
                                 }
-                            } else {
-                                unavailable_control(f, i18n.text(Message::Bluetooth), i18n);
-                            }
-                            f.spacer(2.0);
-
-                            // Desktop group.
-                            group_header(f, i18n.text(Message::Desktop));
-                            f.row_ex(
-                                &LayoutOpts {
-                                    height: 22.0,
-                                    gap: 8.0,
-                                    cross: Align::Center,
-                                    ..Default::default()
-                                },
-                                |f| {
-                                    f.icon(Icon::Grid, 15.0);
-                                    f.label_compact_sized(i18n.text(Message::Desktop), 12.5);
-                                },
-                            );
-                            let mut do_not_disturb = status.do_not_disturb;
-                            if f.checkbox(i18n.text(Message::DoNotDisturb), &mut do_not_disturb) {
-                                out.system_actions.push(SystemAction::SetDoNotDisturb {
-                                    enabled: do_not_disturb,
-                                });
-                            }
-                            let mut tiled = status.tiled;
-                            if f.checkbox(i18n.text(Message::TiledLayout), &mut tiled) {
-                                out.system_actions
-                                    .push(SystemAction::SetTiling { enabled: tiled });
-                            }
-                            f.spacer(2.0);
-
-                            // Agent Workspaces group: display-only aggregate of
-                            // the live Agent Interaction Domains (moved here from the HUD's right
-                            // chip, ADR-0083).
-                            group_header(f, i18n.text(Message::AgentWorkspaces));
-                            f.row_ex(
-                                &LayoutOpts {
-                                    height: 22.0,
-                                    gap: 8.0,
-                                    cross: Align::Center,
-                                    ..Default::default()
-                                },
-                                |f| {
-                                    f.icon(Icon::Users, 15.0);
-                                    f.label_compact_sized(
-                                        i18n.text(Message::AgentWorkspaces),
-                                        12.5,
-                                    );
-                                    f.flex(1.0);
-                                    f.spacer(0.0);
-                                    f.label_compact_sized(&agent_status_text, 11.0);
-                                },
-                            );
-                            f.spacer(2.0);
-
-                            // Session group: an immediate lock trigger and the
-                            // "always on" idle inhibitor, which suspends automatic
-                            // dimming, locking, and display power-off while held.
-                            group_header(f, i18n.text(Message::Session));
-                            if f.button(i18n.text(Message::LockNow)) {
-                                out.lock = true;
-                            }
-                            let mut always_on = status.idle_inhibited;
-                            if f.checkbox(i18n.text(Message::AlwaysOn), &mut always_on) {
-                                out.system_actions
-                                    .push(SystemAction::SetIdleInhibit { inhibit: always_on });
-                            }
-                        },
-                    );
+                            },
+                        );
+                    });
                 });
-            });
-        });
+            },
+        );
         f.set_theme(original);
     }
 
@@ -1225,23 +1296,27 @@ impl CommandPanel {
             let original = f.theme();
             let muted = themes::hud_muted(themes::hud(&hud), &hud);
             f.set_theme(faded_theme(muted, progress));
-            f.layer("aegis-hud-tray-empty", area, &transparent(), |f| {
-                f.row_ex(
-                    &LayoutOpts {
-                        width: area.w,
-                        height: area.h,
-                        cross: Align::Center,
-                        ..Default::default()
-                    },
-                    |f| {
-                        f.flex(1.0);
-                        f.spacer(0.0);
-                        f.label_compact_sized(i18n.text(Message::NoTrayItems), 12.0);
-                        f.flex(1.0);
-                        f.spacer(0.0);
-                    },
-                );
-            });
+            f.place(
+                "aegis-hud-tray-empty",
+                &chrome_place(area, transparent()),
+                |f| {
+                    f.row_ex(
+                        &LayoutOpts {
+                            width: area.w,
+                            height: area.h,
+                            cross: Align::Center,
+                            ..Default::default()
+                        },
+                        |f| {
+                            f.flex(1.0);
+                            f.spacer(0.0);
+                            f.label_compact_sized(i18n.text(Message::NoTrayItems), 12.0);
+                            f.flex(1.0);
+                            f.spacer(0.0);
+                        },
+                    );
+                },
+            );
             f.set_theme(original);
             return;
         }
@@ -1275,7 +1350,7 @@ impl CommandPanel {
         let mut resolved: Vec<(String, Rect)> = Vec::new();
         let original = f.theme();
         f.set_theme(faded_theme(themes::hud(&hud), progress));
-        f.layer("aegis-hud-tray", area, &transparent(), |f| {
+        f.place("aegis-hud-tray", &chrome_place(area, transparent()), |f| {
             f.column_ex(&sized(area.w, area.h), |f| {
                 f.flex(1.0);
                 f.scroll("aegis-hud-tray-scroll", |f| {
@@ -1406,23 +1481,27 @@ impl CommandPanel {
         if notifications.is_empty() {
             let muted = themes::hud_muted(themes::hud(&hud), &hud);
             f.set_theme(faded_theme(muted, progress));
-            f.layer("aegis-hud-messages-empty", area, &transparent(), |f| {
-                f.row_ex(
-                    &LayoutOpts {
-                        width: area.w,
-                        height: area.h,
-                        cross: Align::Center,
-                        ..Default::default()
-                    },
-                    |f| {
-                        f.flex(1.0);
-                        f.spacer(0.0);
-                        f.label_compact_sized(i18n.text(Message::NoNotifications), 12.0);
-                        f.flex(1.0);
-                        f.spacer(0.0);
-                    },
-                );
-            });
+            f.place(
+                "aegis-hud-messages-empty",
+                &chrome_place(area, transparent()),
+                |f| {
+                    f.row_ex(
+                        &LayoutOpts {
+                            width: area.w,
+                            height: area.h,
+                            cross: Align::Center,
+                            ..Default::default()
+                        },
+                        |f| {
+                            f.flex(1.0);
+                            f.spacer(0.0);
+                            f.label_compact_sized(i18n.text(Message::NoNotifications), 12.0);
+                            f.flex(1.0);
+                            f.spacer(0.0);
+                        },
+                    );
+                },
+            );
             f.set_theme(original);
             return;
         }
@@ -1430,59 +1509,63 @@ impl CommandPanel {
         let row_theme = faded_theme(base, progress);
         let muted_theme = faded_theme(themes::hud_muted(base, &hud), progress);
         f.set_theme(row_theme);
-        f.layer("aegis-hud-messages", area, &transparent(), |f| {
-            f.column_ex(&sized(area.w, area.h), |f| {
-                f.flex(1.0);
-                f.scroll("aegis-hud-messages-scroll", |f| {
-                    f.column_ex(
-                        &LayoutOpts {
-                            gap: 6.0,
-                            cross: Align::Stretch,
-                            ..Default::default()
-                        },
-                        |f| {
-                            for notification in notifications.iter().rev() {
-                                let summary = truncate(&notification.summary, 48);
-                                let body = truncate(&notification.body, 72);
-                                let (response, _) = f.pressable_row(
-                                    &format!("aegis-hud-message-{}", notification.id),
-                                    &summary,
-                                    &LayoutOpts {
-                                        height: 58.0,
-                                        gap: 2.0,
-                                        pad: 10.0,
-                                        radius: 12.0,
-                                        cross: Align::Center,
-                                        bg: fade_color(hud.surface_dim, progress),
-                                        ..Default::default()
-                                    },
-                                    |f, _| {
-                                        f.column_ex(
-                                            &LayoutOpts {
-                                                gap: 2.0,
-                                                cross: Align::Start,
-                                                ..Default::default()
-                                            },
-                                            |f| {
-                                                f.label_compact_sized(&summary, 12.5);
-                                                if !body.is_empty() {
-                                                    f.set_theme(muted_theme);
-                                                    f.label_compact_sized(&body, 10.5);
-                                                    f.set_theme(row_theme);
-                                                }
-                                            },
-                                        );
-                                    },
-                                );
-                                if response.clicked {
-                                    out.dismissed_notification = Some(notification.id);
+        f.place(
+            "aegis-hud-messages",
+            &chrome_place(area, transparent()),
+            |f| {
+                f.column_ex(&sized(area.w, area.h), |f| {
+                    f.flex(1.0);
+                    f.scroll("aegis-hud-messages-scroll", |f| {
+                        f.column_ex(
+                            &LayoutOpts {
+                                gap: 6.0,
+                                cross: Align::Stretch,
+                                ..Default::default()
+                            },
+                            |f| {
+                                for notification in notifications.iter().rev() {
+                                    let summary = truncate(&notification.summary, 48);
+                                    let body = truncate(&notification.body, 72);
+                                    let (response, _) = f.pressable_row(
+                                        &format!("aegis-hud-message-{}", notification.id),
+                                        &summary,
+                                        &LayoutOpts {
+                                            height: 58.0,
+                                            gap: 2.0,
+                                            pad: 10.0,
+                                            radius: 12.0,
+                                            cross: Align::Center,
+                                            bg: fade_color(hud.surface_dim, progress),
+                                            ..Default::default()
+                                        },
+                                        |f, _| {
+                                            f.column_ex(
+                                                &LayoutOpts {
+                                                    gap: 2.0,
+                                                    cross: Align::Start,
+                                                    ..Default::default()
+                                                },
+                                                |f| {
+                                                    f.label_compact_sized(&summary, 12.5);
+                                                    if !body.is_empty() {
+                                                        f.set_theme(muted_theme);
+                                                        f.label_compact_sized(&body, 10.5);
+                                                        f.set_theme(row_theme);
+                                                    }
+                                                },
+                                            );
+                                        },
+                                    );
+                                    if response.clicked {
+                                        out.dismissed_notification = Some(notification.id);
+                                    }
                                 }
-                            }
-                        },
-                    );
+                            },
+                        );
+                    });
                 });
-            });
-        });
+            },
+        );
         f.set_theme(original);
     }
 
@@ -1527,10 +1610,9 @@ impl CommandPanel {
         let header_visible = self.menu_path.len() > 1;
         let mut action: Option<MenuRowAction> = None;
         f.set_theme(menu_theme);
-        f.layer(
+        f.place(
             "aegis-hud-sni-menu",
-            popover_bounds,
-            &materials::hud_panel(&hud),
+            &chrome_place(popover_bounds, materials::hud_panel(&hud)),
             |f| {
                 f.column_ex(
                     &LayoutOpts {

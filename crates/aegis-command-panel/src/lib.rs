@@ -56,7 +56,7 @@ use aegis_model::workspace::WorkspaceSnapshot;
 use aegis_settings::builtin_settings_modules;
 use aegis_settings::module::{ModuleAvailability, ModuleEvents, ModuleId, ModuleRegistry};
 use aegis_shell::persona::{Portrait, PortraitConfig, PortraitWatcher, Profile};
-use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect, Theme};
+use lens::{Align, Color, Frame, Input, LayoutOpts, Rect, Theme};
 
 use aegis_shell::{
     BackdropRegion, ChassisKind, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
@@ -750,21 +750,23 @@ impl Chrome for CommandPanel {
 
         // Dark scrim over the blurred desktop — the product's standard modal
         // backdrop, scaled in with the reveal.
-        f.layer(
+        f.place(
             "aegis-hud-scrim",
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                w: display.0,
-                h: display.1,
-            },
-            &OverlayOpts {
-                bg: Color::rgba(8, 10, 18, fade_alpha(SCRIM_ALPHA, reveal)),
-                border: Color::TRANSPARENT,
-                radius: 0.0,
-                pad: 0.0,
-                ..Default::default()
-            },
+            &materials::chrome_place(
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: display.0,
+                    h: display.1,
+                },
+                LayoutOpts {
+                    bg: Color::rgba(8, 10, 18, fade_alpha(SCRIM_ALPHA, reveal)),
+                    border: Color::TRANSPARENT,
+                    radius: 0.0,
+                    pad: 0.0,
+                    ..materials::surface_layout()
+                },
+            ),
             |_| {},
         );
 

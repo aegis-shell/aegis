@@ -9,7 +9,7 @@
 //! checked groups the user allowed, `approved: None` = denied). Ordinary
 //! modal chrome over the live scene: no freeze, no screen-content capture.
 
-use lens::{Align, Color, Frame, Input, LayoutOpts, OverlayOpts, Rect};
+use lens::{Align, Color, Frame, Input, LayoutOpts, Rect};
 
 use crate::{
     BackdropRegion, Chrome, ChromeCommand, ChromeEvents, ChromeUpdate, CursorShape,
@@ -260,18 +260,20 @@ impl Chrome for CapabilityPrompt {
         let design = self.design;
         let layout = self.layout(display);
 
-        frame.layer(
+        frame.place(
             "aegis-capability-prompt-scrim",
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                w: display.0,
-                h: display.1,
-            },
-            &OverlayOpts {
-                bg: design.colors.scrim,
-                ..Default::default()
-            },
+            &materials::chrome_place(
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: display.0,
+                    h: display.1,
+                },
+                LayoutOpts {
+                    bg: design.colors.scrim,
+                    ..materials::surface_layout()
+                },
+            ),
             |_| {},
         );
 
@@ -280,10 +282,9 @@ impl Chrome for CapabilityPrompt {
 
         // Minimal foreground tint only. The compositor-owned analytic pass
         // supplies the body, refraction, rim light, and shadow.
-        frame.layer(
+        frame.place(
             "aegis-capability-prompt-panel",
-            layout.panel,
-            &materials::glass_panel(&design),
+            &materials::chrome_place(layout.panel, materials::glass_panel(&design)),
             |_| {},
         );
 
@@ -293,10 +294,9 @@ impl Chrome for CapabilityPrompt {
             15.0,
             (layout.title.w - frame.theme().padding() * 2.0).max(0.0),
         );
-        frame.layer(
+        frame.place(
             "aegis-capability-prompt-title",
-            layout.title,
-            &transparent(),
+            &materials::chrome_place(layout.title, transparent()),
             |frame| {
                 frame.row_ex(&stretch(layout.title), |frame| {
                     frame.label_sized(&title, 15.0);
@@ -311,17 +311,19 @@ impl Chrome for CapabilityPrompt {
                 12.0,
                 (rect.w - 12.0).max(0.0),
             );
-            frame.layer(
+            frame.place(
                 "aegis-capability-prompt-warning",
-                rect,
-                &OverlayOpts {
-                    bg: design.colors.application_hover,
-                    border: design.colors.application_border,
-                    border_width: design.strokes.hairline,
-                    radius: design.radii.control,
-                    pad: 0.0,
-                    ..Default::default()
-                },
+                &materials::chrome_place(
+                    rect,
+                    LayoutOpts {
+                        bg: design.colors.application_hover,
+                        border: design.colors.application_border,
+                        border_width: design.strokes.hairline,
+                        radius: design.radii.control,
+                        pad: 0.0,
+                        ..materials::surface_layout()
+                    },
+                ),
                 |frame| {
                     frame.row_ex(&stretch_pad(rect), |frame| {
                         frame.label_compact_sized(&warning, 12.0);
@@ -333,19 +335,21 @@ impl Chrome for CapabilityPrompt {
         for (index, group) in self.groups.iter().enumerate() {
             let row = layout.rows[index];
             let hovered = contains(row, cursor.x, cursor.y);
-            frame.layer(
+            frame.place(
                 &format!("aegis-capability-prompt-row-{index}"),
-                row,
-                &if hovered {
-                    materials::glass_focus(&design, false, 1.0)
-                } else {
-                    OverlayOpts {
-                        bg: Color::TRANSPARENT,
-                        radius: design.radii.control,
-                        pad: 0.0,
-                        ..Default::default()
-                    }
-                },
+                &materials::chrome_place(
+                    row,
+                    if hovered {
+                        materials::glass_focus(&design, false, 1.0)
+                    } else {
+                        LayoutOpts {
+                            bg: Color::TRANSPARENT,
+                            radius: design.radii.control,
+                            pad: 0.0,
+                            ..materials::surface_layout()
+                        }
+                    },
+                ),
                 |_| {},
             );
             let check = Rect {
@@ -355,22 +359,24 @@ impl Chrome for CapabilityPrompt {
                 h: CHECK,
             };
             let enabled = group.enabled;
-            frame.layer(
+            frame.place(
                 &format!("aegis-capability-prompt-check-{index}"),
-                check,
-                &OverlayOpts {
-                    bg: if enabled {
-                        design.colors.application_accent
-                    } else {
-                        design.colors.card_surface
+                &materials::chrome_place(
+                    check,
+                    LayoutOpts {
+                        bg: if enabled {
+                            design.colors.application_accent
+                        } else {
+                            design.colors.card_surface
+                        },
+                        border: design.colors.application_border,
+                        border_width: design.strokes.hairline,
+                        radius: design.radii.control,
+                        pad: 0.0,
+                        cross: Align::Center,
+                        ..materials::surface_layout()
                     },
-                    border: design.colors.application_border,
-                    border_width: design.strokes.hairline,
-                    radius: design.radii.control,
-                    pad: 0.0,
-                    cross: Align::Center,
-                    ..Default::default()
-                },
+                ),
                 |frame| {
                     if enabled {
                         frame.column_ex(&stretch(check), |frame| {
@@ -397,10 +403,9 @@ impl Chrome for CapabilityPrompt {
                 13.0,
                 (text.w - gated_width - frame.theme().padding() * 2.0).max(0.0),
             );
-            frame.layer(
+            frame.place(
                 &format!("aegis-capability-prompt-label-{index}"),
-                text,
-                &transparent(),
+                &materials::chrome_place(text, transparent()),
                 |frame| {
                     frame.row_ex(&stretch_gap(text), |frame| {
                         frame.label_sized(&label, 13.0);
@@ -413,36 +418,40 @@ impl Chrome for CapabilityPrompt {
         }
 
         let deny_hovered = contains(layout.deny, cursor.x, cursor.y);
-        frame.layer(
+        frame.place(
             "aegis-capability-prompt-deny",
-            layout.deny,
-            &OverlayOpts {
-                bg: if deny_hovered {
-                    design.colors.application_hover
-                } else {
-                    design.colors.card_surface
+            &materials::chrome_place(
+                layout.deny,
+                LayoutOpts {
+                    bg: if deny_hovered {
+                        design.colors.application_hover
+                    } else {
+                        design.colors.card_surface
+                    },
+                    radius: design.radii.control,
+                    pad: 0.0,
+                    cross: Align::Center,
+                    ..materials::surface_layout()
                 },
-                radius: design.radii.control,
-                pad: 0.0,
-                cross: Align::Center,
-                ..Default::default()
-            },
+            ),
             |frame| {
                 frame.column_ex(&stretch(layout.deny), |frame| {
                     frame.label_sized("Deny", 13.0);
                 });
             },
         );
-        frame.layer(
+        frame.place(
             "aegis-capability-prompt-allow",
-            layout.allow,
-            &OverlayOpts {
-                bg: design.colors.application_accent,
-                radius: design.radii.control,
-                pad: 0.0,
-                cross: Align::Center,
-                ..Default::default()
-            },
+            &materials::chrome_place(
+                layout.allow,
+                LayoutOpts {
+                    bg: design.colors.application_accent,
+                    radius: design.radii.control,
+                    pad: 0.0,
+                    cross: Align::Center,
+                    ..materials::surface_layout()
+                },
+            ),
             |frame| {
                 frame.column_ex(&stretch(layout.allow), |frame| {
                     frame.label_sized("Allow", 13.0);
@@ -476,7 +485,7 @@ impl Chrome for CapabilityPrompt {
         self.active
     }
 
-    // A pending consent owns the complete chrome layer: the Dock, HUD, and
+    // A pending consent owns the complete chrome band: the Dock, HUD, and
     // toasts stay suppressed until the prompt is answered.
     fn exclusive_presentation_active(&self) -> bool {
         self.active
@@ -624,11 +633,11 @@ fn stretch_gap(rect: Rect) -> LayoutOpts {
     }
 }
 
-fn transparent() -> OverlayOpts {
-    OverlayOpts {
+fn transparent() -> LayoutOpts {
+    LayoutOpts {
         bg: Color::TRANSPARENT,
         pad: 0.0,
-        ..Default::default()
+        ..materials::surface_layout()
     }
 }
 
