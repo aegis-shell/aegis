@@ -1161,6 +1161,16 @@ impl Server {
             self.change_pointer_focus(focus);
             self.change_keyboard_focus(focus);
         }
+        // Scene-driven pointer re-hits (surface map/unmap under a stationary
+        // cursor, popup dismissal). Runs after the keyboard restorations so a
+        // focus-pinning grab is already in place, and before the session-lock
+        // focus owner so the lock's explicit target always wins.
+        let pending_pointer_rehit = std::mem::take(&mut self.state.pending_pointer_rehit);
+        for seat in pending_pointer_rehit {
+            if let Some(_guard) = ActiveSeatGuard::enter(self.state.as_mut(), seat) {
+                self.rehit_pointer_after_stack_change();
+            }
+        }
         if self.state.session_lock_phase.is_active() {
             // The compositor-rendered opaque fallback is sufficient after the
             // bounded grace period even if the locker has not mapped every

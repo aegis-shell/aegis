@@ -788,6 +788,29 @@ unsafe fn update_overlay_positions(state: *mut State) {
     }
 }
 
+/// Flag seats for a pointer re-hit once `dispatch` regains the main-loop
+/// context; see `State::pending_pointer_rehit`. `None` flags every live seat,
+/// the common case for scene changes (surface map/unmap) whose coordinates
+/// any seat's cursor could be over.
+unsafe fn schedule_pointer_rehit(state: *mut State, seat: Option<SeatId>) {
+    unsafe {
+        if state.is_null() {
+            return;
+        }
+        match seat {
+            Some(seat) => {
+                (*state).pending_pointer_rehit.insert(seat);
+            }
+            None => {
+                let seats = (*state).seats.keys().copied().collect::<Vec<_>>();
+                for seat in seats {
+                    (*state).pending_pointer_rehit.insert(seat);
+                }
+            }
+        }
+    }
+}
+
 unsafe fn update_overlay_positions_for_seat(state: *mut State, seat: SeatId) {
     unsafe {
         let Some(runtime) = (*state).seat_runtime(seat) else {
@@ -1260,6 +1283,13 @@ pub(crate) struct State {
     /// focus returning from a dismissed popup or closed toplevel; see
     /// [`DeferredKeyboardFocus`] for the restoration semantics.
     pending_keyboard_focus: std::collections::BTreeMap<SeatId, DeferredKeyboardFocus>,
+    /// Seats whose pointer focus must be re-hit-tested by `dispatch` after
+    /// protocol callbacks return. A surface mapping or unmapping changes what
+    /// is under a stationary cursor; without the re-hit a freshly mapped
+    /// popup (a Qt menu, a Chrome bubble) never receives `wl_pointer.enter`,
+    /// so the client's pointer tracking stays on the owning toplevel and the
+    /// first click activates nothing.
+    pending_pointer_rehit: std::collections::BTreeSet<SeatId>,
     /// Active ext-session-lock object and fail-closed visibility phase.
     ///
     /// The object pointer may be null in `Locked` after its client dies. A

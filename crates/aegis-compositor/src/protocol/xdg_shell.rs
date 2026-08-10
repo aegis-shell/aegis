@@ -608,6 +608,11 @@ unsafe extern "C" fn popup_destroy(_client: *mut ffi::wl_client, resource: *mut 
             (*rec).popup_grabbed = false;
             (*rec).popup_grab_seat = None;
             (*rec).mapped = false;
+            if !(*rec).state.is_null() {
+                // The popup may have been under a stationary cursor; re-hit
+                // so the surface beneath sees wl_pointer.enter again.
+                schedule_pointer_rehit((*rec).state, None);
+            }
             if let Some(seat) = grab_seat
                 && !(*rec).state.is_null()
             {

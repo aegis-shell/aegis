@@ -764,19 +764,36 @@ pub(crate) unsafe extern "C" fn surface_commit(
                         // access.
                         let pixels = &mut (*rec).pixels;
                         if incremental {
-                            // Damage rects are surface-local logical coordinates;
-                            // map them to buffer pixels (× buffer_scale, rounded
+                            // Damage rects are surface-local logical
+                            // coordinates; map them to buffer pixels (rounded
                             // outward) before copying, so a HiDPI client's
                             // incremental refresh is no longer forced into a
-                            // whole-buffer copy.
-                            let scale = (*rec).buffer_scale.max(1);
+                            // whole-buffer copy. The factor is the effective
+                            // logical→buffer scale: fractional-scale clients
+                            // keep buffer_scale at 1 and carry the density in
+                            // a wp_viewport destination, which buffer_scale
+                            // alone would under-cover, stranding the far side
+                            // of every alternated buffer (read: truncated
+                            // Chrome tooltips).
+                            let geometry = aegis_model::SurfaceGeometry {
+                                transform: (*rec).buffer_transform,
+                                buffer_scale: (*rec).buffer_scale,
+                                viewport_src: (*rec).viewport_src,
+                                viewport_dst: (*rec).viewport_dst,
+                                ..Default::default()
+                            };
+                            let (scale_x, scale_y) = geometry.logical_to_buffer_scale(w, h);
                             for d in &damage {
-                                let x = d.origin.x.saturating_mul(scale).max(0).min(w);
-                                let y = d.origin.y.saturating_mul(scale).max(0).min(h);
-                                let x1 =
-                                    (d.origin.x + d.size.w).saturating_mul(scale).max(0).min(w);
-                                let y1 =
-                                    (d.origin.y + d.size.h).saturating_mul(scale).max(0).min(h);
+                                let x =
+                                    ((d.origin.x as f32 * scale_x).floor() as i32).max(0).min(w);
+                                let y =
+                                    ((d.origin.y as f32 * scale_y).floor() as i32).max(0).min(h);
+                                let x1 = (((d.origin.x + d.size.w) as f32 * scale_x).ceil() as i32)
+                                    .max(0)
+                                    .min(w);
+                                let y1 = (((d.origin.y + d.size.h) as f32 * scale_y).ceil() as i32)
+                                    .max(0)
+                                    .min(h);
                                 let cw = (x1 - x) as usize;
                                 let ch = (y1 - y) as usize;
                                 if cw == 0 || ch == 0 {
@@ -1189,6 +1206,21 @@ pub(crate) unsafe extern "C" fn surface_commit(
                     );
                 }
             }
+        }
+        // A surface appearing or disappearing changes what is under a
+        // stationary cursor. Defer a pointer re-hit to dispatch (protocol
+        // callbacks cannot re-enter the Server here): without it a popup
+        // that maps under the cursor — a Qt menu, a Chrome bubble — never
+        // receives wl_pointer.enter until the next motion, so the client's
+        // pointer tracking stays on the owning toplevel and the first click
+        // after the menu opens is misrouted. Cursor and drag-icon surfaces
+        // track the pointer by design and are excluded.
+        if was_mapped != (*rec).mapped
+            && !(*rec).cursor_role
+            && !(*rec).drag_icon_role
+            && !(*rec).state.is_null()
+        {
+            schedule_pointer_rehit((*rec).state, None);
         }
         let children = (*rec).children.clone();
         for child in children {

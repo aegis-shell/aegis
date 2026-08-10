@@ -289,10 +289,20 @@ impl Server {
             return;
         }
         if !state.is_pressed() {
+            let implicit_grab_held = self.state.implicit_grab_active;
             self.state.implicit_grab_active = false;
             if self.state.drag.is_some() {
                 unsafe { finish_drag(self.state.as_mut()) };
                 return;
+            }
+            if implicit_grab_held {
+                // The implicit grab pinned pointer focus to the pressed
+                // surface for the whole hold. Now that the hold ended, what
+                // is under the cursor may differ — notably a popup that
+                // opened on the press and could not take focus mid-grab.
+                unsafe {
+                    schedule_pointer_rehit(self.state.as_mut(), Some(self.state.active_seat));
+                }
             }
         }
         if !state.is_pressed()
@@ -365,6 +375,10 @@ impl Server {
                     (*popup).popup_grab_seat = None;
                     (*popup).mapped = false;
                     self.change_keyboard_focus(focus_after_dismissal);
+                    // The dismissed popup may have held pointer focus; re-hit
+                    // so the surface underneath sees the enter without
+                    // waiting for motion.
+                    schedule_pointer_rehit(self.state.as_mut(), Some(self.state.active_seat));
                     return;
                 }
             }
